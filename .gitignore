@@ -15,7 +15,7 @@ deployment/.env
 backtesting/target/
 
 # ── Data & logs ───────────────────────────────────────────────────────────────
-**/data/
+hist-data/data/
 **/*.log
 **/*.parquet
 **/*.csv
@@ -43,3 +43,4 @@ docker-compose.override.yml
 *.md
 Cargo.lock
 monitoring/grafana/provisioning/dashboards/*.json
+/go.work.sum

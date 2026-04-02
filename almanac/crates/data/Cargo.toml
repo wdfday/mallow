@@ -1,0 +1,13 @@
+[package]
+name = "alm-data"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alm-core = { workspace = true }
+anyhow  = { workspace = true }
+
+# Parquet / DataFrame
+polars = { version = "0.46", default-features = false, features = [
+    "parquet", "lazy", "dtype-full", "streaming",
+] }

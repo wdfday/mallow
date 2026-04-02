@@ -1,0 +1,12 @@
+.git
+.github
+.idea
+.vscode
+
+.env
+*.log
+
+# test binaries / coverage
+*.test
+*.out
+coverage.html

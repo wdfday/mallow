@@ -1,0 +1,23 @@
+default:
+    @just --list
+
+fmt:
+    gofmt -w $(rg --files cmd internal | rg '\.go$$')
+
+test:
+    mkdir -p ./tmp/gocache ./tmp/gotmp
+    GOCACHE=$(pwd)/tmp/gocache GOTMPDIR=$(pwd)/tmp/gotmp go test ./...
+
+run:
+    mkdir -p ./tmp/gocache ./tmp/gotmp
+    GOCACHE=$(pwd)/tmp/gocache GOTMPDIR=$(pwd)/tmp/gotmp go run ./cmd/investment/
+
+dev:
+    ~/.go/bin/air
+
+swagger:
+    go run github.com/swaggo/swag/cmd/swag@v1.8.12 init -g cmd/investment/swagger.go -o docs --parseInternal --parseDependency --parseDepth 3
+
+swagger-check:
+    just swagger
+    git diff --exit-code docs/docs.go docs/swagger.json docs/swagger.yaml

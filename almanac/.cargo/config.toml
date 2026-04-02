@@ -1,0 +1,11 @@
+[build]
+# macOS: use lld-compatible linker for faster incremental links
+# Falls back gracefully if not installed
+# rustflags = ["-C", "link-arg=-fuse-ld=lld"]
+
+[target.aarch64-apple-darwin]
+# Apple Silicon — use system linker with split debug info (faster + smaller)
+rustflags = ["-C", "split-debuginfo=unpacked"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "split-debuginfo=unpacked"]

@@ -1,0 +1,112 @@
+// =============================================================================
+// Grafana Alloy — replaces Promtail
+// Collects: Docker container logs → Loki
+//           Pyroscope profile write endpoint (used by SDK push)
+// =============================================================================
+
+// ── Docker log discovery ──────────────────────────────────────────────────────
+
+discovery.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "5s"
+
+  filter {
+    name   = "label"
+    values = ["com.docker.compose.project=mallow"]
+  }
+}
+
+discovery.relabel "docker_meta" {
+  targets = discovery.docker.containers.targets
+
+  // strip leading slash from container name
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_log_stream"]
+    target_label  = "stream"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_compose_service"]
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_compose_project"]
+    target_label  = "project"
+  }
+}
+
+// ── Log collection → Loki ─────────────────────────────────────────────────────
+
+loki.source.docker "docker" {
+  host             = "unix:///var/run/docker.sock"
+  targets          = discovery.relabel.docker_meta.output
+  refresh_interval = "5s"
+  forward_to       = [loki.process.json_logs.receiver]
+}
+
+// Parse structured JSON logs (slog JSON format used by Go services)
+loki.process "json_logs" {
+  stage.json {
+    expressions = {
+      level = "level",
+      msg   = "msg",
+      ts    = "time",
+    }
+  }
+
+  stage.labels {
+    values = {
+      level = "",
+    }
+  }
+
+  stage.timestamp {
+    source           = "ts"
+    format           = "RFC3339Nano"
+    fallback_formats = ["RFC3339", "Unix"]
+    action_on_failure = "skip"
+  }
+
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}
+
+// ── Metrics scraping → Prometheus ────────────────────────────────────────────
+
+prometheus.scrape "nats_surveyor" {
+  targets    = [{ __address__ = "nats-surveyor:7777" }]
+  forward_to = [prometheus.remote_write.default.receiver]
+}
+
+prometheus.scrape "tempo" {
+  targets    = [{ __address__ = "tempo:3200" }]
+  forward_to = [prometheus.remote_write.default.receiver]
+}
+
+prometheus.remote_write "default" {
+  endpoint {
+    url = "http://prometheus:9090/api/v1/write"
+  }
+}
+
+// ── Pyroscope profile forwarding ──────────────────────────────────────────────
+// Services that use the Pyroscope push SDK send profiles here.
+// Alloy proxies them to the Pyroscope server.
+
+pyroscope.write "default" {
+  endpoint {
+    url = "http://pyroscope:4040"
+  }
+}

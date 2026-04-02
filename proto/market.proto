@@ -1,0 +1,104 @@
+// Mallow Trading System — Protobuf message definitions
+// Single source of truth for inter-service communication via NATS.
+//
+// NATS subjects:
+//   ticks.{class}.{symbol}  ← stream-data → orchestrator (raw ticks)
+//   bars.{symbol}           ← orchestrator → signal-engine (aggregated bars)
+//   signals.{symbol}        ← signal-engine → orchestrator
+//   engine.configure        ← orchestrator → signal-engine
+//   engine.reset            ← orchestrator → signal-engine
+
+syntax = "proto3";
+package market;
+
+option go_package = "mallow/proto/market";
+
+// ── Tick (raw trade event from exchange WebSocket) ──────────────────
+
+message TickMsg {
+  int64  t     = 1;  // Unix milliseconds
+  string s     = 2;  // symbol (normalized uppercase, e.g. "BTCUSDT")
+  string class = 3;  // asset class: "crypto" | "stocks" | "forex"
+  string src   = 4;  // source: "binance" | "alpaca" | "twelvedata" | "okx"
+  double p     = 5;  // last price
+  double v     = 6;  // volume (trade qty)
+  double bid   = 7;  // bid (forex only)
+  double ask   = 8;  // ask (forex only)
+}
+
+// ── Bar (OHLCV candle, aggregated from ticks) ────────────────────────
+
+message BarMsg {
+  int64  t = 1;  // Unix milliseconds
+  string s = 2;  // symbol
+  double o = 3;  // open
+  double h = 4;  // high
+  double l = 5;  // low
+  double c = 6;  // close
+  double v = 7;  // volume
+}
+
+// ── Signal (strategy output) ────────────────────────────────────────
+
+message SignalMsg {
+  int64  t        = 1;  // Unix milliseconds
+  string s        = 2;  // symbol
+  string dir      = 3;  // "long" | "short" | "close"
+  double strength = 4;  // [0.0, 1.0]
+
+  // Optional pattern metadata (populated by pattern_breakout strategy)
+  optional double target_price = 5;  // projected price target
+  optional double stop_price   = 6;  // invalidation stop level
+  optional string pattern_kind = 7;  // e.g. "bull_flag", "ascending_triangle"
+  optional double confidence   = 8;  // pattern confidence [0.0, 1.0]
+}
+
+message SignalResponse {
+  repeated SignalMsg signals = 1;
+}
+
+// ── Engine Control ──────────────────────────────────────────────────
+
+message ConfigMsg {
+  string strategy          = 1;  // "ma_crossover" | "rsi_mean_rev" | ...
+  map<string, double> params = 2;  // strategy parameters
+}
+
+message ResetMsg {
+  string symbol = 1;  // empty = reset all
+}
+
+// ── Bot Registry ─────────────────────────────────────────────────────
+// NATS subjects:
+//   engine.register    ← gateway/orchestrator → signal-engine
+//   engine.deregister  ← gateway/orchestrator → signal-engine
+//   engine.list        ← request/reply — returns BotListResponse
+
+message RegisterMsg {
+  string bot_id      = 1;  // unique bot identifier (e.g. "bot_ema_btc_001")
+  string symbol      = 2;  // e.g. "BTCUSDT"
+  string strategy    = 3;  // "ma_crossover" | "rsi_mean_rev" | ...
+  string params_json = 4;  // flat JSON params: {"fast": 20, "slow": 50}
+
+  // Temporary bot fields (optional — omit for permanent bots)
+  optional int64  expires_at_ms = 5;  // Unix ms TTL; auto-deregister after
+  optional double target_price  = 6;  // auto-close when price hits target
+  optional double stop_price    = 7;  // auto-close when price hits stop
+  optional int32  max_bars      = 8;  // auto-expire after N bars
+  optional string pattern_kind  = 9;  // originating pattern e.g. "bull_flag"
+}
+
+message DeregisterMsg {
+  string bot_id = 1;  // bot to remove; empty = remove all
+}
+
+message BotInfo {
+  string bot_id      = 1;
+  string symbol      = 2;
+  string strategy    = 3;
+  string params_json = 4;
+}
+
+message BotListResponse {
+  repeated BotInfo bots = 1;
+}

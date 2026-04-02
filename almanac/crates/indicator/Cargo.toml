@@ -1,0 +1,12 @@
+[package]
+name = "alm-indicator"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Pure math — zero external deps at runtime
+
+[dev-dependencies]
+ta = "0.5"
+rust_ti = "2.2"
+kand = "0.2"

@@ -1,0 +1,8 @@
+# Whitelist: only what identity needs from the workspace
+*
+!go.work
+!go.work.sum
+!pkg/
+!pkg/**
+!identity/
+!identity/**

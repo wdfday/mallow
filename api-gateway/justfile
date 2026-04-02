@@ -1,0 +1,21 @@
+default:
+    @just --list
+
+swagger:
+    swag init -g cmd/gateway/swagger.go --output docs
+
+swagger-check:
+    swag init -g cmd/gateway/swagger.go --output /tmp/swag-check && diff docs/swagger.json /tmp/swag-check/swagger.json
+
+fmt:
+    gofmt -w $(rg --files cmd internal | rg '\.go$$')
+
+test:
+    go test ./...
+
+run:
+    NATS_URL=nats://gateway:${NATS_PASS_GATEWAY:-gateway-dev}@localhost:4222 go run ./cmd/gateway/
+
+dev:
+    NATS_URL=nats://gateway:${NATS_PASS_GATEWAY:-gateway-dev}@localhost:4222 \
+        ~/.go/bin/air

@@ -1,0 +1,8 @@
+[package]
+name = "alm-pattern"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alm-core = { workspace = true }
+serde   = { workspace = true }

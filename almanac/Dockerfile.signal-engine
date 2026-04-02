@@ -1,0 +1,39 @@
+# Build stage
+FROM rust:1.85-slim AS builder
+
+RUN apt-get update && apt-get install -y pkg-config libssl-dev && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Cache dependencies
+COPY Cargo.toml Cargo.lock* ./
+COPY crates/bt-core/Cargo.toml crates/bt-core/Cargo.toml
+COPY crates/bt-data/Cargo.toml crates/bt-data/Cargo.toml
+COPY crates/bt-indicator/Cargo.toml crates/bt-indicator/Cargo.toml
+COPY crates/bt-strategy/Cargo.toml crates/bt-strategy/Cargo.toml
+COPY crates/bt-report/Cargo.toml crates/bt-report/Cargo.toml
+COPY crates/bt-engine/Cargo.toml crates/bt-engine/Cargo.toml
+COPY crates/bt-vectorized/Cargo.toml crates/bt-vectorized/Cargo.toml
+COPY crates/signal-engine/Cargo.toml crates/signal-engine/Cargo.toml
+
+# Create stub src files for dependency caching
+RUN for d in crates/*/; do mkdir -p "$d/src" && echo "" > "$d/src/lib.rs"; done && \
+    echo "fn main(){}" > crates/bt-engine/src/main.rs && \
+    echo "fn main(){}" > crates/signal-engine/src/main.rs
+
+RUN cargo build --release --bin signal-engine 2>/dev/null || true
+
+# Copy real source and build
+COPY crates/ crates/
+RUN cargo build --release --bin signal-engine
+
+# Final stage
+FROM debian:bookworm-slim
+
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY --from=builder /app/target/release/signal-engine .
+
+ENV NATS_URL=nats://nats:4222
+CMD ["./signal-engine"]

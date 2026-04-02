@@ -1,0 +1,104 @@
+default:
+    @just --list
+
+# ── Build ─────────────────────────────────────────────────────────────────────
+
+# Build entire workspace
+build:
+    cargo build
+
+# Build in release mode
+build-release:
+    cargo build --release
+
+# ── Test ──────────────────────────────────────────────────────────────────────
+
+# Run all tests
+test:
+    cargo test
+
+# Run tests for a specific crate  (e.g. just test-crate bt-indicator)
+test-crate crate:
+    cargo test -p {{crate}}
+
+# Run a specific test by name across the workspace
+test-name name:
+    cargo test {{name}}
+
+# ── Run ───────────────────────────────────────────────────────────────────────
+
+# Run the live signal engine
+run:
+    cargo run -p herald
+
+# Run with debug logging
+run-debug:
+    RUST_LOG=herald=debug cargo run -p herald
+
+# Hot-reload signal-engine on file changes (requires cargo-watch)
+dev:
+    cargo watch -x 'run -p herald'
+
+# Run logbook API server (Ctrl+C to stop)
+run-api:
+    NATS_USER=backtest_api \
+    NATS_PASS=${NATS_PASS_BACKTEST_API:-backtest-api-dev} \
+    DATA_DIR=${DATA_DIR:-../hist-data/data} \
+    cargo run -p logbook --bin logbook
+
+# Hot-reload logbook API server (requires cargo-watch)
+dev-api:
+    NATS_USER=backtest_api \
+    NATS_PASS=${NATS_PASS_BACKTEST_API:-backtest-api-dev} \
+    DATA_DIR=${DATA_DIR:-../hist-data/data} \
+    cargo watch -x 'run -p logbook --bin logbook'
+
+# ── Code quality ──────────────────────────────────────────────────────────────
+
+# Lint with clippy
+lint:
+    cargo clippy -- -D warnings
+
+# Format all source files
+fmt:
+    cargo fmt
+
+# Check formatting without modifying files
+fmt-check:
+    cargo fmt --check
+
+# ── Docker ────────────────────────────────────────────────────────────────────
+
+# Build + start signal-engine container
+up:
+    docker compose up -d --build signal-engine
+
+# Start without rebuild
+start:
+    docker compose up -d signal-engine
+
+# Stop
+down:
+    docker compose down
+
+# Live logs for signal-engine
+logs:
+    docker compose logs -f signal-engine
+
+# Restart signal-engine
+restart:
+    docker compose restart signal-engine
+
+# ── Utilities ─────────────────────────────────────────────────────────────────
+
+# Remove build artifacts
+clean:
+    cargo clean
+
+# Show dependency tree
+deps:
+    cargo tree
+
+# Check for outdated dependencies
+outdated:
+    cargo outdated

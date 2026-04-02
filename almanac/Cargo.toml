@@ -1,0 +1,81 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/core",
+    "crates/data",
+    "crates/indicator",
+    "crates/strategy",
+    "crates/engine",
+    "crates/report",
+    "crates/chart",
+    "crates/pattern",
+    "crates/vectorized",
+    "crates/herald",
+    "crates/logbook",
+]
+
+[workspace.dependencies]
+# Internal
+alm-core      = { path = "./crates/core" }
+alm-data      = { path = "./crates/data" }
+alm-indicator = { path = "./crates/indicator" }
+alm-strategy  = { path = "./crates/strategy" }
+alm-report    = { path = "./crates/report" }
+alm-chart     = { path = "./crates/chart" }
+alm-pattern   = { path = "./crates/pattern" }
+
+# Async
+tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread", "signal"] }
+
+# Error
+thiserror = "2"
+anyhow = "1"
+
+# Serde
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Protobuf — schema-first binary serialization for NATS messages
+prost = "0.13"
+prost-types = "0.13"
+
+# NATS messaging
+async-nats = "0.38"
+
+# Time
+chrono    = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Expression evaluation
+evalexpr        = "11"
+cel-interpreter = "0.8"
+
+# Benchmarking
+criterion = { version = "0.5", features = ["html_reports"] }
+
+# ── Build profiles ────────────────────────────────────────────────────────────
+
+[profile.dev]
+# Reduce debug symbols: line tables only (much smaller .d files, faster link)
+debug = 1
+# Disable incremental for cleaner target dir (trade: slightly slower rebuilds)
+incremental = false
+
+[profile.dev.package."*"]
+# Optimize dependencies fully even in dev — faster runtime, no impact on iteration
+opt-level = 3
+debug = false
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = "debuginfo"
+
+[profile.bench]
+inherits = "release"
+debug = 1

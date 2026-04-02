@@ -1,0 +1,530 @@
+# =============================================================================
+# Mallow Trading System — Docker Compose (deployment)
+#
+# Usage:
+#   docker compose up -d                              # full stack
+#   docker compose up -d nats postgres redis          # infra only
+#   docker compose --profile monitoring up -d         # + surveyor + grafana
+#
+# Debug NATS (monitoring profile):
+#   docker exec -it nats-box nats sub "bars.>"
+#   docker exec -it nats-box nats stream ls
+#   open http://localhost:8222                        # NATS monitoring (raw JSON)
+#   open http://localhost:3000                        # Grafana (--profile monitoring)
+# =============================================================================
+name: mallow
+
+services:
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Infrastructure
+  # ═══════════════════════════════════════════════════════════════════
+
+  nats:
+    image: nats:2.10-alpine
+    container_name: nats
+    ports:
+      - "4222:4222"      # client connections
+      - "8222:8222"      # monitoring
+      - "9222:9222"      # websocket (nats-ui)
+    volumes:
+      - ./nats/nats-server.conf:/etc/nats/nats-server.conf:ro
+      - nats-data:/data/jetstream
+    command: ["-c", "/etc/nats/nats-server.conf"]
+    environment:
+      NATS_PASS_STREAM_DATA:   ${NATS_PASS_STREAM_DATA:-stream-data-dev}
+      NATS_PASS_SIGNAL_ENGINE: ${NATS_PASS_SIGNAL_ENGINE:-signal-engine-dev}
+      NATS_PASS_ORCHESTRATOR:  ${NATS_PASS_ORCHESTRATOR:-orchestrator-dev}
+      NATS_PASS_INVESTMENT:    ${NATS_PASS_INVESTMENT:-investment-dev}
+      NATS_PASS_STRATEGIST:    ${NATS_PASS_STRATEGIST:-strategist-dev}
+      NATS_PASS_GATEWAY:       ${NATS_PASS_GATEWAY:-gateway-dev}
+      NATS_PASS_IDENTITY:      ${NATS_PASS_IDENTITY:-identity-dev}
+      NATS_PASS_BACKTEST_API:  ${NATS_PASS_BACKTEST_API:-backtest-api-dev}
+      NATS_PASS_SURVEYOR:      ${NATS_PASS_SURVEYOR:-surveyor-dev}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+
+  postgres:
+    image: postgres:18-alpine
+    container_name: postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: mallow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mallow-dev}
+      POSTGRES_DB: identity
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mallow -d identity"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    command:
+      - redis-server
+      - --appendonly yes
+      - --maxmemory 256mb
+      - --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Identity service
+  # ═══════════════════════════════════════════════════════════════════
+
+  identity:
+    build:
+      context: ..
+      dockerfile: identity/Dockerfile
+    image: identity:latest
+    container_name: identity
+    ports:
+      - "8082:8082"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    environment:
+      PORT: "8082"
+      POSTGRES_URL: "postgres://mallow:${POSTGRES_PASSWORD:-mallow-dev}@postgres:5432/identity?sslmode=disable"
+      REDIS_URL: "redis://redis:6379"
+      NATS_URL: "nats://identity:${NATS_PASS_IDENTITY:-identity-dev}@nats:4222"
+      JWT_SECRET: ${JWT_SECRET:-mallow-dev-secret-change-in-prod}
+      JWT_ACCESS_TTL: "15m"
+      JWT_REFRESH_TTL: "168h"
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-01234567890123456789012345678901}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      GIN_MODE: ${GIN_MODE:-release}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_ENV: ${LOG_ENV:-production}
+      TELEGRAM_GENERAL_BOT_TOKEN: ${TELEGRAM_GENERAL_BOT_TOKEN:-}
+      TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
+      TELEGRAM_ALLOWED_CHATS: ${TELEGRAM_ALLOWED_CHATS:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8082/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Trading engine
+  # ═══════════════════════════════════════════════════════════════════
+
+  stream-data:
+    build:
+      context: ../stream-data
+      dockerfile: Dockerfile
+    image: stream-data:latest
+    container_name: stream-data
+    depends_on:
+      nats:
+        condition: service_healthy
+    environment:
+      NATS_URL: nats://stream_data:${NATS_PASS_STREAM_DATA:-stream-data-dev}@nats:4222
+      ALPACA_API_KEY: ${ALPACA_API_KEY:-}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET:-}
+      TWELVEDATA_API_KEY: ${TWELVEDATA_API_KEY:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    volumes:
+      - ../stream-data/config.yaml:/app/config.yaml:ro
+      - stream-data-vol:/app/data
+    restart: unless-stopped
+
+  signal-engine:
+    build:
+      context: ../backtesting
+      dockerfile: Dockerfile.signal-engine
+    image: signal-engine:latest
+    container_name: signal-engine
+    depends_on:
+      nats:
+        condition: service_healthy
+    environment:
+      NATS_URL: nats://signal_engine:${NATS_PASS_SIGNAL_ENGINE:-signal-engine-dev}@nats:4222
+      RUST_LOG: signal_engine=info
+    restart: unless-stopped
+
+  backtest-api:
+    build:
+      context: ../backtesting
+      dockerfile: Dockerfile.backtest-api
+    image: backtest-api:latest
+    container_name: backtest-api
+    depends_on:
+      nats:
+        condition: service_healthy
+    environment:
+      NATS_URL: nats://gateway:${NATS_PASS_GATEWAY:-gateway-dev}@nats:4222
+      DATA_DIR: /data
+      RUST_LOG: backtest_api=info
+    volumes:
+      - stream-data-vol:/data/stream:ro
+      - ../hist-data/data:/data/hist:ro
+    restart: unless-stopped
+
+  logbook:
+    build:
+      context: ../almanac
+      dockerfile: Dockerfile.logbook
+    image: logbook:latest
+    container_name: logbook
+    ports:
+      - "8085:8085"
+    depends_on:
+      nats:
+        condition: service_healthy
+    environment:
+      NATS_URL: nats://gateway:${NATS_PASS_GATEWAY:-gateway-dev}@nats:4222
+      HTTP_ADDR: "0.0.0.0:8085"
+      DATA_DIR: /data
+      RUST_LOG: logbook=info
+    volumes:
+      - stream-data-vol:/data/stream:ro
+      - ../hist-data/data:/data/hist:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8085/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  orchestrator:
+    build:
+      context: ..
+      dockerfile: orchestrator/Dockerfile
+    image: orchestrator:latest
+    container_name: orchestrator
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      NATS_URL: nats://orchestrator:${NATS_PASS_ORCHESTRATOR:-orchestrator-dev}@nats:4222
+      POSTGRES_URL: "postgres://mallow:${POSTGRES_PASSWORD:-mallow-dev}@postgres:5432/orchestrator?sslmode=disable"
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      API_ADDR: "0.0.0.0:8084"
+      PYROSCOPE_URL: http://pyroscope:4040
+      SYNC_INTERVAL: ${SYNC_INTERVAL:-5m}
+      INITIAL_CAPITAL: ${INITIAL_CAPITAL:-100000}
+      # Alpaca
+      ALPACA_API_KEY: ${ALPACA_API_KEY:-}
+      ALPACA_API_SECRET: ${ALPACA_API_SECRET:-}
+      ALPACA_BASE_URL: ${ALPACA_BASE_URL:-https://paper-api.alpaca.markets}
+      # Binance
+      BINANCE_API_KEY: ${BINANCE_API_KEY:-}
+      BINANCE_API_SECRET: ${BINANCE_API_SECRET:-}
+      # OKX
+      OKX_API_KEY: ${OKX_API_KEY:-}
+      OKX_API_SECRET: ${OKX_API_SECRET:-}
+      OKX_PASSPHRASE: ${OKX_PASSPHRASE:-}
+      OKX_DEMO: ${OKX_DEMO:-true}
+      # Bybit
+      BYBIT_API_KEY: ${BYBIT_API_KEY:-}
+      BYBIT_API_SECRET: ${BYBIT_API_SECRET:-}
+      # IBKR (requires separate ibgw container per account — see docs/ibkr.md)
+      IBKR_BASE_URL: ${IBKR_BASE_URL:-}
+      IBKR_ACCOUNT_ID: ${IBKR_ACCOUNT_ID:-}
+      # OANDA
+      OANDA_TOKEN: ${OANDA_TOKEN:-}
+      OANDA_ACCOUNT_ID: ${OANDA_ACCOUNT_ID:-}
+    restart: unless-stopped
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Investment service
+  # ═══════════════════════════════════════════════════════════════════
+
+  investment:
+    build:
+      context: ..
+      dockerfile: investment/Dockerfile
+    image: investment:latest
+    container_name: investment
+    ports:
+      - "8083:8083"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    environment:
+      PORT: "8083"
+      POSTGRES_URL: "postgres://mallow:${POSTGRES_PASSWORD:-mallow-dev}@postgres:5432/investment?sslmode=disable"
+      NATS_URL: "nats://investment:${NATS_PASS_INVESTMENT:-investment-dev}@nats:4222"
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
+      GIN_MODE: ${GIN_MODE:-release}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8083/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # ═══════════════════════════════════════════════════════════════════
+  # API layer
+  # ═══════════════════════════════════════════════════════════════════
+
+  strategist:
+    build:
+      context: ../thstrategist
+      dockerfile: Dockerfile
+    image: strategist:latest
+    container_name: strategist
+    ports:
+      - "8081:8081"
+    depends_on:
+      nats:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: "8081"
+      NATS_URL: nats://strategist:${NATS_PASS_STRATEGIST:-strategist-dev}@nats:4222
+      POSTGRES_URL: "postgres://mallow:${POSTGRES_PASSWORD:-mallow-dev}@postgres:5432/strategist?sslmode=disable"
+      ORCHESTRATOR_URL: http://orchestrator:8084
+      IDENTITY_URL: http://identity:8082
+      IDENTITY_SERVICE_SECRET: ${SERVICE_SECRET:-}
+      LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_ALLOWED_CHATS: ${TELEGRAM_ALLOWED_CHATS:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: ../api-gateway
+      dockerfile: Dockerfile
+    image: gateway:latest
+    container_name: gateway
+    ports:
+      - "8080:8080"
+    depends_on:
+      nats:
+        condition: service_healthy
+      identity:
+        condition: service_healthy
+      investment:
+        condition: service_healthy
+      strategist:
+        condition: service_healthy
+      logbook:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      PORT: "8080"
+      NATS_URL: nats://gateway:${NATS_PASS_GATEWAY:-gateway-dev}@nats:4222
+      JWT_SECRET: ${JWT_SECRET:-mallow-dev-secret-change-in-prod}
+      IDENTITY_URL: http://identity:8082
+      INVESTMENT_URL: http://investment:8083
+      ORCHESTRATOR_URL: http://orchestrator:8084
+      STRATEGIST_URL: http://strategist:8081
+      LOGBOOK_URL: http://logbook:8085
+      REDIS_URL: redis://redis:6379
+      GIN_MODE: ${GIN_MODE:-release}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    restart: unless-stopped
+
+  # ═══════════════════════════════════════════════════════════════════
+  # Monitoring — LGTP stack  (docker compose --profile monitoring up -d)
+  # ═══════════════════════════════════════════════════════════════════
+
+  nats-ui:
+    image: ghcr.io/gastbob40/nats-ui:latest
+    container_name: nats-ui
+    ports:
+      - "3001:3000"
+    restart: unless-stopped
+
+  nats-box:
+    image: natsio/nats-box:latest
+    container_name: nats-box
+    profiles: ["monitoring"]
+    depends_on:
+      nats:
+        condition: service_healthy
+    environment:
+      NATS_URL: "nats://nats:4222"
+    entrypoint: ["sh", "-c", "sleep infinity"]
+    restart: unless-stopped
+
+
+  nats-surveyor:
+    image: natsio/nats-surveyor:latest
+    container_name: nats-surveyor
+    profiles: ["monitoring"]
+    depends_on:
+      nats:
+        condition: service_healthy
+    command:
+      - "-s"
+      - "nats://surveyor:${NATS_PASS_SURVEYOR:-surveyor-dev}@nats:4222"
+      - "-p"
+      - "7777"
+      - "--jsz"
+      - "all"
+      - "--accounts"
+    ports:
+      - "7777:7777"
+    restart: unless-stopped
+
+  # Prometheus — metrics
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    profiles: ["monitoring"]
+    depends_on:
+      - nats-surveyor
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--web.enable-remote-write-receiver"     # allow Tempo to write span metrics
+      - "--enable-feature=exemplar-storage"      # exemplars for trace→metrics linkage
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9091:9090"
+    restart: unless-stopped
+
+  # Loki — log aggregation
+  loki:
+    image: grafana/loki:latest
+    container_name: loki
+    profiles: ["monitoring"]
+    command: ["-config.file=/etc/loki/config.yaml", "-config.expand-env=true"]
+    volumes:
+      - ./monitoring/loki-config.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki   # index + cache only — chunks go to S3
+    ports:
+      - "3100:3100"
+    environment:
+      LOKI_S3_BUCKET:        ${LOKI_S3_BUCKET}
+      LOKI_S3_BUCKET_REGION: ${LOKI_S3_BUCKET_REGION}
+      LOKI_S3_ACCESS_KEY:    ${LOKI_S3_ACCESS_KEY}
+      LOKI_S3_SECRET_KEY:    ${LOKI_S3_SECRET_KEY}
+      LOKI_S3_ENDPOINT:      ${LOKI_S3_ENDPOINT}
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3100/ready | grep -q ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Tempo — distributed tracing
+  tempo:
+    image: grafana/tempo:latest
+    container_name: tempo
+    profiles: ["monitoring"]
+    command: ["-config.file=/etc/tempo/config.yaml"]
+    volumes:
+      - ./monitoring/tempo-config.yaml:/etc/tempo/config.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"   # Tempo HTTP / query
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    depends_on:
+      - prometheus
+    restart: unless-stopped
+
+  # Alloy — universal collector, replaces Promtail (logs → Loki + profiles → Pyroscope)
+  alloy:
+    image: grafana/alloy:latest
+    container_name: alloy
+    profiles: ["monitoring"]
+    command: run --server.http.listen-addr=0.0.0.0:12345 /etc/alloy/config.alloy
+    volumes:
+      - ./monitoring/alloy-config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    ports:
+      - "12345:12345"   # Alloy UI + config reload endpoint
+    depends_on:
+      loki:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Pyroscope — continuous profiling
+  pyroscope:
+    image: grafana/pyroscope:latest
+    container_name: pyroscope
+    profiles: ["monitoring"]
+    ports:
+      - "4040:4040"
+    volumes:
+      - pyroscope-data:/data
+    restart: unless-stopped
+
+  # Grafana — visualization
+  grafana:
+    image: grafana/grafana:11.5.2
+    container_name: grafana
+    profiles: ["monitoring"]
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-mallow}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_FEATURE_TOGGLES_ENABLE: traceqlEditor traceToMetrics
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+# ═══════════════════════════════════════════════════════════════════
+# Volumes & Network
+# ═══════════════════════════════════════════════════════════════════
+
+volumes:
+  nats-data:
+  postgres-data:
+  redis-data:
+  stream-data-vol:
+  prometheus-data:
+  loki-data:
+  tempo-data:
+  grafana-data:
+  pyroscope-data:
+
+networks:
+  default:
+    name: mallow-network

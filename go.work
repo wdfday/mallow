@@ -1,0 +1,12 @@
+go 1.26.0
+
+use (
+	./api-gateway
+	./hist-data
+	./identity
+	./investment
+	./orchestrator
+	./pkg
+	./thstrategist
+	./stream-data
+)

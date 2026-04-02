@@ -1,0 +1,262 @@
+### ============================================
+### OKX EXCHANGE API TEST
+### Cryptocurrency Trading Platform
+### ============================================
+### Base URL: https://www.okx.com
+### Documentation: https://www.okx.com/docs-v5/en/
+### ============================================
+
+### Variables
+@okx_api_key = YOUR_OKX_API_KEY
+@okx_api_secret = YOUR_OKX_API_SECRET
+@okx_passphrase = YOUR_OKX_PASSPHRASE
+@okx_timestamp = 2026-01-11T10:00:00.000Z
+
+### ============================================
+### AUTHENTICATION NOTES
+### ============================================
+# OKX uses HMAC SHA256 signature authentication (NO separate auth endpoint)
+# Signature = Base64(HMAC-SHA256(timestamp + method + requestPath + body, secretKey))
+#
+# Required Headers for authenticated endpoints:
+# - OK-ACCESS-KEY: Your API key
+# - OK-ACCESS-SIGN: Calculated signature
+# - OK-ACCESS-TIMESTAMP: ISO 8601 timestamp (UTC)
+# - OK-ACCESS-PASSPHRASE: Your passphrase
+#
+# NOTE: The signature must be calculated for EACH request
+# You need to implement signature calculation or use OKX SDK
+
+### ============================================
+### ACCOUNT & BALANCE
+### ============================================
+
+### 1. Get Account Balance (Requires Signature)
+GET https://www.okx.com/api/v5/account/balance
+OK-ACCESS-KEY: {{okx_api_key}}
+OK-ACCESS-SIGN: YOUR_CALCULATED_SIGNATURE
+OK-ACCESS-TIMESTAMP: {{okx_timestamp}}
+OK-ACCESS-PASSPHRASE: {{okx_passphrase}}
+Content-Type: application/json
+
+### Expected Response:
+# {
+#   "code": "0",
+#   "msg": "",
+#   "data": [
+#     {
+#       "totalEq": "15000.50",
+#       "isoEq": "0",
+#       "adjEq": "15000.50",
+#       "details": [
+#         {
+#           "ccy": "USDT",
+#           "eq": "10000",
+#           "availBal": "9500",
+#           "uplNow": "500"
+#         },
+#         {
+#           "ccy": "BTC",
+#           "eq": "0.15",
+#           "availBal": "0.15",
+#           "uplNow": "200"
+#         },
+#         {
+#           "ccy": "ETH",
+#           "eq": "2.5",
+#           "availBal": "2.5",
+#           "uplNow": "100"
+#         }
+#       ]
+#     }
+#   ]
+# }
+
+### 2. Get Account Configuration (Requires Signature)
+GET https://www.okx.com/api/v5/account/config
+OK-ACCESS-KEY: {{okx_api_key}}
+OK-ACCESS-SIGN: YOUR_CALCULATED_SIGNATURE
+OK-ACCESS-TIMESTAMP: {{okx_timestamp}}
+OK-ACCESS-PASSPHRASE: {{okx_passphrase}}
+Content-Type: application/json
+
+### ============================================
+### POSITIONS
+### ============================================
+
+### 3. Get All Positions (Requires Signature)
+GET https://www.okx.com/api/v5/account/positions
+OK-ACCESS-KEY: {{okx_api_key}}
+OK-ACCESS-SIGN: YOUR_CALCULATED_SIGNATURE
+OK-ACCESS-TIMESTAMP: {{okx_timestamp}}
+OK-ACCESS-PASSPHRASE: {{okx_passphrase}}
+Content-Type: application/json
+
+### Expected Response:
+# {
+#   "code": "0",
+#   "msg": "",
+#   "data": [
+#     {
+#       "instId": "BTC-USDT",
+#       "pos": "0.15",
+#       "avgPx": "50000",
+#       "markPx": "52000",
+#       "uplNow": "300",
+#       "uplRatio": "0.04",
+#       "notionalUsd": "7800",
+#       "lever": "1"
+#     },
+#     {
+#       "instId": "ETH-USDT",
+#       "pos": "2.5",
+#       "avgPx": "3000",
+#       "markPx": "3100",
+#       "uplNow": "250",
+#       "uplRatio": "0.033",
+#       "notionalUsd": "7750",
+#       "lever": "1"
+#     }
+#   ]
+# }
+
+### 4. Get Specific Position (Requires Signature)
+GET https://www.okx.com/api/v5/account/positions?instId=BTC-USDT
+OK-ACCESS-KEY: {{okx_api_key}}
+OK-ACCESS-SIGN: YOUR_CALCULATED_SIGNATURE
+OK-ACCESS-TIMESTAMP: {{okx_timestamp}}
+OK-ACCESS-PASSPHRASE: {{okx_passphrase}}
+Content-Type: application/json
+
+### ============================================
+### MARKET DATA (Public - No Authentication)
+### ============================================
+
+### 5. Get BTC-USDT Ticker
+GET https://www.okx.com/api/v5/market/ticker?instId=BTC-USDT
+Content-Type: application/json
+
+### Expected Response:
+# {
+#   "code": "0",
+#   "msg": "",
+#   "data": [
+#     {
+#       "instId": "BTC-USDT",
+#       "last": "52000",
+#       "lastSz": "0.1",
+#       "askPx": "52001",
+#       "bidPx": "51999",
+#       "open24h": "50000",
+#       "high24h": "52500",
+#       "low24h": "49500",
+#       "vol24h": "15000"
+#     }
+#   ]
+# }
+
+### 6. Get ETH-USDT Ticker
+GET https://www.okx.com/api/v5/market/ticker?instId=ETH-USDT
+Content-Type: application/json
+
+### 7. Get SOL-USDT Ticker
+GET https://www.okx.com/api/v5/market/ticker?instId=SOL-USDT
+Content-Type: application/json
+
+### 8. Get MATIC-USDT Ticker
+GET https://www.okx.com/api/v5/market/ticker?instId=MATIC-USDT
+Content-Type: application/json
+
+### 9. Get All SPOT Tickers
+GET https://www.okx.com/api/v5/market/tickers?instType=SPOT
+Content-Type: application/json
+
+### 10. Get BTC-USDT Order Book
+GET https://www.okx.com/api/v5/market/books?instId=BTC-USDT&sz=20
+Content-Type: application/json
+
+### 11. Get BTC-USDT Candlesticks (1 hour)
+GET https://www.okx.com/api/v5/market/candles?instId=BTC-USDT&bar=1H
+Content-Type: application/json
+
+### 12. Get BTC-USDT Recent Trades
+GET https://www.okx.com/api/v5/market/trades?instId=BTC-USDT&limit=100
+Content-Type: application/json
+
+### ============================================
+### TRADING (Requires Signature)
+### ============================================
+
+### 13. Place Order - Market Buy (Requires Signature)
+POST https://www.okx.com/api/v5/trade/order
+OK-ACCESS-KEY: {{okx_api_key}}
+OK-ACCESS-SIGN: YOUR_CALCULATED_SIGNATURE
+OK-ACCESS-TIMESTAMP: {{okx_timestamp}}
+OK-ACCESS-PASSPHRASE: {{okx_passphrase}}
+Content-Type: application/json
+
+{
+  "instId": "BTC-USDT",
+  "tdMode": "cash",
+  "side": "buy",
+  "ordType": "market",
+  "sz": "0.01"
+}
+
+### 14. Place Order - Limit Buy (Requires Signature)
+POST https://www.okx.com/api/v5/trade/order
+OK-ACCESS-KEY: {{okx_api_key}}
+OK-ACCESS-SIGN: YOUR_CALCULATED_SIGNATURE
+OK-ACCESS-TIMESTAMP: {{okx_timestamp}}
+OK-ACCESS-PASSPHRASE: {{okx_passphrase}}
+Content-Type: application/json
+
+{
+  "instId": "BTC-USDT",
+  "tdMode": "cash",
+  "side": "buy",
+  "ordType": "limit",
+  "px": "50000",
+  "sz": "0.01"
+}
+
+### ============================================
+### ERROR TESTING
+### ============================================
+
+### Test with Invalid API Key
+GET https://www.okx.com/api/v5/account/balance
+OK-ACCESS-KEY: invalid_key
+OK-ACCESS-SIGN: invalid_signature
+OK-ACCESS-TIMESTAMP: 2026-01-11T10:00:00.000Z
+OK-ACCESS-PASSPHRASE: invalid
+Content-Type: application/json
+
+### Test with Missing Headers
+GET https://www.okx.com/api/v5/account/balance
+Content-Type: application/json
+
+### Test Invalid Instrument ID
+GET https://www.okx.com/api/v5/market/ticker?instId=INVALID-USDT
+Content-Type: application/json
+
+### ============================================
+### NOTES
+### ============================================
+# - OKX requires account with API access enabled
+# - API keys can have different permissions (read/trade/withdraw)
+# - Signature calculation is REQUIRED for all authenticated endpoints
+# - API keys don't expire but can be revoked
+# - Supports spot, futures, options, perpetual swaps
+# - All trading amounts in base currency (BTC, ETH, etc.)
+# - Price quotes in USDT/USD
+# - Rate limits apply (varies by VIP level)
+# - WebSocket available for real-time data
+#
+# Example signature calculation (pseudo-code):
+# timestamp = "2026-01-11T10:00:00.000Z"
+# method = "GET"
+# requestPath = "/api/v5/account/balance"
+# body = "" (empty for GET)
+# message = timestamp + method + requestPath + body
+# signature = Base64(HMAC-SHA256(message, secretKey))

@@ -1,0 +1,440 @@
+package handler
+
+import (
+	"io"
+	"net/http"
+
+	"github.com/gin-gonic/gin"
+	"github.com/nats-io/nats.go"
+
+	"gateway/internal/service"
+)
+
+// Handler holds shared dependencies for all route handlers.
+type Handler struct {
+	NC         *nats.Conn
+	Strategist *service.StrategistClient
+	// LogbookURL is the base URL of the Rust logbook HTTP API (e.g. http://logbook:3000).
+	LogbookURL string
+}
+
+func (h *Handler) SwaggerIndex(c *gin.Context) {
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(`<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mallow API Docs</title>
+  <style>
+    :root {
+      --bg: #f4f0e8;
+      --card: #fffdf8;
+      --ink: #1d1a16;
+      --muted: #6c6258;
+      --line: #d8cfc3;
+      --accent: #1b6b73;
+      --accent-2: #c96d42;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at top left, rgba(201,109,66,.18), transparent 24rem),
+        radial-gradient(circle at bottom right, rgba(27,107,115,.18), transparent 28rem),
+        var(--bg);
+      min-height: 100vh;
+    }
+    main {
+      max-width: 920px;
+      margin: 0 auto;
+      padding: 48px 20px 64px;
+    }
+    h1 {
+      margin: 0 0 12px;
+      font-size: clamp(2.4rem, 6vw, 4.8rem);
+      line-height: .94;
+      letter-spacing: -.05em;
+    }
+    p.lead {
+      max-width: 48rem;
+      margin: 0 0 32px;
+      color: var(--muted);
+      font-size: 1.05rem;
+      line-height: 1.6;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 18px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 22px;
+      box-shadow: 0 10px 30px rgba(29,26,22,.06);
+    }
+    .eyebrow {
+      margin: 0 0 10px;
+      font-size: .82rem;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--accent);
+      font-weight: 700;
+    }
+    h2 {
+      margin: 0 0 10px;
+      font-size: 1.35rem;
+    }
+    .card p {
+      margin: 0 0 18px;
+      color: var(--muted);
+      line-height: 1.55;
+    }
+    .actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    a.button {
+      display: inline-block;
+      text-decoration: none;
+      color: white;
+      background: var(--accent);
+      padding: 10px 14px;
+      border-radius: 999px;
+      font-weight: 600;
+    }
+    a.link {
+      display: inline-block;
+      text-decoration: none;
+      color: var(--accent-2);
+      font-weight: 600;
+      padding: 10px 0;
+    }
+    code {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: .92em;
+      background: rgba(27,107,115,.08);
+      padding: .12rem .35rem;
+      border-radius: .4rem;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <p class="eyebrow">Mallow Gateway</p>
+    <h1>API docs through gateway</h1>
+    <p class="lead">
+      Open each service Swagger UI from <code>:8080</code>. The docs themselves are proxied by the gateway,
+      so once you authorize with a JWT, requests go through the gateway path and preserve the real header-injection flow.
+    </p>
+    <section class="grid">
+      <article class="card">
+        <p class="eyebrow">Identity</p>
+        <h2>Auth, user, profile</h2>
+        <p>Public auth routes and protected identity routes exposed under <code>/api/v1</code>.</p>
+        <div class="actions">
+          <a class="button" href="/api/v1/swagger/index.html">Open Swagger UI</a>
+          <a class="link" href="/api/v1/swagger/doc.json">Open spec JSON</a>
+        </div>
+      </article>
+      <article class="card">
+        <p class="eyebrow">Investment</p>
+        <h2>Portfolio and broker APIs</h2>
+        <p>Swagger UI is proxied publicly, while protected API calls still run through gateway auth at <code>/api/v1/investment</code>.</p>
+        <div class="actions">
+          <a class="button" href="/swagger/investment/index.html">Open Swagger UI</a>
+          <a class="link" href="/swagger/investment/doc.json">Open spec JSON</a>
+        </div>
+      </article>
+      <article class="card">
+        <p class="eyebrow">Orchestrator</p>
+        <h2>Bots and runtime APIs</h2>
+        <p>Swagger UI is proxied publicly, while protected API calls run through gateway auth at <code>/api/v1/orchestrator</code>.</p>
+        <div class="actions">
+          <a class="button" href="/swagger/orchestrator/index.html">Open Swagger UI</a>
+          <a class="link" href="/swagger/orchestrator/doc.json">Open spec JSON</a>
+        </div>
+      </article>
+      <article class="card">
+        <p class="eyebrow">Logbook (Rust Backtesting)</p>
+        <h2>Strategy backtesting &amp; data</h2>
+        <p>69+ strategies, 39 indicators. <code>POST /api/backtest</code> — run backtest. <code>POST /api/indicator</code> — compute indicator series. <code>GET /api/symbols</code> — available data. <code>GET /api/data/{symbol}</code> — OHLCV bars.</p>
+        <div class="actions">
+          <a class="button" href="/swagger/logbook">Open Swagger UI</a>
+          <a class="link" href="/api/strategies">List strategies</a>
+          <a class="link" href="/api/symbols">List symbols</a>
+        </div>
+      </article>
+      <article class="card">
+        <p class="eyebrow">Gateway</p>
+        <h2>This gateway</h2>
+        <p>JWT auth, rate limiting, reverse proxy to all upstream services.</p>
+        <div class="actions">
+          <a class="button" href="/swagger/gateway/index.html">Open Swagger UI</a>
+        </div>
+      </article>
+      <article class="card">
+        <p class="eyebrow">Strategist</p>
+        <h2>AI agent and chat</h2>
+        <p>ADK-powered trading assistant. Chat via <code>POST /api/chat</code> (sync) or <code>/api/chat/stream</code> (SSE). Raw proxy at <code>/api/v1/strategist</code>.</p>
+        <div class="actions">
+          <a class="button" href="/api/v1/strategist/ui/">Open ADK Web UI</a>
+        </div>
+      </article>
+    </section>
+  </main>
+</body>
+</html>`))
+}
+
+// ── Strategies ──────────────────────────────────────────────────────
+
+// StrategyInfo describes one available backtest strategy.
+type StrategyInfo struct {
+	Name     string            `json:"name"`
+	Category string            `json:"category"`
+	Params   map[string]string `json:"params,omitempty"` // param_name → type hint
+}
+
+var allStrategies = []StrategyInfo{
+	// MA / Trend
+	{"ma_crossover", "trend", map[string]string{"fast": "int", "slow": "int"}},
+	{"dema_crossover", "trend", map[string]string{"fast": "int", "slow": "int"}},
+	{"hma_crossover", "trend", map[string]string{"fast": "int", "slow": "int"}},
+	{"tema_crossover", "trend", map[string]string{"fast": "int", "slow": "int"}},
+	{"gmma_crossover", "trend", nil},
+	{"triple_ema", "trend", map[string]string{"fast": "int", "mid": "int", "slow": "int"}},
+	{"trend_follower", "trend", map[string]string{"period": "int", "adx_threshold": "float"}},
+	{"trend_transition", "trend", nil},
+	{"ma_pullback", "trend", map[string]string{"period": "int"}},
+	// Momentum / Oscillator
+	{"rsi_mean_rev", "momentum", map[string]string{"period": "int", "oversold": "float", "overbought": "float"}},
+	{"stochastic_crossover", "momentum", map[string]string{"k_period": "int", "d_period": "int", "oversold": "float", "overbought": "float"}},
+	{"stochastic_dk", "momentum", map[string]string{"k_period": "int", "d_period": "int"}},
+	{"cci_reversal", "momentum", map[string]string{"period": "int", "threshold": "float"}},
+	{"roc", "momentum", map[string]string{"period": "int"}},
+	{"trix", "momentum", map[string]string{"period": "int", "signal": "int"}},
+	{"tsi", "momentum", map[string]string{"first": "int", "second": "int"}},
+	{"kama", "momentum", map[string]string{"er_period": "int"}},
+	{"stoch_rsi", "momentum", map[string]string{"rsi_period": "int"}},
+	{"connors_rsi", "momentum", map[string]string{"rsi_period": "int", "streak_period": "int", "rank_period": "int"}},
+	{"kdj", "momentum", map[string]string{"period": "int", "oversold": "float", "overbought": "float"}},
+	{"ao", "momentum", map[string]string{"fast": "int", "slow": "int"}},
+	{"momentum_roc", "momentum", map[string]string{"period": "int"}},
+	{"dual_momentum", "momentum", map[string]string{"fast": "int", "slow": "int"}},
+	// Volatility / Breakout
+	{"bb_squeeze", "volatility", nil},
+	{"bb_keltner_squeeze", "volatility", nil},
+	{"keltner_breakout", "volatility", map[string]string{"period": "int", "multiplier": "float"}},
+	{"volatility_ratio_breakout", "volatility", map[string]string{"lookback": "int"}},
+	{"volatility_squeezer", "volatility", nil},
+	{"volatility_vanguard", "volatility", nil},
+	{"donchian_breakout", "volatility", map[string]string{"period": "int"}},
+	{"highest_breakout", "volatility", map[string]string{"period": "int"}},
+	{"chandelier_exit", "volatility", map[string]string{"period": "int", "multiplier": "float"}},
+	// Reversal / Mean Reversion
+	{"mean_reversion", "reversal", map[string]string{"period": "int", "multiplier": "float"}},
+	{"reversal_catcher", "reversal", nil},
+	{"mfi_revert", "reversal", map[string]string{"period": "int", "oversold": "float"}},
+	{"range_rover", "reversal", nil},
+	{"heiken_ashi_color", "reversal", nil},
+	{"heiken_ashi_harmonizer", "reversal", nil},
+	// Composite
+	{"macd_crossover", "composite", map[string]string{"fast": "int", "slow": "int", "signal": "int"}},
+	{"macd_ma", "composite", map[string]string{"fast": "int", "slow": "int", "signal": "int", "ma_period": "int"}},
+	{"bollinger_macd", "composite", nil},
+	{"dmi_adx", "composite", map[string]string{"period": "int", "adx_threshold": "float"}},
+	{"oscillator_overlord", "composite", nil},
+	{"swing_trader", "composite", nil},
+	{"equilibrium_explorer", "composite", nil},
+	{"waddah_attar", "composite", nil},
+	{"wolfstein", "composite", nil},
+	{"supertrend", "composite", map[string]string{"period": "int", "multiplier": "float"}},
+	{"supertrend_macd", "composite", map[string]string{"period": "int", "multiplier": "float"}},
+	{"chop_filter", "composite", map[string]string{"chop_period": "int", "chop_threshold": "float"}},
+	// Special / Session
+	{"orb_breakout", "session", map[string]string{"session_gap_ms": "int"}},
+	{"vwap_bounce", "session", nil},
+	{"vwap_trend", "session", nil},
+	{"scalping_ema", "session", map[string]string{"fast": "int", "slow": "int"}},
+	{"atr_trailing", "session", map[string]string{"ema_period": "int", "atr_period": "int", "atr_multiplier": "float"}},
+	{"elder_ray", "session", map[string]string{"period": "int"}},
+	{"aroon_trend", "session", map[string]string{"period": "int"}},
+	{"rwi", "session", map[string]string{"period": "int"}},
+	{"alligator", "session", nil},
+	{"mfi_trend", "session", map[string]string{"period": "int", "threshold": "float"}},
+	{"parabolic_sar", "session", map[string]string{"step": "float", "max": "float"}},
+	{"heiken_ashi_breakout", "session", nil},
+	{"ichimoku_cloud", "session", nil},
+	{"ichimoku_cross", "session", nil},
+	{"price_action_swing", "session", nil},
+	{"pixel_3", "session", map[string]string{"short": "int", "medium": "int", "long": "int"}},
+	// Expression-based
+	{"cel", "expression", map[string]string{"entry": "string", "exit": "string"}},
+	{"dynamic", "expression", nil},
+}
+
+// ListStrategies godoc
+//
+// @Summary      List available strategies
+// @Description  Returns all 57+ backtest strategies. Use ?category= to filter.
+// @Tags         Backtest
+// @Security     BearerAuth
+// @Produce      json
+// @Param        category  query     string  false  "trend | momentum | volatility | reversal | composite | session | expression"
+// @Success      200       {object}  map[string]interface{}  "strategies array + total count"
+// @Router       /api/strategies [get]
+func (h *Handler) ListStrategies(c *gin.Context) {
+	category := c.Query("category")
+	if category == "" {
+		c.JSON(http.StatusOK, gin.H{"strategies": allStrategies, "total": len(allStrategies)})
+		return
+	}
+	filtered := make([]StrategyInfo, 0)
+	for _, s := range allStrategies {
+		if s.Category == category {
+			filtered = append(filtered, s)
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"strategies": filtered, "total": len(filtered)})
+}
+
+// ── Backtest ────────────────────────────────────────────────────────
+// POST /api/backtest and POST /api/indicator are fully proxied to logbook.
+// Schema: see logbook Swagger UI at /swagger/logbook
+
+// ── Chat (Strategist AI) ────────────────────────────────────────────
+
+// ChatRequest is the body for chat endpoints.
+type ChatRequest struct {
+	Message string `json:"message" binding:"required"`
+}
+
+// ChatResponse is returned by the synchronous chat endpoint.
+type ChatResponse struct {
+	Reply     string `json:"reply"`
+	SessionID string `json:"session_id"`
+}
+
+// Chat godoc
+//
+// @Summary      Chat with AI strategist (sync)
+// @Description  Sends a message to the ADK-powered trading assistant and waits for a full reply.
+// @Tags         AI Strategist
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      json
+// @Param        request  body      ChatRequest   true  "User message"
+// @Success      200      {object}  ChatResponse
+// @Failure      400      {object}  map[string]string
+// @Failure      502      {object}  map[string]string  "strategist unavailable"
+// @Router       /api/chat [post]
+func (h *Handler) Chat(c *gin.Context) {
+	var req ChatRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	userID, _ := c.Get("user_id")
+	uid, _ := userID.(string)
+	if uid == "" {
+		uid = "anonymous"
+	}
+
+	reply, sessionID, err := h.Strategist.Chat(uid, req.Message)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, ChatResponse{
+		Reply:     reply,
+		SessionID: sessionID,
+	})
+}
+
+// ChatStream godoc
+//
+// @Summary      Chat with AI strategist (SSE stream)
+// @Description  Same as /api/chat but streams the reply as Server-Sent Events. Each `data:` line is a partial token.
+// @Tags         AI Strategist
+// @Security     BearerAuth
+// @Accept       json
+// @Produce      text/event-stream
+// @Param        request  body      ChatRequest  true  "User message"
+// @Success      200      {string}  string        "SSE stream — data: <token>\\n\\n"
+// @Failure      400      {object}  map[string]string
+// @Failure      502      {object}  map[string]string  "strategist unavailable"
+// @Router       /api/chat/stream [post]
+func (h *Handler) ChatStream(c *gin.Context) {
+	var req ChatRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	userID, _ := c.Get("user_id")
+	uid, _ := userID.(string)
+	if uid == "" {
+		uid = "anonymous"
+	}
+
+	sseBody, _, err := h.Strategist.ChatStream(uid, req.Message)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
+		return
+	}
+	defer sseBody.Close()
+
+	// Stream SSE to client
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Status(http.StatusOK)
+
+	// Pipe strategist SSE → client
+	c.Stream(func(w io.Writer) bool {
+		buf := make([]byte, 4096)
+		n, err := sseBody.Read(buf)
+		if n > 0 {
+			_, _ = w.Write(buf[:n])
+		}
+		return err == nil
+	})
+}
+
+// ── Health ──────────────────────────────────────────────────────────
+
+// Health godoc
+//
+// @Summary      Health check
+// @Description  Returns gateway status and NATS connectivity.
+// @Tags         System
+// @Produce      json
+// @Success      200  {object}  map[string]interface{}
+// @Router       /health [get]
+func (h *Handler) Health(c *gin.Context) {
+	natsOK := h.NC != nil && h.NC.IsConnected()
+
+	// Probe logbook /health endpoint.
+	logbookOK := false
+	if resp, err := http.Get(h.LogbookURL + "/health"); err == nil {
+		logbookOK = resp.StatusCode == http.StatusOK
+		resp.Body.Close()
+	}
+
+	status := "ok"
+	if !natsOK || !logbookOK {
+		status = "degraded"
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"status":  status,
+		"nats":    natsOK,
+		"logbook": logbookOK,
+	})
+}

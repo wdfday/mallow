@@ -1,0 +1,27 @@
+services:
+  streamer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: stream-data:latest
+    container_name: stream-data
+    environment:
+      - NATS_URL=${NATS_URL:-nats://stream_data:stream-data-dev@nats:4222}
+      # Secrets — never put API keys in config.yaml
+      - ALPACA_API_KEY=${ALPACA_API_KEY:-}
+      - ALPACA_API_SECRET=${ALPACA_API_SECRET:-}
+      - TWELVEDATA_API_KEY=${TWELVEDATA_API_KEY:-}
+      # Optional overrides
+      # - CONFIG_FILE=/app/config.yaml
+      # - LOG_LEVEL=debug
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ${DATA_DIR_HOST:-./data}:/app/data
+    restart: unless-stopped
+    networks:
+      - mallow-network
+
+networks:
+  mallow-network:
+    external: true
+    name: mallow-network

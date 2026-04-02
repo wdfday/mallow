@@ -1,0 +1,84 @@
+# =============================================================================
+# Identity Service — standalone Docker Compose (dev)
+#
+# Build context is the REPO ROOT (required by the multi-module Dockerfile).
+# Run from the REPO ROOT:
+#
+#   docker compose -f identity/docker-compose.yml up -d
+#   docker compose -f identity/docker-compose.yml logs -f identity
+#   docker compose -f identity/docker-compose.yml down -v
+# =============================================================================
+
+services:
+  identity:
+    build:
+      # Build context MUST be the repo root (go.work workspace).
+      context: ..
+      dockerfile: identity/Dockerfile
+    image: identity:latest
+    container_name: identity
+    ports:
+      - "8082:8082"
+    # depends_on:
+      # nats:
+      #   condition: service_healthy
+      # postgres:
+      #   condition: service_healthy
+      # redis:
+      #   condition: service_healthy
+    environment:
+      # Server
+      SERVER_PORT: "8082"
+      GIN_MODE: ${GIN_MODE:-debug}
+
+      # Database
+      POSTGRES_URL: "postgres://mallow:mallow-dev@localhost:5432/mallow?sslmode=disable"
+
+      # Redis
+      REDIS_URL: "redis://redis:6379/0"
+
+      # NATS
+      NATS_URL: "nats://nats:4222"
+
+      # JWT
+      JWT_SECRET: ${JWT_SECRET:-identity-dev-secret-change-in-prod}
+      JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-24h}
+      JWT_REFRESH_TTL: ${JWT_REFRESH_TTL:-168h}
+
+      # Internal service auth
+      SERVICE_SECRET: ${SERVICE_SECRET:-}
+
+      # Encryption (AES-256, must be exactly 32 chars if set)
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-}
+
+      # CORS
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173}
+
+      # SMTP / mail worker (optional — leave empty to skip actual sending)
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Identity Service}
+      MAIL_NATS_SUBJECT: ${MAIL_NATS_SUBJECT:-mail.send}
+      MAIL_WORKER_CONCURRENCY: ${MAIL_WORKER_CONCURRENCY:-3}
+      MAIL_WORKER_BUFFER: ${MAIL_WORKER_BUFFER:-100}
+
+      # Telegram bot (optional)
+      TELEGRAM_GENERAL_BOT_TOKEN: ${TELEGRAM_GENERAL_BOT_TOKEN:-}
+      TELEGRAM_ALLOWED_CHATS: ${TELEGRAM_ALLOWED_CHATS:-}
+
+      # Admin seed (optional — auto-creates first admin on startup)
+      ADMIN_SEED_EMAIL: ${ADMIN_SEED_EMAIL:-}
+      ADMIN_SEED_PASSWORD: ${ADMIN_SEED_PASSWORD:-}
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+volumes:
+  identity-postgres-data:
+
+
+networks:
+  default:
+    name: identity-network

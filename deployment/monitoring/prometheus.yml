@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+# Scraping is handled by Alloy — Prometheus is storage only.
+# Remote write receiver enabled via --web.enable-remote-write-receiver flag
+# in docker-compose.yml.

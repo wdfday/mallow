@@ -1,0 +1,24 @@
+[package]
+name = "herald"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "herald"
+path = "src/main.rs"
+
+[dependencies]
+alm-core       = { workspace = true }
+alm-indicator  = { path = "../indicator" }
+alm-strategy   = { path = "../strategy" }
+thiserror     = { workspace = true }
+anyhow        = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+prost         = { workspace = true }
+async-nats    = { workspace = true }
+futures       = "0.3"
+chrono        = { workspace = true }
+tokio         = { workspace = true }
+tracing       = { workspace = true }
+tracing-subscriber = { workspace = true }

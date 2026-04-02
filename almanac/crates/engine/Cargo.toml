@@ -1,0 +1,49 @@
+[package]
+name = "alm-engine"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "alm-engine"
+path = "src/main.rs"
+
+[[bin]]
+name = "benchmark"
+path = "src/benchmark.rs"
+
+[[bin]]
+name = "compare"
+path = "src/compare.rs"
+
+[[bin]]
+name = "try-strategy"
+path = "src/try_strategy.rs"
+
+[[bin]]
+name = "tournament"
+path = "src/tournament.rs"
+
+[dependencies]
+alm-core      = { workspace = true }
+alm-data      = { path = "../data" }
+alm-strategy  = { path = "../strategy" }
+alm-report    = { path = "../report" }
+thiserror    = { workspace = true }
+anyhow       = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+chrono       = { workspace = true }
+tracing      = { workspace = true }
+tracing-subscriber = { workspace = true }
+tokio        = { workspace = true }
+
+# Parallel batch optimization
+rayon = "1"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "backtest"
+path = "benches/backtest.rs"
+harness = false

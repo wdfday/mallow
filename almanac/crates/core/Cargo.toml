@@ -1,0 +1,14 @@
+[package]
+name = "alm-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+prost = { workspace = true }
+chrono = { workspace = true }
+
+[build-dependencies]
+prost-build = "0.13"

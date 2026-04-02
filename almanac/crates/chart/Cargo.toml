@@ -1,0 +1,26 @@
+[package]
+name = "alm-chart"
+version = "0.1.0"
+edition = "2021"
+
+[features]
+pattern-bridge = ["alm-pattern"]
+
+[dependencies]
+alm-core    = { path = "../core" }
+alm-report  = { path = "../report" }
+alm-pattern = { path = "../pattern", optional = true }
+
+# Interactive HTML charts (Apache ECharts wrapper)
+charming = "0.4"
+
+# Static PNG/SVG charts (pure Rust, no JS dependency)
+plotters = { version = "0.3", features = ["svg_backend"] }
+
+# Shared
+chrono  = { version = "0.4", features = ["serde"] }
+serde   = { version = "1", features = ["derive"] }
+anyhow  = "1"
+
+[dev-dependencies]
+alm-data = { path = "../data" }

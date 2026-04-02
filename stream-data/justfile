@@ -1,0 +1,56 @@
+default:
+    @just --list
+
+# Build Go binary locally
+build:
+    go build -o stream-data ./cmd/stream-data/
+
+# Run locally (Binance + OKX, connects to local NATS with dev credentials)
+run:
+    NATS_URL=nats://stream_data:stream-data-dev@localhost:4222 \
+    go run ./cmd/stream-data/
+
+# Run with all sources (set keys in env or .env)
+run-all:
+    ALPACA_API_KEY=${ALPACA_API_KEY} \
+    ALPACA_API_SECRET=${ALPACA_API_SECRET} \
+    TWELVEDATA_API_KEY=${TWELVEDATA_API_KEY} \
+    go run ./cmd/stream-data/
+
+# Docker: build + start
+up:
+    docker compose up -d --build
+
+# Docker: start without rebuild
+start:
+    docker compose up -d
+
+# Docker: stop
+down:
+    docker compose down
+
+# Docker: live logs
+logs:
+    docker compose logs -f streamer
+
+# Docker: restart streamer
+restart:
+    docker compose restart streamer
+
+# Docker: build image only
+docker-build:
+    docker build -t stream-data:latest .
+
+# Run container manually
+docker-run:
+    docker run --rm \
+        --env-file .env \
+        -v $(pwd)/config.yaml:/app/config.yaml:ro \
+        -v $(pwd)/data:/app/data \
+        stream-data:latest
+
+# Clean build artifacts
+clean:
+    rm -f stream-data
+    docker compose down -v
+    docker rmi stream-data:latest 2>/dev/null || true

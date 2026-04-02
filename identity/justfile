@@ -1,0 +1,21 @@
+default:
+    @just --list
+
+fmt:
+    gofmt -w $(rg --files cmd internal | rg '\.go$$')
+
+test:
+    go test ./...
+
+run:
+    go run ./cmd/identity/
+
+dev:
+    ~/.go/bin/air
+
+swagger:
+    go run github.com/swaggo/swag/cmd/swag@v1.8.12 init -g cmd/identity/swagger.go -o docs --parseInternal --parseDependency --parseDepth 3
+
+swagger-check:
+    just swagger
+    git diff --exit-code docs/docs.go docs/swagger.json docs/swagger.yaml

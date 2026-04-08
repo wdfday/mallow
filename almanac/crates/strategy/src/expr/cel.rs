@@ -8,44 +8,121 @@
 //!
 //! # Indicator reference
 //!
-//! | Function          | Indicator                  | Output          |
-//! |-------------------|----------------------------|-----------------|
-//! | `ema(N)`          | EMA(N)                     | price level     |
-//! | `sma(N)`          | SMA(N)                     | price level     |
-//! | `wma(N)`          | WMA(N)                     | price level     |
-//! | `hma(N)`          | HMA(N)                     | price level     |
-//! | `tema(N)`         | TEMA(N)                    | price level     |
-//! | `kama(N)`         | KAMA(N)                    | price level     |
-//! | `rsi(N)`          | RSI(N)                     | 0–100           |
-//! | `cci(N)`          | CCI(N)                     | oscillator      |
-//! | `roc(N)`          | ROC(N)                     | % change        |
-//! | `mfi(N)`          | MFI(N)                     | 0–100           |
-//! | `williams(N)`     | Williams %R(N)             | -100–0          |
-//! | `tsi(N)`          | TSI(N, 13)                 | -100–100        |
-//! | `chop(N)`         | Choppiness(N)              | 0–100           |
-//! | `connors_rsi(N)`  | ConnorsRSI(N, 2, 100)      | 0–100           |
-//! | `atr(N)`          | ATR(N)                     | price range     |
-//! | `adx(N)`          | ADX(N)                     | 0–100           |
-//! | `plus_di(N)`      | +DI from ADX(N)            | 0–100           |
-//! | `minus_di(N)`     | −DI from ADX(N)            | 0–100           |
-//! | `macd_hist(N)`    | MACD histogram (N, 26, 9)  | signed          |
-//! | `macd_line(N)`    | MACD line (N, 26, 9)       | signed          |
-//! | `bb_upper(N)`     | Bollinger upper (N, 2σ)    | price level     |
-//! | `bb_lower(N)`     | Bollinger lower (N, 2σ)    | price level     |
-//! | `bb_mid(N)`       | Bollinger middle (N)       | price level     |
-//! | `stoch_k(N)`      | Stochastic %K(N)           | 0–100           |
-//! | `stoch_d(N)`      | Stochastic %D(N)           | 0–100           |
-//! | `srsi_k(N)`       | StochRSI %K(N)             | 0–100           |
-//! | `srsi_d(N)`       | StochRSI %D(N)             | 0–100           |
-//! | `kdj_k(N)`        | KDJ %K(N)                  |                 |
-//! | `kdj_d(N)`        | KDJ %D(N)                  |                 |
-//! | `kdj_j(N)`        | KDJ %J(N)                  |                 |
-//! | `supertrend(N)`   | SuperTrend value (N, 3×ATR)|                 |
-//! | `st_bull(N)`      | SuperTrend bullish flag    | 0.0 / 1.0       |
-//! | `cmf(N)`          | Chaikin Money Flow(N)      | -1–1            |
-//! | `obv()`           | On-Balance Volume          | cumulative vol  |
-//! | `ao()`            | Awesome Oscillator         | signed          |
-//! | `sar()`           | Parabolic SAR              | price level     |
+//! | Function             | Indicator                     | Output            |
+//! |----------------------|-------------------------------|-------------------|
+//! | **MA / Trend**       |                               |                   |
+//! | `ema(N)`             | EMA(N)                        | price level       |
+//! | `sma(N)`             | SMA(N)                        | price level       |
+//! | `wma(N)`             | WMA(N)                        | price level       |
+//! | `hma(N)`             | HMA(N)                        | price level       |
+//! | `dema(N)`            | DEMA(N)                       | price level       |
+//! | `tema(N)`            | TEMA(N)                       | price level       |
+//! | `smma(N)`            | SMMA / RMA(N)                 | price level       |
+//! | `alma(N)`            | ALMA(N, offset=0.85, σ=6)     | price level       |
+//! | `mcginley(N)`        | McGinley Dynamic(N)           | price level       |
+//! | `lsma(N)`            | LSMA value(N)                 | price level       |
+//! | `lsma_slope(N)`      | LSMA slope(N)                 | signed rate       |
+//! | `vwma(N)`            | VWMA(N)                       | price level       |
+//! | `kama(N)`            | KAMA(N)                       | price level       |
+//! | `macd_hist(N)`       | MACD histogram (N, 26, 9)     | signed            |
+//! | `macd_line(N)`       | MACD line (N, 26, 9)          | signed            |
+//! ## Multi-Timeframe (MTF)
+//!
+//! Prefix any indicator with `TF.` (TradingView-style) to compute it on a higher timeframe.
+//! Uses wall-clock time alignment — safe for stock data with session gaps.
+//!
+//! ```text
+//! H1.ema(200)          → EMA(200) on hourly bars
+//! M15.rsi(14)          → RSI(14) on 15-minute bars
+//! D1.adx(14)           → ADX(14) on daily bars
+//! prev_H1.ema(200)     → previous H1 EMA value (crossover detection)
+//! ```
+//!
+//! Supported timeframes: `M1` `M5` `M15` `M30` `H1` `H2` `H4` `H6` `H8` `H12` `D1` `W1`.
+//!
+//! The HTF bar is emitted when the first base bar of the **next** period arrives —
+//! i.e. the previous period's incomplete bar is never used (no look-ahead bias).
+//!
+//! | Function             | Indicator                     | Output            |
+//! |----------------------|-------------------------------|-------------------|
+//! | **MA / Trend**       |                               |                   |
+//! | `adx(N)`             | ADX(N)                        | 0–100             |
+//! | `plus_di(N)`         | +DI from ADX(N)               | 0–100             |
+//! | `minus_di(N)`        | −DI from ADX(N)               | 0–100             |
+//! | `dmi_plus(N)`        | DMI +DI(N)                    | 0–100             |
+//! | `dmi_minus(N)`       | DMI −DI(N)                    | 0–100             |
+//! | `dmi_dx(N)`          | DMI DX(N)                     | 0–100             |
+//! | `aroon_up(N)`        | Aroon Up(N)                   | 0–100             |
+//! | `aroon_down(N)`      | Aroon Down(N)                 | 0–100             |
+//! | `aroon_osc(N)`       | Aroon Oscillator(N)           | -100–100          |
+//! | `vortex_plus(N)`     | Vortex +VI(N)                 | ratio             |
+//! | `vortex_minus(N)`    | Vortex −VI(N)                 | ratio             |
+//! | `alligator_jaw()`    | Alligator jaw (13,8,5)        | price level       |
+//! | `alligator_teeth()`  | Alligator teeth               | price level       |
+//! | `alligator_lips()`   | Alligator lips                | price level       |
+//! | `alligator_bull()`   | Alligator bullish flag        | 0.0 / 1.0         |
+//! | `gmma_bull()`        | GMMA bullish flag             | 0.0 / 1.0         |
+//! | `kdj_k(N)`           | KDJ %K(N)                     |                   |
+//! | `kdj_d(N)`           | KDJ %D(N)                     |                   |
+//! | `kdj_j(N)`           | KDJ %J(N)                     |                   |
+//! | **Momentum**         |                               |                   |
+//! | `rsi(N)`             | RSI(N)                        | 0–100             |
+//! | `cci(N)`             | CCI(N)                        | oscillator        |
+//! | `roc(N)`             | ROC(N)                        | % change          |
+//! | `mom(N)`             | Momentum(N)                   | price diff        |
+//! | `cmo(N)`             | CMO(N)                        | -100–100          |
+//! | `dpo(N)`             | DPO(N)                        | oscillator        |
+//! | `mfi(N)`             | MFI(N)                        | 0–100             |
+//! | `williams(N)`        | Williams %R(N)                | -100–0            |
+//! | `tsi(N)`             | TSI(N, 13)                    | -100–100          |
+//! | `rci(N)`             | RCI(N)                        | -100–100          |
+//! | `chop(N)`            | Choppiness(N)                 | 0–100             |
+//! | `connors_rsi(N)`     | ConnorsRSI(N, 2, 100)         | 0–100             |
+//! | `fisher_line(N)`     | Fisher Transform value(N)     | signed            |
+//! | `fisher_sig(N)`      | Fisher Transform signal(N)    | signed            |
+//! | `bull_power(N)`      | Bull Power(N)                 | signed            |
+//! | `bear_power(N)`      | Bear Power(N)                 | signed            |
+//! | `ppo_line(N)`        | PPO line (N, 26, 9)           | %                 |
+//! | `ppo_sig(N)`         | PPO signal                    | %                 |
+//! | `ppo_hist(N)`        | PPO histogram                 | %                 |
+//! | `rvi_line(N)`        | RVI value(N)                  | -1–1              |
+//! | `rvi_sig(N)`         | RVI signal(N)                 | -1–1              |
+//! | `smi_line(N)`        | SMI value(N)                  | -100–100          |
+//! | `smi_sig(N)`         | SMI signal(N)                 | -100–100          |
+//! | `bop()`              | Balance of Power              | -1–1              |
+//! | `coppock()`          | Coppock Curve (11,14,10)      | signed            |
+//! | `kst_line()`         | KST line (standard)           | signed            |
+//! | `kst_sig()`          | KST signal (standard)         | signed            |
+//! | `pmo_line()`         | PMO line (standard)           | signed            |
+//! | `pmo_sig()`          | PMO signal (standard)         | signed            |
+//! | `uo()`               | Ultimate Oscillator (7,14,28) | 0–100             |
+//! | **Volatility**       |                               |                   |
+//! | `atr(N)`             | ATR(N)                        | price range       |
+//! | `bb_upper(N)`        | Bollinger upper (N, 2σ)       | price level       |
+//! | `bb_lower(N)`        | Bollinger lower (N, 2σ)       | price level       |
+//! | `bb_mid(N)`          | Bollinger middle (N)          | price level       |
+//! | `stoch_k(N)`         | Stochastic %K(N)              | 0–100             |
+//! | `stoch_d(N)`         | Stochastic %D(N)              | 0–100             |
+//! | `srsi_k(N)`          | StochRSI %K(N)                | 0–100             |
+//! | `srsi_d(N)`          | StochRSI %D(N)                | 0–100             |
+//! | `supertrend(N)`      | SuperTrend value (N, 3×ATR)   |                   |
+//! | `st_bull(N)`         | SuperTrend bullish flag       | 0.0 / 1.0         |
+//! | `donchian_upper(N)`  | Donchian upper(N)             | price level       |
+//! | `donchian_lower(N)`  | Donchian lower(N)             | price level       |
+//! | `donchian_mid(N)`    | Donchian middle(N)            | price level       |
+//! | `chandelier_long(N)` | Chandelier long stop(N, 3×)   | price level       |
+//! | `chandelier_short(N)`| Chandelier short stop(N, 3×)  | price level       |
+//! | `chande_kroll_long()`| Chande Kroll long stop        | price level       |
+//! | `chande_kroll_short()`| Chande Kroll short stop      | price level       |
+//! | `chop_angle(N)`      | ChopZone angle(N)             | -90–90 degrees    |
+//! | **Volume / Pattern** |                               |                   |
+//! | `cmf(N)`             | Chaikin Money Flow(N)         | -1–1              |
+//! | `obv()`              | On-Balance Volume             | cumulative vol    |
+//! | `vwap()`             | VWAP (session-aware)          | price level       |
+//! | `ao()`               | Awesome Oscillator            | signed            |
+//! | `sar()`              | Parabolic SAR                 | price level       |
+//! | `fractal_bull()`     | Williams Fractal bullish      | 0.0 / 1.0         |
+//! | `fractal_bear()`     | Williams Fractal bearish      | 0.0 / 1.0         |
 //!
 //! Bar fields always in scope: `open`, `high`, `low`, `close`, `volume`.
 //!
@@ -86,28 +163,45 @@ use cel_interpreter::{Context, Program, Value};
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use serde_json::json;
 
+use crate::bar_resampler::{TimeBarResampler, parse_timeframe_ms};
+use crate::candle_type::{CandleTransform, CandleType};
 use crate::dynamic::indicator_box::IndicatorBox;
 
 // ── VarBinding ────────────────────────────────────────────────────────────────
 
 struct VarBinding {
-    ind:    IndicatorBox,
-    field:  String,
-    cached: Option<f64>,
-    prev:   Option<f64>,
+    ind:       IndicatorBox,
+    field:     String,
+    cached:    Option<f64>,
+    prev:      Option<f64>,
+    /// Time-based resampler for MTF indicators (`H1.ema`, `M15.rsi`, etc.).
+    /// `None` = same timeframe as the base bars.
+    resampler: Option<TimeBarResampler>,
 }
 
 impl VarBinding {
     fn update(&mut self, bar: &Bar) -> Option<f64> {
         self.prev = self.cached;
-        let fields = self.ind.update(bar)?;
-        let v = *fields.get(&self.field)?;
-        self.cached = Some(v);
-        Some(v)
+
+        // MTF: feed indicator only when the time-based resampler completes a HTF bar.
+        // Between HTF bars: hold last cached value so the ready-check stays true.
+        let agg = match &mut self.resampler {
+            Some(rs) => rs.push(bar),
+            None => Some(bar.clone()),
+        };
+
+        if let Some(b) = agg {
+            let fields = self.ind.update(&b)?;
+            let v = *fields.get(&self.field)?;
+            self.cached = Some(v);
+        }
+
+        self.cached
     }
 
     fn reset(&mut self) {
         self.ind.reset();
+        if let Some(rs) = &mut self.resampler { rs.reset(); }
         self.cached = None;
         self.prev   = None;
     }
@@ -125,6 +219,14 @@ fn normalize_cel_expr(expr: &str) -> String {
     let mut i = 0;
     while i < n {
         if b[i].is_ascii_digit() {
+            // If the char before this digit is part of an identifier (alnum or '_'),
+            // these digits are part of an identifier (e.g. `tf4_ema`) — emit as-is.
+            let in_ident = i > 0 && (b[i - 1].is_ascii_alphanumeric() || b[i - 1] == b'_');
+            if in_ident {
+                out.push(b[i] as char);
+                i += 1;
+                continue;
+            }
             // If the char before this digit sequence is '.', this is already the
             // fractional part of a float — don't append another ".0".
             let is_fractional = i > 0 && b[i - 1] == b'.';
@@ -148,11 +250,11 @@ fn normalize_cel_expr(expr: &str) -> String {
 ///
 /// Applied **after** `normalize_cel_expr` so arguments are already float literals.
 ///
-/// - `rsi(14.0)`      → `rsi_14`
-/// - `prev_ema(9.0)`  → `prev_ema_9`
-/// - `obv()`          → `obv`
-/// - `prev_obv()`     → `prev_obv`
-/// - `close`, `high`  → unchanged (not in indicator lists)
+/// - `rsi(14.0)`        → `rsi_14`
+/// - `prev_ema(9.0)`    → `prev_ema_9`
+/// - `tf4_ema(200.0)`   → `tf4_ema_200`   (MTF: 4× resampled)
+/// - `obv()`            → `obv`
+/// - `close`, `high`    → unchanged
 ///
 /// The resulting identifiers are registered as CEL variables per bar, eliminating
 /// function-call overhead (mutex lock + `format!` + HashMap lookup) on the hot path.
@@ -171,7 +273,9 @@ fn expand_calls_to_vars(expr: &str) -> String {
             let ident = &expr[start..i];
 
             if i < n && b[i] == b'(' {
-                let base = ident.strip_prefix("prev_").unwrap_or(ident);
+                // Strip prev_ and tf{N}_ prefixes to get the indicator base name
+                let no_prev = ident.strip_prefix("prev_").unwrap_or(ident);
+                let base = strip_tf_prefix(no_prev).0;
 
                 if ONE_ARG_FUNCS.contains(&base) {
                     i += 1; // skip '('
@@ -226,29 +330,93 @@ fn expand_calls_to_vars(expr: &str) -> String {
     out
 }
 
+// ── TF prefix helpers ─────────────────────────────────────────────────────────
+
+/// Pre-process `H1.ema(200)` → `H1_ema(200)` so the rest of the pipeline
+/// treats the whole thing as a single identifier.
+///
+/// Only replaces `.` when the left side is a valid timeframe string
+/// (`M1`, `M15`, `H1`, `H4`, `D1`, etc.) per [`parse_timeframe_ms`].
+/// All other `.` (CEL member access, float literals) are left unchanged.
+fn preprocess_dot_tf(expr: &str) -> String {
+    let mut out = String::with_capacity(expr.len());
+    let b = expr.as_bytes();
+    let n = b.len();
+    let mut i = 0;
+    while i < n {
+        // Only timeframe prefixes start with an uppercase [MHDW]
+        if matches!(b[i], b'M' | b'H' | b'D' | b'W') {
+            let start = i;
+            i += 1;
+            while i < n && b[i].is_ascii_digit() { i += 1; }
+            let candidate = &expr[start..i];
+            // If it's a valid TF AND followed by '.', replace '.' with '_'
+            if i < n && b[i] == b'.' && parse_timeframe_ms(candidate).is_some() {
+                out.push_str(candidate);
+                out.push('_');
+                i += 1; // consume '.'
+            } else {
+                out.push_str(candidate);
+            }
+        } else {
+            out.push(b[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// If `ident` starts with a timeframe prefix (`H1_`, `M15_`, `D1_`, …),
+/// returns `(indicator_base, Some(interval_ms))`.
+/// Otherwise returns `(ident, None)`.
+fn strip_tf_prefix(ident: &str) -> (&str, Option<i64>) {
+    let bytes = ident.as_bytes();
+    if bytes.is_empty() { return (ident, None); }
+    if !matches!(bytes[0], b'M' | b'H' | b'D' | b'W') { return (ident, None); }
+
+    let mut digit_end = 1;
+    while digit_end < bytes.len() && bytes[digit_end].is_ascii_digit() {
+        digit_end += 1;
+    }
+    if digit_end == 1 { return (ident, None); }  // no digits after unit letter
+    if digit_end >= bytes.len() || bytes[digit_end] != b'_' { return (ident, None); }
+
+    let base = &ident[digit_end + 1..];
+    if base.is_empty() { return (ident, None); }
+
+    match parse_timeframe_ms(&ident[..digit_end]) {
+        Some(ms) => (base, Some(ms)),
+        None     => (ident, None),
+    }
+}
+
 // ── Expression scanner ────────────────────────────────────────────────────────
 
 struct Call {
-    raw:  String,    // e.g. "prev_ema", "macd_hist", "obv"
-    args: Vec<f64>,  // e.g. [9.0], []
+    raw:  String,   // after preprocess: e.g. "prev_ema", "H1_ema", "macd_hist", "obv"
+    args: Vec<f64>, // e.g. [9.0], []
 }
 
 impl Call {
-    fn base(&self) -> (&str, bool) {
-        match self.raw.strip_prefix("prev_") {
+    /// Returns `(indicator_base, is_prev, interval_ms)`.
+    fn parts(&self) -> (&str, bool, Option<i64>) {
+        let (no_prev, is_prev) = match self.raw.strip_prefix("prev_") {
             Some(b) => (b, true),
             None    => (self.raw.as_str(), false),
-        }
+        };
+        let (base, interval_ms) = strip_tf_prefix(no_prev);
+        (base, is_prev, interval_ms)
     }
 
-    /// Canonical binding key: `"ema_9"`, `"macd_hist_12"`, `"obv"`.
+    /// Canonical binding key — strips `prev_`, keeps TF prefix, appends args.
+    /// `"H1_ema_200"`, `"M15_rsi_14"`, `"ema_9"`, `"obv"`.
     fn key(&self) -> String {
-        let (base, _) = self.base();
+        let no_prev = self.raw.strip_prefix("prev_").unwrap_or(&self.raw);
         if self.args.is_empty() {
-            base.to_string()
+            no_prev.to_string()
         } else {
             let parts: Vec<String> = self.args.iter().map(|a| format!("{}", *a as i64)).collect();
-            format!("{}_{}", base, parts.join("_"))
+            format!("{}_{}", no_prev, parts.join("_"))
         }
     }
 }
@@ -287,18 +455,20 @@ fn scan_calls(expr: &str) -> Vec<Call> {
 
 // ── Indicator factory ─────────────────────────────────────────────────────────
 
-fn make_binding(base: &str, args: &[f64]) -> Result<Option<VarBinding>> {
+fn make_binding(base: &str, args: &[f64], interval_ms: Option<i64>) -> Result<Option<VarBinding>> {
     let n = args.first().copied().unwrap_or(0.0) as usize;
 
     macro_rules! bind {
-        ($cfg:expr, $field:expr) => {
+        ($cfg:expr, $field:expr) => {{
+            let resampler = interval_ms.map(TimeBarResampler::new);
             Ok(Some(VarBinding {
-                ind:    IndicatorBox::from_config(&$cfg)?,
-                field:  $field.into(),
-                cached: None,
-                prev:   None,
+                ind:       IndicatorBox::from_config(&$cfg)?,
+                field:     $field.into(),
+                cached:    None,
+                prev:      None,
+                resampler,
             }))
-        };
+        }};
     }
 
     match base {
@@ -338,17 +508,100 @@ fn make_binding(base: &str, args: &[f64]) -> Result<Option<VarBinding>> {
         "obv"         => bind!(json!({"type":"obv"}),                                                               "value"),
         "ao"          => bind!(json!({"type":"ao","fast":5,"slow":34}),                                             "value"),
         "sar"         => bind!(json!({"type":"parabolic_sar","step":0.02,"max":0.2}),                               "sar"),
+
+        // ── New trend / MA ───────────────────────────────────────────────────
+        "dema"              => bind!(json!({"type":"dema","period":n}),                                             "value"),
+        "smma"              => bind!(json!({"type":"smma","period":n}),                                             "value"),
+        "alma"              => bind!(json!({"type":"alma","period":n}),                                             "value"),
+        "mcginley"          => bind!(json!({"type":"mcginley","period":n}),                                         "value"),
+        "lsma"              => bind!(json!({"type":"lsma","period":n}),                                             "value"),
+        "lsma_slope"        => bind!(json!({"type":"lsma","period":n}),                                             "slope"),
+        "vwma"              => bind!(json!({"type":"vwma","period":n}),                                             "value"),
+        "dmi_plus"          => bind!(json!({"type":"dmi","period":n}),                                              "plus_di"),
+        "dmi_minus"         => bind!(json!({"type":"dmi","period":n}),                                              "minus_di"),
+        "dmi_dx"            => bind!(json!({"type":"dmi","period":n}),                                              "dx"),
+        "aroon_up"          => bind!(json!({"type":"aroon","period":n}),                                            "up"),
+        "aroon_down"        => bind!(json!({"type":"aroon","period":n}),                                            "down"),
+        "aroon_osc"         => bind!(json!({"type":"aroon","period":n}),                                            "oscillator"),
+        "vortex_plus"       => bind!(json!({"type":"vortex","period":n}),                                           "plus_vi"),
+        "vortex_minus"      => bind!(json!({"type":"vortex","period":n}),                                           "minus_vi"),
+
+        // ── New momentum ─────────────────────────────────────────────────────
+        "mom"               => bind!(json!({"type":"mom","period":n}),                                              "value"),
+        "cmo"               => bind!(json!({"type":"cmo","period":n}),                                              "value"),
+        "dpo"               => bind!(json!({"type":"dpo","period":n}),                                              "value"),
+        "rci"               => bind!(json!({"type":"rci","period":n}),                                              "value"),
+        "fisher_line"       => bind!(json!({"type":"fisher","period":n}),                                           "fisher"),
+        "fisher_sig"        => bind!(json!({"type":"fisher","period":n}),                                           "signal"),
+        "bull_power"        => bind!(json!({"type":"bull_bear","period":n}),                                        "bull"),
+        "bear_power"        => bind!(json!({"type":"bull_bear","period":n}),                                        "bear"),
+        "ppo_line"          => bind!(json!({"type":"ppo","fast":n,"slow":26,"signal":9}),                           "ppo"),
+        "ppo_sig"           => bind!(json!({"type":"ppo","fast":n,"slow":26,"signal":9}),                           "signal"),
+        "ppo_hist"          => bind!(json!({"type":"ppo","fast":n,"slow":26,"signal":9}),                           "histogram"),
+        "rvi_line"          => bind!(json!({"type":"rvi","period":n}),                                              "rvi"),
+        "rvi_sig"           => bind!(json!({"type":"rvi","period":n}),                                              "signal"),
+        "smi_line"          => bind!(json!({"type":"smi"}),                                                         "smi"),
+        "smi_sig"           => bind!(json!({"type":"smi"}),                                                         "signal"),
+
+        // ── New volatility ───────────────────────────────────────────────────
+        "donchian_upper"    => bind!(json!({"type":"donchian","period":n}),                                         "upper"),
+        "donchian_lower"    => bind!(json!({"type":"donchian","period":n}),                                         "lower"),
+        "donchian_mid"      => bind!(json!({"type":"donchian","period":n}),                                         "middle"),
+        "chandelier_long"   => bind!(json!({"type":"chandelier_exit","period":n,"multiplier":3.0}),                 "long_stop"),
+        "chandelier_short"  => bind!(json!({"type":"chandelier_exit","period":n,"multiplier":3.0}),                 "short_stop"),
+        "chop_angle"        => bind!(json!({"type":"chop_zone","ema_period":n,"threshold":5.0}),                    "angle"),
+
+        // ── Zero-arg additions ────────────────────────────────────────────────
+        "bop"               => bind!(json!({"type":"bop"}),                                                         "value"),
+        "coppock"           => bind!(json!({"type":"coppock"}),                                                     "value"),
+        "kst_line"          => bind!(json!({"type":"kst"}),                                                         "kst"),
+        "kst_sig"           => bind!(json!({"type":"kst"}),                                                         "signal"),
+        "pmo_line"          => bind!(json!({"type":"pmo"}),                                                         "pmo"),
+        "pmo_sig"           => bind!(json!({"type":"pmo"}),                                                         "signal"),
+        "uo"                => bind!(json!({"type":"uo","fast":7,"medium":14,"slow":28}),                            "value"),
+        "vwap"              => bind!(json!({"type":"vwap"}),                                                         "value"),
+        "alligator_jaw"     => bind!(json!({"type":"alligator","jaw":13,"teeth":8,"lips":5}),                       "jaw"),
+        "alligator_teeth"   => bind!(json!({"type":"alligator","jaw":13,"teeth":8,"lips":5}),                       "teeth"),
+        "alligator_lips"    => bind!(json!({"type":"alligator","jaw":13,"teeth":8,"lips":5}),                       "lips"),
+        "alligator_bull"    => bind!(json!({"type":"alligator","jaw":13,"teeth":8,"lips":5}),                       "bullish"),
+        "gmma_bull"         => bind!(json!({"type":"gmma"}),                                                         "bullish"),
+        "chande_kroll_long" => bind!(json!({"type":"chande_kroll","atr_period":10,"factor":1.5,"stop_period":9}),   "stop_long"),
+        "chande_kroll_short"=> bind!(json!({"type":"chande_kroll","atr_period":10,"factor":1.5,"stop_period":9}),   "stop_short"),
+        "fractal_bull"      => bind!(json!({"type":"fractal"}),                                                      "bullish"),
+        "fractal_bear"      => bind!(json!({"type":"fractal"}),                                                      "bearish"),
+
         _             => Ok(None),
     }
+}
+
+/// Parse a single CEL-style indicator expression into its components.
+///
+/// Supports MTF dot-notation: `"H1.ema(200)"` → `("ema", vec![200.0], Some(3_600_000))`.
+/// Plain expressions: `"rsi(14)"` → `("rsi", vec![14.0], None)`.
+/// Zero-arg: `"obv()"` → `("obv", vec![], None)`.
+///
+/// Returns an error if no recognisable indicator call is found.
+pub fn parse_cel_indicator(expr: &str) -> Result<(String, Vec<f64>, Option<i64>)> {
+    let preprocessed = preprocess_dot_tf(expr.trim());
+    let calls = scan_calls(&preprocessed);
+    let call = calls.into_iter()
+        .find(|c| {
+            let (base, _, _) = c.parts();
+            ONE_ARG_FUNCS.contains(&base) || ZERO_ARG_FUNCS.contains(&base)
+        })
+        .ok_or_else(|| anyhow::anyhow!("no recognised indicator call in CEL expression: '{expr}'"))?;
+
+    let (base, _, interval_ms) = call.parts();
+    Ok((base.to_string(), call.args.clone(), interval_ms))
 }
 
 fn build_bindings(entry: &str, exit: &str) -> Result<HashMap<String, VarBinding>> {
     let mut map: HashMap<String, VarBinding> = HashMap::new();
     for call in scan_calls(&format!("{entry} {exit}")) {
-        let (base, _) = call.base();
+        let (base, _, interval_ms) = call.parts();
         let key = call.key();
         if !map.contains_key(&key) {
-            if let Some(b) = make_binding(base, &call.args)? {
+            if let Some(b) = make_binding(base, &call.args, interval_ms)? {
                 map.insert(key, b);
             }
         }
@@ -359,18 +612,43 @@ fn build_bindings(entry: &str, exit: &str) -> Result<HashMap<String, VarBinding>
 // ── Function lists ────────────────────────────────────────────────────────────
 
 const ONE_ARG_FUNCS: &[&str] = &[
-    "ema", "sma", "wma", "hma", "tema", "kama",
-    "rsi", "cci", "roc", "mfi", "williams", "tsi", "chop", "connors_rsi",
-    "atr", "adx", "plus_di", "minus_di",
+    // MA / trend
+    "ema", "sma", "wma", "hma", "dema", "tema", "smma", "alma", "mcginley",
+    "lsma", "lsma_slope", "vwma", "kama",
     "macd_hist", "macd_line",
-    "bb_upper", "bb_lower", "bb_mid",
-    "stoch_k", "stoch_d", "srsi_k", "srsi_d",
+    "adx", "plus_di", "minus_di",
+    "dmi_plus", "dmi_minus", "dmi_dx",
+    "aroon_up", "aroon_down", "aroon_osc",
+    "vortex_plus", "vortex_minus",
     "kdj_k", "kdj_d", "kdj_j",
     "supertrend", "st_bull",
+    // momentum
+    "rsi", "cci", "roc", "mom", "cmo", "dpo", "mfi", "williams",
+    "tsi", "rci", "chop", "connors_rsi",
+    "stoch_k", "stoch_d", "srsi_k", "srsi_d",
+    "fisher_line", "fisher_sig",
+    "bull_power", "bear_power",
+    "ppo_line", "ppo_sig", "ppo_hist",
+    "rvi_line", "rvi_sig",
+    "smi_line", "smi_sig",
+    // volatility
+    "atr",
+    "bb_upper", "bb_lower", "bb_mid",
+    "donchian_upper", "donchian_lower", "donchian_mid",
+    "chandelier_long", "chandelier_short",
+    "chop_angle",
+    // volume
     "cmf",
 ];
 
-const ZERO_ARG_FUNCS: &[&str] = &["obv", "ao", "sar"];
+const ZERO_ARG_FUNCS: &[&str] = &[
+    "obv", "ao", "sar", "vwap",
+    "bop", "coppock", "kst_line", "kst_sig", "pmo_line", "pmo_sig", "uo",
+    "alligator_jaw", "alligator_teeth", "alligator_lips", "alligator_bull",
+    "gmma_bull",
+    "chande_kroll_long", "chande_kroll_short",
+    "fractal_bull", "fractal_bear",
+];
 
 // ── Strategy ──────────────────────────────────────────────────────────────────
 
@@ -392,6 +670,8 @@ pub struct CelStrategy {
     /// CEL context; indicator values written as variables each bar — no closures,
     /// no mutex, no `format!` in the hot path.
     ctx:         Context<'static>,
+    /// Candle transform — Raw (pass-through) hoặc HeikenAshi.
+    transform:   CandleTransform,
 }
 
 impl CelStrategy {
@@ -405,13 +685,32 @@ impl CelStrategy {
         tp_pct: Option<f64>,
         sl_pct: Option<f64>,
     ) -> Result<Self> {
-        // Normalise integer literals, then expand function calls to variable refs.
-        // rsi(14) < 30  →  normalize  →  rsi(14.0) < 30.0
-        //               →  expand     →  rsi_14 < 30.0
-        let entry_n = expand_calls_to_vars(&normalize_cel_expr(entry));
-        let exit_n  = expand_calls_to_vars(&normalize_cel_expr(exit));
+        Self::build(entry, exit, tp_pct, sl_pct, CandleType::Raw)
+    }
 
-        let bindings = build_bindings(entry, exit)?;
+    /// Builder: thêm candle type transform (HA, smooth HA, v.v.).
+    pub fn with_candle_type(mut self, candle_type: CandleType) -> Self {
+        self.transform = CandleTransform::new(candle_type);
+        self
+    }
+
+    fn build(
+        entry:       &str,
+        exit:        &str,
+        tp_pct:      Option<f64>,
+        sl_pct:      Option<f64>,
+        candle_type: CandleType,
+    ) -> Result<Self> {
+        // Pipeline:
+        //  1. preprocess: H1.ema(200) → H1_ema(200)
+        //  2. normalize:  rsi(14) < 30 → rsi(14.0) < 30.0
+        //  3. expand:     H1_ema(200.0) → H1_ema_200
+        let entry_pp = preprocess_dot_tf(entry);
+        let exit_pp  = preprocess_dot_tf(exit);
+        let entry_n  = expand_calls_to_vars(&normalize_cel_expr(&entry_pp));
+        let exit_n   = expand_calls_to_vars(&normalize_cel_expr(&exit_pp));
+
+        let bindings = build_bindings(&entry_pp, &exit_pp)?;
 
         // Pre-allocate the (current, prev) variable name strings once.
         let var_keys: Vec<(String, String)> = bindings.keys()
@@ -441,16 +740,23 @@ impl CelStrategy {
             tp_pct,
             sl_pct,
             ctx,
+            transform: CandleTransform::new(candle_type),
         })
     }
 }
 
 impl Strategy for CelStrategy {
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
+        // ── 0. Transform candle if needed (HA, smooth HA, v.v.) ──────────────
+        let effective = match self.transform.apply(bar) {
+            Some(b) => b,
+            None => return vec![], // HA warmup
+        };
+
         // ── 1. Update all indicators ──────────────────────────────────────────
         let mut all_ready = true;
         for b in self.bindings.values_mut() {
-            if b.update(bar).is_none() {
+            if b.update(&effective).is_none() {
                 all_ready = false;
             }
         }
@@ -459,11 +765,12 @@ impl Strategy for CelStrategy {
         }
 
         // ── 2. Write bar fields into context ──────────────────────────────────
-        self.ctx.add_variable_from_value("open",   Value::Float(bar.open));
-        self.ctx.add_variable_from_value("high",   Value::Float(bar.high));
-        self.ctx.add_variable_from_value("low",    Value::Float(bar.low));
-        self.ctx.add_variable_from_value("close",  Value::Float(bar.close));
-        self.ctx.add_variable_from_value("volume", Value::Float(bar.volume));
+        // Dùng effective bar (HA nếu có) để expression nhất quán với indicators.
+        self.ctx.add_variable_from_value("open",   Value::Float(effective.open));
+        self.ctx.add_variable_from_value("high",   Value::Float(effective.high));
+        self.ctx.add_variable_from_value("low",    Value::Float(effective.low));
+        self.ctx.add_variable_from_value("close",  Value::Float(effective.close));
+        self.ctx.add_variable_from_value("volume", Value::Float(effective.volume));
 
         // ── 3. Write indicator values as variables (no Mutex, no format!) ─────
         for (cur_key, prev_key) in &self.var_keys {
@@ -510,6 +817,7 @@ impl Strategy for CelStrategy {
 
     fn reset(&mut self) {
         for b in self.bindings.values_mut() { b.reset(); }
+        self.transform.reset();
         self.in_position = false;
         self.entry_price = 0.0;
     }
@@ -698,5 +1006,89 @@ mod tests {
     fn invalid_cel_expr_rejected_at_new() {
         // "&&" alone is not valid CEL
         assert!(CelStrategy::new("&&", "rsi(14) > 70.0").is_err());
+    }
+
+    // ── MTF (Multi-Timeframe) ─────────────────────────────────────────────────
+
+    #[test]
+    fn preprocess_dot_tf_replaces_dot() {
+        assert_eq!(preprocess_dot_tf("H1.ema(200) > close"),   "H1_ema(200) > close");
+        assert_eq!(preprocess_dot_tf("M15.rsi(14) < 30"),      "M15_rsi(14) < 30");
+        assert_eq!(preprocess_dot_tf("prev_H4.macd_hist(12)"), "prev_H4_macd_hist(12)");
+        // Non-TF dots must be left unchanged
+        assert_eq!(preprocess_dot_tf("x.field"),               "x.field");
+        assert_eq!(preprocess_dot_tf("1.5"),                   "1.5");
+    }
+
+    #[test]
+    fn mtf_binding_key_h1_syntax() {
+        let s = CelStrategy::new("H1.ema(200) > close", "close < H1.ema(200)").unwrap();
+        assert!(
+            s.bindings.contains_key("H1_ema_200"),
+            "expected H1_ema_200, got: {:?}",
+            s.bindings.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(s.bindings.len(), 1);
+    }
+
+    #[test]
+    fn mtf_resampler_uses_time_based() {
+        let s = CelStrategy::new("H4.ema(50) > close", "close < H4.ema(50)").unwrap();
+        let b = s.bindings.get("H4_ema_50").expect("binding missing");
+        assert!(b.resampler.is_some(), "MTF binding must have a TimeBarResampler");
+        // H4 = 4 * 3_600_000 ms
+        assert_eq!(b.resampler.as_ref().unwrap().interval_ms(), 4 * 3_600_000);
+    }
+
+    #[test]
+    fn same_tf_and_base_are_separate_bindings() {
+        // ema(50) and H4.ema(50) must be distinct bindings
+        let s = CelStrategy::new(
+            "ema(50) > close && H4.ema(50) > close",
+            "close < ema(50)",
+        ).unwrap();
+        assert!(s.bindings.contains_key("ema_50"),    "missing ema_50");
+        assert!(s.bindings.contains_key("H4_ema_50"), "missing H4_ema_50");
+        assert_eq!(s.bindings.len(), 2);
+    }
+
+    #[test]
+    fn mtf_prev_shares_binding() {
+        // prev_H1.ema(200) and H1.ema(200) must share one binding
+        let s = CelStrategy::new(
+            "prev_H1.ema(200) < H1.ema(200)",
+            "H1.ema(200) < prev_H1.ema(200)",
+        ).unwrap();
+        assert!(s.bindings.contains_key("H1_ema_200"));
+        assert_eq!(s.bindings.len(), 1);
+    }
+
+    #[test]
+    fn mtf_stays_silent_until_htf_bar() {
+        // H1 = 3_600_000 ms. Feed bars spaced 1 minute apart.
+        // EMA(5) needs 5 H1 bars = 300 M1 bars before producing a value.
+        let hour_ms = 3_600_000i64;
+        let mut s = CelStrategy::new("H1.ema(5) > 0.0", "H1.ema(5) < 0.0").unwrap();
+        // Feed 4 complete H1 bars (240 M1 bars) — EMA(5) not ready yet
+        for i in 0..240i64 {
+            let ts = i * 60_000;
+            let sigs = s.on_bar(&Bar::new(ts, "T", 100.0, 101.0, 99.0, 100.0, 1000.0));
+            // First 4 H1 bars emit at bar 60, 120, 180, 240 — all silent (EMA needs 5)
+            let _ = sigs;
+        }
+        // After 240 M1 bars (4 H1 bars) EMA(5) still has only 4 HTF data points → silent
+        let last = s.on_bar(&Bar::new(240 * 60_000, "T", 100.0, 101.0, 99.0, 100.0, 1000.0));
+        assert!(last.is_empty(), "EMA(5) needs 5 H1 bars, silent after 4");
+    }
+
+    #[test]
+    fn strip_tf_prefix_parses_correctly() {
+        assert_eq!(strip_tf_prefix("H1_ema"),   ("ema",  Some(3_600_000)));
+        assert_eq!(strip_tf_prefix("M15_rsi"),  ("rsi",  Some(900_000)));
+        assert_eq!(strip_tf_prefix("D1_adx"),   ("adx",  Some(86_400_000)));
+        assert_eq!(strip_tf_prefix("H4_macd_hist"), ("macd_hist", Some(14_400_000)));
+        assert_eq!(strip_tf_prefix("ema"),       ("ema",  None));
+        assert_eq!(strip_tf_prefix("H_ema"),     ("H_ema", None)); // no digits
+        assert_eq!(strip_tf_prefix("X1_ema"),    ("X1_ema", None)); // unknown unit
     }
 }

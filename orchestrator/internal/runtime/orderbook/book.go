@@ -1,8 +1,9 @@
-package runtime
+package orderbook
 
 import (
 	"fmt"
 	"math"
+	"slices"
 	"sync"
 )
 
@@ -10,25 +11,92 @@ import (
 // and pending order tracking. Shared per broker type across all runtimes.
 type OrderBook interface {
 	RegisterSymbol(info SymbolInfo)
+	RegisterSymbols(infos []SymbolInfo)
 	Validate(order ProposedOrder) ValidationResult
 	TrackOrder(order PendingOrder)
 	RemoveOrder(accountID, orderID string)
 	PendingOrders(accountID string) []PendingOrder
+	SupportedSymbols() []string
+	RecordUpdate(update BookUpdate) error
+	LatestUpdate(symbol string) (BookUpdate, bool)
+	RecentUpdates(symbol string, limit int) []BookUpdate
 }
 
 // orderBook is the default in-memory implementation of OrderBook.
 type orderBook struct {
 	broker  string // exchange this book belongs to, e.g. "binance", "alpaca"
 	mu      sync.RWMutex
-	symbols map[string]*SymbolInfo              // symbol → exchange constraints
+	symbols map[string]*symbolState             // symbol → exchange constraints + history
 	pending map[string]map[string]*PendingOrder // accountID → orderID → pending
+}
+
+const defaultSymbolHistoryCapacity = 32
+
+type symbolState struct {
+	info    SymbolInfo
+	history bookUpdateRing
+}
+
+type bookUpdateRing struct {
+	buf  []BookUpdate
+	head int
+	size int
+}
+
+func newBookUpdateRing(capacity int) bookUpdateRing {
+	if capacity <= 0 {
+		capacity = defaultSymbolHistoryCapacity
+	}
+	return bookUpdateRing{
+		buf: make([]BookUpdate, capacity),
+	}
+}
+
+func (r *bookUpdateRing) push(update BookUpdate) {
+	if len(r.buf) == 0 {
+		return
+	}
+	r.buf[r.head] = update
+	r.head = (r.head + 1) % len(r.buf)
+	if r.size < len(r.buf) {
+		r.size++
+	}
+}
+
+func (r *bookUpdateRing) latest() (BookUpdate, bool) {
+	if r.size == 0 {
+		return BookUpdate{}, false
+	}
+	idx := (r.head - 1 + len(r.buf)) % len(r.buf)
+	return r.buf[idx], true
+}
+
+func (r *bookUpdateRing) snapshot(limit int) []BookUpdate {
+	if r.size == 0 {
+		return nil
+	}
+	if limit <= 0 || limit > r.size {
+		limit = r.size
+	}
+
+	out := make([]BookUpdate, 0, limit)
+	start := (r.head - r.size + len(r.buf)) % len(r.buf)
+	skip := r.size - limit
+	for i := 0; i < r.size; i++ {
+		idx := (start + i) % len(r.buf)
+		if i < skip {
+			continue
+		}
+		out = append(out, r.buf[idx])
+	}
+	return out
 }
 
 // NewOrderBook creates an empty in-memory OrderBook for the given broker.
 func NewOrderBook(broker string) OrderBook {
 	return &orderBook{
 		broker:  broker,
-		symbols: make(map[string]*SymbolInfo),
+		symbols: make(map[string]*symbolState),
 		pending: make(map[string]map[string]*PendingOrder),
 	}
 }
@@ -37,7 +105,26 @@ func NewOrderBook(broker string) OrderBook {
 func (ob *orderBook) RegisterSymbol(info SymbolInfo) {
 	ob.mu.Lock()
 	defer ob.mu.Unlock()
-	ob.symbols[info.Symbol] = &info
+	state, ok := ob.symbols[info.Symbol]
+	if !ok {
+		state = &symbolState{history: newBookUpdateRing(defaultSymbolHistoryCapacity)}
+		ob.symbols[info.Symbol] = state
+	}
+	state.info = info
+}
+
+// RegisterSymbols registers or updates exchange constraints for a symbol set.
+func (ob *orderBook) RegisterSymbols(infos []SymbolInfo) {
+	ob.mu.Lock()
+	defer ob.mu.Unlock()
+	for _, info := range infos {
+		state, ok := ob.symbols[info.Symbol]
+		if !ok {
+			state = &symbolState{history: newBookUpdateRing(defaultSymbolHistoryCapacity)}
+			ob.symbols[info.Symbol] = state
+		}
+		state.info = info
+	}
 }
 
 // Validate checks a proposed order against exchange constraints.
@@ -45,10 +132,11 @@ func (ob *orderBook) Validate(order ProposedOrder) ValidationResult {
 	ob.mu.RLock()
 	defer ob.mu.RUnlock()
 
-	info, ok := ob.symbols[order.Symbol]
+	state, ok := ob.symbols[order.Symbol]
 	if !ok {
-		return ValidationResult{Valid: false, Reason: fmt.Sprintf("symbol %q not registered", order.Symbol)}
+		return ValidationResult{Valid: false, Reason: fmt.Sprintf("symbol %q not supported", order.Symbol)}
 	}
+	info := state.info
 	if !info.Active {
 		return ValidationResult{Valid: false, Reason: fmt.Sprintf("symbol %q is halted/inactive", order.Symbol)}
 	}
@@ -114,6 +202,60 @@ func (ob *orderBook) PendingOrders(accountID string) []PendingOrder {
 		out = append(out, *p)
 	}
 	return out
+}
+
+// SupportedSymbols returns the configured symbol universe for this broker.
+func (ob *orderBook) SupportedSymbols() []string {
+	ob.mu.RLock()
+	defer ob.mu.RUnlock()
+
+	out := make([]string, 0, len(ob.symbols))
+	for symbol := range ob.symbols {
+		out = append(out, symbol)
+	}
+	slices.Sort(out)
+	return out
+}
+
+// RecordUpdate appends a market-data update into the symbol's fixed-cap history buffer.
+func (ob *orderBook) RecordUpdate(update BookUpdate) error {
+	if update.Symbol == "" {
+		return fmt.Errorf("symbol is required")
+	}
+
+	ob.mu.Lock()
+	defer ob.mu.Unlock()
+
+	state, ok := ob.symbols[update.Symbol]
+	if !ok {
+		return fmt.Errorf("symbol %q not supported", update.Symbol)
+	}
+	state.history.push(update)
+	return nil
+}
+
+// LatestUpdate returns the most recent market-data update for symbol.
+func (ob *orderBook) LatestUpdate(symbol string) (BookUpdate, bool) {
+	ob.mu.RLock()
+	defer ob.mu.RUnlock()
+
+	state, ok := ob.symbols[symbol]
+	if !ok {
+		return BookUpdate{}, false
+	}
+	return state.history.latest()
+}
+
+// RecentUpdates returns up to limit updates in chronological order.
+func (ob *orderBook) RecentUpdates(symbol string, limit int) []BookUpdate {
+	ob.mu.RLock()
+	defer ob.mu.RUnlock()
+
+	state, ok := ob.symbols[symbol]
+	if !ok {
+		return nil
+	}
+	return state.history.snapshot(limit)
 }
 
 // ── SpreadTracker ─────────────────────────────────────────────────────────────

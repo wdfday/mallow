@@ -21,10 +21,11 @@ use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
 use utoipa_swagger_ui::SwaggerUi;
 use walkdir::WalkDir;
 
+use crate::catalog::{self, IndicatorMeta, ParamDef};
 use crate::data::{find_parquet_files, load_bars, parse_date_ms};
 use crate::runner;
 use crate::types::{
-    BacktestRequest, BacktestResponse, CelBacktestRequest, DynamicBacktestRequest,
+    BacktestRequest, BacktestResponse, CelBacktestRequest, CurvePoint, DynamicBacktestRequest,
     ErrorResponse, ExitConfig, TradeResponse,
     IndicatorRequest, IndicatorResponse, IndicatorConfig,
 };
@@ -102,6 +103,7 @@ pub const STRATEGY_KEYS: &[&str] = &[
     "pixel_3",
     "cel",
     "dynamic",
+    "layered",
     "pixel_3",
 ];
 
@@ -131,6 +133,17 @@ pub struct DataResponse {
     pub symbol: String,
     pub count: usize,
     pub bars: Vec<BarRecord>,
+}
+
+/// Query parameters for `GET /api/data/{symbol}/latest`.
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct LatestQuery {
+    /// Number of bars to return (default: 500, max: 5000).
+    pub n: Option<usize>,
+    /// If `true`, only include bars within regular market hours.
+    pub market_hours_only: Option<bool>,
+    /// Exchange for market-hours filtering: `"us"` (default) or `"vn"`.
+    pub exchange: Option<String>,
 }
 
 /// Query parameters for `GET /api/data/{symbol}`.
@@ -188,7 +201,9 @@ impl Modify for SecurityAddon {
         health,
         list_strategies,
         list_symbols,
+        list_indicators,
         get_data,
+        get_latest,
         run_backtest,
         run_backtest_cel,
         run_backtest_dynamic,
@@ -201,12 +216,15 @@ impl Modify for SecurityAddon {
         ExitConfig,
         BacktestResponse,
         TradeResponse,
+        CurvePoint,
         ErrorResponse,
         BarRecord,
         DataResponse,
         IndicatorRequest,
         IndicatorConfig,
         IndicatorResponse,
+        IndicatorMeta,
+        ParamDef,
     )),
     tags(
         (name = "backtest", description = "Backtest execution endpoints"),
@@ -223,7 +241,9 @@ pub fn router(state: AppState) -> Router {
         .route("/health", get(health))
         .route("/api/strategies", get(list_strategies))
         .route("/api/symbols", get(list_symbols))
+        .route("/api/indicators", get(list_indicators))
         .route("/api/data/{symbol}", get(get_data))
+        .route("/api/data/{symbol}/latest", get(get_latest))
         .route("/api/backtest", post(run_backtest))
         .route("/api/backtest/cel", post(run_backtest_cel))
         .route("/api/backtest/dynamic", post(run_backtest_dynamic))
@@ -266,6 +286,24 @@ async fn health() -> impl IntoResponse {
 )]
 async fn list_strategies() -> impl IntoResponse {
     Json(STRATEGY_KEYS)
+}
+
+/// List all supported indicator types with their parameter schemas and output fields.
+///
+/// Returns a JSON array of indicator metadata objects, one per `"type"` key accepted by
+/// `POST /api/indicator` and `POST /api/backtest/dynamic`.
+/// Each entry also lists the CEL function name(s) for use in CEL backtest expressions.
+#[utoipa::path(
+    get,
+    path = "/api/indicators",
+    tag = "meta",
+    security(("BearerAuth" = [])),
+    responses(
+        (status = 200, description = "Indicator catalog", body = Vec<IndicatorMeta>),
+    )
+)]
+async fn list_indicators() -> impl IntoResponse {
+    Json(catalog::all())
 }
 
 /// List symbols that have data available in the data directory.
@@ -386,6 +424,76 @@ async fn get_data(
                     error: "internal error".into(),
                 }),
             )
+                .into_response()
+        }
+    }
+}
+
+/// Return the last N bars for a symbol.
+///
+/// Useful for chart initialisation — no need to know the exact date range.
+/// Default `n` = 500, max = 5 000.
+#[utoipa::path(
+    get,
+    path = "/api/data/{symbol}/latest",
+    tag = "data",
+    security(("BearerAuth" = [])),
+    params(
+        ("symbol" = String, Path, description = "Asset symbol, e.g. `BTCUSDT`"),
+        ("n" = Option<usize>, Query, description = "Number of bars to return (default 500, max 5000)"),
+        ("market_hours_only" = Option<bool>, Query, description = "Filter to regular market hours"),
+        ("exchange" = Option<String>, Query, description = "`\"us\"` or `\"vn\"`"),
+    ),
+    responses(
+        (status = 200, description = "Latest N OHLCV bars", body = DataResponse),
+        (status = 400, description = "Symbol not found",    body = ErrorResponse),
+    )
+)]
+async fn get_latest(
+    State(state): State<AppState>,
+    Path(symbol): Path<String>,
+    Query(q): Query<LatestQuery>,
+) -> Response {
+    let data_dir = Arc::clone(&state.data_dir);
+    let limit = q.n.unwrap_or(500).min(5_000).max(1);
+    let market_hours_only = q.market_hours_only.unwrap_or(false);
+    let exchange = q.exchange.clone().unwrap_or_else(|| "us".to_string());
+    let symbol_clone = symbol.clone();
+
+    let result = tokio::task::spawn_blocking(move || {
+        let files = find_parquet_files(&data_dir, &symbol_clone);
+        load_bars(&files, &symbol_clone, None, None, market_hours_only, &exchange)
+    }).await;
+
+    match result {
+        Ok(Ok(mut feed)) => {
+            use alm_data::BarFeed;
+            // Collect all, then take last N
+            let mut all: Vec<BarRecord> = Vec::with_capacity(feed.len().min(limit * 2));
+            while let Some(bar) = feed.next() {
+                all.push(BarRecord {
+                    t: bar.timestamp,
+                    o: bar.open,
+                    h: bar.high,
+                    l: bar.low,
+                    c: bar.close,
+                    v: bar.volume,
+                    vwap: bar.vwap,
+                    n: bar.transactions,
+                });
+            }
+            let start = all.len().saturating_sub(limit);
+            let bars: Vec<BarRecord> = all.into_iter().skip(start).collect();
+            let count = bars.len();
+            (StatusCode::OK, Json(DataResponse { symbol, count, bars })).into_response()
+        }
+        Ok(Err(e)) => (
+            StatusCode::BAD_REQUEST,
+            Json(ErrorResponse { error: e.to_string() }),
+        ).into_response(),
+        Err(e) => {
+            tracing::error!("spawn_blocking panicked: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "internal error".into() }))
                 .into_response()
         }
     }

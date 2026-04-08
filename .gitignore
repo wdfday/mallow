@@ -12,7 +12,7 @@ deployment/.env
 **/cmd/*/$(basename $(pwd))
 
 # ── Rust ─────────────────────────────────────────────────────────────────────
-backtesting/target/
+almanac/target/
 
 # ── Data & logs ───────────────────────────────────────────────────────────────
 hist-data/data/

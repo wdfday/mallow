@@ -1,4 +1,6 @@
-package runtime
+package orderbook
+
+import "time"
 
 // OrderSide represents the side of an order.
 type OrderSide string
@@ -44,4 +46,15 @@ type PendingOrder struct {
 	Symbol    string    `json:"symbol"`
 	Side      OrderSide `json:"side"`
 	Qty       float64   `json:"qty"`
+}
+
+// BookUpdate is one market-data observation stored in the per-symbol history buffer.
+// It is intentionally compact and value-based so callers receive immutable snapshots.
+type BookUpdate struct {
+	Symbol     string    `json:"symbol"`
+	Sequence   uint64    `json:"sequence"`
+	Bid        float64   `json:"bid,omitempty"`
+	Ask        float64   `json:"ask,omitempty"`
+	Last       float64   `json:"last,omitempty"`
+	ReceivedAt time.Time `json:"received_at"`
 }

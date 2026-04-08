@@ -5,6 +5,7 @@ use std::collections::VecDeque;
 /// ROC = ((Close − Close[n]) / Close[n]) × 100
 ///
 /// Positive ROC → momentum up; negative → momentum down.
+#[derive(Debug, Clone)]
 pub struct Roc {
     period: usize,
     buffer: VecDeque<f64>,

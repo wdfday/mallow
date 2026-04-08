@@ -1,4 +1,4 @@
-use crate::ema::Ema;
+use crate::Ema;
 
 /// MACD value snapshot.
 #[derive(Debug, Clone, Copy, PartialEq)]

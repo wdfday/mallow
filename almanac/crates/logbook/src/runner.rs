@@ -6,13 +6,15 @@ use alm_core::{exit::ExitRules, order::Side};
 use alm_data::BarFeed;
 use alm_engine::Engine;
 use alm_strategy::{build_strategy, FixedFractional};
+use alm_strategy::bar_resampler::TimeBarResampler;
 use alm_strategy::dynamic::indicator_box::IndicatorBox;
+use alm_strategy::expr::cel::parse_cel_indicator;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
 use crate::data::{find_parquet_files, load_bars, parse_date_ms};
 use crate::types::{
-    BacktestRequest, BacktestResponse, TradeResponse,
+    BacktestRequest, BacktestResponse, CurvePoint, TradeResponse,
     IndicatorRequest, IndicatorResponse, IndicatorPoint,
 };
 
@@ -88,12 +90,32 @@ pub fn run(req: BacktestRequest, data_dir: &Path) -> Result<BacktestResponse> {
             qty: t.qty,
             entry_price: t.entry_price,
             exit_price: t.exit_price,
+            entry_ts: t.entry_timestamp,
+            exit_ts: t.exit_timestamp,
             entry_time: ms_to_iso(t.entry_timestamp),
             exit_time: ms_to_iso(t.exit_timestamp),
             pnl: t.pnl,
             pnl_pct: t.pnl_pct,
         })
         .collect();
+
+    // Equity curve
+    let equity_curve: Vec<CurvePoint> = engine
+        .portfolio
+        .equity_curve
+        .iter()
+        .map(|p| CurvePoint { t: p.timestamp, v: p.equity })
+        .collect();
+
+    // Drawdown curve — running drawdown from peak, expressed as fraction
+    let drawdown_curve: Vec<CurvePoint> = {
+        let mut peak = capital;
+        engine.portfolio.equity_curve.iter().map(|p| {
+            if p.equity > peak { peak = p.equity; }
+            let dd = if peak > 0.0 { (p.equity - peak) / peak } else { 0.0 };
+            CurvePoint { t: p.timestamp, v: dd }
+        }).collect()
+    };
 
     let no_trades = report.total_trades == 0;
 
@@ -121,6 +143,8 @@ pub fn run(req: BacktestRequest, data_dir: &Path) -> Result<BacktestResponse> {
         avg_trade_duration_hours: report.avg_trade_duration_hours,
         max_consecutive_losses:   report.max_consecutive_losses,
         trades,
+        equity_curve,
+        drawdown_curve,
     })
 }
 
@@ -159,6 +183,74 @@ fn auto_label(config: &serde_json::Map<String, Value>) -> String {
     parts.join("_")
 }
 
+/// Build a JSON config `Value` from a CEL base name + period (mirrors `make_binding` in cel.rs).
+fn cel_to_config(base: &str, n: usize) -> Value {
+    use serde_json::json;
+    match base {
+        "ema"               => json!({"type":"ema","period":n}),
+        "sma"               => json!({"type":"sma","period":n}),
+        "wma"               => json!({"type":"wma","period":n}),
+        "hma"               => json!({"type":"hma","period":n}),
+        "dema"              => json!({"type":"dema","period":n}),
+        "tema"              => json!({"type":"tema","period":n}),
+        "smma"              => json!({"type":"smma","period":n}),
+        "alma"              => json!({"type":"alma","period":n}),
+        "mcginley"          => json!({"type":"mcginley","period":n}),
+        "lsma" | "lsma_slope" => json!({"type":"lsma","period":n}),
+        "vwma"              => json!({"type":"vwma","period":n}),
+        "kama"              => json!({"type":"kama","er_period":n}),
+        "macd_hist" | "macd_line" => json!({"type":"macd","fast":n,"slow":26,"signal":9}),
+        "adx" | "plus_di" | "minus_di" => json!({"type":"adx","period":n}),
+        "dmi_plus" | "dmi_minus" | "dmi_dx" => json!({"type":"dmi","period":n}),
+        "aroon_up" | "aroon_down" | "aroon_osc" => json!({"type":"aroon","period":n}),
+        "vortex_plus" | "vortex_minus" => json!({"type":"vortex","period":n}),
+        "kdj_k" | "kdj_d" | "kdj_j" => json!({"type":"kdj","period":n}),
+        "supertrend" | "st_bull" => json!({"type":"supertrend","period":n,"multiplier":3.0}),
+        "rsi"               => json!({"type":"rsi","period":n}),
+        "cci"               => json!({"type":"cci","period":n}),
+        "roc"               => json!({"type":"roc","period":n}),
+        "mom"               => json!({"type":"mom","period":n}),
+        "cmo"               => json!({"type":"cmo","period":n}),
+        "dpo"               => json!({"type":"dpo","period":n}),
+        "mfi"               => json!({"type":"mfi","period":n}),
+        "williams"          => json!({"type":"williams_r","period":n}),
+        "tsi"               => json!({"type":"tsi","first":n,"second":13}),
+        "rci"               => json!({"type":"rci","period":n}),
+        "chop"              => json!({"type":"chop","period":n}),
+        "connors_rsi"       => json!({"type":"connors_rsi","rsi_period":n,"streak_period":2,"rank_period":100}),
+        "stoch_k" | "stoch_d" => json!({"type":"stochastic","k_period":n,"d_period":3}),
+        "srsi_k" | "srsi_d" => json!({"type":"stoch_rsi","rsi_period":n,"smooth_d":3}),
+        "fisher_line" | "fisher_sig" => json!({"type":"fisher","period":n}),
+        "bull_power" | "bear_power" => json!({"type":"bull_bear","period":n}),
+        "ppo_line" | "ppo_sig" | "ppo_hist" => json!({"type":"ppo","fast":n,"slow":26,"signal":9}),
+        "rvi_line" | "rvi_sig" => json!({"type":"rvi","period":n}),
+        "atr"               => json!({"type":"atr","period":n}),
+        "bb_upper" | "bb_lower" | "bb_mid" => json!({"type":"bbands","period":n,"multiplier":2.0}),
+        "donchian_upper" | "donchian_lower" | "donchian_mid" => json!({"type":"donchian","period":n}),
+        "chandelier_long" | "chandelier_short" => json!({"type":"chandelier_exit","period":n,"multiplier":3.0}),
+        "chop_angle"        => json!({"type":"chop_zone","ema_period":n,"threshold":5.0}),
+        "cmf"               => json!({"type":"cmf","period":n}),
+        // zero-arg
+        "obv"               => json!({"type":"obv"}),
+        "ao"                => json!({"type":"ao","fast":5,"slow":34}),
+        "sar"               => json!({"type":"parabolic_sar","step":0.02,"max":0.2}),
+        "vwap"              => json!({"type":"vwap"}),
+        "bop"               => json!({"type":"bop"}),
+        "coppock"           => json!({"type":"coppock"}),
+        "kst_line" | "kst_sig" => json!({"type":"kst"}),
+        "pmo_line" | "pmo_sig" => json!({"type":"pmo"}),
+        "uo"                => json!({"type":"uo","fast":7,"medium":14,"slow":28}),
+        "alligator_jaw" | "alligator_teeth" | "alligator_lips" | "alligator_bull" =>
+            json!({"type":"alligator","jaw":13,"teeth":8,"lips":5}),
+        "gmma_bull"         => json!({"type":"gmma"}),
+        "chande_kroll_long" | "chande_kroll_short" =>
+            json!({"type":"chande_kroll","atr_period":10,"factor":1.5,"stop_period":9}),
+        "fractal_bull" | "fractal_bear" => json!({"type":"fractal"}),
+        // fallback: try type=base
+        other               => serde_json::json!({"type": other, "period": n}),
+    }
+}
+
 /// Compute one or more indicators over historical data.
 pub fn compute_indicators(req: IndicatorRequest, data_dir: &Path) -> Result<IndicatorResponse> {
     let symbol = if req.symbol.is_empty() { "BTCUSD".to_string() } else { req.symbol };
@@ -176,27 +268,68 @@ pub fn compute_indicators(req: IndicatorRequest, data_dir: &Path) -> Result<Indi
 
     let bars_total = feed.len();
 
-    // Build (label, IndicatorBox) pairs — validate all configs before touching data
-    let mut inds: Vec<(String, IndicatorBox)> = req.indicators
+    // Build (label, IndicatorBox, Option<TimeBarResampler>) triples.
+    // Validate all configs before touching data.
+    struct BoundInd {
+        label:     String,
+        box_:      IndicatorBox,
+        resampler: Option<TimeBarResampler>,
+    }
+
+    let mut inds: Vec<BoundInd> = req.indicators
         .iter()
         .map(|cfg| {
-            let label = cfg.label.clone()
-                .unwrap_or_else(|| auto_label(&cfg.config));
-            let box_ = IndicatorBox::from_config(&Value::Object(cfg.config.clone()))?;
-            Ok((label, box_))
+            if let Some(cel_expr) = &cfg.cel {
+                // CEL-style: parse the expression to get (base, args, interval_ms)
+                let (base, args, interval_ms) = parse_cel_indicator(cel_expr)?;
+                let n = args.first().copied().unwrap_or(0.0) as usize;
+                // Build JSON config from CEL parsed components
+                let json_cfg = cel_to_config(&base, n);
+                let box_ = IndicatorBox::from_config(&json_cfg)?;
+                let resampler = interval_ms.map(TimeBarResampler::new);
+                let label = cfg.label.clone().unwrap_or_else(|| {
+                    // Auto-label from CEL expression, e.g. "H1.ema(200)" → "H1_ema_200"
+                    let tf_prefix = interval_ms.map(|_| {
+                        // Extract TF prefix from expression
+                        cel_expr.split('.').next()
+                            .filter(|s| !s.is_empty())
+                            .map(|s| format!("{}_", s))
+                            .unwrap_or_default()
+                    }).unwrap_or_default();
+                    if args.is_empty() {
+                        format!("{tf_prefix}{base}")
+                    } else {
+                        let arg_str: Vec<String> = args.iter().map(|a| format!("{}", *a as i64)).collect();
+                        format!("{tf_prefix}{}_{}", base, arg_str.join("_"))
+                    }
+                });
+                Ok(BoundInd { label, box_, resampler })
+            } else {
+                let label = cfg.label.clone()
+                    .unwrap_or_else(|| auto_label(&cfg.config));
+                let box_ = IndicatorBox::from_config(&Value::Object(cfg.config.clone()))?;
+                Ok(BoundInd { label, box_, resampler: None })
+            }
         })
         .collect::<Result<Vec<_>>>()?;
 
     let mut series: HashMap<String, Vec<IndicatorPoint>> =
-        inds.iter().map(|(l, _)| (l.clone(), Vec::new())).collect();
+        inds.iter().map(|b| (b.label.clone(), Vec::new())).collect();
 
     while let Some(bar) = feed.next() {
-        for (label, ind) in &mut inds {
-            if let Some(fields) = ind.update(&bar) {
-                series.get_mut(label).unwrap().push(IndicatorPoint {
-                    t: bar.timestamp,
-                    fields,
-                });
+        for b in &mut inds {
+            // MTF: feed bar through resampler; only update indicator on HTF bar emit
+            let agg = match &mut b.resampler {
+                Some(rs) => rs.push(&bar),
+                None     => Some(bar.clone()),
+            };
+            if let Some(htf_bar) = agg {
+                if let Some(fields) = b.box_.update(&htf_bar) {
+                    series.get_mut(&b.label).unwrap().push(IndicatorPoint {
+                        t: bar.timestamp,  // use base bar timestamp for chart alignment
+                        fields,
+                    });
+                }
             }
         }
     }

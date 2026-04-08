@@ -18,6 +18,7 @@ use serde_json::Value;
 use crate::{
     expr::cel::CelStrategy,
     dynamic::DynamicStrategy,
+    layered::LayeredStrategy,
     AlligatorStrategy, AroonTrend, AtrTrailingStop, BbKeltnerSqueeze, BbSqueeze, BollingerMacd,
     CciReversal, ChandelierExit, ChopFilterStrategy, ConnorsRsiStrategy, DemaCrossover, DmiAdx,
     DonchianBreakout, DualMomentum, ElderRayStrategy, EquilibriumExplorer, GmmaCrossover,
@@ -451,6 +452,30 @@ pub fn build_strategy(name: &str, params: &Value) -> Result<Box<dyn Strategy>> {
 
         // ── Dynamic (declarative JSON conditions) ─────────────────────────────
         "dynamic" => Box::new(DynamicStrategy::from_params(p)?),
+
+        // ── Layered (filter + signal two-tier) ────────────────────────────────
+        // params: { "filter": {"name": "...", "params": {...}},
+        //           "signal": {"name": "...", "params": {...}} }
+        "layered" => {
+            let filter_cfg = p.get("filter")
+                .ok_or_else(|| anyhow::anyhow!("layered strategy missing 'filter'"))?;
+            let signal_cfg = p.get("signal")
+                .ok_or_else(|| anyhow::anyhow!("layered strategy missing 'signal'"))?;
+
+            let filter_name = filter_cfg.get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("layered.filter missing 'name'"))?;
+            let signal_name = signal_cfg.get("name")
+                .and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("layered.signal missing 'name'"))?;
+
+            let filter_params = filter_cfg.get("params").unwrap_or(&Value::Null);
+            let signal_params = signal_cfg.get("params").unwrap_or(&Value::Null);
+
+            let filter = build_strategy(filter_name, filter_params)?;
+            let signal = build_strategy(signal_name, signal_params)?;
+            Box::new(LayeredStrategy::new(filter, signal))
+        }
 
         // ── Multi-timeframe midpoint ──────────────────────────────────────────
         "pixel_3" => Box::new(Pixel3::with_periods(

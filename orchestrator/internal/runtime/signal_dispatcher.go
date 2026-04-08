@@ -19,11 +19,15 @@ func NewSignalDispatcher(reg *Registry) *SignalDispatcher {
 	return &SignalDispatcher{reg: reg}
 }
 
+func signalTargetFromSubject(subject string) string {
+	target := strings.TrimPrefix(subject, engine.SubjBarsPrefix)
+	return strings.TrimPrefix(target, "signals.")
+}
+
 // Dispatch routes all signals in the response according to the NATS subject.
 // Preferred mode is signals.{bot_id}; legacy symbol subjects are logged and ignored.
 func (d *SignalDispatcher) Dispatch(subject string, resp *engine.SignalResponse) {
-	target := strings.TrimPrefix(subject, engine.SubjBarsPrefix)
-	target = strings.TrimPrefix(subject, "signals.")
+	target := signalTargetFromSubject(subject)
 	if target == "" {
 		slog.Warn("signal dispatcher: empty subject target", "subject", subject)
 		return
@@ -39,17 +43,15 @@ func (d *SignalDispatcher) Dispatch(subject string, resp *engine.SignalResponse)
 			Strength:   sig.Strength,
 			ReceivedAt: time.Now(),
 		}
-		if d.reg.DispatchBotSignal(target, rsig) {
-			slog.Info("signal dispatched",
-				"bot_id", target,
-				"symbol", sig.S,
-				"direction", sig.Dir,
-				"strength", sig.Strength,
-			)
+		if d.reg.EnqueueSignal(RoutedSignal{
+			BotID:   target,
+			Subject: subject,
+			Signal:  rsig,
+		}) {
 			continue
 		}
 
-		slog.Warn("signal dispatcher: no target bot found",
+		slog.Warn("signal dispatcher: registry ingress full",
 			"subject", subject,
 			"target", target,
 			"symbol", sig.S,

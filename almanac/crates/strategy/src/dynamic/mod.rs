@@ -9,31 +9,50 @@ use serde_json::Value;
 
 use self::condition::ConditionGroup;
 use self::indicator_box::IndicatorBox;
+use crate::bar_resampler::{TimeBarResampler, parse_timeframe_ms};
+use crate::candle_type::{CandleTransform, CandleType};
 
 /// Internal state for one named indicator.
 struct IndicatorState {
     box_: IndicatorBox,
+    /// Time-based resampler — present when `"tf"` is set in indicator config.
+    resampler: Option<TimeBarResampler>,
     current: HashMap<String, f64>,
     previous: HashMap<String, f64>,
 }
 
 impl IndicatorState {
     fn new(box_: IndicatorBox) -> Self {
-        Self {
-            box_,
-            current: HashMap::new(),
-            previous: HashMap::new(),
+        Self { box_, resampler: None, current: HashMap::new(), previous: HashMap::new() }
+    }
+
+    /// Attach a time-based resampler using a TradingView-style timeframe string.
+    /// `"H1"` → H1 bars, `"M15"` → M15 bars, `"D1"` → daily bars.
+    /// Returns `self` unchanged if `tf` is unrecognised.
+    fn with_tf(mut self, tf: &str) -> Self {
+        if let Some(ms) = parse_timeframe_ms(tf) {
+            self.resampler = Some(TimeBarResampler::new(ms));
         }
+        self
     }
 
     fn update(&mut self, bar: &Bar) {
-        if let Some(vals) = self.box_.update(bar) {
-            self.previous = std::mem::replace(&mut self.current, vals);
+        // Time-based MTF: feed indicator only when the resampler emits a HTF bar.
+        // Between HTF bars: hold current (no update) so ready-check stays true.
+        let agg = match &mut self.resampler {
+            Some(rs) => rs.push(bar),
+            None => Some(bar.clone()),
+        };
+        if let Some(b) = agg {
+            if let Some(vals) = self.box_.update(&b) {
+                self.previous = std::mem::replace(&mut self.current, vals);
+            }
         }
     }
 
     fn reset(&mut self) {
         self.box_.reset();
+        if let Some(rs) = &mut self.resampler { rs.reset(); }
         self.current.clear();
         self.previous.clear();
     }
@@ -46,6 +65,7 @@ impl IndicatorState {
 /// {
 ///   "strategy": "dynamic",
 ///   "params": {
+///     "candle_type": "heiken_ashi",
 ///     "indicators": {
 ///       "rsi14":  { "type": "rsi",  "period": 14 },
 ///       "ema200": { "type": "ema",  "period": 200 },
@@ -69,15 +89,33 @@ impl IndicatorState {
 ///   }
 /// }
 /// ```
+///
+/// ## `candle_type` options
+/// - `"raw"` (default) — dùng nến gốc
+/// - `"heiken_ashi"` — transform sang Heiken Ashi trước khi feed indicators
+/// - `"smooth_ha"` + `"ha_smooth": N` — Smooth Heiken Ashi (EMA N trước HA)
 pub struct DynamicStrategy {
     indicators: HashMap<String, IndicatorState>,
     entry: ConditionGroup,
     exit: Option<ConditionGroup>,
     in_position: bool,
+    transform: CandleTransform,
 }
 
 impl DynamicStrategy {
     pub fn from_params(params: &Value) -> Result<Self> {
+        // ── Candle type ───────────────────────────────────────────────────────
+        let candle_type_str = params
+            .get("candle_type")
+            .and_then(Value::as_str)
+            .unwrap_or("raw");
+        let ha_smooth = params
+            .get("ha_smooth")
+            .and_then(Value::as_f64)
+            .map(|v| v as usize)
+            .unwrap_or(2);
+        let transform = CandleTransform::new(CandleType::from_str(candle_type_str, ha_smooth));
+
         // ── Indicators ────────────────────────────────────────────────────────
         let ind_map = params
             .get("indicators")
@@ -86,8 +124,11 @@ impl DynamicStrategy {
 
         let mut indicators = HashMap::new();
         for (name, cfg) in ind_map {
+            let tf = cfg.get("tf").and_then(Value::as_str).unwrap_or("");
             let box_ = IndicatorBox::from_config(cfg)?;
-            indicators.insert(name.clone(), IndicatorState::new(box_));
+            let state = IndicatorState::new(box_);
+            let state = if tf.is_empty() { state } else { state.with_tf(tf) };
+            indicators.insert(name.clone(), state);
         }
 
         // ── Entry group ───────────────────────────────────────────────────────
@@ -111,6 +152,7 @@ impl DynamicStrategy {
             entry,
             exit,
             in_position: false,
+            transform,
         })
     }
 
@@ -145,9 +187,15 @@ impl DynamicStrategy {
 
 impl Strategy for DynamicStrategy {
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
+        // Transform candle if needed (HA, etc.)
+        let effective = match self.transform.apply(bar) {
+            Some(b) => b,
+            None => return vec![], // HA warmup period
+        };
+
         // Advance all indicators
         for state in self.indicators.values_mut() {
-            state.update(bar);
+            state.update(&effective);
         }
 
         // Check if any indicator is still warming up (empty current map)
@@ -161,6 +209,7 @@ impl Strategy for DynamicStrategy {
 
         let current = self.snapshots(true);
         let previous = self.snapshots(false);
+        // bar_fields dùng raw bar để price conditions reflect giá thực tế
         let bf = Self::bar_fields(bar);
 
         // Exit check first
@@ -191,6 +240,7 @@ impl Strategy for DynamicStrategy {
         for state in self.indicators.values_mut() {
             state.reset();
         }
+        self.transform.reset();
         self.in_position = false;
     }
 }

@@ -1,4 +1,4 @@
-use crate::wma::Wma;
+use crate::Wma;
 
 #[derive(Debug, Clone)]
 pub struct AlligatorValue {

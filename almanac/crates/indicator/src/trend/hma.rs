@@ -1,4 +1,4 @@
-use crate::wma::Wma;
+use crate::Wma;
 use std::collections::VecDeque;
 
 /// Hull Moving Average — reduces lag while maintaining smoothness.

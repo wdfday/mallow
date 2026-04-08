@@ -1,4 +1,4 @@
-use crate::ema::Ema;
+use crate::Ema;
 
 #[derive(Debug, Clone)]
 pub struct TrixValue {

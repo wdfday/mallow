@@ -16,6 +16,7 @@ import (
 	"orchestrator/internal/runtime/core/portfolio"
 	"orchestrator/internal/runtime/core/strategy"
 	"orchestrator/internal/runtime/core/tactics"
+	"orchestrator/internal/runtime/orderbook"
 )
 
 // OrchestratorRuntime is the live in-memory state for one orchestrator instance.
@@ -42,7 +43,7 @@ type OrchestratorRuntime struct {
 
 	Portfolio *portfolio.Portfolio
 	RiskMgr   RiskManager
-	OrderBook OrderBook
+	OrderBook orderbook.OrderBook
 	Exchange  exchange.Exchange
 
 	// fillCh decouples the broker WS goroutine from NATS publishing.
@@ -186,7 +187,7 @@ func NewOrchestratorRuntime(
 	brokerType string,
 	pf *portfolio.Portfolio,
 	riskMgr RiskManager,
-	ob OrderBook,
+	ob orderbook.OrderBook,
 	ex exchange.Exchange,
 	lastSyncedAt *time.Time,
 ) *OrchestratorRuntime {
@@ -307,7 +308,7 @@ func (r *OrchestratorRuntime) ProcessTrade(
 }
 
 // TrackOrder records a placed order in the orderbook for duplicate detection.
-func (r *OrchestratorRuntime) TrackOrder(order PendingOrder) {
+func (r *OrchestratorRuntime) TrackOrder(order orderbook.PendingOrder) {
 	r.OrderBook.TrackOrder(order)
 }
 

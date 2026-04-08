@@ -1,4 +1,4 @@
-use crate::ema::Ema;
+use crate::Ema;
 
 #[derive(Debug, Clone)]
 pub struct HaBar {
@@ -19,6 +19,7 @@ pub struct HaBar {
 ///
 /// Smooth HA applies EMA to each component before computing HA.
 /// `smooth = 1` means no smoothing (standard HA).
+#[derive(Debug, Clone)]
 pub struct HeikenAshi {
     smooth: usize,
     ema_open: Option<Ema>,

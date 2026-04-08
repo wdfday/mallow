@@ -5,7 +5,7 @@
 //!
 //! Reduces lag more aggressively than DEMA.
 
-use crate::ema::Ema;
+use crate::Ema;
 
 pub struct Tema {
     ema1: Ema,

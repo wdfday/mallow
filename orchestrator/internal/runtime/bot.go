@@ -15,6 +15,7 @@ import (
 	"orchestrator/internal/module/worker/domain"
 	"orchestrator/internal/runtime/core/strategy"
 	"orchestrator/internal/runtime/core/tactics"
+	"orchestrator/internal/runtime/orderbook"
 )
 
 // Bot is an autonomous trading agent.
@@ -462,12 +463,12 @@ func (b *Bot) handleSignal(ctx context.Context, sig Signal) {
 	}
 	b.metrics.ordersPlaced.Add(1)
 
-	b.rt.TrackOrder(PendingOrder{
+	b.rt.TrackOrder(orderbook.PendingOrder{
 		OrderID:   result.ID,
 		BotID:     b.id,
 		AccountID: b.orchestratorID,
 		Symbol:    sig.Symbol,
-		Side:      OrderSide(reply.Side),
+		Side:      orderbook.OrderSide(reply.Side),
 		Qty:       reply.Qty,
 	})
 
@@ -622,12 +623,12 @@ func (b *Bot) PlaceOrder(ctx context.Context, symbol string, qty float64, side s
 		return "", fmt.Errorf("place order: %w", err)
 	}
 	b.metrics.ordersPlaced.Add(1)
-	b.rt.TrackOrder(PendingOrder{
+	b.rt.TrackOrder(orderbook.PendingOrder{
 		OrderID:   result.ID,
 		BotID:     b.id,
 		AccountID: b.orchestratorID,
 		Symbol:    symbol,
-		Side:      OrderSide(side),
+		Side:      orderbook.OrderSide(side),
 		Qty:       reply.Qty,
 	})
 	order := domain.Order{

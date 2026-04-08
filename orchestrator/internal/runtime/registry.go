@@ -16,6 +16,7 @@ import (
 	orchdomain "orchestrator/internal/module/orchesrator/domain"
 	"orchestrator/internal/runtime/core/portfolio"
 	"orchestrator/internal/runtime/core/risk"
+	"orchestrator/internal/runtime/orderbook"
 )
 
 // ExchangeFactory creates per-account exchange adapters from an ExchangeConfig.
@@ -41,11 +42,13 @@ type SyncStore interface {
 type Registry struct {
 	mu              sync.RWMutex
 	runtimes        map[uuid.UUID]*OrchestratorRuntime
-	orderBooks      map[string]OrderBook               // broker_type → shared OrderBook
+	orderBooks      map[string]orderbook.OrderBook     // broker_type → shared OrderBook
 	marketStreamers map[string]exchange.MarketStreamer // broker_type → shared streamer
+	signalCh        chan RoutedSignal
 
 	exchFactory     ExchangeFactory
 	streamerFactory MarketStreamerFactory
+	signalLoopOnce  sync.Once
 
 	// nc, js, and runCtx are set once via SetRuntime after startup.
 	nc        *nats.Conn
@@ -58,8 +61,9 @@ type Registry struct {
 func NewRegistry(factory ExchangeFactory, streamerFactory MarketStreamerFactory) *Registry {
 	return &Registry{
 		runtimes:        make(map[uuid.UUID]*OrchestratorRuntime),
-		orderBooks:      make(map[string]OrderBook),
+		orderBooks:      make(map[string]orderbook.OrderBook),
 		marketStreamers: make(map[string]exchange.MarketStreamer),
+		signalCh:        make(chan RoutedSignal, defaultRegistrySignalBuffer),
 		exchFactory:     factory,
 		streamerFactory: streamerFactory,
 	}
@@ -76,6 +80,9 @@ func (r *Registry) SetSyncStore(store SyncStore) {
 // Called from the app lifecycle OnStart, after the connection is established.
 // js is cached here so fill processors never call nc.JetStream() per event.
 func (r *Registry) SetRuntime(ctx context.Context, nc *nats.Conn) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	js, err := nc.JetStream()
 	if err != nil {
 		slog.Error("registry: failed to obtain JetStream context", "err", err)
@@ -85,6 +92,8 @@ func (r *Registry) SetRuntime(ctx context.Context, nc *nats.Conn) {
 	r.js = js
 	r.runCtx = ctx
 	r.mu.Unlock()
+
+	r.startSignalLoop(ctx)
 }
 
 // SyncOne satisfies RuntimeSpawner — triggers an async one-shot sync for id.
@@ -111,7 +120,7 @@ func (r *Registry) SyncOne(id uuid.UUID) {
 }
 
 // OrderBook returns the shared OrderBook for a given broker type.
-func (r *Registry) OrderBook(brokerType string) OrderBook {
+func (r *Registry) OrderBook(brokerType string) orderbook.OrderBook {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.orderBooks[brokerType]
@@ -136,7 +145,7 @@ func (r *Registry) Spawn(cfg *orchdomain.OrchestratorConfig) error {
 	r.mu.Lock()
 	ob, ok := r.orderBooks[cfg.Exchange.BrokerType]
 	if !ok {
-		ob = NewOrderBook(cfg.Exchange.BrokerType)
+		ob = orderbook.NewOrderBook(cfg.Exchange.BrokerType)
 		r.orderBooks[cfg.Exchange.BrokerType] = ob
 		slog.Info("runtime: orderbook created", "broker", cfg.Exchange.BrokerType)
 	}

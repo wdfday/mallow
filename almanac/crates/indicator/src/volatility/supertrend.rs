@@ -1,4 +1,4 @@
-use crate::atr::Atr;
+use crate::Atr;
 
 #[derive(Debug, Clone)]
 pub struct SuperTrendValue {

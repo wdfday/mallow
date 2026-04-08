@@ -93,6 +93,14 @@ pub struct ExitConfig {
 
 // ── Response ──────────────────────────────────────────────────────────────────
 
+/// One point on the equity or drawdown curve.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CurvePoint {
+    /// Unix timestamp in milliseconds (UTC).
+    pub t: i64,
+    pub v: f64,
+}
+
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BacktestResponse {
     pub strategy: String,
@@ -131,6 +139,12 @@ pub struct BacktestResponse {
 
     /// Individual completed trades.
     pub trades: Vec<TradeResponse>,
+
+    /// Bar-by-bar equity curve: `[{t, v}]` where `v` is total equity in currency.
+    pub equity_curve: Vec<CurvePoint>,
+
+    /// Bar-by-bar drawdown series: `[{t, v}]` where `v` is drawdown as fraction (e.g. -0.15 = -15%).
+    pub drawdown_curve: Vec<CurvePoint>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -140,9 +154,13 @@ pub struct TradeResponse {
     pub qty: f64,
     pub entry_price: f64,
     pub exit_price: f64,
-    /// ISO 8601 UTC timestamp.
+    /// Unix timestamp milliseconds — use for chart marker alignment.
+    pub entry_ts: i64,
+    /// Unix timestamp milliseconds — use for chart marker alignment.
+    pub exit_ts: i64,
+    /// ISO 8601 UTC timestamp (human-readable).
     pub entry_time: String,
-    /// ISO 8601 UTC timestamp.
+    /// ISO 8601 UTC timestamp (human-readable).
     pub exit_time: String,
     pub pnl: f64,
     pub pnl_pct: f64,
@@ -329,19 +347,26 @@ pub struct IndicatorRequest {
 
 /// Single indicator specification.
 ///
-/// The `type` field selects the indicator; all other fields are params.
-/// Optional `label` overrides the auto-generated series key.
+/// Specify the indicator either via JSON params (`"type"` + params) **or** via a
+/// CEL-style expression string (`"cel"`).  CEL supports MTF with `TF.func()` syntax.
 ///
 /// Examples:
 /// ```json
 /// { "type": "ema",  "period": 20 }
 /// { "type": "macd", "fast": 12, "slow": 26, "signal": 9 }
 /// { "type": "rsi",  "period": 14, "label": "rsi14" }
+/// { "cel": "H1.ema(200)", "label": "h1_ema200" }
+/// { "cel": "rsi(14)" }
 /// ```
 #[derive(Debug, Deserialize, Clone, ToSchema)]
 pub struct IndicatorConfig {
     /// Override series key in the response.  Auto-generated if omitted.
     pub label: Option<String>,
+
+    /// CEL-style indicator expression, e.g. `"H1.ema(200)"` or `"rsi(14)"`.
+    /// When set, `config` fields are ignored (except `label`).
+    /// Supports MTF prefix: `M1` `M5` `M15` `M30` `H1` `H2` `H4` `H6` `H8` `H12` `D1` `W1`.
+    pub cel: Option<String>,
 
     /// All indicator params including `"type"` — passed directly to `IndicatorBox::from_config`.
     #[serde(flatten)]

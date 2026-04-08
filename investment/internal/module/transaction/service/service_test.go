@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -63,9 +64,9 @@ func TestTransactionList(t *testing.T) {
 				Symbol:    "AAPL",
 				TxType:    "buy",
 				Currency:  "USD",
-				Quantity:  10,
-				Price:     150.0,
-				Amount:    1500.0,
+				Quantity:  decimal.NewFromInt(10),
+				Price:     decimal.NewFromFloat(150.0),
+				Amount:    decimal.NewFromFloat(1500.0),
 				TxDate:    now,
 				CreatedAt: now,
 			},
@@ -76,9 +77,9 @@ func TestTransactionList(t *testing.T) {
 				Symbol:    "AAPL",
 				TxType:    "buy",
 				Currency:  "USD",
-				Quantity:  5,
-				Price:     155.0,
-				Amount:    775.0,
+				Quantity:  decimal.NewFromInt(5),
+				Price:     decimal.NewFromFloat(155.0),
+				Amount:    decimal.NewFromFloat(775.0),
 				TxDate:    now,
 				CreatedAt: now,
 			},

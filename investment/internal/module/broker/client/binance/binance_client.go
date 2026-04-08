@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"mallow/investment/internal/module/broker/client"
 
 	binancesdk "github.com/adshao/go-binance/v2"
@@ -56,12 +57,14 @@ func (c *Client) GetPortfolio(ctx context.Context, accessToken string) (*client.
 	if err != nil {
 		return nil, fmt.Errorf("binance get account failed: %w", err)
 	}
-	var total, cash float64
+	var total, cash decimal.Decimal
 	for _, b := range account.Balances {
-		qty := parseFloat(b.Free) + parseFloat(b.Locked)
-		total += qty
+		free, _ := decimal.NewFromString(b.Free)
+		locked, _ := decimal.NewFromString(b.Locked)
+		qty := free.Add(locked)
+		total = total.Add(qty)
 		if b.Asset == "USDT" || b.Asset == "USDC" || b.Asset == "BUSD" {
-			cash += qty
+			cash = cash.Add(qty)
 		}
 	}
 	return &client.Portfolio{TotalValue: total, Currency: "USDT", CashBalance: cash}, nil
@@ -79,8 +82,10 @@ func (c *Client) GetPositions(ctx context.Context, accessToken string) ([]client
 	}
 	var positions []client.Position
 	for _, b := range account.Balances {
-		qty := parseFloat(b.Free) + parseFloat(b.Locked)
-		if qty <= 0 {
+		free, _ := decimal.NewFromString(b.Free)
+		locked, _ := decimal.NewFromString(b.Locked)
+		qty := free.Add(locked)
+		if !qty.IsPositive() {
 			continue
 		}
 		positions = append(positions, client.Position{Symbol: b.Asset, Quantity: qty, Currency: "USDT"})
@@ -101,7 +106,8 @@ func (c *Client) GetMarketPrice(ctx context.Context, symbol string) (*client.Mar
 	if len(prices) == 0 {
 		return nil, fmt.Errorf("no price found for %s", symbol)
 	}
-	return &client.MarketPrice{Symbol: symbol, Price: parseFloat(prices[0].Price)}, nil
+	price, _ := decimal.NewFromString(prices[0].Price)
+	return &client.MarketPrice{Symbol: symbol, Price: price}, nil
 }
 
 func (c *Client) GetBatchMarketPrices(ctx context.Context, symbols []string) (map[string]*client.MarketPrice, error) {
@@ -117,7 +123,8 @@ func (c *Client) GetBatchMarketPrices(ctx context.Context, symbols []string) (ma
 	result := make(map[string]*client.MarketPrice)
 	for _, p := range all {
 		if want[p.Symbol] {
-			result[p.Symbol] = &client.MarketPrice{Symbol: p.Symbol, Price: parseFloat(p.Price)}
+			price, _ := decimal.NewFromString(p.Price)
+			result[p.Symbol] = &client.MarketPrice{Symbol: p.Symbol, Price: price}
 		}
 	}
 	return result, nil
@@ -134,10 +141,4 @@ func splitToken(token string) (apiKey, apiSecret string, isPaper bool, err error
 		return "", "", false, fmt.Errorf("invalid binance token format")
 	}
 	return token[:idx], token[idx+1:], isPaper, nil
-}
-
-func parseFloat(s string) float64 {
-	var f float64
-	fmt.Sscanf(s, "%f", &f)
-	return f
 }

@@ -6,6 +6,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 
 	"mallow/investment/internal/middleware"
 	"mallow/investment/internal/module/portfolio/event"
@@ -106,12 +107,12 @@ func (h *Handler) Create(c *gin.Context) {
 		AssetType:       req.AssetType,
 		Exchange:        req.Exchange,
 		Currency:        req.Currency,
-		Quantity:        req.Quantity,
-		PricePerUnit:    req.PricePerUnit,
-		Amount:          req.Amount,
-		Fees:            req.Fees,
-		Commission:      req.Commission,
-		Tax:             req.Tax,
+		Quantity:        decimal.NewFromFloat(req.Quantity),
+		PricePerUnit:    decimal.NewFromFloat(req.PricePerUnit),
+		Amount:          decimal.NewFromFloat(req.Amount),
+		Fees:            decimal.NewFromFloat(req.Fees),
+		Commission:      decimal.NewFromFloat(req.Commission),
+		Tax:             decimal.NewFromFloat(req.Tax),
 		TransactionDate: req.TransactionDate,
 		Broker:          req.Broker,
 		Source:          "manual",

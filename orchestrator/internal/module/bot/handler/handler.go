@@ -6,12 +6,13 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 
 	pkgmw "mallow/pkg/middleware"
 	"orchestrator/internal/infra/engine"
 	orchsvc "orchestrator/internal/module/orchesrator/service"
-	"orchestrator/internal/module/worker/domain"
-	"orchestrator/internal/module/worker/service"
+	"orchestrator/internal/module/bot/domain"
+	"orchestrator/internal/module/bot/service"
 	"orchestrator/internal/runtime"
 	"orchestrator/internal/shared"
 )
@@ -480,15 +481,15 @@ func (h *Handler) Metrics(c *gin.Context) {
 	runtimes := h.reg.All()
 	c.Header("Content-Type", "text/plain; version=0.0.4")
 
-	var totalEquity, totalCash float64
+	var totalEquity, totalCash decimal.Decimal
 	for _, rt := range runtimes {
 		s := rt.Portfolio.Summary()
-		totalEquity += s.Equity
-		totalCash += s.Cash
+		totalEquity = totalEquity.Add(s.Equity)
+		totalCash = totalCash.Add(s.Cash)
 	}
 
-	out := formatMetric("orchestrator_total_equity", totalEquity) +
-		formatMetric("orchestrator_total_cash", totalCash) +
+	out := formatMetric("orchestrator_total_equity", totalEquity.InexactFloat64()) +
+		formatMetric("orchestrator_total_cash", totalCash.InexactFloat64()) +
 		formatMetric("orchestrator_running_bots", float64(len(h.botMgr.RunningBots()))) +
 		formatMetric("orchestrator_active_runtimes", float64(len(runtimes)))
 	c.String(http.StatusOK, out)

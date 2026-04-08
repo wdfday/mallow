@@ -7,7 +7,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"orchestrator/internal/module/worker/domain"
+	"orchestrator/internal/module/bot/domain"
 	"orchestrator/internal/runtime"
 )
 
@@ -120,7 +120,7 @@ func (s *Service) Update(id string, patch domain.BotConfig) error {
 		if patch.Risk.MaxPositionPct != 0 {
 			d.Config.Risk.MaxPositionPct = patch.Risk.MaxPositionPct
 		}
-		if patch.Risk.FixedQty != 0 {
+		if patch.Risk.FixedQty.IsPositive() {
 			d.Config.Risk.FixedQty = patch.Risk.FixedQty
 		}
 		if patch.Risk.StopLossATRMult != 0 {

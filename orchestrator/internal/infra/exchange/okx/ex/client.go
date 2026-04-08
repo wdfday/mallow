@@ -5,10 +5,12 @@ package ex
 
 import (
 	"sync"
+
+	"github.com/shopspring/decimal"
 )
 
 // PriceHandler is called with each live trade price.
-type PriceHandler = func(symbol string, price float64)
+type PriceHandler = func(symbol string, price decimal.Decimal)
 
 // QuoteHandler is called with each best-bid/offer update.
 type QuoteHandler = func(symbol string, bid, ask float64)
@@ -96,7 +98,7 @@ func (c *Client) GetL2(symbol string) (L2Book, bool) {
 	return book, ok
 }
 
-func (c *Client) dispatchPrice(symbol string, price float64) {
+func (c *Client) dispatchPrice(symbol string, price decimal.Decimal) {
 	c.mu.RLock()
 	hs := c.priceHandlers
 	c.mu.RUnlock()

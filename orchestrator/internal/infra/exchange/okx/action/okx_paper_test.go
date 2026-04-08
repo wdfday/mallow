@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"orchestrator/internal/infra/exchange"
 )
 
@@ -69,9 +71,9 @@ func TestOKX_SyncAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SyncAccount: %v", err)
 	}
-	t.Logf("cash=%.2f  equity=%.2f  positions=%d", snap.Cash, snap.Equity, len(snap.Positions))
+	t.Logf("cash=%s  equity=%s  positions=%d", snap.Cash, snap.Equity, len(snap.Positions))
 	for _, p := range snap.Positions {
-		t.Logf("  %s: qty=%.6f  cur=%.4f", p.Symbol, p.Qty, p.CurPrice)
+		t.Logf("  %s: qty=%s  cur=%s", p.Symbol, p.Qty, p.CurPrice)
 	}
 }
 
@@ -106,7 +108,7 @@ func TestOKX_GetCurrentPrice(t *testing.T) {
 			t.Logf("  %s: ERROR %v", sym, err)
 			continue
 		}
-		t.Logf("  %s: $%.4f", sym, price)
+		t.Logf("  %s: $%s", sym, price)
 	}
 }
 
@@ -134,12 +136,12 @@ func TestOKX_MarketOrder(t *testing.T) {
 		Symbol: "BTC-USDT",
 		Side:   exchange.Buy,
 		Type:   exchange.Market,
-		Qty:    0.01,
+		Qty:    decimal.NewFromFloat(0.01),
 	})
 	if err != nil {
 		t.Fatalf("PlaceOrder market buy: %v", err)
 	}
-	t.Logf("order placed: id=%s  status=%s  qty=%.4f", result.ID, result.Status, result.Qty)
+	t.Logf("order placed: id=%s  status=%s  qty=%s", result.ID, result.Status, result.Qty)
 
 	// GetOrder
 	cx2, cancel2 := okxCtx()
@@ -149,7 +151,7 @@ func TestOKX_MarketOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrder: %v", err)
 	}
-	t.Logf("order status: %s  filledQty=%.6f @ $%.4f", got.Status, got.FilledQty, got.FilledAvg)
+	t.Logf("order status: %s  filledQty=%s @ $%s", got.Status, got.FilledQty, got.FilledAvg)
 }
 
 func TestOKX_LimitOrder_ThenCancel(t *testing.T) {
@@ -161,7 +163,7 @@ func TestOKX_LimitOrder_ThenCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetCurrentPrice: %v", err)
 	}
-	limitPrice := roundOKX(price*0.95, 0.1) // 5% below market
+	limitPrice := decimal.NewFromFloat(roundOKX(price.InexactFloat64()*0.95, 0.1)) // 5% below market
 
 	cx, cancel := okxCtx()
 	defer cancel()
@@ -169,13 +171,13 @@ func TestOKX_LimitOrder_ThenCancel(t *testing.T) {
 		Symbol: "BTC-USDT",
 		Side:   exchange.Buy,
 		Type:   exchange.Limit,
-		Qty:    0.01,
+		Qty:    decimal.NewFromFloat(0.01),
 		Price:  limitPrice,
 	})
 	if err != nil {
 		t.Fatalf("PlaceOrder limit buy: %v", err)
 	}
-	t.Logf("limit order placed: id=%s  status=%s  price=%.1f", result.ID, result.Status, limitPrice)
+	t.Logf("limit order placed: id=%s  status=%s  price=%s", result.ID, result.Status, limitPrice)
 
 	cx2, cancel2 := okxCtx()
 	defer cancel2()
@@ -204,23 +206,27 @@ func TestOKX_BracketOrder(t *testing.T) {
 		t.Fatalf("GetCurrentPrice: %v", err)
 	}
 
+	priceF := price.InexactFloat64()
+	stopLoss := decimal.NewFromFloat(roundOKX(priceF*0.98, 0.1))
+	takeProfit := decimal.NewFromFloat(roundOKX(priceF*1.02, 0.1))
+
 	cx, cancel := okxCtx()
 	defer cancel()
 	result, err := c.PlaceOrder(cx, exchange.OrderRequest{
 		Symbol:     "BTC-USDT",
 		Side:       exchange.Buy,
 		Type:       exchange.Market,
-		Qty:        0.01,
-		StopLoss:   roundOKX(price*0.98, 0.1),
-		TakeProfit: roundOKX(price*1.02, 0.1),
+		Qty:        decimal.NewFromFloat(0.01),
+		StopLoss:   stopLoss,
+		TakeProfit: takeProfit,
 	})
 	if err != nil {
 		t.Fatalf("PlaceOrder bracket: %v", err)
 	}
 	t.Logf("bracket order: id=%s  status=%s", result.ID, result.Status)
-	t.Logf("  entry  @ market (~$%.2f)", price)
-	t.Logf("  stop   @ $%.1f (-2%%)", price*0.98)
-	t.Logf("  target @ $%.1f (+2%%)", price*1.02)
+	t.Logf("  entry  @ market (~$%s)", price)
+	t.Logf("  stop   @ $%s (-2%%)", stopLoss)
+	t.Logf("  target @ $%s (+2%%)", takeProfit)
 }
 
 // ── Slippage ──────────────────────────────────────────────────────────────────
@@ -346,7 +352,7 @@ func TestOKX_Slippage(t *testing.T) {
 			if !hasBTC {
 				cx2, cancel2 := okxCtx()
 				c.PlaceOrder(cx2, exchange.OrderRequest{ //nolint
-					Symbol: "BTC-USDT", Side: exchange.Buy, Type: exchange.Market, Qty: 0.01,
+					Symbol: "BTC-USDT", Side: exchange.Buy, Type: exchange.Market, Qty: decimal.NewFromFloat(0.01),
 				})
 				cancel2()
 				time.Sleep(500 * time.Millisecond)
@@ -364,7 +370,7 @@ func TestOKX_Slippage(t *testing.T) {
 			Symbol: "BTC-USDT",
 			Side:   side,
 			Type:   exchange.Market,
-			Qty:    0.01,
+			Qty:    decimal.NewFromFloat(0.01),
 		})
 		cancel()
 		if err != nil {
@@ -373,31 +379,32 @@ func TestOKX_Slippage(t *testing.T) {
 
 		// Poll fill price
 		fillPrice := resp.FilledAvg
-		if fillPrice == 0 {
+		if fillPrice.IsZero() {
 			for i := 0; i < 5; i++ {
 				time.Sleep(300 * time.Millisecond)
 				cx2, cancel2 := okxCtx()
 				got, _ := c.GetOrder(cx2, resp.ID)
 				cancel2()
-				if got != nil && got.FilledAvg > 0 {
+				if got != nil && got.FilledAvg.IsPositive() {
 					fillPrice = got.FilledAvg
 					break
 				}
 			}
 		}
+		fillPriceF := fillPrice.InexactFloat64()
 
 		var slipBps float64
-		if fillPrice > 0 && mid > 0 {
+		if fillPriceF > 0 && mid > 0 {
 			if side == exchange.Buy {
-				slipBps = (fillPrice - mid) / mid * 10000
+				slipBps = (fillPriceF - mid) / mid * 10000
 			} else {
-				slipBps = (mid - fillPrice) / mid * 10000
+				slipBps = (mid - fillPriceF) / mid * 10000
 			}
 		}
 
 		results = append(results, result{
 			side: string(side), bid: bid, ask: ask, mid: mid,
-			fillPrice: fillPrice, slipBps: slipBps,
+			fillPrice: fillPriceF, slipBps: slipBps,
 		})
 	}
 
@@ -434,7 +441,7 @@ func TestOKX_StreamFills(t *testing.T) {
 		Symbol: "BTC-USDT",
 		Side:   exchange.Buy,
 		Type:   exchange.Market,
-		Qty:    0.01,
+		Qty:    decimal.NewFromFloat(0.01),
 	})
 	if err != nil {
 		t.Logf("PlaceOrder: %v (stream still running)", err)
@@ -444,7 +451,7 @@ func TestOKX_StreamFills(t *testing.T) {
 
 	select {
 	case f := <-fills:
-		t.Logf("✓ fill received: orderID=%s  symbol=%s  side=%s  qty=%.6f @ %.2f",
+		t.Logf("✓ fill received: orderID=%s  symbol=%s  side=%s  qty=%s @ %s",
 			f.OrderID, f.Symbol, f.Side, f.FilledQty, f.FilledAvg)
 	case <-cx.Done():
 		t.Log("no fill received within 20s")
@@ -486,7 +493,7 @@ func TestOKX_LargeOrderImpact(t *testing.T) {
 			Symbol: "BTC-USDT",
 			Side:   exchange.Sell,
 			Type:   exchange.Market,
-			Qty:    btcAvail,
+			Qty:    decimal.NewFromFloat(btcAvail),
 		})
 		cancel()
 		if err != nil {
@@ -608,7 +615,7 @@ func TestOKX_LargeOrderImpact(t *testing.T) {
 			Symbol: best.instID,
 			Side:   exchange.Buy,
 			Type:   exchange.Market,
-			Qty:    qty,
+			Qty:    decimal.NewFromFloat(qty),
 		})
 		cancel()
 		if err != nil {
@@ -619,24 +626,25 @@ func TestOKX_LargeOrderImpact(t *testing.T) {
 		}
 
 		fillAvg := resp.FilledAvg
-		if fillAvg == 0 {
+		if fillAvg.IsZero() {
 			for range 5 {
 				time.Sleep(400 * time.Millisecond)
 				cx2, cancel2 := okxCtx()
 				got, _ := c.GetOrder(cx2, resp.ID)
 				cancel2()
-				if got != nil && got.FilledAvg > 0 {
+				if got != nil && got.FilledAvg.IsPositive() {
 					fillAvg = got.FilledAvg
 					break
 				}
 			}
 		}
 
+		fillAvgF := fillAvg.InexactFloat64()
 		diffBps := 0.0
-		if fillAvg > 0 && expVWAP > 0 {
-			diffBps = (fillAvg - expVWAP) / expVWAP * 10000
+		if fillAvg.IsPositive() && expVWAP > 0 {
+			diffBps = (fillAvgF - expVWAP) / expVWAP * 10000
 		}
-		rows = append(rows, row{qty, totalDepth, expVWAP, fillAvg, diffBps, depthOK})
+		rows = append(rows, row{qty, totalDepth, expVWAP, fillAvgF, diffBps, depthOK})
 		time.Sleep(500 * time.Millisecond)
 	}
 

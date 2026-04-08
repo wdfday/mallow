@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"mallow/investment/internal/module/broker/client"
 )
 
@@ -118,9 +119,9 @@ func (c *Client) GetPortfolio(ctx context.Context, accessToken string) (*client.
 		return nil, fmt.Errorf("bybit parse wallet failed: %w", err)
 	}
 
-	var total float64
+	var total decimal.Decimal
 	if len(resp.Result.List) > 0 {
-		fmt.Sscanf(resp.Result.List[0].TotalEquity, "%f", &total)
+		total, _ = decimal.NewFromString(resp.Result.List[0].TotalEquity)
 	}
 	return &client.Portfolio{TotalValue: total, Currency: "USDT"}, nil
 }
@@ -154,14 +155,13 @@ func (c *Client) GetPositions(ctx context.Context, accessToken string) ([]client
 
 	var positions []client.Position
 	for _, p := range resp.Result.List {
-		var qty, avgPx, markPx, pnl float64
-		fmt.Sscanf(p.Size, "%f", &qty)
-		if qty == 0 {
+		qty, _ := decimal.NewFromString(p.Size)
+		if !qty.IsPositive() {
 			continue
 		}
-		fmt.Sscanf(p.AvgPrice, "%f", &avgPx)
-		fmt.Sscanf(p.MarkPrice, "%f", &markPx)
-		fmt.Sscanf(p.UnrealisedPnl, "%f", &pnl)
+		avgPx, _ := decimal.NewFromString(p.AvgPrice)
+		markPx, _ := decimal.NewFromString(p.MarkPrice)
+		pnl, _ := decimal.NewFromString(p.UnrealisedPnl)
 		positions = append(positions, client.Position{
 			Symbol:             p.Symbol,
 			Quantity:           qty,
@@ -208,10 +208,9 @@ func (c *Client) GetTransactions(ctx context.Context, accessToken string, from, 
 
 	var txns []client.Transaction
 	for _, e := range resp.Result.List {
-		var qty, price float64
+		qty, _ := decimal.NewFromString(e.ExecQty)
+		price, _ := decimal.NewFromString(e.ExecPrice)
 		var tsMs int64
-		fmt.Sscanf(e.ExecQty, "%f", &qty)
-		fmt.Sscanf(e.ExecPrice, "%f", &price)
 		fmt.Sscanf(e.ExecTime, "%d", &tsMs)
 		txns = append(txns, client.Transaction{
 			ExternalID:      e.ExecId,
@@ -219,7 +218,7 @@ func (c *Client) GetTransactions(ctx context.Context, accessToken string, from, 
 			TransactionType: strings.ToLower(e.Side),
 			Quantity:        qty,
 			Price:           price,
-			Amount:          qty * price,
+			Amount:          qty.Mul(price),
 			Currency:        "USDT",
 			TransactionDate: time.UnixMilli(tsMs),
 		})
@@ -247,8 +246,7 @@ func (c *Client) GetMarketPrice(ctx context.Context, symbol string) (*client.Mar
 		return nil, fmt.Errorf("bybit ticker not found for %s", symbol)
 	}
 
-	var price float64
-	fmt.Sscanf(resp.Result.List[0].LastPrice, "%f", &price)
+	price, _ := decimal.NewFromString(resp.Result.List[0].LastPrice)
 	return &client.MarketPrice{Symbol: symbol, Price: price}, nil
 }
 

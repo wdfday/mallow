@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
 
 // Config holds Bybit API credentials.
@@ -105,6 +107,12 @@ func sign(payload, secret string) string {
 	return hex.EncodeToString(mac.Sum(nil))
 }
 
+func parseDecimal(s string) decimal.Decimal {
+	d, _ := decimal.NewFromString(s)
+	return d
+}
+
+// parseFloat is kept for local display types that remain float64.
 func parseFloat(s string) float64 {
 	f, _ := strconv.ParseFloat(s, 64)
 	return f

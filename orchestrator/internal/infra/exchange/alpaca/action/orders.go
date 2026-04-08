@@ -6,7 +6,6 @@ import (
 	"log/slog"
 
 	alpacasdk "github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
-	"github.com/shopspring/decimal"
 
 	"orchestrator/internal/infra/exchange"
 )
@@ -23,7 +22,7 @@ func (c *Client) PlaceOrder(_ context.Context, req exchange.OrderRequest) (*exch
 		orderType = alpacasdk.Limit
 	}
 
-	qty := decimal.NewFromFloat(req.Qty)
+	qty := req.Qty
 	sdkReq := alpacasdk.PlaceOrderRequest{
 		Symbol:      req.Symbol,
 		Qty:         &qty,
@@ -32,24 +31,24 @@ func (c *Client) PlaceOrder(_ context.Context, req exchange.OrderRequest) (*exch
 		TimeInForce: tif,
 	}
 
-	if orderType == alpacasdk.Limit && req.Price > 0 {
-		lp := decimal.NewFromFloat(req.Price)
+	if orderType == alpacasdk.Limit && req.Price.IsPositive() {
+		lp := req.Price
 		sdkReq.LimitPrice = &lp
 	}
 
-	if req.StopLoss > 0 && req.TakeProfit > 0 {
+	if req.StopLoss.IsPositive() && req.TakeProfit.IsPositive() {
 		sdkReq.OrderClass = alpacasdk.Bracket
-		sl := decimal.NewFromFloat(req.StopLoss)
-		tp := decimal.NewFromFloat(req.TakeProfit)
+		sl := req.StopLoss
+		tp := req.TakeProfit
 		sdkReq.StopLoss = &alpacasdk.StopLoss{StopPrice: &sl}
 		sdkReq.TakeProfit = &alpacasdk.TakeProfit{LimitPrice: &tp}
-	} else if req.StopLoss > 0 {
+	} else if req.StopLoss.IsPositive() {
 		sdkReq.OrderClass = alpacasdk.OTO
-		sl := decimal.NewFromFloat(req.StopLoss)
+		sl := req.StopLoss
 		sdkReq.StopLoss = &alpacasdk.StopLoss{StopPrice: &sl}
-	} else if req.TakeProfit > 0 {
+	} else if req.TakeProfit.IsPositive() {
 		sdkReq.OrderClass = alpacasdk.OTO
-		tp := decimal.NewFromFloat(req.TakeProfit)
+		tp := req.TakeProfit
 		sdkReq.TakeProfit = &alpacasdk.TakeProfit{LimitPrice: &tp}
 	}
 
@@ -125,13 +124,13 @@ func mapOrder(o *alpacasdk.Order) *exchange.OrderResult {
 		Symbol:    o.Symbol,
 		Side:      exchange.OrderSide(o.Side),
 		Status:    o.Status,
-		FilledQty: o.FilledQty.InexactFloat64(),
+		FilledQty: o.FilledQty,
 	}
 	if o.FilledAvgPrice != nil {
-		result.FilledAvg = o.FilledAvgPrice.InexactFloat64()
+		result.FilledAvg = *o.FilledAvgPrice
 	}
 	if o.Qty != nil {
-		result.Qty = o.Qty.InexactFloat64()
+		result.Qty = *o.Qty
 	}
 	return result
 }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
+	"github.com/shopspring/decimal"
 
 	"mallow/pkg/contracts"
 )
@@ -107,18 +108,18 @@ const (
 // AccountLinkedEvent is published to orchestrator.accounts.linked when a broker account is linked.
 // The orchestrator subscribes and auto-creates an OrchestratorConfig for that account.
 type AccountLinkedEvent struct {
-	AccountID  string  `json:"account_id"`
-	UserID     string  `json:"user_id"`
-	Name       string  `json:"name"`
-	Capital    float64 `json:"capital"`
-	BrokerType string  `json:"broker_type"`
-	APIKey     string  `json:"api_key,omitempty"`
-	APISecret  string  `json:"api_secret,omitempty"`
-	Passphrase string  `json:"passphrase,omitempty"`
-	AccountRef string  `json:"account_ref,omitempty"` // IBKR/Oanda account ID
-	BaseURL    string  `json:"base_url,omitempty"`
-	Demo       bool    `json:"demo,omitempty"`
-	Testnet    bool    `json:"testnet,omitempty"`
+	AccountID  string          `json:"account_id"`
+	UserID     string          `json:"user_id"`
+	Name       string          `json:"name"`
+	Capital    decimal.Decimal `json:"capital"`
+	BrokerType string          `json:"broker_type"`
+	APIKey     string          `json:"api_key,omitempty"`
+	APISecret  string          `json:"api_secret,omitempty"`
+	Passphrase string          `json:"passphrase,omitempty"`
+	AccountRef string          `json:"account_ref,omitempty"` // IBKR/Oanda account ID
+	BaseURL    string          `json:"base_url,omitempty"`
+	Demo       bool            `json:"demo,omitempty"`
+	Testnet    bool            `json:"testnet,omitempty"`
 }
 
 // AccountUnlinkedEvent is published to orchestrator.accounts.unlinked when a broker account is removed.
@@ -130,33 +131,33 @@ type AccountUnlinkedEvent struct {
 // FillNotification is published to trade.filled.{orchestrator_id} when an
 // order is confirmed filled via the exchange's private account stream.
 type FillNotification struct {
-	OrchestratorID string    `json:"orchestrator_id"`
-	BotID          string    `json:"bot_id"`
-	OrderID        string    `json:"order_id"`
-	Symbol         string    `json:"symbol"`
-	Side           string    `json:"side"`
-	FilledQty      float64   `json:"filled_qty"`
-	FilledAvg      float64   `json:"filled_avg"`
-	Timestamp      time.Time `json:"timestamp"`
+	OrchestratorID string          `json:"orchestrator_id"`
+	BotID          string          `json:"bot_id"`
+	OrderID        string          `json:"order_id"`
+	Symbol         string          `json:"symbol"`
+	Side           string          `json:"side"`
+	FilledQty      decimal.Decimal `json:"filled_qty"`
+	FilledAvg      decimal.Decimal `json:"filled_avg"`
+	Timestamp      time.Time       `json:"timestamp"`
 }
 
 // SyncedPositionMsg is one position inside PortfolioSyncEvent.
 type SyncedPositionMsg struct {
-	Symbol   string  `json:"symbol"`
-	Qty      float64 `json:"qty"`
-	AvgPrice float64 `json:"avg_price"`
-	CurPrice float64 `json:"cur_price"`
+	Symbol   string          `json:"symbol"`
+	Qty      decimal.Decimal `json:"qty"`
+	AvgPrice decimal.Decimal `json:"avg_price"`
+	CurPrice decimal.Decimal `json:"cur_price"`
 }
 
 // TransactionMsg is one filled order inside PortfolioSyncEvent.
 type TransactionMsg struct {
-	OrderID  string    `json:"order_id"`
-	Symbol   string    `json:"symbol"`
-	Side     string    `json:"side"` // "buy" | "sell"
-	Qty      float64   `json:"qty"`
-	AvgPrice float64   `json:"avg_price"`
-	Fee      float64   `json:"fee"`
-	FilledAt time.Time `json:"filled_at"`
+	OrderID  string          `json:"order_id"`
+	Symbol   string          `json:"symbol"`
+	Side     string          `json:"side"` // "buy" | "sell"
+	Qty      decimal.Decimal `json:"qty"`
+	AvgPrice decimal.Decimal `json:"avg_price"`
+	Fee      decimal.Decimal `json:"fee"`
+	FilledAt time.Time       `json:"filled_at"`
 }
 
 // PortfolioSyncEvent is published to portfolio.synced.{account_id} after each
@@ -165,8 +166,8 @@ type TransactionMsg struct {
 type PortfolioSyncEvent struct {
 	OrchestratorID string              `json:"orchestrator_id"`
 	AccountID      string              `json:"account_id"`
-	Cash           float64             `json:"cash"`
-	Equity         float64             `json:"equity"`
+	Cash           decimal.Decimal     `json:"cash"`
+	Equity         decimal.Decimal     `json:"equity"`
 	Positions      []SyncedPositionMsg `json:"positions"`
 	Transactions   []TransactionMsg    `json:"transactions"` // filled orders since last sync
 	SyncedAt       time.Time           `json:"synced_at"`
@@ -205,10 +206,10 @@ func PublishInvestmentTransaction(js nats.JetStreamContext, orchID, accountID, u
 		AssetType:       assetType,
 		Exchange:        exchangeName,
 		Currency:        currency,
-		Quantity:        txn.Qty,
-		PricePerUnit:    txn.AvgPrice,
-		Amount:          txn.Qty * txn.AvgPrice,
-		Fees:            txn.Fee,
+		Quantity:        txn.Qty.InexactFloat64(),
+		PricePerUnit:    txn.AvgPrice.InexactFloat64(),
+		Amount:          txn.Qty.Mul(txn.AvgPrice).InexactFloat64(),
+		Fees:            txn.Fee.InexactFloat64(),
 		TransactionDate: txn.FilledAt,
 		Broker:          brokerType,
 		ExternalID:      txn.OrderID,
@@ -234,7 +235,7 @@ func PublishInvestmentTransaction(js nats.JetStreamContext, orchID, accountID, u
 }
 
 // PublishPortfolioSync publishes a PortfolioSyncEvent to portfolio.synced.{accountID}.
-func PublishPortfolioSync(nc *nats.Conn, orchID, accountID string, cash, equity float64, positions []SyncedPositionMsg, transactions []TransactionMsg, syncedAt time.Time) {
+func PublishPortfolioSync(nc *nats.Conn, orchID, accountID string, cash, equity decimal.Decimal, positions []SyncedPositionMsg, transactions []TransactionMsg, syncedAt time.Time) {
 	ev := PortfolioSyncEvent{
 		OrchestratorID: orchID,
 		AccountID:      accountID,

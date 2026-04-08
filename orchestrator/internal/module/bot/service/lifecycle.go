@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"orchestrator/internal/module/worker/domain"
+	"orchestrator/internal/module/bot/domain"
 )
 
 func (s *Service) Start(id string) error {

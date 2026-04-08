@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 
+	"github.com/shopspring/decimal"
 	"mallow/investment/internal/module/account/domain"
 
 	"gorm.io/gorm"
@@ -20,10 +21,10 @@ type Repository interface {
 	CountByUserID(ctx context.Context, userID string, filters domain.ListAccountsFilter) (int64, error)
 
 	// UpdateBalance updates account balance atomically (for ACID transactions)
-	UpdateBalance(ctx context.Context, accountID string, balanceDelta float64) error
+	UpdateBalance(ctx context.Context, accountID string, balanceDelta decimal.Decimal) error
 
 	// UpdateBalanceWithTx updates account balance within an existing database transaction
-	UpdateBalanceWithTx(tx *gorm.DB, accountID string, balanceDelta float64) error
+	UpdateBalanceWithTx(tx *gorm.DB, accountID string, balanceDelta decimal.Decimal) error
 
 	// Broker sync methods
 	GetAccountsNeedingSync(ctx context.Context) ([]*domain.Account, error)

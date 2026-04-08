@@ -2,8 +2,9 @@ package handler
 
 import (
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 
-	"orchestrator/internal/module/worker/domain"
+	"orchestrator/internal/module/bot/domain"
 )
 
 // ── Request DTOs ───────────────────────────────────────────────────────────
@@ -128,7 +129,7 @@ func riskToDomain(dto BotRiskConfigDTO) domain.BotRiskConfig {
 		SizeMode:          dto.SizeMode,
 		RiskPerTradePct:   dto.RiskPerTradePct,
 		MaxPositionPct:    dto.MaxPositionPct,
-		FixedQty:          dto.FixedQty,
+		FixedQty:          decimal.NewFromFloat(dto.FixedQty),
 		StopLossATRMult:   dto.StopLossATRMult,
 		TakeProfitATRMult: dto.TakeProfitATRMult,
 		StopLossPct:       dto.StopLossPct,

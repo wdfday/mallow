@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
 
 // BotSummary is the JSON-safe public view of a bot instance.
@@ -42,7 +43,7 @@ type BotMetricsView struct {
 	OrdersPlaced    int64   `json:"orders_placed"`
 	OrdersFilled    int64   `json:"orders_filled"`
 	OrdersFailed    int64   `json:"orders_failed"`
-	TotalPnL        float64 `json:"total_pnl"`
+	TotalPnL        decimal.Decimal `json:"total_pnl"`
 	WinCount        int64   `json:"win_count"`
 	LossCount       int64   `json:"loss_count"`
 }

@@ -2,9 +2,12 @@ package risk
 
 import (
 	"log/slog"
+	"time"
+
+	"github.com/shopspring/decimal"
+
 	"orchestrator/internal/infra/engine"
 	"orchestrator/internal/runtime/core/portfolio"
-	"time"
 )
 
 // Config holds risk management parameters.
@@ -71,13 +74,16 @@ func (m *Manager) Validate(signal *engine.SignalMsg) (bool, string) {
 
 	dailyPnL := m.portfolio.DailyPnL()
 	equity := m.portfolio.Equity()
-	if equity > 0 && dailyPnL < 0 && (-dailyPnL/equity) >= m.cfg.DailyLossLimitPct {
-		m.haltedDay = today
-		slog.Warn("daily loss limit breached",
-			"daily_pnl", dailyPnL,
-			"limit_pct", m.cfg.DailyLossLimitPct*100,
-		)
-		return false, "daily loss limit breached"
+	if equity.IsPositive() && dailyPnL.IsNegative() {
+		lossRatio, _ := dailyPnL.Neg().Div(equity).Float64()
+		if lossRatio >= m.cfg.DailyLossLimitPct {
+			m.haltedDay = today
+			slog.Warn("daily loss limit breached",
+				"daily_pnl", dailyPnL,
+				"limit_pct", m.cfg.DailyLossLimitPct*100,
+			)
+			return false, "daily loss limit breached"
+		}
 	}
 
 	// Check max drawdown.
@@ -112,28 +118,28 @@ func (m *Manager) Validate(signal *engine.SignalMsg) (bool, string) {
 
 // Size returns the quantity to trade for a given signal and current price.
 // Uses fixed fractional sizing: allocate MaxPositionPct of equity per trade.
-func (m *Manager) Size(signal *engine.SignalMsg, price float64) float64 {
-	if price <= 0 {
-		return 0
+func (m *Manager) Size(signal *engine.SignalMsg, price decimal.Decimal) decimal.Decimal {
+	if !price.IsPositive() {
+		return decimal.Zero
 	}
 
 	equity := m.portfolio.Equity()
-	alloc := equity * m.cfg.MaxPositionPct
+	alloc := equity.Mul(decimal.NewFromFloat(m.cfg.MaxPositionPct))
 
 	// Scale by signal strength [0, 1].
-	alloc *= signal.Strength
+	alloc = alloc.Mul(decimal.NewFromFloat(signal.Strength))
 
-	qty := alloc / price
+	qty := alloc.Div(price)
 
 	// For stocks, round down to whole shares.
 	// For crypto, allow fractional.
 	// Simple heuristic: if price > 1, round to whole shares.
-	if price > 1.0 {
-		qty = float64(int(qty))
+	if price.GreaterThan(decimal.NewFromInt(1)) {
+		qty = qty.Floor()
 	}
 
-	if qty < 0 {
-		qty = 0
+	if qty.IsNegative() {
+		return decimal.Zero
 	}
 
 	return qty

@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
 
 // TransactionRecorded is emitted when a user records any investment transaction.
@@ -16,14 +17,14 @@ type TransactionRecorded struct {
 	AssetType       string          `json:"asset_type,omitempty"`
 	Exchange        string          `json:"exchange,omitempty"`
 	Currency        string          `json:"currency"`
-	Quantity        float64         `json:"quantity,omitempty"`
-	PricePerUnit    float64         `json:"price_per_unit,omitempty"`
-	Amount          float64         `json:"amount"` // total transaction amount
-	Fees            float64         `json:"fees,omitempty"`
-	Commission      float64         `json:"commission,omitempty"`
-	Tax             float64         `json:"tax,omitempty"`
-	RealizedGain    *float64        `json:"realized_gain,omitempty"` // only for sell
-	RealizedGainPct *float64        `json:"realized_gain_pct,omitempty"`
+	Quantity        decimal.Decimal  `json:"quantity,omitempty"`
+	PricePerUnit    decimal.Decimal  `json:"price_per_unit,omitempty"`
+	Amount          decimal.Decimal  `json:"amount"` // total transaction amount
+	Fees            decimal.Decimal  `json:"fees,omitempty"`
+	Commission      decimal.Decimal  `json:"commission,omitempty"`
+	Tax             decimal.Decimal  `json:"tax,omitempty"`
+	RealizedGain    *decimal.Decimal `json:"realized_gain,omitempty"` // only for sell
+	RealizedGainPct *float64         `json:"realized_gain_pct,omitempty"`
 	TransactionDate time.Time       `json:"transaction_date"`
 	Broker          string          `json:"broker,omitempty"`
 	Source          string          `json:"source,omitempty"` // "manual" | "sync"
@@ -34,11 +35,11 @@ type TransactionRecorded struct {
 	Underlying     string  `json:"underlying,omitempty"`
 	InstrumentType string  `json:"instrument_type,omitempty"` // futures|perp|options|swap
 	Side           string  `json:"side,omitempty"`            // long|short
-	Leverage       float64 `json:"leverage,omitempty"`
-	StrikePrice    float64 `json:"strike_price,omitempty"`
-	OptionType     string  `json:"option_type,omitempty"` // call|put
-	ExpiryDate     string  `json:"expiry_date,omitempty"` // date string
-	ContractSize   float64 `json:"contract_size,omitempty"`
+	Leverage       float64         `json:"leverage,omitempty"`
+	StrikePrice    decimal.Decimal `json:"strike_price,omitempty"`
+	OptionType     string          `json:"option_type,omitempty"` // call|put
+	ExpiryDate     string          `json:"expiry_date,omitempty"` // date string
+	ContractSize   decimal.Decimal `json:"contract_size,omitempty"`
 }
 
 // AccountInitialized is emitted on the very first operation for an account.

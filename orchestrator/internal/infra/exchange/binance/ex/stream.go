@@ -2,13 +2,13 @@ package ex
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"sync"
 	"time"
 
 	gobinance "github.com/adshao/go-binance/v2"
 	"github.com/adshao/go-binance/v2/futures"
+	"github.com/shopspring/decimal"
 )
 
 // wsMu guards the gobinance.UseTestnet global flag.
@@ -47,7 +47,7 @@ func (c *Client) streamSymbol(ctx context.Context, symbol string) {
 }
 
 func (c *Client) streamSymbolOnce(ctx context.Context, symbol string) error {
-	handler := func(price float64) {
+	handler := func(price decimal.Decimal) {
 		c.dispatchPrice(symbol, price)
 	}
 	errHandler := func(err error) {
@@ -57,7 +57,9 @@ func (c *Client) streamSymbolOnce(ctx context.Context, symbol string) error {
 	wsMu.Lock()
 	gobinance.UseDemo = c.testnet
 	doneC, stopC, err := gobinance.WsTradeServe(symbol, func(event *gobinance.WsTradeEvent) {
-		handler(parseFloat(event.Price))
+		if p, err := decimal.NewFromString(event.Price); err == nil {
+			handler(p)
+		}
 	}, errHandler)
 	gobinance.UseDemo = false
 	wsMu.Unlock()
@@ -83,7 +85,9 @@ func (c *Client) streamFuturesSymbolOnce(ctx context.Context, symbol string) err
 	}
 
 	doneC, stopC, err := futures.WsAggTradeServe(symbol, func(event *futures.WsAggTradeEvent) {
-		c.dispatchPrice(event.Symbol, parseFloat(event.Price))
+		if p, err := decimal.NewFromString(event.Price); err == nil {
+			c.dispatchPrice(event.Symbol, p)
+		}
 	}, errHandler)
 	if err != nil {
 		return err
@@ -98,8 +102,3 @@ func (c *Client) streamFuturesSymbolOnce(ctx context.Context, symbol string) err
 	}
 }
 
-func parseFloat(s string) float64 {
-	var f float64
-	_, _ = fmt.Sscanf(s, "%f", &f)
-	return f
-}

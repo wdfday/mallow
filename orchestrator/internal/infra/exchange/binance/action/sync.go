@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"orchestrator/internal/infra/exchange"
 )
 
@@ -19,20 +21,20 @@ func (c *Client) SyncAccount(ctx context.Context, _ *time.Time) (*exchange.Accou
 		return nil, fmt.Errorf("binance sync: get account: %w", err)
 	}
 
-	cash := 0.0
+	cash := decimal.Zero
 	type assetBalance struct {
 		asset string
-		free  float64
+		free  decimal.Decimal
 	}
 	var nonCash []assetBalance
 
 	for _, b := range acct.Balances {
-		free := parseFloat(b.Free)
-		if free <= 0 {
+		free := parseDecimal(b.Free)
+		if !free.IsPositive() {
 			continue
 		}
 		if b.Asset == "USDT" || b.Asset == "BUSD" || b.Asset == "USDC" {
-			cash += free
+			cash = cash.Add(free)
 		} else {
 			nonCash = append(nonCash, assetBalance{asset: b.Asset, free: free})
 		}
@@ -48,33 +50,33 @@ func (c *Client) SyncAccount(ctx context.Context, _ *time.Time) (*exchange.Accou
 		positions = append(positions, exchange.ExchangePosition{
 			Symbol:   symbol,
 			Qty:      ab.free,
-			AvgPrice: 0, // spot REST does not expose avg entry price
+			AvgPrice: decimal.Zero, // spot REST does not expose avg entry price
 			CurPrice: price,
 		})
 	}
 
-	mv := 0.0
+	mv := decimal.Zero
 	for _, p := range positions {
-		mv += p.Qty * p.CurPrice
+		mv = mv.Add(p.Qty.Mul(p.CurPrice))
 	}
 
 	return &exchange.AccountSnapshot{
 		Cash:      cash,
-		Equity:    cash + mv,
+		Equity:    cash.Add(mv),
 		Positions: positions,
 	}, nil
 }
 
 // tickerPrice fetches the latest spot price for a symbol.
-func (c *Client) tickerPrice(ctx context.Context, symbol string) (float64, error) {
+func (c *Client) tickerPrice(ctx context.Context, symbol string) (decimal.Decimal, error) {
 	prices, err := c.spot.NewListPricesService().Symbol(symbol).Do(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("list prices %s: %w", symbol, err)
+		return decimal.Zero, fmt.Errorf("list prices %s: %w", symbol, err)
 	}
 	for _, p := range prices {
 		if strings.EqualFold(p.Symbol, symbol) {
-			return parseFloat(p.Price), nil
+			return parseDecimal(p.Price), nil
 		}
 	}
-	return 0, fmt.Errorf("symbol %s not found in ticker response", symbol)
+	return decimal.Zero, fmt.Errorf("symbol %s not found in ticker response", symbol)
 }

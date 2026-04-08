@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 
 	"orchestrator/internal/infra/exchange"
 	"orchestrator/internal/shared"
@@ -15,21 +16,21 @@ import (
 
 // ExchangeAccountResp is a flattened account snapshot.
 type ExchangeAccountResp struct {
-	Cash      float64                `json:"cash"`
-	Equity    float64                `json:"equity"`
+	Cash      decimal.Decimal        `json:"cash"`
+	Equity    decimal.Decimal        `json:"equity"`
 	Positions []ExchangePositionResp `json:"positions"`
 }
 
 type ExchangePositionResp struct {
-	Symbol   string  `json:"symbol"`
-	Qty      float64 `json:"qty"`
-	AvgPrice float64 `json:"avg_price"`
-	CurPrice float64 `json:"cur_price"`
+	Symbol   string          `json:"symbol"`
+	Qty      decimal.Decimal `json:"qty"`
+	AvgPrice decimal.Decimal `json:"avg_price"`
+	CurPrice decimal.Decimal `json:"cur_price"`
 }
 
 type ExchangePriceResp struct {
-	Symbol string  `json:"symbol"`
-	Price  float64 `json:"price"`
+	Symbol string          `json:"symbol"`
+	Price  decimal.Decimal `json:"price"`
 }
 
 type PlaceExchangeOrderReq struct {
@@ -41,13 +42,13 @@ type PlaceExchangeOrderReq struct {
 }
 
 type ExchangeOrderResp struct {
-	ID        string  `json:"id"`
-	Symbol    string  `json:"symbol"`
-	Side      string  `json:"side"`
-	Status    string  `json:"status"`
-	Qty       float64 `json:"qty"`
-	FilledQty float64 `json:"filled_qty"`
-	FilledAvg float64 `json:"filled_avg_price"`
+	ID        string          `json:"id"`
+	Symbol    string          `json:"symbol"`
+	Side      string          `json:"side"`
+	Status    string          `json:"status"`
+	Qty       decimal.Decimal `json:"qty"`
+	FilledQty decimal.Decimal `json:"filled_qty"`
+	FilledAvg decimal.Decimal `json:"filled_avg_price"`
 }
 
 func mapOrderResult(r *exchange.OrderResult) ExchangeOrderResp {
@@ -177,8 +178,8 @@ func (h *Handler) exchangePlaceOrder(c *gin.Context) {
 		Symbol: req.Symbol,
 		Side:   exchange.OrderSide(req.Side),
 		Type:   orderType,
-		Qty:    req.Qty,
-		Price:  req.Price,
+		Qty:    decimal.NewFromFloat(req.Qty),
+		Price:  decimal.NewFromFloat(req.Price),
 	})
 	if err != nil {
 		shared.RespondWithError(c, http.StatusBadGateway, err.Error())

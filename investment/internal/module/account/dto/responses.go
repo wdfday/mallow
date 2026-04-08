@@ -3,6 +3,7 @@ package dto
 import (
 	"time"
 
+	"github.com/shopspring/decimal"
 	"mallow/investment/internal/module/account/domain"
 )
 
@@ -13,8 +14,8 @@ type AccountResponse struct {
 	AccountName         string     `json:"accountName"`
 	AccountType         string     `json:"accountType"`
 	InstitutionName     *string    `json:"institutionName,omitempty"`
-	CurrentBalance      float64    `json:"currentBalance"`
-	AvailableBalance    *float64   `json:"availableBalance,omitempty"`
+	CurrentBalance      decimal.Decimal  `json:"currentBalance"`
+	AvailableBalance    *decimal.Decimal `json:"availableBalance,omitempty"`
 	Currency            string     `json:"currency"`
 	AccountNumberMasked *string    `json:"accountNumberMasked,omitempty"`
 	IsActive            bool       `json:"isActive"`

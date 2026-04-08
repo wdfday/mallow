@@ -5,10 +5,12 @@ package ex
 
 import (
 	"sync"
+
+	"github.com/shopspring/decimal"
 )
 
 // PriceHandler is called with each live trade price.
-type PriceHandler = func(symbol string, price float64)
+type PriceHandler = func(symbol string, price decimal.Decimal)
 
 // Client is a shared, broker-level market data WebSocket client for Binance.
 // Uses the public WsCombinedMarketStatServe (or individual symbol streams)
@@ -33,7 +35,7 @@ func (c *Client) AddPriceHandler(h PriceHandler) {
 	c.mu.Unlock()
 }
 
-func (c *Client) dispatchPrice(symbol string, price float64) {
+func (c *Client) dispatchPrice(symbol string, price decimal.Decimal) {
 	c.mu.RLock()
 	hs := c.priceHandlers
 	c.mu.RUnlock()

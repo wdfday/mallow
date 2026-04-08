@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 
 	"orchestrator/internal/module/orchesrator/domain"
 )
@@ -14,7 +15,7 @@ type CreateForAccountReq struct {
 	UserID    uuid.UUID
 	AccountID uuid.UUID
 	Name      string
-	Capital   float64
+	Capital   decimal.Decimal
 	Exchange  domain.ExchangeConfig
 	Risk      domain.RiskConfig
 }
@@ -73,7 +74,7 @@ func (s *Service) DeleteForAccount(accountID uuid.UUID) error {
 // UpdateReq is the patch payload for updating an orchestrator config.
 type UpdateReq struct {
 	Name    string
-	Capital float64
+	Capital decimal.Decimal
 	Risk    *domain.RiskConfig
 	Status  string
 }
@@ -85,7 +86,7 @@ func (s *Service) Update(id uuid.UUID, req UpdateReq) (*domain.OrchestratorConfi
 		if req.Name != "" {
 			o.Name = req.Name
 		}
-		if req.Capital > 0 {
+		if req.Capital.IsPositive() {
 			o.Capital = req.Capital
 		}
 		if req.Risk != nil {

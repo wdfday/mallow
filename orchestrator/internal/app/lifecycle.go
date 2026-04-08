@@ -9,6 +9,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/nats-io/nats.go"
+	"github.com/shopspring/decimal"
 	"go.uber.org/fx"
 
 	"orchestrator/internal/config"
@@ -18,7 +19,7 @@ import (
 	mdbybit "orchestrator/internal/infra/marketdata/bybit"
 	mdokx "orchestrator/internal/infra/marketdata/okx"
 	orchhandler "orchestrator/internal/module/orchesrator/handler"
-	bothandler "orchestrator/internal/module/worker/handler"
+	bothandler "orchestrator/internal/module/bot/handler"
 	"orchestrator/internal/runtime"
 	"orchestrator/internal/runtime/core/tick"
 )
@@ -82,7 +83,7 @@ func runOrchestrator(
 				} else {
 					go func() {
 						slog.Info("market data listener starting", "source", listener.Name(), "symbols", cfg.MarketData.Symbols)
-						if err := listener.Subscribe(runCtx, cfg.MarketData.Symbols, func(symbol string, price float64) {
+						if err := listener.Subscribe(runCtx, cfg.MarketData.Symbols, func(symbol string, price decimal.Decimal) {
 							for _, rt := range reg.All() {
 								rt.UpdatePrice(symbol, price)
 							}

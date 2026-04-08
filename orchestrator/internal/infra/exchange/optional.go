@@ -3,6 +3,8 @@ package exchange
 import (
 	"context"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
 
 // ── Account sync ──────────────────────────────────────────────────────────────
@@ -10,9 +12,9 @@ import (
 // ExchangePosition is a position as reported by the exchange REST API.
 type ExchangePosition struct {
 	Symbol   string
-	Qty      float64 // positive = long, negative = short (futures)
-	AvgPrice float64
-	CurPrice float64
+	Qty      decimal.Decimal // positive = long, negative = short (futures)
+	AvgPrice decimal.Decimal
+	CurPrice decimal.Decimal
 }
 
 // AccountTransaction is a single filled order as returned by the exchange REST API.
@@ -20,16 +22,16 @@ type AccountTransaction struct {
 	OrderID  string
 	Symbol   string
 	Side     string // "buy" | "sell"
-	Qty      float64
-	AvgPrice float64
-	Fee      float64
+	Qty      decimal.Decimal
+	AvgPrice decimal.Decimal
+	Fee      decimal.Decimal
 	FilledAt time.Time
 }
 
 // AccountSnapshot is the current account state fetched from the exchange REST API.
 type AccountSnapshot struct {
-	Cash         float64
-	Equity       float64
+	Cash         decimal.Decimal
+	Equity       decimal.Decimal
 	Positions    []ExchangePosition
 	Transactions []AccountTransaction // recent filled orders since last sync
 }
@@ -48,8 +50,8 @@ type FillEvent struct {
 	OrderID   string
 	Symbol    string
 	Side      OrderSide
-	FilledQty float64
-	FilledAvg float64
+	FilledQty decimal.Decimal
+	FilledAvg decimal.Decimal
 	Timestamp time.Time
 }
 
@@ -64,7 +66,7 @@ type AccountStreamer interface {
 // PriceFetcher is optionally implemented by exchanges that support on-demand
 // REST price lookup. Used as a cache-miss fallback in ProcessTrade.
 type PriceFetcher interface {
-	GetCurrentPrice(ctx context.Context, symbol string) (float64, error)
+	GetCurrentPrice(ctx context.Context, symbol string) (decimal.Decimal, error)
 }
 
 // ── Market data streaming ─────────────────────────────────────────────────────
@@ -75,5 +77,5 @@ type MarketStreamer interface {
 	// Subscribe streams live prices for the given symbols until ctx is cancelled.
 	Subscribe(ctx context.Context, symbols []string) error
 	// AddPriceHandler registers a callback fired on each live trade price.
-	AddPriceHandler(h func(symbol string, price float64))
+	AddPriceHandler(h func(symbol string, price decimal.Decimal))
 }

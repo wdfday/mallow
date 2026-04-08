@@ -7,7 +7,7 @@ import (
 	"sync"
 
 	"orchestrator/internal/infra/engine"
-	"orchestrator/internal/module/worker/domain"
+	"orchestrator/internal/module/bot/domain"
 	"orchestrator/internal/runtime"
 )
 

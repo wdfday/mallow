@@ -11,7 +11,7 @@ import (
 	pkgtelemetry "mallow/pkg/telemetry"
 	_ "orchestrator/docs"
 	orchhandler "orchestrator/internal/module/orchesrator/handler"
-	bothandler "orchestrator/internal/module/worker/handler"
+	bothandler "orchestrator/internal/module/bot/handler"
 	"orchestrator/internal/shared"
 )
 

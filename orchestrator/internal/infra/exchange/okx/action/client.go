@@ -11,6 +11,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
 
 // Config holds OKX API credentials.
@@ -94,6 +96,12 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any, o
 	return json.Unmarshal(respBody, out)
 }
 
+func parseDecimal(s string) decimal.Decimal {
+	d, _ := decimal.NewFromString(s)
+	return d
+}
+
+// parseFloat is kept for local display types that remain float64.
 func parseFloat(s string) float64 {
 	var f float64
 	fmt.Sscanf(s, "%f", &f)

@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
+	"github.com/shopspring/decimal"
 	"go.uber.org/fx"
 
 	"mallow/investment/internal/module/portfolio/command"
@@ -197,12 +198,12 @@ func (c *Consumer) parse(msg *nats.Msg) (*accountBatch, error) {
 		AssetType:       tm.AssetType,
 		Exchange:        tm.Exchange,
 		Currency:        tm.Currency,
-		Quantity:        tm.Quantity,
-		PricePerUnit:    tm.PricePerUnit,
-		Amount:          tm.Amount,
-		Fees:            tm.Fees,
-		Commission:      tm.Commission,
-		Tax:             tm.Tax,
+		Quantity:        decimal.NewFromFloat(tm.Quantity),
+		PricePerUnit:    decimal.NewFromFloat(tm.PricePerUnit),
+		Amount:          decimal.NewFromFloat(tm.Amount),
+		Fees:            decimal.NewFromFloat(tm.Fees),
+		Commission:      decimal.NewFromFloat(tm.Commission),
+		Tax:             decimal.NewFromFloat(tm.Tax),
 		TransactionDate: tm.TransactionDate,
 		Broker:          tm.Broker,
 		ExternalID:      tm.ExternalID,

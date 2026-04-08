@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -193,10 +194,10 @@ func (m *MockAccountRepository) CountByUserID(ctx context.Context, userID string
 	args := m.Called(ctx, userID, filters)
 	return args.Get(0).(int64), args.Error(1)
 }
-func (m *MockAccountRepository) UpdateBalance(ctx context.Context, accountID string, delta float64) error {
+func (m *MockAccountRepository) UpdateBalance(ctx context.Context, accountID string, delta decimal.Decimal) error {
 	return m.Called(ctx, accountID, delta).Error(0)
 }
-func (m *MockAccountRepository) UpdateBalanceWithTx(tx *gorm.DB, accountID string, delta float64) error {
+func (m *MockAccountRepository) UpdateBalanceWithTx(tx *gorm.DB, accountID string, delta decimal.Decimal) error {
 	return m.Called(tx, accountID, delta).Error(0)
 }
 func (m *MockAccountRepository) GetAccountsNeedingSync(ctx context.Context) ([]*accountDomain.Account, error) {
@@ -321,7 +322,7 @@ func TestCreate_RepoSaveError(t *testing.T) {
 		ExpiresAt:    time.Now().Add(time.Hour),
 	}
 	mockClient.On("Authenticate", ctx, mock.Anything).Return(authResp, nil)
-	mockClient.On("GetPortfolio", ctx, "access-token").Return(&client.Portfolio{TotalValue: 1000}, nil)
+	mockClient.On("GetPortfolio", ctx, "access-token").Return(&client.Portfolio{TotalValue: decimal.NewFromInt(1000)}, nil)
 	mockRepo.On("Create", ctx, mock.AnythingOfType("*domain.BrokerConnection")).Return(errors.New("db error"))
 
 	result, err := svc.Create(ctx, makeConnRequest(userID))
@@ -341,7 +342,7 @@ func TestCreate_Success(t *testing.T) {
 		RefreshToken: "refresh-token",
 		ExpiresAt:    time.Now().Add(time.Hour),
 	}
-	portfolio := &client.Portfolio{TotalValue: 5000, CashBalance: 1000}
+	portfolio := &client.Portfolio{TotalValue: decimal.NewFromInt(5000), CashBalance: decimal.NewFromInt(1000)}
 
 	mockClient.On("Authenticate", ctx, mock.Anything).Return(authResp, nil)
 	mockClient.On("GetPortfolio", ctx, "access-token").Return(portfolio, nil)
@@ -509,15 +510,27 @@ func TestUpdate_NotFound(t *testing.T) {
 }
 
 func TestUpdate_Credentials(t *testing.T) {
-	svc, mockRepo, _ := setupService(t)
+	svc, mockRepo, _, mockAccountRepo := setupServiceWithAccount(t)
 	ctx := context.Background()
 	userID := uuid.New()
+
+	// Build a conn with properly encrypted credentials so Decrypt succeeds.
+	encSvc := newTestEncryptionService(t)
+	encKey, err := encSvc.Encrypt("old-api-key")
+	require.NoError(t, err)
+	encSecret, err := encSvc.Encrypt("old-api-secret")
+	require.NoError(t, err)
+
 	conn := sampleConn(userID)
+	conn.APIKey = encKey
+	conn.APISecret = encSecret
 
 	newKey := "new-api-key"
 	newSecret := "new-api-secret"
 
 	mockRepo.On("GetByID", ctx, conn.ID).Return(conn, nil)
+	mockAccountRepo.On("ListByUserID", ctx, userID.String(), accountDomain.ListAccountsFilter{}).
+		Return([]accountDomain.Account{}, nil)
 	mockRepo.On("Update", ctx, mock.AnythingOfType("*domain.BrokerConnection")).Return(nil)
 
 	result, err := svc.Update(ctx, conn.ID, userID, &UpdateBrokerConnectionRequest{
@@ -535,17 +548,20 @@ func TestUpdate_Credentials(t *testing.T) {
 // ────────────────────────────────────────────────────────────────────────────
 
 func TestDelete_Success(t *testing.T) {
-	svc, mockRepo, _ := setupService(t)
+	svc, mockRepo, _, mockAccountRepo := setupServiceWithAccount(t)
 	ctx := context.Background()
 	userID := uuid.New()
 	conn := sampleConn(userID)
 
 	mockRepo.On("GetByID", ctx, conn.ID).Return(conn, nil)
+	mockAccountRepo.On("ListByUserID", ctx, userID.String(), accountDomain.ListAccountsFilter{}).
+		Return([]accountDomain.Account{}, nil)
 	mockRepo.On("Delete", ctx, conn.ID).Return(nil)
 
 	err := svc.Delete(ctx, conn.ID, userID)
 	require.NoError(t, err)
 	mockRepo.AssertExpectations(t)
+	mockAccountRepo.AssertExpectations(t)
 }
 
 func TestDelete_NotFound(t *testing.T) {
@@ -692,7 +708,7 @@ func TestTestConnection_Success(t *testing.T) {
 	conn.AccessToken = &encAccess
 
 	mockRepo.On("GetByID", ctx, conn.ID).Return(conn, nil)
-	mockClient.On("GetPortfolio", ctx, "valid-access-token").Return(&client.Portfolio{TotalValue: 100}, nil)
+	mockClient.On("GetPortfolio", ctx, "valid-access-token").Return(&client.Portfolio{TotalValue: decimal.NewFromInt(100)}, nil)
 
 	err := svc.TestConnection(ctx, conn.ID, userID)
 	require.NoError(t, err)

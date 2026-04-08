@@ -45,11 +45,11 @@ func (c *Client) GetPosition(symbol string) (*PositionInfo, error) {
 }
 
 // ClosePosition liquidates a position (partially or fully).
-// Pass qty=0 to close the entire position.
-func (c *Client) ClosePosition(symbol string, qty float64) (*alpacasdk.Order, error) {
+// Pass qty=decimal.Zero to close the entire position.
+func (c *Client) ClosePosition(symbol string, qty decimal.Decimal) (*alpacasdk.Order, error) {
 	req := alpacasdk.ClosePositionRequest{}
-	if qty > 0 {
-		req.Qty = decimal.NewFromFloat(qty)
+	if qty.IsPositive() {
+		req.Qty = qty
 	}
 	order, err := c.sdk.ClosePosition(symbol, req)
 	if err != nil {

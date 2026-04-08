@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
 
 // BotType defines the operation mode of a bot.
@@ -77,7 +78,7 @@ type BotRiskConfig struct {
 	SizeMode        string  `json:"size_mode,omitempty"`
 	RiskPerTradePct float64 `json:"risk_per_trade_pct,omitempty"`
 	MaxPositionPct  float64 `json:"max_position_pct,omitempty"`
-	FixedQty        float64 `json:"fixed_qty,omitempty"`
+	FixedQty        decimal.Decimal `json:"fixed_qty,omitempty"`
 
 	// ATR-based exits (preferred when ATR is available)
 	StopLossATRMult   float64 `json:"stop_loss_atr_mult,omitempty"`

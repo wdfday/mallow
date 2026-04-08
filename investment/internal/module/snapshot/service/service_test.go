@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -69,11 +70,11 @@ func sampleSnapshot(userID, accountID uuid.UUID, snapType string) domain.Portfol
 		UserID:         userID,
 		SnapshotDate:   now,
 		SnapshotType:   snapType,
-		TotalValue:     15000.0,
-		TotalCost:      12000.0,
-		UnrealizedPnL:  3000.0,
-		RealizedPnL:    500.0,
-		TotalReturn:    3500.0,
+		TotalValue:     decimal.NewFromFloat(15000.0),
+		TotalCost:      decimal.NewFromFloat(12000.0),
+		UnrealizedPnL:  decimal.NewFromFloat(3000.0),
+		RealizedPnL:    decimal.NewFromFloat(500.0),
+		TotalReturn:    decimal.NewFromFloat(3500.0),
 		TotalReturnPct: 29.17,
 		SourceEventID:  uuid.New(),
 		CreatedAt:      now,
@@ -204,11 +205,11 @@ func TestSnapshotTriggerAggregation(t *testing.T) {
 				AccountID:      accountID,
 				UserID:         userID,
 				Symbol:         "AAPL",
-				CurrentValue:   10500.0,
-				TotalCost:      10000.0,
-				UnrealizedPnL:  500.0,
-				RealizedPnL:    200.0,
-				TotalDividends: 50.0,
+				CurrentValue:   decimal.NewFromFloat(10500.0),
+				TotalCost:      decimal.NewFromFloat(10000.0),
+				UnrealizedPnL:  decimal.NewFromFloat(500.0),
+				RealizedPnL:    decimal.NewFromFloat(200.0),
+				TotalDividends: decimal.NewFromFloat(50.0),
 				Status:         "active",
 				OpenedAt:       time.Now().UTC(),
 			},

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sync"
 
-	"orchestrator/internal/module/worker/domain"
+	"orchestrator/internal/module/bot/domain"
 )
 
 // MemoryStore is a thread-safe in-memory implementation of BotRepo.

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"mallow/investment/internal/module/broker/client"
 
 	alpacasdk "github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
@@ -64,9 +65,7 @@ func (c *Client) GetPortfolio(_ context.Context, accessToken string) (*client.Po
 	if err != nil {
 		return nil, fmt.Errorf("alpaca get account failed: %w", err)
 	}
-	equity, _ := account.Equity.Float64()
-	cash, _ := account.Cash.Float64()
-	return &client.Portfolio{TotalValue: equity, Currency: "USD", CashBalance: cash}, nil
+	return &client.Portfolio{TotalValue: account.Equity, Currency: "USD", CashBalance: account.Cash}, nil
 }
 
 func (c *Client) GetPositions(_ context.Context, accessToken string) ([]client.Position, error) {
@@ -80,12 +79,14 @@ func (c *Client) GetPositions(_ context.Context, accessToken string) ([]client.P
 	}
 	var result []client.Position
 	for _, p := range positions {
-		qty, _ := p.Qty.Float64()
-		price, _ := p.CurrentPrice.Float64()
+		curPrice := decimal.Zero
+		if p.CurrentPrice != nil {
+			curPrice = *p.CurrentPrice
+		}
 		result = append(result, client.Position{
 			Symbol:       string(p.Symbol),
-			Quantity:     qty,
-			CurrentPrice: price,
+			Quantity:     p.Qty,
+			CurrentPrice: curPrice,
 			Currency:     "USD",
 		})
 	}
@@ -107,15 +108,13 @@ func (c *Client) GetTransactions(_ context.Context, accessToken string, from, to
 	}
 	var txns []client.Transaction
 	for _, a := range activities {
-		qty, _ := a.Qty.Float64()
-		price, _ := a.Price.Float64()
 		txns = append(txns, client.Transaction{
 			ExternalID:      a.ID,
 			Symbol:          string(a.Symbol),
 			TransactionType: string(a.Side),
-			Amount:          qty * price,
-			Quantity:        qty,
-			Price:           price,
+			Amount:          a.Qty.Mul(a.Price),
+			Quantity:        a.Qty,
+			Price:           a.Price,
 			Currency:        "USD",
 			TransactionDate: a.TransactionTime,
 		})
@@ -129,7 +128,7 @@ func (c *Client) GetMarketPrice(_ context.Context, symbol string) (*client.Marke
 	if err != nil {
 		return nil, fmt.Errorf("alpaca get snapshot failed: %w", err)
 	}
-	return &client.MarketPrice{Symbol: symbol, Price: snapshot.LatestTrade.Price}, nil
+	return &client.MarketPrice{Symbol: symbol, Price: decimal.NewFromFloat(snapshot.LatestTrade.Price)}, nil
 }
 
 func (c *Client) GetBatchMarketPrices(_ context.Context, symbols []string) (map[string]*client.MarketPrice, error) {
@@ -140,7 +139,7 @@ func (c *Client) GetBatchMarketPrices(_ context.Context, symbols []string) (map[
 	}
 	result := make(map[string]*client.MarketPrice, len(snapshots))
 	for sym, snap := range snapshots {
-		result[sym] = &client.MarketPrice{Symbol: sym, Price: snap.LatestTrade.Price}
+		result[sym] = &client.MarketPrice{Symbol: sym, Price: decimal.NewFromFloat(snap.LatestTrade.Price)}
 	}
 	return result, nil
 }

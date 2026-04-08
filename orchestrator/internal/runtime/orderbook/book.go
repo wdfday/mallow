@@ -2,9 +2,10 @@ package orderbook
 
 import (
 	"fmt"
-	"math"
 	"slices"
 	"sync"
+
+	"github.com/shopspring/decimal"
 )
 
 // OrderBook is the interface for exchange-level order constraint validation
@@ -140,25 +141,25 @@ func (ob *orderBook) Validate(order ProposedOrder) ValidationResult {
 	if !info.Active {
 		return ValidationResult{Valid: false, Reason: fmt.Sprintf("symbol %q is halted/inactive", order.Symbol)}
 	}
-	if order.Qty <= 0 {
+	if !order.Qty.IsPositive() {
 		return ValidationResult{Valid: false, Reason: "quantity must be positive"}
 	}
-	if order.Qty < info.MinQty {
-		return ValidationResult{Valid: false, Reason: fmt.Sprintf("qty %.8f below min %.8f", order.Qty, info.MinQty)}
+	if order.Qty.LessThan(info.MinQty) {
+		return ValidationResult{Valid: false, Reason: fmt.Sprintf("qty %s below min %s", order.Qty, info.MinQty)}
 	}
-	if info.MaxQty > 0 && order.Qty > info.MaxQty {
-		return ValidationResult{Valid: false, Reason: fmt.Sprintf("qty %.8f exceeds max %.8f", order.Qty, info.MaxQty)}
+	if info.MaxQty.IsPositive() && order.Qty.GreaterThan(info.MaxQty) {
+		return ValidationResult{Valid: false, Reason: fmt.Sprintf("qty %s exceeds max %s", order.Qty, info.MaxQty)}
 	}
 
 	adjustedQty := roundToStep(order.Qty, info.StepSize)
-	if adjustedQty < info.MinQty {
-		return ValidationResult{Valid: false, Reason: fmt.Sprintf("qty rounds to %.8f, below min %.8f", adjustedQty, info.MinQty)}
+	if adjustedQty.LessThan(info.MinQty) {
+		return ValidationResult{Valid: false, Reason: fmt.Sprintf("qty rounds to %s, below min %s", adjustedQty, info.MinQty)}
 	}
 
-	if order.Price > 0 && info.MinNotional > 0 {
-		notional := adjustedQty * order.Price
-		if notional < info.MinNotional {
-			return ValidationResult{Valid: false, Reason: fmt.Sprintf("notional %.2f below min %.2f", notional, info.MinNotional)}
+	if order.Price.IsPositive() && info.MinNotional.IsPositive() {
+		notional := adjustedQty.Mul(order.Price)
+		if notional.LessThan(info.MinNotional) {
+			return ValidationResult{Valid: false, Reason: fmt.Sprintf("notional %s below min %s", notional, info.MinNotional)}
 		}
 	}
 
@@ -266,14 +267,14 @@ const spreadWindow = 20
 // Useful for stable limit-order pricing and spread anomaly detection.
 // Zero heap allocation after init — embed directly in structs.
 type SpreadTracker struct {
-	buf   [spreadWindow]float64
+	buf   [spreadWindow]decimal.Decimal
 	head  int
 	count int
 }
 
 // Push records a new bid/ask observation.
-func (s *SpreadTracker) Push(bid, ask float64) {
-	s.buf[s.head] = ask - bid
+func (s *SpreadTracker) Push(bid, ask decimal.Decimal) {
+	s.buf[s.head] = ask.Sub(bid)
 	s.head = (s.head + 1) % spreadWindow
 	if s.count < spreadWindow {
 		s.count++
@@ -281,22 +282,22 @@ func (s *SpreadTracker) Push(bid, ask float64) {
 }
 
 // Avg returns the mean spread across all recorded samples.
-// Returns 0 if no samples yet.
-func (s *SpreadTracker) Avg() float64 {
+// Returns zero if no samples yet.
+func (s *SpreadTracker) Avg() decimal.Decimal {
 	if s.count == 0 {
-		return 0
+		return decimal.Zero
 	}
-	sum := 0.0
+	sum := decimal.Zero
 	for i := range s.count {
-		sum += s.buf[i]
+		sum = sum.Add(s.buf[i])
 	}
-	return sum / float64(s.count)
+	return sum.Div(decimal.NewFromInt(int64(s.count)))
 }
 
 // Current returns the most recently recorded spread.
-func (s *SpreadTracker) Current() float64 {
+func (s *SpreadTracker) Current() decimal.Decimal {
 	if s.count == 0 {
-		return 0
+		return decimal.Zero
 	}
 	return s.buf[(s.head-1+spreadWindow)%spreadWindow]
 }
@@ -305,14 +306,14 @@ func (s *SpreadTracker) Current() float64 {
 // Returns false until the buffer has at least one sample.
 func (s *SpreadTracker) IsAnomalous(threshold float64) bool {
 	avg := s.Avg()
-	return avg > 0 && s.Current() > avg*threshold
+	return avg.IsPositive() && s.Current().GreaterThan(avg.Mul(decimal.NewFromFloat(threshold)))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-func roundToStep(qty, step float64) float64 {
-	if step <= 0 {
+func roundToStep(qty, step decimal.Decimal) decimal.Decimal {
+	if !step.IsPositive() {
 		return qty
 	}
-	return math.Floor(qty/step) * step
+	return qty.Div(step).Floor().Mul(step)
 }

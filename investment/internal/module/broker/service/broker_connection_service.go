@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 
 	accountDomain "mallow/investment/internal/module/account/domain"
@@ -26,15 +27,15 @@ import (
 // accountLinkedEvent mirrors natsapi.AccountLinkedEvent in the orchestrator.
 // Defined locally to avoid cross-service imports.
 type accountLinkedEvent struct {
-	AccountID  string  `json:"account_id"`
-	UserID     string  `json:"user_id"`
-	Name       string  `json:"name"`
-	Capital    float64 `json:"capital"`
-	BrokerType string  `json:"broker_type"`
-	APIKey     string  `json:"api_key,omitempty"`
-	APISecret  string  `json:"api_secret,omitempty"`
-	Passphrase string  `json:"passphrase,omitempty"`
-	Demo       bool    `json:"demo,omitempty"`
+	AccountID  string          `json:"account_id"`
+	UserID     string          `json:"user_id"`
+	Name       string          `json:"name"`
+	Capital    decimal.Decimal `json:"capital"`
+	BrokerType string          `json:"broker_type"`
+	APIKey     string          `json:"api_key,omitempty"`
+	APISecret  string          `json:"api_secret,omitempty"`
+	Passphrase string          `json:"passphrase,omitempty"`
+	Demo       bool            `json:"demo,omitempty"`
 }
 
 // accountUnlinkedEvent mirrors natsapi.AccountUnlinkedEvent.
@@ -168,7 +169,7 @@ func (s *brokerConnectionService) Create(ctx context.Context, req *dto.CreateBro
 
 // ensureLinkedAccount creates an Account row linked to this broker connection
 // if one doesn't already exist. Called once on initial broker connection creation.
-func (s *brokerConnectionService) ensureLinkedAccount(ctx context.Context, conn *domain.BrokerConnection, initialBalance float64) (*accountDomain.Account, error) {
+func (s *brokerConnectionService) ensureLinkedAccount(ctx context.Context, conn *domain.BrokerConnection, initialBalance decimal.Decimal) (*accountDomain.Account, error) {
 	accounts, err := s.accountRepo.ListByUserID(ctx, conn.UserID.String(), accountDomain.ListAccountsFilter{})
 	if err != nil {
 		return nil, err
@@ -203,7 +204,7 @@ func (s *brokerConnectionService) ensureLinkedAccount(ctx context.Context, conn 
 	return account, nil
 }
 
-func (s *brokerConnectionService) publishLinked(accountID, userID, name, brokerType, apiKey, apiSecret, passphrase string, capital float64, demo bool) {
+func (s *brokerConnectionService) publishLinked(accountID, userID, name, brokerType, apiKey, apiSecret, passphrase string, capital decimal.Decimal, demo bool) {
 	if s.nc == nil {
 		return
 	}

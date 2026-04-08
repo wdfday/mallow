@@ -6,6 +6,7 @@ import (
 	"time"
 
 	alpacasdk "github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
+	"github.com/shopspring/decimal"
 
 	"orchestrator/internal/infra/exchange"
 )
@@ -46,15 +47,15 @@ func (c *Client) StreamFills(ctx context.Context, handler func(exchange.FillEven
 		if string(tu.Order.Side) == "sell" {
 			side = exchange.Sell
 		}
-		avg := 0.0
+		var avg decimal.Decimal
 		if tu.Order.FilledAvgPrice != nil {
-			avg = tu.Order.FilledAvgPrice.InexactFloat64()
+			avg = *tu.Order.FilledAvgPrice
 		}
 		handler(exchange.FillEvent{
 			OrderID:   tu.Order.ID,
 			Symbol:    tu.Order.Symbol,
 			Side:      side,
-			FilledQty: tu.Order.FilledQty.InexactFloat64(),
+			FilledQty: tu.Order.FilledQty,
 			FilledAvg: avg,
 			Timestamp: time.Now().UTC(),
 		})

@@ -76,8 +76,8 @@ func (c *Client) streamSpotFillsOnce(ctx context.Context, handler func(exchange.
 			OrderID:   strconv.FormatInt(ou.Id, 10),
 			Symbol:    ou.Symbol,
 			Side:      side,
-			FilledQty: parseFloat(ou.LatestVolume),
-			FilledAvg: parseFloat(ou.LatestPrice),
+			FilledQty: parseDecimal(ou.LatestVolume),
+			FilledAvg: parseDecimal(ou.LatestPrice),
 			Timestamp: time.UnixMilli(ou.TransactionTime).UTC(),
 		})
 	}, func(err error) {
@@ -150,8 +150,8 @@ func (c *Client) streamFuturesFillsOnce(ctx context.Context, handler func(exchan
 			OrderID:   strconv.FormatInt(ou.ID, 10),
 			Symbol:    ou.Symbol,
 			Side:      side,
-			FilledQty: parseFloat(ou.LastFilledQty),
-			FilledAvg: parseFloat(ou.LastFilledPrice),
+			FilledQty: parseDecimal(ou.LastFilledQty),
+			FilledAvg: parseDecimal(ou.LastFilledPrice),
 			Timestamp: time.UnixMilli(ou.TradeTime).UTC(),
 		})
 	}, func(err error) {

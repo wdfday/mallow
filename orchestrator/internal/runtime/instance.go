@@ -2,7 +2,7 @@ package runtime
 
 import (
 	"orchestrator/internal/infra/exchange"
-	"orchestrator/internal/module/worker/domain"
+	"orchestrator/internal/module/bot/domain"
 )
 
 // BotInstance is the runtime view of a bot: stored data + Bot runner + Exchange.

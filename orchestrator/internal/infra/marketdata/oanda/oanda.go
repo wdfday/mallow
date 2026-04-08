@@ -7,9 +7,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
 
 const (
@@ -37,7 +38,7 @@ func (l *Listener) Name() string { return "oanda" }
 // Subscribe connects to OANDA streaming prices and calls onTick for each price update.
 // Symbols should be OANDA instrument IDs, e.g. "EUR_USD", "GBP_USD".
 // Blocks until ctx is cancelled. Reconnects automatically on failure.
-func (l *Listener) Subscribe(ctx context.Context, symbols []string, onTick func(string, float64)) error {
+func (l *Listener) Subscribe(ctx context.Context, symbols []string, onTick func(string, decimal.Decimal)) error {
 	if len(symbols) == 0 {
 		return fmt.Errorf("oanda listener: no symbols provided")
 	}
@@ -56,7 +57,7 @@ func (l *Listener) Subscribe(ctx context.Context, symbols []string, onTick func(
 	}
 }
 
-func (l *Listener) connect(ctx context.Context, symbols []string, onTick func(string, float64)) error {
+func (l *Listener) connect(ctx context.Context, symbols []string, onTick func(string, decimal.Decimal)) error {
 	instruments := strings.Join(symbols, ",")
 	url := fmt.Sprintf("%s/v3/accounts/%s/pricing/stream?instruments=%s",
 		l.StreamURL, l.AccountID, instruments)
@@ -96,7 +97,7 @@ func (l *Listener) connect(ctx context.Context, symbols []string, onTick func(st
 }
 
 // handleMessage parses a single OANDA streaming price line.
-func handleMessage(msg []byte, onTick func(string, float64)) {
+func handleMessage(msg []byte, onTick func(string, decimal.Decimal)) {
 	var price priceMsg
 	if err := json.Unmarshal(msg, &price); err != nil {
 		return
@@ -109,21 +110,21 @@ func handleMessage(msg []byte, onTick func(string, float64)) {
 
 	// Use mid-price: (bid + ask) / 2
 	mid := midPrice(price.Bids, price.Asks)
-	if mid > 0 {
+	if mid.IsPositive() {
 		onTick(price.Instrument, mid)
 	}
 }
 
-func midPrice(bids, asks []priceLevel) float64 {
+func midPrice(bids, asks []priceLevel) decimal.Decimal {
 	if len(bids) == 0 || len(asks) == 0 {
-		return 0
+		return decimal.Zero
 	}
-	bid, _ := strconv.ParseFloat(bids[0].Price, 64)
-	ask, _ := strconv.ParseFloat(asks[0].Price, 64)
-	if bid <= 0 || ask <= 0 {
-		return 0
+	bid, err1 := decimal.NewFromString(bids[0].Price)
+	ask, err2 := decimal.NewFromString(asks[0].Price)
+	if err1 != nil || err2 != nil || !bid.IsPositive() || !ask.IsPositive() {
+		return decimal.Zero
 	}
-	return (bid + ask) / 2
+	return bid.Add(ask).Div(decimal.NewFromInt(2))
 }
 
 // --- OANDA streaming types ---

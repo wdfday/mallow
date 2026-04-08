@@ -5,6 +5,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/shopspring/decimal"
 	"mallow/investment/internal/module/watchlist/domain"
 )
 
@@ -18,7 +19,7 @@ func NewPgx(pool *pgxpool.Pool) Repository {
 
 func (r *pgxRepo) ListByUserID(ctx context.Context, userID uuid.UUID) ([]domain.WatchlistItem, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT id, user_id, symbol, name, asset_type, target_price::float8, notes, added_at, updated_at
+		`SELECT id, user_id, symbol, name, asset_type, target_price::text, notes, added_at, updated_at
 		FROM investment_watchlist WHERE user_id = $1 ORDER BY added_at DESC`,
 		userID,
 	)
@@ -30,10 +31,10 @@ func (r *pgxRepo) ListByUserID(ctx context.Context, userID uuid.UUID) ([]domain.
 	var items []domain.WatchlistItem
 	for rows.Next() {
 		var item domain.WatchlistItem
-		var name, assetType, notes *string
+		var name, assetType, targetPriceStr, notes *string
 		err := rows.Scan(
 			&item.ID, &item.UserID, &item.Symbol,
-			&name, &assetType, &item.TargetPrice, &notes,
+			&name, &assetType, &targetPriceStr, &notes,
 			&item.AddedAt, &item.UpdatedAt,
 		)
 		if err != nil {
@@ -45,6 +46,10 @@ func (r *pgxRepo) ListByUserID(ctx context.Context, userID uuid.UUID) ([]domain.
 		if assetType != nil {
 			item.AssetType = *assetType
 		}
+		if targetPriceStr != nil {
+			d, _ := decimal.NewFromString(*targetPriceStr)
+			item.TargetPrice = &d
+		}
 		if notes != nil {
 			item.Notes = *notes
 		}
@@ -54,14 +59,15 @@ func (r *pgxRepo) ListByUserID(ctx context.Context, userID uuid.UUID) ([]domain.
 }
 
 func (r *pgxRepo) Add(ctx context.Context, item *domain.WatchlistItem) error {
-	var targetPrice *float64
+	var targetPrice *string
 	if item.TargetPrice != nil {
-		targetPrice = item.TargetPrice
+		s := item.TargetPrice.String()
+		targetPrice = &s
 	}
 
 	return r.pool.QueryRow(ctx,
 		`INSERT INTO investment_watchlist (id, user_id, symbol, name, asset_type, target_price, notes, added_at, updated_at)
-		VALUES (uuidv7(), $1, $2, $3, $4, $5, $6, now(), now())
+		VALUES (uuidv7(), $1, $2, $3, $4, $5::numeric, $6, now(), now())
 		RETURNING id, added_at, updated_at`,
 		item.UserID, item.Symbol, item.Name, item.AssetType, targetPrice, item.Notes,
 	).Scan(&item.ID, &item.AddedAt, &item.UpdatedAt)

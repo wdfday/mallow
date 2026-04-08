@@ -12,6 +12,7 @@ import (
 
 	alpacasdk "github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata"
+	"github.com/shopspring/decimal"
 
 	"orchestrator/internal/infra/exchange"
 )
@@ -73,9 +74,9 @@ func TestPaper_SyncAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SyncAccount: %v", err)
 	}
-	t.Logf("cash=%.2f  equity=%.2f  positions=%d", snap.Cash, snap.Equity, len(snap.Positions))
+	t.Logf("cash=%s  equity=%s  positions=%d", snap.Cash, snap.Equity, len(snap.Positions))
 	for _, p := range snap.Positions {
-		t.Logf("  %s: qty=%.4f  avg=%.4f  cur=%.4f", p.Symbol, p.Qty, p.AvgPrice, p.CurPrice)
+		t.Logf("  %s: qty=%s  avg=%s  cur=%s", p.Symbol, p.Qty, p.AvgPrice, p.CurPrice)
 	}
 }
 
@@ -105,7 +106,7 @@ func TestPaper_GetCurrentPrice(t *testing.T) {
 			t.Logf("  %s: ERROR %v", sym, err)
 			continue
 		}
-		t.Logf("  %s: $%.4f", sym, price)
+		t.Logf("  %s: $%s", sym, price)
 	}
 }
 
@@ -168,12 +169,12 @@ func TestPaper_MarketOrder(t *testing.T) {
 		Symbol: "AAPL",
 		Side:   exchange.Buy,
 		Type:   exchange.Market,
-		Qty:    1,
+		Qty:    decimal.NewFromInt(1),
 	})
 	if err != nil {
 		t.Fatalf("PlaceOrder market buy AAPL: %v", err)
 	}
-	t.Logf("order placed: id=%s  status=%s  qty=%.0f  filled=%.0f @ $%.4f",
+	t.Logf("order placed: id=%s  status=%s  qty=%s  filled=%s @ $%s",
 		result.ID, result.Status, result.Qty, result.FilledQty, result.FilledAvg)
 
 	// GetOrder
@@ -181,7 +182,7 @@ func TestPaper_MarketOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrder: %v", err)
 	}
-	t.Logf("order status: %s  filledQty=%.0f @ $%.4f", got.Status, got.FilledQty, got.FilledAvg)
+	t.Logf("order status: %s  filledQty=%s @ $%s", got.Status, got.FilledQty, got.FilledAvg)
 }
 
 func TestPaper_LimitOrder_ThenCancel(t *testing.T) {
@@ -191,19 +192,19 @@ func TestPaper_LimitOrder_ThenCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetCurrentPrice: %v", err)
 	}
-	limitPrice := price * 0.95 // 5% below market
+	limitPrice := price.Mul(decimal.NewFromFloat(0.95)) // 5% below market
 
 	result, err := c.PlaceOrder(context.Background(), exchange.OrderRequest{
 		Symbol: "AAPL",
 		Side:   exchange.Buy,
 		Type:   exchange.Limit,
-		Qty:    1,
+		Qty:    decimal.NewFromInt(1),
 		Price:  limitPrice,
 	})
 	if err != nil {
 		t.Fatalf("PlaceOrder limit buy AAPL: %v", err)
 	}
-	t.Logf("limit order placed: id=%s  status=%s  price=$%.4f", result.ID, result.Status, limitPrice)
+	t.Logf("limit order placed: id=%s  status=%s  price=$%s", result.ID, result.Status, limitPrice)
 
 	if err := c.CancelOrder(context.Background(), result.ID); err != nil {
 		t.Fatalf("CancelOrder: %v", err)
@@ -225,28 +226,30 @@ func TestPaper_BracketOrder(t *testing.T) {
 		t.Fatalf("GetCurrentPrice: %v", err)
 	}
 
+	stopLoss := price.Mul(decimal.NewFromFloat(0.98))
+	takeProfit := price.Mul(decimal.NewFromFloat(1.02))
 	result, err := c.PlaceOrder(context.Background(), exchange.OrderRequest{
 		Symbol:     "AAPL",
 		Side:       exchange.Buy,
 		Type:       exchange.Market,
-		Qty:        1,
-		StopLoss:   price * 0.98, // -2% stop loss
-		TakeProfit: price * 1.02, // +2% take profit
+		Qty:        decimal.NewFromInt(1),
+		StopLoss:   stopLoss,
+		TakeProfit: takeProfit,
 	})
 	if err != nil {
 		t.Fatalf("PlaceOrder bracket: %v", err)
 	}
 	t.Logf("bracket order: id=%s  status=%s", result.ID, result.Status)
-	t.Logf("  entry  @ market (~$%.2f)", price)
-	t.Logf("  stop   @ $%.4f (-2%%)", price*0.98)
-	t.Logf("  target @ $%.4f (+2%%)", price*1.02)
+	t.Logf("  entry  @ market (~$%s)", price)
+	t.Logf("  stop   @ $%s (-2%%)", stopLoss)
+	t.Logf("  target @ $%s (+2%%)", takeProfit)
 
 	// Cancel the bracket (closes all legs)
 	time.Sleep(500 * time.Millisecond)
 	if err := c.CancelAllOrders(); err != nil {
 		t.Logf("CancelAllOrders: %v (may already be filled)", err)
 	}
-	if _, err := c.ClosePosition("AAPL", 1); err != nil {
+	if _, err := c.ClosePosition("AAPL", decimal.NewFromInt(1)); err != nil {
 		t.Logf("ClosePosition: %v", err)
 	}
 }
@@ -277,7 +280,7 @@ func TestPaper_Slippage(t *testing.T) {
 			pos, _ := c.GetPosition("AAPL")
 			if pos == nil || pos.Qty < 1 {
 				c.PlaceOrder(context.Background(), exchange.OrderRequest{ //nolint
-					Symbol: "AAPL", Side: exchange.Buy, Type: exchange.Market, Qty: 1,
+					Symbol: "AAPL", Side: exchange.Buy, Type: exchange.Market, Qty: decimal.NewFromInt(1),
 				})
 				time.Sleep(500 * time.Millisecond)
 			}
@@ -294,7 +297,7 @@ func TestPaper_Slippage(t *testing.T) {
 			Symbol: "AAPL",
 			Side:   side,
 			Type:   exchange.Market,
-			Qty:    1,
+			Qty:    decimal.NewFromInt(1),
 		})
 		if err != nil {
 			t.Fatalf("PlaceOrder %s: %v", side, err)
@@ -302,29 +305,30 @@ func TestPaper_Slippage(t *testing.T) {
 
 		// Poll until filled (paper orders may take a moment)
 		fillPrice := resp.FilledAvg
-		if fillPrice == 0 {
+		if fillPrice.IsZero() {
 			for i := 0; i < 5; i++ {
 				time.Sleep(500 * time.Millisecond)
 				got, _ := c.GetOrder(context.Background(), resp.ID)
-				if got != nil && got.FilledAvg > 0 {
+				if got != nil && got.FilledAvg.IsPositive() {
 					fillPrice = got.FilledAvg
 					break
 				}
 			}
 		}
+		fillPriceF := fillPrice.InexactFloat64()
 
 		var slipBps float64
-		if fillPrice > 0 && mid > 0 {
+		if fillPriceF > 0 && mid > 0 {
 			if side == exchange.Buy {
-				slipBps = (fillPrice - mid) / mid * 10000
+				slipBps = (fillPriceF - mid) / mid * 10000
 			} else {
-				slipBps = (mid - fillPrice) / mid * 10000
+				slipBps = (mid - fillPriceF) / mid * 10000
 			}
 		}
 
 		results = append(results, result{
 			side: string(side), bid: bid, ask: ask, mid: mid,
-			fillPrice: fillPrice, slipBps: slipBps,
+			fillPrice: fillPriceF, slipBps: slipBps,
 		})
 	}
 
@@ -342,7 +346,7 @@ func TestPaper_Slippage(t *testing.T) {
 	if err == nil {
 		t.Logf("recent orders (%d):", len(orders))
 		for _, o := range orders {
-			t.Logf("  %s  %s %s  status=%s  filled=%.2f @ $%.4f",
+			t.Logf("  %s  %s %s  status=%s  filled=%s @ $%s",
 				o.ID[:8], o.Symbol, o.Side, o.Status, o.FilledQty, o.FilledAvg)
 		}
 	}
@@ -365,12 +369,12 @@ func TestPaper_StreamFills(t *testing.T) {
 
 	time.Sleep(500 * time.Millisecond)
 	c.PlaceOrder(context.Background(), exchange.OrderRequest{ //nolint
-		Symbol: "AAPL", Side: exchange.Buy, Type: exchange.Market, Qty: 1,
+		Symbol: "AAPL", Side: exchange.Buy, Type: exchange.Market, Qty: decimal.NewFromInt(1),
 	})
 
 	select {
 	case f := <-fills:
-		t.Logf("fill received: orderID=%s  symbol=%s  side=%s  qty=%.0f @ $%.4f",
+		t.Logf("fill received: orderID=%s  symbol=%s  side=%s  qty=%s @ $%s",
 			f.OrderID, f.Symbol, f.Side, f.FilledQty, f.FilledAvg)
 	case <-cx.Done():
 		t.Log("no fill received within 15s")

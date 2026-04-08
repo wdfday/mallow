@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 )
 
@@ -16,13 +17,13 @@ type Account struct {
 	AccountType     AccountType `gorm:"type:varchar(50);not null;column:account_type" json:"accountType"`
 	InstitutionName *string     `gorm:"type:varchar(255);column:institution_name" json:"institutionName,omitempty"`
 
-	CurrentBalance   float64  `gorm:"type:decimal(15,2);not null;default:0;column:current_balance" json:"currentBalance"`
-	AvailableBalance *float64 `gorm:"type:decimal(15,2);column:available_balance" json:"availableBalance,omitempty"`
-	Currency         Currency `gorm:"type:varchar(3);default:'VND';column:currency" json:"currency"`
+	CurrentBalance   decimal.Decimal  `gorm:"type:decimal(15,2);not null;default:0;column:current_balance" json:"currentBalance"`
+	AvailableBalance *decimal.Decimal `gorm:"type:decimal(15,2);column:available_balance" json:"availableBalance,omitempty"`
+	Currency         Currency         `gorm:"type:varchar(3);default:'VND';column:currency" json:"currency"`
 
-	AccountNumberMasked    *string  `gorm:"type:varchar(50);column:account_number_masked" json:"accountNumberMasked,omitempty"`
-	AccountNumberEncrypted *string  `gorm:"type:text;column:account_number_encrypted" json:"-"`
-	CreditLimit            *float64 `gorm:"type:decimal(15,2);column:credit_limit" json:"creditLimit,omitempty"`
+	AccountNumberMasked    *string          `gorm:"type:varchar(50);column:account_number_masked" json:"accountNumberMasked,omitempty"`
+	AccountNumberEncrypted *string          `gorm:"type:text;column:account_number_encrypted" json:"-"`
+	CreditLimit            *decimal.Decimal `gorm:"type:decimal(15,2);column:credit_limit" json:"creditLimit,omitempty"`
 
 	IsActive          bool `gorm:"default:true;column:is_active" json:"isActive"`
 	IsPrimary         bool `gorm:"default:false;column:is_primary" json:"isPrimary"`
@@ -47,6 +48,6 @@ func (Account) TableName() string {
 	return "accounts"
 }
 
-func (a *Account) UpdateBalance(amount float64) {
-	a.CurrentBalance = a.CurrentBalance + amount
+func (a *Account) UpdateBalance(amount decimal.Decimal) {
+	a.CurrentBalance = a.CurrentBalance.Add(amount)
 }

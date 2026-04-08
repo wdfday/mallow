@@ -8,7 +8,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"orchestrator/internal/module/worker/domain"
+	"orchestrator/internal/module/bot/domain"
 )
 
 // PostgresBotStore implements domain.BotRepo against the bots table.

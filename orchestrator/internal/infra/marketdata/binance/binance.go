@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/shopspring/decimal"
 )
 
 const (
@@ -28,7 +29,7 @@ func (l *Listener) Name() string { return "binance" }
 // Subscribe connects to Binance combined stream and calls onTick for each trade.
 // Symbols should be Binance trading pairs, e.g. "BTCUSDT", "ETHUSDT".
 // Blocks until ctx is cancelled.
-func (l *Listener) Subscribe(ctx context.Context, symbols []string, onTick func(string, float64)) error {
+func (l *Listener) Subscribe(ctx context.Context, symbols []string, onTick func(string, decimal.Decimal)) error {
 	if len(symbols) == 0 {
 		return fmt.Errorf("binance listener: no symbols provided")
 	}
@@ -47,7 +48,7 @@ func (l *Listener) Subscribe(ctx context.Context, symbols []string, onTick func(
 	}
 }
 
-func (l *Listener) connect(ctx context.Context, symbols []string, onTick func(string, float64)) error {
+func (l *Listener) connect(ctx context.Context, symbols []string, onTick func(string, decimal.Decimal)) error {
 	// Build combined stream URL: btcusdt@trade/ethusdt@trade/...
 	streams := make([]string, len(symbols))
 	for i, s := range symbols {
@@ -75,7 +76,7 @@ func (l *Listener) connect(ctx context.Context, symbols []string, onTick func(st
 }
 
 // handleMessage parses a Binance combined stream message and calls onTick.
-func handleMessage(msg []byte, onTick func(string, float64)) {
+func handleMessage(msg []byte, onTick func(string, decimal.Decimal)) {
 	var env struct {
 		Stream string   `json:"stream"`
 		Data   tradeMsg `json:"data"`
@@ -87,16 +88,9 @@ func handleMessage(msg []byte, onTick func(string, float64)) {
 		return
 	}
 
-	px := parseFloat(env.Data.Price)
-	if px > 0 {
+	if px, err := decimal.NewFromString(env.Data.Price); err == nil && px.IsPositive() {
 		onTick(strings.ToUpper(env.Data.Symbol), px)
 	}
-}
-
-func parseFloat(s string) float64 {
-	var f float64
-	fmt.Sscanf(s, "%f", &f)
-	return f
 }
 
 type tradeMsg struct {

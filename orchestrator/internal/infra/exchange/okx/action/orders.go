@@ -43,7 +43,7 @@ func (c *Client) PlaceOrder(ctx context.Context, req exchange.OrderRequest) (*ex
 		TdMode:     tdMode,
 		Side:       side,
 		OrdType:    ordType,
-		Sz:         fmt.Sprintf("%g", req.Qty),
+		Sz:         req.Qty.String(),
 		ReduceOnly: req.ReduceOnly,
 	}
 
@@ -52,19 +52,19 @@ func (c *Client) PlaceOrder(ctx context.Context, req exchange.OrderRequest) (*ex
 	if req.Market != exchange.MarketFutures && ordType == "market" {
 		body.TgtCcy = "base_ccy"
 	}
-	if ordType == "limit" && req.Price > 0 {
-		body.Px = fmt.Sprintf("%g", req.Price)
+	if ordType == "limit" && req.Price.IsPositive() {
+		body.Px = req.Price.String()
 	}
 
 	// Bracket order: attach TP/SL as algo legs.
-	if req.TakeProfit > 0 || req.StopLoss > 0 {
+	if req.TakeProfit.IsPositive() || req.StopLoss.IsPositive() {
 		leg := attachAlgoOrd{}
-		if req.TakeProfit > 0 {
-			leg.TpTriggerPx = fmt.Sprintf("%g", req.TakeProfit)
+		if req.TakeProfit.IsPositive() {
+			leg.TpTriggerPx = req.TakeProfit.String()
 			leg.TpOrdPx = "-1" // market TP
 		}
-		if req.StopLoss > 0 {
-			leg.SlTriggerPx = fmt.Sprintf("%g", req.StopLoss)
+		if req.StopLoss.IsPositive() {
+			leg.SlTriggerPx = req.StopLoss.String()
 			leg.SlOrdPx = "-1" // market SL
 		}
 		body.AttachAlgoOrds = []attachAlgoOrd{leg}
@@ -169,9 +169,9 @@ func mapOrderDetail(d *orderDetailData) *exchange.OrderResult {
 		Symbol:    d.InstID,
 		Side:      exchange.OrderSide(d.Side),
 		Status:    mapOKXStatus(d.State),
-		Qty:       parseFloat(d.Sz),
-		FilledQty: parseFloat(d.AccFillSz),
-		FilledAvg: parseFloat(d.AvgPx),
+		Qty:       parseDecimal(d.Sz),
+		FilledQty: parseDecimal(d.AccFillSz),
+		FilledAvg: parseDecimal(d.AvgPx),
 	}
 }
 

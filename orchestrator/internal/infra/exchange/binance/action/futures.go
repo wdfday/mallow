@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/adshao/go-binance/v2/futures"
+	"github.com/shopspring/decimal"
 )
 
 // SupportsFutures implements exchange.FuturesTrader — Binance supports futures.
@@ -41,27 +42,27 @@ func (c *Client) SetLeverage(ctx context.Context, symbol string, leverage int, m
 }
 
 // FundingRate returns the latest funding rate for a futures symbol.
-func (c *Client) FundingRate(ctx context.Context, symbol string) (float64, error) {
+func (c *Client) FundingRate(ctx context.Context, symbol string) (decimal.Decimal, error) {
 	rates, err := c.fut.NewFundingRateService().Symbol(symbol).Limit(1).Do(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("binance funding rate %s: %w", symbol, err)
+		return decimal.Zero, fmt.Errorf("binance funding rate %s: %w", symbol, err)
 	}
 	if len(rates) == 0 {
-		return 0, fmt.Errorf("binance: no funding rate data for %s", symbol)
+		return decimal.Zero, fmt.Errorf("binance: no funding rate data for %s", symbol)
 	}
-	return parseFloat(rates[0].FundingRate), nil
+	return parseDecimal(rates[0].FundingRate), nil
 }
 
 // MarkPrice returns the current mark price for a futures symbol.
-func (c *Client) MarkPrice(ctx context.Context, symbol string) (float64, error) {
+func (c *Client) MarkPrice(ctx context.Context, symbol string) (decimal.Decimal, error) {
 	prices, err := c.fut.NewPremiumIndexService().Symbol(symbol).Do(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("binance mark price %s: %w", symbol, err)
+		return decimal.Zero, fmt.Errorf("binance mark price %s: %w", symbol, err)
 	}
 	for _, p := range prices {
 		if p.Symbol == symbol {
-			return parseFloat(p.MarkPrice), nil
+			return parseDecimal(p.MarkPrice), nil
 		}
 	}
-	return 0, fmt.Errorf("binance: mark price not found for %s", symbol)
+	return decimal.Zero, fmt.Errorf("binance: mark price not found for %s", symbol)
 }

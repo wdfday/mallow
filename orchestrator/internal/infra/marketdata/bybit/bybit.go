@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/shopspring/decimal"
 )
 
 const (
@@ -29,7 +29,7 @@ func (l *Listener) Name() string { return "bybit" }
 // Subscribe connects to Bybit public WebSocket and calls onTick for each trade.
 // Symbols should be Bybit trading pairs, e.g. "BTCUSDT".
 // Blocks until ctx is cancelled.
-func (l *Listener) Subscribe(ctx context.Context, symbols []string, onTick func(string, float64)) error {
+func (l *Listener) Subscribe(ctx context.Context, symbols []string, onTick func(string, decimal.Decimal)) error {
 	if len(symbols) == 0 {
 		return fmt.Errorf("bybit listener: no symbols provided")
 	}
@@ -48,7 +48,7 @@ func (l *Listener) Subscribe(ctx context.Context, symbols []string, onTick func(
 	}
 }
 
-func (l *Listener) connect(ctx context.Context, symbols []string, onTick func(string, float64)) error {
+func (l *Listener) connect(ctx context.Context, symbols []string, onTick func(string, decimal.Decimal)) error {
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
@@ -84,7 +84,7 @@ func (l *Listener) connect(ctx context.Context, symbols []string, onTick func(st
 }
 
 // handleMessage parses a Bybit WebSocket message and calls onTick for trades.
-func handleMessage(msg []byte, onTick func(string, float64)) {
+func handleMessage(msg []byte, onTick func(string, decimal.Decimal)) {
 	var push tradePush
 	if err := json.Unmarshal(msg, &push); err != nil {
 		return
@@ -94,8 +94,8 @@ func handleMessage(msg []byte, onTick func(string, float64)) {
 	}
 
 	for _, t := range push.Data {
-		px, err := strconv.ParseFloat(t.Price, 64)
-		if err != nil || px <= 0 {
+		px, err := decimal.NewFromString(t.Price)
+		if err != nil || !px.IsPositive() {
 			continue
 		}
 		onTick(t.Symbol, px)

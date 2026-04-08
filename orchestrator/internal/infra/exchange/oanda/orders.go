@@ -6,8 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strconv"
 	"strings"
+
+	"github.com/shopspring/decimal"
 
 	"orchestrator/internal/infra/exchange"
 )
@@ -17,7 +18,7 @@ import (
 func (c *Client) PlaceOrder(ctx context.Context, req exchange.OrderRequest) (*exchange.OrderResult, error) {
 	units := req.Qty
 	if req.Side == exchange.Sell {
-		units = -units
+		units = units.Neg()
 	}
 
 	var orderReq any
@@ -26,8 +27,8 @@ func (c *Client) PlaceOrder(ctx context.Context, req exchange.OrderRequest) (*ex
 			"order": map[string]any{
 				"type":        "LIMIT",
 				"instrument":  req.Symbol,
-				"units":       fmt.Sprintf("%g", units),
-				"price":       fmt.Sprintf("%g", req.Price),
+				"units":       units.String(),
+				"price":       req.Price.String(),
 				"timeInForce": "GTC",
 			},
 		}
@@ -36,7 +37,7 @@ func (c *Client) PlaceOrder(ctx context.Context, req exchange.OrderRequest) (*ex
 			"order": map[string]any{
 				"type":        "MARKET",
 				"instrument":  req.Symbol,
-				"units":       fmt.Sprintf("%g", units),
+				"units":       units.String(),
 				"timeInForce": "FOK",
 			},
 		}
@@ -55,9 +56,9 @@ func (c *Client) PlaceOrder(ctx context.Context, req exchange.OrderRequest) (*ex
 		id = resp.OrderFillTransaction.ID
 	}
 
-	filledAvg := 0.0
+	var filledAvg decimal.Decimal
 	if resp.OrderFillTransaction.Price != "" {
-		filledAvg, _ = strconv.ParseFloat(resp.OrderFillTransaction.Price, 64)
+		filledAvg, _ = decimal.NewFromString(resp.OrderFillTransaction.Price)
 	}
 
 	return &exchange.OrderResult{

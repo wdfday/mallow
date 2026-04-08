@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
+	"github.com/shopspring/decimal"
 	"go.uber.org/fx"
 
 	"mallow/investment/internal/module/account/service"
@@ -19,8 +20,8 @@ import (
 // that this subscriber needs. Using a local type avoids importing the
 // orchestrator module from within the investment service.
 type portfolioSyncedPayload struct {
-	AccountID string  `json:"account_id"`
-	Cash      float64 `json:"cash"`
+	AccountID string          `json:"account_id"`
+	Cash      decimal.Decimal `json:"cash"`
 }
 
 // Subscriber watches portfolio.synced.> and updates available_balance on the
@@ -75,7 +76,7 @@ func (s *Subscriber) onSynced(msg *nats.Msg) {
 		return
 	}
 
-	if ev.Cash < 0 {
+	if ev.Cash.IsNegative() {
 		s.logger.Warn("portfolio.synced: negative cash, skipping", "account_id", ev.AccountID, "cash", ev.Cash)
 		return
 	}

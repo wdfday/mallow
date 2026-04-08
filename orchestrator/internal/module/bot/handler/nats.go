@@ -10,7 +10,7 @@ import (
 
 	"orchestrator/internal/infra/natsapi"
 	orchsvc "orchestrator/internal/module/orchesrator/service"
-	"orchestrator/internal/module/worker/service"
+	"orchestrator/internal/module/bot/service"
 )
 
 // NATSHandler is the NATS request/reply transport adapter for bot operations.

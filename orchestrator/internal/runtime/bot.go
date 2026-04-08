@@ -8,11 +8,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/shopspring/decimal"
 	"golang.org/x/time/rate"
 
 	"orchestrator/internal/infra/exchange"
+	"orchestrator/internal/module/bot/domain"
 	orchdomain "orchestrator/internal/module/orchesrator/domain"
-	"orchestrator/internal/module/worker/domain"
 	"orchestrator/internal/runtime/core/strategy"
 	"orchestrator/internal/runtime/core/tactics"
 	"orchestrator/internal/runtime/orderbook"
@@ -64,7 +65,7 @@ type Bot struct {
 		ordersFilled    atomic.Int64
 		ordersFailed    atomic.Int64
 		mu              sync.Mutex
-		totalPnL        float64
+		totalPnL        decimal.Decimal
 		winCount        int64
 		lossCount       int64
 	}
@@ -79,8 +80,6 @@ func timePtr(t time.Time) *time.Time { return &t }
 func (b *Bot) RecordDrop() { b.metrics.signalsDropped.Add(1) }
 
 // DeliverSignal enqueues a signal onto the appropriate bot channel.
-// Urgent signals are prioritized and never silently replaced; regular signals
-// use drain-replace semantics so only the freshest entry signal is kept.
 func (b *Bot) DeliverSignal(sig Signal) {
 	if sig.IsUrgent() {
 		select {
@@ -128,7 +127,6 @@ func NewBot(
 }
 
 // BuildBotComponents translates a BotConfig into a Strategy + Tactician.
-// Called by the service layer when creating or updating a bot.
 func BuildBotComponents(cfg domain.BotConfig) (strategy.Strategy, *tactics.Tactician) {
 	minStrength := cfg.Tactic.MinStrength
 	if minStrength <= 0 {
@@ -211,7 +209,7 @@ func (b *Bot) IsRunning() bool {
 	return b.running
 }
 
-// IsPaused reports whether the bot is individually paused (ignores runtime-level pause).
+// IsPaused reports whether the bot is individually paused.
 func (b *Bot) IsPaused() bool {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -219,7 +217,6 @@ func (b *Bot) IsPaused() bool {
 }
 
 // Pause suspends signal processing for this bot without stopping its goroutine.
-// The bot continues to poll pending orders and will still respond to urgent signals.
 func (b *Bot) Pause() {
 	b.mu.Lock()
 	b.paused = true
@@ -240,32 +237,24 @@ func (b *Bot) Resume() {
 }
 
 // Kill stops the bot and immediately closes all open positions via market orders.
-// This is a best-effort emergency flatten — errors are logged but do not abort.
 func (b *Bot) Kill(ctx context.Context) {
 	slog.Warn("bot: kill initiated — flattening all positions", "bot_id", b.id)
-
-	// Pause first so no new signals are processed while we flatten.
 	b.mu.Lock()
 	b.paused = true
 	b.health.Status = "killed"
 	b.mu.Unlock()
-
 	b.flattenPositions(ctx)
 	b.Stop()
 }
 
-// flattenPositions closes every open position held by this bot's orchestrator portfolio.
 func (b *Bot) flattenPositions(ctx context.Context) {
 	positions := b.rt.Portfolio.Positions()
 	for _, pos := range positions {
 		side := exchange.Sell
-		if pos.Qty < 0 {
+		if pos.Qty.IsNegative() {
 			side = exchange.Buy
 		}
-		qty := pos.Qty
-		if qty < 0 {
-			qty = -qty
-		}
+		qty := pos.Qty.Abs()
 		result, err := b.rt.Exchange.PlaceOrder(ctx, exchange.OrderRequest{
 			Symbol: pos.Symbol,
 			Side:   side,
@@ -326,7 +315,6 @@ func (b *Bot) run(ctx context.Context) {
 	defer staleTicker.Stop()
 
 	for {
-		// Priority: drain all urgent signals before processing regular ones.
 		select {
 		case sig := <-b.UrgentSignals:
 			b.handleSignal(ctx, sig)
@@ -363,7 +351,6 @@ func (b *Bot) checkStale() {
 func (b *Bot) handleSignal(ctx context.Context, sig Signal) {
 	b.metrics.signalsReceived.Add(1)
 
-	// Discard stale non-urgent signals — stale close signals are always processed.
 	if !sig.IsUrgent() && !sig.ReceivedAt.IsZero() && time.Since(sig.ReceivedAt) > signalMaxAge {
 		b.metrics.signalsFiltered.Add(1)
 		slog.Debug("bot: stale signal discarded", "bot_id", b.id, "symbol", sig.Symbol, "age", time.Since(sig.ReceivedAt).Truncate(time.Millisecond))
@@ -396,21 +383,20 @@ func (b *Bot) handleSignal(ctx context.Context, sig Signal) {
 	intent := b.strategy.Evaluate(signal)
 
 	if sig.Direction == "close" {
-		if pos := b.rt.Portfolio.GetPosition(sig.Symbol); pos != nil && pos.Qty < 0 {
+		if pos := b.rt.Portfolio.GetPosition(sig.Symbol); pos != nil && pos.Qty.IsNegative() {
 			intent.Action = strategy.ActionExitShort
 		}
 	}
 
-	// Time-stop: if MaxBarsHeld is configured, count each incoming signal as one bar.
-	// When the counter hits the limit, force-close the position.
+	// Time-stop: count each incoming signal as one bar.
 	if maxBars := b.tactician.MaxBarsHeld(); maxBars > 0 {
-		if pos := b.rt.Portfolio.GetPosition(sig.Symbol); pos != nil && pos.Qty != 0 {
+		if pos := b.rt.Portfolio.GetPosition(sig.Symbol); pos != nil && !pos.Qty.IsZero() {
 			b.mu.Lock()
 			b.barsSinceEntry[sig.Symbol]++
 			bars := b.barsSinceEntry[sig.Symbol]
 			b.mu.Unlock()
 			if bars >= maxBars {
-				if pos.Qty > 0 {
+				if pos.Qty.IsPositive() {
 					intent.Action = strategy.ActionExitLong
 				} else {
 					intent.Action = strategy.ActionExitShort
@@ -424,7 +410,7 @@ func (b *Bot) handleSignal(ctx context.Context, sig Signal) {
 		BotID:  b.id,
 		Symbol: sig.Symbol,
 		Intent: intent,
-		ATR:    sig.ATR,
+		ATR:    decimal.NewFromFloat(sig.ATR),
 	}, b.tactician)
 
 	if !reply.Approved {
@@ -435,8 +421,8 @@ func (b *Bot) handleSignal(ctx context.Context, sig Signal) {
 	b.metrics.tradesApproved.Add(1)
 
 	orderType := exchange.Market
-	limitPrice := 0.0
-	if reply.EntryType == "limit" && reply.LimitPrice > 0 {
+	var limitPrice decimal.Decimal
+	if reply.EntryType == "limit" && reply.LimitPrice.IsPositive() {
 		orderType = exchange.Limit
 		limitPrice = reply.LimitPrice
 	}
@@ -502,31 +488,27 @@ func (b *Bot) handleSignal(ctx context.Context, sig Signal) {
 	}
 }
 
-func (b *Bot) applyFill(orderID, symbol, side string, qty, price float64) {
+func (b *Bot) applyFill(orderID, symbol, side string, qty, price decimal.Decimal) {
 	b.metrics.ordersFilled.Add(1)
 
-	// Calculate PnL when closing a long (sell) or covering a short (buy).
-	// Snapshot entry price before ReportFill updates the portfolio position.
-	if price > 0 {
-		if pos := b.rt.Portfolio.GetPosition(symbol); pos != nil && pos.Qty != 0 {
-			var pnl float64
-			if side == "sell" && pos.Qty > 0 {
-				pnl = (price - pos.AvgPrice) * qty
-				// Closing a long — reset time-stop counter.
+	if price.IsPositive() {
+		if pos := b.rt.Portfolio.GetPosition(symbol); pos != nil && !pos.Qty.IsZero() {
+			var pnl decimal.Decimal
+			if side == "sell" && pos.Qty.IsPositive() {
+				pnl = price.Sub(pos.AvgPrice).Mul(qty)
 				b.mu.Lock()
 				delete(b.barsSinceEntry, symbol)
 				b.mu.Unlock()
-			} else if side == "buy" && pos.Qty < 0 {
-				pnl = (pos.AvgPrice - price) * qty
-				// Covering a short — reset time-stop counter.
+			} else if side == "buy" && pos.Qty.IsNegative() {
+				pnl = pos.AvgPrice.Sub(price).Mul(qty)
 				b.mu.Lock()
 				delete(b.barsSinceEntry, symbol)
 				b.mu.Unlock()
 			}
-			if pnl != 0 {
+			if !pnl.IsZero() {
 				b.metrics.mu.Lock()
-				b.metrics.totalPnL += pnl
-				if pnl > 0 {
+				b.metrics.totalPnL = b.metrics.totalPnL.Add(pnl)
+				if pnl.IsPositive() {
 					b.metrics.winCount++
 				} else {
 					b.metrics.lossCount++
@@ -586,12 +568,12 @@ func (b *Bot) pollOrders(ctx context.Context) {
 }
 
 // PlaceOrder submits an order via the full pipeline. Manual/legacy interface.
-func (b *Bot) PlaceOrder(ctx context.Context, symbol string, qty float64, side string) (string, error) {
+func (b *Bot) PlaceOrder(ctx context.Context, symbol string, qty decimal.Decimal, side string) (string, error) {
 	if !b.IsRunning() {
 		return "", fmt.Errorf("bot is not running")
 	}
-	if qty <= 0 {
-		return "", fmt.Errorf("invalid quantity: %f", qty)
+	if !qty.IsPositive() {
+		return "", fmt.Errorf("invalid quantity: %s", qty)
 	}
 	direction := "long"
 	if side == "sell" {

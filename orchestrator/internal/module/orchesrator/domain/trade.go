@@ -1,17 +1,21 @@
 package domain
 
-import "time"
+import (
+	"time"
+
+	"github.com/shopspring/decimal"
+)
 
 // TradeReply is the orchestrator runtime's decision on a trade proposal.
 type TradeReply struct {
 	Approved     bool    `json:"approved"`
-	Qty          float64 `json:"qty"`
-	Side         string  `json:"side"`       // "buy" | "sell"
-	EntryType    string  `json:"entry_type"` // "market" | "limit" | "twap"
-	LimitPrice   float64 `json:"limit_price,omitempty"`
-	StopLoss     float64 `json:"stop_loss,omitempty"`
-	TakeProfit   float64 `json:"take_profit,omitempty"`
-	TrailingStop float64 `json:"trailing_stop,omitempty"` // trailing stop as fraction; 0 = fixed stop
+	Qty          decimal.Decimal `json:"qty"`
+	Side         string          `json:"side"`       // "buy" | "sell"
+	EntryType    string          `json:"entry_type"` // "market" | "limit" | "twap"
+	LimitPrice   decimal.Decimal `json:"limit_price,omitempty"`
+	StopLoss     decimal.Decimal `json:"stop_loss,omitempty"`
+	TakeProfit   decimal.Decimal `json:"take_profit,omitempty"`
+	TrailingStop decimal.Decimal `json:"trailing_stop,omitempty"` // trailing stop as fraction; 0 = fixed stop
 	Reason       string  `json:"reason,omitempty"`        // populated when rejected
 }
 
@@ -22,7 +26,7 @@ type FillReport struct {
 	OrderID   string    `json:"order_id"`
 	Symbol    string    `json:"symbol"`
 	Side      string    `json:"side"` // "buy" | "sell"
-	Qty       float64   `json:"qty"`
-	Price     float64   `json:"price"`
+	Qty       decimal.Decimal `json:"qty"`
+	Price     decimal.Decimal `json:"price"`
 	Timestamp time.Time `json:"timestamp"`
 }

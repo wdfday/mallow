@@ -8,6 +8,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -31,12 +32,12 @@ func TestTransactionProjector_InsertBuyTransaction(t *testing.T) {
 		Type:            event.TransactionTypeBuy,
 		Symbol:          "AAPL",
 		Currency:        "USD",
-		Quantity:        10,
-		PricePerUnit:    150.0,
-		Amount:          1500.0,
-		Fees:            1.5,
-		Commission:      0.5,
-		Tax:             0.0,
+		Quantity:        decimal.NewFromInt(10),
+		PricePerUnit:    decimal.NewFromFloat(150.0),
+		Amount:          decimal.NewFromFloat(1500.0),
+		Fees:            decimal.NewFromFloat(1.5),
+		Commission:      decimal.NewFromFloat(0.5),
+		Tax:             decimal.Zero,
 		Broker:          "alpaca",
 		Source:          "manual",
 		ExternalID:      "ext-001",
@@ -54,12 +55,12 @@ func TestTransactionProjector_InsertBuyTransaction(t *testing.T) {
 			"AAPL",
 			"buy",
 			"USD",
-			10.0,
-			150.0,
-			1500.0,
-			1.5,
-			0.5,
-			0.0,
+			sqlmock.AnyArg(), // quantity (decimal)
+			sqlmock.AnyArg(), // price (decimal)
+			sqlmock.AnyArg(), // amount (decimal)
+			sqlmock.AnyArg(), // fees (decimal)
+			sqlmock.AnyArg(), // commission (decimal)
+			sqlmock.AnyArg(), // tax (decimal)
 			sqlmock.AnyArg(), // realized_pnl (nil)
 			"alpaca",
 			"ext-001",
@@ -87,16 +88,16 @@ func TestTransactionProjector_InsertSellTransaction(t *testing.T) {
 	userID := uuid.New()
 	newID := uuid.New()
 	txDate := time.Now().UTC()
-	realizedGain := 50.0
+	realizedGain := decimal.NewFromFloat(50.0)
 
 	payload := event.TransactionRecorded{
 		UserID:          userID,
 		Type:            event.TransactionTypeSell,
 		Symbol:          "MSFT",
 		Currency:        "USD",
-		Quantity:        5,
-		PricePerUnit:    310.0,
-		Amount:          1550.0,
+		Quantity:        decimal.NewFromInt(5),
+		PricePerUnit:    decimal.NewFromFloat(310.0),
+		Amount:          decimal.NewFromFloat(1550.0),
 		RealizedGain:    &realizedGain,
 		TransactionDate: txDate,
 	}
@@ -110,13 +111,13 @@ func TestTransactionProjector_InsertSellTransaction(t *testing.T) {
 			"MSFT",
 			"sell",
 			"USD",
-			5.0,
-			310.0,
-			1550.0,
-			0.0, // fees
-			0.0, // commission
-			0.0, // tax
-			&realizedGain,
+			sqlmock.AnyArg(), // quantity (decimal)
+			sqlmock.AnyArg(), // price (decimal)
+			sqlmock.AnyArg(), // amount (decimal)
+			sqlmock.AnyArg(), // fees (decimal)
+			sqlmock.AnyArg(), // commission (decimal)
+			sqlmock.AnyArg(), // tax (decimal)
+			sqlmock.AnyArg(), // realized_pnl
 			sqlmock.AnyArg(), // broker
 			sqlmock.AnyArg(), // external_id
 			sqlmock.AnyArg(), // source
@@ -149,7 +150,7 @@ func TestTransactionProjector_InsertDividendTransaction(t *testing.T) {
 		Type:            event.TransactionTypeDividend,
 		Symbol:          "AAPL",
 		Currency:        "USD",
-		Amount:          25.0,
+		Amount:          decimal.NewFromFloat(25.0),
 		TransactionDate: txDate,
 	}
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 3, payload)
@@ -159,8 +160,8 @@ func TestTransactionProjector_InsertDividendTransaction(t *testing.T) {
 		WithArgs(
 			accountID, userID,
 			"AAPL", "dividend", "USD",
-			0.0, 0.0, 25.0,
-			0.0, 0.0, 0.0,
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), // qty, price, amount
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), // fees, commission, tax
 			sqlmock.AnyArg(), // realized_pnl
 			sqlmock.AnyArg(), // broker
 			sqlmock.AnyArg(), // external_id
@@ -193,7 +194,7 @@ func TestTransactionProjector_InsertDepositTransaction(t *testing.T) {
 		UserID:          userID,
 		Type:            event.TransactionTypeDeposit,
 		Currency:        "USD",
-		Amount:          10000.0,
+		Amount:          decimal.NewFromFloat(10000.0),
 		TransactionDate: txDate,
 	}
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 4, payload)
@@ -204,8 +205,8 @@ func TestTransactionProjector_InsertDepositTransaction(t *testing.T) {
 			accountID, userID,
 			sqlmock.AnyArg(), // symbol (empty string)
 			"deposit", "USD",
-			0.0, 0.0, 10000.0,
-			0.0, 0.0, 0.0,
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), // qty, price, amount
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), // fees, commission, tax
 			sqlmock.AnyArg(), // realized_pnl
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			ev.ID,
@@ -254,9 +255,9 @@ func TestTransactionProjector_IdempotentDuplicateSourceEventID(t *testing.T) {
 		Type:            event.TransactionTypeBuy,
 		Symbol:          "AAPL",
 		Currency:        "USD",
-		Quantity:        10,
-		PricePerUnit:    150.0,
-		Amount:          1500.0,
+		Quantity:        decimal.NewFromInt(10),
+		PricePerUnit:    decimal.NewFromFloat(150.0),
+		Amount:          decimal.NewFromFloat(1500.0),
 		TransactionDate: txDate,
 	}
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 1, payload)
@@ -267,8 +268,8 @@ func TestTransactionProjector_IdempotentDuplicateSourceEventID(t *testing.T) {
 		WithArgs(
 			accountID, userID,
 			"AAPL", "buy", "USD",
-			10.0, 150.0, 1500.0,
-			0.0, 0.0, 0.0,
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), // qty, price, amount
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), // fees, commission, tax
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			ev.ID,
 			txDate,

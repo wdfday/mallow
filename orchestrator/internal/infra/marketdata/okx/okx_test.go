@@ -2,17 +2,19 @@ package okx
 
 import (
 	"testing"
+
+	"github.com/shopspring/decimal"
 )
 
 func TestHandleMessage_TradeData(t *testing.T) {
 	var calls []struct {
 		symbol string
-		price  float64
+		price  decimal.Decimal
 	}
-	onTick := func(symbol string, price float64) {
+	onTick := func(symbol string, price decimal.Decimal) {
 		calls = append(calls, struct {
 			symbol string
-			price  float64
+			price  decimal.Decimal
 		}{symbol, price})
 	}
 
@@ -33,20 +35,22 @@ func TestHandleMessage_TradeData(t *testing.T) {
 	if calls[0].symbol != "BTC-USDT" {
 		t.Errorf("call[0] symbol = %q, want BTC-USDT", calls[0].symbol)
 	}
-	if calls[0].price != 42000.5 {
-		t.Errorf("call[0] price = %f, want 42000.5", calls[0].price)
+	want0, _ := decimal.NewFromString("42000.5")
+	if !calls[0].price.Equal(want0) {
+		t.Errorf("call[0] price = %s, want 42000.5", calls[0].price)
 	}
 	if calls[1].symbol != "ETH-USDT" {
 		t.Errorf("call[1] symbol = %q, want ETH-USDT", calls[1].symbol)
 	}
-	if calls[1].price != 2200.0 {
-		t.Errorf("call[1] price = %f, want 2200.0", calls[1].price)
+	want1, _ := decimal.NewFromString("2200.0")
+	if !calls[1].price.Equal(want1) {
+		t.Errorf("call[1] price = %s, want 2200.0", calls[1].price)
 	}
 }
 
 func TestHandleMessage_Pong(t *testing.T) {
 	called := false
-	onTick := func(string, float64) { called = true }
+	onTick := func(string, decimal.Decimal) { called = true }
 
 	handleMessage([]byte("pong"), onTick)
 
@@ -57,7 +61,7 @@ func TestHandleMessage_Pong(t *testing.T) {
 
 func TestHandleMessage_SubscriptionConfirm(t *testing.T) {
 	called := false
-	onTick := func(string, float64) { called = true }
+	onTick := func(string, decimal.Decimal) { called = true }
 
 	msg := []byte(`{"event": "subscribe", "arg": {"channel": "trades", "instId": "BTC-USDT"}}`)
 	handleMessage(msg, onTick)
@@ -69,7 +73,7 @@ func TestHandleMessage_SubscriptionConfirm(t *testing.T) {
 
 func TestHandleMessage_InvalidPrice(t *testing.T) {
 	var calls int
-	onTick := func(string, float64) { calls++ }
+	onTick := func(string, decimal.Decimal) { calls++ }
 
 	msg := []byte(`{
 		"arg": {"channel": "trades", "instId": "BTC-USDT"},

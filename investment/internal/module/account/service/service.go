@@ -9,6 +9,7 @@ import (
 	internalService "mallow/investment/internal/service"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
 
 // AccountCreator defines account creation operations
@@ -28,7 +29,7 @@ type AccountReader interface {
 // AccountUpdater defines account update operations
 type AccountUpdater interface {
 	UpdateAccount(ctx context.Context, id, userID string, req accountdto.UpdateAccountRequest) (*domain.Account, error)
-	UpdateAvailableBalance(ctx context.Context, accountID uuid.UUID, availableBalance float64) error
+	UpdateAvailableBalance(ctx context.Context, accountID uuid.UUID, availableBalance decimal.Decimal) error
 }
 
 // AccountDeleter defines account delete operations

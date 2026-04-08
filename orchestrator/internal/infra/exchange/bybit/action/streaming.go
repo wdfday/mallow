@@ -168,8 +168,8 @@ func (c *Client) handleBybitMessage(msg []byte, handler func(exchange.FillEvent)
 		if d.ExecType != "Trade" {
 			continue
 		}
-		qty := parseFloat(d.ExecQty)
-		if qty == 0 {
+		qty := parseDecimal(d.ExecQty)
+		if !qty.IsPositive() {
 			continue
 		}
 		side := exchange.Buy
@@ -181,7 +181,7 @@ func (c *Client) handleBybitMessage(msg []byte, handler func(exchange.FillEvent)
 			Symbol:    d.Symbol,
 			Side:      side,
 			FilledQty: qty,
-			FilledAvg: parseFloat(d.ExecPrice),
+			FilledAvg: parseDecimal(d.ExecPrice),
 			Timestamp: time.UnixMilli(d.TradeTime).UTC(),
 		})
 	}

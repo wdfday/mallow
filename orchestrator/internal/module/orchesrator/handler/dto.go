@@ -4,9 +4,10 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 
+	botdomain "orchestrator/internal/module/bot/domain"
 	"orchestrator/internal/module/orchesrator/domain"
-	botdomain "orchestrator/internal/module/worker/domain"
 	"orchestrator/internal/runtime/core/portfolio"
 )
 
@@ -51,7 +52,7 @@ type OrchestratorResp struct {
 	ID        uuid.UUID          `json:"id"`
 	AccountID uuid.UUID          `json:"account_id"`
 	Name      string             `json:"name"`
-	Capital   float64            `json:"capital"`
+	Capital   decimal.Decimal    `json:"capital"`
 	Exchange  ExchangeConfigResp `json:"exchange"`
 	Risk      RiskConfigDTO      `json:"risk"`
 	Enabled   bool               `json:"enabled"`
@@ -76,16 +77,16 @@ type BotTacticResp struct {
 }
 
 type BotRiskResp struct {
-	SizeMode          string  `json:"size_mode,omitempty"`
-	RiskPerTradePct   float64 `json:"risk_per_trade_pct,omitempty"`
-	MaxPositionPct    float64 `json:"max_position_pct,omitempty"`
-	FixedQty          float64 `json:"fixed_qty,omitempty"`
-	StopLossATRMult   float64 `json:"stop_loss_atr_mult,omitempty"`
-	TakeProfitATRMult float64 `json:"take_profit_atr_mult,omitempty"`
-	StopLossPct       float64 `json:"stop_loss_pct,omitempty"`
-	TakeProfitPct     float64 `json:"take_profit_pct,omitempty"`
-	TrailingStopPct   float64 `json:"trailing_stop_pct,omitempty"`
-	MaxBarsHeld       int     `json:"max_bars_held,omitempty"`
+	SizeMode          string          `json:"size_mode,omitempty"`
+	RiskPerTradePct   float64         `json:"risk_per_trade_pct,omitempty"`
+	MaxPositionPct    float64         `json:"max_position_pct,omitempty"`
+	FixedQty          decimal.Decimal `json:"fixed_qty,omitempty"`
+	StopLossATRMult   float64         `json:"stop_loss_atr_mult,omitempty"`
+	TakeProfitATRMult float64         `json:"take_profit_atr_mult,omitempty"`
+	StopLossPct       float64         `json:"stop_loss_pct,omitempty"`
+	TakeProfitPct     float64         `json:"take_profit_pct,omitempty"`
+	TrailingStopPct   float64         `json:"trailing_stop_pct,omitempty"`
+	MaxBarsHeld       int             `json:"max_bars_held,omitempty"`
 }
 
 type BotHealthResp struct {
@@ -99,15 +100,15 @@ type BotHealthResp struct {
 }
 
 type BotMetricsResp struct {
-	SignalsReceived int64   `json:"signals_received"`
-	SignalsFiltered int64   `json:"signals_filtered"`
-	TradesApproved  int64   `json:"trades_approved"`
-	OrdersPlaced    int64   `json:"orders_placed"`
-	OrdersFilled    int64   `json:"orders_filled"`
-	OrdersFailed    int64   `json:"orders_failed"`
-	TotalPnL        float64 `json:"total_pnl"`
-	WinCount        int64   `json:"win_count"`
-	LossCount       int64   `json:"loss_count"`
+	SignalsReceived int64           `json:"signals_received"`
+	SignalsFiltered int64           `json:"signals_filtered"`
+	TradesApproved  int64           `json:"trades_approved"`
+	OrdersPlaced    int64           `json:"orders_placed"`
+	OrdersFilled    int64           `json:"orders_filled"`
+	OrdersFailed    int64           `json:"orders_failed"`
+	TotalPnL        decimal.Decimal `json:"total_pnl"`
+	WinCount        int64           `json:"win_count"`
+	LossCount       int64           `json:"loss_count"`
 }
 
 type BotSummaryResp struct {
@@ -135,39 +136,39 @@ type OrchestratorDetailResp struct {
 }
 
 type PortfolioResp struct {
-	InitialCapital float64        `json:"initial_capital"`
-	Cash           float64        `json:"cash"`
-	Equity         float64        `json:"equity"`
-	TotalReturn    float64        `json:"total_return_pct"`
-	CurrentDD      float64        `json:"current_drawdown_pct"`
-	MaxDD          float64        `json:"max_drawdown_pct"`
-	WinRate        float64        `json:"win_rate_pct"`
-	TotalTrades    int            `json:"total_trades"`
-	OpenPositions  int            `json:"open_positions"`
-	DailyPnL       float64        `json:"daily_pnl"`
-	Positions      []PositionResp `json:"positions"`
+	InitialCapital decimal.Decimal `json:"initial_capital"`
+	Cash           decimal.Decimal `json:"cash"`
+	Equity         decimal.Decimal `json:"equity"`
+	TotalReturn    float64         `json:"total_return_pct"`
+	CurrentDD      float64         `json:"current_drawdown_pct"`
+	MaxDD          float64         `json:"max_drawdown_pct"`
+	WinRate        float64         `json:"win_rate_pct"`
+	TotalTrades    int             `json:"total_trades"`
+	OpenPositions  int             `json:"open_positions"`
+	DailyPnL       decimal.Decimal `json:"daily_pnl"`
+	Positions      []PositionResp  `json:"positions"`
 }
 
 type PositionResp struct {
-	Symbol        string    `json:"symbol"`
-	Qty           float64   `json:"qty"`
-	AvgPrice      float64   `json:"avg_price"`
-	CurrentPrice  float64   `json:"current_price"`
-	UnrealizedPnL float64   `json:"unrealized_pnl"`
-	MarketValue   float64   `json:"market_value"`
-	EntryTime     time.Time `json:"entry_time"`
+	Symbol        string          `json:"symbol"`
+	Qty           decimal.Decimal `json:"qty"`
+	AvgPrice      decimal.Decimal `json:"avg_price"`
+	CurrentPrice  decimal.Decimal `json:"current_price"`
+	UnrealizedPnL decimal.Decimal `json:"unrealized_pnl"`
+	MarketValue   decimal.Decimal `json:"market_value"`
+	EntryTime     time.Time       `json:"entry_time"`
 }
 
 type TradeResp struct {
-	Symbol     string    `json:"symbol"`
-	Side       string    `json:"side"`
-	Qty        float64   `json:"qty"`
-	EntryPrice float64   `json:"entry_price"`
-	ExitPrice  float64   `json:"exit_price"`
-	EntryTime  time.Time `json:"entry_time"`
-	ExitTime   time.Time `json:"exit_time"`
-	PnL        float64   `json:"pnl"`
-	PnLPct     float64   `json:"pnl_pct"`
+	Symbol     string          `json:"symbol"`
+	Side       string          `json:"side"`
+	Qty        decimal.Decimal `json:"qty"`
+	EntryPrice decimal.Decimal `json:"entry_price"`
+	ExitPrice  decimal.Decimal `json:"exit_price"`
+	EntryTime  time.Time       `json:"entry_time"`
+	ExitTime   time.Time       `json:"exit_time"`
+	PnL        decimal.Decimal `json:"pnl"`
+	PnLPct     decimal.Decimal `json:"pnl_pct"`
 }
 
 type ActionResp struct {
@@ -361,17 +362,17 @@ func PositionsToResp(positions []portfolio.Position) []PositionResp {
 }
 
 type OrderResp struct {
-	ID             string    `json:"id"`
-	BotID          string    `json:"bot_id"`
-	OrchestratorID string    `json:"orchestrator_id"`
-	Symbol         string    `json:"symbol"`
-	Side           string    `json:"side"`
-	Qty            float64   `json:"qty"`
-	Type           string    `json:"type"`
-	Status         string    `json:"status"`
-	FilledQty      float64   `json:"filled_qty"`
-	FilledAvg      float64   `json:"filled_avg_price"`
-	SubmitTime     time.Time `json:"submitted_at"`
+	ID             string          `json:"id"`
+	BotID          string          `json:"bot_id"`
+	OrchestratorID string          `json:"orchestrator_id"`
+	Symbol         string          `json:"symbol"`
+	Side           string          `json:"side"`
+	Qty            decimal.Decimal `json:"qty"`
+	Type           string          `json:"type"`
+	Status         string          `json:"status"`
+	FilledQty      decimal.Decimal `json:"filled_qty"`
+	FilledAvg      decimal.Decimal `json:"filled_avg_price"`
+	SubmitTime     time.Time       `json:"submitted_at"`
 }
 
 func OrderToResp(o botdomain.Order) OrderResp {

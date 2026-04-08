@@ -6,10 +6,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 
 	pkgmw "mallow/pkg/middleware"
 	"orchestrator/internal/module/orchesrator/service"
-	botservice "orchestrator/internal/module/worker/service"
+	botservice "orchestrator/internal/module/bot/service"
 	"orchestrator/internal/runtime"
 	"orchestrator/internal/shared"
 )
@@ -231,7 +232,7 @@ func (h *Handler) update(c *gin.Context) {
 
 	updateReq := service.UpdateReq{
 		Name:    req.Name,
-		Capital: req.Capital,
+		Capital: decimal.NewFromFloat(req.Capital),
 	}
 	if req.Risk != nil {
 		r := req.Risk.ToDomain()

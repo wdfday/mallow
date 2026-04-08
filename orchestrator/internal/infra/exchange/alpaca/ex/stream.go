@@ -6,6 +6,7 @@ import (
 
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata"
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata/stream"
+	"github.com/shopspring/decimal"
 )
 
 // Subscribe connects to the Alpaca market data WebSocket and subscribes to
@@ -50,7 +51,7 @@ func (c *Client) runStocks(ctx context.Context, symbols []string) error {
 		return err
 	}
 	if err := client.SubscribeToTrades(func(t stream.Trade) {
-		c.dispatchPrice(t.Symbol, t.Price)
+		c.dispatchPrice(t.Symbol, decimal.NewFromFloat(t.Price))
 	}, symbols...); err != nil {
 		return err
 	}
@@ -68,7 +69,7 @@ func (c *Client) runCrypto(ctx context.Context, symbols []string) error {
 		return err
 	}
 	if err := client.SubscribeToTrades(func(t stream.CryptoTrade) {
-		c.dispatchPrice(t.Symbol, t.Price)
+		c.dispatchPrice(t.Symbol, decimal.NewFromFloat(t.Price))
 	}, symbols...); err != nil {
 		return err
 	}

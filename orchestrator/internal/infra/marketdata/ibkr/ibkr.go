@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
 
 const (
@@ -44,7 +46,7 @@ func (l *Listener) Name() string { return "ibkr" }
 // Subscribe polls IBKR market data snapshots and calls onTick for each update.
 // Symbols should be IBKR conids as strings (e.g. "265598" for AAPL).
 // Blocks until ctx is cancelled.
-func (l *Listener) Subscribe(ctx context.Context, symbols []string, onTick func(string, float64)) error {
+func (l *Listener) Subscribe(ctx context.Context, symbols []string, onTick func(string, decimal.Decimal)) error {
 	if len(symbols) == 0 {
 		return fmt.Errorf("ibkr listener: no symbols (conids) provided")
 	}
@@ -65,7 +67,7 @@ func (l *Listener) Subscribe(ctx context.Context, symbols []string, onTick func(
 	}
 }
 
-func (l *Listener) poll(ctx context.Context, conids string, onTick func(string, float64)) {
+func (l *Listener) poll(ctx context.Context, conids string, onTick func(string, decimal.Decimal)) {
 	// Field 31 = last price, field 84 = bid, field 86 = ask
 	url := fmt.Sprintf("%s/iserver/marketdata/snapshot?conids=%s&fields=31", l.BaseURL, conids)
 
@@ -100,7 +102,7 @@ func (l *Listener) poll(ctx context.Context, conids string, onTick func(string, 
 
 	for _, snap := range snapshots {
 		if snap.LastPrice > 0 && snap.ConID != "" {
-			onTick(snap.ConID, snap.LastPrice)
+			onTick(snap.ConID, decimal.NewFromFloat(snap.LastPrice))
 		}
 	}
 }

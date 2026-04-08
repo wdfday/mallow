@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/shopspring/decimal"
 
 	"mallow/investment/internal/middleware"
 	"mallow/investment/internal/module/watchlist/domain"
@@ -74,12 +75,17 @@ func (h *Handler) Add(c *gin.Context) {
 		return
 	}
 
+	var targetPrice *decimal.Decimal
+	if req.TargetPrice != nil {
+		d := decimal.NewFromFloat(*req.TargetPrice)
+		targetPrice = &d
+	}
 	item := &domain.WatchlistItem{
 		UserID:      user.ID,
 		Symbol:      req.Symbol,
 		Name:        req.Name,
 		AssetType:   req.AssetType,
-		TargetPrice: req.TargetPrice,
+		TargetPrice: targetPrice,
 		Notes:       req.Notes,
 	}
 	if err := h.svc.Add(c.Request.Context(), item); err != nil {

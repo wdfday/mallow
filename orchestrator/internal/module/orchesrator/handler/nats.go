@@ -6,11 +6,12 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
+	"github.com/shopspring/decimal"
 
 	"orchestrator/internal/infra/natsapi"
 	"orchestrator/internal/module/orchesrator/domain"
 	"orchestrator/internal/module/orchesrator/service"
-	botservice "orchestrator/internal/module/worker/service"
+	botservice "orchestrator/internal/module/bot/service"
 	"orchestrator/internal/runtime"
 )
 
@@ -250,7 +251,7 @@ func (h *NATSHandler) update(msg *nats.Msg) {
 		return
 	}
 
-	updateReq := service.UpdateReq{Name: raw.Name, Capital: raw.Capital}
+	updateReq := service.UpdateReq{Name: raw.Name, Capital: decimal.NewFromFloat(raw.Capital)}
 	if raw.Risk != nil {
 		r := raw.Risk.ToDomain()
 		updateReq.Risk = &r

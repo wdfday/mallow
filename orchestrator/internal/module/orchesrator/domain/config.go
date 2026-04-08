@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
 
 // OrchestratorConfig is the persisted configuration of one orchestrator instance.
@@ -15,7 +16,7 @@ type OrchestratorConfig struct {
 	UserID       uuid.UUID      `json:"user_id"`    // owner — from identity.users.id
 	AccountID    uuid.UUID      `json:"account_id"` // → investment.accounts.id
 	Name         string         `json:"name"`
-	Capital      float64        `json:"capital"`
+	Capital      decimal.Decimal `json:"capital"`
 	Exchange     ExchangeConfig `json:"exchange"`
 	Risk         RiskConfig     `json:"risk"`
 	Enabled      bool           `json:"enabled"`        // user toggle — gates bot create/delete

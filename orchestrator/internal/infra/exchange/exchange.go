@@ -1,6 +1,10 @@
 package exchange
 
-import "context"
+import (
+	"context"
+
+	"github.com/shopspring/decimal"
+)
 
 // MarketKind identifies which market segment an order targets.
 // The exchange adapter uses this to route to the correct endpoint.
@@ -33,11 +37,11 @@ type OrderRequest struct {
 	Market       MarketKind // routes to spot or futures endpoint
 	Side         OrderSide
 	Type         OrderType
-	Qty          float64
-	Price        float64 // only for limit orders
-	StopLoss     float64 // optional: bracket/OTO fixed stop price
-	TakeProfit   float64 // optional: bracket/OTO limit price
-	TrailingStop float64 // optional: trailing stop as fraction of entry (e.g. 0.02 = 2%); mutually exclusive with StopLoss
+	Qty          decimal.Decimal
+	Price        decimal.Decimal // only for limit orders
+	StopLoss     decimal.Decimal // optional: bracket/OTO fixed stop price
+	TakeProfit   decimal.Decimal // optional: bracket/OTO limit price
+	TrailingStop decimal.Decimal // optional: trailing stop as fraction of entry (e.g. 0.02 = 2%); mutually exclusive with StopLoss
 	ReduceOnly   bool    // futures only: close-only, never opens a position
 }
 
@@ -47,9 +51,9 @@ type OrderResult struct {
 	Symbol    string
 	Side      OrderSide
 	Status    string
-	Qty       float64
-	FilledQty float64
-	FilledAvg float64
+	Qty       decimal.Decimal
+	FilledQty decimal.Decimal
+	FilledAvg decimal.Decimal
 }
 
 // Exchange is the core interface every broker adapter must implement.

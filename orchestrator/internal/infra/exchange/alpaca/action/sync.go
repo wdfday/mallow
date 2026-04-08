@@ -7,6 +7,7 @@ import (
 	"time"
 
 	alpacasdk "github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
+	"github.com/shopspring/decimal"
 
 	"orchestrator/internal/infra/exchange"
 )
@@ -27,14 +28,14 @@ func (c *Client) SyncAccount(_ context.Context, since *time.Time) (*exchange.Acc
 
 	positions := make([]exchange.ExchangePosition, len(sdkPositions))
 	for i, p := range sdkPositions {
-		curPrice := 0.0
+		var curPrice decimal.Decimal
 		if p.CurrentPrice != nil {
-			curPrice = p.CurrentPrice.InexactFloat64()
+			curPrice = *p.CurrentPrice
 		}
 		positions[i] = exchange.ExchangePosition{
 			Symbol:   p.Symbol,
-			Qty:      p.Qty.InexactFloat64(),
-			AvgPrice: p.AvgEntryPrice.InexactFloat64(),
+			Qty:      p.Qty,
+			AvgPrice: p.AvgEntryPrice,
 			CurPrice: curPrice,
 		}
 	}
@@ -60,23 +61,23 @@ func (c *Client) SyncAccount(_ context.Context, since *time.Time) (*exchange.Acc
 		if o.FilledAt == nil {
 			continue
 		}
-		avg := 0.0
+		var avg decimal.Decimal
 		if o.FilledAvgPrice != nil {
-			avg = o.FilledAvgPrice.InexactFloat64()
+			avg = *o.FilledAvgPrice
 		}
 		txns = append(txns, exchange.AccountTransaction{
 			OrderID:  o.ID,
 			Symbol:   o.Symbol,
 			Side:     string(o.Side),
-			Qty:      o.FilledQty.InexactFloat64(),
+			Qty:      o.FilledQty,
 			AvgPrice: avg,
 			FilledAt: *o.FilledAt,
 		})
 	}
 
 	return &exchange.AccountSnapshot{
-		Cash:         acct.Cash.InexactFloat64(),
-		Equity:       acct.Equity.InexactFloat64(),
+		Cash:         acct.Cash,
+		Equity:       acct.Equity,
 		Positions:    positions,
 		Transactions: txns,
 	}, nil

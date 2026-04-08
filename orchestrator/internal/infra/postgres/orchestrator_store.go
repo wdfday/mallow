@@ -24,7 +24,7 @@ type PostgresOrchestratorStore struct {
 //	    user_id         UUID NOT NULL,
 //	    account_id      UUID NOT NULL UNIQUE,
 //	    name            TEXT NOT NULL,
-//	    capital         DOUBLE PRECISION NOT NULL DEFAULT 0,
+//	    capital         NUMERIC(28,10) NOT NULL DEFAULT 0,
 //	    exchange_config JSONB NOT NULL DEFAULT '{}',
 //	    risk_config     JSONB NOT NULL DEFAULT '{}',
 //	    enabled         BOOLEAN NOT NULL DEFAULT FALSE,
@@ -36,6 +36,7 @@ type PostgresOrchestratorStore struct {
 //	CREATE INDEX idx_orchestrators_user_id ON orchestrators(user_id);
 //	-- migration for existing tables:
 //	ALTER TABLE orchestrators ADD COLUMN IF NOT EXISTS last_synced_at TIMESTAMPTZ;
+//	ALTER TABLE orchestrators ALTER COLUMN capital TYPE NUMERIC(28,10) USING capital::NUMERIC;
 func NewOrchestratorStore(db *sql.DB) *PostgresOrchestratorStore {
 	return &PostgresOrchestratorStore{db: db}
 }

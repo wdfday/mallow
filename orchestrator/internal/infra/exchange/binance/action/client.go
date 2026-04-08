@@ -7,6 +7,7 @@ import (
 
 	gobinance "github.com/adshao/go-binance/v2"
 	"github.com/adshao/go-binance/v2/futures"
+	"github.com/shopspring/decimal"
 )
 
 const testnetBaseURL = "https://demo-api.binance.com"
@@ -56,6 +57,12 @@ func New(cfg Config) *Client {
 
 func (c *Client) Name() string { return "binance" }
 
+func parseDecimal(s string) decimal.Decimal {
+	d, _ := decimal.NewFromString(s)
+	return d
+}
+
+// parseFloat is kept for account.go display types that remain float64.
 func parseFloat(s string) float64 {
 	var f float64
 	_, _ = fmt.Sscanf(s, "%f", &f)

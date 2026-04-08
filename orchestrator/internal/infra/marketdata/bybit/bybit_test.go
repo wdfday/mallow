@@ -2,17 +2,19 @@ package bybit
 
 import (
 	"testing"
+
+	"github.com/shopspring/decimal"
 )
 
 func TestHandleMessage_Trade(t *testing.T) {
 	var calls []struct {
 		symbol string
-		price  float64
+		price  decimal.Decimal
 	}
-	onTick := func(symbol string, price float64) {
+	onTick := func(symbol string, price decimal.Decimal) {
 		calls = append(calls, struct {
 			symbol string
-			price  float64
+			price  decimal.Decimal
 		}{symbol, price})
 	}
 
@@ -29,17 +31,19 @@ func TestHandleMessage_Trade(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("expected 2 calls, got %d", len(calls))
 	}
-	if calls[0].symbol != "BTCUSDT" || calls[0].price != 42000.5 {
+	want0, _ := decimal.NewFromString("42000.5")
+	want1, _ := decimal.NewFromString("42001.0")
+	if calls[0].symbol != "BTCUSDT" || !calls[0].price.Equal(want0) {
 		t.Errorf("call[0] = %+v, want BTCUSDT/42000.5", calls[0])
 	}
-	if calls[1].price != 42001.0 {
-		t.Errorf("call[1] price = %f, want 42001.0", calls[1].price)
+	if !calls[1].price.Equal(want1) {
+		t.Errorf("call[1] price = %s, want 42001.0", calls[1].price)
 	}
 }
 
 func TestHandleMessage_EmptyTopic(t *testing.T) {
 	called := false
-	onTick := func(string, float64) { called = true }
+	onTick := func(string, decimal.Decimal) { called = true }
 
 	msg := []byte(`{"topic": "", "data": []}`)
 	handleMessage(msg, onTick)
@@ -51,7 +55,7 @@ func TestHandleMessage_EmptyTopic(t *testing.T) {
 
 func TestHandleMessage_InvalidPrice(t *testing.T) {
 	var calls int
-	onTick := func(string, float64) { calls++ }
+	onTick := func(string, decimal.Decimal) { calls++ }
 
 	msg := []byte(`{
 		"topic": "publicTrade.BTCUSDT",

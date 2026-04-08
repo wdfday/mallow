@@ -10,7 +10,6 @@ import (
 	binanceex "orchestrator/internal/infra/exchange/binance/ex"
 	bybitaction "orchestrator/internal/infra/exchange/bybit/action"
 	bybitex "orchestrator/internal/infra/exchange/bybit/ex"
-	"orchestrator/internal/infra/exchange/ibkr"
 	"orchestrator/internal/infra/exchange/oanda"
 	okxaction "orchestrator/internal/infra/exchange/okx/action"
 	okxex "orchestrator/internal/infra/exchange/okx/ex"
@@ -46,11 +45,6 @@ func (f *exchangeFactory) New(cfg orchdomain.ExchangeConfig) (exchange.Exchange,
 			BaseURL:   cfg.BaseURL,
 			Testnet:   cfg.Testnet,
 		}), nil
-	case "ibkr":
-		return ibkr.New(ibkr.Config{
-			BaseURL:   cfg.BaseURL,
-			AccountID: cfg.AccountID,
-		}), nil
 	case "oanda":
 		return oanda.New(oanda.Config{
 			Token:     cfg.APIKey,
@@ -68,7 +62,7 @@ func (f *exchangeFactory) New(cfg orchdomain.ExchangeConfig) (exchange.Exchange,
 			BaseURL:   baseURL,
 		}), nil
 	default:
-		return nil, fmt.Errorf("unknown exchange: %q (supported: alpaca, binance, okx, bybit, ibkr, oanda)", cfg.BrokerType)
+		return nil, fmt.Errorf("unknown exchange: %q (supported: alpaca, binance, okx, bybit, oanda)", cfg.BrokerType)
 	}
 }
 

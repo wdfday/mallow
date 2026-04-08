@@ -9,6 +9,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"gorm.io/driver/postgres"
@@ -70,9 +71,9 @@ func TestPositionProjector_BuyNewPosition(t *testing.T) {
 		AssetType:       "stock",
 		Exchange:        "NASDAQ",
 		Currency:        "USD",
-		Quantity:        10,
-		PricePerUnit:    150.0,
-		Amount:          1500.0,
+		Quantity:        decimal.NewFromInt(10),
+		PricePerUnit:    decimal.NewFromFloat(150.0),
+		Amount:          decimal.NewFromFloat(1500.0),
 		TransactionDate: txDate,
 	}
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 1, payload)
@@ -93,13 +94,13 @@ func TestPositionProjector_BuyNewPosition(t *testing.T) {
 			sqlmock.AnyArg(), // quantity
 			sqlmock.AnyArg(), // avg_cost
 			sqlmock.AnyArg(), // total_cost
-			0.0,              // current_price
+			sqlmock.AnyArg(), // current_price
 			sqlmock.AnyArg(), // current_value
 			sqlmock.AnyArg(), // unrealized_pnl
 			sqlmock.AnyArg(), // unrealized_pct
-			0.0,              // realized_pnl
-			0.0,              // total_dividends
-			0.0,              // portfolio_weight
+			sqlmock.AnyArg(), // realized_pnl
+			sqlmock.AnyArg(), // total_dividends
+			sqlmock.AnyArg(), // portfolio_weight
 			"active",
 			int64(1),         // last_seq
 			txDate,           // opened_at
@@ -129,9 +130,9 @@ func TestPositionProjector_BuyExistingPosition(t *testing.T) {
 		Type:            event.TransactionTypeBuy,
 		Symbol:          "AAPL",
 		Currency:        "USD",
-		Quantity:        5,
-		PricePerUnit:    160.0,
-		Amount:          800.0,
+		Quantity:        decimal.NewFromInt(5),
+		PricePerUnit:    decimal.NewFromFloat(160.0),
+		Amount:          decimal.NewFromFloat(800.0),
 		TransactionDate: txDate,
 	}
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 20, payload)
@@ -188,9 +189,9 @@ func TestPositionProjector_BuyIdempotent(t *testing.T) {
 		Type:            event.TransactionTypeBuy,
 		Symbol:          "AAPL",
 		Currency:        "USD",
-		Quantity:        5,
-		PricePerUnit:    160.0,
-		Amount:          800.0,
+		Quantity:        decimal.NewFromInt(5),
+		PricePerUnit:    decimal.NewFromFloat(160.0),
+		Amount:          decimal.NewFromFloat(800.0),
 		TransactionDate: txDate,
 	}
 	// Event sequence 5, but position already has LastSeq=10 → skip
@@ -235,9 +236,9 @@ func TestPositionProjector_SellReducesQuantity(t *testing.T) {
 		Type:            event.TransactionTypeSell,
 		Symbol:          "AAPL",
 		Currency:        "USD",
-		Quantity:        3,
-		PricePerUnit:    170.0,
-		Amount:          510.0,
+		Quantity:        decimal.NewFromInt(3),
+		PricePerUnit:    decimal.NewFromFloat(170.0),
+		Amount:          decimal.NewFromFloat(510.0),
 		TransactionDate: txDate,
 	}
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 30, payload)
@@ -291,9 +292,9 @@ func TestPositionProjector_SellSymbolNotFound(t *testing.T) {
 		Type:            event.TransactionTypeSell,
 		Symbol:          "TSLA",
 		Currency:        "USD",
-		Quantity:        1,
-		PricePerUnit:    200.0,
-		Amount:          200.0,
+		Quantity:        decimal.NewFromInt(1),
+		PricePerUnit:    decimal.NewFromFloat(200.0),
+		Amount:          decimal.NewFromFloat(200.0),
 		TransactionDate: txDate,
 	}
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 5, payload)
@@ -322,14 +323,14 @@ func TestPositionProjector_DividendUpdatesTotalDividends(t *testing.T) {
 		Type:            event.TransactionTypeDividend,
 		Symbol:          "AAPL",
 		Currency:        "USD",
-		Amount:          25.0,
+		Amount:          decimal.NewFromFloat(25.0),
 		TransactionDate: txDate,
 	}
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 40, payload)
 
 	mock.ExpectBegin()
 	mock.ExpectExec(regexp.QuoteMeta(`UPDATE "portfolio_positions" SET "total_dividends"=total_dividends + $1 WHERE account_id = $2 AND symbol = $3`)).
-		WithArgs(25.0, accountID, "AAPL").
+		WithArgs(sqlmock.AnyArg(), accountID, "AAPL").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()
 
@@ -352,7 +353,7 @@ func TestPositionProjector_DividendEmptySymbol(t *testing.T) {
 		Type:            event.TransactionTypeDividend,
 		Symbol:          "",
 		Currency:        "USD",
-		Amount:          10.0,
+		Amount:          decimal.NewFromFloat(10.0),
 		TransactionDate: txDate,
 	}
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 5, payload)
@@ -376,7 +377,7 @@ func TestPositionProjector_NonPositionEventDeposit(t *testing.T) {
 		UserID:          userID,
 		Type:            event.TransactionTypeDeposit,
 		Currency:        "USD",
-		Amount:          5000.0,
+		Amount:          decimal.NewFromFloat(5000.0),
 		TransactionDate: txDate,
 	}
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 1, payload)

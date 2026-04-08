@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/shopspring/decimal"
 )
 
 const (
@@ -142,7 +143,7 @@ func (c *Client) handleMessage(msg []byte) {
 			return
 		}
 		for _, d := range trades {
-			if price := parseFloat(d.Px); price > 0 {
+			if price, err := decimal.NewFromString(d.Px); err == nil && price.IsPositive() {
 				c.dispatchPrice(d.InstID, price)
 			}
 		}

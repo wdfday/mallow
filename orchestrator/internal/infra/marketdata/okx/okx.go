@@ -5,11 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/shopspring/decimal"
 )
 
 const (
@@ -30,7 +30,7 @@ func (l *Listener) Name() string { return "okx" }
 // Subscribe connects to OKX public WebSocket and calls onTick for each trade.
 // Symbols should be OKX instrument IDs, e.g. "BTC-USDT".
 // Blocks until ctx is cancelled. Reconnects automatically on failure.
-func (l *Listener) Subscribe(ctx context.Context, symbols []string, onTick func(string, float64)) error {
+func (l *Listener) Subscribe(ctx context.Context, symbols []string, onTick func(string, decimal.Decimal)) error {
 	if len(symbols) == 0 {
 		return fmt.Errorf("okx listener: no symbols provided")
 	}
@@ -49,7 +49,7 @@ func (l *Listener) Subscribe(ctx context.Context, symbols []string, onTick func(
 	}
 }
 
-func (l *Listener) connect(ctx context.Context, symbols []string, onTick func(string, float64)) error {
+func (l *Listener) connect(ctx context.Context, symbols []string, onTick func(string, decimal.Decimal)) error {
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
@@ -85,7 +85,7 @@ func (l *Listener) connect(ctx context.Context, symbols []string, onTick func(st
 }
 
 // handleMessage parses a single OKX WebSocket message and calls onTick for trades.
-func handleMessage(msg []byte, onTick func(string, float64)) {
+func handleMessage(msg []byte, onTick func(string, decimal.Decimal)) {
 	raw := strings.TrimSpace(string(msg))
 	if raw == "pong" {
 		return
@@ -102,8 +102,8 @@ func handleMessage(msg []byte, onTick func(string, float64)) {
 	}
 
 	for _, t := range push.Data {
-		px, err := strconv.ParseFloat(t.Px, 64)
-		if err != nil || px <= 0 {
+		px, err := decimal.NewFromString(t.Px)
+		if err != nil || !px.IsPositive() {
 			continue
 		}
 		onTick(t.InstID, px)

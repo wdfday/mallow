@@ -5,11 +5,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"mallow/investment/internal/module/account/domain"
 	accountdto "mallow/investment/internal/module/account/dto"
 	"mallow/investment/internal/shared"
-
-	"github.com/google/uuid"
 )
 
 // CreateAccount creates a new account for a user
@@ -28,7 +28,7 @@ func (s *accountService) CreateAccount(ctx context.Context, userID string, req a
 		UserID:            userUUID,
 		AccountName:       strings.TrimSpace(req.AccountName),
 		AccountType:       accountType,
-		CurrentBalance:    0,
+		CurrentBalance:    decimal.Zero,
 		Currency:          domain.CurrencyVND,
 		IsActive:          true,
 		IsPrimary:         false,
@@ -40,10 +40,11 @@ func (s *accountService) CreateAccount(ctx context.Context, userID string, req a
 		account.InstitutionName = normalizeString(*req.InstitutionName)
 	}
 	if req.CurrentBalance != nil {
-		account.CurrentBalance = *req.CurrentBalance
+		account.CurrentBalance = decimal.NewFromFloat(*req.CurrentBalance)
 	}
 	if req.AvailableBalance != nil {
-		account.AvailableBalance = req.AvailableBalance
+		d := decimal.NewFromFloat(*req.AvailableBalance)
+		account.AvailableBalance = &d
 	}
 	if req.Currency != nil {
 		account.Currency = domain.Currency(strings.ToUpper(strings.TrimSpace(*req.Currency)))
@@ -76,7 +77,8 @@ func (s *accountService) CreateAccount(ctx context.Context, userID string, req a
 		account.IncludeInNetWorth = *req.IncludeInNetWorth
 	}
 	if req.CreditLimit != nil {
-		account.CreditLimit = req.CreditLimit
+		d := decimal.NewFromFloat(*req.CreditLimit)
+		account.CreditLimit = &d
 	}
 
 	account.CreatedAt = time.Now().UTC()
@@ -99,7 +101,7 @@ func (s *accountService) CreateDefaultCashAccount(ctx context.Context, userID st
 		UserID:            userUUID,
 		AccountName:       "Cash",
 		AccountType:       domain.AccountTypeCash,
-		CurrentBalance:    0,
+		CurrentBalance:    decimal.Zero,
 		Currency:          domain.CurrencyVND,
 		IsActive:          true,
 		IsPrimary:         true,

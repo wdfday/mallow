@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"github.com/shopspring/decimal"
 )
 
 // SupportsFutures implements exchange.FuturesTrader — OKX supports SWAP perpetuals.
@@ -42,7 +44,7 @@ func (c *Client) SetLeverage(ctx context.Context, symbol string, leverage int, m
 }
 
 // FundingRate returns the latest funding rate for a SWAP instrument.
-func (c *Client) FundingRate(ctx context.Context, symbol string) (float64, error) {
+func (c *Client) FundingRate(ctx context.Context, symbol string) (decimal.Decimal, error) {
 	path := "/api/v5/public/funding-rate?instId=" + symbol
 
 	var resp struct {
@@ -53,16 +55,16 @@ func (c *Client) FundingRate(ctx context.Context, symbol string) (float64, error
 	}
 
 	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
-		return 0, fmt.Errorf("okx funding rate %s: %w", symbol, err)
+		return decimal.Zero, fmt.Errorf("okx funding rate %s: %w", symbol, err)
 	}
 	if resp.Code != "0" || len(resp.Data) == 0 {
-		return 0, fmt.Errorf("okx funding rate: code=%s msg=%s", resp.Code, resp.Msg)
+		return decimal.Zero, fmt.Errorf("okx funding rate: code=%s msg=%s", resp.Code, resp.Msg)
 	}
-	return parseFloat(resp.Data[0].FundingRate), nil
+	return parseDecimal(resp.Data[0].FundingRate), nil
 }
 
 // MarkPrice returns the current mark price for a SWAP instrument.
-func (c *Client) MarkPrice(ctx context.Context, symbol string) (float64, error) {
+func (c *Client) MarkPrice(ctx context.Context, symbol string) (decimal.Decimal, error) {
 	path := "/api/v5/public/mark-price?instType=SWAP&instId=" + symbol
 
 	var resp struct {
@@ -73,10 +75,10 @@ func (c *Client) MarkPrice(ctx context.Context, symbol string) (float64, error) 
 	}
 
 	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
-		return 0, fmt.Errorf("okx mark price %s: %w", symbol, err)
+		return decimal.Zero, fmt.Errorf("okx mark price %s: %w", symbol, err)
 	}
 	if resp.Code != "0" || len(resp.Data) == 0 {
-		return 0, fmt.Errorf("okx mark price: code=%s msg=%s", resp.Code, resp.Msg)
+		return decimal.Zero, fmt.Errorf("okx mark price: code=%s msg=%s", resp.Code, resp.Msg)
 	}
-	return parseFloat(resp.Data[0].MarkPx), nil
+	return parseDecimal(resp.Data[0].MarkPx), nil
 }

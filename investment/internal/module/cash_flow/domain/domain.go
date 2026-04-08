@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
 
 // PortfolioCashFlow is the read model for dividends, deposits, withdrawals, and fees.
@@ -12,8 +13,8 @@ type PortfolioCashFlow struct {
 	AccountID uuid.UUID `gorm:"type:uuid;not null;index;column:account_id" json:"account_id"`
 	UserID    uuid.UUID `gorm:"type:uuid;not null;index;column:user_id" json:"user_id"`
 
-	FlowType string  `gorm:"type:varchar(20);not null;index;column:flow_type" json:"flow_type"` // dividend|deposit|withdrawal|fee
-	Amount   float64 `gorm:"type:decimal(15,2);not null;column:amount" json:"amount"`
+	FlowType string          `gorm:"type:varchar(20);not null;index;column:flow_type" json:"flow_type"` // dividend|deposit|withdrawal|fee
+	Amount   decimal.Decimal `gorm:"type:decimal(15,2);not null;column:amount" json:"amount"`
 	Currency string  `gorm:"type:varchar(3);not null;default:'USD';column:currency" json:"currency"`
 
 	Symbol      string `gorm:"type:varchar(20);column:symbol" json:"symbol,omitempty"` // nullable — dividends have symbol, deposits don't

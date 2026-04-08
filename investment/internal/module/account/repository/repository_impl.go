@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/shopspring/decimal"
 	"mallow/investment/internal/module/account/domain"
 	"mallow/investment/internal/shared"
 
@@ -127,12 +128,12 @@ func (r *gormRepository) SoftDelete(ctx context.Context, id string) error {
 // UpdateBalance updates account balance atomically
 // balanceDelta: positive for credit, negative for debit
 // This method uses the repository's db connection. For ACID transactions, use UpdateBalanceWithTx instead.
-func (r *gormRepository) UpdateBalance(ctx context.Context, accountID string, balanceDelta float64) error {
+func (r *gormRepository) UpdateBalance(ctx context.Context, accountID string, balanceDelta decimal.Decimal) error {
 	return r.UpdateBalanceWithTx(r.db.WithContext(ctx), accountID, balanceDelta)
 }
 
 // UpdateBalanceWithTx updates account balance within an existing database transaction
-func (r *gormRepository) UpdateBalanceWithTx(tx *gorm.DB, accountID string, balanceDelta float64) error {
+func (r *gormRepository) UpdateBalanceWithTx(tx *gorm.DB, accountID string, balanceDelta decimal.Decimal) error {
 	result := tx.Model(&domain.Account{}).
 		Where("id = ? AND deleted_at IS NULL", accountID).
 		Update("current_balance", gorm.Expr("current_balance + ?", balanceDelta))

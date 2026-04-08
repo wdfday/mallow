@@ -59,8 +59,9 @@ func (p *DerivativeProjector) handleOpen(ctx context.Context, ev event.Investmen
 		OpenedAt:       tx.TransactionDate,
 		OpenEventID:    ev.ID,
 	}
-	if tx.StrikePrice > 0 {
-		pos.StrikePrice = &tx.StrikePrice
+	if tx.StrikePrice.IsPositive() {
+		sp := tx.StrikePrice
+		pos.StrikePrice = &sp
 	}
 	if tx.OptionType != "" {
 		pos.OptionType = tx.OptionType
@@ -89,15 +90,15 @@ func (p *DerivativeProjector) handleClose(ctx context.Context, ev event.Investme
 		return err
 	}
 
-	realized := (tx.PricePerUnit - pos.EntryPrice) * tx.Quantity * pos.ContractSize
+	realized := tx.PricePerUnit.Sub(pos.EntryPrice).Mul(tx.Quantity).Mul(pos.ContractSize)
 	if pos.Side == "short" {
-		realized = -realized
+		realized = realized.Neg()
 	}
 
 	now := time.Now().UTC()
 	pos.Status = "closed"
 	pos.ClosedAt = &now
-	pos.RealizedPnL += realized
+	pos.RealizedPnL = pos.RealizedPnL.Add(realized)
 	pos.CloseEventID = &ev.ID
 	return p.db.WithContext(ctx).Save(&pos).Error
 }

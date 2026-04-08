@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
+	"github.com/shopspring/decimal"
 
 	"orchestrator/internal/infra/exchange"
 	"orchestrator/internal/infra/natsapi"
@@ -22,13 +23,6 @@ import (
 // OrchestratorRuntime is the live in-memory state for one orchestrator instance.
 // Holds account-level shared resources: Exchange, Portfolio, OrderBook, RiskManager.
 // Per-bot resources (strategy, tactician) live on the Bot itself.
-//
-// Lifecycle:
-//
-//	Spawn()  → runtime created, status = running
-//	Pause()  → all bots stopped, signals rejected
-//	Resume() → previously-running bots restarted
-//	Teardown() → runtime destroyed
 //
 // RiskManager is the interface for account-level risk controls consumed by OrchestratorRuntime.
 type RiskManager interface {
@@ -47,7 +41,6 @@ type OrchestratorRuntime struct {
 	Exchange  exchange.Exchange
 
 	// fillCh decouples the broker WS goroutine from NATS publishing.
-	// The WS callback drops fills here non-blocking; a dedicated goroutine drains and publishes.
 	fillCh chan exchange.FillEvent
 
 	mu     sync.RWMutex
@@ -55,11 +48,10 @@ type OrchestratorRuntime struct {
 	paused bool
 
 	// lastSyncAtNano stores the last successful sync time as UnixNano (0 = never).
-	// Atomic so Sync() and LastSyncAt() need no extra lock.
 	lastSyncAtNano atomic.Int64
 
 	pricesMu sync.RWMutex
-	prices   map[string]float64 // last known price per symbol
+	prices   map[string]decimal.Decimal // last known price per symbol
 
 	tradeMu      sync.Mutex
 	requestCount atomic.Int64
@@ -75,7 +67,6 @@ func (r *OrchestratorRuntime) LastSyncAt() time.Time {
 	return time.Unix(0, ns).UTC()
 }
 
-// storeSyncAt atomically advances lastSyncAtNano; ignores t if it is older than the current value.
 func (r *OrchestratorRuntime) storeSyncAt(t time.Time) {
 	ns := t.UnixNano()
 	for {
@@ -91,7 +82,6 @@ func (r *OrchestratorRuntime) storeSyncAt(t time.Time) {
 
 // Sync fetches current account state from the exchange REST API, updates the in-memory
 // portfolio, and publishes a portfolio.synced event to NATS for the investment service.
-// No-op if the exchange does not implement AccountSyncer.
 func (r *OrchestratorRuntime) Sync(ctx context.Context, nc *nats.Conn, js nats.JetStreamContext) error {
 	syncer, ok := r.Exchange.(exchange.AccountSyncer)
 	if !ok {
@@ -124,10 +114,9 @@ func (r *OrchestratorRuntime) Sync(ctx context.Context, nc *nats.Conn, js nats.J
 	}
 	r.Portfolio.ApplySync(snap.Cash, pfPositions)
 
-	// Seed price cache from synced positions so ProcessTrade has a price immediately.
 	r.pricesMu.Lock()
 	for _, p := range snap.Positions {
-		if p.CurPrice > 0 {
+		if p.CurPrice.IsPositive() {
 			r.prices[p.Symbol] = p.CurPrice
 		}
 	}
@@ -148,7 +137,6 @@ func (r *OrchestratorRuntime) Sync(ctx context.Context, nc *nats.Conn, js nats.J
 			FilledAt: t.FilledAt,
 		}
 		natsTxns = append(natsTxns, msg)
-		// Only forward transactions not yet published (first sync or after lastSyncAt).
 		if prevSyncAt.IsZero() || t.FilledAt.After(prevSyncAt) {
 			newTxns = append(newTxns, msg)
 		}
@@ -167,7 +155,6 @@ func (r *OrchestratorRuntime) Sync(ctx context.Context, nc *nats.Conn, js nats.J
 	if nc != nil {
 		natsapi.PublishPortfolioSync(nc, r.OrchestratorID.String(), r.AccountID.String(), snap.Cash, snap.Equity, natsPositions, natsTxns, now)
 
-		// Publish new transactions to the investment JetStream stream for event sourcing.
 		if js != nil && len(newTxns) > 0 {
 			orchID := r.OrchestratorID.String()
 			accountID := r.AccountID.String()
@@ -181,7 +168,6 @@ func (r *OrchestratorRuntime) Sync(ctx context.Context, nc *nats.Conn, js nats.J
 }
 
 // NewOrchestratorRuntime creates a runtime and starts its circuit-breaker reset ticker.
-// lastSyncedAt, if non-nil, seeds the sync cursor so restarts replay only the gap.
 func NewOrchestratorRuntime(
 	orchID, accountID, userID uuid.UUID,
 	brokerType string,
@@ -202,7 +188,7 @@ func NewOrchestratorRuntime(
 		Exchange:       ex,
 		fillCh:         make(chan exchange.FillEvent, 128),
 		bots:           make(map[string]*Bot),
-		prices:         make(map[string]float64),
+		prices:         make(map[string]decimal.Decimal),
 		resetTicker:    time.NewTicker(1 * time.Minute),
 	}
 	if lastSyncedAt != nil {
@@ -221,15 +207,11 @@ type TradeProposal struct {
 	BotID  string
 	Symbol string
 	Intent strategy.Intent
-	Price  float64 // optional: resolved from price cache when zero
-	ATR    float64
+	Price  decimal.Decimal // optional: resolved from price cache when zero
+	ATR    decimal.Decimal
 }
 
 // ProcessTrade validates a trade against account-level guards and sizes via the bot's tactician.
-// Pipeline: circuit breaker → risk check → price resolve → tactics (per-bot) → place order.
-// OrderBook is tracked for reference only — it does not block execution.
-// The tactician is owned by the bot but runs here under the account-level lock
-// to guarantee consistent reads of portfolio equity and position state.
 func (r *OrchestratorRuntime) ProcessTrade(
 	ctx context.Context,
 	proposal TradeProposal,
@@ -251,15 +233,13 @@ func (r *OrchestratorRuntime) ProcessTrade(
 		return orchdomain.TradeReply{Approved: false, Reason: "risk: trading halted"}
 	}
 
-	// Resolve price: caller may omit it; fall back to last known price from cache/portfolio,
-	// then on-demand via PriceFetcher if the exchange supports it.
 	price := proposal.Price
-	if price <= 0 {
+	if price.IsZero() {
 		price = r.lastKnownPrice(proposal.Symbol)
 	}
-	if price <= 0 {
+	if price.IsZero() {
 		if pf, ok := r.Exchange.(exchange.PriceFetcher); ok {
-			if p, err := pf.GetCurrentPrice(ctx, proposal.Symbol); err == nil && p > 0 {
+			if p, err := pf.GetCurrentPrice(ctx, proposal.Symbol); err == nil && p.IsPositive() {
 				price = p
 				r.pricesMu.Lock()
 				r.prices[proposal.Symbol] = p
@@ -267,11 +247,11 @@ func (r *OrchestratorRuntime) ProcessTrade(
 			}
 		}
 	}
-	if price <= 0 {
+	if price.IsZero() {
 		return orchdomain.TradeReply{Approved: false, Reason: "no price available for " + proposal.Symbol}
 	}
 
-	posQty := 0.0
+	posQty := decimal.Zero
 	if pos := r.Portfolio.GetPosition(proposal.Symbol); pos != nil {
 		posQty = pos.Qty
 	}
@@ -282,7 +262,7 @@ func (r *OrchestratorRuntime) ProcessTrade(
 		PositionQty: posQty,
 	})
 
-	if plan.Qty <= 0 {
+	if !plan.Qty.IsPositive() {
 		return orchdomain.TradeReply{Approved: false, Reason: "tactics: zero quantity after sizing"}
 	}
 
@@ -307,7 +287,7 @@ func (r *OrchestratorRuntime) ProcessTrade(
 	}
 }
 
-// TrackOrder records a placed order in the orderbook for duplicate detection.
+// TrackOrder records a placed order in the orderbook.
 func (r *OrchestratorRuntime) TrackOrder(order orderbook.PendingOrder) {
 	r.OrderBook.TrackOrder(order)
 }
@@ -319,7 +299,7 @@ func (r *OrchestratorRuntime) ReportFill(fill orchdomain.FillReport) {
 
 	r.OrderBook.RemoveOrder(fill.AccountID, fill.OrderID)
 
-	if fill.Price > 0 {
+	if fill.Price.IsPositive() {
 		r.pricesMu.Lock()
 		r.prices[fill.Symbol] = fill.Price
 		r.pricesMu.Unlock()
@@ -336,7 +316,7 @@ func (r *OrchestratorRuntime) ReportFill(fill orchdomain.FillReport) {
 		Side:       pfSide,
 		Qty:        fill.Qty,
 		Price:      fill.Price,
-		Commission: 0,
+		Commission: decimal.Zero,
 	})
 
 	slog.Info("runtime: fill applied",
@@ -349,9 +329,8 @@ func (r *OrchestratorRuntime) ReportFill(fill orchdomain.FillReport) {
 }
 
 // UpdatePrice stores the latest market price for a symbol and forwards it to the portfolio.
-// Called by the market data listener and fill events so ProcessTrade always has a price.
-func (r *OrchestratorRuntime) UpdatePrice(symbol string, price float64) {
-	if price <= 0 {
+func (r *OrchestratorRuntime) UpdatePrice(symbol string, price decimal.Decimal) {
+	if !price.IsPositive() {
 		return
 	}
 	r.pricesMu.Lock()
@@ -360,22 +339,20 @@ func (r *OrchestratorRuntime) UpdatePrice(symbol string, price float64) {
 	r.Portfolio.UpdatePrice(symbol, price)
 }
 
-// lastKnownPrice returns the last price seen for symbol, falling back to the portfolio position price.
-func (r *OrchestratorRuntime) lastKnownPrice(symbol string) float64 {
+func (r *OrchestratorRuntime) lastKnownPrice(symbol string) decimal.Decimal {
 	r.pricesMu.RLock()
 	p := r.prices[symbol]
 	r.pricesMu.RUnlock()
-	if p > 0 {
+	if p.IsPositive() {
 		return p
 	}
 	if pos := r.Portfolio.GetPosition(symbol); pos != nil {
 		return pos.CurrentPrice
 	}
-	return 0
+	return decimal.Zero
 }
 
 // EnqueueFill drops a broker fill event into the runtime's fill channel non-blocking.
-// Called from the broker WS goroutine — must never block.
 func (r *OrchestratorRuntime) EnqueueFill(ev exchange.FillEvent) {
 	select {
 	case r.fillCh <- ev:
@@ -402,7 +379,6 @@ func (r *OrchestratorRuntime) IsPaused() bool {
 }
 
 // Pause suspends the runtime — all bots will ignore incoming signals.
-// Returns IDs of bots that were running, so the caller can stop their goroutines.
 func (r *OrchestratorRuntime) Pause() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -432,7 +408,7 @@ func (r *OrchestratorRuntime) Resume() []string {
 	return toRestart
 }
 
-// AddBot registers a bot with this runtime. The bot's ID is used as the map key.
+// AddBot registers a bot with this runtime.
 func (r *OrchestratorRuntime) AddBot(bot *Bot) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -468,7 +444,6 @@ func (r *OrchestratorRuntime) RunningBotIDs() []string {
 }
 
 // DispatchBotSignal routes a signal to the named bot owned by this runtime.
-// Returns true when the bot exists, even if the bot later filters the signal.
 func (r *OrchestratorRuntime) DispatchBotSignal(botID string, sig Signal) bool {
 	r.mu.RLock()
 	bot, ok := r.bots[botID]

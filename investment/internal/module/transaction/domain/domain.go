@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
 
 // PortfolioTransaction is the read model for transaction history.
@@ -16,13 +17,13 @@ type PortfolioTransaction struct {
 	TxType   string `gorm:"type:varchar(30);not null;index;column:tx_type" json:"tx_type"` // buy|sell|dividend|...
 	Currency string `gorm:"type:varchar(3);not null;default:'USD';column:currency" json:"currency"`
 
-	Quantity    float64  `gorm:"type:decimal(20,8);column:quantity" json:"quantity,omitempty"`
-	Price       float64  `gorm:"type:decimal(15,2);column:price" json:"price,omitempty"`
-	Amount      float64  `gorm:"type:decimal(15,2);not null;column:amount" json:"amount"`
-	Fees        float64  `gorm:"type:decimal(15,2);default:0;column:fees" json:"fees"`
-	Commission  float64  `gorm:"type:decimal(15,2);default:0;column:commission" json:"commission"`
-	Tax         float64  `gorm:"type:decimal(15,2);default:0;column:tax" json:"tax"`
-	RealizedPnL *float64 `gorm:"type:decimal(15,2);column:realized_pnl" json:"realized_pnl,omitempty"`
+	Quantity    decimal.Decimal  `gorm:"type:decimal(20,8);column:quantity" json:"quantity,omitempty"`
+	Price       decimal.Decimal  `gorm:"type:decimal(15,2);column:price" json:"price,omitempty"`
+	Amount      decimal.Decimal  `gorm:"type:decimal(15,2);not null;column:amount" json:"amount"`
+	Fees        decimal.Decimal  `gorm:"type:decimal(15,2);default:0;column:fees" json:"fees"`
+	Commission  decimal.Decimal  `gorm:"type:decimal(15,2);default:0;column:commission" json:"commission"`
+	Tax         decimal.Decimal  `gorm:"type:decimal(15,2);default:0;column:tax" json:"tax"`
+	RealizedPnL *decimal.Decimal `gorm:"type:decimal(15,2);column:realized_pnl" json:"realized_pnl,omitempty"`
 
 	Broker     string `gorm:"type:varchar(100);column:broker" json:"broker,omitempty"`
 	ExternalID string `gorm:"type:varchar(255);index;column:external_id" json:"external_id,omitempty"`

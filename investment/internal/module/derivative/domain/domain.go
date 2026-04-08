@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
 
 // DerivativePosition is the read model for futures/options/perps/swaps.
@@ -18,21 +19,21 @@ type DerivativePosition struct {
 	Side           string `gorm:"type:varchar(10);not null;column:side" json:"side"`                       // long|short
 	Currency       string `gorm:"type:varchar(3);not null;default:'USD';column:currency" json:"currency"`
 
-	Quantity         float64  `gorm:"type:decimal(20,8);not null;column:quantity" json:"quantity"`
-	EntryPrice       float64  `gorm:"type:decimal(15,2);not null;column:entry_price" json:"entry_price"`
-	CurrentPrice     float64  `gorm:"type:decimal(15,2);default:0;column:current_price" json:"current_price"`
-	Leverage         float64  `gorm:"type:decimal(10,2);default:1;column:leverage" json:"leverage"`
-	MarginUsed       float64  `gorm:"type:decimal(15,2);default:0;column:margin_used" json:"margin_used"`
-	LiquidationPrice *float64 `gorm:"type:decimal(15,2);column:liquidation_price" json:"liquidation_price,omitempty"`
-	ContractSize     float64  `gorm:"type:decimal(15,4);default:1;column:contract_size" json:"contract_size"`
+	Quantity         decimal.Decimal  `gorm:"type:decimal(20,8);not null;column:quantity" json:"quantity"`
+	EntryPrice       decimal.Decimal  `gorm:"type:decimal(15,2);not null;column:entry_price" json:"entry_price"`
+	CurrentPrice     decimal.Decimal  `gorm:"type:decimal(15,2);default:0;column:current_price" json:"current_price"`
+	Leverage         float64          `gorm:"type:decimal(10,2);default:1;column:leverage" json:"leverage"`
+	MarginUsed       decimal.Decimal  `gorm:"type:decimal(15,2);default:0;column:margin_used" json:"margin_used"`
+	LiquidationPrice *decimal.Decimal `gorm:"type:decimal(15,2);column:liquidation_price" json:"liquidation_price,omitempty"`
+	ContractSize     decimal.Decimal  `gorm:"type:decimal(15,4);default:1;column:contract_size" json:"contract_size"`
 
 	// Options-specific
-	StrikePrice *float64 `gorm:"type:decimal(15,2);column:strike_price" json:"strike_price,omitempty"`
+	StrikePrice *decimal.Decimal `gorm:"type:decimal(15,2);column:strike_price" json:"strike_price,omitempty"`
 	OptionType  string   `gorm:"type:varchar(10);column:option_type" json:"option_type,omitempty"` // call|put
 	ExpiryDate  *string  `gorm:"type:date;column:expiry_date" json:"expiry_date,omitempty"`
 
-	UnrealizedPnL float64 `gorm:"type:decimal(15,2);default:0;column:unrealized_pnl" json:"unrealized_pnl"`
-	RealizedPnL   float64 `gorm:"type:decimal(15,2);default:0;column:realized_pnl" json:"realized_pnl"`
+	UnrealizedPnL decimal.Decimal `gorm:"type:decimal(15,2);default:0;column:unrealized_pnl" json:"unrealized_pnl"`
+	RealizedPnL   decimal.Decimal `gorm:"type:decimal(15,2);default:0;column:realized_pnl" json:"realized_pnl"`
 
 	Status   string     `gorm:"type:varchar(20);not null;default:'open';column:status" json:"status"` // open|closed
 	OpenedAt time.Time  `gorm:"not null;column:opened_at" json:"opened_at"`

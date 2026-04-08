@@ -4,19 +4,21 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+
+	"github.com/shopspring/decimal"
 )
 
 // GetCurrentPrice implements exchange.PriceFetcher via OKX REST ticker.
-func (c *Client) GetCurrentPrice(ctx context.Context, symbol string) (float64, error) {
+func (c *Client) GetCurrentPrice(ctx context.Context, symbol string) (decimal.Decimal, error) {
 	price, err := c.tickerLast(ctx, symbol)
 	if err != nil {
-		return 0, fmt.Errorf("okx get price %s: %w", symbol, err)
+		return decimal.Zero, fmt.Errorf("okx get price %s: %w", symbol, err)
 	}
 	return price, nil
 }
 
 // tickerLast fetches the last traded price for a symbol.
-func (c *Client) tickerLast(ctx context.Context, instID string) (float64, error) {
+func (c *Client) tickerLast(ctx context.Context, instID string) (decimal.Decimal, error) {
 	var resp struct {
 		okxResponse
 		Data []struct {
@@ -25,10 +27,10 @@ func (c *Client) tickerLast(ctx context.Context, instID string) (float64, error)
 	}
 	path := "/api/v5/market/ticker?instId=" + instID
 	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
-		return 0, err
+		return decimal.Zero, err
 	}
 	if resp.Code != "0" || len(resp.Data) == 0 {
-		return 0, fmt.Errorf("ticker: code=%s msg=%s", resp.Code, resp.Msg)
+		return decimal.Zero, fmt.Errorf("ticker: code=%s msg=%s", resp.Code, resp.Msg)
 	}
-	return parseFloat(resp.Data[0].Last), nil
+	return parseDecimal(resp.Data[0].Last), nil
 }

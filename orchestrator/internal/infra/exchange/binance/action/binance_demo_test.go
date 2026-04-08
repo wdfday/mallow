@@ -16,6 +16,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"orchestrator/internal/infra/exchange"
 )
 
@@ -94,7 +96,7 @@ func TestDemo_SpotBalance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SpotBalance USDT: %v", err)
 	}
-	t.Logf("USDT free: %.2f", free)
+	t.Logf("USDT free: %s", free)
 }
 
 func TestDemo_SyncAccount(t *testing.T) {
@@ -106,9 +108,9 @@ func TestDemo_SyncAccount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SyncAccount: %v", err)
 	}
-	t.Logf("cash=%.2f  equity=%.2f  positions=%d", snap.Cash, snap.Equity, len(snap.Positions))
+	t.Logf("cash=%s  equity=%s  positions=%d", snap.Cash, snap.Equity, len(snap.Positions))
 	for _, p := range snap.Positions {
-		t.Logf("  %s: qty=%.8f  curPrice=%.4f", p.Symbol, p.Qty, p.CurPrice)
+		t.Logf("  %s: qty=%s  curPrice=%s", p.Symbol, p.Qty, p.CurPrice)
 	}
 }
 
@@ -123,7 +125,7 @@ func TestDemo_GetCurrentPrice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetCurrentPrice BTCUSDT: %v", err)
 	}
-	t.Logf("BTCUSDT price: %.2f", price)
+	t.Logf("BTCUSDT price: %s", price)
 }
 
 func TestDemo_GetExchangeAsset(t *testing.T) {
@@ -150,12 +152,12 @@ func TestDemo_SpotMarketOrder(t *testing.T) {
 		Symbol: "BTCUSDT",
 		Side:   exchange.Buy,
 		Type:   exchange.Market,
-		Qty:    0.001,
+		Qty:    decimal.NewFromFloat(0.001),
 	})
 	if err != nil {
 		t.Fatalf("PlaceOrder market buy: %v", err)
 	}
-	t.Logf("order placed: id=%s  status=%s  filled=%.6f @ %.2f",
+	t.Logf("order placed: id=%s  status=%s  filled=%s @ %s",
 		result.ID, result.Status, result.FilledQty, result.FilledAvg)
 
 	// GetOrder
@@ -165,7 +167,7 @@ func TestDemo_SpotMarketOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrder: %v", err)
 	}
-	t.Logf("order status: %s  filledQty=%.6f", got.Status, got.FilledQty)
+	t.Logf("order status: %s  filledQty=%s", got.Status, got.FilledQty)
 }
 
 func TestDemo_SpotLimitOrder_ThenCancel(t *testing.T) {
@@ -178,7 +180,7 @@ func TestDemo_SpotLimitOrder_ThenCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetCurrentPrice: %v", err)
 	}
-	limitPrice := roundTick(price*0.95, 0.01) // 5% below market, rounded to BTCUSDT tick size
+	limitPrice := decimal.NewFromFloat(roundTick(price.InexactFloat64()*0.95, 0.01)) // 5% below market
 
 	cx, cancel := ctx()
 	defer cancel()
@@ -186,13 +188,13 @@ func TestDemo_SpotLimitOrder_ThenCancel(t *testing.T) {
 		Symbol: "BTCUSDT",
 		Side:   exchange.Buy,
 		Type:   exchange.Limit,
-		Qty:    0.001,
+		Qty:    decimal.NewFromFloat(0.001),
 		Price:  limitPrice,
 	})
 	if err != nil {
 		t.Fatalf("PlaceOrder limit buy: %v", err)
 	}
-	t.Logf("limit order placed: id=%s  status=%s  price=%.2f", result.ID, result.Status, limitPrice)
+	t.Logf("limit order placed: id=%s  status=%s  price=%s", result.ID, result.Status, limitPrice)
 
 	// Cancel it
 	cx2, cancel2 := ctx()
@@ -230,7 +232,7 @@ func TestDemo_SpotSellOrder(t *testing.T) {
 			Symbol: "BTCUSDT",
 			Side:   exchange.Buy,
 			Type:   exchange.Market,
-			Qty:    0.001,
+			Qty:    decimal.NewFromFloat(0.001),
 		}); err != nil {
 			t.Fatalf("buy before sell: %v", err)
 		}
@@ -250,12 +252,12 @@ func TestDemo_SpotSellOrder(t *testing.T) {
 		Symbol: "BTCUSDT",
 		Side:   exchange.Sell,
 		Type:   exchange.Market,
-		Qty:    0.001,
+		Qty:    decimal.NewFromFloat(0.001),
 	})
 	if err != nil {
 		t.Fatalf("PlaceOrder market sell: %v", err)
 	}
-	t.Logf("sell order: id=%s  status=%s  filled=%.6f @ %.2f",
+	t.Logf("sell order: id=%s  status=%s  filled=%s @ %s",
 		result.ID, result.Status, result.FilledQty, result.FilledAvg)
 }
 
@@ -303,7 +305,7 @@ func TestDemo_Slippage(t *testing.T) {
 			if bal == nil || bal.Free < 0.001 {
 				cxb, cancelb := ctx()
 				c.PlaceOrder(cxb, exchange.OrderRequest{ //nolint
-					Symbol: "BTCUSDT", Side: exchange.Buy, Type: exchange.Market, Qty: 0.001,
+					Symbol: "BTCUSDT", Side: exchange.Buy, Type: exchange.Market, Qty: decimal.NewFromFloat(0.001),
 				})
 				cancelb()
 				time.Sleep(300 * time.Millisecond)
@@ -323,29 +325,29 @@ func TestDemo_Slippage(t *testing.T) {
 			Symbol: "BTCUSDT",
 			Side:   side,
 			Type:   exchange.Market,
-			Qty:    0.001,
+			Qty:    decimal.NewFromFloat(0.001),
 		})
 		cancel()
 		if err != nil {
 			t.Fatalf("PlaceOrder %s: %v", side, err)
 		}
 
-		fillPrice := resp.FilledAvg
+		fillPriceF := resp.FilledAvg.InexactFloat64()
 		// Slippage = how far fill deviates from mid, in the adverse direction
 		// buy:  fill above mid is adverse  (+)
 		// sell: fill below mid is adverse  (+)
 		var slipBps float64
-		if fillPrice > 0 && mid > 0 {
+		if fillPriceF > 0 && mid > 0 {
 			if side == exchange.Buy {
-				slipBps = (fillPrice - mid) / mid * 10000
+				slipBps = (fillPriceF - mid) / mid * 10000
 			} else {
-				slipBps = (mid - fillPrice) / mid * 10000
+				slipBps = (mid - fillPriceF) / mid * 10000
 			}
 		}
 
 		results = append(results, result{
 			side: string(side), bid: bid, ask: ask, mid: mid,
-			fillPrice: fillPrice, spreadBps: spreadBps, slipBps: slipBps,
+			fillPrice: fillPriceF, spreadBps: spreadBps, slipBps: slipBps,
 		})
 	}
 
@@ -385,7 +387,7 @@ func TestDemo_StreamFills(t *testing.T) {
 		Symbol: "BTCUSDT",
 		Side:   exchange.Buy,
 		Type:   exchange.Market,
-		Qty:    0.001,
+		Qty:    decimal.NewFromFloat(0.001),
 	})
 	if err != nil {
 		t.Logf("PlaceOrder for fill trigger: %v (stream still running)", err)
@@ -393,7 +395,7 @@ func TestDemo_StreamFills(t *testing.T) {
 
 	select {
 	case f := <-fills:
-		t.Logf("fill received: orderID=%s  symbol=%s  side=%s  qty=%.6f @ %.2f",
+		t.Logf("fill received: orderID=%s  symbol=%s  side=%s  qty=%s @ %s",
 			f.OrderID, f.Symbol, f.Side, f.FilledQty, f.FilledAvg)
 	case <-cx.Done():
 		t.Log("no fill received within 15s (expected if order filled before stream ready)")

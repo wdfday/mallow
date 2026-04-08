@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"orchestrator/internal/infra/exchange"
 )
 
@@ -27,23 +29,25 @@ func (c *Client) SyncAccount(ctx context.Context, _ *time.Time) (*exchange.Accou
 		return nil, fmt.Errorf("okx sync: get balance: %w", err)
 	}
 
-	cash := 0.0
+	cash := decimal.Zero
 	type holding struct {
 		ccy string
-		qty float64
+		qty decimal.Decimal
 	}
 	var nonCash []holding
 
 	for _, b := range info.Balances {
-		if b.Available <= 0 && b.Equity <= 0 {
+		available := decimal.NewFromFloat(b.Available)
+		equity := decimal.NewFromFloat(b.Equity)
+		if !available.IsPositive() && !equity.IsPositive() {
 			continue
 		}
-		qty := b.Available
-		if b.Equity > qty {
-			qty = b.Equity
+		qty := available
+		if equity.GreaterThan(qty) {
+			qty = equity
 		}
 		if stablecoins[b.Currency] {
-			cash += b.Available
+			cash = cash.Add(available)
 		} else {
 			nonCash = append(nonCash, holding{ccy: b.Currency, qty: qty})
 		}
@@ -55,7 +59,7 @@ func (c *Client) SyncAccount(ctx context.Context, _ *time.Time) (*exchange.Accou
 		price, err := c.tickerLast(ctx, instID)
 		if err != nil {
 			slog.Warn("okx sync: failed to price asset", "ccy", h.ccy, "err", err)
-			price = 0
+			price = decimal.Zero
 		}
 		positions = append(positions, exchange.ExchangePosition{
 			Symbol:   instID,
@@ -64,14 +68,14 @@ func (c *Client) SyncAccount(ctx context.Context, _ *time.Time) (*exchange.Accou
 		})
 	}
 
-	mv := 0.0
+	mv := decimal.Zero
 	for _, p := range positions {
-		mv += p.Qty * p.CurPrice
+		mv = mv.Add(p.Qty.Mul(p.CurPrice))
 	}
 
 	return &exchange.AccountSnapshot{
 		Cash:      cash,
-		Equity:    cash + mv,
+		Equity:    cash.Add(mv),
 		Positions: positions,
 	}, nil
 }

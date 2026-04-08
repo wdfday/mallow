@@ -27,12 +27,12 @@ func (c *Client) PlaceOrder(ctx context.Context, req exchange.OrderRequest) (*ex
 		Symbol:      req.Symbol,
 		Side:        mapSide(req.Side),
 		OrderType:   orderType,
-		Qty:         fmt.Sprintf("%g", req.Qty),
+		Qty:         req.Qty.String(),
 		TimeInForce: "GTC",
 		ReduceOnly:  req.ReduceOnly,
 	}
-	if orderType == "Limit" && req.Price > 0 {
-		body.Price = fmt.Sprintf("%g", req.Price)
+	if orderType == "Limit" && req.Price.IsPositive() {
+		body.Price = req.Price.String()
 	}
 
 	slog.Info("bybit: placing order", "symbol", req.Symbol, "side", req.Side, "qty", req.Qty, "category", category)
@@ -131,8 +131,8 @@ func mapOrderDetail(o *orderDetail) *exchange.OrderResult {
 		Symbol:    o.Symbol,
 		Side:      exchange.OrderSide(strings.ToLower(o.Side)),
 		Status:    mapStatus(o.OrderStatus),
-		FilledQty: parseFloat(o.CumExecQty),
-		FilledAvg: parseFloat(o.AvgPrice),
+		FilledQty: parseDecimal(o.CumExecQty),
+		FilledAvg: parseDecimal(o.AvgPrice),
 	}
 }
 

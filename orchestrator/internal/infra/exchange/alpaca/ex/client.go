@@ -7,10 +7,12 @@ package ex
 import (
 	"strings"
 	"sync"
+
+	"github.com/shopspring/decimal"
 )
 
 // PriceHandler is called with each live trade price received from the exchange.
-type PriceHandler = func(symbol string, price float64)
+type PriceHandler = func(symbol string, price decimal.Decimal)
 
 // OrderbookEntry is a single price level in the orderbook.
 type OrderbookEntry struct {
@@ -60,7 +62,7 @@ func (c *Client) AddOrderbookHandler(h OrderbookHandler) {
 	c.mu.Unlock()
 }
 
-func (c *Client) dispatchPrice(symbol string, price float64) {
+func (c *Client) dispatchPrice(symbol string, price decimal.Decimal) {
 	c.mu.RLock()
 	hs := c.priceHandlers
 	c.mu.RUnlock()

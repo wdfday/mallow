@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/shopspring/decimal"
 )
 
 // SupportsFutures implements exchange.FuturesTrader — Bybit supports linear perpetuals.
@@ -53,7 +55,7 @@ func (c *Client) SetLeverage(ctx context.Context, symbol string, leverage int, m
 }
 
 // FundingRate returns the latest funding rate for a linear perpetual symbol.
-func (c *Client) FundingRate(ctx context.Context, symbol string) (float64, error) {
+func (c *Client) FundingRate(ctx context.Context, symbol string) (decimal.Decimal, error) {
 	body := map[string]string{
 		"category": "linear",
 		"symbol":   symbol,
@@ -62,26 +64,26 @@ func (c *Client) FundingRate(ctx context.Context, symbol string) (float64, error
 
 	var resp apiResponse[fundingHistoryResult]
 	if err := c.doSigned(ctx, "GET", "/v5/market/funding/history", body, &resp); err != nil {
-		return 0, fmt.Errorf("bybit funding rate %s: %w", symbol, err)
+		return decimal.Zero, fmt.Errorf("bybit funding rate %s: %w", symbol, err)
 	}
 	if resp.RetCode != 0 || len(resp.Result.List) == 0 {
-		return 0, fmt.Errorf("bybit funding rate: code=%d msg=%s", resp.RetCode, resp.RetMsg)
+		return decimal.Zero, fmt.Errorf("bybit funding rate: code=%d msg=%s", resp.RetCode, resp.RetMsg)
 	}
-	return parseFloat(resp.Result.List[0].FundingRate), nil
+	return parseDecimal(resp.Result.List[0].FundingRate), nil
 }
 
 // MarkPrice returns the current mark price for a linear perpetual symbol.
-func (c *Client) MarkPrice(ctx context.Context, symbol string) (float64, error) {
+func (c *Client) MarkPrice(ctx context.Context, symbol string) (decimal.Decimal, error) {
 	body := map[string]string{"category": "linear", "symbol": symbol}
 
 	var resp apiResponse[tickerResult]
 	if err := c.doSigned(ctx, "GET", "/v5/market/tickers", body, &resp); err != nil {
-		return 0, fmt.Errorf("bybit mark price %s: %w", symbol, err)
+		return decimal.Zero, fmt.Errorf("bybit mark price %s: %w", symbol, err)
 	}
 	if resp.RetCode != 0 || len(resp.Result.List) == 0 {
-		return 0, fmt.Errorf("bybit mark price: code=%d msg=%s", resp.RetCode, resp.RetMsg)
+		return decimal.Zero, fmt.Errorf("bybit mark price: code=%d msg=%s", resp.RetCode, resp.RetMsg)
 	}
-	return parseFloat(resp.Result.List[0].MarkPrice), nil
+	return parseDecimal(resp.Result.List[0].MarkPrice), nil
 }
 
 // --- types ---

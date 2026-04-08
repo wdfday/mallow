@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
 
 // BrokerClient is the interface that all broker clients must implement
@@ -53,14 +54,14 @@ type AuthResponse struct {
 
 // Portfolio represents a user's portfolio balance
 type Portfolio struct {
-	TotalValue      float64            // Total portfolio value in base currency
-	TotalCost       float64            // Total cost basis
-	UnrealizedGain  float64            // Unrealized P&L
-	RealizedGain    float64            // Realized P&L from closed positions
-	TotalDividends  float64            // Total dividends received
-	CashBalance     float64            // Available cash
-	Currency        string             // Base currency (VND, USD, etc.)
-	AssetAllocation map[string]float64 // Asset type -> value
+	TotalValue      decimal.Decimal            // Total portfolio value in base currency
+	TotalCost       decimal.Decimal            // Total cost basis
+	UnrealizedGain  decimal.Decimal            // Unrealized P&L
+	RealizedGain    decimal.Decimal            // Realized P&L from closed positions
+	TotalDividends  decimal.Decimal            // Total dividends received
+	CashBalance     decimal.Decimal            // Available cash
+	Currency        string                     // Base currency (VND, USD, etc.)
+	AssetAllocation map[string]decimal.Decimal // Asset type -> value
 	LastUpdated     time.Time
 }
 
@@ -69,11 +70,11 @@ type Position struct {
 	Symbol             string
 	Name               string
 	AssetType          string // stock, crypto, etc.
-	Quantity           float64
-	AverageCostPerUnit float64
-	CurrentPrice       float64
-	CurrentValue       float64
-	UnrealizedGain     float64
+	Quantity           decimal.Decimal
+	AverageCostPerUnit decimal.Decimal
+	CurrentPrice       decimal.Decimal
+	CurrentValue       decimal.Decimal
+	UnrealizedGain     decimal.Decimal
 	UnrealizedGainPct  float64
 	Currency           string
 	Exchange           string
@@ -88,12 +89,12 @@ type Transaction struct {
 	ExternalID      string
 	TransactionType string // buy, sell, dividend, fee, deposit, withdrawal, etc.
 	Symbol          string
-	Quantity        float64
-	Price           float64
-	Amount          float64
-	Fee             float64
-	Commission      float64
-	Tax             float64
+	Quantity        decimal.Decimal
+	Price           decimal.Decimal
+	Amount          decimal.Decimal
+	Fee             decimal.Decimal
+	Commission      decimal.Decimal
+	Tax             decimal.Decimal
 	Currency        string
 	TransactionDate time.Time
 	SettlementDate  *time.Time
@@ -101,16 +102,16 @@ type Transaction struct {
 	Notes           string
 
 	// Banking-specific fields
-	AccountNumber  string  // External account number from bank
-	ReferenceCode  string  // Bank reference number
-	RunningBalance float64 // Balance after transaction
+	AccountNumber  string          // External account number from bank
+	ReferenceCode  string          // Bank reference number
+	RunningBalance decimal.Decimal // Balance after transaction
 }
 
 // MarketPrice represents current market price for an asset
 type MarketPrice struct {
 	Symbol      string
-	Price       float64
-	Change      float64
+	Price       decimal.Decimal
+	Change      decimal.Decimal
 	ChangePct   float64
 	Volume      float64
 	Currency    string
@@ -147,7 +148,7 @@ type BankAccount struct {
 	AccountHolderName string
 	BankCode          string
 	BankName          string
-	Balance           float64    // Accumulated balance
-	LastTransaction   *time.Time // Last transaction time
+	Balance           decimal.Decimal // Accumulated balance
+	LastTransaction   *time.Time      // Last transaction time
 	IsActive          bool
 }

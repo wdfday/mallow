@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -52,7 +53,7 @@ func setupWatchlistService() (*watchlistSvc, *mockWatchlistRepo) {
 
 // sampleWatchlistItem returns a minimal WatchlistItem for use in tests.
 func sampleWatchlistItem(userID uuid.UUID, symbol string) domain.WatchlistItem {
-	targetPrice := 200.0
+	targetPrice := decimal.NewFromFloat(200.0)
 	now := time.Now().UTC()
 	return domain.WatchlistItem{
 		ID:          uuid.New(),

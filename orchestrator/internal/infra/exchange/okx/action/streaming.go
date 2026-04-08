@@ -176,8 +176,8 @@ func (c *Client) handleOKXMessage(msg []byte, handler func(exchange.FillEvent)) 
 		return
 	}
 	for _, d := range ev.Data {
-		qty := parseFloat(d.FillSz)
-		if qty == 0 {
+		qty := parseDecimal(d.FillSz)
+		if !qty.IsPositive() {
 			continue
 		}
 		side := exchange.Buy
@@ -189,7 +189,7 @@ func (c *Client) handleOKXMessage(msg []byte, handler func(exchange.FillEvent)) 
 			Symbol:    d.InstId,
 			Side:      side,
 			FilledQty: qty,
-			FilledAvg: parseFloat(d.FillPx),
+			FilledAvg: parseDecimal(d.FillPx),
 			Timestamp: time.Now().UTC(),
 		})
 	}

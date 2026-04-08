@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -23,9 +24,9 @@ func makeTx(userID uuid.UUID) event.TransactionRecorded {
 		Type:            event.TransactionTypeBuy,
 		Symbol:          "AAPL",
 		Currency:        "USD",
-		Quantity:        10,
-		PricePerUnit:    150.00,
-		Amount:          1500.00,
+		Quantity:        decimal.NewFromInt(10),
+		PricePerUnit:    decimal.NewFromFloat(150.00),
+		Amount:          decimal.NewFromFloat(1500.00),
 		TransactionDate: time.Now().UTC(),
 	}
 }
@@ -209,7 +210,7 @@ func TestTakeSnapshot_RaisesSnapshotEvent(t *testing.T) {
 		UserID:       userID,
 		SnapshotDate: time.Now().UTC(),
 		SnapshotType: event.SnapshotTypeDaily,
-		TotalValue:   10000.00,
+		TotalValue:   decimal.NewFromFloat(10000.00),
 	}
 
 	err := a.TakeSnapshot(snap)
@@ -266,7 +267,7 @@ func TestEvent_PayloadIsValidJSON(t *testing.T) {
 	var txPayload event.TransactionRecorded
 	require.NoError(t, json.Unmarshal(evts[1].Payload, &txPayload))
 	assert.Equal(t, tx.Symbol, txPayload.Symbol)
-	assert.Equal(t, tx.Amount, txPayload.Amount)
+	assert.True(t, tx.Amount.Equal(txPayload.Amount), "Amount should be equal: %s vs %s", tx.Amount, txPayload.Amount)
 	assert.Equal(t, tx.Type, txPayload.Type)
 }
 

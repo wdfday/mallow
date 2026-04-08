@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 )
 
 // PortfolioPosition is the read model for current spot holdings.
@@ -21,20 +22,20 @@ type PortfolioPosition struct {
 	Currency   string `gorm:"type:varchar(3);not null;default:'USD';column:currency" json:"currency"`
 
 	// Holding
-	Quantity  float64 `gorm:"type:decimal(20,8);not null;default:0;column:quantity" json:"quantity"`
-	AvgCost   float64 `gorm:"type:decimal(15,2);not null;default:0;column:avg_cost" json:"avg_cost"`
-	TotalCost float64 `gorm:"type:decimal(15,2);not null;default:0;column:total_cost" json:"total_cost"`
+	Quantity  decimal.Decimal `gorm:"type:decimal(20,8);not null;default:0;column:quantity" json:"quantity"`
+	AvgCost   decimal.Decimal `gorm:"type:decimal(15,2);not null;default:0;column:avg_cost" json:"avg_cost"`
+	TotalCost decimal.Decimal `gorm:"type:decimal(15,2);not null;default:0;column:total_cost" json:"total_cost"`
 
 	// Market
-	CurrentPrice  float64 `gorm:"type:decimal(15,2);not null;default:0;column:current_price" json:"current_price"`
-	CurrentValue  float64 `gorm:"type:decimal(15,2);not null;default:0;column:current_value" json:"current_value"`
-	UnrealizedPnL float64 `gorm:"type:decimal(15,2);not null;default:0;column:unrealized_pnl" json:"unrealized_pnl"`
-	UnrealizedPct float64 `gorm:"type:decimal(10,4);not null;default:0;column:unrealized_pct" json:"unrealized_pct"`
+	CurrentPrice  decimal.Decimal `gorm:"type:decimal(15,2);not null;default:0;column:current_price" json:"current_price"`
+	CurrentValue  decimal.Decimal `gorm:"type:decimal(15,2);not null;default:0;column:current_value" json:"current_value"`
+	UnrealizedPnL decimal.Decimal `gorm:"type:decimal(15,2);not null;default:0;column:unrealized_pnl" json:"unrealized_pnl"`
+	UnrealizedPct float64         `gorm:"type:decimal(10,4);not null;default:0;column:unrealized_pct" json:"unrealized_pct"`
 
 	// Realized
-	RealizedPnL     float64 `gorm:"type:decimal(15,2);not null;default:0;column:realized_pnl" json:"realized_pnl"`
-	TotalDividends  float64 `gorm:"type:decimal(15,2);not null;default:0;column:total_dividends" json:"total_dividends"`
-	PortfolioWeight float64 `gorm:"type:decimal(10,4);not null;default:0;column:portfolio_weight" json:"portfolio_weight"`
+	RealizedPnL     decimal.Decimal `gorm:"type:decimal(15,2);not null;default:0;column:realized_pnl" json:"realized_pnl"`
+	TotalDividends  decimal.Decimal `gorm:"type:decimal(15,2);not null;default:0;column:total_dividends" json:"total_dividends"`
+	PortfolioWeight float64         `gorm:"type:decimal(10,4);not null;default:0;column:portfolio_weight" json:"portfolio_weight"`
 
 	// Status
 	Status  string `gorm:"type:varchar(20);not null;default:'active';column:status" json:"status"`
@@ -51,19 +52,19 @@ func (PortfolioPosition) TableName() string {
 
 // CalculateMetrics recomputes derived fields.
 func (p *PortfolioPosition) CalculateMetrics() {
-	p.CurrentValue = p.Quantity * p.CurrentPrice
-	p.UnrealizedPnL = p.CurrentValue - p.TotalCost
-	if p.TotalCost > 0 {
-		p.UnrealizedPct = (p.UnrealizedPnL / p.TotalCost) * 100
+	p.CurrentValue = p.Quantity.Mul(p.CurrentPrice)
+	p.UnrealizedPnL = p.CurrentValue.Sub(p.TotalCost)
+	if p.TotalCost.IsPositive() {
+		p.UnrealizedPct = p.UnrealizedPnL.Div(p.TotalCost).Mul(decimal.NewFromInt(100)).InexactFloat64()
 	}
 }
 
 // AddQuantity updates avg_cost and total_cost on a buy.
-func (p *PortfolioPosition) AddQuantity(qty, pricePerUnit float64) {
-	newCost := p.TotalCost + qty*pricePerUnit
-	newQty := p.Quantity + qty
-	if newQty > 0 {
-		p.AvgCost = newCost / newQty
+func (p *PortfolioPosition) AddQuantity(qty, pricePerUnit decimal.Decimal) {
+	newCost := p.TotalCost.Add(qty.Mul(pricePerUnit))
+	newQty := p.Quantity.Add(qty)
+	if newQty.IsPositive() {
+		p.AvgCost = newCost.Div(newQty)
 	}
 	p.Quantity = newQty
 	p.TotalCost = newCost
@@ -71,20 +72,20 @@ func (p *PortfolioPosition) AddQuantity(qty, pricePerUnit float64) {
 }
 
 // RemoveQuantity updates fields on a sell and returns realized PnL.
-func (p *PortfolioPosition) RemoveQuantity(qty, pricePerUnit float64) float64 {
-	if qty > p.Quantity {
+func (p *PortfolioPosition) RemoveQuantity(qty, pricePerUnit decimal.Decimal) decimal.Decimal {
+	if qty.GreaterThan(p.Quantity) {
 		qty = p.Quantity
 	}
-	costBasis := qty * p.AvgCost
-	proceeds := qty * pricePerUnit
-	realized := proceeds - costBasis
+	costBasis := qty.Mul(p.AvgCost)
+	proceeds := qty.Mul(pricePerUnit)
+	realized := proceeds.Sub(costBasis)
 
-	p.Quantity -= qty
-	p.TotalCost -= costBasis
-	p.RealizedPnL += realized
+	p.Quantity = p.Quantity.Sub(qty)
+	p.TotalCost = p.TotalCost.Sub(costBasis)
+	p.RealizedPnL = p.RealizedPnL.Add(realized)
 	p.CalculateMetrics()
 
-	if p.Quantity == 0 {
+	if p.Quantity.IsZero() {
 		p.Status = "closed"
 		now := time.Now().UTC()
 		p.ClosedAt = &now

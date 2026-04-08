@@ -5,9 +5,13 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func d(f float64) decimal.Decimal { return decimal.NewFromFloat(f) }
+func di(i int64) decimal.Decimal  { return decimal.NewFromInt(i) }
 
 func TestAccount_TableName(t *testing.T) {
 	account := Account{}
@@ -17,45 +21,45 @@ func TestAccount_TableName(t *testing.T) {
 func TestAccount_UpdateBalance(t *testing.T) {
 	tests := []struct {
 		name            string
-		initialBalance  float64
-		amount          float64
-		expectedBalance float64
+		initialBalance  decimal.Decimal
+		amount          decimal.Decimal
+		expectedBalance decimal.Decimal
 	}{
 		{
 			name:            "add positive amount",
-			initialBalance:  10000000,
-			amount:          5000000,
-			expectedBalance: 15000000,
+			initialBalance:  di(10000000),
+			amount:          di(5000000),
+			expectedBalance: di(15000000),
 		},
 		{
 			name:            "subtract amount (negative value)",
-			initialBalance:  10000000,
-			amount:          -3000000,
-			expectedBalance: 7000000,
+			initialBalance:  di(10000000),
+			amount:          di(-3000000),
+			expectedBalance: di(7000000),
 		},
 		{
 			name:            "add zero",
-			initialBalance:  10000000,
-			amount:          0,
-			expectedBalance: 10000000,
+			initialBalance:  di(10000000),
+			amount:          decimal.Zero,
+			expectedBalance: di(10000000),
 		},
 		{
 			name:            "result in negative balance",
-			initialBalance:  5000000,
-			amount:          -8000000,
-			expectedBalance: -3000000,
+			initialBalance:  di(5000000),
+			amount:          di(-8000000),
+			expectedBalance: di(-3000000),
 		},
 		{
 			name:            "add to zero balance",
-			initialBalance:  0,
-			amount:          1000000,
-			expectedBalance: 1000000,
+			initialBalance:  decimal.Zero,
+			amount:          di(1000000),
+			expectedBalance: di(1000000),
 		},
 		{
 			name:            "add decimal amounts",
-			initialBalance:  1000.50,
-			amount:          500.25,
-			expectedBalance: 1500.75,
+			initialBalance:  d(1000.50),
+			amount:          d(500.25),
+			expectedBalance: d(1500.75),
 		},
 	}
 
@@ -67,7 +71,8 @@ func TestAccount_UpdateBalance(t *testing.T) {
 
 			account.UpdateBalance(tt.amount)
 
-			assert.Equal(t, tt.expectedBalance, account.CurrentBalance)
+			assert.True(t, tt.expectedBalance.Equal(account.CurrentBalance),
+				"expected %s got %s", tt.expectedBalance, account.CurrentBalance)
 		})
 	}
 }
@@ -78,7 +83,7 @@ func TestAccount_Structure(t *testing.T) {
 		accountID := uuid.New()
 		brokerConnectionID := uuid.New()
 		institutionName := "Test Bank"
-		availableBalance := 8000000.0
+		availableBalance := d(8000000)
 		accountNumberMasked := "****1234"
 		accountNumberEncrypted := "encrypted_data"
 		lastSyncedAt := time.Now()
@@ -91,7 +96,7 @@ func TestAccount_Structure(t *testing.T) {
 			AccountName:            "Test Account",
 			AccountType:            AccountTypeBank,
 			InstitutionName:        &institutionName,
-			CurrentBalance:         10000000,
+			CurrentBalance:         di(10000000),
 			AvailableBalance:       &availableBalance,
 			Currency:               CurrencyVND,
 			AccountNumberMasked:    &accountNumberMasked,
@@ -113,8 +118,8 @@ func TestAccount_Structure(t *testing.T) {
 		assert.Equal(t, "Test Account", account.AccountName)
 		assert.Equal(t, AccountTypeBank, account.AccountType)
 		assert.Equal(t, institutionName, *account.InstitutionName)
-		assert.Equal(t, 10000000.0, account.CurrentBalance)
-		assert.Equal(t, 8000000.0, *account.AvailableBalance)
+		assert.True(t, di(10000000).Equal(account.CurrentBalance))
+		assert.True(t, d(8000000).Equal(*account.AvailableBalance))
 		assert.Equal(t, CurrencyVND, account.Currency)
 		assert.Equal(t, accountNumberMasked, *account.AccountNumberMasked)
 		assert.Equal(t, accountNumberEncrypted, *account.AccountNumberEncrypted)
@@ -134,7 +139,7 @@ func TestAccount_Structure(t *testing.T) {
 			UserID:         userID,
 			AccountName:    "Cash Account",
 			AccountType:    AccountTypeCash,
-			CurrentBalance: 0,
+			CurrentBalance: decimal.Zero,
 			Currency:       CurrencyVND,
 			IsActive:       true,
 		}
@@ -142,7 +147,7 @@ func TestAccount_Structure(t *testing.T) {
 		assert.Equal(t, userID, account.UserID)
 		assert.Equal(t, "Cash Account", account.AccountName)
 		assert.Equal(t, AccountTypeCash, account.AccountType)
-		assert.Equal(t, 0.0, account.CurrentBalance)
+		assert.True(t, account.CurrentBalance.IsZero())
 		assert.Equal(t, CurrencyVND, account.Currency)
 		assert.True(t, account.IsActive)
 		assert.Nil(t, account.InstitutionName)
@@ -270,7 +275,7 @@ func TestAccount_NullableFields(t *testing.T) {
 
 	t.Run("set nullable fields", func(t *testing.T) {
 		institutionName := "Test Bank"
-		availableBalance := 5000000.0
+		availableBalance := d(5000000)
 		accountNumberMasked := "****5678"
 		accountNumberEncrypted := "encrypted"
 		lastSyncedAt := time.Now()
@@ -293,7 +298,7 @@ func TestAccount_NullableFields(t *testing.T) {
 		assert.Equal(t, institutionName, *account.InstitutionName)
 
 		require.NotNil(t, account.AvailableBalance)
-		assert.Equal(t, availableBalance, *account.AvailableBalance)
+		assert.True(t, d(5000000).Equal(*account.AvailableBalance))
 
 		require.NotNil(t, account.AccountNumberMasked)
 		assert.Equal(t, accountNumberMasked, *account.AccountNumberMasked)
@@ -346,18 +351,18 @@ func TestAccount_DifferentAccountTypes(t *testing.T) {
 
 func TestAccount_MultipleBalanceUpdates(t *testing.T) {
 	account := &Account{
-		CurrentBalance: 10000000,
+		CurrentBalance: di(10000000),
 	}
 
-	account.UpdateBalance(2000000)
-	assert.Equal(t, 12000000.0, account.CurrentBalance)
+	account.UpdateBalance(di(2000000))
+	assert.True(t, di(12000000).Equal(account.CurrentBalance))
 
-	account.UpdateBalance(-5000000)
-	assert.Equal(t, 7000000.0, account.CurrentBalance)
+	account.UpdateBalance(di(-5000000))
+	assert.True(t, di(7000000).Equal(account.CurrentBalance))
 
-	account.UpdateBalance(3000000)
-	assert.Equal(t, 10000000.0, account.CurrentBalance)
+	account.UpdateBalance(di(3000000))
+	assert.True(t, di(10000000).Equal(account.CurrentBalance))
 
-	account.UpdateBalance(-10000000)
-	assert.Equal(t, 0.0, account.CurrentBalance)
+	account.UpdateBalance(di(-10000000))
+	assert.True(t, account.CurrentBalance.IsZero())
 }

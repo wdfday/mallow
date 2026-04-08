@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -56,7 +57,7 @@ func TestCashFlowList(t *testing.T) {
 				AccountID:     uuid.New(),
 				UserID:        userID,
 				FlowType:      "dividend",
-				Amount:        125.50,
+				Amount:        decimal.NewFromFloat(125.50),
 				Currency:      "USD",
 				Symbol:        "AAPL",
 				Description:   "Q4 dividend",
@@ -69,7 +70,7 @@ func TestCashFlowList(t *testing.T) {
 				AccountID:     uuid.New(),
 				UserID:        userID,
 				FlowType:      "dividend",
-				Amount:        80.00,
+				Amount:        decimal.NewFromFloat(80.00),
 				Currency:      "USD",
 				Symbol:        "MSFT",
 				Description:   "Q4 dividend",

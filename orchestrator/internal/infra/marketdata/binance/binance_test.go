@@ -2,17 +2,19 @@ package binance
 
 import (
 	"testing"
+
+	"github.com/shopspring/decimal"
 )
 
 func TestHandleMessage_Trade(t *testing.T) {
 	var calls []struct {
 		symbol string
-		price  float64
+		price  decimal.Decimal
 	}
-	onTick := func(symbol string, price float64) {
+	onTick := func(symbol string, price decimal.Decimal) {
 		calls = append(calls, struct {
 			symbol string
-			price  float64
+			price  decimal.Decimal
 		}{symbol, price})
 	}
 
@@ -36,14 +38,15 @@ func TestHandleMessage_Trade(t *testing.T) {
 	if calls[0].symbol != "BTCUSDT" {
 		t.Errorf("symbol = %q, want BTCUSDT", calls[0].symbol)
 	}
-	if calls[0].price != 42000.5 {
-		t.Errorf("price = %f, want 42000.5", calls[0].price)
+	want, _ := decimal.NewFromString("42000.5")
+	if !calls[0].price.Equal(want) {
+		t.Errorf("price = %s, want 42000.5", calls[0].price)
 	}
 }
 
 func TestHandleMessage_NonTrade(t *testing.T) {
 	called := false
-	onTick := func(string, float64) { called = true }
+	onTick := func(string, decimal.Decimal) { called = true }
 
 	msg := []byte(`{
 		"stream": "btcusdt@kline_1m",
@@ -62,7 +65,7 @@ func TestHandleMessage_NonTrade(t *testing.T) {
 
 func TestHandleMessage_InvalidJSON(t *testing.T) {
 	called := false
-	onTick := func(string, float64) { called = true }
+	onTick := func(string, decimal.Decimal) { called = true }
 
 	handleMessage([]byte("invalid json"), onTick)
 

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -544,12 +545,12 @@ func TestUpdateAvailableBalance(t *testing.T) {
 		var captured map[string]any
 		mockRepo.On("UpdateColumns", ctx, accountID.String(), captureMap(&captured)).Return(nil)
 
-		err := svc.UpdateAvailableBalance(ctx, accountID, 8888.88)
+		err := svc.UpdateAvailableBalance(ctx, accountID, decimal.NewFromFloat(8888.88))
 		require.NoError(t, err)
 
-		avail, ok := captured["available_balance"].(float64)
-		require.True(t, ok, "expected float64 in map")
-		assert.Equal(t, 8888.88, avail)
+		avail, ok := captured["available_balance"].(decimal.Decimal)
+		require.True(t, ok, "expected decimal.Decimal in map")
+		assert.True(t, decimal.NewFromFloat(8888.88).Equal(avail))
 
 		// only one key updated
 		assert.Len(t, captured, 1)
@@ -561,11 +562,11 @@ func TestUpdateAvailableBalance(t *testing.T) {
 		var captured map[string]any
 		mockRepo.On("UpdateColumns", ctx, accountID.String(), captureMap(&captured)).Return(nil)
 
-		err := svc.UpdateAvailableBalance(ctx, accountID, 0)
+		err := svc.UpdateAvailableBalance(ctx, accountID, decimal.Zero)
 		require.NoError(t, err)
-		avail, ok := captured["available_balance"].(float64)
-		require.True(t, ok, "expected float64 in map")
-		assert.Equal(t, 0.0, avail)
+		avail, ok := captured["available_balance"].(decimal.Decimal)
+		require.True(t, ok, "expected decimal.Decimal in map")
+		assert.True(t, avail.IsZero())
 		mockRepo.AssertExpectations(t)
 	})
 
@@ -573,7 +574,7 @@ func TestUpdateAvailableBalance(t *testing.T) {
 		svc, mockRepo := setupService()
 		mockRepo.On("UpdateColumns", ctx, accountID.String(), mock.Anything).Return(shared.ErrNotFound)
 
-		err := svc.UpdateAvailableBalance(ctx, accountID, 100)
+		err := svc.UpdateAvailableBalance(ctx, accountID, decimal.NewFromInt(100))
 		require.Error(t, err)
 		assert.Equal(t, shared.ErrNotFound, err)
 		mockRepo.AssertExpectations(t)
@@ -583,7 +584,7 @@ func TestUpdateAvailableBalance(t *testing.T) {
 		svc, mockRepo := setupService()
 		mockRepo.On("UpdateColumns", ctx, accountID.String(), mock.Anything).Return(errors.New("db error"))
 
-		err := svc.UpdateAvailableBalance(ctx, accountID, 100)
+		err := svc.UpdateAvailableBalance(ctx, accountID, decimal.NewFromInt(100))
 		require.Error(t, err)
 		mockRepo.AssertExpectations(t)
 	})

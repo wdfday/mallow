@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 
 	"mallow/investment/internal/module/watchlist/domain"
 )
@@ -17,14 +18,14 @@ type AddRequest struct {
 }
 
 type ItemResponse struct {
-	ID          uuid.UUID `json:"id"`
-	Symbol      string    `json:"symbol"`
-	Name        string    `json:"name,omitempty"`
-	AssetType   string    `json:"asset_type,omitempty"`
-	TargetPrice *float64  `json:"target_price,omitempty"`
-	Notes       string    `json:"notes,omitempty"`
-	AddedAt     time.Time `json:"added_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          uuid.UUID        `json:"id"`
+	Symbol      string           `json:"symbol"`
+	Name        string           `json:"name,omitempty"`
+	AssetType   string           `json:"asset_type,omitempty"`
+	TargetPrice *decimal.Decimal `json:"target_price,omitempty"`
+	Notes       string           `json:"notes,omitempty"`
+	AddedAt     time.Time        `json:"added_at"`
+	UpdatedAt   time.Time        `json:"updated_at"`
 }
 
 func ToItemResponse(item domain.WatchlistItem) ItemResponse {

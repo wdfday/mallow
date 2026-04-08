@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -60,7 +61,7 @@ func (m *MockAccountService) UpdateAccount(ctx context.Context, id, userID strin
 	}
 	return args.Get(0).(*domain.Account), args.Error(1)
 }
-func (m *MockAccountService) UpdateAvailableBalance(ctx context.Context, accountID uuid.UUID, balance float64) error {
+func (m *MockAccountService) UpdateAvailableBalance(ctx context.Context, accountID uuid.UUID, balance decimal.Decimal) error {
 	return m.Called(ctx, accountID, balance).Error(0)
 }
 func (m *MockAccountService) DeleteAccount(ctx context.Context, id, userID string) error {

@@ -8,6 +8,7 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -31,7 +32,7 @@ func TestCashFlowProjector_DividendInsert(t *testing.T) {
 		Type:            event.TransactionTypeDividend,
 		Symbol:          "AAPL",
 		Currency:        "USD",
-		Amount:          25.0,
+		Amount:          decimal.NewFromFloat(25.0),
 		Notes:           "Q1 dividend",
 		TransactionDate: txDate,
 	}
@@ -44,7 +45,7 @@ func TestCashFlowProjector_DividendInsert(t *testing.T) {
 			accountID,
 			userID,
 			"dividend",
-			25.0,
+			sqlmock.AnyArg(), // amount (decimal)
 			"USD",
 			"AAPL",
 			"Q1 dividend",
@@ -74,7 +75,7 @@ func TestCashFlowProjector_DepositInsert(t *testing.T) {
 		UserID:          userID,
 		Type:            event.TransactionTypeDeposit,
 		Currency:        "USD",
-		Amount:          5000.0,
+		Amount:          decimal.NewFromFloat(5000.0),
 		Notes:           "wire transfer",
 		TransactionDate: txDate,
 	}
@@ -86,7 +87,7 @@ func TestCashFlowProjector_DepositInsert(t *testing.T) {
 			accountID,
 			userID,
 			"deposit",
-			5000.0,
+			sqlmock.AnyArg(), // amount (decimal)
 			"USD",
 			sqlmock.AnyArg(), // symbol (empty string)
 			"wire transfer",
@@ -116,7 +117,7 @@ func TestCashFlowProjector_WithdrawalInsert(t *testing.T) {
 		UserID:          userID,
 		Type:            event.TransactionTypeWithdrawal,
 		Currency:        "USD",
-		Amount:          1000.0,
+		Amount:          decimal.NewFromFloat(1000.0),
 		Notes:           "monthly withdrawal",
 		TransactionDate: txDate,
 	}
@@ -128,7 +129,7 @@ func TestCashFlowProjector_WithdrawalInsert(t *testing.T) {
 			accountID,
 			userID,
 			"withdrawal",
-			1000.0,
+			sqlmock.AnyArg(), // amount (decimal)
 			"USD",
 			sqlmock.AnyArg(), // symbol (empty string)
 			"monthly withdrawal",
@@ -158,7 +159,7 @@ func TestCashFlowProjector_FeeInsert(t *testing.T) {
 		UserID:          userID,
 		Type:            event.TransactionTypeFee,
 		Currency:        "USD",
-		Amount:          9.99,
+		Amount:          decimal.NewFromFloat(9.99),
 		Notes:           "management fee",
 		TransactionDate: txDate,
 	}
@@ -170,7 +171,7 @@ func TestCashFlowProjector_FeeInsert(t *testing.T) {
 			accountID,
 			userID,
 			"fee",
-			9.99,
+			sqlmock.AnyArg(), // amount (decimal)
 			"USD",
 			sqlmock.AnyArg(), // symbol (empty string)
 			"management fee",
@@ -200,9 +201,9 @@ func TestCashFlowProjector_BuyNoDBCall(t *testing.T) {
 		Type:            event.TransactionTypeBuy,
 		Symbol:          "AAPL",
 		Currency:        "USD",
-		Quantity:        10,
-		PricePerUnit:    150.0,
-		Amount:          1500.0,
+		Quantity:        decimal.NewFromInt(10),
+		PricePerUnit:    decimal.NewFromFloat(150.0),
+		Amount:          decimal.NewFromFloat(1500.0),
 		TransactionDate: txDate,
 	}
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 5, payload)
@@ -227,9 +228,9 @@ func TestCashFlowProjector_SellNoDBCall(t *testing.T) {
 		Type:            event.TransactionTypeSell,
 		Symbol:          "AAPL",
 		Currency:        "USD",
-		Quantity:        5,
-		PricePerUnit:    160.0,
-		Amount:          800.0,
+		Quantity:        decimal.NewFromInt(5),
+		PricePerUnit:    decimal.NewFromFloat(160.0),
+		Amount:          decimal.NewFromFloat(800.0),
 		TransactionDate: txDate,
 	}
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 6, payload)
@@ -253,7 +254,7 @@ func TestCashFlowProjector_DerivativeOpenNoDBCall(t *testing.T) {
 		Type:            event.TransactionTypeDerivativeOpen,
 		Symbol:          "BTCUSDT-PERP",
 		Currency:        "USDT",
-		Amount:          500.0,
+		Amount:          decimal.NewFromFloat(500.0),
 		TransactionDate: txDate,
 	}
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 7, payload)
@@ -296,7 +297,7 @@ func TestCashFlowProjector_IdempotentDuplicateSourceEventID(t *testing.T) {
 		UserID:          userID,
 		Type:            event.TransactionTypeDeposit,
 		Currency:        "USD",
-		Amount:          3000.0,
+		Amount:          decimal.NewFromFloat(3000.0),
 		TransactionDate: txDate,
 	}
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 1, payload)
@@ -308,7 +309,7 @@ func TestCashFlowProjector_IdempotentDuplicateSourceEventID(t *testing.T) {
 			accountID,
 			userID,
 			"deposit",
-			3000.0,
+			sqlmock.AnyArg(), // amount (decimal)
 			"USD",
 			sqlmock.AnyArg(), // symbol
 			sqlmock.AnyArg(), // description

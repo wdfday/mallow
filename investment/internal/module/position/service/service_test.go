@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -68,12 +69,12 @@ func samplePosition(userID, accountID uuid.UUID, symbol, status string) domain.P
 		Name:          symbol + " Inc.",
 		AssetType:     "equity",
 		Currency:      "USD",
-		Quantity:      10,
-		AvgCost:       100.0,
-		TotalCost:     1000.0,
-		CurrentPrice:  105.0,
-		CurrentValue:  1050.0,
-		UnrealizedPnL: 50.0,
+		Quantity:      decimal.NewFromInt(10),
+		AvgCost:       decimal.NewFromFloat(100.0),
+		TotalCost:     decimal.NewFromFloat(1000.0),
+		CurrentPrice:  decimal.NewFromFloat(105.0),
+		CurrentValue:  decimal.NewFromFloat(1050.0),
+		UnrealizedPnL: decimal.NewFromFloat(50.0),
 		Status:        status,
 		OpenedAt:      now,
 		UpdatedAt:     now,

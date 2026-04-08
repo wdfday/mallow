@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -199,9 +200,9 @@ func makeTx(txType event.TransactionType) event.TransactionRecorded {
 		Type:            txType,
 		Symbol:          "AAPL",
 		Currency:        "USD",
-		Quantity:        10,
-		PricePerUnit:    150.0,
-		Amount:          1500.0,
+		Quantity:        decimal.NewFromInt(10),
+		PricePerUnit:    decimal.NewFromFloat(150.0),
+		Amount:          decimal.NewFromFloat(1500.0),
 		TransactionDate: time.Now().UTC(),
 	}
 }
@@ -395,7 +396,7 @@ func TestHandleTakeSnapshot_UninitializedAccount(t *testing.T) {
 		UserID:       userID,
 		SnapshotDate: time.Now().UTC(),
 		SnapshotType: event.SnapshotTypeDaily,
-		Payload:      event.PortfolioSnapshotTaken{TotalValue: 1000},
+		Payload:      event.PortfolioSnapshotTaken{TotalValue: decimal.NewFromInt(1000)},
 	}
 
 	err := h.HandleTakeSnapshot(context.Background(), cmd)
@@ -434,8 +435,8 @@ func TestHandleTakeSnapshot_InitializedAccount(t *testing.T) {
 		SnapshotDate: snapshotDate,
 		SnapshotType: event.SnapshotTypeDaily,
 		Payload: event.PortfolioSnapshotTaken{
-			TotalValue:  5000.0,
-			CashBalance: 5000.0,
+			TotalValue:  decimal.NewFromFloat(5000.0),
+			CashBalance: decimal.NewFromFloat(5000.0),
 		},
 	}
 	err := h.HandleTakeSnapshot(context.Background(), snapCmd)
@@ -451,7 +452,7 @@ func TestHandleTakeSnapshot_InitializedAccount(t *testing.T) {
 	require.NoError(t, json.Unmarshal(snapEvt.Payload, &payload))
 	assert.Equal(t, userID, payload.UserID, "UserID must be injected from cmd.UserID")
 	assert.Equal(t, event.SnapshotTypeDaily, payload.SnapshotType)
-	assert.InDelta(t, 5000.0, payload.TotalValue, 0.001)
+	assert.True(t, decimal.NewFromFloat(5000.0).Equal(payload.TotalValue))
 }
 
 // Test 6: loadAccount - uses snapshot + partial replay

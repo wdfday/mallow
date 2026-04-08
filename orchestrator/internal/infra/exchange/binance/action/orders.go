@@ -9,6 +9,7 @@ import (
 
 	gobinance "github.com/adshao/go-binance/v2"
 	"github.com/adshao/go-binance/v2/futures"
+	"github.com/shopspring/decimal"
 
 	"orchestrator/internal/infra/exchange"
 )
@@ -35,11 +36,11 @@ func (c *Client) placeSpotOrder(ctx context.Context, req exchange.OrderRequest) 
 		Symbol(req.Symbol).
 		Side(side).
 		Type(orderType).
-		Quantity(strconv.FormatFloat(req.Qty, 'f', -1, 64))
+		Quantity(req.Qty.String())
 
 	if orderType == gobinance.OrderTypeLimit {
 		svc = svc.TimeInForce(gobinance.TimeInForceTypeGTC).
-			Price(strconv.FormatFloat(req.Price, 'f', -1, 64))
+			Price(req.Price.String())
 	}
 
 	slog.Info("binance: placing spot order", "symbol", req.Symbol, "side", req.Side, "qty", req.Qty)
@@ -47,18 +48,18 @@ func (c *Client) placeSpotOrder(ctx context.Context, req exchange.OrderRequest) 
 	if err != nil {
 		return nil, fmt.Errorf("binance spot place order: %w", err)
 	}
-	filledQty := parseFloat(resp.ExecutedQuantity)
-	quoteQty := parseFloat(resp.CummulativeQuoteQuantity)
-	var filledAvg float64
-	if filledQty > 0 {
-		filledAvg = quoteQty / filledQty
+	filledQty := parseDecimal(resp.ExecutedQuantity)
+	quoteQty := parseDecimal(resp.CummulativeQuoteQuantity)
+	var filledAvg decimal.Decimal
+	if filledQty.IsPositive() {
+		filledAvg = quoteQty.Div(filledQty)
 	}
 	return &exchange.OrderResult{
 		ID:        req.Symbol + ":" + strconv.FormatInt(resp.OrderID, 10),
 		Symbol:    resp.Symbol,
 		Side:      req.Side,
 		Status:    string(resp.Status),
-		Qty:       parseFloat(resp.OrigQuantity),
+		Qty:       parseDecimal(resp.OrigQuantity),
 		FilledQty: filledQty,
 		FilledAvg: filledAvg,
 	}, nil
@@ -78,12 +79,12 @@ func (c *Client) placeFuturesOrder(ctx context.Context, req exchange.OrderReques
 		Symbol(req.Symbol).
 		Side(side).
 		Type(orderType).
-		Quantity(fmt.Sprintf("%g", req.Qty)).
+		Quantity(req.Qty.String()).
 		ReduceOnly(req.ReduceOnly)
 
 	if orderType == futures.OrderTypeLimit {
 		svc = svc.TimeInForce(futures.TimeInForceTypeGTC).
-			Price(fmt.Sprintf("%g", req.Price))
+			Price(req.Price.String())
 	}
 
 	slog.Info("binance: placing futures order", "symbol", req.Symbol, "side", req.Side, "qty", req.Qty, "reduce_only", req.ReduceOnly)
@@ -96,8 +97,8 @@ func (c *Client) placeFuturesOrder(ctx context.Context, req exchange.OrderReques
 		Symbol:    resp.Symbol,
 		Side:      req.Side,
 		Status:    string(resp.Status),
-		Qty:       parseFloat(resp.OrigQuantity),
-		FilledQty: parseFloat(resp.ExecutedQuantity),
+		Qty:       parseDecimal(resp.OrigQuantity),
+		FilledQty: parseDecimal(resp.ExecutedQuantity),
 	}, nil
 }
 
@@ -125,18 +126,18 @@ func (c *Client) GetOrder(ctx context.Context, orderID string) (*exchange.OrderR
 	if err != nil {
 		return nil, fmt.Errorf("binance get order: %w", err)
 	}
-	filledQty := parseFloat(resp.ExecutedQuantity)
-	quoteQty := parseFloat(resp.CummulativeQuoteQuantity)
-	var filledAvg float64
-	if filledQty > 0 {
-		filledAvg = quoteQty / filledQty
+	filledQty := parseDecimal(resp.ExecutedQuantity)
+	quoteQty := parseDecimal(resp.CummulativeQuoteQuantity)
+	var filledAvg decimal.Decimal
+	if filledQty.IsPositive() {
+		filledAvg = quoteQty.Div(filledQty)
 	}
 	return &exchange.OrderResult{
 		ID:        orderID,
 		Symbol:    resp.Symbol,
 		Side:      exchange.OrderSide(mapSide(resp.Side)),
 		Status:    string(resp.Status),
-		Qty:       parseFloat(resp.OrigQuantity),
+		Qty:       parseDecimal(resp.OrigQuantity),
 		FilledQty: filledQty,
 		FilledAvg: filledAvg,
 	}, nil
@@ -166,8 +167,8 @@ func (c *Client) GetFuturesOrder(ctx context.Context, symbol string, orderID int
 		Symbol:    resp.Symbol,
 		Side:      exchange.OrderSide(string(resp.Side)),
 		Status:    string(resp.Status),
-		Qty:       parseFloat(resp.OrigQuantity),
-		FilledQty: parseFloat(resp.ExecutedQuantity),
+		Qty:       parseDecimal(resp.OrigQuantity),
+		FilledQty: parseDecimal(resp.ExecutedQuantity),
 	}, nil
 }
 

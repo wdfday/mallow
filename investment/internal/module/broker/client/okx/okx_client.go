@@ -9,10 +9,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"mallow/investment/internal/module/broker/client"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/shopspring/decimal"
+	"mallow/investment/internal/module/broker/client"
 )
 
 const (
@@ -175,18 +177,18 @@ func (c *OKXClient) GetPortfolio(ctx context.Context, accessToken string) (*clie
 	}
 
 	data := balanceResp.Data[0]
-	totalValue := parseFloat(data.TotalEq)
+	totalValue, _ := decimal.NewFromString(data.TotalEq)
 
-	assetAllocation := make(map[string]float64)
-	cashBalance := 0.0
+	assetAllocation := make(map[string]decimal.Decimal)
+	var cashBalance decimal.Decimal
 	for _, detail := range data.Details {
-		value := parseFloat(detail.EqUsd)
-		if value <= 0 {
+		value, _ := decimal.NewFromString(detail.EqUsd)
+		if !value.IsPositive() {
 			continue
 		}
 		assetAllocation[detail.Ccy] = value
 		if detail.Ccy == "USDT" || detail.Ccy == "USD" || detail.Ccy == "USDC" {
-			cashBalance += value
+			cashBalance = cashBalance.Add(value)
 		}
 	}
 
@@ -241,21 +243,26 @@ func (c *OKXClient) GetPositions(ctx context.Context, accessToken string) ([]cli
 
 	positions := make([]client.Position, 0, len(positionsResp.Data))
 	for _, pos := range positionsResp.Data {
-		quantity := parseFloat(pos.Pos)
-		if quantity == 0 {
+		quantity, _ := decimal.NewFromString(pos.Pos)
+		if quantity.IsZero() {
 			continue
 		}
 		symbol := strings.Split(pos.InstId, "-")[0]
-		unrealizedPLPct := parseFloat(pos.UplRatio) * 100
+		uplRatio, _ := decimal.NewFromString(pos.UplRatio)
+		unrealizedPLPct := uplRatio.Mul(decimal.NewFromInt(100)).InexactFloat64()
+		avgPx, _ := decimal.NewFromString(pos.AvgPx)
+		markPx, _ := decimal.NewFromString(pos.MarkPx)
+		notional, _ := decimal.NewFromString(pos.NotionalUsd)
+		upl, _ := decimal.NewFromString(pos.Upl)
 		positions = append(positions, client.Position{
 			Symbol:             symbol,
 			Name:               pos.InstId,
 			AssetType:          "crypto",
 			Quantity:           quantity,
-			AverageCostPerUnit: parseFloat(pos.AvgPx),
-			CurrentPrice:       parseFloat(pos.MarkPx),
-			CurrentValue:       parseFloat(pos.NotionalUsd),
-			UnrealizedGain:     parseFloat(pos.Upl),
+			AverageCostPerUnit: avgPx,
+			CurrentPrice:       markPx,
+			CurrentValue:       notional,
+			UnrealizedGain:     upl,
 			UnrealizedGainPct:  unrealizedPLPct,
 			Currency:           "USD",
 			Exchange:           "OKX",
@@ -329,20 +336,21 @@ func (c *OKXClient) GetMarketPrice(ctx context.Context, symbol string) (*client.
 	}
 
 	data := priceResp.Data[0]
-	price := parseFloat(data.Last)
-	open := parseFloat(data.Open24h)
-	change := price - open
+	price, _ := decimal.NewFromString(data.Last)
+	open, _ := decimal.NewFromString(data.Open24h)
+	change := price.Sub(open)
 	changePct := 0.0
-	if open > 0 {
-		changePct = (change / open) * 100
+	if open.IsPositive() {
+		changePct = change.Div(open).Mul(decimal.NewFromInt(100)).InexactFloat64()
 	}
+	vol, _ := decimal.NewFromString(data.Vol24h)
 
 	return &client.MarketPrice{
 		Symbol:      symbol,
 		Price:       price,
 		Change:      change,
 		ChangePct:   changePct,
-		Volume:      parseFloat(data.Vol24h),
+		Volume:      vol.InexactFloat64(),
 		Currency:    "USD",
 		LastUpdated: time.Now(),
 	}, nil
@@ -359,11 +367,4 @@ func (c *OKXClient) GetBatchMarketPrices(ctx context.Context, symbols []string) 
 		prices[symbol] = price
 	}
 	return prices, nil
-}
-
-// parseFloat converts string to float64, returns 0 on error
-func parseFloat(s string) float64 {
-	var f float64
-	fmt.Sscanf(s, "%f", &f)
-	return f
 }

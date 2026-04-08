@@ -1,14 +1,18 @@
 package orderbook
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/shopspring/decimal"
+)
 
 func TestOrderBookUpdateHistoryRing(t *testing.T) {
 	ring := newBookUpdateRing(3)
 
-	ring.push(BookUpdate{Symbol: "AAPL", Sequence: 1, Bid: 100, Ask: 101})
-	ring.push(BookUpdate{Symbol: "AAPL", Sequence: 2, Bid: 101, Ask: 102})
-	ring.push(BookUpdate{Symbol: "AAPL", Sequence: 3, Bid: 102, Ask: 103})
-	ring.push(BookUpdate{Symbol: "AAPL", Sequence: 4, Bid: 103, Ask: 104})
+	ring.push(BookUpdate{Symbol: "AAPL", Sequence: 1, Bid: decimal.NewFromInt(100), Ask: decimal.NewFromInt(101)})
+	ring.push(BookUpdate{Symbol: "AAPL", Sequence: 2, Bid: decimal.NewFromInt(101), Ask: decimal.NewFromInt(102)})
+	ring.push(BookUpdate{Symbol: "AAPL", Sequence: 3, Bid: decimal.NewFromInt(102), Ask: decimal.NewFromInt(103)})
+	ring.push(BookUpdate{Symbol: "AAPL", Sequence: 4, Bid: decimal.NewFromInt(103), Ask: decimal.NewFromInt(104)})
 
 	got := ring.snapshot(0)
 	if len(got) != 3 {
@@ -30,14 +34,14 @@ func TestOrderBookUpdateHistoryRing(t *testing.T) {
 func TestOrderBookRecordAndReadRecentUpdates(t *testing.T) {
 	ob := NewOrderBook("alpaca")
 	ob.RegisterSymbols([]SymbolInfo{
-		{Symbol: "AAPL", Active: true, MinQty: 1, StepSize: 1},
-		{Symbol: "MSFT", Active: true, MinQty: 1, StepSize: 1},
+		{Symbol: "AAPL", Active: true, MinQty: decimal.NewFromInt(1), StepSize: decimal.NewFromInt(1)},
+		{Symbol: "MSFT", Active: true, MinQty: decimal.NewFromInt(1), StepSize: decimal.NewFromInt(1)},
 	})
 
-	if err := ob.RecordUpdate(BookUpdate{Symbol: "AAPL", Sequence: 10, Bid: 190, Ask: 191}); err != nil {
+	if err := ob.RecordUpdate(BookUpdate{Symbol: "AAPL", Sequence: 10, Bid: decimal.NewFromInt(190), Ask: decimal.NewFromInt(191)}); err != nil {
 		t.Fatalf("record update 10: %v", err)
 	}
-	if err := ob.RecordUpdate(BookUpdate{Symbol: "AAPL", Sequence: 11, Bid: 191, Ask: 192}); err != nil {
+	if err := ob.RecordUpdate(BookUpdate{Symbol: "AAPL", Sequence: 11, Bid: decimal.NewFromInt(191), Ask: decimal.NewFromInt(192)}); err != nil {
 		t.Fatalf("record update 11: %v", err)
 	}
 
@@ -60,32 +64,32 @@ func TestOrderBookValidateStillUsesSupportedSymbolState(t *testing.T) {
 	ob.RegisterSymbol(SymbolInfo{
 		Symbol:      "NVDA",
 		Active:      true,
-		MinQty:      1,
-		MaxQty:      10,
-		StepSize:    1,
-		MinNotional: 100,
+		MinQty:      decimal.NewFromInt(1),
+		MaxQty:      decimal.NewFromInt(10),
+		StepSize:    decimal.NewFromInt(1),
+		MinNotional: decimal.NewFromInt(100),
 	})
 
 	result := ob.Validate(ProposedOrder{
 		AccountID: "acct-1",
 		Symbol:    "NVDA",
 		Side:      SideBuy,
-		Qty:       2.7,
-		Price:     60,
+		Qty:       decimal.NewFromFloat(2.7),
+		Price:     decimal.NewFromInt(60),
 	})
 	if !result.Valid {
 		t.Fatalf("expected order to validate, got invalid: %+v", result)
 	}
-	if result.AdjustedQty != 2 {
-		t.Fatalf("expected adjusted qty 2, got %f", result.AdjustedQty)
+	if !result.AdjustedQty.Equal(decimal.NewFromInt(2)) {
+		t.Fatalf("expected adjusted qty 2, got %s", result.AdjustedQty)
 	}
 
 	unsupported := ob.Validate(ProposedOrder{
 		AccountID: "acct-1",
 		Symbol:    "AMD",
 		Side:      SideBuy,
-		Qty:       1,
-		Price:     100,
+		Qty:       decimal.NewFromInt(1),
+		Price:     decimal.NewFromInt(100),
 	})
 	if unsupported.Valid {
 		t.Fatalf("expected unsupported symbol to fail: %+v", unsupported)

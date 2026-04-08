@@ -6,7 +6,7 @@ import (
 	"time"
 
 	"orchestrator/internal/infra/engine"
-	"orchestrator/internal/module/worker/domain"
+	"orchestrator/internal/module/bot/domain"
 )
 
 // heraldRegister sends engine.register to herald for every symbol the bot watches.

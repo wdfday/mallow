@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -80,12 +81,12 @@ func (m *MockRepository) GetAccountsNeedingSync(ctx context.Context) ([]*domain.
 	return args.Get(0).([]*domain.Account), args.Error(1)
 }
 
-func (m *MockRepository) UpdateBalance(ctx context.Context, accountID string, balanceDelta float64) error {
+func (m *MockRepository) UpdateBalance(ctx context.Context, accountID string, balanceDelta decimal.Decimal) error {
 	args := m.Called(ctx, accountID, balanceDelta)
 	return args.Error(0)
 }
 
-func (m *MockRepository) UpdateBalanceWithTx(tx *gorm.DB, accountID string, balanceDelta float64) error {
+func (m *MockRepository) UpdateBalanceWithTx(tx *gorm.DB, accountID string, balanceDelta decimal.Decimal) error {
 	args := m.Called(tx, accountID, balanceDelta)
 	return args.Error(0)
 }
@@ -120,7 +121,7 @@ func TestCreateAccount(t *testing.T) {
 			UserID:            uuid.MustParse(userID),
 			AccountName:       "My Cash",
 			AccountType:       domain.AccountTypeCash,
-			CurrentBalance:    0,
+			CurrentBalance:    decimal.Zero,
 			Currency:          domain.CurrencyVND,
 			IsActive:          true,
 			IsPrimary:         false,
@@ -514,16 +515,17 @@ func TestUpdateAccount(t *testing.T) {
 			UserID:         uuid.MustParse(userID),
 			AccountName:    "Old Name",
 			AccountType:    domain.AccountTypeCash,
-			CurrentBalance: 0,
+			CurrentBalance: decimal.Zero,
 		}
 
 		newName := "Updated Account"
-		newBalance := 5000000.0
+		newBalanceF := 5000000.0
+		newBalance := decimal.NewFromFloat(newBalanceF)
 		isActive := false
 
 		req := accountdto.UpdateAccountRequest{
 			AccountName:    &newName,
-			CurrentBalance: &newBalance,
+			CurrentBalance: &newBalanceF,
 			IsActive:       &isActive,
 		}
 

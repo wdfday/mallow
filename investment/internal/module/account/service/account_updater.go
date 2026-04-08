@@ -5,11 +5,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"mallow/investment/internal/module/account/domain"
 	accountdto "mallow/investment/internal/module/account/dto"
 	"mallow/investment/internal/shared"
-
-	"github.com/google/uuid"
 )
 
 // UpdateAccount updates an existing account
@@ -121,7 +121,7 @@ func (s *accountService) unsetPrimaryAccount(ctx context.Context, userID string)
 }
 
 // UpdateAvailableBalance updates the available balance of an account
-func (s *accountService) UpdateAvailableBalance(ctx context.Context, accountID uuid.UUID, availableBalance float64) error {
+func (s *accountService) UpdateAvailableBalance(ctx context.Context, accountID uuid.UUID, availableBalance decimal.Decimal) error {
 	// Directly update the available_balance column
 	err := s.repo.UpdateColumns(ctx, accountID.String(), map[string]any{
 		"available_balance": availableBalance,

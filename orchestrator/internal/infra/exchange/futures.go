@@ -1,6 +1,10 @@
 package exchange
 
-import "context"
+import (
+	"context"
+
+	"github.com/shopspring/decimal"
+)
 
 // FuturesTrader is implemented by exchanges that support futures/perpetual trading.
 // Binance futures, OKX swap, Bybit perpetual all implement this.
@@ -12,7 +16,7 @@ type FuturesTrader interface {
 	// Must be called before placing the first futures order on that symbol.
 	SetLeverage(ctx context.Context, symbol string, leverage int, marginType string) error
 	// FundingRate returns the current funding rate for a perpetual contract.
-	FundingRate(ctx context.Context, symbol string) (float64, error)
+	FundingRate(ctx context.Context, symbol string) (decimal.Decimal, error)
 	// MarkPrice returns the current mark price used for liquidation calculation.
-	MarkPrice(ctx context.Context, symbol string) (float64, error)
+	MarkPrice(ctx context.Context, symbol string) (decimal.Decimal, error)
 }

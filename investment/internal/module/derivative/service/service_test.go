@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -44,7 +45,7 @@ func setupDerivativeService() (*derivativeSvc, *mockDerivativeRepo) {
 // sampleDerivativePosition returns a minimal DerivativePosition for use in tests.
 func sampleDerivativePosition(userID, accountID uuid.UUID, symbol, status string) domain.DerivativePosition {
 	now := time.Now().UTC()
-	liqPrice := 45000.0
+	liqPrice := decimal.NewFromFloat(45000.0)
 	return domain.DerivativePosition{
 		ID:               uuid.New(),
 		AccountID:        accountID,
@@ -54,14 +55,14 @@ func sampleDerivativePosition(userID, accountID uuid.UUID, symbol, status string
 		InstrumentType:   "perp",
 		Side:             "long",
 		Currency:         "USD",
-		Quantity:         1.0,
-		EntryPrice:       50000.0,
-		CurrentPrice:     52000.0,
+		Quantity:         decimal.NewFromFloat(1.0),
+		EntryPrice:       decimal.NewFromFloat(50000.0),
+		CurrentPrice:     decimal.NewFromFloat(52000.0),
 		Leverage:         10.0,
-		MarginUsed:       5000.0,
+		MarginUsed:       decimal.NewFromFloat(5000.0),
 		LiquidationPrice: &liqPrice,
-		ContractSize:     1.0,
-		UnrealizedPnL:    2000.0,
+		ContractSize:     decimal.NewFromFloat(1.0),
+		UnrealizedPnL:    decimal.NewFromFloat(2000.0),
 		Status:           status,
 		OpenedAt:         now,
 		OpenEventID:      uuid.New(),

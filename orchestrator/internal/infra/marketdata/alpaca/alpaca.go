@@ -7,6 +7,7 @@ import (
 
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata"
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata/stream"
+	"github.com/shopspring/decimal"
 )
 
 // Listener streams real-time trade prices from Alpaca using the official SDK.
@@ -26,7 +27,7 @@ func (l *Listener) Name() string { return "alpaca" }
 
 // Subscribe connects to Alpaca streaming and calls onTick for each trade.
 // Blocks until ctx is cancelled.
-func (l *Listener) Subscribe(ctx context.Context, symbols []string, onTick func(string, float64)) error {
+func (l *Listener) Subscribe(ctx context.Context, symbols []string, onTick func(string, decimal.Decimal)) error {
 	if len(symbols) == 0 {
 		return fmt.Errorf("alpaca listener: no symbols provided")
 	}
@@ -41,14 +42,14 @@ func (l *Listener) Subscribe(ctx context.Context, symbols []string, onTick func(
 	return l.subscribeStocks(ctx, symbols, onTick, opts)
 }
 
-func (l *Listener) subscribeStocks(ctx context.Context, symbols []string, onTick func(string, float64), opts []stream.Option) error {
+func (l *Listener) subscribeStocks(ctx context.Context, symbols []string, onTick func(string, decimal.Decimal), opts []stream.Option) error {
 	stockOpts := make([]stream.StockOption, len(opts))
 	for i, o := range opts {
 		stockOpts[i] = o.(stream.StockOption)
 	}
 	stockOpts = append(stockOpts, stream.WithTrades(func(t stream.Trade) {
 		if t.Price > 0 {
-			onTick(t.Symbol, t.Price)
+			onTick(t.Symbol, decimal.NewFromFloat(t.Price))
 		}
 	}, symbols...))
 
@@ -66,14 +67,14 @@ func (l *Listener) subscribeStocks(ctx context.Context, symbols []string, onTick
 	return nil
 }
 
-func (l *Listener) subscribeCrypto(ctx context.Context, symbols []string, onTick func(string, float64), opts []stream.Option) error {
+func (l *Listener) subscribeCrypto(ctx context.Context, symbols []string, onTick func(string, decimal.Decimal), opts []stream.Option) error {
 	cryptoOpts := make([]stream.CryptoOption, len(opts))
 	for i, o := range opts {
 		cryptoOpts[i] = o.(stream.CryptoOption)
 	}
 	cryptoOpts = append(cryptoOpts, stream.WithCryptoTrades(func(t stream.CryptoTrade) {
 		if t.Price > 0 {
-			onTick(t.Symbol, t.Price)
+			onTick(t.Symbol, decimal.NewFromFloat(t.Price))
 		}
 	}, symbols...))
 

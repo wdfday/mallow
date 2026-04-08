@@ -2,17 +2,19 @@ package oanda
 
 import (
 	"testing"
+
+	"github.com/shopspring/decimal"
 )
 
 func TestHandleMessage_Price(t *testing.T) {
 	var calls []struct {
 		instrument string
-		price      float64
+		price      decimal.Decimal
 	}
-	onTick := func(instrument string, price float64) {
+	onTick := func(instrument string, price decimal.Decimal) {
 		calls = append(calls, struct {
 			instrument string
-			price      float64
+			price      decimal.Decimal
 		}{instrument, price})
 	}
 
@@ -33,15 +35,17 @@ func TestHandleMessage_Price(t *testing.T) {
 		t.Errorf("instrument = %q, want EUR_USD", calls[0].instrument)
 	}
 	// Mid-price: (1.08500 + 1.08520) / 2 = 1.08510
-	expected := 1.0851
-	if calls[0].price < expected-0.00001 || calls[0].price > expected+0.00001 {
-		t.Errorf("price = %f, want ~%f", calls[0].price, expected)
+	expected, _ := decimal.NewFromString("1.0851")
+	tolerance, _ := decimal.NewFromString("0.00001")
+	diff := calls[0].price.Sub(expected).Abs()
+	if diff.GreaterThan(tolerance) {
+		t.Errorf("price = %s, want ~%s", calls[0].price, expected)
 	}
 }
 
 func TestHandleMessage_Heartbeat(t *testing.T) {
 	called := false
-	onTick := func(string, float64) { called = true }
+	onTick := func(string, decimal.Decimal) { called = true }
 
 	msg := []byte(`{"type": "HEARTBEAT", "time": "2024-01-15T14:30:00Z"}`)
 	handleMessage(msg, onTick)
@@ -53,7 +57,7 @@ func TestHandleMessage_Heartbeat(t *testing.T) {
 
 func TestHandleMessage_InvalidJSON(t *testing.T) {
 	called := false
-	onTick := func(string, float64) { called = true }
+	onTick := func(string, decimal.Decimal) { called = true }
 
 	handleMessage([]byte("not json"), onTick)
 
@@ -67,18 +71,20 @@ func TestMidPrice(t *testing.T) {
 		name string
 		bids []priceLevel
 		asks []priceLevel
-		want float64
+		want decimal.Decimal
 	}{
-		{"normal", []priceLevel{{"1.08500", 0}}, []priceLevel{{"1.08520", 0}}, 1.0851},
-		{"empty bids", nil, []priceLevel{{"1.08520", 0}}, 0},
-		{"empty asks", []priceLevel{{"1.08500", 0}}, nil, 0},
+		{"normal", []priceLevel{{"1.08500", 0}}, []priceLevel{{"1.08520", 0}}, func() decimal.Decimal { d, _ := decimal.NewFromString("1.0851"); return d }()},
+		{"empty bids", nil, []priceLevel{{"1.08520", 0}}, decimal.Zero},
+		{"empty asks", []priceLevel{{"1.08500", 0}}, nil, decimal.Zero},
 	}
 
+	tolerance, _ := decimal.NewFromString("0.00001")
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := midPrice(tt.bids, tt.asks)
-			if got < tt.want-0.00001 || got > tt.want+0.00001 {
-				t.Errorf("midPrice() = %f, want %f", got, tt.want)
+			diff := got.Sub(tt.want).Abs()
+			if diff.GreaterThan(tolerance) {
+				t.Errorf("midPrice() = %s, want %s", got, tt.want)
 			}
 		})
 	}

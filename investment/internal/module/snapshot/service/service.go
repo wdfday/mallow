@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 
@@ -71,19 +72,19 @@ func (s *snapshotSvc) Trigger(ctx context.Context, accountID, userID uuid.UUID, 
 		return err
 	}
 
-	var totalValue, totalCost, unrealizedPnL, realizedPnL, totalDividends float64
+	var totalValue, totalCost, unrealizedPnL, realizedPnL, totalDividends decimal.Decimal
 	for _, p := range positions {
-		totalValue += p.CurrentValue
-		totalCost += p.TotalCost
-		unrealizedPnL += p.UnrealizedPnL
-		realizedPnL += p.RealizedPnL
-		totalDividends += p.TotalDividends
+		totalValue = totalValue.Add(p.CurrentValue)
+		totalCost = totalCost.Add(p.TotalCost)
+		unrealizedPnL = unrealizedPnL.Add(p.UnrealizedPnL)
+		realizedPnL = realizedPnL.Add(p.RealizedPnL)
+		totalDividends = totalDividends.Add(p.TotalDividends)
 	}
 
-	totalReturn := unrealizedPnL + realizedPnL
+	totalReturn := unrealizedPnL.Add(realizedPnL)
 	var totalReturnPct float64
-	if totalCost > 0 {
-		totalReturnPct = (totalReturn / totalCost) * 100
+	if totalCost.IsPositive() {
+		totalReturnPct = totalReturn.Div(totalCost).Mul(decimal.NewFromInt(100)).InexactFloat64()
 	}
 
 	now := time.Now().UTC()

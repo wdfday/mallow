@@ -163,7 +163,7 @@ func (ob *orderBook) Validate(order ProposedOrder) ValidationResult {
 		}
 	}
 
-	if acctPending, ok := ob.pending[order.AccountID]; ok {
+	if acctPending, ok := ob.pending[order.OrchestratorID]; ok {
 		for _, p := range acctPending {
 			if p.Symbol == order.Symbol && p.Side == order.Side {
 				return ValidationResult{Valid: false, Reason: fmt.Sprintf("duplicate: pending %s %s order %s", p.Side, p.Symbol, p.OrderID)}
@@ -178,10 +178,10 @@ func (ob *orderBook) Validate(order ProposedOrder) ValidationResult {
 func (ob *orderBook) TrackOrder(order PendingOrder) {
 	ob.mu.Lock()
 	defer ob.mu.Unlock()
-	if ob.pending[order.AccountID] == nil {
-		ob.pending[order.AccountID] = make(map[string]*PendingOrder)
+	if ob.pending[order.OrchestratorID] == nil {
+		ob.pending[order.OrchestratorID] = make(map[string]*PendingOrder)
 	}
-	ob.pending[order.AccountID][order.OrderID] = &order
+	ob.pending[order.OrchestratorID][order.OrderID] = &order
 }
 
 // RemoveOrder removes a completed/cancelled order from pending tracking.

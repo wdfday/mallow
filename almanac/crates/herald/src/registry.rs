@@ -27,6 +27,7 @@ const MAX_WINDOW: usize = 200;
 
 pub struct BotHandle {
     pub bot_id: String,
+    pub orch_id: String,
     pub symbol: String,
     pub strategy_name: String,
     pub params_json: String,
@@ -36,6 +37,7 @@ pub struct BotHandle {
 impl BotHandle {
     fn new(
         bot_id: String,
+        orch_id: String,
         symbol: String,
         strategy_name: String,
         params_json: String,
@@ -43,6 +45,7 @@ impl BotHandle {
         let strategy = build_from_json(&strategy_name, &params_json)?;
         Ok(Self {
             bot_id,
+            orch_id,
             symbol,
             strategy_name,
             params_json,
@@ -94,9 +97,9 @@ impl SymbolGroup {
         self.bots.is_empty()
     }
 
-    /// Returns (bot_id, signals) for each bot that emitted at least one signal.
+    /// Returns (bot_id, orch_id, signals) for each bot that emitted at least one signal.
     /// Signals from on_bar() and on_window() are merged per bot.
-    pub fn on_bar(&mut self, bar: &Bar) -> Vec<(String, Vec<Signal>)> {
+    pub fn on_bar(&mut self, bar: &Bar) -> Vec<(String, String, Vec<Signal>)> {
         // Advance shared window
         self.bar_window.push(bar.clone());
         if self.bar_window.len() > MAX_WINDOW {
@@ -111,7 +114,7 @@ impl SymbolGroup {
                 if sigs.is_empty() {
                     None
                 } else {
-                    Some((b.bot_id.clone(), sigs))
+                    Some((b.bot_id.clone(), b.orch_id.clone(), sigs))
                 }
             })
             .collect()
@@ -148,11 +151,12 @@ impl Registry {
     pub fn register(
         &mut self,
         bot_id: String,
+        orch_id: String,
         symbol: String,
         strategy_name: String,
         params_json: String,
     ) -> Result<()> {
-        let bot = BotHandle::new(bot_id, symbol.clone(), strategy_name, params_json)?;
+        let bot = BotHandle::new(bot_id, orch_id, symbol.clone(), strategy_name, params_json)?;
         self.groups
             .entry(symbol.clone())
             .or_insert_with(|| SymbolGroup::new(symbol))
@@ -185,13 +189,14 @@ impl Registry {
 
     /// Process a bar. Auto-creates a fallback bot for new symbols if global
     /// config is set (backward-compat with `engine.configure` flow).
-    pub fn on_bar(&mut self, bar: &Bar) -> Vec<(String, Vec<Signal>)> {
+    pub fn on_bar(&mut self, bar: &Bar) -> Vec<(String, String, Vec<Signal>)> {
         // Auto-register fallback bot for unseen symbols
         if !self.groups.contains_key(&bar.symbol) {
             if let Some(gc) = &self.global_config {
                 let bot_id = format!("global.{}", bar.symbol);
                 let bot = BotHandle::new(
                     bot_id,
+                    String::new(), // global fallback bots have no orch_id
                     bar.symbol.clone(),
                     gc.strategy_name.clone(),
                     gc.params_json.clone(),
@@ -230,13 +235,14 @@ impl Registry {
         }
     }
 
-    pub fn list_bots(&self) -> Vec<(&str, &str, &str, &str)> {
+    pub fn list_bots(&self) -> Vec<(&str, &str, &str, &str, &str)> {
         self.groups
             .values()
             .flat_map(|g| g.bot_infos())
             .map(|b| {
                 (
                     b.bot_id.as_str(),
+                    b.orch_id.as_str(),
                     b.symbol.as_str(),
                     b.strategy_name.as_str(),
                     b.params_json.as_str(),

@@ -55,6 +55,8 @@ message SignalMsg {
 
 message SignalResponse {
   repeated SignalMsg signals = 1;
+  string orch_id = 2;  // owning orchestrator — used for routing on the consumer side
+  string bot_id  = 3;  // target bot
 }
 
 // ── Engine Control ──────────────────────────────────────────────────
@@ -86,6 +88,8 @@ message RegisterMsg {
   optional double stop_price    = 7;  // auto-close when price hits stop
   optional int32  max_bars      = 8;  // auto-expire after N bars
   optional string pattern_kind  = 9;  // originating pattern e.g. "bull_flag"
+
+  string orch_id = 10;  // owning orchestrator — used to build signal subject signals.{orch_id}.{bot_id}
 }
 
 message DeregisterMsg {

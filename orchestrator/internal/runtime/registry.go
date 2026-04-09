@@ -36,19 +36,23 @@ type SyncStore interface {
 	UpdateLastSyncedAt(id uuid.UUID, t time.Time) error
 }
 
-// Registry manages all live OrchestratorRuntime instances.
-// One runtime per active orchestrator config.
+// SignalSink is the narrow interface consumed by SignalDispatcher.
+// Registry implements it; callers only see this interface.
+type SignalSink interface {
+	RouteSignal(orchID, botID string, sig Signal)
+}
+
+// Registry manages all live Orchestrator instances.
+// One Orchestrator per active orchestrator config.
 // OrderBooks and MarketStreamers are shared per broker type.
 type Registry struct {
 	mu              sync.RWMutex
-	runtimes        map[uuid.UUID]*OrchestratorRuntime
+	runtimes        map[uuid.UUID]*Orchestrator
 	orderBooks      map[string]orderbook.OrderBook     // broker_type → shared OrderBook
 	marketStreamers map[string]exchange.MarketStreamer // broker_type → shared streamer
-	signalCh        chan RoutedSignal
 
 	exchFactory     ExchangeFactory
 	streamerFactory MarketStreamerFactory
-	signalLoopOnce  sync.Once
 
 	// nc, js, and runCtx are set once via SetRuntime after startup.
 	nc        *nats.Conn
@@ -60,10 +64,9 @@ type Registry struct {
 // NewRegistry creates an empty Registry.
 func NewRegistry(factory ExchangeFactory, streamerFactory MarketStreamerFactory) *Registry {
 	return &Registry{
-		runtimes:        make(map[uuid.UUID]*OrchestratorRuntime),
+		runtimes:        make(map[uuid.UUID]*Orchestrator),
 		orderBooks:      make(map[string]orderbook.OrderBook),
 		marketStreamers: make(map[string]exchange.MarketStreamer),
-		signalCh:        make(chan RoutedSignal, defaultRegistrySignalBuffer),
 		exchFactory:     factory,
 		streamerFactory: streamerFactory,
 	}
@@ -92,8 +95,6 @@ func (r *Registry) SetRuntime(ctx context.Context, nc *nats.Conn) {
 	r.js = js
 	r.runCtx = ctx
 	r.mu.Unlock()
-
-	r.startSignalLoop(ctx)
 }
 
 // SyncOne satisfies RuntimeSpawner — triggers an async one-shot sync for id.
@@ -159,7 +160,7 @@ func (r *Registry) Spawn(cfg *orchdomain.OrchestratorConfig) error {
 	}
 	r.mu.Unlock()
 
-	rt := NewOrchestratorRuntime(cfg.ID, cfg.AccountID, cfg.UserID, cfg.Exchange.BrokerType, pf, riskMgr, ob, ex, cfg.LastSyncedAt)
+	rt := NewOrchestrator(cfg.ID, cfg.AccountID, cfg.UserID, cfg.Exchange.BrokerType, pf, riskMgr, ob, ex, cfg.LastSyncedAt)
 
 	// Register this runtime's price updater with the shared market streamer.
 	r.mu.RLock()
@@ -233,7 +234,7 @@ func (r *Registry) Resume(id uuid.UUID) ([]string, error) {
 }
 
 // Get returns the OrchestratorRuntime for the given orchestrator ID.
-func (r *Registry) Get(id uuid.UUID) (*OrchestratorRuntime, error) {
+func (r *Registry) Get(id uuid.UUID) (*Orchestrator, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	rt, ok := r.runtimes[id]
@@ -244,29 +245,39 @@ func (r *Registry) Get(id uuid.UUID) (*OrchestratorRuntime, error) {
 }
 
 // All returns all active runtimes.
-func (r *Registry) All() []*OrchestratorRuntime {
+func (r *Registry) All() []*Orchestrator {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := make([]*OrchestratorRuntime, 0, len(r.runtimes))
+	out := make([]*Orchestrator, 0, len(r.runtimes))
 	for _, rt := range r.runtimes {
 		out = append(out, rt)
 	}
 	return out
 }
 
-// DispatchBotSignal routes a signal to a specific bot by scanning orchestrator runtimes.
-// Returns true when the target bot is found and the signal is delivered.
-func (r *Registry) DispatchBotSignal(botID string, sig Signal) bool {
-	for _, rt := range r.All() {
-		if rt.DispatchBotSignal(botID, sig) {
-			return true
-		}
+// RouteSignal implements SignalSink. Routes a signal directly to the target orchestrator
+// (looked up by orchID) which then dispatches it to the target bot.
+// Called from SignalDispatcher in the NATS callback goroutine — must be non-blocking.
+func (r *Registry) RouteSignal(orchID, botID string, sig Signal) {
+	id, err := uuid.Parse(orchID)
+	if err != nil {
+		slog.Warn("signal route: invalid orch_id", "orch_id", orchID, "bot_id", botID)
+		return
 	}
-	return false
+	r.mu.RLock()
+	orch := r.runtimes[id]
+	r.mu.RUnlock()
+	if orch == nil {
+		slog.Warn("signal route: no orchestrator found", "orch_id", orchID, "bot_id", botID)
+		return
+	}
+	if !orch.DispatchBotSignal(botID, sig) {
+		slog.Warn("signal route: bot not found in orchestrator", "orch_id", orchID, "bot_id", botID)
+	}
 }
 
 // persistSyncTime writes the runtime's lastSyncAt to the store (best-effort, logs on error).
-func (r *Registry) persistSyncTime(rt *OrchestratorRuntime) {
+func (r *Registry) persistSyncTime(rt *Orchestrator) {
 	r.mu.RLock()
 	ss := r.syncStore
 	r.mu.RUnlock()
@@ -286,7 +297,7 @@ func (r *Registry) persistSyncTime(rt *OrchestratorRuntime) {
 func (r *Registry) StartPollingSync(ctx context.Context, nc *nats.Conn, interval time.Duration) {
 	syncAll := func() {
 		r.mu.RLock()
-		rts := make([]*OrchestratorRuntime, 0, len(r.runtimes))
+		rts := make([]*Orchestrator, 0, len(r.runtimes))
 		for _, rt := range r.runtimes {
 			rts = append(rts, rt)
 		}
@@ -346,7 +357,7 @@ func (r *Registry) SpawnAll(cfgs []*orchdomain.OrchestratorConfig) {
 // implements AccountStreamer. Called once after SpawnAll, from the app lifecycle.
 func (r *Registry) StartFillStreaming(ctx context.Context, nc *nats.Conn) {
 	r.mu.RLock()
-	rts := make([]*OrchestratorRuntime, 0, len(r.runtimes))
+	rts := make([]*Orchestrator, 0, len(r.runtimes))
 	for _, rt := range r.runtimes {
 		rts = append(rts, rt)
 	}
@@ -357,7 +368,7 @@ func (r *Registry) StartFillStreaming(ctx context.Context, nc *nats.Conn) {
 	}
 }
 
-func (r *Registry) startFillStream(ctx context.Context, nc *nats.Conn, rt *OrchestratorRuntime) {
+func (r *Registry) startFillStream(ctx context.Context, nc *nats.Conn, rt *Orchestrator) {
 	streamer, ok := rt.Exchange.(exchange.AccountStreamer)
 	if !ok {
 		return
@@ -374,7 +385,7 @@ func (r *Registry) startFillStream(ctx context.Context, nc *nats.Conn, rt *Orche
 
 // runFillProcessor drains rt.fillCh and applies each fill:
 // updates the in-memory portfolio, publishes FillNotification and InvestmentTransaction to NATS.
-func (r *Registry) runFillProcessor(ctx context.Context, nc *nats.Conn, rt *OrchestratorRuntime) {
+func (r *Registry) runFillProcessor(ctx context.Context, nc *nats.Conn, rt *Orchestrator) {
 	for {
 		select {
 		case ev := <-rt.fillCh:
@@ -388,12 +399,12 @@ func (r *Registry) runFillProcessor(ctx context.Context, nc *nats.Conn, rt *Orch
 	}
 }
 
-func (r *Registry) applyFill(nc *nats.Conn, js nats.JetStreamContext, rt *OrchestratorRuntime, ev exchange.FillEvent) {
-	accountID := rt.OrchestratorID.String()
+func (r *Registry) applyFill(nc *nats.Conn, js nats.JetStreamContext, rt *Orchestrator, ev exchange.FillEvent) {
+	orchID := rt.OrchestratorID.String()
 
 	// Resolve botID from pending orders before the fill removes the record.
 	botID := ""
-	for _, p := range rt.OrderBook.PendingOrders(accountID) {
+	for _, p := range rt.OrderBook.PendingOrders(orchID) {
 		if p.OrderID == ev.OrderID {
 			botID = p.BotID
 			break
@@ -401,14 +412,14 @@ func (r *Registry) applyFill(nc *nats.Conn, js nats.JetStreamContext, rt *Orches
 	}
 
 	rt.ReportFill(orchdomain.FillReport{
-		BotID:     botID,
-		AccountID: accountID,
-		OrderID:   ev.OrderID,
-		Symbol:    ev.Symbol,
-		Side:      string(ev.Side),
-		Qty:       ev.FilledQty,
-		Price:     ev.FilledAvg,
-		Timestamp: ev.Timestamp,
+		BotID:          botID,
+		OrchestratorID: orchID,
+		OrderID:        ev.OrderID,
+		Symbol:         ev.Symbol,
+		Side:           string(ev.Side),
+		Qty:            ev.FilledQty,
+		Price:          ev.FilledAvg,
+		Timestamp:      ev.Timestamp,
 	})
 
 	if nc == nil {
@@ -416,7 +427,7 @@ func (r *Registry) applyFill(nc *nats.Conn, js nats.JetStreamContext, rt *Orches
 	}
 	subj := fmt.Sprintf(natsapi.SubjTradeFilled, rt.OrchestratorID)
 	data, _ := json.Marshal(natsapi.FillNotification{
-		OrchestratorID: accountID,
+		OrchestratorID: orchID,
 		BotID:          botID,
 		OrderID:        ev.OrderID,
 		Symbol:         ev.Symbol,

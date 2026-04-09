@@ -47,11 +47,26 @@ func startNATSAPI(
 }
 
 // subscribeSignals wires NATS signal subscription → runtime SignalDispatcher.
-func subscribeSignals(sc *engine.SignalClient, dispatcher *runtime.SignalDispatcher) error {
-	_, err := sc.SubscribeAllSignals(func(subject string, resp *engine.SignalResponse) {
-		dispatcher.Dispatch(subject, resp)
+func subscribeSignals(lc fx.Lifecycle, sc *engine.SignalClient, dispatcher *runtime.SignalDispatcher) {
+	var sub interface{ Drain() error }
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			s, err := sc.SubscribeSignals(func(resp *engine.SignalResponse) {
+				dispatcher.Dispatch(resp)
+			})
+			if err != nil {
+				return err
+			}
+			sub = s
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			if sub != nil {
+				return sub.Drain()
+			}
+			return nil
+		},
 	})
-	return err
 }
 
 // runOrchestrator starts market data listener, equity recorder, API server, tick router,

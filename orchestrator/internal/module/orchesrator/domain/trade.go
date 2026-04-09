@@ -21,9 +21,9 @@ type TradeReply struct {
 
 // FillReport is a bot's fill notification to the orchestrator.
 type FillReport struct {
-	BotID     string    `json:"bot_id"`
-	AccountID string    `json:"account_id"`
-	OrderID   string    `json:"order_id"`
+	BotID          string    `json:"bot_id"`
+	OrchestratorID string    `json:"orchestrator_id"`
+	OrderID        string    `json:"order_id"`
 	Symbol    string    `json:"symbol"`
 	Side      string    `json:"side"` // "buy" | "sell"
 	Qty       decimal.Decimal `json:"qty"`

@@ -144,6 +144,7 @@ func (s *Service) Update(id string, patch domain.BotConfig) error {
 			rt.AddBot(bi.Bot)
 		} else {
 			if rt, _ := s.registry.Get(d.OrchestratorID); rt != nil {
+				rt.RemoveBot(d.ID)
 				strat, tact := runtime.BuildBotComponents(d.Config)
 				bi.Bot = runtime.NewBot(d.ID, d.OrchestratorID.String(), rt, strat, tact)
 				setMeta(bi.Bot, d.Config)

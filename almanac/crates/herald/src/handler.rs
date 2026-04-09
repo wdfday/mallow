@@ -118,12 +118,14 @@ impl Handler {
             return;
         }
 
-        for (bot_id, signals) in results {
+        for (bot_id, orch_id, signals) in results {
             let response = SignalResponse {
                 signals: signals.iter().map(SignalMsg::from).collect(),
+                orch_id: orch_id.clone(),
+                bot_id: bot_id.clone(),
             };
             let payload = response.encode_to_vec();
-            let subject = format!("signals.{bot_id}");
+            let subject = "signals";
 
             if let Err(e) = self.client.publish(subject.clone(), payload.into()).await {
                 error!(%subject, err = %e, "failed to publish signals");
@@ -204,6 +206,7 @@ impl Handler {
             let mut reg = self.registry.lock().await;
             reg.register(
                 req.bot_id.clone(),
+                req.orch_id.clone(),
                 req.symbol.clone(),
                 req.strategy.clone(),
                 req.params_json.clone(),
@@ -270,7 +273,7 @@ impl Handler {
             let reg = self.registry.lock().await;
             reg.list_bots()
                 .into_iter()
-                .map(|(bot_id, symbol, strategy, params_json)| BotInfo {
+                .map(|(bot_id, _orch_id, symbol, strategy, params_json)| BotInfo {
                     bot_id: bot_id.to_string(),
                     symbol: symbol.to_string(),
                     strategy: strategy.to_string(),

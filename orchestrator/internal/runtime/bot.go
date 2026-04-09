@@ -19,13 +19,21 @@ import (
 	"orchestrator/internal/runtime/orderbook"
 )
 
+// exitLevel tracks the local SL/TP levels for an open position.
+// Populated when an entry order fills; cleared when the position is closed.
+type exitLevel struct {
+	Side       string          // opening side: "buy" (long) or "sell" (short)
+	StopLoss   decimal.Decimal // zero = not set
+	TakeProfit decimal.Decimal // zero = not set
+}
+
 // Bot is an autonomous trading agent.
 // Each Bot owns its own strategy, tactician, signal channel, and run-loop goroutine.
 // Account-level resources (Exchange, Portfolio, OrderBook) are shared via OrchestratorRuntime.
 type Bot struct {
 	id             string
 	orchestratorID string
-	rt             *OrchestratorRuntime
+	rt             *Orchestrator
 	strategy       strategy.Strategy
 	tactician      *tactics.Tactician
 	limiter        *rate.Limiter
@@ -53,7 +61,9 @@ type Bot struct {
 	cancel         context.CancelFunc
 	done           chan struct{}
 	orders         []domain.Order
-	barsSinceEntry map[string]int // symbol → bar count since position entry (time-stop)
+	barsSinceEntry map[string]int    // symbol → bar count since position entry (time-stop)
+	pendingExits   map[string]exitLevel // orderID → SL/TP levels; promoted to exitLevels on entry fill
+	exitLevels     map[string]exitLevel // symbol → active SL/TP for open position (local safety net)
 
 	health  BotHealth
 	metrics struct {
@@ -107,7 +117,7 @@ func (b *Bot) DeliverSignal(sig Signal) {
 // NewBot creates a Bot. Call Start() to spawn its run-loop goroutine.
 func NewBot(
 	id, orchestratorID string,
-	rt *OrchestratorRuntime,
+	rt *Orchestrator,
 	strat strategy.Strategy,
 	tact *tactics.Tactician,
 ) *Bot {
@@ -122,6 +132,8 @@ func NewBot(
 		UrgentSignals:  make(chan Signal, 4),
 		orders:         make([]domain.Order, 0, 256),
 		barsSinceEntry: make(map[string]int),
+		pendingExits:   make(map[string]exitLevel),
+		exitLevels:     make(map[string]exitLevel),
 		health:         BotHealth{Status: "stopped"},
 	}
 }
@@ -329,6 +341,7 @@ func (b *Bot) run(ctx context.Context) {
 			b.handleSignal(ctx, sig)
 		case <-pollTicker.C:
 			b.pollOrders(ctx)
+			b.checkExits()
 		case <-staleTicker.C:
 			b.checkStale()
 		case <-ctx.Done():
@@ -450,13 +463,23 @@ func (b *Bot) handleSignal(ctx context.Context, sig Signal) {
 	b.metrics.ordersPlaced.Add(1)
 
 	b.rt.TrackOrder(orderbook.PendingOrder{
-		OrderID:   result.ID,
-		BotID:     b.id,
-		AccountID: b.orchestratorID,
-		Symbol:    sig.Symbol,
-		Side:      orderbook.OrderSide(reply.Side),
-		Qty:       reply.Qty,
+		OrderID:        result.ID,
+		BotID:          b.id,
+		OrchestratorID: b.orchestratorID,
+		Symbol:         sig.Symbol,
+		Side:           orderbook.OrderSide(reply.Side),
+		Qty:            reply.Qty,
 	})
+
+	if reply.StopLoss.IsPositive() || reply.TakeProfit.IsPositive() {
+		b.mu.Lock()
+		b.pendingExits[result.ID] = exitLevel{
+			Side:       reply.Side,
+			StopLoss:   reply.StopLoss,
+			TakeProfit: reply.TakeProfit,
+		}
+		b.mu.Unlock()
+	}
 
 	now := time.Now().UTC()
 	order := domain.Order{
@@ -491,6 +514,14 @@ func (b *Bot) handleSignal(ctx context.Context, sig Signal) {
 func (b *Bot) applyFill(orderID, symbol, side string, qty, price decimal.Decimal) {
 	b.metrics.ordersFilled.Add(1)
 
+	// Promote pending exit level to active (entry filled) or discard (close order).
+	b.mu.Lock()
+	if el, ok := b.pendingExits[orderID]; ok {
+		delete(b.pendingExits, orderID)
+		b.exitLevels[symbol] = el
+	}
+	b.mu.Unlock()
+
 	if price.IsPositive() {
 		if pos := b.rt.Portfolio.GetPosition(symbol); pos != nil && !pos.Qty.IsZero() {
 			var pnl decimal.Decimal
@@ -498,11 +529,13 @@ func (b *Bot) applyFill(orderID, symbol, side string, qty, price decimal.Decimal
 				pnl = price.Sub(pos.AvgPrice).Mul(qty)
 				b.mu.Lock()
 				delete(b.barsSinceEntry, symbol)
+				delete(b.exitLevels, symbol)
 				b.mu.Unlock()
 			} else if side == "buy" && pos.Qty.IsNegative() {
 				pnl = pos.AvgPrice.Sub(price).Mul(qty)
 				b.mu.Lock()
 				delete(b.barsSinceEntry, symbol)
+				delete(b.exitLevels, symbol)
 				b.mu.Unlock()
 			}
 			if !pnl.IsZero() {
@@ -520,7 +553,7 @@ func (b *Bot) applyFill(orderID, symbol, side string, qty, price decimal.Decimal
 
 	b.rt.ReportFill(orchdomain.FillReport{
 		BotID:     b.id,
-		AccountID: b.orchestratorID,
+		OrchestratorID: b.orchestratorID,
 		OrderID:   orderID,
 		Symbol:    symbol,
 		Side:      side,
@@ -567,6 +600,53 @@ func (b *Bot) pollOrders(ctx context.Context) {
 	}
 }
 
+// checkExits scans open positions against locally stored SL/TP levels.
+// Called on every pollTicker tick (every 5s) as a safety net in case
+// exchange-side bracket orders fail to execute.
+func (b *Bot) checkExits() {
+	b.mu.RLock()
+	exits := make(map[string]exitLevel, len(b.exitLevels))
+	for sym, el := range b.exitLevels {
+		exits[sym] = el
+	}
+	b.mu.RUnlock()
+
+	for sym, el := range exits {
+		price := b.rt.lastKnownPrice(sym)
+		if !price.IsPositive() {
+			continue
+		}
+		var reason string
+		if el.Side == "buy" { // long position
+			if el.StopLoss.IsPositive() && price.LessThanOrEqual(el.StopLoss) {
+				reason = "stop_loss"
+			} else if el.TakeProfit.IsPositive() && price.GreaterThanOrEqual(el.TakeProfit) {
+				reason = "take_profit"
+			}
+		} else { // short position
+			if el.StopLoss.IsPositive() && price.GreaterThanOrEqual(el.StopLoss) {
+				reason = "stop_loss"
+			} else if el.TakeProfit.IsPositive() && price.LessThanOrEqual(el.TakeProfit) {
+				reason = "take_profit"
+			}
+		}
+		if reason == "" {
+			continue
+		}
+		slog.Info("exit monitor triggered", "bot_id", b.id, "symbol", sym,
+			"reason", reason, "price", price,
+			"stop_loss", el.StopLoss, "take_profit", el.TakeProfit)
+		b.mu.Lock()
+		delete(b.exitLevels, sym)
+		b.mu.Unlock()
+		select {
+		case b.UrgentSignals <- Signal{Symbol: sym, Direction: "close", Strength: 1.0, ReceivedAt: time.Now()}:
+		default:
+			slog.Warn("exit monitor: urgent channel full", "bot_id", b.id, "symbol", sym)
+		}
+	}
+}
+
 // PlaceOrder submits an order via the full pipeline. Manual/legacy interface.
 func (b *Bot) PlaceOrder(ctx context.Context, symbol string, qty decimal.Decimal, side string) (string, error) {
 	if !b.IsRunning() {
@@ -608,7 +688,7 @@ func (b *Bot) PlaceOrder(ctx context.Context, symbol string, qty decimal.Decimal
 	b.rt.TrackOrder(orderbook.PendingOrder{
 		OrderID:   result.ID,
 		BotID:     b.id,
-		AccountID: b.orchestratorID,
+		OrchestratorID: b.orchestratorID,
 		Symbol:    symbol,
 		Side:      orderbook.OrderSide(side),
 		Qty:       reply.Qty,

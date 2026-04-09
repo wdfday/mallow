@@ -71,7 +71,7 @@ func TestOrderBookValidateStillUsesSupportedSymbolState(t *testing.T) {
 	})
 
 	result := ob.Validate(ProposedOrder{
-		AccountID: "acct-1",
+		OrchestratorID: "acct-1",
 		Symbol:    "NVDA",
 		Side:      SideBuy,
 		Qty:       decimal.NewFromFloat(2.7),
@@ -85,7 +85,7 @@ func TestOrderBookValidateStillUsesSupportedSymbolState(t *testing.T) {
 	}
 
 	unsupported := ob.Validate(ProposedOrder{
-		AccountID: "acct-1",
+		OrchestratorID: "acct-1",
 		Symbol:    "AMD",
 		Side:      SideBuy,
 		Qty:       decimal.NewFromInt(1),

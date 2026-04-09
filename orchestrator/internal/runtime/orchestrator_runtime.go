@@ -20,16 +20,15 @@ import (
 	"orchestrator/internal/runtime/orderbook"
 )
 
-// OrchestratorRuntime is the live in-memory state for one orchestrator instance.
-// Holds account-level shared resources: Exchange, Portfolio, OrderBook, RiskManager.
-// Per-bot resources (strategy, tactician) live on the Bot itself.
-//
-// RiskManager is the interface for account-level risk controls consumed by OrchestratorRuntime.
+// RiskManager is the interface for account-level risk controls.
 type RiskManager interface {
 	IsHalted() bool
 }
 
-type OrchestratorRuntime struct {
+// Orchestrator is the live in-memory state for one orchestrator instance.
+// Holds account-level shared resources: Exchange, Portfolio, OrderBook, RiskManager.
+// Per-bot resources (strategy, tactician) live on the Bot itself.
+type Orchestrator struct {
 	OrchestratorID uuid.UUID
 	AccountID      uuid.UUID
 	UserID         uuid.UUID
@@ -59,7 +58,7 @@ type OrchestratorRuntime struct {
 }
 
 // LastSyncAt returns the timestamp of the most recent portfolio sync, or zero if never synced.
-func (r *OrchestratorRuntime) LastSyncAt() time.Time {
+func (r *Orchestrator) LastSyncAt() time.Time {
 	ns := r.lastSyncAtNano.Load()
 	if ns == 0 {
 		return time.Time{}
@@ -67,7 +66,7 @@ func (r *OrchestratorRuntime) LastSyncAt() time.Time {
 	return time.Unix(0, ns).UTC()
 }
 
-func (r *OrchestratorRuntime) storeSyncAt(t time.Time) {
+func (r *Orchestrator) storeSyncAt(t time.Time) {
 	ns := t.UnixNano()
 	for {
 		cur := r.lastSyncAtNano.Load()
@@ -82,7 +81,7 @@ func (r *OrchestratorRuntime) storeSyncAt(t time.Time) {
 
 // Sync fetches current account state from the exchange REST API, updates the in-memory
 // portfolio, and publishes a portfolio.synced event to NATS for the investment service.
-func (r *OrchestratorRuntime) Sync(ctx context.Context, nc *nats.Conn, js nats.JetStreamContext) error {
+func (r *Orchestrator) Sync(ctx context.Context, nc *nats.Conn, js nats.JetStreamContext) error {
 	syncer, ok := r.Exchange.(exchange.AccountSyncer)
 	if !ok {
 		return nil
@@ -167,8 +166,8 @@ func (r *OrchestratorRuntime) Sync(ctx context.Context, nc *nats.Conn, js nats.J
 	return nil
 }
 
-// NewOrchestratorRuntime creates a runtime and starts its circuit-breaker reset ticker.
-func NewOrchestratorRuntime(
+// NewOrchestrator creates an Orchestrator and starts its circuit-breaker reset ticker.
+func NewOrchestrator(
 	orchID, accountID, userID uuid.UUID,
 	brokerType string,
 	pf *portfolio.Portfolio,
@@ -176,8 +175,8 @@ func NewOrchestratorRuntime(
 	ob orderbook.OrderBook,
 	ex exchange.Exchange,
 	lastSyncedAt *time.Time,
-) *OrchestratorRuntime {
-	rt := &OrchestratorRuntime{
+) *Orchestrator {
+	rt := &Orchestrator{
 		OrchestratorID: orchID,
 		AccountID:      accountID,
 		UserID:         userID,
@@ -212,7 +211,7 @@ type TradeProposal struct {
 }
 
 // ProcessTrade validates a trade against account-level guards and sizes via the bot's tactician.
-func (r *OrchestratorRuntime) ProcessTrade(
+func (r *Orchestrator) ProcessTrade(
 	ctx context.Context,
 	proposal TradeProposal,
 	tact *tactics.Tactician,
@@ -288,16 +287,16 @@ func (r *OrchestratorRuntime) ProcessTrade(
 }
 
 // TrackOrder records a placed order in the orderbook.
-func (r *OrchestratorRuntime) TrackOrder(order orderbook.PendingOrder) {
+func (r *Orchestrator) TrackOrder(order orderbook.PendingOrder) {
 	r.OrderBook.TrackOrder(order)
 }
 
 // ReportFill applies a fill to the portfolio and removes the order from orderbook.
-func (r *OrchestratorRuntime) ReportFill(fill orchdomain.FillReport) {
+func (r *Orchestrator) ReportFill(fill orchdomain.FillReport) {
 	r.tradeMu.Lock()
 	defer r.tradeMu.Unlock()
 
-	r.OrderBook.RemoveOrder(fill.AccountID, fill.OrderID)
+	r.OrderBook.RemoveOrder(fill.OrchestratorID, fill.OrderID)
 
 	if fill.Price.IsPositive() {
 		r.pricesMu.Lock()
@@ -329,7 +328,7 @@ func (r *OrchestratorRuntime) ReportFill(fill orchdomain.FillReport) {
 }
 
 // UpdatePrice stores the latest market price for a symbol and forwards it to the portfolio.
-func (r *OrchestratorRuntime) UpdatePrice(symbol string, price decimal.Decimal) {
+func (r *Orchestrator) UpdatePrice(symbol string, price decimal.Decimal) {
 	if !price.IsPositive() {
 		return
 	}
@@ -339,7 +338,7 @@ func (r *OrchestratorRuntime) UpdatePrice(symbol string, price decimal.Decimal) 
 	r.Portfolio.UpdatePrice(symbol, price)
 }
 
-func (r *OrchestratorRuntime) lastKnownPrice(symbol string) decimal.Decimal {
+func (r *Orchestrator) lastKnownPrice(symbol string) decimal.Decimal {
 	r.pricesMu.RLock()
 	p := r.prices[symbol]
 	r.pricesMu.RUnlock()
@@ -353,7 +352,7 @@ func (r *OrchestratorRuntime) lastKnownPrice(symbol string) decimal.Decimal {
 }
 
 // EnqueueFill drops a broker fill event into the runtime's fill channel non-blocking.
-func (r *OrchestratorRuntime) EnqueueFill(ev exchange.FillEvent) {
+func (r *Orchestrator) EnqueueFill(ev exchange.FillEvent) {
 	select {
 	case r.fillCh <- ev:
 	default:
@@ -366,20 +365,20 @@ func (r *OrchestratorRuntime) EnqueueFill(ev exchange.FillEvent) {
 }
 
 // Stop cleans up the circuit-breaker ticker.
-func (r *OrchestratorRuntime) Stop() {
+func (r *Orchestrator) Stop() {
 	if r.resetTicker != nil {
 		r.resetTicker.Stop()
 	}
 }
 
-func (r *OrchestratorRuntime) IsPaused() bool {
+func (r *Orchestrator) IsPaused() bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.paused
 }
 
 // Pause suspends the runtime — all bots will ignore incoming signals.
-func (r *OrchestratorRuntime) Pause() []string {
+func (r *Orchestrator) Pause() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.paused = true
@@ -394,7 +393,7 @@ func (r *OrchestratorRuntime) Pause() []string {
 }
 
 // Resume unpauses the runtime and returns IDs of bots that should be restarted.
-func (r *OrchestratorRuntime) Resume() []string {
+func (r *Orchestrator) Resume() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.paused = false
@@ -409,19 +408,19 @@ func (r *OrchestratorRuntime) Resume() []string {
 }
 
 // AddBot registers a bot with this runtime.
-func (r *OrchestratorRuntime) AddBot(bot *Bot) {
+func (r *Orchestrator) AddBot(bot *Bot) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.bots[bot.id] = bot
 }
 
-func (r *OrchestratorRuntime) RemoveBot(id string) {
+func (r *Orchestrator) RemoveBot(id string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.bots, id)
 }
 
-func (r *OrchestratorRuntime) BotIDs() []string {
+func (r *Orchestrator) BotIDs() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	ids := make([]string, 0, len(r.bots))
@@ -431,7 +430,7 @@ func (r *OrchestratorRuntime) BotIDs() []string {
 	return ids
 }
 
-func (r *OrchestratorRuntime) RunningBotIDs() []string {
+func (r *Orchestrator) RunningBotIDs() []string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	var ids []string
@@ -443,13 +442,19 @@ func (r *OrchestratorRuntime) RunningBotIDs() []string {
 	return ids
 }
 
-// DispatchBotSignal routes a signal to the named bot owned by this runtime.
-func (r *OrchestratorRuntime) DispatchBotSignal(botID string, sig Signal) bool {
+// DispatchBotSignal routes a signal to the named bot owned by this orchestrator.
+// Returns false if the bot is not found. Logs and skips if the bot is paused.
+func (r *Orchestrator) DispatchBotSignal(botID string, sig Signal) bool {
 	r.mu.RLock()
 	bot, ok := r.bots[botID]
 	r.mu.RUnlock()
 	if !ok {
 		return false
+	}
+	if bot.IsPaused() {
+		slog.Debug("orchestrator: bot paused, signal skipped",
+			"bot_id", botID, "symbol", sig.Symbol, "direction", sig.Direction)
+		return true
 	}
 	bot.DeliverSignal(sig)
 	return true

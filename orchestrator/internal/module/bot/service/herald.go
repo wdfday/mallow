@@ -28,6 +28,7 @@ func (s *Service) heraldRegister(botID string, cfg domain.BotConfig) {
 			Symbol:     sym,
 			Strategy:   cfg.Tactic.StrategyName(),
 			ParamsJson: paramsJSON,
+			OrchId:     cfg.OrchestratorID.String(),
 		}
 		if ack, err := s.herald.Register(ctx, req); err != nil {
 			slog.Warn("herald register failed", "bot_id", botID, "symbol", sym, "err", err)

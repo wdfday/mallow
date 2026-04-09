@@ -313,7 +313,7 @@ func (h *NATSHandler) resume(msg *nats.Msg) {
 	_ = msg.Respond(natsapi.ReplyOK(ActionResp{Status: "resumed", ID: id}))
 }
 
-func (h *NATSHandler) requireRuntime(data []byte) (*runtime.OrchestratorRuntime, error) {
+func (h *NATSHandler) requireRuntime(data []byte) (*runtime.Orchestrator, error) {
 	id, err := natsapi.ParseID(data)
 	if err != nil {
 		return nil, err

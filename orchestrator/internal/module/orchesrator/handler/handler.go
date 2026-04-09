@@ -313,7 +313,7 @@ func (h *Handler) resume(c *gin.Context) {
 
 // --- Per-orchestrator runtime data ---
 
-func (h *Handler) requireRuntime(c *gin.Context) *runtime.OrchestratorRuntime {
+func (h *Handler) requireRuntime(c *gin.Context) *runtime.Orchestrator {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		shared.RespondWithError(c, http.StatusBadRequest, "invalid id")

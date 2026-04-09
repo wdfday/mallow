@@ -15,7 +15,7 @@ import (
 // Subjects
 const (
 	SubjBarsPrefix    = "bars."     // bars.{symbol}
-	SubjSignalsAll    = "signals.>" // signals.{symbol} wildcard
+	SubjSignals       = "signals" // all signals — orch_id and bot_id are in the payload
 	SubjEngConfigure  = "engine.configure"
 	SubjEngReset      = "engine.reset"
 	SubjEngRegister   = "engine.register"
@@ -46,10 +46,10 @@ func (c *SignalClient) PublishBar(ctx context.Context, bar *BarMsg) error {
 
 // ── Signal subscription ───────────────────────────────────────────────────────
 
-// SubscribeSignals subscribes to `signals.{symbol}` (legacy single-symbol mode).
-func (c *SignalClient) SubscribeSignals(symbol string, cb func(*SignalResponse)) (*nats.Subscription, error) {
-	subj := "signals." + symbol
-	sub, err := c.nc.Subscribe(subj, func(msg *nats.Msg) {
+// SubscribeSignals subscribes to the "signals" subject.
+// Both orch_id and bot_id are read from SignalResponse payload.
+func (c *SignalClient) SubscribeSignals(cb func(resp *SignalResponse)) (*nats.Subscription, error) {
+	sub, err := c.nc.Subscribe(SubjSignals, func(msg *nats.Msg) {
 		var resp market.SignalResponse
 		if err := proto.Unmarshal(msg.Data, &resp); err != nil {
 			slog.Error("failed to decode SignalResponse", "err", err)
@@ -60,26 +60,7 @@ func (c *SignalClient) SubscribeSignals(symbol string, cb func(*SignalResponse))
 	if err != nil {
 		return nil, err
 	}
-	slog.Info("subscribed to signals", "subject", subj)
-	return sub, nil
-}
-
-// SubscribeAllSignals subscribes to `signals.>` — all bot signals.
-// The subject format is signals.{symbol} (legacy) or signals.{bot_id} (registry mode).
-// The cb receives the raw subject so the caller can route by bot_id.
-func (c *SignalClient) SubscribeAllSignals(cb func(subject string, resp *SignalResponse)) (*nats.Subscription, error) {
-	sub, err := c.nc.Subscribe(SubjSignalsAll, func(msg *nats.Msg) {
-		var resp market.SignalResponse
-		if err := proto.Unmarshal(msg.Data, &resp); err != nil {
-			slog.Error("failed to decode SignalResponse", "subject", msg.Subject, "err", err)
-			return
-		}
-		cb(msg.Subject, &resp)
-	})
-	if err != nil {
-		return nil, err
-	}
-	slog.Info("subscribed to all signals", "subject", SubjSignalsAll)
+	slog.Info("subscribed to signals", "subject", SubjSignals)
 	return sub, nil
 }
 

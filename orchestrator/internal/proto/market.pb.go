@@ -294,6 +294,8 @@ func (x *SignalMsg) GetStrength() float64 {
 type SignalResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Signals       []*SignalMsg           `protobuf:"bytes,1,rep,name=signals,proto3" json:"signals,omitempty"`
+	OrchId        string                 `protobuf:"bytes,2,opt,name=orch_id,json=orchId,proto3" json:"orch_id,omitempty"` // owning orchestrator
+	BotId         string                 `protobuf:"bytes,3,opt,name=bot_id,json=botId,proto3" json:"bot_id,omitempty"`    // target bot
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -333,6 +335,20 @@ func (x *SignalResponse) GetSignals() []*SignalMsg {
 		return x.Signals
 	}
 	return nil
+}
+
+func (x *SignalResponse) GetOrchId() string {
+	if x != nil {
+		return x.OrchId
+	}
+	return ""
+}
+
+func (x *SignalResponse) GetBotId() string {
+	if x != nil {
+		return x.BotId
+	}
+	return ""
 }
 
 type ConfigMsg struct {
@@ -437,6 +453,7 @@ type RegisterMsg struct {
 	Symbol        string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"`                           // e.g. "BTCUSDT"
 	Strategy      string                 `protobuf:"bytes,3,opt,name=strategy,proto3" json:"strategy,omitempty"`                       // "ma_crossover" | "rsi_mean_rev" | ...
 	ParamsJson    string                 `protobuf:"bytes,4,opt,name=params_json,json=paramsJson,proto3" json:"params_json,omitempty"` // flat JSON params: {"fast": 20, "slow": 50}
+	OrchId        string                 `protobuf:"bytes,10,opt,name=orch_id,json=orchId,proto3" json:"orch_id,omitempty"`            // owning orchestrator — used to build signal subject signals.{orch_id}.{bot_id}
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -495,6 +512,13 @@ func (x *RegisterMsg) GetStrategy() string {
 func (x *RegisterMsg) GetParamsJson() string {
 	if x != nil {
 		return x.ParamsJson
+	}
+	return ""
+}
+
+func (x *RegisterMsg) GetOrchId() string {
+	if x != nil {
+		return x.OrchId
 	}
 	return ""
 }

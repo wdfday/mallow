@@ -352,20 +352,20 @@ func TestPaper_Slippage(t *testing.T) {
 	}
 }
 
-// ── Fill streaming ────────────────────────────────────────────────────────────
+// ── Order streaming ───────────────────────────────────────────────────────────
 
-func TestPaper_StreamFills(t *testing.T) {
+func TestPaper_StreamOrders(t *testing.T) {
 	c := paperClient(t)
 	cx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	fills := make(chan exchange.FillEvent, 4)
-	if err := c.StreamFills(cx, func(f exchange.FillEvent) {
-		fills <- f
+	events := make(chan exchange.OrderEvent, 8)
+	if err := c.StreamOrders(cx, func(e exchange.OrderEvent) {
+		events <- e
 	}); err != nil {
-		t.Fatalf("StreamFills: %v", err)
+		t.Fatalf("StreamOrders: %v", err)
 	}
-	t.Log("fill stream started — placing a market order to trigger a fill...")
+	t.Log("order stream started — placing a market order to trigger events...")
 
 	time.Sleep(500 * time.Millisecond)
 	c.PlaceOrder(context.Background(), exchange.OrderRequest{ //nolint
@@ -373,10 +373,10 @@ func TestPaper_StreamFills(t *testing.T) {
 	})
 
 	select {
-	case f := <-fills:
-		t.Logf("fill received: orderID=%s  symbol=%s  side=%s  qty=%s @ $%s",
-			f.OrderID, f.Symbol, f.Side, f.FilledQty, f.FilledAvg)
+	case e := <-events:
+		t.Logf("event received: type=%s orderID=%s  symbol=%s  side=%s  qty=%s @ $%s",
+			e.Type, e.OrderID, e.Symbol, e.Side, e.FilledQty, e.FilledAvg)
 	case <-cx.Done():
-		t.Log("no fill received within 15s")
+		t.Log("no event received within 15s")
 	}
 }

@@ -4,10 +4,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 )
 
-// OrchestratorConfig is the persisted configuration of one orchestrator instance.
+// Orchestrator is the persisted configuration of one orchestrator instance.
 // 1:1 with an investment account (via AccountID).
 // Auto-created on account.linked event; never manually created/deleted via API.
 // Runtime state (portfolio, orderbook, running bots) lives in runtime.OrchestratorRuntime.
@@ -16,7 +15,7 @@ type OrchestratorConfig struct {
 	UserID       uuid.UUID      `json:"user_id"`    // owner — from identity.users.id
 	AccountID    uuid.UUID      `json:"account_id"` // → investment.accounts.id
 	Name         string         `json:"name"`
-	Capital      decimal.Decimal `json:"capital"`
+	Capital      float64        `json:"capital"`
 	Exchange     ExchangeConfig `json:"exchange"`
 	Risk         RiskConfig     `json:"risk"`
 	Enabled      bool           `json:"enabled"`        // user toggle — gates bot create/delete

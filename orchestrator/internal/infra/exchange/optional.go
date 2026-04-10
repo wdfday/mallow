@@ -42,23 +42,35 @@ type AccountSyncer interface {
 	SyncAccount(ctx context.Context, since *time.Time) (*AccountSnapshot, error)
 }
 
-// ── Fill streaming ────────────────────────────────────────────────────────────
+// ── Order event streaming ─────────────────────────────────────────────────────
 
-// FillEvent is a completed (or partial) fill received from the exchange's
-// private account WebSocket stream.
-type FillEvent struct {
+// OrderEventType classifies a private WS order lifecycle event.
+type OrderEventType string
+
+const (
+	OrderEventLive        OrderEventType = "live"         // order acknowledged by exchange
+	OrderEventPartialFill OrderEventType = "partial_fill" // partial fill received
+	OrderEventFilled      OrderEventType = "filled"       // fully filled
+	OrderEventCanceled    OrderEventType = "canceled"     // canceled or rejected
+)
+
+// OrderEvent is received from the exchange private WebSocket on every order
+// state change. FilledQty/FilledAvg are zero for live and canceled events.
+type OrderEvent struct {
+	Type      OrderEventType
 	OrderID   string
 	Symbol    string
 	Side      OrderSide
-	FilledQty decimal.Decimal
-	FilledAvg decimal.Decimal
+	Qty       decimal.Decimal // original submitted qty; populated on live events
+	FilledQty decimal.Decimal // this-event fill qty; zero for live/canceled
+	FilledAvg decimal.Decimal // this-event fill price; zero for live/canceled
 	Timestamp time.Time
 }
 
 // AccountStreamer is optionally implemented by exchanges that support private
-// WebSocket streaming for account fill events.
+// WebSocket streaming for account order lifecycle events.
 type AccountStreamer interface {
-	StreamFills(ctx context.Context, handler func(FillEvent)) error
+	StreamOrders(ctx context.Context, handler func(OrderEvent)) error
 }
 
 // ── Price fetch ───────────────────────────────────────────────────────────────
@@ -78,4 +90,35 @@ type MarketStreamer interface {
 	Subscribe(ctx context.Context, symbols []string) error
 	// AddPriceHandler registers a callback fired on each live trade price.
 	AddPriceHandler(h func(symbol string, price decimal.Decimal))
+}
+
+// ── L2 order book streaming ───────────────────────────────────────────────────
+
+// L2Level is one price level in a top-of-book snapshot.
+type L2Level struct {
+	Price decimal.Decimal
+	Size  decimal.Decimal
+}
+
+// L2Snapshot is a top-5 bid/ask snapshot from the books5 channel.
+// Timestamp is set at dispatch time (Go side), not from the exchange payload.
+type L2Snapshot struct {
+	Symbol    string
+	Timestamp time.Time
+	Bids      [5]L2Level // descending: best bid first
+	Asks      [5]L2Level // ascending: best ask first
+}
+
+// BookStreamer is optionally implemented by market streamers that publish
+// L2 order book snapshots. Currently: OKX via the books5 channel.
+type BookStreamer interface {
+	AddBookHandler(h func(L2Snapshot))
+}
+
+// ── Order reconciliation ──────────────────────────────────────────────────────
+
+// OrderReconciler is optionally implemented by exchanges that can list open
+// orders via REST. Used on startup to rebuild the in-memory orderbook after a crash.
+type OrderReconciler interface {
+	GetPendingOrders(ctx context.Context, symbol string) ([]OrderResult, error)
 }

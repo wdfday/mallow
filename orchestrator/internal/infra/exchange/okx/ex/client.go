@@ -5,8 +5,11 @@ package ex
 
 import (
 	"sync"
+	"time"
 
 	"github.com/shopspring/decimal"
+
+	"orchestrator/internal/infra/exchange"
 )
 
 // PriceHandler is called with each live trade price.
@@ -73,11 +76,32 @@ func (c *Client) AddQuoteHandler(h QuoteHandler) {
 	c.mu.Unlock()
 }
 
-// AddBookHandler registers a callback fired on every L2 book update.
-func (c *Client) AddBookHandler(h BookHandler) {
+// addRawBookHandler registers an internal callback using the package-local L2Book type.
+func (c *Client) addRawBookHandler(h BookHandler) {
 	c.mu.Lock()
 	c.bookHandlers = append(c.bookHandlers, h)
 	c.mu.Unlock()
+}
+
+// AddBookHandler implements exchange.BookStreamer.
+// Converts the internal float64 L2Book to exchange.L2Snapshot on each dispatch.
+func (c *Client) AddBookHandler(h func(exchange.L2Snapshot)) {
+	c.addRawBookHandler(func(symbol string, book L2Book) {
+		snap := exchange.L2Snapshot{Symbol: symbol, Timestamp: time.Now()}
+		for i, b := range book.Bids {
+			snap.Bids[i] = exchange.L2Level{
+				Price: decimal.NewFromFloat(b.Price),
+				Size:  decimal.NewFromFloat(b.Size),
+			}
+		}
+		for i, a := range book.Asks {
+			snap.Asks[i] = exchange.L2Level{
+				Price: decimal.NewFromFloat(a.Price),
+				Size:  decimal.NewFromFloat(a.Size),
+			}
+		}
+		h(snap)
+	})
 }
 
 // GetBBO returns the cached best bid/ask for a symbol.

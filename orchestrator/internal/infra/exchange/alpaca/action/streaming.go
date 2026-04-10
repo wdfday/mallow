@@ -34,31 +34,64 @@ func (c *Client) StreamTradeUpdatesInBackground(ctx context.Context, handler Tra
 	})
 }
 
-// StreamFills implements exchange.AccountStreamer. Starts a background WebSocket
-// listener for fill events; reconnects automatically on failure.
-// Only "fill" and "partial_fill" events are forwarded to the handler.
-func (c *Client) StreamFills(ctx context.Context, handler func(exchange.FillEvent)) error {
-	slog.Info("alpaca: starting fill stream")
+// StreamOrders implements exchange.AccountStreamer. Starts a background WebSocket
+// listener for all order lifecycle events; reconnects automatically on failure.
+func (c *Client) StreamOrders(ctx context.Context, handler func(exchange.OrderEvent)) error {
+	slog.Info("alpaca: starting order stream")
 	c.sdk.StreamTradeUpdatesInBackground(ctx, func(tu alpacasdk.TradeUpdate) {
-		if tu.Event != "fill" && tu.Event != "partial_fill" {
-			return
-		}
 		side := exchange.Buy
 		if string(tu.Order.Side) == "sell" {
 			side = exchange.Sell
 		}
-		var avg decimal.Decimal
-		if tu.Order.FilledAvgPrice != nil {
-			avg = *tu.Order.FilledAvgPrice
+		ts := time.Now().UTC()
+		var origQty decimal.Decimal
+		if tu.Order.Qty != nil {
+			origQty = *tu.Order.Qty
 		}
-		handler(exchange.FillEvent{
-			OrderID:   tu.Order.ID,
-			Symbol:    tu.Order.Symbol,
-			Side:      side,
-			FilledQty: tu.Order.FilledQty,
-			FilledAvg: avg,
-			Timestamp: time.Now().UTC(),
-		})
+
+		switch tu.Event {
+		case "new", "pending_new", "accepted":
+			handler(exchange.OrderEvent{
+				Type:      exchange.OrderEventLive,
+				OrderID:   tu.Order.ID,
+				Symbol:    tu.Order.Symbol,
+				Side:      side,
+				Qty:       origQty,
+				Timestamp: ts,
+			})
+		case "fill", "partial_fill":
+			evType := exchange.OrderEventPartialFill
+			if tu.Event == "fill" {
+				evType = exchange.OrderEventFilled
+			}
+			var avg decimal.Decimal
+			if tu.Order.FilledAvgPrice != nil {
+				avg = *tu.Order.FilledAvgPrice
+			}
+			qty := tu.Order.FilledQty
+			if !qty.IsPositive() {
+				return
+			}
+			handler(exchange.OrderEvent{
+				Type:      evType,
+				OrderID:   tu.Order.ID,
+				Symbol:    tu.Order.Symbol,
+				Side:      side,
+				Qty:       origQty,
+				FilledQty: qty,
+				FilledAvg: avg,
+				Timestamp: ts,
+			})
+		case "canceled", "expired", "replaced", "rejected":
+			handler(exchange.OrderEvent{
+				Type:      exchange.OrderEventCanceled,
+				OrderID:   tu.Order.ID,
+				Symbol:    tu.Order.Symbol,
+				Side:      side,
+				Qty:       origQty,
+				Timestamp: ts,
+			})
+		}
 	})
 	return nil
 }

@@ -365,22 +365,24 @@ func TestDemo_Slippage(t *testing.T) {
 	}
 }
 
-// ── Fill streaming ────────────────────────────────────────────────────────────
+// ── Order streaming ───────────────────────────────────────────────────────────
 
-func TestDemo_StreamFills(t *testing.T) {
+// TestDemo_StreamOrders subscribes to the demo order stream via signature-based auth
+// (wss://demo-ws-api.binance.com/ws-api/v3), then places a market order to trigger events.
+func TestDemo_StreamOrders(t *testing.T) {
 	c := demoClient(t)
-	cx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	cx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	fills := make(chan exchange.FillEvent, 4)
-	if err := c.StreamFills(cx, func(f exchange.FillEvent) {
-		fills <- f
+	events := make(chan exchange.OrderEvent, 8)
+	if err := c.StreamOrders(cx, func(e exchange.OrderEvent) {
+		events <- e
 	}); err != nil {
-		t.Fatalf("StreamFills: %v", err)
+		t.Fatalf("StreamOrders: %v", err)
 	}
-	t.Log("fill stream started — placing a market order to trigger a fill...")
+	t.Log("order stream started — waiting 1s for subscription to settle...")
+	time.Sleep(1 * time.Second)
 
-	// Place a market order to trigger a fill event
 	cx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel2()
 	_, err := c.PlaceOrder(cx2, exchange.OrderRequest{
@@ -390,14 +392,21 @@ func TestDemo_StreamFills(t *testing.T) {
 		Qty:    decimal.NewFromFloat(0.001),
 	})
 	if err != nil {
-		t.Logf("PlaceOrder for fill trigger: %v (stream still running)", err)
+		t.Logf("PlaceOrder: %v (stream still running)", err)
 	}
 
-	select {
-	case f := <-fills:
-		t.Logf("fill received: orderID=%s  symbol=%s  side=%s  qty=%s @ %s",
-			f.OrderID, f.Symbol, f.Side, f.FilledQty, f.FilledAvg)
-	case <-cx.Done():
-		t.Log("no fill received within 15s (expected if order filled before stream ready)")
+	for {
+		select {
+		case e := <-events:
+			t.Logf("event: type=%-12s orderID=%s  symbol=%s  side=%s  qty=%s filledQty=%s @ %s",
+				e.Type, e.OrderID, e.Symbol, e.Side, e.Qty, e.FilledQty, e.FilledAvg)
+			if e.Type == exchange.OrderEventFilled {
+				t.Log("PASS: received filled event")
+				return
+			}
+		case <-cx.Done():
+			t.Log("timeout — no filled event received (stream may not be supported on demo)")
+			return
+		}
 	}
 }

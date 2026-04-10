@@ -39,7 +39,7 @@ func (s *Service) CreateForAccount(req CreateForAccountReq) (*domain.Orchestrato
 		UserID:    req.UserID,
 		AccountID: req.AccountID,
 		Name:      req.Name,
-		Capital:   req.Capital,
+		Capital:   req.Capital.InexactFloat64(),
 		Exchange:  req.Exchange,
 		Risk:      req.Risk,
 		Enabled:   false,
@@ -87,7 +87,7 @@ func (s *Service) Update(id uuid.UUID, req UpdateReq) (*domain.OrchestratorConfi
 			o.Name = req.Name
 		}
 		if req.Capital.IsPositive() {
-			o.Capital = req.Capital
+			o.Capital = req.Capital.InexactFloat64()
 		}
 		if req.Risk != nil {
 			o.Risk = *req.Risk

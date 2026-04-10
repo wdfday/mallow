@@ -39,8 +39,8 @@ type Orchestrator struct {
 	OrderBook orderbook.OrderBook
 	Exchange  exchange.Exchange
 
-	// fillCh decouples the broker WS goroutine from NATS publishing.
-	fillCh chan exchange.FillEvent
+	// orderCh decouples the broker WS goroutine from NATS publishing.
+	orderCh chan exchange.OrderEvent
 
 	mu     sync.RWMutex
 	bots   map[string]*Bot
@@ -51,6 +51,9 @@ type Orchestrator struct {
 
 	pricesMu sync.RWMutex
 	prices   map[string]decimal.Decimal // last known price per symbol
+
+	l2Mu    sync.RWMutex
+	l2Books map[string]exchange.L2Snapshot // latest books5 snapshot per symbol
 
 	tradeMu      sync.Mutex
 	requestCount atomic.Int64
@@ -185,9 +188,10 @@ func NewOrchestrator(
 		RiskMgr:        riskMgr,
 		OrderBook:      ob,
 		Exchange:       ex,
-		fillCh:         make(chan exchange.FillEvent, 128),
+		orderCh:        make(chan exchange.OrderEvent, 128),
 		bots:           make(map[string]*Bot),
 		prices:         make(map[string]decimal.Decimal),
+		l2Books:        make(map[string]exchange.L2Snapshot),
 		resetTicker:    time.NewTicker(1 * time.Minute),
 	}
 	if lastSyncedAt != nil {
@@ -338,6 +342,32 @@ func (r *Orchestrator) UpdatePrice(symbol string, price decimal.Decimal) {
 	r.Portfolio.UpdatePrice(symbol, price)
 }
 
+// UpdateL2 caches the latest books5 snapshot and pushes it to running bots
+// watching that symbol. Called from the shared OKX market streamer goroutine —
+// must not block; OnL2 on each bot must be fast.
+func (r *Orchestrator) UpdateL2(snap exchange.L2Snapshot) {
+	r.l2Mu.Lock()
+	r.l2Books[snap.Symbol] = snap
+	r.l2Mu.Unlock()
+
+	r.mu.RLock()
+	for _, bot := range r.bots {
+		if bot.Symbol == snap.Symbol && bot.IsRunning() {
+			bot.OnL2(snap)
+		}
+	}
+	r.mu.RUnlock()
+}
+
+// LatestL2 returns the most recent books5 snapshot for a symbol.
+// ok=false if no snapshot has been received yet.
+func (r *Orchestrator) LatestL2(symbol string) (exchange.L2Snapshot, bool) {
+	r.l2Mu.RLock()
+	s, ok := r.l2Books[symbol]
+	r.l2Mu.RUnlock()
+	return s, ok
+}
+
 func (r *Orchestrator) lastKnownPrice(symbol string) decimal.Decimal {
 	r.pricesMu.RLock()
 	p := r.prices[symbol]
@@ -351,13 +381,14 @@ func (r *Orchestrator) lastKnownPrice(symbol string) decimal.Decimal {
 	return decimal.Zero
 }
 
-// EnqueueFill drops a broker fill event into the runtime's fill channel non-blocking.
-func (r *Orchestrator) EnqueueFill(ev exchange.FillEvent) {
+// EnqueueOrderEvent drops a broker order event into the runtime's channel non-blocking.
+func (r *Orchestrator) EnqueueOrderEvent(ev exchange.OrderEvent) {
 	select {
-	case r.fillCh <- ev:
+	case r.orderCh <- ev:
 	default:
-		slog.Error("fill channel full, dropping fill event",
+		slog.Error("order channel full, dropping event",
 			"orchestrator_id", r.OrchestratorID,
+			"type", ev.Type,
 			"order_id", ev.OrderID,
 			"symbol", ev.Symbol,
 		)

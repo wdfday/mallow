@@ -288,7 +288,33 @@ func okxBookTicker(instID string) (bid, ask float64, err error) {
 }
 
 func okxDeepBook(instID string, depth int) (*orderBook, error) {
-	resp, err := http.Get(fmt.Sprintf("https://www.okx.com/api/v5/market/books?instId=%s&sz=%d", instID, depth))
+	return fetchOKXBook("https://www.okx.com", instID, depth, false)
+}
+
+// okxDemoDeepBook fetches the order book via the simulated-trading endpoint
+// (x-simulated-trading: 1 header). OKX may return a different book for demo.
+func okxDemoDeepBook(c *Client, instID string, depth int) (*orderBook, error) {
+	var v struct {
+		Data []struct {
+			Bids [][]string `json:"bids"`
+			Asks [][]string `json:"asks"`
+			Ts   string     `json:"ts"`
+		} `json:"data"`
+	}
+	path := fmt.Sprintf("/api/v5/market/books?instId=%s&sz=%d", instID, depth)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.doRequest(ctx, "GET", path, nil, &v); err != nil {
+		return nil, err
+	}
+	if len(v.Data) == 0 {
+		return nil, fmt.Errorf("empty demo book")
+	}
+	return parseOKXBook(v.Data[0].Bids, v.Data[0].Asks), nil
+}
+
+func fetchOKXBook(baseURL, instID string, depth int, _ bool) (*orderBook, error) {
+	resp, err := http.Get(fmt.Sprintf("%s/api/v5/market/books?instId=%s&sz=%d", baseURL, instID, depth))
 	if err != nil {
 		return nil, err
 	}
@@ -305,6 +331,10 @@ func okxDeepBook(instID string, depth int) (*orderBook, error) {
 	if len(v.Data) == 0 {
 		return nil, fmt.Errorf("empty book")
 	}
+	return parseOKXBook(v.Data[0].Bids, v.Data[0].Asks), nil
+}
+
+func parseOKXBook(bids, asks [][]string) *orderBook {
 	parse := func(rows [][]string) []bookLevel {
 		levels := make([]bookLevel, 0, len(rows))
 		for _, r := range rows {
@@ -315,10 +345,7 @@ func okxDeepBook(instID string, depth int) (*orderBook, error) {
 		}
 		return levels
 	}
-	return &orderBook{
-		Bids: parse(v.Data[0].Bids),
-		Asks: parse(v.Data[0].Asks),
-	}, nil
+	return &orderBook{Bids: parse(bids), Asks: parse(asks)}
 }
 
 func TestOKX_Slippage(t *testing.T) {
@@ -418,20 +445,20 @@ func TestOKX_Slippage(t *testing.T) {
 	t.Log("└─────────────────────────────────────────────────────────────────────┘")
 }
 
-// ── Fill streaming ────────────────────────────────────────────────────────────
+// ── Order streaming ───────────────────────────────────────────────────────────
 
-func TestOKX_StreamFills(t *testing.T) {
+func TestOKX_StreamOrders(t *testing.T) {
 	c := paperOKXClient(t)
 	cx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	fills := make(chan exchange.FillEvent, 4)
-	if err := c.StreamFills(cx, func(f exchange.FillEvent) {
-		fills <- f
+	events := make(chan exchange.OrderEvent, 8)
+	if err := c.StreamOrders(cx, func(e exchange.OrderEvent) {
+		events <- e
 	}); err != nil {
-		t.Fatalf("StreamFills: %v", err)
+		t.Fatalf("StreamOrders: %v", err)
 	}
-	t.Log("fill stream started — placing a market order to trigger a fill...")
+	t.Log("order stream started — placing a market order to trigger events...")
 
 	time.Sleep(1 * time.Second)
 
@@ -450,11 +477,74 @@ func TestOKX_StreamFills(t *testing.T) {
 	}
 
 	select {
-	case f := <-fills:
-		t.Logf("✓ fill received: orderID=%s  symbol=%s  side=%s  qty=%s @ %s",
-			f.OrderID, f.Symbol, f.Side, f.FilledQty, f.FilledAvg)
+	case e := <-events:
+		t.Logf("✓ event received: type=%s orderID=%s  symbol=%s  side=%s  qty=%s @ %s",
+			e.Type, e.OrderID, e.Symbol, e.Side, e.FilledQty, e.FilledAvg)
 	case <-cx.Done():
-		t.Log("no fill received within 20s")
+		t.Log("no event received within 20s")
+	}
+}
+
+// ── Book comparison: real vs demo ────────────────────────────────────────────
+
+// TestOKX_BookComparison fetches both real and demo order books for a set of
+// symbols and prints side-by-side ask top-5 levels + expected VWAP divergence.
+// No orders are placed. Useful to see how much the simulated book differs from live.
+func TestOKX_BookComparison(t *testing.T) {
+	c := paperOKXClient(t)
+	symbols := []string{"BTC-USDT", "TRX-USDT", "DOGE-USDT", "XRP-USDT"}
+	// qty to probe: ~$1000 notional worth at rough prices
+	probeUSDT := 1000.0
+
+	for _, sym := range symbols {
+		realBook, err := okxDeepBook(sym, 20)
+		if err != nil {
+			t.Logf("%s: real book error: %v", sym, err)
+			continue
+		}
+		demoBook, demoErr := okxDemoDeepBook(c, sym, 20)
+
+		bestAsk := 0.0
+		if len(realBook.Asks) > 0 {
+			bestAsk = realBook.Asks[0].price
+		}
+		probeQty := 0.0
+		if bestAsk > 0 {
+			probeQty = probeUSDT / bestAsk
+		}
+
+		realVWAP, _, _ := expectedVWAP(realBook.Asks, probeQty)
+		demoVWAP := 0.0
+		if demoErr == nil && demoBook != nil {
+			demoVWAP, _, _ = expectedVWAP(demoBook.Asks, probeQty)
+		}
+
+		t.Logf("══ %s  (probe qty=%.4f @ ~$%.2f) ══", sym, probeQty, probeUSDT)
+
+		// Print side-by-side top-5
+		t.Log("  lvl  real_price      real_size       demo_price      demo_size")
+		t.Log("  ───  ──────────────  ──────────────  ──────────────  ──────────────")
+		for j := 0; j < 5; j++ {
+			rPrice, rSize := 0.0, 0.0
+			dPrice, dSize := 0.0, 0.0
+			if j < len(realBook.Asks) {
+				rPrice = realBook.Asks[j].price
+				rSize = realBook.Asks[j].size
+			}
+			if demoErr == nil && demoBook != nil && j < len(demoBook.Asks) {
+				dPrice = demoBook.Asks[j].price
+				dSize = demoBook.Asks[j].size
+			}
+			t.Logf("  [%d]  %-14.6f  %-14.4f  %-14.6f  %-14.4f", j+1, rPrice, rSize, dPrice, dSize)
+		}
+
+		if demoVWAP > 0 && realVWAP > 0 {
+			divergeBps := (demoVWAP - realVWAP) / realVWAP * 10000
+			t.Logf("  exp_vwap_real=%.6f  exp_vwap_demo=%.6f  diverge=%+.4f bps", realVWAP, demoVWAP, divergeBps)
+		} else if demoErr != nil {
+			t.Logf("  demo unavailable: %v  exp_vwap_real=%.6f", demoErr, realVWAP)
+		}
+		t.Log("")
 	}
 }
 
@@ -590,24 +680,68 @@ func TestOKX_LargeOrderImpact(t *testing.T) {
 
 	// ── Step 4: place orders and measure slippage ──────────────────────────────
 	type row struct {
-		qty         float64
-		bookDepth   float64
-		expectedAvg float64
-		fillAvg     float64
-		diffBps     float64
-		ok          bool
+		qty            float64
+		pctDepth       float64
+		totalDepth     float64
+		expVWAPReal    float64
+		expVWAPDemo    float64
+		fillAvg        float64
+		filledQty      float64
+		diffRealBps    float64
+		diffDemoBps    float64
+		status         string
+		realDepthOK    bool
+		demoDepthOK    bool
 	}
 	var rows []row
 
-	for _, qty := range sizes {
-		book, err := okxDeepBook(best.instID, 20)
-		if err != nil {
-			t.Fatalf("okxDeepBook: %v", err)
+	logBook := func(label string, asks []bookLevel) {
+		t.Logf("  %s ask book (top-10):", label)
+		cumQty := 0.0
+		for j, l := range asks {
+			if j >= 10 {
+				break
+			}
+			cumQty += l.size
+			t.Logf("    [%2d] price=%-12.6f  size=%-12.4f  cumQty=%-12.4f  notional=$%.2f",
+				j+1, l.price, l.size, cumQty, l.price*l.size)
 		}
-		expVWAP, _, depthOK := expectedVWAP(book.Asks, qty)
+	}
+
+	for i, qty := range sizes {
+		// Fetch real and demo books in parallel (sequentially here — demo needs auth context)
+		realBook, err := okxDeepBook(best.instID, 20)
+		if err != nil {
+			t.Fatalf("okxDeepBook (real): %v", err)
+		}
+		demoBook, demoErr := okxDemoDeepBook(c, best.instID, 20)
+
+		expVWAPReal, _, realDepthOK := expectedVWAP(realBook.Asks, qty)
 		totalDepth := 0.0
-		for _, l := range book.Asks {
+		for _, l := range realBook.Asks {
 			totalDepth += l.size
+		}
+		pctDepth := qty / totalDepth * 100
+
+		expVWAPDemo := 0.0
+		demoDepthOK := false
+		if demoErr == nil && demoBook != nil {
+			expVWAPDemo, _, demoDepthOK = expectedVWAP(demoBook.Asks, qty)
+		}
+
+		t.Logf("── order %d/%d: qty=%.4f %s (%.1f%% of real ask depth=%.2f) ──",
+			i+1, len(sizes), qty, best.instID, pctDepth, totalDepth)
+		logBook("REAL", realBook.Asks)
+		t.Logf("  exp_vwap_real=%.6f  (depth_ok=%v)", expVWAPReal, realDepthOK)
+		if demoErr == nil && demoBook != nil {
+			logBook("DEMO", demoBook.Asks)
+			t.Logf("  exp_vwap_demo=%.6f  (depth_ok=%v)", expVWAPDemo, demoDepthOK)
+			if expVWAPReal > 0 {
+				bookDiffBps := (expVWAPDemo - expVWAPReal) / expVWAPReal * 10000
+				t.Logf("  book divergence (demo-real): %+.4f bps", bookDiffBps)
+			}
+		} else {
+			t.Logf("  demo book unavailable: %v", demoErr)
 		}
 
 		cx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -619,46 +753,82 @@ func TestOKX_LargeOrderImpact(t *testing.T) {
 		})
 		cancel()
 		if err != nil {
-			t.Logf("qty=%.2f: PlaceOrder error: %v", qty, err)
-			rows = append(rows, row{qty: qty, bookDepth: totalDepth})
+			t.Logf("  PlaceOrder error: %v", err)
+			rows = append(rows, row{qty: qty, pctDepth: pctDepth, totalDepth: totalDepth, status: "error"})
 			time.Sleep(500 * time.Millisecond)
 			continue
 		}
+		t.Logf("  placed:  id=%s  status=%s  qty=%s  filledQty=%s  filledAvg=%s",
+			resp.ID, resp.Status, resp.Qty, resp.FilledQty, resp.FilledAvg)
 
+		// Poll until filled
 		fillAvg := resp.FilledAvg
+		filledQty := resp.FilledQty
+		status := resp.Status
 		if fillAvg.IsZero() {
-			for range 5 {
+			for attempt := range 6 {
 				time.Sleep(400 * time.Millisecond)
 				cx2, cancel2 := okxCtx()
-				got, _ := c.GetOrder(cx2, resp.ID)
+				got, pollErr := c.GetOrder(cx2, resp.ID)
 				cancel2()
-				if got != nil && got.FilledAvg.IsPositive() {
-					fillAvg = got.FilledAvg
-					break
+				if pollErr != nil {
+					t.Logf("  poll[%d] error: %v", attempt+1, pollErr)
+					continue
+				}
+				if got != nil {
+					status = got.Status
+					filledQty = got.FilledQty
+					t.Logf("  poll[%d]: status=%s  filledQty=%s  filledAvg=%s",
+						attempt+1, got.Status, got.FilledQty, got.FilledAvg)
+					if got.FilledAvg.IsPositive() {
+						fillAvg = got.FilledAvg
+						break
+					}
 				}
 			}
 		}
 
 		fillAvgF := fillAvg.InexactFloat64()
-		diffBps := 0.0
-		if fillAvg.IsPositive() && expVWAP > 0 {
-			diffBps = (fillAvgF - expVWAP) / expVWAP * 10000
+		diffRealBps, diffDemoBps := 0.0, 0.0
+		if fillAvg.IsPositive() {
+			if expVWAPReal > 0 {
+				diffRealBps = (fillAvgF - expVWAPReal) / expVWAPReal * 10000
+			}
+			if expVWAPDemo > 0 {
+				diffDemoBps = (fillAvgF - expVWAPDemo) / expVWAPDemo * 10000
+			}
 		}
-		rows = append(rows, row{qty, totalDepth, expVWAP, fillAvgF, diffBps, depthOK})
-		time.Sleep(500 * time.Millisecond)
+		t.Logf("  result:  fillAvg=%.6f  exp_real=%.6f (%+.4fbps)  exp_demo=%.6f (%+.4fbps)  filledQty=%s",
+			fillAvgF, expVWAPReal, diffRealBps, expVWAPDemo, diffDemoBps, filledQty)
+
+		rows = append(rows, row{
+			qty: qty, pctDepth: pctDepth, totalDepth: totalDepth,
+			expVWAPReal: expVWAPReal, expVWAPDemo: expVWAPDemo,
+			fillAvg: fillAvgF, filledQty: filledQty.InexactFloat64(),
+			diffRealBps: diffRealBps, diffDemoBps: diffDemoBps,
+			status: status, realDepthOK: realDepthOK, demoDepthOK: demoDepthOK,
+		})
+		time.Sleep(600 * time.Millisecond)
 	}
 
-	unit := best.instID
-	t.Logf("┌──────────────────────────────────────────────────────────────────────────────────┐")
-	t.Logf("│  %-10s %-12s %-15s %-12s %-10s %-12s │", "qty("+unit[:3]+")", "depth", "expected_avg", "fill_avg", "diff(bps)", "book_covered")
-	t.Log("├──────────────────────────────────────────────────────────────────────────────────┤")
+	// Summary table
+	t.Log("")
+	t.Log("══ SUMMARY ══════════════════════════════════════════════════════════════════════════════════════════════════════════")
+	t.Logf("  %-10s %-7s %-12s %-14s %-14s %-14s %-11s %-11s %-12s",
+		"qty", "%depth", "depth_total", "exp_vwap_real", "exp_vwap_demo", "fill_avg", "diff_real", "diff_demo", "status")
+	t.Log("  ────────────────────────────────────────────────────────────────────────────────────────────────────────────────")
 	for _, r := range rows {
-		covered := "yes"
-		if !r.ok {
-			covered = "NO (partial)"
+		flags := ""
+		if !r.realDepthOK {
+			flags += "[real-partial]"
 		}
-		t.Logf("│  %-10.2f %-12.2f %-15.6f %-12.6f %+9.4f  %-12s │",
-			r.qty, r.bookDepth, r.expectedAvg, r.fillAvg, r.diffBps, covered)
+		if !r.demoDepthOK {
+			flags += "[demo-partial]"
+		}
+		t.Logf("  %-10.4f %-7.1f %-12.2f %-14.6f %-14.6f %-14.6f %+10.4f  %+10.4f  %s %s",
+			r.qty, r.pctDepth, r.totalDepth,
+			r.expVWAPReal, r.expVWAPDemo, r.fillAvg,
+			r.diffRealBps, r.diffDemoBps, r.status, flags)
 	}
-	t.Log("└──────────────────────────────────────────────────────────────────────────────┘")
+	t.Log("════════════════════════════════════════════════════════════════════════════════════════════════════════════════════")
 }

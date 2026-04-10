@@ -27,6 +27,12 @@ type exitLevel struct {
 	TakeProfit decimal.Decimal // zero = not set
 }
 
+// l2Guard holds per-symbol warm-up state for reactive L2 monitoring.
+// Prevents reactions on the first few snapshots when the bot just started.
+type l2Guard struct {
+	warmupLeft int // countdown; bot reacts only after this reaches zero
+}
+
 // Bot is an autonomous trading agent.
 // Each Bot owns its own strategy, tactician, signal channel, and run-loop goroutine.
 // Account-level resources (Exchange, Portfolio, OrderBook) are shared via OrchestratorRuntime.
@@ -62,8 +68,9 @@ type Bot struct {
 	done           chan struct{}
 	orders         []domain.Order
 	barsSinceEntry map[string]int    // symbol → bar count since position entry (time-stop)
-	pendingExits   map[string]exitLevel // orderID → SL/TP levels; promoted to exitLevels on entry fill
-	exitLevels     map[string]exitLevel // symbol → active SL/TP for open position (local safety net)
+	pendingExits   map[string]exitLevel  // orderID → SL/TP levels; promoted to exitLevels on entry fill
+	exitLevels     map[string]exitLevel  // symbol → active SL/TP for open position (local safety net)
+	l2Guards       map[string]*l2Guard   // symbol → L2 warm-up state
 
 	health  BotHealth
 	metrics struct {
@@ -134,6 +141,7 @@ func NewBot(
 		barsSinceEntry: make(map[string]int),
 		pendingExits:   make(map[string]exitLevel),
 		exitLevels:     make(map[string]exitLevel),
+		l2Guards:       make(map[string]*l2Guard),
 		health:         BotHealth{Status: "stopped"},
 	}
 }
@@ -163,6 +171,11 @@ func BuildBotComponents(cfg domain.BotConfig) (strategy.Strategy, *tactics.Tacti
 
 	tact := tactics.New(tactics.SizingConfig{
 		Mode:              sizingMode,
+		AllocatedCapital:  cfg.Risk.AllocatedCapital,
+		AllocatedPct:      cfg.Risk.AllocatedPct,
+		UnitCapital:       cfg.Risk.UnitCapital,
+		UnitPct:           cfg.Risk.UnitPct,
+		MaxPositions:      cfg.Risk.MaxPositions,
 		RiskPerTradePct:   cfg.Risk.RiskPerTradePct,
 		MaxPositionPct:    cfg.Risk.MaxPositionPct,
 		FixedQty:          cfg.Risk.FixedQty,
@@ -645,6 +658,31 @@ func (b *Bot) checkExits() {
 			slog.Warn("exit monitor: urgent channel full", "bot_id", b.id, "symbol", sym)
 		}
 	}
+}
+
+// OnL2 is called by Orchestrator.UpdateL2 on every books5 snapshot for this
+// bot's symbol. It runs in the shared OKX market streamer goroutine and must
+// return quickly. The first 10 snapshots (~1s at 100ms cadence) are skipped
+// while the guard warms up.
+//
+// Exit rule evaluation is intentionally deferred — plug in an L2ExitRule here.
+func (b *Bot) OnL2(snap exchange.L2Snapshot) {
+	if b.IsPaused() {
+		return
+	}
+	b.mu.Lock()
+	g, ok := b.l2Guards[snap.Symbol]
+	if !ok {
+		g = &l2Guard{warmupLeft: 10}
+		b.l2Guards[snap.Symbol] = g
+	}
+	if g.warmupLeft > 0 {
+		g.warmupLeft--
+		b.mu.Unlock()
+		return
+	}
+	b.mu.Unlock()
+	// TODO: evaluate pluggable L2ExitRule(snap) → b.UrgentSignals
 }
 
 // PlaceOrder submits an order via the full pipeline. Manual/legacy interface.

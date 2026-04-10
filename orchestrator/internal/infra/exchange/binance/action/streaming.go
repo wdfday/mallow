@@ -17,33 +17,33 @@ import (
 // wsMu guards gobinance.UseTestnet global flag.
 var wsMu sync.Mutex
 
-// StreamFills implements exchange.AccountStreamer.
-// For spot bots (req.Market != futures) it uses the spot user data stream.
-// For futures bots it uses the futures user data stream.
-func (c *Client) StreamFills(ctx context.Context, handler func(exchange.FillEvent)) error {
-	go c.streamSpotFills(ctx, handler)
-	if c.testnet {
-		// Testnet futures stream is optional; skip to avoid noise.
-		slog.Info("binance: futures fill streaming skipped on testnet")
+// StreamOrders implements exchange.AccountStreamer.
+// For spot it uses WsUserDataServeSignature (signature-based, works on demo/testnet)
+// or WsUserDataServe (listen-key, production fallback).
+// Futures streaming uses the listen-key flow (production only).
+func (c *Client) StreamOrders(ctx context.Context, handler func(exchange.OrderEvent)) error {
+	go c.streamSpotOrders(ctx, handler)
+	if !c.testnet {
+		go c.streamFuturesOrders(ctx, handler)
 	} else {
-		go c.streamFuturesFills(ctx, handler)
+		slog.Info("binance: futures order streaming skipped on demo/testnet")
 	}
-	slog.Info("binance: fill streaming started")
+	slog.Info("binance: order streaming started")
 	return nil
 }
 
 // ── Spot ──────────────────────────────────────────────────────────────────────
 
-func (c *Client) streamSpotFills(ctx context.Context, handler func(exchange.FillEvent)) {
+func (c *Client) streamSpotOrders(ctx context.Context, handler func(exchange.OrderEvent)) {
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		err := c.streamSpotFillsOnce(ctx, handler)
+		err := c.streamSpotOrdersOnce(ctx, handler)
 		if ctx.Err() != nil {
 			return
 		}
-		slog.Warn("binance: spot fill stream disconnected, reconnecting in 5s", "err", err)
+		slog.Warn("binance: spot order stream disconnected, reconnecting in 5s", "err", err)
 		select {
 		case <-time.After(5 * time.Second):
 		case <-ctx.Done():
@@ -52,53 +52,122 @@ func (c *Client) streamSpotFills(ctx context.Context, handler func(exchange.Fill
 	}
 }
 
-func (c *Client) streamSpotFillsOnce(ctx context.Context, handler func(exchange.FillEvent)) error {
+func (c *Client) streamSpotOrdersOnce(ctx context.Context, handler func(exchange.OrderEvent)) error {
+	if c.testnet {
+		return c.streamSpotOrdersSignature(ctx, handler)
+	}
+	return c.streamSpotOrdersListenKey(ctx, handler)
+}
+
+// streamSpotOrdersSignature uses WsUserDataServeSignature — no listen key needed.
+// Works on demo (wss://demo-ws-api.binance.com/ws-api/v3) and production.
+func (c *Client) streamSpotOrdersSignature(ctx context.Context, handler func(exchange.OrderEvent)) error {
+	wsMu.Lock()
+	gobinance.UseDemo = c.testnet
+	doneC, stopC, err := gobinance.WsUserDataServeSignature(
+		c.apiKey, c.apiSecret, "HMAC", 0,
+		c.spotOrderHandler(handler),
+		func(err error) { slog.Warn("binance: spot ws error", "err", err) },
+	)
+	gobinance.UseDemo = false
+	wsMu.Unlock()
+	if err != nil {
+		return fmt.Errorf("ws spot user data (signature): %w", err)
+	}
+	return c.waitSpotStream(ctx, stopC, doneC, "", false)
+}
+
+// streamSpotOrdersListenKey is the classic listen-key flow (production only).
+func (c *Client) streamSpotOrdersListenKey(ctx context.Context, handler func(exchange.OrderEvent)) error {
 	listenKey, err := c.spot.NewStartUserStreamService().Do(ctx)
 	if err != nil {
 		return fmt.Errorf("start spot user stream: %w", err)
 	}
 
 	wsMu.Lock()
-	gobinance.UseDemo = c.testnet
-	doneC, stopC, err := gobinance.WsUserDataServe(listenKey, func(event *gobinance.WsUserDataEvent) {
+	doneC, stopC, err := gobinance.WsUserDataServe(listenKey, c.spotOrderHandler(handler), func(err error) {
+		slog.Warn("binance: spot ws error", "err", err)
+	})
+	wsMu.Unlock()
+	if err != nil {
+		return fmt.Errorf("ws spot user data: %w", err)
+	}
+	return c.waitSpotStream(ctx, stopC, doneC, listenKey, true)
+}
+
+// spotOrderHandler returns a WsUserDataHandler that converts execution reports to OrderEvents.
+func (c *Client) spotOrderHandler(handler func(exchange.OrderEvent)) gobinance.WsUserDataHandler {
+	return func(event *gobinance.WsUserDataEvent) {
 		if event.Event != gobinance.UserDataEventTypeExecutionReport {
 			return
 		}
 		ou := event.OrderUpdate
-		if ou.ExecutionType != "TRADE" {
-			return
-		}
 		side := exchange.Buy
 		if gobinance.SideType(ou.Side) == gobinance.SideTypeSell {
 			side = exchange.Sell
 		}
-		handler(exchange.FillEvent{
-			OrderID:   strconv.FormatInt(ou.Id, 10),
-			Symbol:    ou.Symbol,
-			Side:      side,
-			FilledQty: parseDecimal(ou.LatestVolume),
-			FilledAvg: parseDecimal(ou.LatestPrice),
-			Timestamp: time.UnixMilli(ou.TransactionTime).UTC(),
-		})
-	}, func(err error) {
-		slog.Warn("binance: spot ws error", "err", err)
-	})
-	gobinance.UseDemo = false
-	wsMu.Unlock()
+		ts := time.UnixMilli(ou.TransactionTime).UTC()
+		orderID := strconv.FormatInt(ou.Id, 10)
 
-	if err != nil {
-		return fmt.Errorf("ws spot user data: %w", err)
+		switch ou.ExecutionType {
+		case "NEW":
+			handler(exchange.OrderEvent{
+				Type:      exchange.OrderEventLive,
+				OrderID:   orderID,
+				Symbol:    ou.Symbol,
+				Side:      side,
+				Qty:       parseDecimal(ou.Volume),
+				Timestamp: ts,
+			})
+		case "TRADE":
+			evType := exchange.OrderEventPartialFill
+			if ou.Status == "FILLED" {
+				evType = exchange.OrderEventFilled
+			}
+			qty := parseDecimal(ou.LatestVolume)
+			if !qty.IsPositive() {
+				return
+			}
+			handler(exchange.OrderEvent{
+				Type:      evType,
+				OrderID:   orderID,
+				Symbol:    ou.Symbol,
+				Side:      side,
+				Qty:       parseDecimal(ou.Volume),
+				FilledQty: qty,
+				FilledAvg: parseDecimal(ou.LatestPrice),
+				Timestamp: ts,
+			})
+		case "CANCELED", "EXPIRED", "REJECTED":
+			handler(exchange.OrderEvent{
+				Type:      exchange.OrderEventCanceled,
+				OrderID:   orderID,
+				Symbol:    ou.Symbol,
+				Side:      side,
+				Qty:       parseDecimal(ou.Volume),
+				Timestamp: ts,
+			})
+		}
 	}
+}
 
-	keepAlive := time.NewTicker(25 * time.Minute)
-	defer keepAlive.Stop()
+// waitSpotStream blocks until ctx is done or the stream closes.
+// If keepAlive=true it sends periodic keep-alives for the given listenKey.
+func (c *Client) waitSpotStream(ctx context.Context, stopC, doneC chan struct{}, listenKey string, keepAlive bool) error {
+	var ticker *time.Ticker
+	var tickC <-chan time.Time
+	if keepAlive && listenKey != "" {
+		ticker = time.NewTicker(25 * time.Minute)
+		tickC = ticker.C
+		defer ticker.Stop()
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			close(stopC)
 			return nil
-		case <-keepAlive.C:
+		case <-tickC:
 			if err := c.spot.NewKeepaliveUserStreamService().ListenKey(listenKey).Do(ctx); err != nil {
 				slog.Warn("binance: spot listen key keep-alive failed", "err", err)
 			}
@@ -110,16 +179,16 @@ func (c *Client) streamSpotFillsOnce(ctx context.Context, handler func(exchange.
 
 // ── Futures ───────────────────────────────────────────────────────────────────
 
-func (c *Client) streamFuturesFills(ctx context.Context, handler func(exchange.FillEvent)) {
+func (c *Client) streamFuturesOrders(ctx context.Context, handler func(exchange.OrderEvent)) {
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		err := c.streamFuturesFillsOnce(ctx, handler)
+		err := c.streamFuturesOrdersOnce(ctx, handler)
 		if ctx.Err() != nil {
 			return
 		}
-		slog.Warn("binance: futures fill stream disconnected, reconnecting in 5s", "err", err)
+		slog.Warn("binance: futures order stream disconnected, reconnecting in 5s", "err", err)
 		select {
 		case <-time.After(5 * time.Second):
 		case <-ctx.Done():
@@ -128,7 +197,7 @@ func (c *Client) streamFuturesFills(ctx context.Context, handler func(exchange.F
 	}
 }
 
-func (c *Client) streamFuturesFillsOnce(ctx context.Context, handler func(exchange.FillEvent)) error {
+func (c *Client) streamFuturesOrdersOnce(ctx context.Context, handler func(exchange.OrderEvent)) error {
 	listenKey, err := c.fut.NewStartUserStreamService().Do(ctx)
 	if err != nil {
 		return fmt.Errorf("start futures user stream: %w", err)
@@ -139,21 +208,52 @@ func (c *Client) streamFuturesFillsOnce(ctx context.Context, handler func(exchan
 			return
 		}
 		ou := event.OrderTradeUpdate
-		if ou.ExecutionType != "TRADE" {
-			return
-		}
 		side := exchange.Buy
 		if ou.Side == futures.SideTypeSell {
 			side = exchange.Sell
 		}
-		handler(exchange.FillEvent{
-			OrderID:   strconv.FormatInt(ou.ID, 10),
-			Symbol:    ou.Symbol,
-			Side:      side,
-			FilledQty: parseDecimal(ou.LastFilledQty),
-			FilledAvg: parseDecimal(ou.LastFilledPrice),
-			Timestamp: time.UnixMilli(ou.TradeTime).UTC(),
-		})
+		ts := time.UnixMilli(ou.TradeTime).UTC()
+		orderID := strconv.FormatInt(ou.ID, 10)
+
+		switch ou.ExecutionType {
+		case "NEW":
+			handler(exchange.OrderEvent{
+				Type:      exchange.OrderEventLive,
+				OrderID:   orderID,
+				Symbol:    ou.Symbol,
+				Side:      side,
+				Qty:       parseDecimal(ou.OriginalQty),
+				Timestamp: ts,
+			})
+		case "TRADE":
+			evType := exchange.OrderEventPartialFill
+			if ou.Status == futures.OrderStatusTypeFilled {
+				evType = exchange.OrderEventFilled
+			}
+			qty := parseDecimal(ou.LastFilledQty)
+			if !qty.IsPositive() {
+				return
+			}
+			handler(exchange.OrderEvent{
+				Type:      evType,
+				OrderID:   orderID,
+				Symbol:    ou.Symbol,
+				Side:      side,
+				Qty:       parseDecimal(ou.OriginalQty),
+				FilledQty: qty,
+				FilledAvg: parseDecimal(ou.LastFilledPrice),
+				Timestamp: ts,
+			})
+		case "CANCELED", "EXPIRED", "CALCULATED":
+			handler(exchange.OrderEvent{
+				Type:      exchange.OrderEventCanceled,
+				OrderID:   orderID,
+				Symbol:    ou.Symbol,
+				Side:      side,
+				Qty:       parseDecimal(ou.OriginalQty),
+				Timestamp: ts,
+			})
+		}
 	}, func(err error) {
 		slog.Warn("binance: futures ws error", "err", err)
 	})

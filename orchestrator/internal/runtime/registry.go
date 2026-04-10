@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
+	"github.com/shopspring/decimal"
 
 	"orchestrator/internal/infra/exchange"
 	"orchestrator/internal/infra/natsapi"
@@ -134,7 +135,7 @@ func (r *Registry) Spawn(cfg *orchdomain.OrchestratorConfig) error {
 		return fmt.Errorf("registry: create exchange for %q: %w", cfg.ID, err)
 	}
 
-	pf := portfolio.New(cfg.Capital)
+	pf := portfolio.New(decimal.NewFromFloat(cfg.Capital))
 	riskCfg := risk.Config{
 		MaxPositions:      cfg.Risk.MaxPositions,
 		MaxPositionPct:    cfg.Risk.MaxPositionPct,
@@ -168,6 +169,10 @@ func (r *Registry) Spawn(cfg *orchdomain.OrchestratorConfig) error {
 	r.mu.RUnlock()
 	if ms != nil {
 		ms.AddPriceHandler(rt.UpdatePrice)
+		if bs, ok := ms.(exchange.BookStreamer); ok {
+			bs.AddBookHandler(rt.UpdateL2)
+			slog.Info("runtime: L2 book streaming registered", "orchestrator_id", cfg.ID, "broker", cfg.Exchange.BrokerType)
+		}
 	}
 
 	r.mu.Lock()
@@ -353,6 +358,68 @@ func (r *Registry) SpawnAll(cfgs []*orchdomain.OrchestratorConfig) {
 	}
 }
 
+// ReconcileAllOrders fetches open orders from the exchange for each runtime
+// and re-tracks any that are missing from the in-memory orderbook.
+// Call this after SpawnAll + StartFillStreaming so the fill processor is ready
+// to handle fills that arrive for reconciled orders.
+func (r *Registry) ReconcileAllOrders(ctx context.Context) {
+	r.mu.RLock()
+	rts := make([]*Orchestrator, 0, len(r.runtimes))
+	for _, rt := range r.runtimes {
+		rts = append(rts, rt)
+	}
+	r.mu.RUnlock()
+
+	for _, rt := range rts {
+		r.reconcileOrders(ctx, rt)
+	}
+}
+
+func (r *Registry) reconcileOrders(ctx context.Context, rt *Orchestrator) {
+	reconciler, ok := rt.Exchange.(exchange.OrderReconciler)
+	if !ok {
+		return
+	}
+	// Fetch all open orders (symbol="" = all instruments).
+	orders, err := reconciler.GetPendingOrders(ctx, "")
+	if err != nil {
+		slog.Warn("reconcile orders: fetch failed",
+			"orchestrator_id", rt.OrchestratorID, "err", err)
+		return
+	}
+	if len(orders) == 0 {
+		return
+	}
+
+	orchID := rt.OrchestratorID.String()
+	// Build set of already-tracked order IDs so we don't double-track.
+	tracked := make(map[string]struct{})
+	for _, p := range rt.OrderBook.PendingOrders(orchID) {
+		tracked[p.OrderID] = struct{}{}
+	}
+
+	recovered := 0
+	for _, o := range orders {
+		if _, exists := tracked[o.ID]; exists {
+			continue
+		}
+		rt.OrderBook.TrackOrder(orderbook.PendingOrder{
+			OrchestratorID: orchID,
+			OrderID:        o.ID,
+			BotID:          "", // unknown after crash
+			Symbol:         o.Symbol,
+			Side:           orderbook.OrderSide(o.Side),
+		})
+		recovered++
+	}
+	if recovered > 0 {
+		slog.Info("reconcile orders: recovered pending orders",
+			"orchestrator_id", rt.OrchestratorID,
+			"recovered", recovered,
+			"total_open", len(orders))
+	}
+}
+
 // StartFillStreaming starts account fill listeners for all runtimes whose exchange
 // implements AccountStreamer. Called once after SpawnAll, from the app lifecycle.
 func (r *Registry) StartFillStreaming(ctx context.Context, nc *nats.Conn) {
@@ -374,32 +441,63 @@ func (r *Registry) startFillStream(ctx context.Context, nc *nats.Conn, rt *Orche
 		return
 	}
 	// WS callback only enqueues — never blocks on NATS.
-	if err := streamer.StreamFills(ctx, rt.EnqueueFill); err != nil {
-		slog.Error("fill stream start failed", "orchestrator_id", rt.OrchestratorID, "err", err)
+	if err := streamer.StreamOrders(ctx, rt.EnqueueOrderEvent); err != nil {
+		slog.Error("order stream start failed", "orchestrator_id", rt.OrchestratorID, "err", err)
 		return
 	}
-	// Dedicated goroutine drains fillCh and publishes to NATS.
-	go r.runFillProcessor(ctx, nc, rt)
-	slog.Info("fill streaming started", "orchestrator_id", rt.OrchestratorID, "exchange", rt.Exchange.Name())
+	// Dedicated goroutine drains orderCh and processes all event types.
+	go r.runOrderProcessor(ctx, nc, rt)
+	slog.Info("order streaming started", "orchestrator_id", rt.OrchestratorID, "exchange", rt.Exchange.Name())
 }
 
-// runFillProcessor drains rt.fillCh and applies each fill:
-// updates the in-memory portfolio, publishes FillNotification and InvestmentTransaction to NATS.
-func (r *Registry) runFillProcessor(ctx context.Context, nc *nats.Conn, rt *Orchestrator) {
+// runOrderProcessor drains rt.orderCh and dispatches each event by type:
+//   - live:         track manual orders that bypassed bot PlaceOrder
+//   - partial_fill / filled: apply fill to portfolio + publish to NATS
+//   - canceled:     remove from orderbook
+func (r *Registry) runOrderProcessor(ctx context.Context, nc *nats.Conn, rt *Orchestrator) {
 	for {
 		select {
-		case ev := <-rt.fillCh:
+		case ev := <-rt.orderCh:
 			r.mu.RLock()
 			js := r.js
 			r.mu.RUnlock()
-			r.applyFill(nc, js, rt, ev)
+			orchID := rt.OrchestratorID.String()
+			switch ev.Type {
+			case exchange.OrderEventLive:
+				// Dedup: bot orders are already tracked via PlaceOrder REST response.
+				// Only track if missing — indicates a manual order placed outside the bot.
+				if !rt.OrderBook.Has(orchID, ev.OrderID) {
+					rt.OrderBook.TrackOrder(orderbook.PendingOrder{
+						OrchestratorID: orchID,
+						OrderID:        ev.OrderID,
+						BotID:          "manual",
+						Symbol:         ev.Symbol,
+						Side:           orderbook.OrderSide(ev.Side),
+						Qty:            ev.Qty,
+					})
+					slog.Info("order book: manual order tracked via WS",
+						"orchestrator_id", rt.OrchestratorID,
+						"order_id", ev.OrderID,
+						"symbol", ev.Symbol,
+						"qty", ev.Qty,
+					)
+				}
+			case exchange.OrderEventPartialFill, exchange.OrderEventFilled:
+				r.applyFill(nc, js, rt, ev)
+			case exchange.OrderEventCanceled:
+				rt.OrderBook.RemoveOrder(orchID, ev.OrderID)
+				slog.Info("order book: canceled order removed",
+					"orchestrator_id", rt.OrchestratorID,
+					"order_id", ev.OrderID,
+				)
+			}
 		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-func (r *Registry) applyFill(nc *nats.Conn, js nats.JetStreamContext, rt *Orchestrator, ev exchange.FillEvent) {
+func (r *Registry) applyFill(nc *nats.Conn, js nats.JetStreamContext, rt *Orchestrator, ev exchange.OrderEvent) {
 	orchID := rt.OrchestratorID.String()
 
 	// Resolve botID from pending orders before the fill removes the record.

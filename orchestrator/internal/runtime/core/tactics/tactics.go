@@ -55,9 +55,25 @@ const (
 
 // SizingConfig holds parameters for position sizing and exit levels.
 type SizingConfig struct {
-	Mode              SizingMode      `json:"mode"`
-	RiskPerTradePct   float64         `json:"risk_per_trade_pct"`   // for fixed_fractional (e.g. 0.01 = 1%)
-	MaxPositionPct    float64         `json:"max_position_pct"`     // max % of equity in one position
+	Mode SizingMode `json:"mode"`
+
+	// Capital isolation — bot's share of the orchestrator equity.
+	// AllocatedCapital (fixed) takes priority over AllocatedPct.
+	// Zero values → use full orchestrator equity (no isolation).
+	AllocatedCapital decimal.Decimal `json:"allocated_capital,omitempty"`
+	AllocatedPct     float64         `json:"allocated_pct,omitempty"`
+
+	// Position unit — capital deployed per single entry.
+	// UnitCapital (fixed) takes priority over UnitPct.
+	// Zero values → fall back to MaxPositionPct * allocatedEquity (legacy).
+	UnitCapital decimal.Decimal `json:"unit_capital,omitempty"`
+	UnitPct     float64         `json:"unit_pct,omitempty"`
+
+	// MaxPositions limits concurrent open positions (default 1).
+	MaxPositions int `json:"max_positions,omitempty"`
+
+	RiskPerTradePct   float64         `json:"risk_per_trade_pct"`   // for volatility mode (e.g. 0.01 = 1% of unit capital at risk)
+	MaxPositionPct    float64         `json:"max_position_pct"`     // legacy fallback unit size (% of allocated equity)
 	FixedQty          decimal.Decimal `json:"fixed_qty"`            // for fixed_qty mode
 	StopLossATRMult   float64         `json:"stop_loss_atr_mult"`   // stop loss = ATR * mult (e.g. 2.0); 0 = disabled
 	TakeProfitATRMult float64         `json:"take_profit_atr_mult"` // take profit = ATR * mult; 0 = use 2x SL rule
@@ -81,8 +97,8 @@ func DefaultSizingConfig() SizingConfig {
 
 // Tactician converts strategy intents into executable plans.
 type Tactician struct {
-	sizing SizingConfig
-	equity decimal.Decimal // current equity, updated externally
+	sizing      SizingConfig
+	totalEquity decimal.Decimal // orchestrator-level equity, updated externally
 }
 
 // New creates a Tactician with the given sizing config.
@@ -90,9 +106,35 @@ func New(sizing SizingConfig) *Tactician {
 	return &Tactician{sizing: sizing}
 }
 
-// UpdateEquity updates the current equity for sizing calculations.
+// UpdateEquity updates the total orchestrator equity for sizing calculations.
 func (t *Tactician) UpdateEquity(equity decimal.Decimal) {
-	t.equity = equity
+	t.totalEquity = equity
+}
+
+// allocatedEquity returns the capital budget for this bot.
+// Priority: AllocatedCapital (fixed) → AllocatedPct * totalEquity → totalEquity.
+func (t *Tactician) allocatedEquity() decimal.Decimal {
+	if t.sizing.AllocatedCapital.IsPositive() {
+		return t.sizing.AllocatedCapital
+	}
+	if t.sizing.AllocatedPct > 0 {
+		return t.totalEquity.Mul(decimal.NewFromFloat(t.sizing.AllocatedPct))
+	}
+	return t.totalEquity
+}
+
+// unitCapital returns the capital deployed per single entry.
+// Priority: UnitCapital (fixed) → UnitPct * allocatedEquity → MaxPositionPct * allocatedEquity (legacy).
+func (t *Tactician) unitCapital() decimal.Decimal {
+	alloc := t.allocatedEquity()
+	if t.sizing.UnitCapital.IsPositive() {
+		return t.sizing.UnitCapital
+	}
+	if t.sizing.UnitPct > 0 {
+		return alloc.Mul(decimal.NewFromFloat(t.sizing.UnitPct))
+	}
+	// legacy fallback
+	return alloc.Mul(decimal.NewFromFloat(t.sizing.MaxPositionPct))
 }
 
 // Plan converts a strategy intent + market context into an execution plan.
@@ -149,7 +191,7 @@ func (t *Tactician) MaxBarsHeld() int { return t.sizing.MaxBarsHeld }
 
 // size calculates position quantity based on sizing mode.
 func (t *Tactician) size(intent strategy.Intent, ctx MarketContext) decimal.Decimal {
-	if ctx.Price.IsZero() || t.equity.IsZero() {
+	if ctx.Price.IsZero() || t.totalEquity.IsZero() {
 		return decimal.Zero
 	}
 
@@ -163,6 +205,7 @@ func (t *Tactician) size(intent strategy.Intent, ctx MarketContext) decimal.Deci
 		return ctx.PositionQty.Abs().Div(decimal.NewFromInt(2))
 	}
 
+	unit := t.unitCapital()
 	var qty decimal.Decimal
 
 	switch t.sizing.Mode {
@@ -170,26 +213,26 @@ func (t *Tactician) size(intent strategy.Intent, ctx MarketContext) decimal.Deci
 		qty = t.sizing.FixedQty
 
 	case SizingVolatility:
-		// Risk-parity: risk $ per trade / (ATR * multiplier) = qty
+		// Risk-parity: risk $ per trade / (ATR * multiplier) = qty.
+		// Risk dollar is RiskPerTradePct of unit capital (not total equity).
 		if ctx.ATR.IsPositive() && t.sizing.StopLossATRMult > 0 {
-			riskDollar := t.equity.Mul(decimal.NewFromFloat(t.sizing.RiskPerTradePct))
+			riskDollar := unit.Mul(decimal.NewFromFloat(t.sizing.RiskPerTradePct))
 			stopDistance := ctx.ATR.Mul(decimal.NewFromFloat(t.sizing.StopLossATRMult))
 			qty = riskDollar.Div(stopDistance)
 		}
 
 	case SizingPercentEquity:
-		// Fixed % of equity, no confidence scaling.
-		alloc := t.equity.Mul(decimal.NewFromFloat(t.sizing.MaxPositionPct))
-		qty = alloc.Div(ctx.Price)
+		// Deploy full unit capital, no confidence scaling.
+		qty = unit.Div(ctx.Price)
 
 	default: // fixed_fractional
-		alloc := t.equity.Mul(decimal.NewFromFloat(t.sizing.MaxPositionPct))
-		alloc = alloc.Mul(decimal.NewFromFloat(intent.Confidence)) // scale by confidence
+		// Scale unit capital by signal confidence.
+		alloc := unit.Mul(decimal.NewFromFloat(intent.Confidence))
 		qty = alloc.Div(ctx.Price)
 	}
 
-	// Clamp to max position size.
-	maxQty := t.equity.Mul(decimal.NewFromFloat(t.sizing.MaxPositionPct)).Div(ctx.Price)
+	// Clamp to unit capital (never deploy more than one unit per entry).
+	maxQty := unit.Div(ctx.Price)
 	if qty.GreaterThan(maxQty) {
 		qty = maxQty
 	}

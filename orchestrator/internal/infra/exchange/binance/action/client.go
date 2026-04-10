@@ -25,9 +25,11 @@ type Config struct {
 // for a single Binance account.
 // spot and fut are separate SDK clients — Binance uses different endpoints per market.
 type Client struct {
-	spot    *gobinance.Client
-	fut     *futures.Client
-	testnet bool
+	spot      *gobinance.Client
+	fut       *futures.Client
+	testnet   bool
+	apiKey    string
+	apiSecret string
 }
 
 // New creates a per-account Binance action client with both spot and futures SDK clients.
@@ -52,7 +54,7 @@ func New(cfg Config) *Client {
 	}
 	fut.HTTPClient = &http.Client{Timeout: 10 * time.Second}
 
-	return &Client{spot: spot, fut: fut, testnet: cfg.Testnet}
+	return &Client{spot: spot, fut: fut, testnet: cfg.Testnet, apiKey: cfg.APIKey, apiSecret: cfg.APISecret}
 }
 
 func (c *Client) Name() string { return "binance" }

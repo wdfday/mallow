@@ -74,10 +74,25 @@ func (t Strategy) ParamsJSON() (string, error) {
 // BotRiskConfig defines per-bot position sizing, risk limits, and exit levels.
 // Distinct from orchestrator-level RiskConfig (portfolio-wide).
 type BotRiskConfig struct {
-	// Position sizing
-	SizeMode        string  `json:"size_mode,omitempty"`
-	RiskPerTradePct float64 `json:"risk_per_trade_pct,omitempty"`
-	MaxPositionPct  float64 `json:"max_position_pct,omitempty"`
+	// Capital isolation — how much of the orchestrator's equity this bot can use.
+	// AllocatedCapital (fixed USDT) takes priority over AllocatedPct.
+	// If both are zero, the bot uses the full orchestrator equity.
+	AllocatedCapital decimal.Decimal `json:"allocated_capital,omitempty"` // e.g. 1000 USDT
+	AllocatedPct     float64         `json:"allocated_pct,omitempty"`     // e.g. 0.20 = 20% of equity
+
+	// Position unit — capital deployed per entry (one trade).
+	// UnitCapital (fixed USDT) takes priority over UnitPct.
+	// If both are zero, defaults to UnitPct = 0.10 (10% of allocated capital).
+	UnitCapital decimal.Decimal `json:"unit_capital,omitempty"` // e.g. 100 USDT per entry
+	UnitPct     float64         `json:"unit_pct,omitempty"`     // e.g. 0.10 = 10% of allocated capital
+
+	// MaxPositions limits concurrent open positions for this bot (default 1).
+	MaxPositions int `json:"max_positions,omitempty"`
+
+	// Position sizing mode (how qty is derived from unit capital).
+	SizeMode        string          `json:"size_mode,omitempty"`
+	RiskPerTradePct float64         `json:"risk_per_trade_pct,omitempty"`
+	MaxPositionPct  float64         `json:"max_position_pct,omitempty"` // legacy fallback when UnitCapital/UnitPct unset
 	FixedQty        decimal.Decimal `json:"fixed_qty,omitempty"`
 
 	// ATR-based exits (preferred when ATR is available)
@@ -130,6 +145,12 @@ func (c *BotConfig) Defaults() {
 	}
 	if c.Risk.MaxPositionPct == 0 {
 		c.Risk.MaxPositionPct = 0.20
+	}
+	if c.Risk.UnitCapital.IsZero() && c.Risk.UnitPct == 0 {
+		c.Risk.UnitPct = 0.10 // 10% of allocated capital per entry
+	}
+	if c.Risk.MaxPositions == 0 {
+		c.Risk.MaxPositions = 1
 	}
 	if c.Risk.StopLossATRMult == 0 {
 		c.Risk.StopLossATRMult = 2.0

@@ -215,7 +215,7 @@ func orchToResp(cfg *domain.OrchestratorConfig) OrchestratorResp {
 		ID:        cfg.ID,
 		AccountID: cfg.AccountID,
 		Name:      cfg.Name,
-		Capital:   cfg.Capital,
+		Capital:   decimal.NewFromFloat(cfg.Capital),
 		Exchange: ExchangeConfigResp{
 			BrokerType: cfg.Exchange.BrokerType,
 			BaseURL:    cfg.Exchange.BaseURL,

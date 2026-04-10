@@ -16,6 +16,7 @@ type OrderBook interface {
 	Validate(order ProposedOrder) ValidationResult
 	TrackOrder(order PendingOrder)
 	RemoveOrder(accountID, orderID string)
+	Has(accountID, orderID string) bool
 	PendingOrders(accountID string) []PendingOrder
 	SupportedSymbols() []string
 	RecordUpdate(update BookUpdate) error
@@ -191,6 +192,18 @@ func (ob *orderBook) RemoveOrder(accountID, orderID string) {
 	if acct, ok := ob.pending[accountID]; ok {
 		delete(acct, orderID)
 	}
+}
+
+// Has reports whether an order is currently tracked as pending.
+func (ob *orderBook) Has(accountID, orderID string) bool {
+	ob.mu.RLock()
+	defer ob.mu.RUnlock()
+	acct, ok := ob.pending[accountID]
+	if !ok {
+		return false
+	}
+	_, exists := acct[orderID]
+	return exists
 }
 
 // PendingOrders returns all pending orders for an account.

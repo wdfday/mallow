@@ -22,20 +22,20 @@ const (
 	okxPingInterval     = 25 * time.Second
 )
 
-// StreamFills implements exchange.AccountStreamer.
+// StreamOrders implements exchange.AccountStreamer.
 // Connects to OKX private WebSocket, subscribes to the "orders" channel, and
-// calls handler on each fill. Reconnects automatically on disconnection.
-func (c *Client) StreamFills(ctx context.Context, handler func(exchange.FillEvent)) error {
+// calls handler on each order lifecycle event. Reconnects automatically on disconnection.
+func (c *Client) StreamOrders(ctx context.Context, handler func(exchange.OrderEvent)) error {
 	go func() {
 		for {
 			if ctx.Err() != nil {
 				return
 			}
-			err := c.streamFillsOnce(ctx, handler)
+			err := c.streamOrdersOnce(ctx, handler)
 			if ctx.Err() != nil {
 				return
 			}
-			slog.Warn("okx: fill stream disconnected, reconnecting in 5s", "err", err)
+			slog.Warn("okx: order stream disconnected, reconnecting in 5s", "err", err)
 			select {
 			case <-time.After(5 * time.Second):
 			case <-ctx.Done():
@@ -43,11 +43,11 @@ func (c *Client) StreamFills(ctx context.Context, handler func(exchange.FillEven
 			}
 		}
 	}()
-	slog.Info("okx: fill streaming started")
+	slog.Info("okx: order streaming started")
 	return nil
 }
 
-func (c *Client) streamFillsOnce(ctx context.Context, handler func(exchange.FillEvent)) error {
+func (c *Client) streamOrdersOnce(ctx context.Context, handler func(exchange.OrderEvent)) error {
 	wsURL := okxPrivateWSURL
 	if c.cfg.Demo {
 		wsURL = okxPrivateWSDemoURL
@@ -161,13 +161,15 @@ type okxOrderEvent struct {
 		OrdId  string `json:"ordId"`
 		InstId string `json:"instId"`
 		Side   string `json:"side"`
-		FillSz string `json:"fillSz"`
-		FillPx string `json:"fillPx"`
-		State  string `json:"state"`
+		State  string `json:"state"`  // "live", "partially_filled", "filled", "canceled", "mmp_canceled"
+		Sz     string `json:"sz"`     // original submitted qty
+		FillSz string `json:"fillSz"` // qty filled in this event
+		FillPx string `json:"fillPx"` // price of this fill
+		UTime  string `json:"uTime"`  // update time ms
 	} `json:"data"`
 }
 
-func (c *Client) handleOKXMessage(msg []byte, handler func(exchange.FillEvent)) {
+func (c *Client) handleOKXMessage(msg []byte, handler func(exchange.OrderEvent)) {
 	var ev okxOrderEvent
 	if err := json.Unmarshal(msg, &ev); err != nil {
 		return
@@ -176,21 +178,44 @@ func (c *Client) handleOKXMessage(msg []byte, handler func(exchange.FillEvent)) 
 		return
 	}
 	for _, d := range ev.Data {
-		qty := parseDecimal(d.FillSz)
-		if !qty.IsPositive() {
-			continue
-		}
 		side := exchange.Buy
 		if d.Side == "sell" {
 			side = exchange.Sell
 		}
-		handler(exchange.FillEvent{
+		ts := time.Now().UTC()
+		if ms, err := strconv.ParseInt(d.UTime, 10, 64); err == nil && ms > 0 {
+			ts = time.UnixMilli(ms).UTC()
+		}
+
+		var evType exchange.OrderEventType
+		switch d.State {
+		case "live":
+			evType = exchange.OrderEventLive
+		case "partially_filled":
+			evType = exchange.OrderEventPartialFill
+		case "filled":
+			evType = exchange.OrderEventFilled
+		case "canceled", "mmp_canceled":
+			evType = exchange.OrderEventCanceled
+		default:
+			continue
+		}
+
+		oe := exchange.OrderEvent{
+			Type:      evType,
 			OrderID:   d.OrdId,
 			Symbol:    d.InstId,
 			Side:      side,
-			FilledQty: qty,
-			FilledAvg: parseDecimal(d.FillPx),
-			Timestamp: time.Now().UTC(),
-		})
+			Qty:       parseDecimal(d.Sz),
+			Timestamp: ts,
+		}
+		if evType == exchange.OrderEventPartialFill || evType == exchange.OrderEventFilled {
+			oe.FilledQty = parseDecimal(d.FillSz)
+			oe.FilledAvg = parseDecimal(d.FillPx)
+			if !oe.FilledQty.IsPositive() {
+				continue
+			}
+		}
+		handler(oe)
 	}
 }

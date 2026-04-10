@@ -23,20 +23,20 @@ const (
 	bybitWsPingInterval      = 20 * time.Second
 )
 
-// StreamFills implements exchange.AccountStreamer.
+// StreamOrders implements exchange.AccountStreamer.
 // Connects to Bybit private WebSocket, authenticates, subscribes to the "order"
-// topic, and calls handler on each fill. Reconnects automatically on disconnection.
-func (c *Client) StreamFills(ctx context.Context, handler func(exchange.FillEvent)) error {
+// topic, and calls handler on each order lifecycle event. Reconnects automatically.
+func (c *Client) StreamOrders(ctx context.Context, handler func(exchange.OrderEvent)) error {
 	go func() {
 		for {
 			if ctx.Err() != nil {
 				return
 			}
-			err := c.streamFillsOnce(ctx, handler)
+			err := c.streamOrdersOnce(ctx, handler)
 			if ctx.Err() != nil {
 				return
 			}
-			slog.Warn("bybit: fill stream disconnected, reconnecting in 5s", "err", err)
+			slog.Warn("bybit: order stream disconnected, reconnecting in 5s", "err", err)
 			select {
 			case <-time.After(5 * time.Second):
 			case <-ctx.Done():
@@ -44,11 +44,11 @@ func (c *Client) StreamFills(ctx context.Context, handler func(exchange.FillEven
 			}
 		}
 	}()
-	slog.Info("bybit: fill streaming started")
+	slog.Info("bybit: order streaming started")
 	return nil
 }
 
-func (c *Client) streamFillsOnce(ctx context.Context, handler func(exchange.FillEvent)) error {
+func (c *Client) streamOrdersOnce(ctx context.Context, handler func(exchange.OrderEvent)) error {
 	wsURL := bybitPrivateWSURL
 	if c.cfg.Testnet {
 		wsURL = bybitPrivateWSTestnetURL
@@ -146,17 +146,19 @@ func (c *Client) wsAuth(conn *websocket.Conn) error {
 type bybitOrderEvent struct {
 	Topic string `json:"topic"`
 	Data  []struct {
-		OrderID   string `json:"orderId"`
-		Symbol    string `json:"symbol"`
-		Side      string `json:"side"`     // "Buy" | "Sell"
-		ExecType  string `json:"execType"` // "Trade" on fills
-		ExecQty   string `json:"execQty"`
-		ExecPrice string `json:"execPrice"`
-		TradeTime int64  `json:"tradeTime"`
+		OrderID     string `json:"orderId"`
+		Symbol      string `json:"symbol"`
+		Side        string `json:"side"`        // "Buy" | "Sell"
+		OrderStatus string `json:"orderStatus"` // "New", "PartiallyFilled", "Filled", "Cancelled", "Rejected"
+		ExecType    string `json:"execType"`    // "New" (ack) | "Trade" (fill)
+		Qty         string `json:"qty"`         // original submitted qty
+		ExecQty     string `json:"execQty"`
+		ExecPrice   string `json:"execPrice"`
+		UpdatedTime string `json:"updatedTime"` // ms
 	} `json:"data"`
 }
 
-func (c *Client) handleBybitMessage(msg []byte, handler func(exchange.FillEvent)) {
+func (c *Client) handleBybitMessage(msg []byte, handler func(exchange.OrderEvent)) {
 	var ev bybitOrderEvent
 	if err := json.Unmarshal(msg, &ev); err != nil {
 		return
@@ -165,24 +167,56 @@ func (c *Client) handleBybitMessage(msg []byte, handler func(exchange.FillEvent)
 		return
 	}
 	for _, d := range ev.Data {
-		if d.ExecType != "Trade" {
-			continue
-		}
-		qty := parseDecimal(d.ExecQty)
-		if !qty.IsPositive() {
-			continue
-		}
 		side := exchange.Buy
 		if strings.ToLower(d.Side) == "sell" {
 			side = exchange.Sell
 		}
-		handler(exchange.FillEvent{
-			OrderID:   d.OrderID,
-			Symbol:    d.Symbol,
-			Side:      side,
-			FilledQty: qty,
-			FilledAvg: parseDecimal(d.ExecPrice),
-			Timestamp: time.UnixMilli(d.TradeTime).UTC(),
-		})
+		ts := time.Now().UTC()
+		if ms, err := strconv.ParseInt(d.UpdatedTime, 10, 64); err == nil && ms > 0 {
+			ts = time.UnixMilli(ms).UTC()
+		}
+
+		switch d.ExecType {
+		case "New":
+			handler(exchange.OrderEvent{
+				Type:      exchange.OrderEventLive,
+				OrderID:   d.OrderID,
+				Symbol:    d.Symbol,
+				Side:      side,
+				Qty:       parseDecimal(d.Qty),
+				Timestamp: ts,
+			})
+		case "Trade":
+			evType := exchange.OrderEventPartialFill
+			if d.OrderStatus == "Filled" {
+				evType = exchange.OrderEventFilled
+			}
+			execQty := parseDecimal(d.ExecQty)
+			if !execQty.IsPositive() {
+				continue
+			}
+			handler(exchange.OrderEvent{
+				Type:      evType,
+				OrderID:   d.OrderID,
+				Symbol:    d.Symbol,
+				Side:      side,
+				Qty:       parseDecimal(d.Qty),
+				FilledQty: execQty,
+				FilledAvg: parseDecimal(d.ExecPrice),
+				Timestamp: ts,
+			})
+		default:
+			// Cancelled / Rejected come through as orderStatus changes without ExecType="Trade"
+			if d.OrderStatus == "Cancelled" || d.OrderStatus == "Rejected" {
+				handler(exchange.OrderEvent{
+					Type:      exchange.OrderEventCanceled,
+					OrderID:   d.OrderID,
+					Symbol:    d.Symbol,
+					Side:      side,
+					Qty:       parseDecimal(d.Qty),
+					Timestamp: ts,
+				})
+			}
+		}
 	}
 }

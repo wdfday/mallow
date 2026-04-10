@@ -89,6 +89,7 @@ func runOrchestrator(
 
 			reg.SetRuntime(runCtx, nc)
 			reg.StartFillStreaming(runCtx, nc)
+			reg.ReconcileAllOrders(ctx)
 			reg.StartPollingSync(runCtx, nc, cfg.Runtime.SyncInterval)
 
 			if cfg.MarketData.Source != "none" && cfg.MarketData.Source != "" {

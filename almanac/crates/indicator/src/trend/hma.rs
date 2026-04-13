@@ -1,9 +1,35 @@
 use crate::Wma;
 use std::collections::VecDeque;
 
-/// Hull Moving Average — reduces lag while maintaining smoothness.
+/// Hull Moving Average (HMA) — giảm lag tối đa trong khi vẫn giữ độ mượt.
 ///
+/// Được Alan Hull phát triển năm 2005. HMA giải quyết vấn đề cốt lõi của tất cả
+/// MA truyền thống: lag vs. noise. WMA gốc bị lag; HMA triệt tiêu lag bằng cách
+/// nhân đôi WMA nhanh (n/2) và trừ đi WMA chậm (n), rồi smooth bằng WMA(√n).
+///
+/// # Công thức
+/// ```text
 /// HMA(n) = WMA( 2·WMA(n/2) − WMA(n),  √n )
+///
+/// Bước 1: wma_half = WMA(close, n/2)       ← nhanh, bị "kéo về tương lai"
+/// Bước 2: wma_full = WMA(close, n)         ← chậm, "ở lại quá khứ"
+/// Bước 3: raw = 2·wma_half − wma_full      ← loại bỏ lag
+/// Bước 4: HMA = WMA(raw, √n)              ← smooth bước cuối
+/// ```
+///
+/// # Ưu điểm vs các MA khác
+/// - Lag ít hơn EMA và WMA cùng period đáng kể
+/// - Mượt hơn EMA; ít "giật" khi bar đột biến
+/// - Phản ứng nhanh khi giá đảo chiều
+///
+/// # Cảnh báo
+/// - Period nhỏ (< 9): HMA có thể "chạy trước" giá, gây false signal
+/// - Không nên dùng trong thị trường choppy — whipsaw nhiều hơn SMA/EMA
+///
+/// # Warmup
+/// Cần khoảng `period + √period` bar (WMA full + WMA sqrt warm up).
+/// Ví dụ: HMA(16) cần ~20 bar; HMA(9) cần ~12 bar.
+#[derive(Clone)]
 pub struct Hma {
     wma_half: Wma,
     wma_full: Wma,

@@ -5,41 +5,48 @@ import (
 
 	alpacasdk "github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata"
+
+	"orchestrator/internal/infra/exchange"
 )
 
-// Config holds Alpaca API credentials.
+// Config holds Alpaca process-level settings (no credentials).
 type Config struct {
-	APIKey    string
-	APISecret string
-	BaseURL   string // default: https://paper-api.alpaca.markets
+	BaseURL string // default: https://paper-api.alpaca.markets
 }
 
-// Client implements exchange.Exchange and optional interfaces (AccountSyncer,
-// PriceFetcher, AccountStreamer) for a single Alpaca account.
+// Client is a stateless Alpaca client.
+// One instance is shared across all Alpaca accounts; credentials are passed per-call.
 type Client struct {
-	sdk *alpacasdk.Client
-	md  *marketdata.Client
+	baseURL string
 }
 
-// New creates a per-account Alpaca action client.
+// New creates a shared stateless Alpaca client.
 func New(cfg Config) *Client {
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		baseURL = "https://paper-api.alpaca.markets"
 	}
-	sdk := alpacasdk.NewClient(alpacasdk.ClientOpts{
-		APIKey:    cfg.APIKey,
-		APISecret: cfg.APISecret,
-		BaseURL:   baseURL,
-	})
-	md := marketdata.NewClient(marketdata.ClientOpts{
-		APIKey:    cfg.APIKey,
-		APISecret: cfg.APISecret,
-	})
-	return &Client{sdk: sdk, md: md}
+	return &Client{baseURL: baseURL}
 }
 
 func (c *Client) Name() string { return "alpaca" }
+
+// newSDK creates an Alpaca trading SDK client with the given credentials.
+func (c *Client) newSDK(creds exchange.Credentials) *alpacasdk.Client {
+	return alpacasdk.NewClient(alpacasdk.ClientOpts{
+		APIKey:    creds.APIKey,
+		APISecret: creds.APISecret,
+		BaseURL:   c.baseURL,
+	})
+}
+
+// newMD creates an Alpaca market data client with the given credentials.
+func (c *Client) newMD(creds exchange.Credentials) *marketdata.Client {
+	return marketdata.NewClient(marketdata.ClientOpts{
+		APIKey:    creds.APIKey,
+		APISecret: creds.APISecret,
+	})
+}
 
 // isCrypto checks if a symbol is a crypto pair (e.g. "BTC/USD").
 func isCrypto(symbol string) bool {

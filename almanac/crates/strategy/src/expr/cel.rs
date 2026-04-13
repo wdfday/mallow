@@ -32,16 +32,23 @@
 //! Uses wall-clock time alignment — safe for stock data with session gaps.
 //!
 //! ```text
-//! H1.ema(200)          → EMA(200) on hourly bars
-//! M15.rsi(14)          → RSI(14) on 15-minute bars
-//! D1.adx(14)           → ADX(14) on daily bars
-//! prev_H1.ema(200)     → previous H1 EMA value (crossover detection)
+//! H1.ema(200)          → EMA(200) on confirmed H1 bars (updates on bar close)
+//! M15.rsi(14)          → RSI(14) on confirmed M15 bars
+//! D1.adx(14)           → ADX(14) on confirmed D1 bars
+//! prev_H1.ema(200)     → previous confirmed H1 EMA value (crossover detection)
+//! live_H1.ema(200)     → EMA(200) on the forming H1 bar (updates every base bar)
 //! ```
+//!
+//! **Confirmed vs live**: by default (`H1.ema`) the value updates only when the HTF
+//! bar closes — no look-ahead bias. `live_H1.ema` recomputes on every incoming base
+//! bar using the partially-formed HTF bar, so it reflects current price action within
+//! the period. Both modes share the same indicator state; the live value is derived by
+//! cloning the confirmed state and applying the forming bar (O(1), cheap).
 //!
 //! Supported timeframes: `M1` `M5` `M15` `M30` `H1` `H2` `H4` `H6` `H8` `H12` `D1` `W1`.
 //!
-//! The HTF bar is emitted when the first base bar of the **next** period arrives —
-//! i.e. the previous period's incomplete bar is never used (no look-ahead bias).
+//! The confirmed HTF bar is emitted when the first base bar of the **next** period
+//! arrives — i.e. the previous period's incomplete bar is never used for `H1.ema` etc.
 //!
 //! | Function             | Indicator                     | Output            |
 //! |----------------------|-------------------------------|-------------------|
@@ -172,7 +179,8 @@ use crate::dynamic::indicator_box::IndicatorBox;
 struct VarBinding {
     ind:       IndicatorBox,
     field:     String,
-    cached:    Option<f64>,
+    cached:    Option<f64>,   // last confirmed value (HTF bar fully closed)
+    live:      Option<f64>,   // forming value (HTF bar in progress); = cached for base-TF
     prev:      Option<f64>,
     /// Time-based resampler for MTF indicators (`H1.ema`, `M15.rsi`, etc.).
     /// `None` = same timeframe as the base bars.
@@ -187,14 +195,29 @@ impl VarBinding {
         // Between HTF bars: hold last cached value so the ready-check stays true.
         let agg = match &mut self.resampler {
             Some(rs) => rs.push(bar),
-            None => Some(bar.clone()),
+            None     => Some(bar.clone()),
         };
 
-        if let Some(b) = agg {
-            let fields = self.ind.update(&b)?;
-            let v = *fields.get(&self.field)?;
-            self.cached = Some(v);
+        if let Some(b) = &agg {
+            let fields = self.ind.update(b)?;
+            self.cached = fields.get(&self.field).copied();
         }
+
+        // Live/forming value: clone confirmed state, feed the forming HTF bar.
+        // For base-TF (no resampler) the forming bar IS the current bar → live = cached.
+        self.live = match &self.resampler {
+            None => self.cached,
+            Some(rs) => {
+                if let Some(forming) = rs.peek() {
+                    let mut tmp = self.ind.clone();
+                    tmp.update(&forming).and_then(|f: std::collections::HashMap<String, f64>| {
+                        f.get(self.field.as_str()).copied()
+                    })
+                } else {
+                    self.cached
+                }
+            }
+        };
 
         self.cached
     }
@@ -203,6 +226,7 @@ impl VarBinding {
         self.ind.reset();
         if let Some(rs) = &mut self.resampler { rs.reset(); }
         self.cached = None;
+        self.live   = None;
         self.prev   = None;
     }
 }
@@ -244,127 +268,7 @@ fn normalize_cel_expr(expr: &str) -> String {
     out
 }
 
-// ── Call → variable expander ──────────────────────────────────────────────────
-
-/// Replace known indicator function calls with plain variable references.
-///
-/// Applied **after** `normalize_cel_expr` so arguments are already float literals.
-///
-/// - `rsi(14.0)`        → `rsi_14`
-/// - `prev_ema(9.0)`    → `prev_ema_9`
-/// - `tf4_ema(200.0)`   → `tf4_ema_200`   (MTF: 4× resampled)
-/// - `obv()`            → `obv`
-/// - `close`, `high`    → unchanged
-///
-/// The resulting identifiers are registered as CEL variables per bar, eliminating
-/// function-call overhead (mutex lock + `format!` + HashMap lookup) on the hot path.
-fn expand_calls_to_vars(expr: &str) -> String {
-    let mut out = String::with_capacity(expr.len());
-    let b = expr.as_bytes();
-    let n = b.len();
-    let mut i = 0;
-
-    while i < n {
-        if b[i].is_ascii_alphabetic() || b[i] == b'_' {
-            let start = i;
-            while i < n && (b[i].is_ascii_alphanumeric() || b[i] == b'_') {
-                i += 1;
-            }
-            let ident = &expr[start..i];
-
-            if i < n && b[i] == b'(' {
-                // Strip prev_ and tf{N}_ prefixes to get the indicator base name
-                let no_prev = ident.strip_prefix("prev_").unwrap_or(ident);
-                let base = strip_tf_prefix(no_prev).0;
-
-                if ONE_ARG_FUNCS.contains(&base) {
-                    i += 1; // skip '('
-                    let arg_start = i;
-                    let mut depth = 1usize;
-                    while i < n && depth > 0 {
-                        match b[i] {
-                            b'(' => depth += 1,
-                            b')' => depth -= 1,
-                            _ => {}
-                        }
-                        i += 1;
-                    }
-                    let arg_str = expr[arg_start..i - 1].trim();
-                    if let Ok(period) = arg_str.parse::<f64>() {
-                        // e.g. "rsi_14" or "prev_ema_9"
-                        out.push_str(ident);
-                        out.push('_');
-                        out.push_str(&(period as i64).to_string());
-                    } else {
-                        // Unrecognised arg — keep original syntax
-                        out.push_str(ident);
-                        out.push('(');
-                        out.push_str(&expr[arg_start..i]);
-                    }
-                } else if ZERO_ARG_FUNCS.contains(&base) {
-                    i += 1; // skip '('
-                    let mut depth = 1usize;
-                    while i < n && depth > 0 {
-                        match b[i] {
-                            b'(' => depth += 1,
-                            b')' => depth -= 1,
-                            _ => {}
-                        }
-                        i += 1;
-                    }
-                    // e.g. "obv" or "prev_obv" — no argument suffix
-                    out.push_str(ident);
-                } else {
-                    // Not a known indicator — emit identifier, leave '(' to next iteration
-                    out.push_str(ident);
-                }
-            } else {
-                out.push_str(ident);
-            }
-        } else {
-            out.push(b[i] as char);
-            i += 1;
-        }
-    }
-
-    out
-}
-
 // ── TF prefix helpers ─────────────────────────────────────────────────────────
-
-/// Pre-process `H1.ema(200)` → `H1_ema(200)` so the rest of the pipeline
-/// treats the whole thing as a single identifier.
-///
-/// Only replaces `.` when the left side is a valid timeframe string
-/// (`M1`, `M15`, `H1`, `H4`, `D1`, etc.) per [`parse_timeframe_ms`].
-/// All other `.` (CEL member access, float literals) are left unchanged.
-fn preprocess_dot_tf(expr: &str) -> String {
-    let mut out = String::with_capacity(expr.len());
-    let b = expr.as_bytes();
-    let n = b.len();
-    let mut i = 0;
-    while i < n {
-        // Only timeframe prefixes start with an uppercase [MHDW]
-        if matches!(b[i], b'M' | b'H' | b'D' | b'W') {
-            let start = i;
-            i += 1;
-            while i < n && b[i].is_ascii_digit() { i += 1; }
-            let candidate = &expr[start..i];
-            // If it's a valid TF AND followed by '.', replace '.' with '_'
-            if i < n && b[i] == b'.' && parse_timeframe_ms(candidate).is_some() {
-                out.push_str(candidate);
-                out.push('_');
-                i += 1; // consume '.'
-            } else {
-                out.push_str(candidate);
-            }
-        } else {
-            out.push(b[i] as char);
-            i += 1;
-        }
-    }
-    out
-}
 
 /// If `ident` starts with a timeframe prefix (`H1_`, `M15_`, `D1_`, …),
 /// returns `(indicator_base, Some(interval_ms))`.
@@ -393,8 +297,12 @@ fn strip_tf_prefix(ident: &str) -> (&str, Option<i64>) {
 // ── Expression scanner ────────────────────────────────────────────────────────
 
 struct Call {
-    raw:  String,   // after preprocess: e.g. "prev_ema", "H1_ema", "macd_hist", "obv"
-    args: Vec<f64>, // e.g. [9.0], []
+    /// Underscore form (no dot), may carry `prev_` or `live_` prefix.
+    /// e.g. `"prev_ema"`, `"H1_ema"`, `"live_H1_ema"`, `"macd_hist"`, `"obv"`.
+    raw:     String,
+    args:    Vec<f64>, // e.g. [9.0], []
+    #[allow(dead_code)] // read in tests to assert live_ prefix was parsed
+    is_live: bool,     // true when `live_` prefix was present
 }
 
 impl Call {
@@ -408,7 +316,7 @@ impl Call {
         (base, is_prev, interval_ms)
     }
 
-    /// Canonical binding key — strips `prev_`, keeps TF prefix, appends args.
+    /// Canonical binding key — strips `prev_`/`live_`, keeps TF prefix, appends args.
     /// `"H1_ema_200"`, `"M15_rsi_14"`, `"ema_9"`, `"obv"`.
     fn key(&self) -> String {
         let no_prev = self.raw.strip_prefix("prev_").unwrap_or(&self.raw);
@@ -421,36 +329,146 @@ impl Call {
     }
 }
 
-/// Walk `expr` byte-by-byte collecting every `ident(...)` call.
-fn scan_calls(expr: &str) -> Vec<Call> {
+/// Single-pass scanner + expander.
+///
+/// Walks `expr`, recognises indicator call patterns in their natural dot form
+/// (`H1.ema(200)`, `prev_M15.rsi(14)`, `ema(9)`, `obv()`) and replaces each
+/// with its pre-allocated CEL variable name (`H1_ema_200`, `prev_M15_rsi_14`,
+/// `ema_9`, `obv`).  All other tokens are emitted verbatim.
+///
+/// Returns `(expanded_expression, calls)` where `calls` contains one entry per
+/// **unique logical indicator** found (deduplication happens in
+/// `build_bindings_from_calls`).
+fn expand_indicators(expr: &str) -> (String, Vec<Call>) {
+    let mut out   = String::with_capacity(expr.len());
     let mut calls = Vec::new();
     let b = expr.as_bytes();
     let n = b.len();
     let mut i = 0;
+
     while i < n {
         if b[i].is_ascii_alphabetic() || b[i] == b'_' {
-            let start = i;
-            while i < n && (b[i].is_ascii_alphanumeric() || b[i] == b'_') { i += 1; }
-            if i < n && b[i] == b'(' {
-                let raw = expr[start..i].to_string();
-                i += 1; // skip '('
-                let arg_start = i;
-                let mut depth = 1usize;
-                while i < n && depth > 0 {
-                    match b[i] { b'(' => depth += 1, b')' => depth -= 1, _ => {} }
-                    i += 1;
-                }
-                let args_str = &expr[arg_start..i - 1];
-                let args: Vec<f64> = args_str.split(',')
-                    .filter_map(|s| s.trim().parse::<f64>().ok())
-                    .collect();
-                calls.push(Call { raw, args });
+            if let Some((end, call, var_name)) = try_match_indicator(expr, i) {
+                out.push_str(&var_name);
+                calls.push(call);
+                i = end;
+            } else {
+                // Ordinary identifier — emit as-is
+                let id_start = i;
+                while i < n && (b[i].is_ascii_alphanumeric() || b[i] == b'_') { i += 1; }
+                out.push_str(&expr[id_start..i]);
             }
         } else {
+            out.push(b[i] as char);
             i += 1;
         }
     }
-    calls
+    (out, calls)
+}
+
+/// Try to match one complete indicator call starting at `start`.
+///
+/// Handles all six forms:
+/// - `ema(9)`           → var `ema_9`
+/// - `prev_ema(9)`      → var `prev_ema_9`
+/// - `H1.ema(200)`      → var `H1_ema_200`   (dot form — preferred)
+/// - `prev_H1.ema(200)` → var `prev_H1_ema_200`
+/// - `H1_ema(200)`      → var `H1_ema_200`   (underscore form — also accepted)
+/// - `prev_H1_ema(200)` → var `prev_H1_ema_200`
+///
+/// Returns `None` if the text at `start` is not a known indicator call.
+fn try_match_indicator(expr: &str, start: usize) -> Option<(usize, Call, String)> {
+    let b = expr.as_bytes();
+    let n = expr.len();
+    let mut i = start;
+
+    // Optional `prev_` or `live_` prefix (mutually exclusive)
+    let is_prev = expr[i..].starts_with("prev_");
+    let is_live = !is_prev && expr[i..].starts_with("live_");
+    if is_prev || is_live {
+        i += 5;
+        if i >= n { return None; }
+    }
+
+    // Optional TF prefix: [MHDW]\d+\.  (e.g. `H1.`, `M15.`, `D1.`)
+    let tf_start = i;
+    let mut tf_token = "";
+    let _interval_ms: Option<i64> = if i < n && matches!(b[i], b'M' | b'H' | b'D' | b'W') {
+        let ts = i;
+        i += 1;
+        while i < n && b[i].is_ascii_digit() { i += 1; }
+        let candidate = &expr[ts..i];
+        if i < n && b[i] == b'.' && parse_timeframe_ms(candidate).is_some() {
+            tf_token = candidate;
+            let ms = parse_timeframe_ms(candidate);
+            i += 1; // consume '.'
+            ms
+        } else {
+            i = tf_start; // rewind — not a valid TF prefix
+            None
+        }
+    } else {
+        None
+    };
+
+    // Indicator base name
+    if i >= n || !(b[i].is_ascii_alphabetic() || b[i] == b'_') { return None; }
+    let name_start = i;
+    while i < n && (b[i].is_ascii_alphanumeric() || b[i] == b'_') { i += 1; }
+    let base_name = &expr[name_start..i];
+
+    // Must be followed by '('
+    if i >= n || b[i] != b'(' { return None; }
+
+    // If no dot TF was detected, try underscore TF prefix embedded in base_name.
+    // e.g. `H1_ema(200)` → resolved_base = `ema`, resolved_tf = `H1`
+    let (resolved_base, resolved_tf): (&str, &str) = if tf_token.is_empty() {
+        let (stripped, ms) = strip_tf_prefix(base_name);
+        if ms.is_some() {
+            // tf_part is everything before the trailing `_<stripped>` suffix
+            let tf_part = &base_name[..base_name.len() - stripped.len() - 1];
+            (stripped, tf_part)
+        } else {
+            (base_name, "")
+        }
+    } else {
+        (base_name, tf_token)
+    };
+
+    // Must be a known indicator
+    if !ONE_ARG_FUNCS.contains(&resolved_base) && !ZERO_ARG_FUNCS.contains(&resolved_base) {
+        return None;
+    }
+
+    // Consume argument list
+    i += 1; // skip '('
+    let arg_start = i;
+    let mut depth = 1usize;
+    while i < n && depth > 0 {
+        match b[i] { b'(' => depth += 1, b')' => depth -= 1, _ => {} }
+        i += 1;
+    }
+    let args_str = &expr[arg_start..i - 1];
+    let args: Vec<f64> = args_str.split(',')
+        .filter_map(|s| s.trim().parse::<f64>().ok())
+        .collect();
+
+    // Build `Call.raw` in underscore form (strips `prev_`/`live_`, keeps TF prefix)
+    let raw = match resolved_tf.is_empty() {
+        true  => resolved_base.to_string(),
+        false => format!("{resolved_tf}_{resolved_base}"),
+    };
+
+    let call = Call { raw, args, is_live };
+    let var_name = if is_prev {
+        format!("prev_{}", call.key())
+    } else if is_live {
+        format!("live_{}", call.key())
+    } else {
+        call.key()
+    };
+
+    Some((i, call, var_name))
 }
 
 // ── Indicator factory ─────────────────────────────────────────────────────────
@@ -465,6 +483,7 @@ fn make_binding(base: &str, args: &[f64], interval_ms: Option<i64>) -> Result<Op
                 ind:       IndicatorBox::from_config(&$cfg)?,
                 field:     $field.into(),
                 cached:    None,
+                live:      None,
                 prev:      None,
                 resampler,
             }))
@@ -582,8 +601,7 @@ fn make_binding(base: &str, args: &[f64], interval_ms: Option<i64>) -> Result<Op
 ///
 /// Returns an error if no recognisable indicator call is found.
 pub fn parse_cel_indicator(expr: &str) -> Result<(String, Vec<f64>, Option<i64>)> {
-    let preprocessed = preprocess_dot_tf(expr.trim());
-    let calls = scan_calls(&preprocessed);
+    let (_, calls) = expand_indicators(expr.trim());
     let call = calls.into_iter()
         .find(|c| {
             let (base, _, _) = c.parts();
@@ -595,9 +613,9 @@ pub fn parse_cel_indicator(expr: &str) -> Result<(String, Vec<f64>, Option<i64>)
     Ok((base.to_string(), call.args.clone(), interval_ms))
 }
 
-fn build_bindings(entry: &str, exit: &str) -> Result<HashMap<String, VarBinding>> {
+fn build_bindings_from_calls(calls: impl IntoIterator<Item = Call>) -> Result<HashMap<String, VarBinding>> {
     let mut map: HashMap<String, VarBinding> = HashMap::new();
-    for call in scan_calls(&format!("{entry} {exit}")) {
+    for call in calls {
         let (base, _, interval_ms) = call.parts();
         let key = call.key();
         if !map.contains_key(&key) {
@@ -658,15 +676,26 @@ pub struct CelStrategy {
     /// Indicator state, keyed by canonical name (e.g. `"rsi_14"`).
     /// Kept as HashMap so external tests can assert on `contains_key`.
     bindings:    HashMap<String, VarBinding>,
-    /// Pre-allocated `(current_var_name, prev_var_name)` strings for the hot path.
+    /// Pre-allocated `(current_var_name, prev_var_name, live_var_name)` strings for the hot path.
     /// Order matches `bindings.keys()` at construction time.
-    var_keys:    Vec<(String, String)>,
+    var_keys:    Vec<(String, String, String)>,
     in_position: bool,
     entry_price: f64,
-    /// Take-profit as fraction of entry price, e.g. 0.05 = 5%. None = disabled.
+    peak_price:  f64,
+    /// Fixed % TP/SL from entry price.
     tp_pct:      Option<f64>,
-    /// Stop-loss as fraction of entry price, e.g. 0.02 = 2%. None = disabled.
     sl_pct:      Option<f64>,
+    /// ATR-based fixed levels (computed at entry, stored as absolute price).
+    tp_atr_mult: Option<f64>,
+    sl_atr_mult: Option<f64>,
+    tp_atr_level: f64,
+    sl_atr_level: f64,
+    /// Trailing stop.
+    trail_pct:      Option<f64>,
+    trail_atr_mult: Option<f64>,
+    /// Internal ATR — only allocated when any ATR mode is active.
+    atr:      Option<alm_indicator::Atr>,
+    last_atr: f64,
     /// CEL context; indicator values written as variables each bar — no closures,
     /// no mutex, no `format!` in the hot path.
     ctx:         Context<'static>,
@@ -676,16 +705,33 @@ pub struct CelStrategy {
 
 impl CelStrategy {
     pub fn new(entry: &str, exit: &str) -> Result<Self> {
-        Self::with_risk(entry, exit, None, None)
+        Self::build(entry, exit, None, None, None, None, None, None, None, CandleType::Raw)
     }
 
     pub fn with_risk(
-        entry: &str,
-        exit:  &str,
+        entry:  &str,
+        exit:   &str,
         tp_pct: Option<f64>,
         sl_pct: Option<f64>,
     ) -> Result<Self> {
-        Self::build(entry, exit, tp_pct, sl_pct, CandleType::Raw)
+        Self::build(entry, exit, tp_pct, sl_pct, None, None, None, None, None, CandleType::Raw)
+    }
+
+    pub fn from_params(p: &serde_json::Value) -> Result<Self> {
+        let entry = p.get("entry").and_then(|v| v.as_str()).unwrap_or("false");
+        let exit  = p.get("exit").and_then(|v| v.as_str()).unwrap_or("false");
+        let atr_period = p.get("atr_period").and_then(serde_json::Value::as_f64).map(|v| v as usize);
+        Self::build(
+            entry, exit,
+            p.get("tp").and_then(serde_json::Value::as_f64),
+            p.get("sl").and_then(serde_json::Value::as_f64),
+            p.get("tp_atr").and_then(serde_json::Value::as_f64),
+            p.get("sl_atr").and_then(serde_json::Value::as_f64),
+            p.get("trail_pct").and_then(serde_json::Value::as_f64),
+            p.get("trail_atr").and_then(serde_json::Value::as_f64),
+            atr_period,
+            CandleType::Raw,
+        )
     }
 
     /// Builder: thêm candle type transform (HA, smooth HA, v.v.).
@@ -694,27 +740,33 @@ impl CelStrategy {
         self
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn build(
-        entry:       &str,
-        exit:        &str,
-        tp_pct:      Option<f64>,
-        sl_pct:      Option<f64>,
-        candle_type: CandleType,
+        entry:          &str,
+        exit:           &str,
+        tp_pct:         Option<f64>,
+        sl_pct:         Option<f64>,
+        tp_atr_mult:    Option<f64>,
+        sl_atr_mult:    Option<f64>,
+        trail_pct:      Option<f64>,
+        trail_atr_mult: Option<f64>,
+        atr_period:     Option<usize>,
+        candle_type:    CandleType,
     ) -> Result<Self> {
-        // Pipeline:
-        //  1. preprocess: H1.ema(200) → H1_ema(200)
-        //  2. normalize:  rsi(14) < 30 → rsi(14.0) < 30.0
-        //  3. expand:     H1_ema(200.0) → H1_ema_200
-        let entry_pp = preprocess_dot_tf(entry);
-        let exit_pp  = preprocess_dot_tf(exit);
-        let entry_n  = expand_calls_to_vars(&normalize_cel_expr(&entry_pp));
-        let exit_n   = expand_calls_to_vars(&normalize_cel_expr(&exit_pp));
+        // Pipeline (single pass):
+        //   H1.ema(200) > close && rsi(14) < 30
+        //   → expand_indicators → H1_ema_200 > close && rsi_14 < 30
+        //   → normalize_cel_expr → H1_ema_200 > close && rsi_14 < 30.0
+        let (entry_raw, entry_calls) = expand_indicators(entry);
+        let (exit_raw,  exit_calls)  = expand_indicators(exit);
+        let entry_n = normalize_cel_expr(&entry_raw);
+        let exit_n  = normalize_cel_expr(&exit_raw);
 
-        let bindings = build_bindings(&entry_pp, &exit_pp)?;
+        let bindings = build_bindings_from_calls(entry_calls.into_iter().chain(exit_calls))?;
 
-        // Pre-allocate the (current, prev) variable name strings once.
-        let var_keys: Vec<(String, String)> = bindings.keys()
-            .map(|k| (k.clone(), format!("prev_{k}")))
+        // Pre-allocate the (current, prev, live) variable name strings once.
+        let var_keys: Vec<(String, String, String)> = bindings.keys()
+            .map(|k| (k.clone(), format!("prev_{k}"), format!("live_{k}")))
             .collect();
 
         // Build a minimal context: only the 5 bar fields + indicator placeholders.
@@ -725,10 +777,18 @@ impl CelStrategy {
         ctx.add_variable_from_value("low",    Value::Float(0.0));
         ctx.add_variable_from_value("close",  Value::Float(0.0));
         ctx.add_variable_from_value("volume", Value::Float(0.0));
-        for (cur, prev) in &var_keys {
+        for (cur, prev, live) in &var_keys {
             ctx.add_variable_from_value(cur.as_str(),  Value::Float(0.0));
             ctx.add_variable_from_value(prev.as_str(), Value::Float(0.0));
+            ctx.add_variable_from_value(live.as_str(), Value::Float(0.0));
         }
+
+        let needs_atr = tp_atr_mult.is_some() || sl_atr_mult.is_some() || trail_atr_mult.is_some();
+        let atr = if needs_atr {
+            Some(alm_indicator::Atr::new(atr_period.unwrap_or(14)))
+        } else {
+            None
+        };
 
         Ok(Self {
             entry_prog:  Program::compile(&entry_n)?,
@@ -737,8 +797,17 @@ impl CelStrategy {
             var_keys,
             in_position: false,
             entry_price: 0.0,
+            peak_price:  0.0,
             tp_pct,
             sl_pct,
+            tp_atr_mult,
+            sl_atr_mult,
+            tp_atr_level: 0.0,
+            sl_atr_level: 0.0,
+            trail_pct,
+            trail_atr_mult,
+            atr,
+            last_atr: 0.0,
             ctx,
             transform: CandleTransform::new(candle_type),
         })
@@ -773,39 +842,70 @@ impl Strategy for CelStrategy {
         self.ctx.add_variable_from_value("volume", Value::Float(effective.volume));
 
         // ── 3. Write indicator values as variables (no Mutex, no format!) ─────
-        for (cur_key, prev_key) in &self.var_keys {
+        for (cur_key, prev_key, live_key) in &self.var_keys {
             if let Some(b) = self.bindings.get(cur_key) {
                 if let Some(v) = b.cached {
-                    self.ctx.add_variable_from_value(cur_key.as_str(), Value::Float(v));
+                    self.ctx.add_variable_from_value(cur_key.as_str(),  Value::Float(v));
                 }
                 if let Some(p) = b.prev {
                     self.ctx.add_variable_from_value(prev_key.as_str(), Value::Float(p));
                 }
+                if let Some(l) = b.live {
+                    self.ctx.add_variable_from_value(live_key.as_str(), Value::Float(l));
+                }
             }
         }
 
-        // ── 4. Evaluate the appropriate program ───────────────────────────────
+        // ── 4. Update internal ATR ────────────────────────────────────────────
+        if let Some(atr) = &mut self.atr {
+            if let Some(v) = atr.update(bar.high, bar.low, bar.close) {
+                self.last_atr = v.atr;
+            }
+        }
+
+        // ── 5. Evaluate the appropriate program ───────────────────────────────
         if !self.in_position {
             let fire = matches!(self.entry_prog.execute(&self.ctx), Ok(Value::Bool(true)));
             if fire {
                 self.in_position = true;
                 self.entry_price = bar.close;
+                self.peak_price  = bar.close;
+                self.tp_atr_level = self.tp_atr_mult
+                    .filter(|_| self.last_atr > 0.0)
+                    .map(|m| bar.close + m * self.last_atr)
+                    .unwrap_or(0.0);
+                self.sl_atr_level = self.sl_atr_mult
+                    .filter(|_| self.last_atr > 0.0)
+                    .map(|m| bar.close - m * self.last_atr)
+                    .unwrap_or(0.0);
                 return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
             }
         } else {
-            // SL: hit if close drops below entry * (1 - sl_pct)
-            let sl_hit = self.sl_pct
-                .map(|pct| bar.close <= self.entry_price * (1.0 - pct))
-                .unwrap_or(false);
-            // TP: hit if close rises above entry * (1 + tp_pct)
+            if bar.close > self.peak_price { self.peak_price = bar.close; }
+
             let tp_hit = self.tp_pct
                 .map(|pct| bar.close >= self.entry_price * (1.0 + pct))
-                .unwrap_or(false);
+                .unwrap_or(false)
+                || (self.tp_atr_level > 0.0 && bar.close >= self.tp_atr_level);
+
+            let trail_sl = self.trail_pct
+                .map(|pct| self.peak_price * (1.0 - pct))
+                .or_else(|| self.trail_atr_mult.map(|m| self.peak_price - m * self.last_atr));
+
+            let sl_hit = self.sl_pct
+                .map(|pct| bar.close <= self.entry_price * (1.0 - pct))
+                .unwrap_or(false)
+                || (self.sl_atr_level > 0.0 && bar.close <= self.sl_atr_level)
+                || trail_sl.map(|sl| bar.close <= sl).unwrap_or(false);
+
             let exit_hit = matches!(self.exit_prog.execute(&self.ctx), Ok(Value::Bool(true)));
 
-            if sl_hit || tp_hit || exit_hit {
+            if tp_hit || sl_hit || exit_hit {
                 self.in_position = false;
                 self.entry_price = 0.0;
+                self.peak_price  = 0.0;
+                self.tp_atr_level = 0.0;
+                self.sl_atr_level = 0.0;
                 return vec![Signal::close(bar.timestamp, &bar.symbol)];
             }
         }
@@ -817,9 +917,14 @@ impl Strategy for CelStrategy {
 
     fn reset(&mut self) {
         for b in self.bindings.values_mut() { b.reset(); }
+        if let Some(atr) = &mut self.atr { atr.reset(); }
         self.transform.reset();
         self.in_position = false;
         self.entry_price = 0.0;
+        self.peak_price  = 0.0;
+        self.tp_atr_level = 0.0;
+        self.sl_atr_level = 0.0;
+        self.last_atr = 0.0;
     }
 }
 
@@ -834,73 +939,66 @@ mod tests {
         Bar::new(ts, "T", c, c * 1.01, c * 0.99, c, 1_000.0)
     }
 
-    // ── expand_calls_to_vars ──────────────────────────────────────────────────
+    // ── expand_indicators ────────────────────────────────────────────────────
 
     #[test]
     fn expand_one_arg_indicator() {
-        let norm = normalize_cel_expr("rsi(14) < 30");
-        let expanded = expand_calls_to_vars(&norm);
-        assert_eq!(expanded, "rsi_14 < 30.0");
+        let (expr, _) = expand_indicators("rsi(14) < 30");
+        assert_eq!(normalize_cel_expr(&expr), "rsi_14 < 30.0");
     }
 
     #[test]
     fn expand_prev_prefix() {
-        let norm = normalize_cel_expr("prev_ema(9) <= prev_ema(21) && ema(9) > ema(21)");
-        let expanded = expand_calls_to_vars(&norm);
-        assert_eq!(expanded, "prev_ema_9 <= prev_ema_21 && ema_9 > ema_21");
+        let (expr, _) = expand_indicators("prev_ema(9) <= prev_ema(21) && ema(9) > ema(21)");
+        assert_eq!(expr, "prev_ema_9 <= prev_ema_21 && ema_9 > ema_21");
     }
 
     #[test]
     fn expand_zero_arg() {
-        let norm = normalize_cel_expr("obv() > 0 && ao() > 0");
-        let expanded = expand_calls_to_vars(&norm);
-        assert_eq!(expanded, "obv > 0.0 && ao > 0.0");
+        let (expr, _) = expand_indicators("obv() > 0 && ao() > 0");
+        assert_eq!(normalize_cel_expr(&expr), "obv > 0.0 && ao > 0.0");
     }
 
     #[test]
     fn expand_bar_fields_unchanged() {
-        let norm = normalize_cel_expr("close > 100 && high < 200");
-        let expanded = expand_calls_to_vars(&norm);
-        assert_eq!(expanded, "close > 100.0 && high < 200.0");
-    }
-
-    // ── Scanner ───────────────────────────────────────────────────────────────
-
-    #[test]
-    fn scan_simple_calls() {
-        let calls = scan_calls("ema(9) > close && rsi(14) < 30.0");
-        let raws: Vec<_> = calls.iter().map(|c| c.raw.as_str()).collect();
-        assert!(raws.contains(&"ema"), "ema not found");
-        assert!(raws.contains(&"rsi"), "rsi not found");
+        // close/high are not indicator calls — must pass through verbatim
+        let (expr, calls) = expand_indicators("close > 100 && high < 200");
+        assert_eq!(normalize_cel_expr(&expr), "close > 100.0 && high < 200.0");
+        assert!(calls.is_empty());
     }
 
     #[test]
-    fn scan_prev_prefix() {
-        let calls = scan_calls("prev_ema(9) <= prev_ema(21) && ema(9) > ema(21)");
-        // 4 tokens: prev_ema (×2), ema (×2)
+    fn expand_collects_calls() {
+        let (_, calls) = expand_indicators("ema(9) > close && rsi(14) < 30.0");
+        let keys: Vec<_> = calls.iter().map(|c| c.key()).collect();
+        assert!(keys.iter().any(|k| k == "ema_9"),  "ema_9");
+        assert!(keys.iter().any(|k| k == "rsi_14"), "rsi_14");
+    }
+
+    #[test]
+    fn expand_prev_calls_share_key() {
+        let (_, calls) = expand_indicators("prev_ema(9) <= prev_ema(21) && ema(9) > ema(21)");
+        // 4 tokens, but keys deduplicate to ema_9 and ema_21
         let keys: std::collections::HashSet<_> = calls.iter().map(|c| c.key()).collect();
         assert!(keys.contains("ema_9"),  "ema_9");
         assert!(keys.contains("ema_21"), "ema_21");
-        // prev_ calls fold into the same base key
-        assert!(!keys.contains("prev_ema_9"), "prev_ key must not appear in key()");
+        assert!(!keys.contains("prev_ema_9"), "prev_ must not appear in key()");
     }
 
     #[test]
-    fn scan_zero_arg_funcs() {
-        let calls = scan_calls("obv() > 0.0 && ao() > 0.0 && sar() < close");
-        let raws: Vec<_> = calls.iter().map(|c| c.raw.as_str()).collect();
-        assert!(raws.contains(&"obv"));
-        assert!(raws.contains(&"ao"));
-        assert!(raws.contains(&"sar"));
-        // zero-arg calls have empty args and key == name
-        for c in &calls {
-            if c.raw == "obv" { assert!(c.args.is_empty()); assert_eq!(c.key(), "obv"); }
-        }
+    fn expand_zero_arg_calls() {
+        let (_, calls) = expand_indicators("obv() > 0.0 && ao() > 0.0 && sar() < close");
+        let keys: Vec<_> = calls.iter().map(|c| c.key()).collect();
+        assert!(keys.iter().any(|k| k == "obv"));
+        assert!(keys.iter().any(|k| k == "ao"));
+        assert!(keys.iter().any(|k| k == "sar"));
+        let obv = calls.iter().find(|c| c.key() == "obv").unwrap();
+        assert!(obv.args.is_empty());
     }
 
     #[test]
-    fn scan_multi_field_indicators() {
-        let calls = scan_calls("macd_hist(12) > 0.0 && bb_upper(20) > close && stoch_k(14) > 80.0");
+    fn expand_multi_field_indicators() {
+        let (_, calls) = expand_indicators("macd_hist(12) > 0.0 && bb_upper(20) > close && stoch_k(14) > 80.0");
         let keys: Vec<_> = calls.iter().map(|c| c.key()).collect();
         assert!(keys.iter().any(|k| k == "macd_hist_12"));
         assert!(keys.iter().any(|k| k == "bb_upper_20"));
@@ -1011,13 +1109,69 @@ mod tests {
     // ── MTF (Multi-Timeframe) ─────────────────────────────────────────────────
 
     #[test]
-    fn preprocess_dot_tf_replaces_dot() {
-        assert_eq!(preprocess_dot_tf("H1.ema(200) > close"),   "H1_ema(200) > close");
-        assert_eq!(preprocess_dot_tf("M15.rsi(14) < 30"),      "M15_rsi(14) < 30");
-        assert_eq!(preprocess_dot_tf("prev_H4.macd_hist(12)"), "prev_H4_macd_hist(12)");
-        // Non-TF dots must be left unchanged
-        assert_eq!(preprocess_dot_tf("x.field"),               "x.field");
-        assert_eq!(preprocess_dot_tf("1.5"),                   "1.5");
+    fn expand_indicators_dot_tf() {
+        let (expr, _) = expand_indicators("H1.ema(200) > close");
+        assert_eq!(expr, "H1_ema_200 > close");
+
+        let (expr, _) = expand_indicators("M15.rsi(14) < 30");
+        assert_eq!(expr, "M15_rsi_14 < 30");
+
+        let (expr, _) = expand_indicators("prev_H4.macd_hist(12) < 0.0 && H4.macd_hist(12) > 0.0");
+        assert_eq!(expr, "prev_H4_macd_hist_12 < 0.0 && H4_macd_hist_12 > 0.0");
+
+        // Non-indicator dots must pass through unchanged
+        let (expr, _) = expand_indicators("x.field > 1.5");
+        assert_eq!(expr, "x.field > 1.5");
+    }
+
+    #[test]
+    fn expand_indicators_underscore_tf() {
+        // H1_ema(200) is the underscore form — should produce the same CEL var as dot form
+        let (expr, calls) = expand_indicators("H1_ema(200) > close");
+        assert_eq!(expr, "H1_ema_200 > close");
+        assert_eq!(calls[0].key(), "H1_ema_200");
+
+        let (expr, _) = expand_indicators("M15_rsi(14) < 30");
+        assert_eq!(expr, "M15_rsi_14 < 30");
+
+        // prev_ prefix with underscore TF
+        let (expr, _) = expand_indicators("prev_H4_macd_hist(12) < 0.0");
+        assert_eq!(expr, "prev_H4_macd_hist_12 < 0.0");
+
+        // Dot and underscore forms are equivalent
+        let (dot_expr,  _) = expand_indicators("H1.ema(200) > close");
+        let (us_expr,   _) = expand_indicators("H1_ema(200) > close");
+        assert_eq!(dot_expr, us_expr);
+    }
+
+    #[test]
+    fn expand_indicators_live_prefix() {
+        // live_ prefix → var name prefixed with live_
+        let (expr, calls) = expand_indicators("live_H1.ema(200) > close");
+        assert_eq!(expr, "live_H1_ema_200 > close");
+        assert!(calls[0].is_live);
+        assert_eq!(calls[0].key(), "H1_ema_200"); // key strips live_
+
+        // live_ with base TF (no HTF)
+        let (expr, calls) = expand_indicators("live_ema(9) > close");
+        assert_eq!(expr, "live_ema_9 > close");
+        assert!(calls[0].is_live);
+
+        // live_ and non-live share the same binding key
+        let (_, live_calls)  = expand_indicators("live_H1.ema(200) > 0.0");
+        let (_, plain_calls) = expand_indicators("H1.ema(200) > 0.0");
+        assert_eq!(live_calls[0].key(), plain_calls[0].key());
+    }
+
+    #[test]
+    fn live_and_confirmed_share_one_binding() {
+        // live_H1.ema(200) and H1.ema(200) in the same strategy → one binding, not two
+        let s = CelStrategy::new(
+            "live_H1.ema(200) > close",
+            "close < H1.ema(200)",
+        ).unwrap();
+        assert_eq!(s.bindings.len(), 1, "live_ and confirmed must share binding");
+        assert!(s.bindings.contains_key("H1_ema_200"));
     }
 
     #[test]
@@ -1067,7 +1221,6 @@ mod tests {
     fn mtf_stays_silent_until_htf_bar() {
         // H1 = 3_600_000 ms. Feed bars spaced 1 minute apart.
         // EMA(5) needs 5 H1 bars = 300 M1 bars before producing a value.
-        let hour_ms = 3_600_000i64;
         let mut s = CelStrategy::new("H1.ema(5) > 0.0", "H1.ema(5) < 0.0").unwrap();
         // Feed 4 complete H1 bars (240 M1 bars) — EMA(5) not ready yet
         for i in 0..240i64 {

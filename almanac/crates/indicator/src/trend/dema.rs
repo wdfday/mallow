@@ -1,7 +1,29 @@
 use crate::Ema;
 
-/// Double Exponential Moving Average — reduces EMA lag.
-/// DEMA(n) = 2 * EMA(n) - EMA(EMA(n))
+/// Double Exponential Moving Average (DEMA) — giảm lag của EMA.
+///
+/// Được Patrick Mulloy giới thiệu năm 1994. DEMA không phải là EMA của EMA
+/// (như tên gọi có thể gây hiểu nhầm), mà là một công thức toán học nhằm
+/// triệt tiêu phần lớn lag vốn có của EMA thông thường.
+///
+/// # Công thức
+/// ```text
+/// EMA1 = EMA(close, n)
+/// EMA2 = EMA(EMA1, n)
+///
+/// DEMA = 2 × EMA1 − EMA2
+/// ```
+/// Trực giác: `EMA2` là phần lag của `EMA1`. Nhân đôi `EMA1` và trừ đi
+/// phần lag → kết quả gần với giá hiện tại hơn.
+///
+/// # So sánh với EMA
+/// - Trong uptrend: DEMA > EMA (phản ứng nhanh hơn, gần giá hơn)
+/// - Lag giảm khoảng 50% so với EMA cùng period
+/// - Nhiều noise hơn EMA một chút
+///
+/// # Warmup
+/// Cần `2 × (period - 1) + 1` bar vì phải warm up EMA1 rồi EMA2 tiếp theo.
+/// Ví dụ: DEMA(5) cần 9 bar.
 #[derive(Debug, Clone)]
 pub struct Dema {
     ema1: Ema,

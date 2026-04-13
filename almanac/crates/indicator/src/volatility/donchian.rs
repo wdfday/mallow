@@ -1,49 +1,75 @@
-use std::collections::VecDeque;
+use crate::util::{RollingMax, RollingMin};
 
+/// Donchian Channel — kênh giá dựa trên highest high / lowest low trong N bar.
+///
+/// Được Richard Donchian phát triển trong thập niên 1950, nổi tiếng qua chiến lược
+/// Turtle Trading. Là indicator cơ bản nhất cho breakout trading: giá vượt upper
+/// channel = breakout upward; giá phá lower channel = breakout downward.
+///
+/// # Công thức
+/// ```text
+/// Upper  = max(High₀, High₁, …, Highₙ₋₁)    ← highest high trong period bar
+/// Lower  = min(Low₀,  Low₁,  …, Lowₙ₋₁)     ← lowest low trong period bar
+/// Middle = (Upper + Lower) / 2
+/// ```
+///
+/// # Tín hiệu giao dịch
+/// - **Giá đóng cửa > Upper**: breakout upward → long signal
+/// - **Giá đóng cửa < Lower**: breakout downward → short signal
+/// - **Middle**: dynamic support/resistance trong ranging market
+/// - **Channel width** (Upper − Lower): đo volatility; hẹp = consolidation → breakout sắp xảy ra
+///
+/// # Turtle Trading rules (Richard Dennis)
+/// - Entry: breakout khỏi Donchian(20)
+/// - Exit: reverse breakout của Donchian(10)
+///
+/// # So sánh với Bollinger Bands và Keltner Channel
+/// - Donchian: dựa trên price extremes (cứng), dễ bị breakout giả
+/// - Bollinger: dựa trên stddev (mềm), co/nở theo volatility
+/// - Keltner: dựa trên ATR (mềm), ít bị ảnh hưởng bởi spike đơn lẻ
+///
+/// # Warmup
+/// Cần đúng `period` bar.
 #[derive(Debug, Clone, Copy)]
 pub struct DonchianValue {
+    /// Highest high trong period bar gần nhất
     pub upper: f64,
+    /// Lowest low trong period bar gần nhất
     pub lower: f64,
+    /// (Upper + Lower) / 2 — midpoint của kênh
     pub middle: f64,
 }
 
-/// Donchian Channel — highest high / lowest low over N bars.
+/// Donchian Channel — kênh giá highest high / lowest low trong N bar.
 #[derive(Debug, Clone)]
 pub struct Donchian {
-    period: usize,
-    highs: VecDeque<f64>,
-    lows: VecDeque<f64>,
+    max_high: RollingMax,
+    min_low: RollingMin,
 }
 
 impl Donchian {
     pub fn new(period: usize) -> Self {
         assert!(period > 0, "Donchian period must be > 0");
         Self {
-            period,
-            highs: VecDeque::with_capacity(period),
-            lows: VecDeque::with_capacity(period),
+            max_high: RollingMax::new(period),
+            min_low: RollingMin::new(period),
         }
     }
 
     pub fn update(&mut self, high: f64, low: f64) -> Option<DonchianValue> {
-        self.highs.push_back(high);
-        self.lows.push_back(low);
-        if self.highs.len() > self.period {
-            self.highs.pop_front();
-            self.lows.pop_front();
+        // Gọi cả hai push độc lập — không dùng `?` để tránh min_low bị bỏ qua
+        // khi max_high chưa ready (cùng bug cascade như GMMA).
+        let upper = self.max_high.push(high);
+        let lower = self.min_low.push(low);
+        match (upper, lower) {
+            (Some(u), Some(l)) => Some(DonchianValue { upper: u, lower: l, middle: (u + l) / 2.0 }),
+            _ => None,
         }
-        if self.highs.len() < self.period {
-            return None;
-        }
-
-        let upper = self.highs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let lower = self.lows.iter().cloned().fold(f64::INFINITY, f64::min);
-        Some(DonchianValue { upper, lower, middle: (upper + lower) / 2.0 })
     }
 
     pub fn reset(&mut self) {
-        self.highs.clear();
-        self.lows.clear();
+        self.max_high.reset();
+        self.min_low.reset();
     }
 }
 

@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+
+	"orchestrator/internal/infra/exchange"
 )
 
 // BalanceInfo represents a single currency balance on OKX.
@@ -45,7 +47,7 @@ type PositionInfo struct {
 }
 
 // GetBalance returns the unified account balance.
-func (c *Client) GetBalance(ctx context.Context) (*AccountInfo, error) {
+func (c *Client) GetBalance(ctx context.Context, creds exchange.Credentials) (*AccountInfo, error) {
 	var resp struct {
 		okxResponse
 		Data []struct {
@@ -60,7 +62,7 @@ func (c *Client) GetBalance(ctx context.Context) (*AccountInfo, error) {
 		} `json:"data"`
 	}
 
-	if err := c.doRequest(ctx, http.MethodGet, "/api/v5/account/balance", nil, &resp); err != nil {
+	if err := c.doRequest(ctx, creds, http.MethodGet, "/api/v5/account/balance", nil, &resp); err != nil {
 		return nil, fmt.Errorf("okx get balance: %w", err)
 	}
 	if resp.Code != "0" || len(resp.Data) == 0 {
@@ -85,7 +87,7 @@ func (c *Client) GetBalance(ctx context.Context) (*AccountInfo, error) {
 }
 
 // GetPositions returns all open positions for an optional instType (SWAP, FUTURES, etc).
-func (c *Client) GetPositions(ctx context.Context, instType string) ([]PositionInfo, error) {
+func (c *Client) GetPositions(ctx context.Context, creds exchange.Credentials, instType string) ([]PositionInfo, error) {
 	path := "/api/v5/account/positions"
 	if instType != "" {
 		path += "?instType=" + instType
@@ -105,7 +107,7 @@ func (c *Client) GetPositions(ctx context.Context, instType string) ([]PositionI
 		} `json:"data"`
 	}
 
-	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+	if err := c.doRequest(ctx, creds, http.MethodGet, path, nil, &resp); err != nil {
 		return nil, fmt.Errorf("okx get positions: %w", err)
 	}
 	if resp.Code != "0" {
@@ -128,7 +130,7 @@ func (c *Client) GetPositions(ctx context.Context, instType string) ([]PositionI
 	return results, nil
 }
 
-// GetInstrument returns info about a specific trading instrument.
+// GetInstrument returns info about a specific trading instrument (public endpoint).
 func (c *Client) GetInstrument(ctx context.Context, instType, instID string) (*InstrumentInfo, error) {
 	path := fmt.Sprintf("/api/v5/public/instruments?instType=%s&instId=%s", instType, instID)
 
@@ -145,7 +147,7 @@ func (c *Client) GetInstrument(ctx context.Context, instType, instID string) (*I
 		} `json:"data"`
 	}
 
-	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+	if err := c.doRequest(ctx, exchange.Credentials{}, http.MethodGet, path, nil, &resp); err != nil {
 		return nil, fmt.Errorf("okx get instrument: %w", err)
 	}
 	if resp.Code != "0" || len(resp.Data) == 0 {

@@ -19,7 +19,7 @@ import (
 	"orchestrator/internal/infra/exchange"
 )
 
-func paperOKXClient(t *testing.T) *Client {
+func paperOKXClient(t *testing.T) (*Client, exchange.Credentials) {
 	t.Helper()
 	key := os.Getenv("OKX_API_KEY")
 	secret := os.Getenv("OKX_API_SECRET")
@@ -27,12 +27,8 @@ func paperOKXClient(t *testing.T) *Client {
 	if key == "" || secret == "" || passphrase == "" {
 		t.Skip("OKX_API_KEY / OKX_API_SECRET / OKX_PASSPHRASE not set")
 	}
-	return New(Config{
-		APIKey:     key,
-		APISecret:  secret,
-		Passphrase: passphrase,
-		Demo:       true,
-	})
+	creds := exchange.Credentials{APIKey: key, APISecret: secret, Passphrase: passphrase}
+	return New(Config{Demo: true}), creds
 }
 
 func okxCtx() (context.Context, context.CancelFunc) {
@@ -47,11 +43,11 @@ func roundOKX(price, tick float64) float64 {
 // ── Account ───────────────────────────────────────────────────────────────────
 
 func TestOKX_GetBalance(t *testing.T) {
-	c := paperOKXClient(t)
+	c, creds := paperOKXClient(t)
 	cx, cancel := okxCtx()
 	defer cancel()
 
-	info, err := c.GetBalance(cx)
+	info, err := c.GetBalance(cx, creds)
 	if err != nil {
 		t.Fatalf("GetBalance: %v", err)
 	}
@@ -63,11 +59,11 @@ func TestOKX_GetBalance(t *testing.T) {
 }
 
 func TestOKX_SyncAccount(t *testing.T) {
-	c := paperOKXClient(t)
+	c, creds := paperOKXClient(t)
 	cx, cancel := okxCtx()
 	defer cancel()
 
-	snap, err := c.SyncAccount(cx, nil)
+	snap, err := c.SyncAccount(cx, creds, nil)
 	if err != nil {
 		t.Fatalf("SyncAccount: %v", err)
 	}
@@ -78,11 +74,11 @@ func TestOKX_SyncAccount(t *testing.T) {
 }
 
 func TestOKX_GetPositions(t *testing.T) {
-	c := paperOKXClient(t)
+	c, creds := paperOKXClient(t)
 	cx, cancel := okxCtx()
 	defer cancel()
 
-	positions, err := c.GetPositions(cx, "")
+	positions, err := c.GetPositions(cx, creds, "")
 	if err != nil {
 		t.Fatalf("GetPositions: %v", err)
 	}
@@ -99,10 +95,10 @@ func TestOKX_GetPositions(t *testing.T) {
 // ── Market data ───────────────────────────────────────────────────────────────
 
 func TestOKX_GetCurrentPrice(t *testing.T) {
-	c := paperOKXClient(t)
+	c, creds := paperOKXClient(t)
 	for _, sym := range []string{"BTC-USDT", "ETH-USDT", "SOL-USDT"} {
 		cx, cancel := okxCtx()
-		price, err := c.GetCurrentPrice(cx, sym)
+		price, err := c.GetCurrentPrice(cx, creds, sym)
 		cancel()
 		if err != nil {
 			t.Logf("  %s: ERROR %v", sym, err)
@@ -113,7 +109,7 @@ func TestOKX_GetCurrentPrice(t *testing.T) {
 }
 
 func TestOKX_GetInstrument(t *testing.T) {
-	c := paperOKXClient(t)
+	c, _ := paperOKXClient(t)
 	cx, cancel := okxCtx()
 	defer cancel()
 
@@ -128,11 +124,11 @@ func TestOKX_GetInstrument(t *testing.T) {
 // ── Orders ────────────────────────────────────────────────────────────────────
 
 func TestOKX_MarketOrder(t *testing.T) {
-	c := paperOKXClient(t)
+	c, creds := paperOKXClient(t)
 	cx, cancel := okxCtx()
 	defer cancel()
 
-	result, err := c.PlaceOrder(cx, exchange.OrderRequest{
+	result, err := c.PlaceOrder(cx, creds, exchange.OrderRequest{
 		Symbol: "BTC-USDT",
 		Side:   exchange.Buy,
 		Type:   exchange.Market,
@@ -147,7 +143,7 @@ func TestOKX_MarketOrder(t *testing.T) {
 	cx2, cancel2 := okxCtx()
 	defer cancel2()
 	time.Sleep(300 * time.Millisecond)
-	got, err := c.GetOrder(cx2, result.ID)
+	got, err := c.GetOrder(cx2, creds, result.ID)
 	if err != nil {
 		t.Fatalf("GetOrder: %v", err)
 	}
@@ -155,11 +151,11 @@ func TestOKX_MarketOrder(t *testing.T) {
 }
 
 func TestOKX_LimitOrder_ThenCancel(t *testing.T) {
-	c := paperOKXClient(t)
+	c, creds := paperOKXClient(t)
 
 	cx0, cancel0 := okxCtx()
 	defer cancel0()
-	price, err := c.GetCurrentPrice(cx0, "BTC-USDT")
+	price, err := c.GetCurrentPrice(cx0, creds, "BTC-USDT")
 	if err != nil {
 		t.Fatalf("GetCurrentPrice: %v", err)
 	}
@@ -167,7 +163,7 @@ func TestOKX_LimitOrder_ThenCancel(t *testing.T) {
 
 	cx, cancel := okxCtx()
 	defer cancel()
-	result, err := c.PlaceOrder(cx, exchange.OrderRequest{
+	result, err := c.PlaceOrder(cx, creds, exchange.OrderRequest{
 		Symbol: "BTC-USDT",
 		Side:   exchange.Buy,
 		Type:   exchange.Limit,
@@ -181,7 +177,7 @@ func TestOKX_LimitOrder_ThenCancel(t *testing.T) {
 
 	cx2, cancel2 := okxCtx()
 	defer cancel2()
-	if err := c.CancelOrder(cx2, result.ID); err != nil {
+	if err := c.CancelOrder(cx2, creds, result.ID); err != nil {
 		t.Fatalf("CancelOrder: %v", err)
 	}
 	t.Logf("order %s cancelled", result.ID)
@@ -189,7 +185,7 @@ func TestOKX_LimitOrder_ThenCancel(t *testing.T) {
 	cx3, cancel3 := okxCtx()
 	defer cancel3()
 	time.Sleep(300 * time.Millisecond)
-	got, err := c.GetOrder(cx3, result.ID)
+	got, err := c.GetOrder(cx3, creds, result.ID)
 	if err != nil {
 		t.Fatalf("GetOrder after cancel: %v", err)
 	}
@@ -197,11 +193,11 @@ func TestOKX_LimitOrder_ThenCancel(t *testing.T) {
 }
 
 func TestOKX_BracketOrder(t *testing.T) {
-	c := paperOKXClient(t)
+	c, creds := paperOKXClient(t)
 
 	cx0, cancel0 := okxCtx()
 	defer cancel0()
-	price, err := c.GetCurrentPrice(cx0, "BTC-USDT")
+	price, err := c.GetCurrentPrice(cx0, creds, "BTC-USDT")
 	if err != nil {
 		t.Fatalf("GetCurrentPrice: %v", err)
 	}
@@ -212,7 +208,7 @@ func TestOKX_BracketOrder(t *testing.T) {
 
 	cx, cancel := okxCtx()
 	defer cancel()
-	result, err := c.PlaceOrder(cx, exchange.OrderRequest{
+	result, err := c.PlaceOrder(cx, creds, exchange.OrderRequest{
 		Symbol:     "BTC-USDT",
 		Side:       exchange.Buy,
 		Type:       exchange.Market,
@@ -304,7 +300,7 @@ func okxDemoDeepBook(c *Client, instID string, depth int) (*orderBook, error) {
 	path := fmt.Sprintf("/api/v5/market/books?instId=%s&sz=%d", instID, depth)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := c.doRequest(ctx, "GET", path, nil, &v); err != nil {
+	if err := c.doRequest(ctx, exchange.Credentials{}, "GET", path, nil, &v); err != nil {
 		return nil, err
 	}
 	if len(v.Data) == 0 {
@@ -349,7 +345,7 @@ func parseOKXBook(bids, asks [][]string) *orderBook {
 }
 
 func TestOKX_Slippage(t *testing.T) {
-	c := paperOKXClient(t)
+	c, creds := paperOKXClient(t)
 
 	type result struct {
 		side      string
@@ -365,7 +361,7 @@ func TestOKX_Slippage(t *testing.T) {
 		if side == exchange.Sell {
 			// Ensure BTC balance for sell
 			cx, cancel := okxCtx()
-			bal, _ := c.GetBalance(cx)
+			bal, _ := c.GetBalance(cx, creds)
 			cancel()
 			hasBTC := false
 			if bal != nil {
@@ -378,7 +374,7 @@ func TestOKX_Slippage(t *testing.T) {
 			}
 			if !hasBTC {
 				cx2, cancel2 := okxCtx()
-				c.PlaceOrder(cx2, exchange.OrderRequest{ //nolint
+				c.PlaceOrder(cx2, creds, exchange.OrderRequest{ //nolint
 					Symbol: "BTC-USDT", Side: exchange.Buy, Type: exchange.Market, Qty: decimal.NewFromFloat(0.01),
 				})
 				cancel2()
@@ -393,7 +389,7 @@ func TestOKX_Slippage(t *testing.T) {
 		mid := (bid + ask) / 2
 
 		cx, cancel := okxCtx()
-		resp, err := c.PlaceOrder(cx, exchange.OrderRequest{
+		resp, err := c.PlaceOrder(cx, creds, exchange.OrderRequest{
 			Symbol: "BTC-USDT",
 			Side:   side,
 			Type:   exchange.Market,
@@ -410,7 +406,7 @@ func TestOKX_Slippage(t *testing.T) {
 			for i := 0; i < 5; i++ {
 				time.Sleep(300 * time.Millisecond)
 				cx2, cancel2 := okxCtx()
-				got, _ := c.GetOrder(cx2, resp.ID)
+				got, _ := c.GetOrder(cx2, creds, resp.ID)
 				cancel2()
 				if got != nil && got.FilledAvg.IsPositive() {
 					fillPrice = got.FilledAvg
@@ -448,12 +444,12 @@ func TestOKX_Slippage(t *testing.T) {
 // ── Order streaming ───────────────────────────────────────────────────────────
 
 func TestOKX_StreamOrders(t *testing.T) {
-	c := paperOKXClient(t)
+	c, creds := paperOKXClient(t)
 	cx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
 	events := make(chan exchange.OrderEvent, 8)
-	if err := c.StreamOrders(cx, func(e exchange.OrderEvent) {
+	if err := c.StreamOrders(cx, creds, func(e exchange.OrderEvent) {
 		events <- e
 	}); err != nil {
 		t.Fatalf("StreamOrders: %v", err)
@@ -464,7 +460,7 @@ func TestOKX_StreamOrders(t *testing.T) {
 
 	cx2, cancel2 := okxCtx()
 	defer cancel2()
-	result, err := c.PlaceOrder(cx2, exchange.OrderRequest{
+	result, err := c.PlaceOrder(cx2, creds, exchange.OrderRequest{
 		Symbol: "BTC-USDT",
 		Side:   exchange.Buy,
 		Type:   exchange.Market,
@@ -491,7 +487,7 @@ func TestOKX_StreamOrders(t *testing.T) {
 // symbols and prints side-by-side ask top-5 levels + expected VWAP divergence.
 // No orders are placed. Useful to see how much the simulated book differs from live.
 func TestOKX_BookComparison(t *testing.T) {
-	c := paperOKXClient(t)
+	c, _ := paperOKXClient(t)
 	symbols := []string{"BTC-USDT", "TRX-USDT", "DOGE-USDT", "XRP-USDT"}
 	// qty to probe: ~$1000 notional worth at rough prices
 	probeUSDT := 1000.0
@@ -555,11 +551,11 @@ func TestOKX_BookComparison(t *testing.T) {
 // 1%, 5%, 15%, 30%, 60% of total ask depth to measure whether OKX simulated
 // trading models book-walk slippage.
 func TestOKX_LargeOrderImpact(t *testing.T) {
-	c := paperOKXClient(t)
+	c, creds := paperOKXClient(t)
 
 	// ── Step 1: sell BTC if we have it ────────────────────────────────────────
 	cx0, cancel0 := context.WithTimeout(context.Background(), 10*time.Second)
-	bal, err := c.GetBalance(cx0)
+	bal, err := c.GetBalance(cx0, creds)
 	cancel0()
 	if err != nil {
 		t.Fatalf("GetBalance: %v", err)
@@ -579,7 +575,7 @@ func TestOKX_LargeOrderImpact(t *testing.T) {
 	if btcAvail >= 0.001 {
 		t.Logf("selling %.4f BTC → USDT", btcAvail)
 		cx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		_, err := c.PlaceOrder(cx, exchange.OrderRequest{
+		_, err := c.PlaceOrder(cx, creds, exchange.OrderRequest{
 			Symbol: "BTC-USDT",
 			Side:   exchange.Sell,
 			Type:   exchange.Market,
@@ -591,7 +587,7 @@ func TestOKX_LargeOrderImpact(t *testing.T) {
 		} else {
 			time.Sleep(800 * time.Millisecond)
 			cx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
-			bal2, _ := c.GetBalance(cx2)
+			bal2, _ := c.GetBalance(cx2, creds)
 			cancel2()
 			if bal2 != nil {
 				for _, b := range bal2.Balances {
@@ -680,18 +676,18 @@ func TestOKX_LargeOrderImpact(t *testing.T) {
 
 	// ── Step 4: place orders and measure slippage ──────────────────────────────
 	type row struct {
-		qty            float64
-		pctDepth       float64
-		totalDepth     float64
-		expVWAPReal    float64
-		expVWAPDemo    float64
-		fillAvg        float64
-		filledQty      float64
-		diffRealBps    float64
-		diffDemoBps    float64
-		status         string
-		realDepthOK    bool
-		demoDepthOK    bool
+		qty         float64
+		pctDepth    float64
+		totalDepth  float64
+		expVWAPReal float64
+		expVWAPDemo float64
+		fillAvg     float64
+		filledQty   float64
+		diffRealBps float64
+		diffDemoBps float64
+		status      string
+		realDepthOK bool
+		demoDepthOK bool
 	}
 	var rows []row
 
@@ -745,7 +741,7 @@ func TestOKX_LargeOrderImpact(t *testing.T) {
 		}
 
 		cx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		resp, err := c.PlaceOrder(cx, exchange.OrderRequest{
+		resp, err := c.PlaceOrder(cx, creds, exchange.OrderRequest{
 			Symbol: best.instID,
 			Side:   exchange.Buy,
 			Type:   exchange.Market,
@@ -769,7 +765,7 @@ func TestOKX_LargeOrderImpact(t *testing.T) {
 			for attempt := range 6 {
 				time.Sleep(400 * time.Millisecond)
 				cx2, cancel2 := okxCtx()
-				got, pollErr := c.GetOrder(cx2, resp.ID)
+				got, pollErr := c.GetOrder(cx2, creds, resp.ID)
 				cancel2()
 				if pollErr != nil {
 					t.Logf("  poll[%d] error: %v", attempt+1, pollErr)

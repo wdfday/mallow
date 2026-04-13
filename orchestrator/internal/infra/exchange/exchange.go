@@ -31,6 +31,15 @@ const (
 	Limit  OrderType = "limit"
 )
 
+// Credentials holds per-account API credentials passed to each exchange call.
+// The exchange client itself is stateless — one shared instance serves all accounts.
+type Credentials struct {
+	APIKey     string
+	APISecret  string
+	Passphrase string // OKX only
+	AccountID  string // OANDA only
+}
+
 // OrderRequest contains parameters for placing an order.
 type OrderRequest struct {
 	Symbol       string
@@ -42,7 +51,7 @@ type OrderRequest struct {
 	StopLoss     decimal.Decimal // optional: bracket/OTO fixed stop price
 	TakeProfit   decimal.Decimal // optional: bracket/OTO limit price
 	TrailingStop decimal.Decimal // optional: trailing stop as fraction of entry (e.g. 0.02 = 2%); mutually exclusive with StopLoss
-	ReduceOnly   bool    // futures only: close-only, never opens a position
+	ReduceOnly   bool            // futures only: close-only, never opens a position
 }
 
 // OrderResult contains the result of an order operation.
@@ -57,14 +66,15 @@ type OrderResult struct {
 }
 
 // Exchange is the core interface every broker adapter must implement.
-// It covers order placement and status — the minimum needed by a trading bot.
+// Implementations are stateless — credentials are passed per call so one instance
+// can serve multiple accounts without re-instantiation.
 type Exchange interface {
 	// Name returns the exchange identifier (e.g. "alpaca", "binance").
 	Name() string
 	// PlaceOrder submits a new order. Market field routes to spot or futures endpoint.
-	PlaceOrder(ctx context.Context, req OrderRequest) (*OrderResult, error)
+	PlaceOrder(ctx context.Context, creds Credentials, req OrderRequest) (*OrderResult, error)
 	// GetOrder retrieves the current status of an order by ID.
-	GetOrder(ctx context.Context, orderID string) (*OrderResult, error)
+	GetOrder(ctx context.Context, creds Credentials, orderID string) (*OrderResult, error)
 	// CancelOrder cancels a pending order by ID.
-	CancelOrder(ctx context.Context, orderID string) error
+	CancelOrder(ctx context.Context, creds Credentials, orderID string) error
 }

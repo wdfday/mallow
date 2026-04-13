@@ -11,7 +11,9 @@ import (
 )
 
 // PlaceOrder submits a market or limit order via Alpaca SDK.
-func (c *Client) PlaceOrder(_ context.Context, req exchange.OrderRequest) (*exchange.OrderResult, error) {
+func (c *Client) PlaceOrder(_ context.Context, creds exchange.Credentials, req exchange.OrderRequest) (*exchange.OrderResult, error) {
+	sdk := c.newSDK(creds)
+
 	tif := alpacasdk.Day
 	if isCrypto(req.Symbol) {
 		tif = alpacasdk.GTC
@@ -54,7 +56,7 @@ func (c *Client) PlaceOrder(_ context.Context, req exchange.OrderRequest) (*exch
 
 	slog.Info("alpaca: placing order", "symbol", req.Symbol, "side", req.Side, "qty", req.Qty)
 
-	order, err := c.sdk.PlaceOrder(sdkReq)
+	order, err := sdk.PlaceOrder(sdkReq)
 	if err != nil {
 		return nil, fmt.Errorf("alpaca place order: %w", err)
 	}
@@ -62,26 +64,25 @@ func (c *Client) PlaceOrder(_ context.Context, req exchange.OrderRequest) (*exch
 }
 
 // GetOrder retrieves an order by ID.
-func (c *Client) GetOrder(_ context.Context, orderID string) (*exchange.OrderResult, error) {
-	order, err := c.sdk.GetOrder(orderID)
+func (c *Client) GetOrder(_ context.Context, creds exchange.Credentials, orderID string) (*exchange.OrderResult, error) {
+	order, err := c.newSDK(creds).GetOrder(orderID)
 	if err != nil {
 		return nil, fmt.Errorf("alpaca get order: %w", err)
 	}
 	return mapOrder(order), nil
 }
 
-// GetOrderByClientID retrieves an order by the client-provided order ID.
-func (c *Client) GetOrderByClientID(clientOrderID string) (*exchange.OrderResult, error) {
-	order, err := c.sdk.GetOrderByClientOrderID(clientOrderID)
-	if err != nil {
-		return nil, fmt.Errorf("alpaca get order by client id: %w", err)
+// CancelOrder cancels a single pending order by ID.
+func (c *Client) CancelOrder(_ context.Context, creds exchange.Credentials, orderID string) error {
+	if err := c.newSDK(creds).CancelOrder(orderID); err != nil {
+		return fmt.Errorf("alpaca cancel order: %w", err)
 	}
-	return mapOrder(order), nil
+	return nil
 }
 
 // GetOrders lists orders with optional filters.
-func (c *Client) GetOrders(req alpacasdk.GetOrdersRequest) ([]exchange.OrderResult, error) {
-	orders, err := c.sdk.GetOrders(req)
+func (c *Client) GetOrders(creds exchange.Credentials, req alpacasdk.GetOrdersRequest) ([]exchange.OrderResult, error) {
+	orders, err := c.newSDK(creds).GetOrders(req)
 	if err != nil {
 		return nil, fmt.Errorf("alpaca get orders: %w", err)
 	}
@@ -93,25 +94,17 @@ func (c *Client) GetOrders(req alpacasdk.GetOrdersRequest) ([]exchange.OrderResu
 }
 
 // ReplaceOrder modifies an existing order (qty, price, etc).
-func (c *Client) ReplaceOrder(orderID string, req alpacasdk.ReplaceOrderRequest) (*exchange.OrderResult, error) {
-	order, err := c.sdk.ReplaceOrder(orderID, req)
+func (c *Client) ReplaceOrder(creds exchange.Credentials, orderID string, req alpacasdk.ReplaceOrderRequest) (*exchange.OrderResult, error) {
+	order, err := c.newSDK(creds).ReplaceOrder(orderID, req)
 	if err != nil {
 		return nil, fmt.Errorf("alpaca replace order: %w", err)
 	}
 	return mapOrder(order), nil
 }
 
-// CancelOrder cancels a single pending order by ID.
-func (c *Client) CancelOrder(_ context.Context, orderID string) error {
-	if err := c.sdk.CancelOrder(orderID); err != nil {
-		return fmt.Errorf("alpaca cancel order: %w", err)
-	}
-	return nil
-}
-
 // CancelAllOrders cancels every open order.
-func (c *Client) CancelAllOrders() error {
-	if err := c.sdk.CancelAllOrders(); err != nil {
+func (c *Client) CancelAllOrders(creds exchange.Credentials) error {
+	if err := c.newSDK(creds).CancelAllOrders(); err != nil {
 		return fmt.Errorf("alpaca cancel all orders: %w", err)
 	}
 	return nil

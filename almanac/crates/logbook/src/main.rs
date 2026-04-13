@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::Result;
+use logbook::backtest;
 use logbook::http::{router, AppState};
-use logbook::runner;
 use logbook::types::{BacktestRequest, ErrorResponse};
 use tokio::sync::Semaphore;
 
@@ -134,7 +134,7 @@ async fn handle_nats(
     );
 
     let data_dir = data_dir.clone();
-    let result = tokio::task::spawn_blocking(move || runner::run(req, &data_dir)).await;
+    let result = tokio::task::spawn_blocking(move || backtest::run(req, &data_dir)).await;
 
     match result {
         Ok(Ok(resp)) => match serde_json::to_vec(&resp) {

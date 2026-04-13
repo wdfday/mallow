@@ -1,17 +1,51 @@
 use crate::{Atr, Ema};
 
-#[derive(Debug, Clone)]
-pub struct KeltnerValue {
-    pub middle: f64,
-    pub upper: f64,
-    pub lower: f64,
-}
-
-/// Keltner Channel.
+/// Keltner Channel — dải động lực dựa trên EMA ± ATR.
 ///
+/// Được Chester Keltner phát triển ban đầu (1960), sau đó được Linda Raschke
+/// cải tiến (dùng EMA + ATR thay cho MA + daily range). Dải Keltner co/nở theo
+/// volatility thực tế (ATR), không bị ảnh hưởng bởi một spike đơn lẻ như Donchian.
+///
+/// # Công thức
+/// ```text
 /// Middle = EMA(close, period)
 /// Upper  = Middle + multiplier × ATR(atr_period)
 /// Lower  = Middle − multiplier × ATR(atr_period)
+/// ```
+///
+/// # Tham số thông dụng
+/// - **Trend-following**: EMA(20), ATR(10), multiplier=2.0
+/// - **Squeeze detection**: EMA(20), ATR(20), multiplier=1.5
+///
+/// # Tín hiệu giao dịch
+/// - **Giá đóng trên Upper**: uptrend momentum mạnh (breakout)
+/// - **Giá đóng dưới Lower**: downtrend momentum mạnh
+/// - **Giá quay lại Middle**: mean-reversion target
+///
+/// # Keltner Squeeze (kết hợp Bollinger Bands)
+/// Khi Bollinger Bands nằm *bên trong* Keltner Channel → Squeeze:
+/// volatility cực thấp, sắp có breakout mạnh.
+/// Bollinger nở ra ngoài Keltner → Squeeze kết thúc, trend bắt đầu.
+///
+/// # So sánh với Bollinger Bands
+/// - Bollinger: dựa trên stddev → nhạy với price spike ngắn hạn
+/// - Keltner: dựa trên ATR → mượt hơn, ít bị distort bởi spike đơn lẻ
+///
+/// # Warmup
+/// Cần `max(period, atr_period)` bar (EMA và ATR warm up song song).
+#[derive(Debug, Clone)]
+pub struct KeltnerValue {
+    /// Middle band: EMA của close
+    pub middle: f64,
+    /// Upper band: Middle + multiplier × ATR
+    pub upper: f64,
+    /// Lower band: Middle − multiplier × ATR
+    pub lower: f64,
+}
+
+/// Keltner Channel — EMA ± multiplier×ATR.
+#[allow(missing_docs)]
+#[derive(Clone)]
 pub struct Keltner {
     ema: Ema,
     atr: Atr,

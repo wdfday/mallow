@@ -17,24 +17,23 @@ import (
 	"orchestrator/internal/infra/exchange"
 )
 
-func paperClient(t *testing.T) *Client {
+func paperClient(t *testing.T) (*Client, exchange.Credentials) {
 	t.Helper()
 	key := os.Getenv("ALPACA_API_KEY")
 	secret := os.Getenv("ALPACA_API_SECRET")
 	if key == "" || secret == "" {
 		t.Skip("ALPACA_API_KEY / ALPACA_API_SECRET not set")
 	}
+	creds := exchange.Credentials{APIKey: key, APISecret: secret}
 	return New(Config{
-		APIKey:    key,
-		APISecret: secret,
 		// BaseURL defaults to paper-api.alpaca.markets
-	})
+	}), creds
 }
 
 // ── Connectivity ──────────────────────────────────────────────────────────────
 
 func TestPaper_Clock(t *testing.T) {
-	c := paperClient(t)
+	c, _ := paperClient(t)
 	clock, err := c.GetClock()
 	if err != nil {
 		t.Fatalf("GetClock: %v", err)
@@ -46,8 +45,8 @@ func TestPaper_Clock(t *testing.T) {
 // ── Account ───────────────────────────────────────────────────────────────────
 
 func TestPaper_GetAccount(t *testing.T) {
-	c := paperClient(t)
-	info, err := c.GetAccount()
+	c, creds := paperClient(t)
+	info, err := c.GetAccount(creds)
 	if err != nil {
 		t.Fatalf("GetAccount: %v", err)
 	}
@@ -60,8 +59,8 @@ func TestPaper_GetAccount(t *testing.T) {
 }
 
 func TestPaper_SpotBalance(t *testing.T) {
-	c := paperClient(t)
-	bal, err := c.SpotBalance(context.Background(), "USD")
+	c, creds := paperClient(t)
+	bal, err := c.SpotBalance(context.Background(), creds, "USD")
 	if err != nil {
 		t.Fatalf("SpotBalance USD: %v", err)
 	}
@@ -69,8 +68,8 @@ func TestPaper_SpotBalance(t *testing.T) {
 }
 
 func TestPaper_SyncAccount(t *testing.T) {
-	c := paperClient(t)
-	snap, err := c.SyncAccount(context.Background(), nil)
+	c, creds := paperClient(t)
+	snap, err := c.SyncAccount(context.Background(), creds, nil)
 	if err != nil {
 		t.Fatalf("SyncAccount: %v", err)
 	}
@@ -81,8 +80,8 @@ func TestPaper_SyncAccount(t *testing.T) {
 }
 
 func TestPaper_GetPositions(t *testing.T) {
-	c := paperClient(t)
-	positions, err := c.GetPositions()
+	c, creds := paperClient(t)
+	positions, err := c.GetPositions(creds)
 	if err != nil {
 		t.Fatalf("GetPositions: %v", err)
 	}
@@ -99,9 +98,9 @@ func TestPaper_GetPositions(t *testing.T) {
 // ── Market data ───────────────────────────────────────────────────────────────
 
 func TestPaper_GetCurrentPrice(t *testing.T) {
-	c := paperClient(t)
+	c, creds := paperClient(t)
 	for _, sym := range []string{"AAPL", "SPY", "BTC/USD"} {
-		price, err := c.GetCurrentPrice(context.Background(), sym)
+		price, err := c.GetCurrentPrice(context.Background(), creds, sym)
 		if err != nil {
 			t.Logf("  %s: ERROR %v", sym, err)
 			continue
@@ -111,9 +110,9 @@ func TestPaper_GetCurrentPrice(t *testing.T) {
 }
 
 func TestPaper_GetLatestQuote(t *testing.T) {
-	c := paperClient(t)
+	c, creds := paperClient(t)
 	for _, sym := range []string{"AAPL", "SPY"} {
-		q, err := c.GetLatestQuote(sym)
+		q, err := c.GetLatestQuote(creds, sym)
 		if err != nil {
 			t.Logf("  %s: ERROR %v", sym, err)
 			continue
@@ -126,8 +125,8 @@ func TestPaper_GetLatestQuote(t *testing.T) {
 }
 
 func TestPaper_GetSnapshot(t *testing.T) {
-	c := paperClient(t)
-	snap, err := c.GetSnapshot("AAPL")
+	c, creds := paperClient(t)
+	snap, err := c.GetSnapshot(creds, "AAPL")
 	if err != nil {
 		t.Fatalf("GetSnapshot AAPL: %v", err)
 	}
@@ -138,8 +137,8 @@ func TestPaper_GetSnapshot(t *testing.T) {
 }
 
 func TestPaper_GetLatestBar(t *testing.T) {
-	c := paperClient(t)
-	bar, err := c.GetLatestBar("AAPL", marketdata.OneMin)
+	c, creds := paperClient(t)
+	bar, err := c.GetLatestBar(creds, "AAPL", marketdata.OneMin)
 	if err != nil {
 		t.Fatalf("GetLatestBar AAPL: %v", err)
 	}
@@ -148,7 +147,7 @@ func TestPaper_GetLatestBar(t *testing.T) {
 }
 
 func TestPaper_GetAsset(t *testing.T) {
-	c := paperClient(t)
+	c, _ := paperClient(t)
 	for _, sym := range []string{"AAPL", "SPY", "TSLA"} {
 		a, err := c.GetAsset(sym)
 		if err != nil {
@@ -163,9 +162,9 @@ func TestPaper_GetAsset(t *testing.T) {
 // ── Orders ────────────────────────────────────────────────────────────────────
 
 func TestPaper_MarketOrder(t *testing.T) {
-	c := paperClient(t)
+	c, creds := paperClient(t)
 
-	result, err := c.PlaceOrder(context.Background(), exchange.OrderRequest{
+	result, err := c.PlaceOrder(context.Background(), creds, exchange.OrderRequest{
 		Symbol: "AAPL",
 		Side:   exchange.Buy,
 		Type:   exchange.Market,
@@ -178,7 +177,7 @@ func TestPaper_MarketOrder(t *testing.T) {
 		result.ID, result.Status, result.Qty, result.FilledQty, result.FilledAvg)
 
 	// GetOrder
-	got, err := c.GetOrder(context.Background(), result.ID)
+	got, err := c.GetOrder(context.Background(), creds, result.ID)
 	if err != nil {
 		t.Fatalf("GetOrder: %v", err)
 	}
@@ -186,15 +185,15 @@ func TestPaper_MarketOrder(t *testing.T) {
 }
 
 func TestPaper_LimitOrder_ThenCancel(t *testing.T) {
-	c := paperClient(t)
+	c, creds := paperClient(t)
 
-	price, err := c.GetCurrentPrice(context.Background(), "AAPL")
+	price, err := c.GetCurrentPrice(context.Background(), creds, "AAPL")
 	if err != nil {
 		t.Fatalf("GetCurrentPrice: %v", err)
 	}
 	limitPrice := price.Mul(decimal.NewFromFloat(0.95)) // 5% below market
 
-	result, err := c.PlaceOrder(context.Background(), exchange.OrderRequest{
+	result, err := c.PlaceOrder(context.Background(), creds, exchange.OrderRequest{
 		Symbol: "AAPL",
 		Side:   exchange.Buy,
 		Type:   exchange.Limit,
@@ -206,12 +205,12 @@ func TestPaper_LimitOrder_ThenCancel(t *testing.T) {
 	}
 	t.Logf("limit order placed: id=%s  status=%s  price=$%s", result.ID, result.Status, limitPrice)
 
-	if err := c.CancelOrder(context.Background(), result.ID); err != nil {
+	if err := c.CancelOrder(context.Background(), creds, result.ID); err != nil {
 		t.Fatalf("CancelOrder: %v", err)
 	}
 	t.Logf("order %s cancelled", result.ID)
 
-	got, err := c.GetOrder(context.Background(), result.ID)
+	got, err := c.GetOrder(context.Background(), creds, result.ID)
 	if err != nil {
 		t.Fatalf("GetOrder after cancel: %v", err)
 	}
@@ -219,16 +218,16 @@ func TestPaper_LimitOrder_ThenCancel(t *testing.T) {
 }
 
 func TestPaper_BracketOrder(t *testing.T) {
-	c := paperClient(t)
+	c, creds := paperClient(t)
 
-	price, err := c.GetCurrentPrice(context.Background(), "AAPL")
+	price, err := c.GetCurrentPrice(context.Background(), creds, "AAPL")
 	if err != nil {
 		t.Fatalf("GetCurrentPrice: %v", err)
 	}
 
 	stopLoss := price.Mul(decimal.NewFromFloat(0.98))
 	takeProfit := price.Mul(decimal.NewFromFloat(1.02))
-	result, err := c.PlaceOrder(context.Background(), exchange.OrderRequest{
+	result, err := c.PlaceOrder(context.Background(), creds, exchange.OrderRequest{
 		Symbol:     "AAPL",
 		Side:       exchange.Buy,
 		Type:       exchange.Market,
@@ -246,10 +245,10 @@ func TestPaper_BracketOrder(t *testing.T) {
 
 	// Cancel the bracket (closes all legs)
 	time.Sleep(500 * time.Millisecond)
-	if err := c.CancelAllOrders(); err != nil {
+	if err := c.CancelAllOrders(creds); err != nil {
 		t.Logf("CancelAllOrders: %v (may already be filled)", err)
 	}
-	if _, err := c.ClosePosition("AAPL", decimal.NewFromInt(1)); err != nil {
+	if _, err := c.ClosePosition(creds, "AAPL", decimal.NewFromInt(1)); err != nil {
 		t.Logf("ClosePosition: %v", err)
 	}
 }
@@ -257,7 +256,7 @@ func TestPaper_BracketOrder(t *testing.T) {
 // ── Slippage (vs quote mid) ───────────────────────────────────────────────────
 
 func TestPaper_Slippage(t *testing.T) {
-	c := paperClient(t)
+	c, creds := paperClient(t)
 
 	clock, _ := c.GetClock()
 	if clock != nil && !clock.IsOpen {
@@ -277,23 +276,23 @@ func TestPaper_Slippage(t *testing.T) {
 	for _, side := range []exchange.OrderSide{exchange.Buy, exchange.Sell} {
 		if side == exchange.Sell {
 			// Ensure position exists
-			pos, _ := c.GetPosition("AAPL")
+			pos, _ := c.GetPosition(creds, "AAPL")
 			if pos == nil || pos.Qty < 1 {
-				c.PlaceOrder(context.Background(), exchange.OrderRequest{ //nolint
+				c.PlaceOrder(context.Background(), creds, exchange.OrderRequest{ //nolint
 					Symbol: "AAPL", Side: exchange.Buy, Type: exchange.Market, Qty: decimal.NewFromInt(1),
 				})
 				time.Sleep(500 * time.Millisecond)
 			}
 		}
 
-		q, err := c.GetLatestQuote("AAPL")
+		q, err := c.GetLatestQuote(creds, "AAPL")
 		if err != nil {
 			t.Fatalf("GetLatestQuote: %v", err)
 		}
 		bid, ask := q.BidPrice, q.AskPrice
 		mid := (bid + ask) / 2
 
-		resp, err := c.PlaceOrder(context.Background(), exchange.OrderRequest{
+		resp, err := c.PlaceOrder(context.Background(), creds, exchange.OrderRequest{
 			Symbol: "AAPL",
 			Side:   side,
 			Type:   exchange.Market,
@@ -308,7 +307,7 @@ func TestPaper_Slippage(t *testing.T) {
 		if fillPrice.IsZero() {
 			for i := 0; i < 5; i++ {
 				time.Sleep(500 * time.Millisecond)
-				got, _ := c.GetOrder(context.Background(), resp.ID)
+				got, _ := c.GetOrder(context.Background(), creds, resp.ID)
 				if got != nil && got.FilledAvg.IsPositive() {
 					fillPrice = got.FilledAvg
 					break
@@ -342,7 +341,7 @@ func TestPaper_Slippage(t *testing.T) {
 	t.Log("└──────────────────────────────────────────────────────────────────────┘")
 
 	// GetOrders list
-	orders, err := c.GetOrders(alpacasdk.GetOrdersRequest{Status: "all", Limit: 5})
+	orders, err := c.GetOrders(creds, alpacasdk.GetOrdersRequest{Status: "all", Limit: 5})
 	if err == nil {
 		t.Logf("recent orders (%d):", len(orders))
 		for _, o := range orders {
@@ -355,12 +354,12 @@ func TestPaper_Slippage(t *testing.T) {
 // ── Order streaming ───────────────────────────────────────────────────────────
 
 func TestPaper_StreamOrders(t *testing.T) {
-	c := paperClient(t)
+	c, creds := paperClient(t)
 	cx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
 	events := make(chan exchange.OrderEvent, 8)
-	if err := c.StreamOrders(cx, func(e exchange.OrderEvent) {
+	if err := c.StreamOrders(cx, creds, func(e exchange.OrderEvent) {
 		events <- e
 	}); err != nil {
 		t.Fatalf("StreamOrders: %v", err)
@@ -368,7 +367,7 @@ func TestPaper_StreamOrders(t *testing.T) {
 	t.Log("order stream started — placing a market order to trigger events...")
 
 	time.Sleep(500 * time.Millisecond)
-	c.PlaceOrder(context.Background(), exchange.OrderRequest{ //nolint
+	c.PlaceOrder(context.Background(), creds, exchange.OrderRequest{ //nolint
 		Symbol: "AAPL", Side: exchange.Buy, Type: exchange.Market, Qty: decimal.NewFromInt(1),
 	})
 

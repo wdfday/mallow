@@ -1,11 +1,44 @@
 use std::collections::VecDeque;
 
-/// Money Flow Index — volume-weighted RSI.
+/// Money Flow Index (MFI) — RSI có tích hợp volume (volume-weighted RSI).
 ///
-/// MFI = 100 − 100 / (1 + Money Flow Ratio)
-/// MFR = Positive Money Flow / Negative Money Flow
+/// Được Gene Quong và Avrum Soudack phát triển. MFI kết hợp cả giá lẫn volume,
+/// nên nhạy hơn RSI thuần giá trong việc phát hiện divergence. Khi giá tăng
+/// nhưng MFI giảm (negative divergence) → volume không xác nhận uptrend.
 ///
-/// Typical interpretation: MFI > 80 = overbought, MFI < 20 = oversold.
+/// # Công thức
+/// ```text
+/// TP  = (High + Low + Close) / 3          ← Typical Price
+/// MF  = TP × Volume                        ← Raw Money Flow (tiền vào/ra)
+///
+/// Bar rising  (TP > prev_TP): cộng MF vào Positive Money Flow
+/// Bar falling (TP < prev_TP): cộng MF vào Negative Money Flow
+/// Bar unchanged:              trung tính (không cộng vào đâu)
+///
+/// PMF = Σ Positive Money Flow (n bar)
+/// NMF = Σ Negative Money Flow (n bar)
+/// MFR = PMF / NMF
+///
+/// MFI = 100 − 100 / (1 + MFR)
+/// ```
+///
+/// # Ngưỡng và cách đọc
+/// - **MFI > 80**: overbought — volume lớn đẩy giá lên → có thể pullback
+/// - **MFI < 20**: oversold  — volume lớn đẩy giá xuống → có thể rebound
+/// - **NMF = 0** (chỉ có positive flow): MFI = 100
+/// - **PMF = 0** (chỉ có negative flow): MFI = 0
+///
+/// # Divergence signals (mạnh nhất)
+/// - **Bullish divergence**: giá tạo lower low nhưng MFI tạo higher low → reversal lên
+/// - **Bearish divergence**: giá tạo higher high nhưng MFI tạo lower high → reversal xuống
+///
+/// # Ưu điểm vs RSI
+/// - Nhạy với volume → phát hiện institutional money flow sớm hơn
+/// - Ít bị lag hơn RSI trong trending market có volume rõ ràng
+///
+/// # Warmup
+/// Cần `period + 1` bar (bar đầu tiên cần prev_TP để xác định hướng flow).
+#[derive(Clone)]
 pub struct Mfi {
     period: usize,
     prev_tp: Option<f64>,

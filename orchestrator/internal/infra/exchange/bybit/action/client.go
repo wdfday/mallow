@@ -14,45 +14,52 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
+
+	"orchestrator/internal/infra/exchange"
 )
 
-// Config holds Bybit API credentials.
+// Config holds Bybit process-level settings (no credentials).
 type Config struct {
-	APIKey    string
-	APISecret string
-	BaseURL   string // default: https://api.bybit.com
-	Testnet   bool   // true → https://api-testnet.bybit.com
+	BaseURL string // default depends on Testnet flag
+	Testnet bool
 }
 
-// Client wraps the Bybit V5 REST API.
+// Client is a stateless Bybit V5 REST client.
+// One instance is shared across all Bybit accounts; credentials are passed per-call.
 type Client struct {
-	cfg    Config
-	client *http.Client
+	baseURL string
+	testnet bool
+	client  *http.Client // shared connection pool
 }
 
-// New creates a new Bybit action client.
+// New creates a shared stateless Bybit client.
 func New(cfg Config) *Client {
-	if cfg.BaseURL == "" {
+	baseURL := cfg.BaseURL
+	if baseURL == "" {
 		if cfg.Testnet {
-			cfg.BaseURL = "https://api-testnet.bybit.com"
+			baseURL = "https://api-testnet.bybit.com"
 		} else {
-			cfg.BaseURL = "https://api.bybit.com"
+			baseURL = "https://api.bybit.com"
 		}
 	}
-	return &Client{cfg: cfg, client: &http.Client{Timeout: 10 * time.Second}}
+	return &Client{
+		baseURL: baseURL,
+		testnet: cfg.Testnet,
+		client:  &http.Client{Timeout: 10 * time.Second},
+	}
 }
 
 func (c *Client) Name() string { return "bybit" }
 
-// doSigned performs a signed HTTP request to Bybit V5 API.
-func (c *Client) doSigned(ctx context.Context, method, path string, body any, out any) error {
+// doSigned performs a signed HTTP request to Bybit V5 API using the given credentials.
+func (c *Client) doSigned(ctx context.Context, creds exchange.Credentials, method, path string, body any, out any) error {
 	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	recvWindow := "5000"
 
 	payload, reqURL := c.buildRequest(method, path, body)
 
-	preSign := timestamp + c.cfg.APIKey + recvWindow + string(payload)
-	signature := sign(preSign, c.cfg.APISecret)
+	preSign := timestamp + creds.APIKey + recvWindow + string(payload)
+	signature := sign(preSign, creds.APISecret)
 
 	var bodyReader io.Reader
 	if method != http.MethodGet && payload != nil {
@@ -64,7 +71,7 @@ func (c *Client) doSigned(ctx context.Context, method, path string, body any, ou
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-BAPI-API-KEY", c.cfg.APIKey)
+	req.Header.Set("X-BAPI-API-KEY", creds.APIKey)
 	req.Header.Set("X-BAPI-SIGN", signature)
 	req.Header.Set("X-BAPI-TIMESTAMP", timestamp)
 	req.Header.Set("X-BAPI-RECV-WINDOW", recvWindow)
@@ -93,12 +100,12 @@ func (c *Client) buildRequest(method, path string, body any) (payload []byte, re
 				params = append(params, k+"="+v)
 			}
 			qs := strings.Join(params, "&")
-			return []byte(qs), c.cfg.BaseURL + path + "?" + qs
+			return []byte(qs), c.baseURL + path + "?" + qs
 		}
-		return nil, c.cfg.BaseURL + path
+		return nil, c.baseURL + path
 	}
 	data, _ := json.Marshal(body)
-	return data, c.cfg.BaseURL + path
+	return data, c.baseURL + path
 }
 
 func sign(payload, secret string) string {

@@ -2,15 +2,45 @@ use std::collections::VecDeque;
 
 use crate::Rsi;
 
-/// Stochastic RSI.
+/// Stochastic RSI — áp dụng công thức Stochastic lên giá trị RSI.
 ///
-/// Applies the Stochastic formula to RSI values:
-///   rsi_vals = RSI(period) of close
-///   StochRSI_K = (rsi - MinRSI(period)) / (MaxRSI(period) - MinRSI(period))
-///   StochRSI_D = SMA(K, smooth_d)
+/// Được Tushar Chande và Stanley Kroll phát triển năm 1994. StochRSI nhạy hơn RSI
+/// thông thường vì nó đo *RSI đang ở đâu trong range RSI của nó* — khuếch đại
+/// các tín hiệu oversold/overbought của RSI. Đặc biệt hữu ích khi RSI bị "mắc kẹt"
+/// trong vùng trung tính (40–60) trong khi market vẫn đang di chuyển.
 ///
-/// Range: 0..1 for K and D.
-/// Default: rsi_period=14, smooth_k=1 (no extra smoothing), smooth_d=3
+/// # Công thức
+/// ```text
+/// RSI    = RSI(close, rsi_period)               ← tính RSI trước
+/// MinRSI = min(RSI) trong rsi_period bar gần đây
+/// MaxRSI = max(RSI) trong rsi_period bar gần đây
+///
+/// StochRSI_K = (RSI − MinRSI) / (MaxRSI − MinRSI)   ← range: 0..1
+///
+/// StochRSI_D = SMA(K, smooth_d)                  ← signal line
+/// ```
+///
+/// # Ngưỡng
+/// - **K > 0.8**: overbought (RSI đang ở đỉnh range của nó)
+/// - **K < 0.2**: oversold (RSI đang ở đáy range của nó)
+/// - **K cắt D từ dưới**: buy signal
+/// - **K cắt D từ trên**: sell signal
+///
+/// # So sánh với RSI thông thường
+/// | | RSI | StochRSI |
+/// |--|--|--|
+/// | Nhạy | Trung bình | Cao |
+/// | Overbought mức | 70 | 0.8 |
+/// | Oversold mức | 30 | 0.2 |
+/// | Tín hiệu oversold trong trending market | Ít | Nhiều hơn |
+/// | Whipsaw | Ít | Nhiều hơn |
+///
+/// # Cảnh báo
+/// StochRSI nhạy → nhiều false signal trong sideways market.
+/// Dùng kết hợp với ADX hoặc CHOP để filter.
+///
+/// # Warmup
+/// Cần `2 × rsi_period + smooth_d` bar (RSI warm up + rolling RSI window + D smooth).
 #[derive(Debug, Clone)]
 pub struct StochasticRsi {
     rsi_period: usize,

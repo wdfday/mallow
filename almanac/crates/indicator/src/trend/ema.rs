@@ -1,11 +1,40 @@
-/// Exponential Moving Average — O(1) update, incremental state.
+/// Exponential Moving Average (EMA) — trung bình động có trọng số hàm mũ.
+///
+/// EMA gán trọng số lớn hơn cho các bar gần đây, phản ứng nhanh hơn SMA với
+/// biến động giá trong khi vẫn smooth tốt hơn raw price.
+///
+/// # Công thức
+/// ```text
+/// alpha = 2 / (period + 1)
+/// EMA(t) = price(t) × alpha + EMA(t-1) × (1 − alpha)
+/// ```
+/// Seed ban đầu = SMA(period) của `period` bar đầu tiên.
+///
+/// # So sánh với SMA
+/// | | EMA | SMA |
+/// |---|---|---|
+/// | Weights | exponential (gần = lớn) | bằng nhau |
+/// | Lag | thấp hơn | cao hơn |
+/// | Noise | nhiều hơn | ít hơn |
+/// | Crossover signal | nhanh hơn | chậm hơn |
+///
+/// # Ứng dụng phổ biến
+/// - EMA(12) và EMA(26): MACD
+/// - EMA(9): signal line
+/// - EMA(20/50/200): dynamic support/resistance
+/// - EMA(13): Elder's force index, Bull Bear Power
+///
+/// # Warmup
+/// Cần đúng `period` bar để seed SMA. Bar thứ `period` trả về giá trị đầu tiên.
 #[derive(Debug, Clone)]
 pub struct Ema {
     period: usize,
+    /// α = 2/(period+1) — hệ số smoothing
     multiplier: f64,
     value: Option<f64>,
-    /// Number of values seen (used to seed EMA with SMA for the first `period` bars)
+    /// Số bar đã nhận (dùng để seed EMA bằng SMA trong `period` bar đầu)
     count: usize,
+    /// Tổng tích lũy để tính SMA seed
     seed_sum: f64,
 }
 
@@ -21,7 +50,7 @@ impl Ema {
         }
     }
 
-    /// Feed a new value. Returns `Some(ema)` once seeded (after `period` bars).
+    /// Feed một giá mới. Trả về `Some(ema)` sau khi đủ `period` bar để seed.
     pub fn update(&mut self, value: f64) -> Option<f64> {
         self.count += 1;
 

@@ -3,6 +3,8 @@ package action
 import (
 	"context"
 	"fmt"
+
+	"orchestrator/internal/infra/exchange"
 )
 
 // WalletBalance represents the balance for a single coin.
@@ -33,11 +35,11 @@ type FeeRate struct {
 }
 
 // GetWalletBalance returns the wallet balance for the given account type (UNIFIED, SPOT, CONTRACT).
-func (c *Client) GetWalletBalance(ctx context.Context, accountType string) (*AccountInfo, error) {
+func (c *Client) GetWalletBalance(ctx context.Context, creds exchange.Credentials, accountType string) (*AccountInfo, error) {
 	body := map[string]string{"accountType": accountType}
 
 	var resp apiResponse[walletBalanceResult]
-	if err := c.doSigned(ctx, "GET", "/v5/account/wallet-balance", body, &resp); err != nil {
+	if err := c.doSigned(ctx, creds, "GET", "/v5/account/wallet-balance", body, &resp); err != nil {
 		return nil, fmt.Errorf("bybit wallet balance: %w", err)
 	}
 	if resp.RetCode != 0 {
@@ -73,14 +75,14 @@ func (c *Client) GetWalletBalance(ctx context.Context, accountType string) (*Acc
 }
 
 // GetFeeRate returns the trading fee rate for a category/symbol.
-func (c *Client) GetFeeRate(ctx context.Context, category, symbol string) (*FeeRate, error) {
+func (c *Client) GetFeeRate(ctx context.Context, creds exchange.Credentials, category, symbol string) (*FeeRate, error) {
 	body := map[string]string{"category": category}
 	if symbol != "" {
 		body["symbol"] = symbol
 	}
 
 	var resp apiResponse[feeRateResult]
-	if err := c.doSigned(ctx, "GET", "/v5/account/fee-rate", body, &resp); err != nil {
+	if err := c.doSigned(ctx, creds, "GET", "/v5/account/fee-rate", body, &resp); err != nil {
 		return nil, fmt.Errorf("bybit fee rate: %w", err)
 	}
 	if resp.RetCode != 0 || len(resp.Result.List) == 0 {

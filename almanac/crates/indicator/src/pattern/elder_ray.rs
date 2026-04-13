@@ -9,10 +9,34 @@ pub struct ElderRayValue {
     pub bear_power: f64,
 }
 
-/// Elder Ray index — separates the power of bulls from bears.
+/// Elder Ray Index — tách biệt sức mạnh của phe mua và phe bán.
 ///
-/// Entry: EMA uptrend + Bear Power < 0 but rising → long.
-/// Entry: EMA downtrend + Bull Power > 0 but falling → short.
+/// Được Dr. Alexander Elder phát triển và trình bày trong cuốn *Trading for a Living*
+/// (1993). Elder Ray đo khoảng cách từ High/Low đến EMA: Bulls kiểm soát khi có
+/// thể đẩy High lên cao hơn EMA; Bears kiểm soát khi kéo Low xuống dưới EMA.
+///
+/// # Công thức
+/// ```text
+/// EMA       = EMA(close, period)
+/// Bull Power = High  − EMA    (>0: high trên EMA — bulls đang "đẩy cao")
+/// Bear Power = Low   − EMA    (<0: low dưới EMA — bears đang "kéo xuống")
+/// ```
+///
+/// # Cách đọc tín hiệu (Elder's Triple Screen system)
+/// **Long entry** (tất cả phải đúng):
+/// 1. Timeframe dài hơn: EMA đang tăng (uptrend)
+/// 2. Bear Power < 0 (bears chưa bị đè hoàn toàn)
+/// 3. Bear Power đang tăng dần (bears đang yếu đi → phe mua lấy lại sức)
+/// 4. Bull Power không phải mức âm mới
+///
+/// **Short entry** (tất cả phải đúng):
+/// 1. Timeframe dài hơn: EMA đang giảm (downtrend)
+/// 2. Bull Power > 0 (bulls chưa bị diệt hoàn toàn)
+/// 3. Bull Power đang giảm dần
+/// 4. Bear Power không phải mức dương mới
+///
+/// # Warmup
+/// Cần `period` bar để EMA warm up.
 #[derive(Debug, Clone)]
 pub struct ElderRay {
     ema: Ema,

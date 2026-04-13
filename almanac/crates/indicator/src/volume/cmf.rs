@@ -1,13 +1,42 @@
-//! Chaikin Money Flow (CMF)
+//! Chaikin Money Flow (CMF) — đo áp lực mua/bán tích hợp volume.
 //!
-//! MFM = ((Close - Low) - (High - Close)) / (High - Low)
-//! MFV = MFM * Volume
-//! CMF = Sum(MFV, n) / Sum(Volume, n)
+//! Được Marc Chaikin phát triển dựa trên Accumulation/Distribution của Larry Williams.
+//! CMF đo liệu volume đang chảy vào (accumulation) hay ra khỏi (distribution) thị trường
+//! bằng cách chuẩn hóa vị trí đóng cửa trong range của bar rồi nhân với volume.
 //!
-//! Range: -1 to +1. Above 0 = buying pressure, below 0 = selling pressure.
+//! # Công thức
+//! ```text
+//! MFM = ((Close − Low) − (High − Close)) / (High − Low)
+//!      = (2×Close − High − Low) / (High − Low)
+//!
+//! MFM = +1: close = High (toàn bộ range là buying pressure)
+//! MFM = -1: close = Low  (toàn bộ range là selling pressure)
+//! MFM =  0: close = (H+L)/2 (trung tính)
+//!
+//! MFV = MFM × Volume      ← Money Flow Volume có dấu
+//!
+//! CMF = Σ MFV(n) / Σ Volume(n)   ← range: −1 đến +1
+//! ```
+//!
+//! # Cách đọc tín hiệu
+//! - **CMF > 0**: buying pressure; càng gần +1 càng mạnh
+//! - **CMF < 0**: selling pressure; càng gần −1 càng mạnh
+//! - **CMF cắt 0 từ dưới lên**: accumulation bắt đầu → buy signal
+//! - **CMF cắt 0 từ trên xuống**: distribution → sell signal
+//! - **CMF > +0.25**: buying pressure mạnh (institutional accumulation)
+//! - **CMF < −0.25**: selling pressure mạnh
+//!
+//! # Ưu điểm vs OBV
+//! - CMF chuẩn hóa theo vị trí close trong range → phân biệt được "close near high"
+//!   và "close near low" trong cùng một bar có volume lớn
+//! - OBV chỉ biết bar tăng hay giảm; CMF biết *mức độ* áp lực mua/bán
+//!
+//! # Warmup
+//! Cần đúng `period` bar.
 
 use std::collections::VecDeque;
 
+#[derive(Clone)]
 pub struct Cmf {
     period: usize,
     mfv_buf: VecDeque<f64>,

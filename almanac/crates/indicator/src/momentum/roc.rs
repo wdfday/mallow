@@ -1,10 +1,34 @@
 use std::collections::VecDeque;
 
-/// Rate of Change — measures percentage change over `period` bars.
+/// Rate of Change (ROC) — đo % thay đổi giá so với n bar trước.
 ///
-/// ROC = ((Close − Close[n]) / Close[n]) × 100
+/// ROC là indicator momentum đơn giản nhất: so sánh giá hiện tại với giá n bar
+/// trước đó. Dương = giá cao hơn n bar trước (upward momentum); Âm = ngược lại.
 ///
-/// Positive ROC → momentum up; negative → momentum down.
+/// # Công thức
+/// ```text
+/// ROC = ((Close − Close[n]) / Close[n]) × 100    (đơn vị: %)
+/// ```
+///
+/// # Cách đọc tín hiệu
+/// - **ROC > 0**: giá cao hơn n bar trước → positive momentum
+/// - **ROC < 0**: giá thấp hơn → negative momentum
+/// - **ROC cắt 0 từ dưới lên**: momentum chuyển positive → buy signal
+/// - **ROC cắt 0 từ trên xuống**: momentum chuyển negative → sell signal
+/// - **ROC divergence vs giá**: tín hiệu đảo chiều (giá new high nhưng ROC thấp hơn)
+///
+/// # Ứng dụng
+/// - **Momentum ranking**: dùng ROC(n) để rank cổ phiếu theo momentum (momentum factor)
+/// - **Thành phần của TRIX**: TRIX = ROC(EMA3) — ROC của triple smoothed EMA
+/// - **Overbought/oversold**: ROC quá cao/thấp so với lịch sử → mean reversion
+///
+/// # So sánh với momentum indicator khác
+/// - ROC: đơn giản nhất, không smoothed, nhiều noise
+/// - RSI: chuẩn hóa 0..100, smoothed → ít noise hơn
+/// - MACD: so sánh 2 EMA → smoothed và có signal line
+///
+/// # Warmup
+/// Cần `period + 1` bar (bar hiện tại + bar n bar trước).
 #[derive(Debug, Clone)]
 pub struct Roc {
     period: usize,

@@ -21,6 +21,7 @@ use serde_json::Value;
 
 /// A boxed indicator that can be built from JSON config and produces
 /// a flat map of named f64 fields on each bar.
+#[derive(Clone)]
 pub enum IndicatorBox {
     // ── Trend / MA ────────────────────────────────────────────────────────────
     Sma(Sma),

@@ -1,8 +1,36 @@
 use std::collections::VecDeque;
 
-/// Weighted Moving Average — linear weights (most recent bar has highest weight).
+/// Weighted Moving Average (WMA) — trung bình động có trọng số tuyến tính.
 ///
-/// WMA = (n·C₀ + (n−1)·C₁ + … + 1·Cₙ₋₁) / (n·(n+1)/2)
+/// Khác với SMA (mỗi bar được coi ngang nhau), WMA gán trọng số cao hơn cho
+/// các bar gần đây nhất. Bar hiện tại có trọng số n, bar trước đó n−1, v.v.
+/// Kết quả là WMA phản ứng nhanh hơn SMA khi giá thay đổi hướng.
+///
+/// # Công thức
+/// ```text
+/// WMA(n) = (n·C₀ + (n−1)·C₁ + … + 1·Cₙ₋₁) / (n·(n+1)/2)
+///
+/// Divisor = n·(n+1)/2  (tổng các trọng số 1+2+…+n)
+/// C₀ = bar gần nhất, Cₙ₋₁ = bar cũ nhất trong cửa sổ
+/// ```
+///
+/// Ví dụ WMA(3) với giá [1, 2, 3]:
+/// - Trọng số: [1, 2, 3], divisor = 6
+/// - WMA = (1×1 + 2×2 + 3×3) / 6 = 14/6 ≈ 2.33
+///
+/// # So sánh
+/// | Indicator | Phản ứng | Noise | Ứng dụng |
+/// |-----------|----------|-------|----------|
+/// | SMA       | Chậm     | Thấp  | Trend dài hạn |
+/// | WMA       | Trung bình | Trung bình | HMA building block |
+/// | EMA       | Nhanh    | Cao hơn | Mọi thứ |
+///
+/// WMA là thành phần cốt lõi của Hull Moving Average (HMA):
+/// `HMA(n) = WMA(2·WMA(n/2) − WMA(n), √n)`
+///
+/// # Warmup
+/// Cần đúng `period` bar để trả về giá trị đầu tiên.
+#[derive(Clone)]
 pub struct Wma {
     period: usize,
     buffer: VecDeque<f64>,

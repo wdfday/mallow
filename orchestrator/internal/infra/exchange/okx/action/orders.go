@@ -11,18 +11,16 @@ import (
 )
 
 // parseOKXOrderID splits the "INSTID:ordId" format used by PlaceOrder.
-// OKX REST requires instId for GetOrder and CancelOrder.
 func parseOKXOrderID(orderID string) (instID, ordID string) {
 	parts := strings.SplitN(orderID, ":", 2)
 	if len(parts) == 2 {
 		return parts[0], parts[1]
 	}
-	return "_", orderID // fallback: unknown instId
+	return "_", orderID
 }
 
 // PlaceOrder routes to spot or futures (SWAP) endpoint based on req.Market.
-// Returns ID encoded as "instId:ordId" so GetOrder/CancelOrder can pass instId back.
-func (c *Client) PlaceOrder(ctx context.Context, req exchange.OrderRequest) (*exchange.OrderResult, error) {
+func (c *Client) PlaceOrder(ctx context.Context, creds exchange.Credentials, req exchange.OrderRequest) (*exchange.OrderResult, error) {
 	side := "buy"
 	if req.Side == exchange.Sell {
 		side = "sell"
@@ -47,8 +45,6 @@ func (c *Client) PlaceOrder(ctx context.Context, req exchange.OrderRequest) (*ex
 		ReduceOnly: req.ReduceOnly,
 	}
 
-	// OKX spot market buy: default sz unit is quote currency (USDT).
-	// Set tgtCcy=base_ccy so sz is always base currency (e.g. BTC).
 	if req.Market != exchange.MarketFutures && ordType == "market" {
 		body.TgtCcy = "base_ccy"
 	}
@@ -56,16 +52,15 @@ func (c *Client) PlaceOrder(ctx context.Context, req exchange.OrderRequest) (*ex
 		body.Px = req.Price.String()
 	}
 
-	// Bracket order: attach TP/SL as algo legs.
 	if req.TakeProfit.IsPositive() || req.StopLoss.IsPositive() {
 		leg := attachAlgoOrd{}
 		if req.TakeProfit.IsPositive() {
 			leg.TpTriggerPx = req.TakeProfit.String()
-			leg.TpOrdPx = "-1" // market TP
+			leg.TpOrdPx = "-1"
 		}
 		if req.StopLoss.IsPositive() {
 			leg.SlTriggerPx = req.StopLoss.String()
-			leg.SlOrdPx = "-1" // market SL
+			leg.SlOrdPx = "-1"
 		}
 		body.AttachAlgoOrds = []attachAlgoOrd{leg}
 	}
@@ -73,7 +68,7 @@ func (c *Client) PlaceOrder(ctx context.Context, req exchange.OrderRequest) (*ex
 	slog.Info("okx: placing order", "symbol", req.Symbol, "side", side, "qty", req.Qty, "market", req.Market)
 
 	var resp placeOrderResponse
-	if err := c.doRequest(ctx, http.MethodPost, "/api/v5/trade/order", body, &resp); err != nil {
+	if err := c.doRequest(ctx, creds, http.MethodPost, "/api/v5/trade/order", body, &resp); err != nil {
 		return nil, fmt.Errorf("place order: %w", err)
 	}
 	if resp.Code != "0" || len(resp.Data) == 0 {
@@ -94,27 +89,27 @@ func (c *Client) PlaceOrder(ctx context.Context, req exchange.OrderRequest) (*ex
 }
 
 // GetOrder retrieves order status by "instId:ordId" encoded ID.
-func (c *Client) GetOrder(ctx context.Context, orderID string) (*exchange.OrderResult, error) {
+func (c *Client) GetOrder(ctx context.Context, creds exchange.Credentials, orderID string) (*exchange.OrderResult, error) {
 	instID, ordID := parseOKXOrderID(orderID)
 	path := fmt.Sprintf("/api/v5/trade/order?ordId=%s&instId=%s", ordID, instID)
 	var resp getOrderResponse
-	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+	if err := c.doRequest(ctx, creds, http.MethodGet, path, nil, &resp); err != nil {
 		return nil, fmt.Errorf("get order: %w", err)
 	}
 	if resp.Code != "0" || len(resp.Data) == 0 {
 		return nil, fmt.Errorf("okx get order: code=%s msg=%s", resp.Code, resp.Msg)
 	}
 	r := mapOrderDetail(&resp.Data[0])
-	r.ID = orderID // preserve encoded format
+	r.ID = orderID
 	return r, nil
 }
 
 // CancelOrder cancels a pending order by "instId:ordId" encoded ID.
-func (c *Client) CancelOrder(ctx context.Context, orderID string) error {
+func (c *Client) CancelOrder(ctx context.Context, creds exchange.Credentials, orderID string) error {
 	instID, ordID := parseOKXOrderID(orderID)
 	body := cancelOrderRequest{InstID: instID, OrdID: ordID}
 	var resp placeOrderResponse
-	if err := c.doRequest(ctx, http.MethodPost, "/api/v5/trade/cancel-order", body, &resp); err != nil {
+	if err := c.doRequest(ctx, creds, http.MethodPost, "/api/v5/trade/cancel-order", body, &resp); err != nil {
 		return fmt.Errorf("cancel order: %w", err)
 	}
 	if resp.Code != "0" {
@@ -124,13 +119,13 @@ func (c *Client) CancelOrder(ctx context.Context, orderID string) error {
 }
 
 // GetPendingOrders returns all open orders for an optional instrument.
-func (c *Client) GetPendingOrders(ctx context.Context, instID string) ([]exchange.OrderResult, error) {
+func (c *Client) GetPendingOrders(ctx context.Context, creds exchange.Credentials, instID string) ([]exchange.OrderResult, error) {
 	path := "/api/v5/trade/orders-pending"
 	if instID != "" {
 		path += "?instId=" + instID
 	}
 	var resp getOrderResponse
-	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+	if err := c.doRequest(ctx, creds, http.MethodGet, path, nil, &resp); err != nil {
 		return nil, fmt.Errorf("get pending orders: %w", err)
 	}
 	if resp.Code != "0" {
@@ -145,7 +140,7 @@ func (c *Client) GetPendingOrders(ctx context.Context, instID string) ([]exchang
 }
 
 // AmendOrder modifies price or qty of an existing live order.
-func (c *Client) AmendOrder(ctx context.Context, instID, orderID, newSz, newPx string) error {
+func (c *Client) AmendOrder(ctx context.Context, creds exchange.Credentials, instID, orderID, newSz, newPx string) error {
 	body := map[string]string{"instId": instID, "ordId": orderID}
 	if newSz != "" {
 		body["newSz"] = newSz
@@ -154,7 +149,7 @@ func (c *Client) AmendOrder(ctx context.Context, instID, orderID, newSz, newPx s
 		body["newPx"] = newPx
 	}
 	var resp placeOrderResponse
-	if err := c.doRequest(ctx, http.MethodPost, "/api/v5/trade/amend-order", body, &resp); err != nil {
+	if err := c.doRequest(ctx, creds, http.MethodPost, "/api/v5/trade/amend-order", body, &resp); err != nil {
 		return fmt.Errorf("amend order: %w", err)
 	}
 	if resp.Code != "0" {

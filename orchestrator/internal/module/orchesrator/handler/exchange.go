@@ -84,7 +84,7 @@ func (h *Handler) exchangeAccount(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusBadRequest, "exchange does not support account sync")
 		return
 	}
-	snap, err := syncer.SyncAccount(c.Request.Context(), nil)
+	snap, err := syncer.SyncAccount(c.Request.Context(), rt.Creds, nil)
 	if err != nil {
 		shared.RespondWithError(c, http.StatusBadGateway, err.Error())
 		return
@@ -132,7 +132,7 @@ func (h *Handler) exchangePrice(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusBadRequest, "exchange does not support price fetch")
 		return
 	}
-	price, err := pf.GetCurrentPrice(c.Request.Context(), symbol)
+	price, err := pf.GetCurrentPrice(c.Request.Context(), rt.Creds, symbol)
 	if err != nil {
 		shared.RespondWithError(c, http.StatusBadGateway, err.Error())
 		return
@@ -174,7 +174,7 @@ func (h *Handler) exchangePlaceOrder(c *gin.Context) {
 		}
 		orderType = exchange.Limit
 	}
-	result, err := rt.Exchange.PlaceOrder(c.Request.Context(), exchange.OrderRequest{
+	result, err := rt.Exchange.PlaceOrder(c.Request.Context(), rt.Creds, exchange.OrderRequest{
 		Symbol: req.Symbol,
 		Side:   exchange.OrderSide(req.Side),
 		Type:   orderType,
@@ -210,7 +210,7 @@ func (h *Handler) exchangeGetOrder(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusBadRequest, "order_id is required")
 		return
 	}
-	result, err := rt.Exchange.GetOrder(c.Request.Context(), orderID)
+	result, err := rt.Exchange.GetOrder(c.Request.Context(), rt.Creds, orderID)
 	if err != nil {
 		shared.RespondWithError(c, http.StatusBadGateway, err.Error())
 		return
@@ -240,7 +240,7 @@ func (h *Handler) exchangeCancelOrder(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusBadRequest, "order_id is required")
 		return
 	}
-	if err := rt.Exchange.CancelOrder(c.Request.Context(), orderID); err != nil {
+	if err := rt.Exchange.CancelOrder(c.Request.Context(), rt.Creds, orderID); err != nil {
 		shared.RespondWithError(c, http.StatusBadGateway, err.Error())
 		return
 	}

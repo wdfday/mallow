@@ -1,12 +1,36 @@
-//! Triple Exponential Moving Average (TEMA)
+//! Triple Exponential Moving Average (TEMA) — giảm lag triệt để hơn DEMA.
 //!
-//! TEMA = (3 * EMA1) - (3 * EMA2) + EMA3
-//! where EMA1 = EMA(close), EMA2 = EMA(EMA1), EMA3 = EMA(EMA2)
+//! Được Patrick Mulloy giới thiệu cùng DEMA năm 1994. TEMA sử dụng ba lớp EMA
+//! để loại bỏ nhiều hơn phần lag so với DEMA. Công thức được suy ra từ phép
+//! triệt tiêu đại số của các thành phần lag bậc 1 và bậc 2.
 //!
-//! Reduces lag more aggressively than DEMA.
+//! # Công thức
+//! ```text
+//! EMA1 = EMA(close, n)
+//! EMA2 = EMA(EMA1, n)
+//! EMA3 = EMA(EMA2, n)
+//!
+//! TEMA = 3·EMA1 − 3·EMA2 + EMA3
+//! ```
+//!
+//! Trực giác: EMA2 là lag bậc 1 của EMA1, EMA3 là lag bậc 2.
+//! Triệt tiêu cả hai → TEMA rất gần giá hiện tại nhưng rất nhiều noise.
+//!
+//! # So sánh lag reduction
+//! | MA   | Lag reduction | Noise |
+//! |------|--------------|-------|
+//! | EMA  | 0            | Thấp  |
+//! | DEMA | ~50%         | Trung bình |
+//! | TEMA | ~67%         | Cao   |
+//! | HMA  | ~75%         | Trung bình |
+//!
+//! # Warmup
+//! Cần `3 × (period - 1) + 1` bar vì ba EMA phải warm up tuần tự.
+//! Ví dụ: TEMA(5) cần 13 bar; TEMA(14) cần 39 bar.
 
 use crate::Ema;
 
+#[derive(Clone)]
 pub struct Tema {
     ema1: Ema,
     ema2: Ema,

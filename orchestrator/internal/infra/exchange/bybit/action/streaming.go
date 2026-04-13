@@ -26,13 +26,13 @@ const (
 // StreamOrders implements exchange.AccountStreamer.
 // Connects to Bybit private WebSocket, authenticates, subscribes to the "order"
 // topic, and calls handler on each order lifecycle event. Reconnects automatically.
-func (c *Client) StreamOrders(ctx context.Context, handler func(exchange.OrderEvent)) error {
+func (c *Client) StreamOrders(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent)) error {
 	go func() {
 		for {
 			if ctx.Err() != nil {
 				return
 			}
-			err := c.streamOrdersOnce(ctx, handler)
+			err := c.streamOrdersOnce(ctx, creds, handler)
 			if ctx.Err() != nil {
 				return
 			}
@@ -48,9 +48,9 @@ func (c *Client) StreamOrders(ctx context.Context, handler func(exchange.OrderEv
 	return nil
 }
 
-func (c *Client) streamOrdersOnce(ctx context.Context, handler func(exchange.OrderEvent)) error {
+func (c *Client) streamOrdersOnce(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent)) error {
 	wsURL := bybitPrivateWSURL
-	if c.cfg.Testnet {
+	if c.testnet {
 		wsURL = bybitPrivateWSTestnetURL
 	}
 
@@ -60,7 +60,7 @@ func (c *Client) streamOrdersOnce(ctx context.Context, handler func(exchange.Ord
 	}
 	defer conn.Close()
 
-	if err := c.wsAuth(conn); err != nil {
+	if err := wsAuth(conn, creds); err != nil {
 		return fmt.Errorf("auth: %w", err)
 	}
 
@@ -106,16 +106,16 @@ func (c *Client) streamOrdersOnce(ctx context.Context, handler func(exchange.Ord
 
 // wsAuth sends the Bybit private WS authentication message.
 // Signature: HMAC-SHA256("GET/realtime" + expires, apiSecret)
-func (c *Client) wsAuth(conn *websocket.Conn) error {
+func wsAuth(conn *websocket.Conn, creds exchange.Credentials) error {
 	expires := strconv.FormatInt(time.Now().UnixMilli()+1000, 10)
 	preSign := "GET/realtime" + expires
-	mac := hmac.New(sha256.New, []byte(c.cfg.APISecret))
+	mac := hmac.New(sha256.New, []byte(creds.APISecret))
 	mac.Write([]byte(preSign))
 	sig := hex.EncodeToString(mac.Sum(nil))
 
 	authMsg := map[string]any{
 		"op":   "auth",
-		"args": []string{c.cfg.APIKey, expires, sig},
+		"args": []string{creds.APIKey, expires, sig},
 	}
 	if err := conn.WriteJSON(authMsg); err != nil {
 		return err

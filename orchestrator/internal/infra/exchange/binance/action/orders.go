@@ -15,14 +15,14 @@ import (
 )
 
 // PlaceOrder routes to spot or futures endpoint based on req.Market.
-func (c *Client) PlaceOrder(ctx context.Context, req exchange.OrderRequest) (*exchange.OrderResult, error) {
+func (c *Client) PlaceOrder(ctx context.Context, creds exchange.Credentials, req exchange.OrderRequest) (*exchange.OrderResult, error) {
 	if req.Market == exchange.MarketFutures {
-		return c.placeFuturesOrder(ctx, req)
+		return c.placeFuturesOrder(ctx, creds, req)
 	}
-	return c.placeSpotOrder(ctx, req)
+	return c.placeSpotOrder(ctx, creds, req)
 }
 
-func (c *Client) placeSpotOrder(ctx context.Context, req exchange.OrderRequest) (*exchange.OrderResult, error) {
+func (c *Client) placeSpotOrder(ctx context.Context, creds exchange.Credentials, req exchange.OrderRequest) (*exchange.OrderResult, error) {
 	side := gobinance.SideTypeBuy
 	if req.Side == exchange.Sell {
 		side = gobinance.SideTypeSell
@@ -32,7 +32,7 @@ func (c *Client) placeSpotOrder(ctx context.Context, req exchange.OrderRequest) 
 		orderType = gobinance.OrderTypeLimit
 	}
 
-	svc := c.spot.NewCreateOrderService().
+	svc := c.newSpot(creds).NewCreateOrderService().
 		Symbol(req.Symbol).
 		Side(side).
 		Type(orderType).
@@ -65,7 +65,7 @@ func (c *Client) placeSpotOrder(ctx context.Context, req exchange.OrderRequest) 
 	}, nil
 }
 
-func (c *Client) placeFuturesOrder(ctx context.Context, req exchange.OrderRequest) (*exchange.OrderResult, error) {
+func (c *Client) placeFuturesOrder(ctx context.Context, creds exchange.Credentials, req exchange.OrderRequest) (*exchange.OrderResult, error) {
 	side := futures.SideTypeBuy
 	if req.Side == exchange.Sell {
 		side = futures.SideTypeSell
@@ -75,7 +75,7 @@ func (c *Client) placeFuturesOrder(ctx context.Context, req exchange.OrderReques
 		orderType = futures.OrderTypeLimit
 	}
 
-	svc := c.fut.NewCreateOrderService().
+	svc := c.newFut(creds).NewCreateOrderService().
 		Symbol(req.Symbol).
 		Side(side).
 		Type(orderType).
@@ -103,7 +103,6 @@ func (c *Client) placeFuturesOrder(ctx context.Context, req exchange.OrderReques
 }
 
 // parseSpotOrderID splits the "SYMBOL:id" format returned by PlaceOrder.
-// Binance spot requires both symbol and numeric ID to query or cancel an order.
 func parseSpotOrderID(orderID string) (symbol string, oid int64, err error) {
 	parts := strings.SplitN(orderID, ":", 2)
 	if len(parts) != 2 {
@@ -116,13 +115,13 @@ func parseSpotOrderID(orderID string) (symbol string, oid int64, err error) {
 	return parts[0], oid, nil
 }
 
-// GetOrder retrieves spot order status. For futures orders use GetFuturesOrder.
-func (c *Client) GetOrder(ctx context.Context, orderID string) (*exchange.OrderResult, error) {
+// GetOrder retrieves spot order status.
+func (c *Client) GetOrder(ctx context.Context, creds exchange.Credentials, orderID string) (*exchange.OrderResult, error) {
 	symbol, oid, err := parseSpotOrderID(orderID)
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.spot.NewGetOrderService().Symbol(symbol).OrderID(oid).Do(ctx)
+	resp, err := c.newSpot(creds).NewGetOrderService().Symbol(symbol).OrderID(oid).Do(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("binance get order: %w", err)
 	}
@@ -144,12 +143,12 @@ func (c *Client) GetOrder(ctx context.Context, orderID string) (*exchange.OrderR
 }
 
 // CancelOrder cancels a spot order by ID.
-func (c *Client) CancelOrder(ctx context.Context, orderID string) error {
+func (c *Client) CancelOrder(ctx context.Context, creds exchange.Credentials, orderID string) error {
 	symbol, oid, err := parseSpotOrderID(orderID)
 	if err != nil {
 		return err
 	}
-	_, err = c.spot.NewCancelOrderService().Symbol(symbol).OrderID(oid).Do(ctx)
+	_, err = c.newSpot(creds).NewCancelOrderService().Symbol(symbol).OrderID(oid).Do(ctx)
 	if err != nil {
 		return fmt.Errorf("binance cancel order: %w", err)
 	}
@@ -157,8 +156,8 @@ func (c *Client) CancelOrder(ctx context.Context, orderID string) error {
 }
 
 // GetFuturesOrder retrieves futures order status.
-func (c *Client) GetFuturesOrder(ctx context.Context, symbol string, orderID int64) (*exchange.OrderResult, error) {
-	resp, err := c.fut.NewGetOrderService().Symbol(symbol).OrderID(orderID).Do(ctx)
+func (c *Client) GetFuturesOrder(ctx context.Context, creds exchange.Credentials, symbol string, orderID int64) (*exchange.OrderResult, error) {
+	resp, err := c.newFut(creds).NewGetOrderService().Symbol(symbol).OrderID(orderID).Do(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("binance futures get order: %w", err)
 	}
@@ -173,8 +172,8 @@ func (c *Client) GetFuturesOrder(ctx context.Context, symbol string, orderID int
 }
 
 // CancelFuturesOrder cancels a futures order.
-func (c *Client) CancelFuturesOrder(ctx context.Context, symbol string, orderID int64) error {
-	_, err := c.fut.NewCancelOrderService().Symbol(symbol).OrderID(orderID).Do(ctx)
+func (c *Client) CancelFuturesOrder(ctx context.Context, creds exchange.Credentials, symbol string, orderID int64) error {
+	_, err := c.newFut(creds).NewCancelOrderService().Symbol(symbol).OrderID(orderID).Do(ctx)
 	if err != nil {
 		return fmt.Errorf("binance futures cancel order: %w", err)
 	}

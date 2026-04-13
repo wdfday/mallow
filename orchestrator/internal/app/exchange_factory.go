@@ -2,7 +2,9 @@ package app
 
 import (
 	"fmt"
+	"sync"
 
+	"orchestrator/internal/config"
 	"orchestrator/internal/infra/exchange"
 	alpacaaction "orchestrator/internal/infra/exchange/alpaca/action"
 	alpacaex "orchestrator/internal/infra/exchange/alpaca/ex"
@@ -17,39 +19,48 @@ import (
 )
 
 // exchangeFactory implements runtime.ExchangeFactory.
-type exchangeFactory struct{}
+// Returns a stateless shared client per (broker, env) — no credentials stored.
+type exchangeFactory struct {
+	mu      sync.Mutex
+	clients map[string]exchange.Exchange // cache key: "brokerType|baseURL|testnet|demo"
+}
 
-func newExchangeFactory() *exchangeFactory { return &exchangeFactory{} }
+func newExchangeFactory() *exchangeFactory {
+	return &exchangeFactory{clients: make(map[string]exchange.Exchange)}
+}
 
 func (f *exchangeFactory) New(cfg orchdomain.ExchangeConfig) (exchange.Exchange, error) {
+	key := fmt.Sprintf("%s|%s|testnet=%v|demo=%v", cfg.BrokerType, cfg.BaseURL, cfg.Testnet, cfg.Demo)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if cl, ok := f.clients[key]; ok {
+		return cl, nil
+	}
+	cl, err := f.create(cfg)
+	if err != nil {
+		return nil, err
+	}
+	f.clients[key] = cl
+	return cl, nil
+}
+
+func (f *exchangeFactory) create(cfg orchdomain.ExchangeConfig) (exchange.Exchange, error) {
 	switch cfg.BrokerType {
 	case "okx":
 		return okxaction.New(okxaction.Config{
-			APIKey:     cfg.APIKey,
-			APISecret:  cfg.APISecret,
-			Passphrase: cfg.Passphrase,
-			BaseURL:    cfg.BaseURL,
-			Demo:       cfg.Demo,
+			BaseURL: cfg.BaseURL,
+			Demo:    cfg.Demo,
 		}), nil
 	case "binance":
-		return binanceaction.New(binanceaction.Config{
-			APIKey:    cfg.APIKey,
-			APISecret: cfg.APISecret,
-			BaseURL:   cfg.BaseURL,
-			Testnet:   cfg.Testnet,
-		}), nil
+		return binanceaction.New(cfg.Testnet), nil
 	case "bybit":
 		return bybitaction.New(bybitaction.Config{
-			APIKey:    cfg.APIKey,
-			APISecret: cfg.APISecret,
-			BaseURL:   cfg.BaseURL,
-			Testnet:   cfg.Testnet,
+			BaseURL: cfg.BaseURL,
+			Testnet: cfg.Testnet,
 		}), nil
 	case "oanda":
 		return oanda.New(oanda.Config{
-			Token:     cfg.APIKey,
-			AccountID: cfg.AccountID,
-			BaseURL:   cfg.BaseURL,
+			BaseURL: cfg.BaseURL,
 		}), nil
 	case "alpaca", "":
 		baseURL := cfg.BaseURL
@@ -57,9 +68,7 @@ func (f *exchangeFactory) New(cfg orchdomain.ExchangeConfig) (exchange.Exchange,
 			baseURL = "https://paper-api.alpaca.markets"
 		}
 		return alpacaaction.New(alpacaaction.Config{
-			APIKey:    cfg.APIKey,
-			APISecret: cfg.APISecret,
-			BaseURL:   baseURL,
+			BaseURL: baseURL,
 		}), nil
 	default:
 		return nil, fmt.Errorf("unknown exchange: %q (supported: alpaca, binance, okx, bybit, oanda)", cfg.BrokerType)
@@ -67,9 +76,14 @@ func (f *exchangeFactory) New(cfg orchdomain.ExchangeConfig) (exchange.Exchange,
 }
 
 // marketStreamerFactory implements runtime.MarketStreamerFactory.
-type marketStreamerFactory struct{}
+// Returns a shared market data streaming client per broker type.
+type marketStreamerFactory struct {
+	cfg config.MarketDataConfig
+}
 
-func newMarketStreamerFactory() *marketStreamerFactory { return &marketStreamerFactory{} }
+func newMarketStreamerFactory(cfg config.Config) *marketStreamerFactory {
+	return &marketStreamerFactory{cfg: cfg.MarketData}
+}
 
 func (f *marketStreamerFactory) New(cfg orchdomain.ExchangeConfig) exchange.MarketStreamer {
 	switch cfg.BrokerType {
@@ -80,7 +94,8 @@ func (f *marketStreamerFactory) New(cfg orchdomain.ExchangeConfig) exchange.Mark
 	case "okx":
 		return okxex.New(cfg.Demo)
 	case "alpaca", "":
-		return alpacaex.New(cfg.APIKey, cfg.APISecret)
+		// Use shared admin-level key from service config (not per-account).
+		return alpacaex.New(f.cfg.AlpacaAPIKey, f.cfg.AlpacaAPISecret)
 	default:
 		return nil
 	}

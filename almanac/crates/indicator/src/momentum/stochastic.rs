@@ -1,15 +1,41 @@
-use crate::Sma;
-use std::collections::VecDeque;
+use crate::{util::{RollingMax, RollingMin}, Sma};
 
-/// Stochastic Oscillator — %K and %D.
+/// Stochastic Oscillator — đo vị trí giá hiện tại trong range n bar.
 ///
-/// %K = (close - lowest_low) / (highest_high - lowest_low) * 100
-/// %D = SMA(%K, d_period)
+/// Được George Lane phát triển cuối thập niên 1950. Stochastic dựa trên quan sát:
+/// trong uptrend, giá có xu hướng đóng cửa gần High; trong downtrend, gần Low.
+/// Khi giá đóng cửa bắt đầu xa High trong uptrend → momentum yếu dần.
+///
+/// # Công thức
+/// ```text
+/// %K = (Close − LowestLow(n)) / (HighestHigh(n) − LowestLow(n)) × 100
+///      (vị trí của close trong range n bar — 0% = đáy, 100% = đỉnh)
+///
+/// %D = SMA(%K, d_period)    ← signal line (smoothed %K)
+/// ```
+///
+/// - **Fast Stochastic**: %K raw và %D = SMA(%K, 3)
+/// - **Slow Stochastic**: %K = Fast %D (smoothed thêm); %D = SMA(Slow %K, 3)
+///
+/// # Ngưỡng thông dụng
+/// - **%K / %D > 80**: overbought — giá ở vùng cao trong range
+/// - **%K / %D < 20**: oversold — giá ở vùng thấp trong range
+///
+/// # Tín hiệu giao dịch
+/// - **%K cắt %D từ dưới** trong vùng oversold (<20): buy signal
+/// - **%K cắt %D từ trên** trong vùng overbought (>80): sell signal
+/// - **Divergence**: giá new high nhưng %K thấp hơn → bearish divergence
+/// - **Bull/Bear setup**: %K < 50 trong uptrend → pullback → long entry
+///
+/// # Flat market
+/// Khi HighestHigh = LowestLow (range = 0): trả về %K = 50.0 (trung lập).
+///
+/// # Warmup
+/// Cần `k_period + d_period - 1` bar.
 #[derive(Debug, Clone)]
 pub struct Stochastic {
-    k_period: usize,
-    highs: VecDeque<f64>,
-    lows: VecDeque<f64>,
+    max_high: RollingMax,
+    min_low: RollingMin,
     d_smooth: Sma,
 }
 
@@ -22,9 +48,8 @@ pub struct StochasticValue {
 impl Stochastic {
     pub fn new(k_period: usize, d_period: usize) -> Self {
         Self {
-            k_period,
-            highs: VecDeque::with_capacity(k_period + 1),
-            lows: VecDeque::with_capacity(k_period + 1),
+            max_high: RollingMax::new(k_period),
+            min_low: RollingMin::new(k_period),
             d_smooth: Sma::new(d_period),
         }
     }
@@ -35,20 +60,12 @@ impl Stochastic {
     }
 
     pub fn update(&mut self, high: f64, low: f64, close: f64) -> Option<StochasticValue> {
-        self.highs.push_back(high);
-        self.lows.push_back(low);
-
-        if self.highs.len() > self.k_period {
-            self.highs.pop_front();
-            self.lows.pop_front();
-        }
-
-        if self.highs.len() < self.k_period {
-            return None;
-        }
-
-        let highest = self.highs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let lowest = self.lows.iter().cloned().fold(f64::INFINITY, f64::min);
+        let highest = self.max_high.push(high);
+        let lowest = self.min_low.push(low);
+        let (highest, lowest) = match (highest, lowest) {
+            (Some(h), Some(l)) => (h, l),
+            _ => return None,
+        };
         let range = highest - lowest;
 
         let k = if range > f64::EPSILON {
@@ -65,8 +82,8 @@ impl Stochastic {
     }
 
     pub fn reset(&mut self) {
-        self.highs.clear();
-        self.lows.clear();
+        self.max_high.reset();
+        self.min_low.reset();
         self.d_smooth.reset();
     }
 }

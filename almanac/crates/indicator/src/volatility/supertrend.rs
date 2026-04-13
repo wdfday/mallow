@@ -8,12 +8,44 @@ pub struct SuperTrendValue {
     pub is_bullish: bool,
 }
 
-/// SuperTrend indicator.
+/// SuperTrend — đường hỗ trợ/kháng cự động dựa trên ATR.
 ///
-/// Uses ATR-based bands to determine trend direction and provide dynamic support/resistance.
+/// Được Olivier Seban phổ biến. SuperTrend tạo ra một đường duy nhất thay đổi phía
+/// (trên hoặc dưới giá) theo trend. Rất phổ biến trong trading crypto và futures vì
+/// đơn giản — chỉ cần một đường để xác định hướng và đặt stop loss.
 ///
-/// - Bullish: price above SuperTrend line → potential long entry.
-/// - Bearish: price below SuperTrend line → potential short / exit.
+/// # Công thức
+/// ```text
+/// HL2 = (High + Low) / 2
+/// Basic_Upper = HL2 + multiplier × ATR(period)
+/// Basic_Lower = HL2 − multiplier × ATR(period)
+///
+/// Final_Upper = min(Basic_Upper, prev_Final_Upper)  nếu prev_close ≤ prev_Final_Upper
+///             = Basic_Upper                          nếu prev_close > prev_Final_Upper (breakout)
+///
+/// Final_Lower = max(Basic_Lower, prev_Final_Lower)  nếu prev_close ≥ prev_Final_Lower
+///             = Basic_Lower                          nếu prev_close < prev_Final_Lower (breakdown)
+///
+/// SuperTrend = Final_Lower  nếu bullish (đường hỗ trợ dưới giá)
+///            = Final_Upper  nếu bearish (đường kháng cự trên giá)
+///
+/// Chuyển sang bearish khi close < Final_Lower
+/// Chuyển sang bullish khi close > Final_Upper
+/// ```
+///
+/// # Tham số thông dụng
+/// - ATR(7), multiplier=3.0: nhạy, nhiều signal
+/// - ATR(14), multiplier=3.0: cân bằng (phổ biến nhất)
+/// - ATR(21), multiplier=4.0: ít signal, phù hợp daily/weekly
+///
+/// # Ứng dụng
+/// - **Entry**: giá cắt SuperTrend từ trên → buy; từ dưới → sell
+/// - **Stop loss**: đặt stop tại đường SuperTrend (trailing stop)
+/// - **Filter**: chỉ trade khi trend direction khớp với signal chính
+///
+/// # Warmup
+/// Cần `atr_period` bar để ATR warm up, sau đó trả về giá trị ngay.
+#[derive(Clone)]
 pub struct SuperTrend {
     atr: Atr,
     multiplier: f64,

@@ -5,12 +5,13 @@ import (
 	"fmt"
 
 	"github.com/shopspring/decimal"
+
+	"orchestrator/internal/infra/exchange"
 )
 
-// SpotBalance implements exchange.SpotTrader.
-// Returns available balance for the given currency (e.g. "USDT").
-func (c *Client) SpotBalance(ctx context.Context, asset string) (decimal.Decimal, error) {
-	info, err := c.GetBalance(ctx)
+// SpotBalance returns available balance for the given currency (e.g. "USDT").
+func (c *Client) SpotBalance(ctx context.Context, creds exchange.Credentials, asset string) (decimal.Decimal, error) {
+	info, err := c.GetBalance(ctx, creds)
 	if err != nil {
 		return decimal.Zero, fmt.Errorf("okx spot balance %s: %w", asset, err)
 	}
@@ -19,5 +20,5 @@ func (c *Client) SpotBalance(ctx context.Context, asset string) (decimal.Decimal
 			return decimal.NewFromFloat(b.Available), nil
 		}
 	}
-	return decimal.Zero, nil // no balance = zero, not an error
+	return decimal.Zero, nil
 }

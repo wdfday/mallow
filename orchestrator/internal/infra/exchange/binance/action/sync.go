@@ -13,10 +13,9 @@ import (
 )
 
 // SyncAccount implements exchange.AccountSyncer for Binance spot.
-// Cash = sum of stablecoin free balances (USDT/BUSD/USDC).
-// Positions = non-stablecoin assets priced via ticker.
-func (c *Client) SyncAccount(ctx context.Context, _ *time.Time) (*exchange.AccountSnapshot, error) {
-	acct, err := c.spot.NewGetAccountService().Do(ctx)
+func (c *Client) SyncAccount(ctx context.Context, creds exchange.Credentials, _ *time.Time) (*exchange.AccountSnapshot, error) {
+	spot := c.newSpot(creds)
+	acct, err := spot.NewGetAccountService().Do(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("binance sync: get account: %w", err)
 	}
@@ -43,14 +42,14 @@ func (c *Client) SyncAccount(ctx context.Context, _ *time.Time) (*exchange.Accou
 	positions := make([]exchange.ExchangePosition, 0, len(nonCash))
 	for _, ab := range nonCash {
 		symbol := ab.asset + "USDT"
-		price, err := c.tickerPrice(ctx, symbol)
+		price, err := c.tickerPrice(ctx, creds, symbol)
 		if err != nil {
 			slog.Warn("binance sync: failed to get ticker price", "symbol", symbol, "err", err)
 		}
 		positions = append(positions, exchange.ExchangePosition{
 			Symbol:   symbol,
 			Qty:      ab.free,
-			AvgPrice: decimal.Zero, // spot REST does not expose avg entry price
+			AvgPrice: decimal.Zero,
 			CurPrice: price,
 		})
 	}
@@ -68,8 +67,8 @@ func (c *Client) SyncAccount(ctx context.Context, _ *time.Time) (*exchange.Accou
 }
 
 // tickerPrice fetches the latest spot price for a symbol.
-func (c *Client) tickerPrice(ctx context.Context, symbol string) (decimal.Decimal, error) {
-	prices, err := c.spot.NewListPricesService().Symbol(symbol).Do(ctx)
+func (c *Client) tickerPrice(ctx context.Context, creds exchange.Credentials, symbol string) (decimal.Decimal, error) {
+	prices, err := c.newSpot(creds).NewListPricesService().Symbol(symbol).Do(ctx)
 	if err != nil {
 		return decimal.Zero, fmt.Errorf("list prices %s: %w", symbol, err)
 	}

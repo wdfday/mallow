@@ -1,9 +1,33 @@
-/// Session VWAP — Volume Weighted Average Price, reset per session.
+/// Session VWAP — Volume Weighted Average Price, reset theo session.
 ///
-/// Typical price = (H + L + C) / 3
-/// VWAP = cumsum(typical * volume) / cumsum(volume)
+/// VWAP là giá trung bình có trọng số volume trong một session. Được dùng rộng
+/// rãi bởi institutional trader và algorithmic trading desk như một benchmark giá
+/// "fair value". Khác với SMA hay EMA — VWAP luôn reset về 0 đầu mỗi session.
 ///
-/// Session boundary detected when timestamp gap > `session_gap_ms`.
+/// # Công thức
+/// ```text
+/// TP = (High + Low + Close) / 3          ← Typical Price
+/// TPV = TP × Volume                       ← điểm tích lũy có trọng số
+///
+/// VWAP = Σ(TPV) / Σ(Volume)             ← tính lũy kế từ đầu session
+/// ```
+///
+/// # Session reset
+/// Khi gap giữa hai bar liên tiếp > `session_gap_ms`, session mới bắt đầu
+/// và VWAP reset về 0. Thường dùng 60–240 phút cho equities (market close/open).
+///
+/// # Ứng dụng
+/// - **Institutional benchmark**: buy orders đặt dưới VWAP (mua rẻ hơn VWAP = good fill)
+/// - **Support/Resistance**: VWAP thường hoạt động như dynamic support trong uptrend
+/// - **VWAP cross**: giá cắt VWAP từ dưới lên → buy; từ trên xuống → sell
+/// - **Execution**: TWAP và VWAP algo execution giảm market impact
+///
+/// # Hạn chế
+/// - Chỉ có ý nghĩa trong intraday (reset mỗi session) → không dùng cho daily/weekly chart
+/// - Volume của bar đầu tiên = 0 → VWAP = close trong trường hợp không có volume
+///
+/// # Warmup
+/// Không có warmup — trả về giá trị từ bar đầu tiên.
 #[derive(Debug, Clone)]
 pub struct Vwap {
     session_gap_ms: i64,

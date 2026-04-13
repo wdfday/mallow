@@ -2,16 +2,45 @@ use std::collections::VecDeque;
 
 use crate::Rsi;
 
-/// ConnorsRSI (CRSI) — composite momentum indicator.
+/// ConnorsRSI (CRSI) — composite momentum indicator ba thành phần.
 ///
-/// Three components averaged equally:
-///   1. RSI(rsi_period) of close                          → rsi1
-///   2. RSI(streak_rsi_period) of consecutive up/down streak → rsi2
-///   3. Percent Rank of 1-bar ROC% over last rank_period bars → pct_rank (0..100)
+/// Được Larry Connors và Cesar Alvarez phát triển. ConnorsRSI kết hợp ba nguồn
+/// thông tin khác nhau về momentum để tạo ra tín hiệu oversold/overbought tin cậy
+/// hơn RSI đơn thuần, đặc biệt cho short-term mean-reversion trading.
 ///
-/// CRSI = (rsi1 + rsi2 + pct_rank) / 3
-/// Range: 0..100
-/// Defaults: rsi_period=3, streak_rsi_period=2, percent_rank_period=100
+/// # Công thức
+/// ```text
+/// Component 1 — RSI của giá đóng cửa:
+///   rsi1 = RSI(close, rsi_period)       [thường dùng period=3]
+///
+/// Component 2 — RSI của streak:
+///   streak: số bar liên tiếp tăng (+n) hoặc giảm (−n)
+///   rsi2 = RSI(streak, streak_rsi_period)  [thường dùng period=2]
+///
+/// Component 3 — Percent Rank của 1-bar ROC%:
+///   roc = (close − prev_close) / prev_close × 100
+///   pct_rank = count(roc_history < roc_today) / (rank_period − 1) × 100
+///
+/// CRSI = (rsi1 + rsi2 + pct_rank) / 3    (range: 0..100)
+/// ```
+///
+/// # Tham số mặc định
+/// - `rsi_period = 3`: RSI nhanh → nhạy với momentum ngắn hạn
+/// - `streak_rsi_period = 2`: RSI của streak → đo exhaustion của move liên tục
+/// - `rank_period = 100`: lookback dài → so sánh với lịch sử dài hạn
+///
+/// # Cách đọc tín hiệu
+/// - **CRSI < 10**: extremely oversold → mean-reversion buy opportunity
+/// - **CRSI > 90**: extremely overbought → mean-reversion sell opportunity
+/// - **Tín hiệu tốt nhất**: khi cả ba components cùng extreme (oversold/overbought)
+///
+/// # Ứng dụng
+/// CRSI thiết kế cho **mean-reversion trading** trong thị trường có xu hướng chính
+/// (uptrend dài hạn). Entry khi pullback → CRSI < 10. Exit nhanh (1−3 ngày).
+///
+/// # Warmup
+/// Cần `max(rsi_period, streak_rsi_period) + rank_period` bar.
+/// Default CRSI(3,2,100): cần ~103 bar.
 #[derive(Debug, Clone)]
 pub struct ConnorsRsi {
     rsi_period: usize,

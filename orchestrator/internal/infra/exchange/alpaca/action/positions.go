@@ -5,6 +5,8 @@ import (
 
 	alpacasdk "github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
 	"github.com/shopspring/decimal"
+
+	"orchestrator/internal/infra/exchange"
 )
 
 // PositionInfo is a simplified view of an Alpaca position.
@@ -22,8 +24,8 @@ type PositionInfo struct {
 }
 
 // GetPositions returns all open positions.
-func (c *Client) GetPositions() ([]PositionInfo, error) {
-	positions, err := c.sdk.GetPositions()
+func (c *Client) GetPositions(creds exchange.Credentials) ([]PositionInfo, error) {
+	positions, err := c.newSDK(creds).GetPositions()
 	if err != nil {
 		return nil, fmt.Errorf("alpaca get positions: %w", err)
 	}
@@ -35,8 +37,8 @@ func (c *Client) GetPositions() ([]PositionInfo, error) {
 }
 
 // GetPosition returns the open position for a single symbol.
-func (c *Client) GetPosition(symbol string) (*PositionInfo, error) {
-	pos, err := c.sdk.GetPosition(symbol)
+func (c *Client) GetPosition(creds exchange.Credentials, symbol string) (*PositionInfo, error) {
+	pos, err := c.newSDK(creds).GetPosition(symbol)
 	if err != nil {
 		return nil, fmt.Errorf("alpaca get position %s: %w", symbol, err)
 	}
@@ -45,13 +47,12 @@ func (c *Client) GetPosition(symbol string) (*PositionInfo, error) {
 }
 
 // ClosePosition liquidates a position (partially or fully).
-// Pass qty=decimal.Zero to close the entire position.
-func (c *Client) ClosePosition(symbol string, qty decimal.Decimal) (*alpacasdk.Order, error) {
+func (c *Client) ClosePosition(creds exchange.Credentials, symbol string, qty decimal.Decimal) (*alpacasdk.Order, error) {
 	req := alpacasdk.ClosePositionRequest{}
 	if qty.IsPositive() {
 		req.Qty = qty
 	}
-	order, err := c.sdk.ClosePosition(symbol, req)
+	order, err := c.newSDK(creds).ClosePosition(symbol, req)
 	if err != nil {
 		return nil, fmt.Errorf("alpaca close position %s: %w", symbol, err)
 	}
@@ -59,8 +60,8 @@ func (c *Client) ClosePosition(symbol string, qty decimal.Decimal) (*alpacasdk.O
 }
 
 // CloseAllPositions liquidates all open positions.
-func (c *Client) CloseAllPositions(cancelOrders bool) ([]alpacasdk.Order, error) {
-	orders, err := c.sdk.CloseAllPositions(alpacasdk.CloseAllPositionsRequest{
+func (c *Client) CloseAllPositions(creds exchange.Credentials, cancelOrders bool) ([]alpacasdk.Order, error) {
+	orders, err := c.newSDK(creds).CloseAllPositions(alpacasdk.CloseAllPositionsRequest{
 		CancelOrders: cancelOrders,
 	})
 	if err != nil {

@@ -39,7 +39,7 @@ type AccountSnapshot struct {
 // AccountSyncer is optionally implemented by exchanges that support polling
 // account state via REST. since, if non-nil, requests only transactions after that time.
 type AccountSyncer interface {
-	SyncAccount(ctx context.Context, since *time.Time) (*AccountSnapshot, error)
+	SyncAccount(ctx context.Context, creds Credentials, since *time.Time) (*AccountSnapshot, error)
 }
 
 // ── Order event streaming ─────────────────────────────────────────────────────
@@ -70,7 +70,7 @@ type OrderEvent struct {
 // AccountStreamer is optionally implemented by exchanges that support private
 // WebSocket streaming for account order lifecycle events.
 type AccountStreamer interface {
-	StreamOrders(ctx context.Context, handler func(OrderEvent)) error
+	StreamOrders(ctx context.Context, creds Credentials, handler func(OrderEvent)) error
 }
 
 // ── Price fetch ───────────────────────────────────────────────────────────────
@@ -78,7 +78,7 @@ type AccountStreamer interface {
 // PriceFetcher is optionally implemented by exchanges that support on-demand
 // REST price lookup. Used as a cache-miss fallback in ProcessTrade.
 type PriceFetcher interface {
-	GetCurrentPrice(ctx context.Context, symbol string) (decimal.Decimal, error)
+	GetCurrentPrice(ctx context.Context, creds Credentials, symbol string) (decimal.Decimal, error)
 }
 
 // ── Market data streaming ─────────────────────────────────────────────────────
@@ -120,5 +120,5 @@ type BookStreamer interface {
 // OrderReconciler is optionally implemented by exchanges that can list open
 // orders via REST. Used on startup to rebuild the in-memory orderbook after a crash.
 type OrderReconciler interface {
-	GetPendingOrders(ctx context.Context, symbol string) ([]OrderResult, error)
+	GetPendingOrders(ctx context.Context, creds Credentials, symbol string) ([]OrderResult, error)
 }

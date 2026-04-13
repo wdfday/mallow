@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"math"
+
+	"orchestrator/internal/infra/exchange"
 )
 
 // AccountInfo is a simplified view of the OANDA account.
@@ -42,8 +44,8 @@ type InstrumentInfo struct {
 }
 
 // GetAccount returns the account information.
-func (c *Client) GetAccount(ctx context.Context) (*AccountInfo, error) {
-	path := fmt.Sprintf("/v3/accounts/%s/summary", c.cfg.AccountID)
+func (c *Client) GetAccount(ctx context.Context, creds exchange.Credentials) (*AccountInfo, error) {
+	path := fmt.Sprintf("/v3/accounts/%s/summary", creds.AccountID)
 	var resp struct {
 		Account struct {
 			ID                string `json:"id"`
@@ -58,7 +60,7 @@ func (c *Client) GetAccount(ctx context.Context) (*AccountInfo, error) {
 		} `json:"account"`
 	}
 
-	if err := c.doRequest(ctx, "GET", path, nil, &resp); err != nil {
+	if err := c.doRequest(ctx, creds, "GET", path, nil, &resp); err != nil {
 		return nil, fmt.Errorf("oanda get account: %w", err)
 	}
 
@@ -77,8 +79,8 @@ func (c *Client) GetAccount(ctx context.Context) (*AccountInfo, error) {
 }
 
 // GetPositions returns all open positions (with non-zero units).
-func (c *Client) GetPositions(ctx context.Context) ([]PositionInfo, error) {
-	path := fmt.Sprintf("/v3/accounts/%s/openPositions", c.cfg.AccountID)
+func (c *Client) GetPositions(ctx context.Context, creds exchange.Credentials) ([]PositionInfo, error) {
+	path := fmt.Sprintf("/v3/accounts/%s/openPositions", creds.AccountID)
 	var resp struct {
 		Positions []struct {
 			Instrument string `json:"instrument"`
@@ -98,7 +100,7 @@ func (c *Client) GetPositions(ctx context.Context) ([]PositionInfo, error) {
 		} `json:"positions"`
 	}
 
-	if err := c.doRequest(ctx, "GET", path, nil, &resp); err != nil {
+	if err := c.doRequest(ctx, creds, "GET", path, nil, &resp); err != nil {
 		return nil, fmt.Errorf("oanda positions: %w", err)
 	}
 
@@ -119,19 +121,19 @@ func (c *Client) GetPositions(ctx context.Context) ([]PositionInfo, error) {
 }
 
 // ClosePosition closes an entire position for an instrument.
-func (c *Client) ClosePosition(ctx context.Context, instrument string) error {
-	path := fmt.Sprintf("/v3/accounts/%s/positions/%s/close", c.cfg.AccountID, instrument)
+func (c *Client) ClosePosition(ctx context.Context, creds exchange.Credentials, instrument string) error {
+	path := fmt.Sprintf("/v3/accounts/%s/positions/%s/close", creds.AccountID, instrument)
 	body := map[string]string{"longUnits": "ALL", "shortUnits": "ALL"}
 	var resp interface{}
-	if err := c.doRequest(ctx, "PUT", path, body, &resp); err != nil {
+	if err := c.doRequest(ctx, creds, "PUT", path, body, &resp); err != nil {
 		return fmt.Errorf("oanda close position %s: %w", instrument, err)
 	}
 	return nil
 }
 
 // GetInstruments returns the list of tradable instruments for the account.
-func (c *Client) GetInstruments(ctx context.Context) ([]InstrumentInfo, error) {
-	path := fmt.Sprintf("/v3/accounts/%s/instruments", c.cfg.AccountID)
+func (c *Client) GetInstruments(ctx context.Context, creds exchange.Credentials) ([]InstrumentInfo, error) {
+	path := fmt.Sprintf("/v3/accounts/%s/instruments", creds.AccountID)
 	var resp struct {
 		Instruments []struct {
 			Name                string `json:"name"`
@@ -143,7 +145,7 @@ func (c *Client) GetInstruments(ctx context.Context) ([]InstrumentInfo, error) {
 		} `json:"instruments"`
 	}
 
-	if err := c.doRequest(ctx, "GET", path, nil, &resp); err != nil {
+	if err := c.doRequest(ctx, creds, "GET", path, nil, &resp); err != nil {
 		return nil, fmt.Errorf("oanda instruments: %w", err)
 	}
 

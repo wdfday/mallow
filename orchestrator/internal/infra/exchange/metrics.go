@@ -91,23 +91,23 @@ func NewMeteredExchange(inner Exchange) *MeteredExchange {
 
 func (m *MeteredExchange) Name() string { return m.inner.Name() }
 
-func (m *MeteredExchange) PlaceOrder(ctx context.Context, req OrderRequest) (*OrderResult, error) {
+func (m *MeteredExchange) PlaceOrder(ctx context.Context, creds Credentials, req OrderRequest) (*OrderResult, error) {
 	start := time.Now()
-	res, err := m.inner.PlaceOrder(ctx, req)
+	res, err := m.inner.PlaceOrder(ctx, creds, req)
 	m.Metrics.PlaceOrder.record(time.Since(start), err)
 	return res, err
 }
 
-func (m *MeteredExchange) GetOrder(ctx context.Context, orderID string) (*OrderResult, error) {
+func (m *MeteredExchange) GetOrder(ctx context.Context, creds Credentials, orderID string) (*OrderResult, error) {
 	start := time.Now()
-	res, err := m.inner.GetOrder(ctx, orderID)
+	res, err := m.inner.GetOrder(ctx, creds, orderID)
 	m.Metrics.GetOrder.record(time.Since(start), err)
 	return res, err
 }
 
-func (m *MeteredExchange) CancelOrder(ctx context.Context, orderID string) error {
+func (m *MeteredExchange) CancelOrder(ctx context.Context, creds Credentials, orderID string) error {
 	start := time.Now()
-	err := m.inner.CancelOrder(ctx, orderID)
+	err := m.inner.CancelOrder(ctx, creds, orderID)
 	m.Metrics.CancelOrder.record(time.Since(start), err)
 	return err
 }
@@ -117,7 +117,7 @@ func (m *MeteredExchange) CancelOrder(ctx context.Context, orderID string) error
 // For exchanges that expose a dedicated server-time or ping endpoint, override this.
 func (m *MeteredExchange) Ping(ctx context.Context) time.Duration {
 	start := time.Now()
-	_, _ = m.inner.GetOrder(ctx, "__ping__")
+	_, _ = m.inner.GetOrder(ctx, Credentials{}, "__ping__")
 	rtt := time.Since(start)
 	ns := rtt.Nanoseconds()
 	m.Metrics.Ping.Calls.Add(1)

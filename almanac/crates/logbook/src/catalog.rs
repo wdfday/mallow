@@ -1,6 +1,7 @@
 //! Static indicator catalog — returned by `GET /api/indicators`.
 
 use serde::Serialize;
+use serde_json::Value;
 use utoipa::ToSchema;
 
 /// A single parameter descriptor.
@@ -436,4 +437,163 @@ pub fn all() -> Vec<IndicatorMeta> {
             cel_funcs: vec!["fractal_bull", "fractal_bear"],
         },
     ]
+}
+
+// ── Strategy catalogue ────────────────────────────────────────────────────────
+
+pub const STRATEGY_KEYS: &[&str] = &[
+    "ma_crossover",
+    "triple_ema",
+    "hma_crossover",
+    "rsi_mean_rev",
+    "macd_crossover",
+    "macd_ma",
+    "waddah_attar",
+    "stochastic_crossover",
+    "stochastic_dk",
+    "range_rover",
+    "reversal_catcher",
+    "atr_trailing",
+    "volatility_squeezer",
+    "volatility_vanguard",
+    "volatility_ratio",
+    "bollinger_macd",
+    "bb_squeeze",
+    "mean_reversion",
+    "bb_keltner_squeeze",
+    "dmi_adx",
+    "wolfstein",
+    "trend_transition",
+    "swing_trader",
+    "oscillator_overlord",
+    "equilibrium_explorer",
+    "trend_follower",
+    "ma_pullback",
+    "cci_reversal",
+    "supertrend",
+    "supertrend_macd",
+    "parabolic_sar",
+    "heiken_ashi_color",
+    "heiken_ashi_breakout",
+    "heiken_ashi_harmonizer",
+    "gmma_crossover",
+    "ichimoku_cloud",
+    "ichimoku_cross",
+    "scalping_ema",
+    "dema_crossover",
+    "donchian_breakout",
+    "elder_ray",
+    "aroon_trend",
+    "chandelier_exit",
+    "vwap_bounce",
+    "vwap_trend",
+    "momentum_roc",
+    "dual_momentum",
+    "price_action_swing",
+    "orb_breakout",
+    "highest_breakout",
+    "keltner_breakout",
+    "mfi_trend",
+    "mfi_revert",
+    "roc",
+    "kst",
+    "trix",
+    "alligator",
+    "rwi",
+    "pattern_breakout",
+    "kama",
+    "tsi",
+    "stoch_rsi",
+    "chop_filter",
+    "connors_rsi",
+    "kdj",
+    "ao",
+    "tema_crossover",
+    "pixel_3",
+    "cel",
+    "dynamic",
+    "layered",
+];
+
+// ── Indicator helpers (used by indicator runner) ──────────────────────────────
+
+/// Auto-generate a series label from indicator config if no explicit label given.
+/// E.g. `{ "type": "ema", "period": 20 }` → `"ema_20"`.
+pub fn auto_label(config: &serde_json::Map<String, Value>) -> String {
+    let type_ = config.get("type").and_then(Value::as_str).unwrap_or("ind");
+    let mut parts: Vec<String> = vec![type_.to_string()];
+    for key in &["period", "fast", "slow", "signal", "k_period", "er_period",
+                 "tenkan", "kijun", "senkou_b", "lookback"] {
+        if let Some(v) = config.get(*key).and_then(Value::as_f64) {
+            parts.push(format!("{}", v as i64));
+        }
+    }
+    parts.join("_")
+}
+
+/// Build a JSON config `Value` from a CEL base name + period.
+pub fn cel_to_config(base: &str, n: usize) -> Value {
+    use serde_json::json;
+    match base {
+        "ema"               => json!({"type":"ema","period":n}),
+        "sma"               => json!({"type":"sma","period":n}),
+        "wma"               => json!({"type":"wma","period":n}),
+        "hma"               => json!({"type":"hma","period":n}),
+        "dema"              => json!({"type":"dema","period":n}),
+        "tema"              => json!({"type":"tema","period":n}),
+        "smma"              => json!({"type":"smma","period":n}),
+        "alma"              => json!({"type":"alma","period":n}),
+        "mcginley"          => json!({"type":"mcginley","period":n}),
+        "lsma" | "lsma_slope" => json!({"type":"lsma","period":n}),
+        "vwma"              => json!({"type":"vwma","period":n}),
+        "kama"              => json!({"type":"kama","er_period":n}),
+        "macd_hist" | "macd_line" => json!({"type":"macd","fast":n,"slow":26,"signal":9}),
+        "adx" | "plus_di" | "minus_di" => json!({"type":"adx","period":n}),
+        "dmi_plus" | "dmi_minus" | "dmi_dx" => json!({"type":"dmi","period":n}),
+        "aroon_up" | "aroon_down" | "aroon_osc" => json!({"type":"aroon","period":n}),
+        "vortex_plus" | "vortex_minus" => json!({"type":"vortex","period":n}),
+        "kdj_k" | "kdj_d" | "kdj_j" => json!({"type":"kdj","period":n}),
+        "supertrend" | "st_bull" => json!({"type":"supertrend","period":n,"multiplier":3.0}),
+        "rsi"               => json!({"type":"rsi","period":n}),
+        "cci"               => json!({"type":"cci","period":n}),
+        "roc"               => json!({"type":"roc","period":n}),
+        "mom"               => json!({"type":"mom","period":n}),
+        "cmo"               => json!({"type":"cmo","period":n}),
+        "dpo"               => json!({"type":"dpo","period":n}),
+        "mfi"               => json!({"type":"mfi","period":n}),
+        "williams"          => json!({"type":"williams_r","period":n}),
+        "tsi"               => json!({"type":"tsi","first":n,"second":13}),
+        "rci"               => json!({"type":"rci","period":n}),
+        "chop"              => json!({"type":"chop","period":n}),
+        "connors_rsi"       => json!({"type":"connors_rsi","rsi_period":n,"streak_period":2,"rank_period":100}),
+        "stoch_k" | "stoch_d" => json!({"type":"stochastic","k_period":n,"d_period":3}),
+        "srsi_k" | "srsi_d" => json!({"type":"stoch_rsi","rsi_period":n,"smooth_d":3}),
+        "fisher_line" | "fisher_sig" => json!({"type":"fisher","period":n}),
+        "bull_power" | "bear_power" => json!({"type":"bull_bear","period":n}),
+        "ppo_line" | "ppo_sig" | "ppo_hist" => json!({"type":"ppo","fast":n,"slow":26,"signal":9}),
+        "rvi_line" | "rvi_sig" => json!({"type":"rvi","period":n}),
+        "atr"               => json!({"type":"atr","period":n}),
+        "bb_upper" | "bb_lower" | "bb_mid" => json!({"type":"bbands","period":n,"multiplier":2.0}),
+        "donchian_upper" | "donchian_lower" | "donchian_mid" => json!({"type":"donchian","period":n}),
+        "chandelier_long" | "chandelier_short" => json!({"type":"chandelier_exit","period":n,"multiplier":3.0}),
+        "chop_angle"        => json!({"type":"chop_zone","ema_period":n,"threshold":5.0}),
+        "cmf"               => json!({"type":"cmf","period":n}),
+        // zero-arg
+        "obv"               => json!({"type":"obv"}),
+        "ao"                => json!({"type":"ao","fast":5,"slow":34}),
+        "sar"               => json!({"type":"parabolic_sar","step":0.02,"max":0.2}),
+        "vwap"              => json!({"type":"vwap"}),
+        "bop"               => json!({"type":"bop"}),
+        "coppock"           => json!({"type":"coppock"}),
+        "kst_line" | "kst_sig" => json!({"type":"kst"}),
+        "pmo_line" | "pmo_sig" => json!({"type":"pmo"}),
+        "uo"                => json!({"type":"uo","fast":7,"medium":14,"slow":28}),
+        "alligator_jaw" | "alligator_teeth" | "alligator_lips" | "alligator_bull" =>
+            json!({"type":"alligator","jaw":13,"teeth":8,"lips":5}),
+        "gmma_bull"         => json!({"type":"gmma"}),
+        "chande_kroll_long" | "chande_kroll_short" =>
+            json!({"type":"chande_kroll","atr_period":10,"factor":1.5,"stop_period":9}),
+        "fractal_bull" | "fractal_bear" => json!({"type":"fractal"}),
+        other               => serde_json::json!({"type": other, "period": n}),
+    }
 }

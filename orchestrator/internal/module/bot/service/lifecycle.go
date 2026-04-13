@@ -99,6 +99,7 @@ func (s *Service) StartBots(ids []string) {
 	defer s.mu.RUnlock()
 	for _, id := range ids {
 		if bi, ok := s.bots[id]; ok && !bi.Bot.IsRunning() {
+			s.heraldRegister(id, bi.Data.Config)
 			bi.Bot.Start()
 		}
 	}

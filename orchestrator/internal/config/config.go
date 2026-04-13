@@ -39,9 +39,11 @@ type RuntimeConfig struct {
 }
 
 type MarketDataConfig struct {
-	Source   string
-	Symbols  []string
-	IsCrypto bool
+	Source          string
+	Symbols         []string
+	IsCrypto        bool
+	AlpacaAPIKey    string // shared key for the Alpaca market data WebSocket streamer
+	AlpacaAPISecret string
 }
 
 // Load reads configuration from environment variables with sensible defaults.
@@ -56,6 +58,8 @@ func Load() Config {
 	v.SetDefault("MARKET_DATA_SOURCE", "none")
 	v.SetDefault("MARKET_DATA_SYMBOLS", "")
 	v.SetDefault("MARKET_DATA_CRYPTO", false)
+	v.SetDefault("ALPACA_MD_API_KEY", "")
+	v.SetDefault("ALPACA_MD_API_SECRET", "")
 
 	if envFile := findDotEnv(); envFile != "" {
 		v.SetConfigFile(envFile)
@@ -84,9 +88,11 @@ func Load() Config {
 			SyncInterval: getDuration(v, "SYNC_INTERVAL", 5*time.Minute),
 		},
 		MarketData: MarketDataConfig{
-			Source:   v.GetString("MARKET_DATA_SOURCE"),
-			Symbols:  getStringSlice(v.GetString("MARKET_DATA_SYMBOLS")),
-			IsCrypto: v.GetBool("MARKET_DATA_CRYPTO"),
+			Source:          v.GetString("MARKET_DATA_SOURCE"),
+			Symbols:         getStringSlice(v.GetString("MARKET_DATA_SYMBOLS")),
+			IsCrypto:        v.GetBool("MARKET_DATA_CRYPTO"),
+			AlpacaAPIKey:    v.GetString("ALPACA_MD_API_KEY"),
+			AlpacaAPISecret: v.GetString("ALPACA_MD_API_SECRET"),
 		},
 	}
 

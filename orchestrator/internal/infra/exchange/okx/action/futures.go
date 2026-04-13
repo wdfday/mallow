@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/shopspring/decimal"
+
+	"orchestrator/internal/infra/exchange"
 )
 
 // SupportsFutures implements exchange.FuturesTrader — OKX supports SWAP perpetuals.
@@ -14,7 +16,7 @@ func (c *Client) SupportsFutures() bool { return true }
 
 // SetLeverage sets leverage and margin mode for a SWAP instrument.
 // marginType: "cross" | "isolated"
-func (c *Client) SetLeverage(ctx context.Context, symbol string, leverage int, marginType string) error {
+func (c *Client) SetLeverage(ctx context.Context, creds exchange.Credentials, symbol string, leverage int, marginType string) error {
 	mgnMode := "cross"
 	if strings.ToLower(marginType) == "isolated" {
 		mgnMode = "isolated"
@@ -34,7 +36,7 @@ func (c *Client) SetLeverage(ctx context.Context, symbol string, leverage int, m
 		} `json:"data"`
 	}
 
-	if err := c.doRequest(ctx, http.MethodPost, "/api/v5/account/set-leverage", body, &resp); err != nil {
+	if err := c.doRequest(ctx, creds, http.MethodPost, "/api/v5/account/set-leverage", body, &resp); err != nil {
 		return fmt.Errorf("okx set leverage %s x%d: %w", symbol, leverage, err)
 	}
 	if resp.Code != "0" {
@@ -43,7 +45,7 @@ func (c *Client) SetLeverage(ctx context.Context, symbol string, leverage int, m
 	return nil
 }
 
-// FundingRate returns the latest funding rate for a SWAP instrument.
+// FundingRate returns the latest funding rate for a SWAP instrument (public endpoint).
 func (c *Client) FundingRate(ctx context.Context, symbol string) (decimal.Decimal, error) {
 	path := "/api/v5/public/funding-rate?instId=" + symbol
 
@@ -54,7 +56,7 @@ func (c *Client) FundingRate(ctx context.Context, symbol string) (decimal.Decima
 		} `json:"data"`
 	}
 
-	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+	if err := c.doRequest(ctx, exchange.Credentials{}, http.MethodGet, path, nil, &resp); err != nil {
 		return decimal.Zero, fmt.Errorf("okx funding rate %s: %w", symbol, err)
 	}
 	if resp.Code != "0" || len(resp.Data) == 0 {
@@ -63,7 +65,7 @@ func (c *Client) FundingRate(ctx context.Context, symbol string) (decimal.Decima
 	return parseDecimal(resp.Data[0].FundingRate), nil
 }
 
-// MarkPrice returns the current mark price for a SWAP instrument.
+// MarkPrice returns the current mark price for a SWAP instrument (public endpoint).
 func (c *Client) MarkPrice(ctx context.Context, symbol string) (decimal.Decimal, error) {
 	path := "/api/v5/public/mark-price?instType=SWAP&instId=" + symbol
 
@@ -74,7 +76,7 @@ func (c *Client) MarkPrice(ctx context.Context, symbol string) (decimal.Decimal,
 		} `json:"data"`
 	}
 
-	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+	if err := c.doRequest(ctx, exchange.Credentials{}, http.MethodGet, path, nil, &resp); err != nil {
 		return decimal.Zero, fmt.Errorf("okx mark price %s: %w", symbol, err)
 	}
 	if resp.Code != "0" || len(resp.Data) == 0 {

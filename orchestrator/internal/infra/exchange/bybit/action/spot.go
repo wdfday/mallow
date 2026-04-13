@@ -5,12 +5,14 @@ import (
 	"fmt"
 
 	"github.com/shopspring/decimal"
+
+	"orchestrator/internal/infra/exchange"
 )
 
 // SpotBalance implements exchange.SpotTrader.
 // Returns available balance for the given coin from the SPOT wallet.
-func (c *Client) SpotBalance(ctx context.Context, asset string) (decimal.Decimal, error) {
-	info, err := c.GetWalletBalance(ctx, "SPOT")
+func (c *Client) SpotBalance(ctx context.Context, creds exchange.Credentials, asset string) (decimal.Decimal, error) {
+	info, err := c.GetWalletBalance(ctx, creds, "SPOT")
 	if err != nil {
 		return decimal.Zero, fmt.Errorf("bybit spot balance %s: %w", asset, err)
 	}

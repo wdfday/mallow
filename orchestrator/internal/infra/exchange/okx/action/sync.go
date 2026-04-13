@@ -17,14 +17,12 @@ var stablecoins = map[string]bool{
 	"BUSD": true,
 	"DAI":  true,
 	"TUSD": true,
-	"OKB":  false, // OKB is exchange token, not stablecoin
+	"OKB":  false,
 }
 
 // SyncAccount implements exchange.AccountSyncer.
-// Cash = sum of stablecoin available balances.
-// Positions = non-stablecoin spot holdings priced via REST ticker.
-func (c *Client) SyncAccount(ctx context.Context, _ *time.Time) (*exchange.AccountSnapshot, error) {
-	info, err := c.GetBalance(ctx)
+func (c *Client) SyncAccount(ctx context.Context, creds exchange.Credentials, _ *time.Time) (*exchange.AccountSnapshot, error) {
+	info, err := c.GetBalance(ctx, creds)
 	if err != nil {
 		return nil, fmt.Errorf("okx sync: get balance: %w", err)
 	}

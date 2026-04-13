@@ -3,6 +3,8 @@ package action
 import (
 	"context"
 	"fmt"
+
+	"orchestrator/internal/infra/exchange"
 )
 
 // BalanceInfo represents a single asset balance.
@@ -31,8 +33,8 @@ type ExchangeAsset struct {
 }
 
 // GetAccount returns account info including all non-zero balances.
-func (c *Client) GetAccount(ctx context.Context) (*AccountInfo, error) {
-	acct, err := c.spot.NewGetAccountService().Do(ctx)
+func (c *Client) GetAccount(ctx context.Context, creds exchange.Credentials) (*AccountInfo, error) {
+	acct, err := c.newSpot(creds).NewGetAccountService().Do(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("binance get account: %w", err)
 	}
@@ -56,8 +58,8 @@ func (c *Client) GetAccount(ctx context.Context) (*AccountInfo, error) {
 }
 
 // GetBalance returns the balance for a specific asset.
-func (c *Client) GetBalance(ctx context.Context, asset string) (*BalanceInfo, error) {
-	acct, err := c.spot.NewGetAccountService().Do(ctx)
+func (c *Client) GetBalance(ctx context.Context, creds exchange.Credentials, asset string) (*BalanceInfo, error) {
+	acct, err := c.newSpot(creds).NewGetAccountService().Do(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("binance get balance: %w", err)
 	}
@@ -75,7 +77,8 @@ func (c *Client) GetBalance(ctx context.Context, asset string) (*BalanceInfo, er
 
 // GetExchangeAsset returns trading pair info.
 func (c *Client) GetExchangeAsset(ctx context.Context, symbol string) (*ExchangeAsset, error) {
-	info, err := c.spot.NewExchangeInfoService().Symbol(symbol).Do(ctx)
+	// Public endpoint — no credentials needed.
+	info, err := c.newSpot(exchange.Credentials{}).NewExchangeInfoService().Symbol(symbol).Do(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("binance exchange info: %w", err)
 	}
@@ -95,7 +98,7 @@ func (c *Client) GetExchangeAsset(ctx context.Context, symbol string) (*Exchange
 
 // GetServerTime returns Binance server time in Unix milliseconds.
 func (c *Client) GetServerTime(ctx context.Context) (int64, error) {
-	resp, err := c.spot.NewServerTimeService().Do(ctx)
+	resp, err := c.newSpot(exchange.Credentials{}).NewServerTimeService().Do(ctx)
 	if err != nil {
 		return 0, fmt.Errorf("binance server time: %w", err)
 	}

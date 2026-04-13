@@ -1,8 +1,11 @@
 pub mod momentum;
 pub mod pattern;
 pub mod trend;
+pub mod util;
 pub mod volatility;
 pub mod volume;
+
+pub use util::{RollingMax, RollingMin};
 
 // Trend + MA family
 pub use trend::{

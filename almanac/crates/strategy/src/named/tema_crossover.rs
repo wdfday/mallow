@@ -67,3 +67,94 @@ impl Strategy for TemaCrossover {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alm_core::signal::Direction;
+    use serde_json::json;
+    use crate::factory::build_strategy;
+
+    fn bar(ts: i64, close: f64) -> Bar {
+        Bar::new(ts, "T", close * 1.005, close * 1.005, close * 0.995, close, 1000.0)
+    }
+
+    fn run(s: &mut dyn Strategy, bars: &[Bar]) -> Vec<(i64, Direction)> {
+        bars.iter().flat_map(|b| s.on_bar(b)).map(|s| (s.timestamp, s.direction)).collect()
+    }
+
+    fn trending_bars(n: usize) -> Vec<Bar> {
+        let third = n / 3;
+        (0..n).map(|i| {
+            let price = if i < third {
+                200.0 - i as f64 * 1.5
+            } else if i < third * 2 {
+                200.0 - third as f64 * 1.5 + (i - third) as f64 * 2.0
+            } else {
+                200.0 - third as f64 * 1.5 + third as f64 * 2.0 - (i - third * 2) as f64 * 2.0
+            };
+            bar(i as i64 * 60_000, price.max(10.0))
+        }).collect()
+    }
+
+    #[test]
+    fn no_signal_before_warmup() {
+        let mut s = TemaCrossover::new(10, 25);
+        for i in 0..50 {
+            assert!(s.on_bar(&bar(i, 100.0)).is_empty());
+        }
+    }
+
+    #[test]
+    fn parity_dynamic() {
+        let bars = trending_bars(300);
+        let mut hc = TemaCrossover::new(10, 25);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": {
+                "fast": { "type": "tema", "period": 10 },
+                "slow": { "type": "tema", "period": 25 }
+            },
+            "entry": {
+                "logic": "and",
+                "rules": [{ "source": "fast", "field": "value", "op": "cross_above",
+                            "compare": "slow", "compare_field": "value" }]
+            },
+            "exit": {
+                "logic": "and",
+                "rules": [{ "source": "fast", "field": "value", "op": "cross_below",
+                            "compare": "slow", "compare_field": "value" }]
+            }
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "no signals produced");
+        assert_eq!(hc_sigs, dyn_sigs, "hardcoded vs dynamic mismatch");
+    }
+
+    #[test]
+    fn parity_cel() {
+        let bars = trending_bars(300);
+        let mut hc = TemaCrossover::new(10, 25);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "prev_tema(10) <= prev_tema(25) && tema(10) > tema(25)",
+            "exit":  "prev_tema(10) >= prev_tema(25) && tema(10) < tema(25)"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert_eq!(hc_sigs, cel_sigs, "hardcoded vs cel mismatch");
+    }
+
+    #[test]
+    fn parity_reset() {
+        let bars = trending_bars(300);
+        let mut hc = TemaCrossover::new(10, 25);
+        let r1 = run(&mut hc, &bars);
+        hc.reset();
+        let r2 = run(&mut hc, &bars);
+        assert_eq!(r1, r2, "reset parity failed");
+    }
+}

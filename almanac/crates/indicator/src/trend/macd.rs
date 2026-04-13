@@ -1,15 +1,44 @@
 use crate::Ema;
 
-/// MACD value snapshot.
+/// Giá trị snapshot của MACD.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MacdValue {
+    /// MACD Line: EMA(fast) − EMA(slow)
     pub macd: f64,
+    /// Signal Line: EMA(MACD, signal_period)
     pub signal: f64,
+    /// Histogram: macd − signal (dương khi momentum tăng)
     pub histogram: f64,
 }
 
-/// MACD (Moving Average Convergence Divergence).
-/// Classic params: fast=12, slow=26, signal=9.
+/// MACD (Moving Average Convergence/Divergence) — oscillator momentum kinh điển.
+///
+/// Được Gerald Appel phát triển cuối thập niên 1970. MACD đo động lượng bằng
+/// cách so sánh hai EMA khác period — khi EMA nhanh cắt EMA chậm từ dưới lên,
+/// momentum chuyển từ âm sang dương.
+///
+/// # Công thức (tham số cổ điển: fast=12, slow=26, signal=9)
+/// ```text
+/// MACD Line  = EMA(12) − EMA(26)
+/// Signal     = EMA(MACD Line, 9)
+/// Histogram  = MACD Line − Signal
+/// ```
+///
+/// # Tín hiệu giao dịch
+/// - **MACD cắt Signal từ dưới lên** → buy signal
+/// - **MACD cắt Signal từ trên xuống** → sell signal
+/// - **Histogram đổi từ âm sang dương** → tín hiệu sớm hơn crossover
+/// - **MACD > 0** (cả MACD line > 0): EMA nhanh trên EMA chậm → bullish momentum
+/// - **Divergence** MACD vs giá: tín hiệu đảo chiều mạnh nhất
+///
+/// # Warmup
+/// Do cascading EMA: cần `slow + signal - 1` bar để signal EMA warm up.
+/// Standard MACD(12,26,9): bar thứ ≈ 34 trả về giá trị đầu tiên.
+///
+/// # Điểm yếu
+/// - Là lagging indicator (dựa trên EMA, không leading)
+/// - Nhiều false signal trong thị trường sideways
+/// - Nên kết hợp với ADX hoặc CHOP để lọc
 #[derive(Debug, Clone)]
 pub struct Macd {
     fast: Ema,
@@ -27,12 +56,12 @@ impl Macd {
         }
     }
 
-    /// Standard MACD(12, 26, 9)
+    /// MACD(12, 26, 9) — tham số Gerald Appel gốc, phổ biến nhất.
     pub fn standard() -> Self {
         Self::new(12, 26, 9)
     }
 
-    /// Feed a new closing price. Returns `Some(MacdValue)` once all EMAs are seeded.
+    /// Feed một giá đóng cửa. Trả về `Some(MacdValue)` sau khi tất cả EMA warm up.
     pub fn update(&mut self, close: f64) -> Option<MacdValue> {
         let fast = self.fast.update(close)?;
         let slow = self.slow.update(close)?;

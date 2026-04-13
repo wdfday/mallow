@@ -12,161 +12,30 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tokio::sync::Semaphore;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
-use utoipa::{IntoParams, Modify, OpenApi, ToSchema};
+use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 use walkdir::WalkDir;
 
-use crate::catalog::{self, IndicatorMeta, ParamDef};
+use crate::catalog::{self, IndicatorMeta, ParamDef, STRATEGY_KEYS};
 use crate::data::{find_parquet_files, load_bars, parse_date_ms};
-use crate::runner;
 use crate::types::{
-    BacktestRequest, BacktestResponse, CelBacktestRequest, CurvePoint, DynamicBacktestRequest,
-    ErrorResponse, ExitConfig, TradeResponse,
-    IndicatorRequest, IndicatorResponse, IndicatorConfig,
+    BacktestRequest, BacktestResponse, BarRecord, CelBacktestRequest, CurvePoint,
+    DataQuery, DataResponse, DynamicBacktestRequest, ErrorResponse, ExitConfig,
+    IndicatorConfig, IndicatorRequest, IndicatorResponse, LatestQuery, TradeResponse,
 };
-
-// ── Strategy catalogue ────────────────────────────────────────────────────────
-
-pub const STRATEGY_KEYS: &[&str] = &[
-    "ma_crossover",
-    "triple_ema",
-    "hma_crossover",
-    "rsi_mean_rev",
-    "macd_crossover",
-    "macd_ma",
-    "waddah_attar",
-    "stochastic_crossover",
-    "stochastic_dk",
-    "range_rover",
-    "reversal_catcher",
-    "atr_trailing",
-    "volatility_squeezer",
-    "volatility_vanguard",
-    "volatility_ratio",
-    "bollinger_macd",
-    "bb_squeeze",
-    "mean_reversion",
-    "bb_keltner_squeeze",
-    "dmi_adx",
-    "wolfstein",
-    "trend_transition",
-    "swing_trader",
-    "oscillator_overlord",
-    "equilibrium_explorer",
-    "trend_follower",
-    "ma_pullback",
-    "cci_reversal",
-    "supertrend",
-    "supertrend_macd",
-    "parabolic_sar",
-    "heiken_ashi_color",
-    "heiken_ashi_breakout",
-    "heiken_ashi_harmonizer",
-    "gmma_crossover",
-    "ichimoku_cloud",
-    "ichimoku_cross",
-    "scalping_ema",
-    "dema_crossover",
-    "donchian_breakout",
-    "elder_ray",
-    "aroon_trend",
-    "chandelier_exit",
-    "vwap_bounce",
-    "vwap_trend",
-    "momentum_roc",
-    "dual_momentum",
-    "price_action_swing",
-    "orb_breakout",
-    "highest_breakout",
-    "keltner_breakout",
-    "mfi_trend",
-    "mfi_revert",
-    "roc",
-    "kst",
-    "trix",
-    "alligator",
-    "rwi",
-    "pattern_breakout",
-    "kama",
-    "tsi",
-    "stoch_rsi",
-    "chop_filter",
-    "connors_rsi",
-    "kdj",
-    "ao",
-    "tema_crossover",
-    "pixel_3",
-    "cel",
-    "dynamic",
-    "layered",
-    "pixel_3",
-];
-
-// ── Data types ────────────────────────────────────────────────────────────────
-
-/// A single OHLCV bar as returned by `GET /api/data/{symbol}`.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct BarRecord {
-    /// Unix timestamp in milliseconds (UTC).
-    pub t: i64,
-    pub o: f64,
-    pub h: f64,
-    pub l: f64,
-    pub c: f64,
-    pub v: f64,
-    /// Volume-weighted average price (if available in source data).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub vwap: Option<f64>,
-    /// Number of transactions (if available).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub n: Option<i64>,
-}
-
-/// Response envelope for `GET /api/data/{symbol}`.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct DataResponse {
-    pub symbol: String,
-    pub count: usize,
-    pub bars: Vec<BarRecord>,
-}
-
-/// Query parameters for `GET /api/data/{symbol}/latest`.
-#[derive(Debug, Deserialize, IntoParams)]
-pub struct LatestQuery {
-    /// Number of bars to return (default: 500, max: 5000).
-    pub n: Option<usize>,
-    /// If `true`, only include bars within regular market hours.
-    pub market_hours_only: Option<bool>,
-    /// Exchange for market-hours filtering: `"us"` (default) or `"vn"`.
-    pub exchange: Option<String>,
-}
-
-/// Query parameters for `GET /api/data/{symbol}`.
-#[derive(Debug, Deserialize, IntoParams)]
-pub struct DataQuery {
-    /// Start date inclusive, format `YYYY-MM-DD`.
-    pub from: Option<String>,
-    /// End date inclusive, format `YYYY-MM-DD`.
-    pub to: Option<String>,
-    /// Maximum number of bars to return (default: 5000, max: 50000).
-    pub limit: Option<usize>,
-    /// If `true`, only include bars within regular market hours.
-    pub market_hours_only: Option<bool>,
-    /// Exchange for market-hours filtering: `"us"` (default) or `"vn"`.
-    pub exchange: Option<String>,
-}
+use crate::{backtest, indicator};
 
 // ── App state ─────────────────────────────────────────────────────────────────
 
 #[derive(Clone)]
 pub struct AppState {
-    pub data_dir: Arc<PathBuf>,
-    /// Limits concurrent CPU-bound backtest tasks to protect VPS RAM/CPU.
+    pub data_dir:  Arc<PathBuf>,
+    /// Limits concurrent CPU-bound tasks to protect VPS RAM/CPU.
     pub semaphore: Arc<Semaphore>,
 }
 
@@ -238,16 +107,16 @@ pub struct ApiDoc;
 
 pub fn router(state: AppState) -> Router {
     let api = Router::new()
-        .route("/health", get(health))
-        .route("/api/strategies", get(list_strategies))
-        .route("/api/symbols", get(list_symbols))
-        .route("/api/indicators", get(list_indicators))
-        .route("/api/data/{symbol}", get(get_data))
-        .route("/api/data/{symbol}/latest", get(get_latest))
-        .route("/api/backtest", post(run_backtest))
-        .route("/api/backtest/cel", post(run_backtest_cel))
-        .route("/api/backtest/dynamic", post(run_backtest_dynamic))
-        .route("/api/indicator", post(compute_indicator))
+        .route("/health",                    get(health))
+        .route("/api/strategies",            get(list_strategies))
+        .route("/api/symbols",               get(list_symbols))
+        .route("/api/indicators",            get(list_indicators))
+        .route("/api/data/{symbol}",         get(get_data))
+        .route("/api/data/{symbol}/latest",  get(get_latest))
+        .route("/api/backtest",              post(run_backtest))
+        .route("/api/backtest/cel",          post(run_backtest_cel))
+        .route("/api/backtest/dynamic",      post(run_backtest_dynamic))
+        .route("/api/indicator",             post(compute_indicator))
         .with_state(state);
 
     Router::new()
@@ -260,64 +129,35 @@ pub fn router(state: AppState) -> Router {
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
 /// Simple health check.
-#[utoipa::path(
-    get,
-    path = "/health",
-    tag = "meta",
-    responses(
-        (status = 200, description = "Service is healthy", body = serde_json::Value),
-    )
+#[utoipa::path(get, path = "/health", tag = "meta",
+    responses((status = 200, description = "Service is healthy", body = serde_json::Value))
 )]
 async fn health() -> impl IntoResponse {
-    Json(serde_json::json!({ "ok": true }))
+    Json(json!({ "ok": true }))
 }
 
 /// List available strategy keys.
-///
-/// Returns a JSON array of strategy name strings accepted by `POST /api/backtest`.
-#[utoipa::path(
-    get,
-    path = "/api/strategies",
-    tag = "meta",
+#[utoipa::path(get, path = "/api/strategies", tag = "meta",
     security(("BearerAuth" = [])),
-    responses(
-        (status = 200, description = "List of strategy keys", body = Vec<String>),
-    )
+    responses((status = 200, description = "List of strategy keys", body = Vec<String>))
 )]
 async fn list_strategies() -> impl IntoResponse {
     Json(STRATEGY_KEYS)
 }
 
 /// List all supported indicator types with their parameter schemas and output fields.
-///
-/// Returns a JSON array of indicator metadata objects, one per `"type"` key accepted by
-/// `POST /api/indicator` and `POST /api/backtest/dynamic`.
-/// Each entry also lists the CEL function name(s) for use in CEL backtest expressions.
-#[utoipa::path(
-    get,
-    path = "/api/indicators",
-    tag = "meta",
+#[utoipa::path(get, path = "/api/indicators", tag = "meta",
     security(("BearerAuth" = [])),
-    responses(
-        (status = 200, description = "Indicator catalog", body = Vec<IndicatorMeta>),
-    )
+    responses((status = 200, description = "Indicator catalog", body = Vec<IndicatorMeta>))
 )]
 async fn list_indicators() -> impl IntoResponse {
     Json(catalog::all())
 }
 
 /// List symbols that have data available in the data directory.
-///
-/// Walks the data directory and returns every folder name that contains at least
-/// one `.parquet` file (deduplicated, sorted alphabetically).
-#[utoipa::path(
-    get,
-    path = "/api/symbols",
-    tag = "data",
+#[utoipa::path(get, path = "/api/symbols", tag = "data",
     security(("BearerAuth" = [])),
-    responses(
-        (status = 200, description = "Sorted list of available symbols", body = Vec<String>),
-    )
+    responses((status = 200, description = "Sorted list of available symbols", body = Vec<String>))
 )]
 async fn list_symbols(State(state): State<AppState>) -> impl IntoResponse {
     let data_dir = Arc::clone(&state.data_dir);
@@ -328,21 +168,16 @@ async fn list_symbols(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 /// Load OHLCV bars for a symbol.
-///
-/// Reads parquet files from the data directory filtered by date range.
-/// Results are capped at `limit` bars (default 5 000, max 50 000).
 #[utoipa::path(
-    get,
-    path = "/api/data/{symbol}",
-    tag = "data",
+    get, path = "/api/data/{symbol}", tag = "data",
     security(("BearerAuth" = [])),
     params(
         ("symbol" = String, Path, description = "Asset symbol, e.g. `BTCUSDT` or `NVDA`"),
         DataQuery,
     ),
     responses(
-        (status = 200, description = "OHLCV bars",                          body = DataResponse),
-        (status = 400, description = "Symbol not found or bad date range",  body = ErrorResponse),
+        (status = 200, description = "OHLCV bars",                         body = DataResponse),
+        (status = 400, description = "Symbol not found or bad date range", body = ErrorResponse),
     )
 )]
 async fn get_data(
@@ -354,25 +189,16 @@ async fn get_data(
     let limit = q.limit.unwrap_or(5_000).min(50_000);
     let market_hours_only = q.market_hours_only.unwrap_or(false);
     let exchange = q.exchange.clone().unwrap_or_else(|| "us".to_string());
-
     let from_ms = q.from.as_deref().and_then(parse_date_ms);
     let to_ms = q.to.as_deref().and_then(|s| {
-        parse_date_ms(s).map(|ms| ms + 86_400_000 - 1) // inclusive end-of-day
+        parse_date_ms(s).map(|ms| ms + 86_400_000 - 1)
     });
 
     let symbol_clone = symbol.clone();
     let result = tokio::task::spawn_blocking(move || {
         let files = find_parquet_files(&data_dir, &symbol_clone);
-        load_bars(
-            &files,
-            &symbol_clone,
-            from_ms,
-            to_ms,
-            market_hours_only,
-            &exchange,
-        )
-    })
-    .await;
+        load_bars(&files, &symbol_clone, from_ms, to_ms, market_hours_only, &exchange)
+    }).await;
 
     match result {
         Ok(Ok(mut feed)) => {
@@ -380,67 +206,34 @@ async fn get_data(
             let mut bars: Vec<BarRecord> = Vec::with_capacity(limit.min(feed.len()));
             while let Some(bar) = feed.next() {
                 bars.push(BarRecord {
-                    t: bar.timestamp,
-                    o: bar.open,
-                    h: bar.high,
-                    l: bar.low,
-                    c: bar.close,
-                    v: bar.volume,
-                    vwap: bar.vwap,
-                    n: bar.transactions,
+                    t: bar.timestamp, o: bar.open, h: bar.high,
+                    l: bar.low,       c: bar.close, v: bar.volume,
+                    vwap: bar.vwap, n: bar.transactions,
                 });
-                if bars.len() >= limit {
-                    break;
-                }
+                if bars.len() >= limit { break; }
             }
             let count = bars.len();
-            (
-                StatusCode::OK,
-                Json(DataResponse {
-                    symbol,
-                    count,
-                    bars,
-                }),
-            )
-                .into_response()
+            (StatusCode::OK, Json(DataResponse { symbol, count, bars })).into_response()
         }
-
         Ok(Err(e)) => {
             tracing::warn!("data load error for {symbol}: {:#}", e);
-            (
-                StatusCode::BAD_REQUEST,
-                Json(ErrorResponse {
-                    error: e.to_string(),
-                }),
-            )
-                .into_response()
+            (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e.to_string() })).into_response()
         }
-
         Err(e) => {
             tracing::error!("spawn_blocking panicked: {}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse {
-                    error: "internal error".into(),
-                }),
-            )
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "internal error".into() }))
                 .into_response()
         }
     }
 }
 
-/// Return the last N bars for a symbol.
-///
-/// Useful for chart initialisation — no need to know the exact date range.
-/// Default `n` = 500, max = 5 000.
+/// Return the last N bars for a symbol (default 500, max 5 000).
 #[utoipa::path(
-    get,
-    path = "/api/data/{symbol}/latest",
-    tag = "data",
+    get, path = "/api/data/{symbol}/latest", tag = "data",
     security(("BearerAuth" = [])),
     params(
         ("symbol" = String, Path, description = "Asset symbol, e.g. `BTCUSDT`"),
-        ("n" = Option<usize>, Query, description = "Number of bars to return (default 500, max 5000)"),
+        ("n" = Option<usize>, Query, description = "Number of bars (default 500, max 5000)"),
         ("market_hours_only" = Option<bool>, Query, description = "Filter to regular market hours"),
         ("exchange" = Option<String>, Query, description = "`\"us\"` or `\"vn\"`"),
     ),
@@ -468,18 +261,12 @@ async fn get_latest(
     match result {
         Ok(Ok(mut feed)) => {
             use alm_data::BarFeed;
-            // Collect all, then take last N
             let mut all: Vec<BarRecord> = Vec::with_capacity(feed.len().min(limit * 2));
             while let Some(bar) = feed.next() {
                 all.push(BarRecord {
-                    t: bar.timestamp,
-                    o: bar.open,
-                    h: bar.high,
-                    l: bar.low,
-                    c: bar.close,
-                    v: bar.volume,
-                    vwap: bar.vwap,
-                    n: bar.transactions,
+                    t: bar.timestamp, o: bar.open, h: bar.high,
+                    l: bar.low,       c: bar.close, v: bar.volume,
+                    vwap: bar.vwap, n: bar.transactions,
                 });
             }
             let start = all.len().saturating_sub(limit);
@@ -500,12 +287,8 @@ async fn get_latest(
 }
 
 /// Run a backtest with a named strategy.
-///
-/// Concurrent requests beyond the semaphore limit receive `429`.
 #[utoipa::path(
-    post,
-    path = "/api/backtest",
-    tag = "backtest",
+    post, path = "/api/backtest", tag = "backtest",
     security(("BearerAuth" = [])),
     request_body(
         content = BacktestRequest,
@@ -513,42 +296,31 @@ async fn get_latest(
             ("RSI — BTCUSDT" = (
                 summary = "RSI mean reversion on BTCUSDT 1m (2022–2024)",
                 value = json!({
-                    "strategy": "rsi_mean_rev",
-                    "symbol": "BTCUSDT",
-                    "from": "2022-06-01",
-                    "to": "2024-01-01",
+                    "strategy": "rsi_mean_rev", "symbol": "BTCUSDT",
+                    "from": "2022-06-01", "to": "2024-01-01",
                     "params": { "period": 14, "oversold": 30, "overbought": 70 },
                     "exit": { "stop_loss_pct": 0.05, "trailing_stop_pct": 0.03 },
-                    "initial_capital": 10000.0,
-                    "commission_pct": 0.001
+                    "initial_capital": 10000.0, "commission_pct": 0.001
                 })
             )),
             ("MACD — AAPL" = (
                 summary = "MACD crossover on AAPL 1min (2024–2026)",
                 value = json!({
-                    "strategy": "macd_crossover",
-                    "symbol": "AAPL",
-                    "from": "2024-04-01",
-                    "to": "2026-01-01",
+                    "strategy": "macd_crossover", "symbol": "AAPL",
+                    "from": "2024-04-01", "to": "2026-01-01",
                     "params": { "fast": 12, "slow": 26, "signal": 9 },
-                    "market_hours_only": true,
-                    "exchange": "us",
-                    "commission_pct": 0.0,
-                    "initial_capital": 10000.0
+                    "market_hours_only": true, "exchange": "us",
+                    "commission_pct": 0.0, "initial_capital": 10000.0
                 })
             )),
             ("EMA crossover — FPT" = (
                 summary = "EMA 9/21 crossover on FPT (VN stock)",
                 value = json!({
-                    "strategy": "ma_crossover",
-                    "symbol": "FPT",
-                    "from": "2024-01-01",
-                    "to": "2026-01-01",
+                    "strategy": "ma_crossover", "symbol": "FPT",
+                    "from": "2024-01-01", "to": "2026-01-01",
                     "params": { "fast": 9, "slow": 21 },
-                    "market_hours_only": true,
-                    "exchange": "vn",
-                    "commission_pct": 0.0015,
-                    "initial_capital": 100000000.0
+                    "market_hours_only": true, "exchange": "vn",
+                    "commission_pct": 0.0015, "initial_capital": 100000000.0
                 })
             ))
         )
@@ -563,38 +335,17 @@ async fn get_latest(
 async fn run_backtest(State(state): State<AppState>, Json(req): Json<BacktestRequest>) -> Response {
     let _permit = match state.semaphore.try_acquire() {
         Ok(p) => p,
-        Err(_) => {
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(ErrorResponse {
-                    error: "too many concurrent backtests — please retry shortly".into(),
-                }),
-            )
-                .into_response();
-        }
+        Err(_) => return too_many_requests(),
     };
-
-    tracing::info!(
-        strategy = %req.strategy,
-        symbol   = %req.symbol,
-        from     = ?req.from,
-        to       = ?req.to,
-        "HTTP backtest request"
-    );
-
+    tracing::info!(strategy = %req.strategy, symbol = %req.symbol, "HTTP backtest request");
     let data_dir = Arc::clone(&state.data_dir);
-    let result = tokio::task::spawn_blocking(move || runner::run(req, &data_dir)).await;
+    let result = tokio::task::spawn_blocking(move || backtest::run(req, &data_dir)).await;
     backtest_response(result)
 }
 
 /// Run a backtest with a CEL expression strategy.
-///
-/// Entry and exit are CEL expressions with built-in indicator functions.
-/// Concurrent requests beyond the semaphore limit receive `429`.
 #[utoipa::path(
-    post,
-    path = "/api/backtest/cel",
-    tag = "backtest",
+    post, path = "/api/backtest/cel", tag = "backtest",
     security(("BearerAuth" = [])),
     request_body(
         content = CelBacktestRequest,
@@ -605,12 +356,9 @@ async fn run_backtest(State(state): State<AppState>, Json(req): Json<BacktestReq
                     "symbol": "BTCUSDT",
                     "entry": "rsi(14) < 30 && close > ema(200)",
                     "exit": "rsi(14) > 70",
-                    "sl": 0.05,
-                    "tp": 0.15,
-                    "from": "2022-06-01",
-                    "to": "2024-01-01",
-                    "initial_capital": 10000.0,
-                    "commission_pct": 0.001
+                    "sl": 0.05, "tp": 0.15,
+                    "from": "2022-06-01", "to": "2024-01-01",
+                    "initial_capital": 10000.0, "commission_pct": 0.001
                 })
             )),
             ("EMA crossover — AAPL" = (
@@ -620,12 +368,9 @@ async fn run_backtest(State(state): State<AppState>, Json(req): Json<BacktestReq
                     "entry": "prev_ema(9) < prev_ema(21) && ema(9) > ema(21)",
                     "exit": "prev_ema(9) > prev_ema(21) && ema(9) < ema(21)",
                     "sl": 0.04,
-                    "from": "2024-04-01",
-                    "to": "2026-01-01",
-                    "market_hours_only": true,
-                    "exchange": "us",
-                    "commission_pct": 0.0,
-                    "initial_capital": 10000.0,
+                    "from": "2024-04-01", "to": "2026-01-01",
+                    "market_hours_only": true, "exchange": "us",
+                    "commission_pct": 0.0, "initial_capital": 10000.0,
                     "exit_config": { "trailing_stop_pct": 0.03 }
                 })
             )),
@@ -636,12 +381,9 @@ async fn run_backtest(State(state): State<AppState>, Json(req): Json<BacktestReq
                     "entry": "prev_macd(12,26,9).histogram < 0 && macd(12,26,9).histogram > 0",
                     "exit": "prev_macd(12,26,9).histogram > 0 && macd(12,26,9).histogram < 0",
                     "sl": 0.05,
-                    "from": "2024-01-01",
-                    "to": "2026-01-01",
-                    "market_hours_only": true,
-                    "exchange": "vn",
-                    "commission_pct": 0.0015,
-                    "initial_capital": 100000000.0
+                    "from": "2024-01-01", "to": "2026-01-01",
+                    "market_hours_only": true, "exchange": "vn",
+                    "commission_pct": 0.0015, "initial_capital": 100000000.0
                 })
             ))
         )
@@ -659,33 +401,18 @@ async fn run_backtest_cel(
 ) -> Response {
     let _permit = match state.semaphore.try_acquire() {
         Ok(p) => p,
-        Err(_) => {
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(ErrorResponse {
-                    error: "too many concurrent backtests — please retry shortly".into(),
-                }),
-            )
-                .into_response();
-        }
+        Err(_) => return too_many_requests(),
     };
-
     tracing::info!(symbol = %req.symbol, "CEL backtest request");
-
     let base: BacktestRequest = req.into();
     let data_dir = Arc::clone(&state.data_dir);
-    let result = tokio::task::spawn_blocking(move || runner::run(base, &data_dir)).await;
+    let result = tokio::task::spawn_blocking(move || backtest::run(base, &data_dir)).await;
     backtest_response(result)
 }
 
 /// Run a backtest with a JSON-defined (dynamic) strategy.
-///
-/// Define indicators by name and wire them into entry/exit condition trees.
-/// Concurrent requests beyond the semaphore limit receive `429`.
 #[utoipa::path(
-    post,
-    path = "/api/backtest/dynamic",
-    tag = "backtest",
+    post, path = "/api/backtest/dynamic", tag = "backtest",
     security(("BearerAuth" = [])),
     request_body(
         content = DynamicBacktestRequest,
@@ -694,27 +421,19 @@ async fn run_backtest_cel(
                 summary = "RSI oversold + price above EMA200 on BTCUSDT 1m",
                 value = json!({
                     "symbol": "BTCUSDT",
-                    "from": "2022-06-01",
-                    "to": "2024-01-01",
-                    "initial_capital": 10000.0,
-                    "commission_pct": 0.001,
+                    "from": "2022-06-01", "to": "2024-01-01",
+                    "initial_capital": 10000.0, "commission_pct": 0.001,
                     "indicators": {
                         "rsi14":  { "type": "rsi", "period": 14 },
                         "ema200": { "type": "ema", "period": 200 }
                     },
-                    "entry": {
-                        "logic": "and",
-                        "rules": [
-                            { "source": "rsi14", "field": "value", "op": "lt", "value": 30 },
-                            { "source": "close", "field": "value", "op": "gt", "compare": "ema200" }
-                        ]
-                    },
-                    "exit": {
-                        "logic": "or",
-                        "rules": [
-                            { "source": "rsi14", "field": "value", "op": "gt", "value": 70 }
-                        ]
-                    },
+                    "entry": { "logic": "and", "rules": [
+                        { "source": "rsi14", "field": "value", "op": "lt", "value": 30 },
+                        { "source": "close", "field": "value", "op": "gt", "compare": "ema200" }
+                    ]},
+                    "exit": { "logic": "or", "rules": [
+                        { "source": "rsi14", "field": "value", "op": "gt", "value": 70 }
+                    ]},
                     "exit_config": { "stop_loss_pct": 0.05, "trailing_stop_pct": 0.03 }
                 })
             )),
@@ -722,60 +441,42 @@ async fn run_backtest_cel(
                 summary = "MACD histogram cross với RSI confirmation trên AAPL 1min",
                 value = json!({
                     "symbol": "AAPL",
-                    "from": "2024-04-01",
-                    "to": "2026-01-01",
-                    "initial_capital": 10000.0,
-                    "commission_pct": 0.0,
-                    "market_hours_only": true,
-                    "exchange": "us",
+                    "from": "2024-04-01", "to": "2026-01-01",
+                    "initial_capital": 10000.0, "commission_pct": 0.0,
+                    "market_hours_only": true, "exchange": "us",
                     "indicators": {
                         "macd":  { "type": "macd", "fast": 12, "slow": 26, "signal": 9 },
                         "rsi14": { "type": "rsi",  "period": 14 }
                     },
-                    "entry": {
-                        "logic": "and",
-                        "rules": [
-                            { "source": "macd",  "field": "histogram", "op": "cross_above", "value": 0 },
-                            { "source": "rsi14", "field": "value",     "op": "lt",          "value": 60 }
-                        ]
-                    },
-                    "exit": {
-                        "logic": "or",
-                        "rules": [
-                            { "source": "macd",  "field": "histogram", "op": "cross_below", "value": 0 },
-                            { "source": "rsi14", "field": "value",     "op": "gt",          "value": 75 }
-                        ]
-                    }
+                    "entry": { "logic": "and", "rules": [
+                        { "source": "macd",  "field": "histogram", "op": "cross_above", "value": 0 },
+                        { "source": "rsi14", "field": "value",     "op": "lt",          "value": 60 }
+                    ]},
+                    "exit": { "logic": "or", "rules": [
+                        { "source": "macd",  "field": "histogram", "op": "cross_below", "value": 0 },
+                        { "source": "rsi14", "field": "value",     "op": "gt",          "value": 75 }
+                    ]}
                 })
             )),
             ("BB + RSI — FPT" = (
                 summary = "Bollinger Band squeeze với RSI trên FPT (VN)",
                 value = json!({
                     "symbol": "FPT",
-                    "from": "2024-01-01",
-                    "to": "2026-01-01",
-                    "initial_capital": 100000000.0,
-                    "commission_pct": 0.0015,
-                    "market_hours_only": true,
-                    "exchange": "vn",
+                    "from": "2024-01-01", "to": "2026-01-01",
+                    "initial_capital": 100000000.0, "commission_pct": 0.0015,
+                    "market_hours_only": true, "exchange": "vn",
                     "indicators": {
-                        "rsi14": { "type": "rsi",  "period": 14 },
+                        "rsi14": { "type": "rsi",    "period": 14 },
                         "bb20":  { "type": "bbands", "period": 20, "std_dev": 2.0 }
                     },
-                    "entry": {
-                        "logic": "and",
-                        "rules": [
-                            { "source": "rsi14", "field": "value",  "op": "lt", "value": 35 },
-                            { "source": "close", "field": "value",  "op": "lt", "compare": "bb20.lower" }
-                        ]
-                    },
-                    "exit": {
-                        "logic": "or",
-                        "rules": [
-                            { "source": "rsi14", "field": "value", "op": "gt", "value": 65 },
-                            { "source": "close", "field": "value", "op": "gt", "compare": "bb20.upper" }
-                        ]
-                    },
+                    "entry": { "logic": "and", "rules": [
+                        { "source": "rsi14", "field": "value", "op": "lt", "value": 35 },
+                        { "source": "close", "field": "value", "op": "lt", "compare": "bb20.lower" }
+                    ]},
+                    "exit": { "logic": "or", "rules": [
+                        { "source": "rsi14", "field": "value", "op": "gt", "value": 65 },
+                        { "source": "close", "field": "value", "op": "gt", "compare": "bb20.upper" }
+                    ]},
                     "exit_config": { "stop_loss_pct": 0.05 }
                 })
             ))
@@ -794,34 +495,18 @@ async fn run_backtest_dynamic(
 ) -> Response {
     let _permit = match state.semaphore.try_acquire() {
         Ok(p) => p,
-        Err(_) => {
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(ErrorResponse {
-                    error: "too many concurrent backtests — please retry shortly".into(),
-                }),
-            )
-                .into_response();
-        }
+        Err(_) => return too_many_requests(),
     };
-
     tracing::info!(symbol = %req.symbol, "dynamic backtest request");
-
     let base: BacktestRequest = req.into();
     let data_dir = Arc::clone(&state.data_dir);
-    let result = tokio::task::spawn_blocking(move || runner::run(base, &data_dir)).await;
+    let result = tokio::task::spawn_blocking(move || backtest::run(base, &data_dir)).await;
     backtest_response(result)
 }
 
 /// Compute indicators over historical data.
-///
-/// Returns a time series for each requested indicator, keyed by `label`
-/// (auto-generated from type + params if not supplied).
-/// Bars before indicator warmup are omitted from the series.
 #[utoipa::path(
-    post,
-    path = "/api/indicator",
-    tag = "data",
+    post, path = "/api/indicator", tag = "data",
     security(("BearerAuth" = [])),
     request_body = IndicatorRequest,
     responses(
@@ -837,27 +522,17 @@ async fn compute_indicator(
 ) -> Response {
     let _permit = match state.semaphore.try_acquire() {
         Ok(p) => p,
-        Err(_) => {
-            return (
-                StatusCode::TOO_MANY_REQUESTS,
-                Json(ErrorResponse { error: "too many concurrent requests — please retry shortly".into() }),
-            ).into_response();
-        }
+        Err(_) => return too_many_requests(),
     };
-
     tracing::info!(
         symbol     = %req.symbol,
         indicators = req.indicators.len(),
-        from       = ?req.from,
-        to         = ?req.to,
         "indicator request"
     );
-
     let data_dir = Arc::clone(&state.data_dir);
     let result = tokio::task::spawn_blocking(move || {
-        runner::compute_indicators(req, &data_dir)
+        indicator::compute_indicators(req, &data_dir)
     }).await;
-
     match result {
         Ok(Ok(resp))  => (StatusCode::OK, Json(resp)).into_response(),
         Ok(Err(e)) => {
@@ -872,7 +547,65 @@ async fn compute_indicator(
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Request conversions ───────────────────────────────────────────────────────
+
+impl From<CelBacktestRequest> for BacktestRequest {
+    fn from(req: CelBacktestRequest) -> Self {
+        let mut params = serde_json::Map::new();
+        params.insert("entry".into(), serde_json::Value::String(req.entry));
+        params.insert("exit".into(),  serde_json::Value::String(req.exit));
+        if let Some(tp) = req.tp { params.insert("tp".into(), json!(tp)); }
+        if let Some(sl) = req.sl { params.insert("sl".into(), json!(sl)); }
+        BacktestRequest {
+            strategy: "cel".into(),
+            symbol: req.symbol,
+            params: Some(serde_json::Value::Object(params)),
+            exit: req.exit_config,
+            from: req.from, to: req.to,
+            initial_capital: req.initial_capital,
+            commission_pct: req.commission_pct,
+            slippage_pct: req.slippage_pct,
+            risk_free_annual: req.risk_free_annual,
+            position_size_pct: req.position_size_pct,
+            market_hours_only: req.market_hours_only,
+            exchange: req.exchange,
+            asset_type: req.asset_type,
+        }
+    }
+}
+
+impl From<DynamicBacktestRequest> for BacktestRequest {
+    fn from(req: DynamicBacktestRequest) -> Self {
+        let mut params = serde_json::Map::new();
+        params.insert("indicators".into(), serde_json::Value::Object(req.indicators));
+        params.insert("entry".into(), req.entry);
+        params.insert("exit".into(),  req.exit);
+        BacktestRequest {
+            strategy: "dynamic".into(),
+            symbol: req.symbol,
+            params: Some(serde_json::Value::Object(params)),
+            exit: req.exit_config,
+            from: req.from, to: req.to,
+            initial_capital: req.initial_capital,
+            commission_pct: req.commission_pct,
+            slippage_pct: req.slippage_pct,
+            risk_free_annual: req.risk_free_annual,
+            position_size_pct: req.position_size_pct,
+            market_hours_only: req.market_hours_only,
+            exchange: req.exchange,
+            asset_type: req.asset_type,
+        }
+    }
+}
+
+// ── Private helpers ───────────────────────────────────────────────────────────
+
+fn too_many_requests() -> Response {
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        Json(ErrorResponse { error: "too many concurrent requests — please retry shortly".into() }),
+    ).into_response()
+}
 
 fn backtest_response(
     result: Result<anyhow::Result<BacktestResponse>, tokio::task::JoinError>,
@@ -891,77 +624,16 @@ fn backtest_response(
     }
 }
 
-impl From<CelBacktestRequest> for BacktestRequest {
-    fn from(req: CelBacktestRequest) -> Self {
-        let mut params = serde_json::Map::new();
-        params.insert("entry".into(), serde_json::Value::String(req.entry));
-        params.insert("exit".into(), serde_json::Value::String(req.exit));
-        if let Some(tp) = req.tp { params.insert("tp".into(), serde_json::json!(tp)); }
-        if let Some(sl) = req.sl { params.insert("sl".into(), serde_json::json!(sl)); }
-        BacktestRequest {
-            strategy: "cel".into(),
-            symbol: req.symbol,
-            params: Some(serde_json::Value::Object(params)),
-            exit: req.exit_config,
-            from: req.from,
-            to: req.to,
-            initial_capital: req.initial_capital,
-            commission_pct: req.commission_pct,
-            slippage_pct: req.slippage_pct,
-            risk_free_annual: req.risk_free_annual,
-            position_size_pct: req.position_size_pct,
-            market_hours_only: req.market_hours_only,
-            exchange: req.exchange,
-            asset_type: req.asset_type,
-        }
-    }
-}
-
-impl From<DynamicBacktestRequest> for BacktestRequest {
-    fn from(req: DynamicBacktestRequest) -> Self {
-        let mut params = serde_json::Map::new();
-        params.insert("indicators".into(), serde_json::Value::Object(req.indicators));
-        params.insert("entry".into(), req.entry);
-        params.insert("exit".into(), req.exit);
-        BacktestRequest {
-            strategy: "dynamic".into(),
-            symbol: req.symbol,
-            params: Some(serde_json::Value::Object(params)),
-            exit: req.exit_config,
-            from: req.from,
-            to: req.to,
-            initial_capital: req.initial_capital,
-            commission_pct: req.commission_pct,
-            slippage_pct: req.slippage_pct,
-            risk_free_annual: req.risk_free_annual,
-            position_size_pct: req.position_size_pct,
-            market_hours_only: req.market_hours_only,
-            exchange: req.exchange,
-            asset_type: req.asset_type,
-        }
-    }
-}
-
-/// Walk `data_dir` and return every parent-directory name that contains at
-/// least one `.parquet` file.  Results are sorted and deduplicated.
 fn discover_symbols(data_dir: &PathBuf) -> Vec<String> {
     let mut symbols: BTreeSet<String> = BTreeSet::new();
-    for entry in WalkDir::new(data_dir)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
+    for entry in WalkDir::new(data_dir).follow_links(false).into_iter().filter_map(|e| e.ok()) {
         let path = entry.path();
         if path.extension().and_then(|s| s.to_str()) == Some("parquet") {
-            // Skip EOD directories
             let in_eod = path.components().any(|c| {
                 c.as_os_str().to_str().map(|s| s.ends_with("_eod")).unwrap_or(false)
             });
-            if in_eod {
-                continue;
-            }
-            if let Some(parent) = path
-                .parent()
+            if in_eod { continue; }
+            if let Some(parent) = path.parent()
                 .and_then(|p| p.file_name())
                 .and_then(|n| n.to_str())
             {

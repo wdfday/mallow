@@ -23,15 +23,13 @@ const (
 )
 
 // StreamOrders implements exchange.AccountStreamer.
-// Connects to OKX private WebSocket, subscribes to the "orders" channel, and
-// calls handler on each order lifecycle event. Reconnects automatically on disconnection.
-func (c *Client) StreamOrders(ctx context.Context, handler func(exchange.OrderEvent)) error {
+func (c *Client) StreamOrders(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent)) error {
 	go func() {
 		for {
 			if ctx.Err() != nil {
 				return
 			}
-			err := c.streamOrdersOnce(ctx, handler)
+			err := c.streamOrdersOnce(ctx, creds, handler)
 			if ctx.Err() != nil {
 				return
 			}
@@ -47,9 +45,9 @@ func (c *Client) StreamOrders(ctx context.Context, handler func(exchange.OrderEv
 	return nil
 }
 
-func (c *Client) streamOrdersOnce(ctx context.Context, handler func(exchange.OrderEvent)) error {
+func (c *Client) streamOrdersOnce(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent)) error {
 	wsURL := okxPrivateWSURL
-	if c.cfg.Demo {
+	if c.demo {
 		wsURL = okxPrivateWSDemoURL
 	}
 
@@ -59,7 +57,7 @@ func (c *Client) streamOrdersOnce(ctx context.Context, handler func(exchange.Ord
 	}
 	defer conn.Close()
 
-	if err := c.wsLogin(conn); err != nil {
+	if err := wsLogin(conn, creds); err != nil {
 		return fmt.Errorf("login: %w", err)
 	}
 
@@ -101,20 +99,20 @@ func (c *Client) streamOrdersOnce(ctx context.Context, handler func(exchange.Ord
 			if string(msg) == "pong" {
 				continue
 			}
-			c.handleOKXMessage(msg, handler)
+			handleOKXMessage(msg, handler)
 		}
 	}
 }
 
-func (c *Client) wsLogin(conn *websocket.Conn) error {
+func wsLogin(conn *websocket.Conn, creds exchange.Credentials) error {
 	ts := strconv.FormatInt(time.Now().Unix(), 10)
-	sign := okxWsSign(ts, c.cfg.APISecret)
+	sign := okxWsSign(ts, creds.APISecret)
 
 	loginMsg := map[string]any{
 		"op": "login",
 		"args": []map[string]string{{
-			"apiKey":     c.cfg.APIKey,
-			"passphrase": c.cfg.Passphrase,
+			"apiKey":     creds.APIKey,
+			"passphrase": creds.Passphrase,
 			"timestamp":  ts,
 			"sign":       sign,
 		}},
@@ -145,7 +143,6 @@ func (c *Client) wsLogin(conn *websocket.Conn) error {
 	return nil
 }
 
-// okxWsSign produces HMAC-SHA256 for OKX private WS auth.
 func okxWsSign(timestamp, secret string) string {
 	msg := timestamp + "GET" + "/users/self/verify"
 	mac := hmac.New(sha256.New, []byte(secret))
@@ -161,15 +158,15 @@ type okxOrderEvent struct {
 		OrdId  string `json:"ordId"`
 		InstId string `json:"instId"`
 		Side   string `json:"side"`
-		State  string `json:"state"`  // "live", "partially_filled", "filled", "canceled", "mmp_canceled"
-		Sz     string `json:"sz"`     // original submitted qty
-		FillSz string `json:"fillSz"` // qty filled in this event
-		FillPx string `json:"fillPx"` // price of this fill
-		UTime  string `json:"uTime"`  // update time ms
+		State  string `json:"state"`
+		Sz     string `json:"sz"`
+		FillSz string `json:"fillSz"`
+		FillPx string `json:"fillPx"`
+		UTime  string `json:"uTime"`
 	} `json:"data"`
 }
 
-func (c *Client) handleOKXMessage(msg []byte, handler func(exchange.OrderEvent)) {
+func handleOKXMessage(msg []byte, handler func(exchange.OrderEvent)) {
 	var ev okxOrderEvent
 	if err := json.Unmarshal(msg, &ev); err != nil {
 		return

@@ -101,14 +101,45 @@ impl BarResampler {
     }
 }
 
+// ── Supported MTF timeframes by asset class ───────────────────────────────────
+
+/// Timeframes supported for Multi-Timeframe (MTF) indicators on **US stocks**.
+///
+/// H4 is intentionally excluded: the US equity session is 390 min (9:30–16:00),
+/// which 240 min does not divide evenly.  Wall-clock H4 alignment produces a
+/// ~2.5 h "stub" bar at the open of every session, making indicators computed on
+/// it unreliable.  Use D1 as the higher timeframe instead.
+///
+/// Valid: `M1 M5 M15 M30 H1 H2 H3 D1 W1`
+pub const SUPPORTED_MTF_STOCK: &[&str] = &[
+    "M1", "M5", "M15", "M30",
+    "H1", "H2", "H3",
+    "D1", "W1",
+];
+
+/// Timeframes supported for Multi-Timeframe (MTF) indicators on **crypto**.
+///
+/// Crypto trades 24/7 so all hourly multiples align cleanly. H4 is included
+/// (6 full bars per day, 0 h / 4 h / 8 h / 12 h / 16 h / 20 h UTC).
+///
+/// Valid: `M1 M5 M15 M30 H1 H2 H3 H4 D1 W1`
+pub const SUPPORTED_MTF_CRYPTO: &[&str] = &[
+    "M1", "M5", "M15", "M30",
+    "H1", "H2", "H3", "H4",
+    "D1", "W1",
+];
+
 // ── Time-based resampler ──────────────────────────────────────────────────────
 
 /// Parse a TradingView-style timeframe string into milliseconds.
 ///
-/// Supported formats: `M1`, `M5`, `M15`, `M30`, `H1`, `H2`, `H4`, `H6`,
-/// `H8`, `H12`, `D1`, `W1`.
+/// Accepts any `M<n>`, `H<n>`, `D<n>`, `W<n>` string where `n > 0`.
+/// The parser is intentionally permissive — callers that need to enforce
+/// asset-class restrictions should validate against [`SUPPORTED_MTF_STOCK`]
+/// or [`SUPPORTED_MTF_CRYPTO`] before calling this function.
 ///
-/// Returns `None` for unrecognised strings.
+/// Returns `None` for unrecognised strings (bad unit letter, non-numeric
+/// suffix, or `n == 0`).
 pub fn parse_timeframe_ms(tf: &str) -> Option<i64> {
     let tf = tf.trim();
     if tf.len() < 2 { return None; }
@@ -127,8 +158,7 @@ pub fn parse_timeframe_ms(tf: &str) -> Option<i64> {
 
 /// Time-based bar resampler — aggregates bars by wall-clock bucket.
 ///
-/// Unlike [`BarResampler`] (count-based), this aligns to real time boundaries
-/// so it works correctly with stock data that has session gaps:
+/// Unlike [`BarResampler`] (count-based), this aligns to real time boundaries:
 /// `floor(timestamp / interval_ms)` determines the bucket.
 ///
 /// A completed HTF bar is emitted when the **first bar of the next bucket**
@@ -136,7 +166,35 @@ pub fn parse_timeframe_ms(tf: &str) -> Option<i64> {
 /// This means the very last partial HTF bar is silently dropped — correct
 /// behaviour for live trading (never trade on an incomplete candle).
 ///
-/// # OHLCV aggregation
+/// ## Session gaps (stocks)
+///
+/// Session gaps (e.g. 16:00 → 9:30 next day) are handled transparently: the
+/// overnight gap simply keeps the current bucket alive until the next bar
+/// arrives, at which point the bucket boundary logic kicks in normally.
+/// Bars are never merged across sessions.
+///
+/// ## Stub bar at session open (stocks, known limitation)
+///
+/// Because bucket boundaries are wall-clock-aligned (e.g. 9:00, 10:00, …),
+/// but the US equity session opens at 9:30, the **first HTF bar of each
+/// session is shorter than nominal**:
+///
+/// | HTF | Nominal | Actual (first bar) |
+/// |-----|---------|--------------------|
+/// | H1  | 60 min  | ~30 min (9:30–10:00) |
+/// | H2  | 120 min | ~30 min (9:30–10:00) |
+/// | H3  | 180 min | ~30 min (9:30–10:00) |
+///
+/// For smooth indicators (EMA, RSI) this is an acceptable imperfection.
+/// It would matter more for ATR-based dynamic sizing (slightly underestimated
+/// volatility at the open).  If session-accurate alignment becomes necessary,
+/// add a `session_open: Option<NaiveTime>` field and align buckets to session
+/// start instead of UTC midnight.
+///
+/// H4 is excluded from [`SUPPORTED_MTF_STOCK`] because 390-minute sessions
+/// don't divide evenly by 240 min — the stub there is ~2.5 h, far too large.
+///
+/// ## OHLCV aggregation
 /// - `timestamp` = bucket open time (floor of the first bar's timestamp)
 /// - `open`   = open of the first bar in the bucket
 /// - `high`   = max(high) across all bars
@@ -210,6 +268,22 @@ impl TimeBarResampler {
     }
 
     pub fn interval_ms(&self) -> i64 { self.interval_ms }
+
+    /// Returns the bar currently being accumulated (the "forming" / live bar)
+    /// without emitting or advancing state.
+    ///
+    /// Returns `None` if no base bar has been received yet.
+    pub fn peek(&self) -> Option<Bar> {
+        self.bucket.map(|ts| Bar::new(
+            ts,
+            &self.symbol,
+            self.open,
+            self.high,
+            self.low,
+            self.close,
+            self.volume,
+        ))
+    }
 
     pub fn reset(&mut self) {
         self.bucket = None;

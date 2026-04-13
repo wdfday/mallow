@@ -1,12 +1,33 @@
 use std::collections::VecDeque;
 
-/// Volatility Ratio (Schwager).
+/// Volatility Ratio (Schwager) — đo mức độ "bùng nổ" của bar hiện tại so với range lịch sử.
 ///
-/// VR = True Range / (Highest High − Lowest Low) over `lookback` bars.
+/// Được Jack Schwager mô tả trong *Schwager on Futures*. VR so sánh True Range của bar
+/// hiện tại với khoảng dao động tổng (HH − LL) trong `lookback` bar gần đây. Khi VR cao
+/// → bar hiện tại "kéo dài" gần bằng toàn bộ range lịch sử → explosive move / breakout.
 ///
-/// Values near 1.0 mean today's range spans the whole lookback range (explosive move).
-/// Values near 0.0 mean today's range is tiny relative to recent history.
-/// Typical breakout threshold: VR > 0.5.
+/// # Công thức
+/// ```text
+/// TR    = max(High − Low, |High − prev_Close|, |Low − prev_Close|)
+/// HH    = max(High₀, High₁, …, Highₙ₋₁)    ← highest high trong lookback bar
+/// LL    = min(Low₀,  Low₁,  …, Lowₙ₋₁)     ← lowest low
+///
+/// VR = TR / (HH − LL)
+/// ```
+///
+/// # Diễn giải
+/// - **VR ≈ 1.0**: bar hiện tại có TR gần bằng toàn bộ lookback range → explosive breakout
+/// - **VR ≈ 0.0**: bar hiện tại rất nhỏ so với range lịch sử → consolidation
+/// - **VR > 0.5**: ngưỡng thông thường cho breakout signal
+///
+/// # Ứng dụng
+/// - Lọc breakout: chỉ trade khi VR > threshold để tránh false breakout
+/// - Volatility regime detection: VR thấp liên tục → sắp có biến động lớn
+/// - Kết hợp với Donchian Channel: giá vượt channel AND VR > 0.5 → breakout đáng tin
+///
+/// # Warmup
+/// Cần `lookback` bar để có đủ dữ liệu HH/LL.
+#[derive(Clone)]
 pub struct VolatilityRatio {
     lookback: usize,
     highs: VecDeque<f64>,

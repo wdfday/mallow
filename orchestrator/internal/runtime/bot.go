@@ -67,10 +67,10 @@ type Bot struct {
 	cancel         context.CancelFunc
 	done           chan struct{}
 	orders         []domain.Order
-	barsSinceEntry map[string]int    // symbol → bar count since position entry (time-stop)
-	pendingExits   map[string]exitLevel  // orderID → SL/TP levels; promoted to exitLevels on entry fill
-	exitLevels     map[string]exitLevel  // symbol → active SL/TP for open position (local safety net)
-	l2Guards       map[string]*l2Guard   // symbol → L2 warm-up state
+	barsSinceEntry map[string]int       // symbol → bar count since position entry (time-stop)
+	pendingExits   map[string]exitLevel // orderID → SL/TP levels; promoted to exitLevels on entry fill
+	exitLevels     map[string]exitLevel // symbol → active SL/TP for open position (local safety net)
+	l2Guards       map[string]*l2Guard  // symbol → L2 warm-up state
 
 	health  BotHealth
 	metrics struct {
@@ -280,7 +280,7 @@ func (b *Bot) flattenPositions(ctx context.Context) {
 			side = exchange.Buy
 		}
 		qty := pos.Qty.Abs()
-		result, err := b.rt.Exchange.PlaceOrder(ctx, exchange.OrderRequest{
+		result, err := b.rt.Exchange.PlaceOrder(ctx, b.rt.Creds, exchange.OrderRequest{
 			Symbol: pos.Symbol,
 			Side:   side,
 			Type:   exchange.Market,
@@ -453,7 +453,7 @@ func (b *Bot) handleSignal(ctx context.Context, sig Signal) {
 		limitPrice = reply.LimitPrice
 	}
 
-	result, err := b.rt.Exchange.PlaceOrder(ctx, exchange.OrderRequest{
+	result, err := b.rt.Exchange.PlaceOrder(ctx, b.rt.Creds, exchange.OrderRequest{
 		Symbol:       sig.Symbol,
 		Side:         exchange.OrderSide(reply.Side),
 		Type:         orderType,
@@ -565,14 +565,14 @@ func (b *Bot) applyFill(orderID, symbol, side string, qty, price decimal.Decimal
 	}
 
 	b.rt.ReportFill(orchdomain.FillReport{
-		BotID:     b.id,
+		BotID:          b.id,
 		OrchestratorID: b.orchestratorID,
-		OrderID:   orderID,
-		Symbol:    symbol,
-		Side:      side,
-		Qty:       qty,
-		Price:     price,
-		Timestamp: time.Now().UTC(),
+		OrderID:        orderID,
+		Symbol:         symbol,
+		Side:           side,
+		Qty:            qty,
+		Price:          price,
+		Timestamp:      time.Now().UTC(),
 	})
 }
 
@@ -588,7 +588,7 @@ func (b *Bot) pollOrders(ctx context.Context) {
 	b.mu.RUnlock()
 
 	for _, o := range pending {
-		result, err := b.rt.Exchange.GetOrder(ctx, o.ID)
+		result, err := b.rt.Exchange.GetOrder(ctx, b.rt.Creds, o.ID)
 		if err != nil {
 			slog.Warn("bot: poll order failed", "order_id", o.ID, "err", err)
 			continue
@@ -712,7 +712,7 @@ func (b *Bot) PlaceOrder(ctx context.Context, symbol string, qty decimal.Decimal
 	if !reply.Approved {
 		return "", fmt.Errorf("trade rejected: %s", reply.Reason)
 	}
-	result, err := b.rt.Exchange.PlaceOrder(ctx, exchange.OrderRequest{
+	result, err := b.rt.Exchange.PlaceOrder(ctx, b.rt.Creds, exchange.OrderRequest{
 		Symbol: symbol,
 		Side:   exchange.OrderSide(side),
 		Type:   exchange.Market,
@@ -724,12 +724,12 @@ func (b *Bot) PlaceOrder(ctx context.Context, symbol string, qty decimal.Decimal
 	}
 	b.metrics.ordersPlaced.Add(1)
 	b.rt.TrackOrder(orderbook.PendingOrder{
-		OrderID:   result.ID,
-		BotID:     b.id,
+		OrderID:        result.ID,
+		BotID:          b.id,
 		OrchestratorID: b.orchestratorID,
-		Symbol:    symbol,
-		Side:      orderbook.OrderSide(side),
-		Qty:       reply.Qty,
+		Symbol:         symbol,
+		Side:           orderbook.OrderSide(side),
+		Qty:            reply.Qty,
 	})
 	order := domain.Order{
 		BotID:          b.id,

@@ -79,3 +79,95 @@ impl Strategy for StochasticCrossover {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alm_core::signal::Direction;
+    use serde_json::json;
+    use crate::factory::build_strategy;
+
+    fn bar(ts: i64, close: f64) -> Bar {
+        Bar::new(ts, "T", close * 1.005, close * 1.005, close * 0.995, close, 1000.0)
+    }
+
+    fn run(s: &mut dyn Strategy, bars: &[Bar]) -> Vec<(i64, Direction)> {
+        bars.iter().flat_map(|b| s.on_bar(b)).map(|s| (s.timestamp, s.direction)).collect()
+    }
+
+    // V-shape: falling → rising to push stochastic into oversold then overbought
+    fn v_bars(n: usize) -> Vec<Bar> {
+        (0..n).map(|i| {
+            let price = if i < n / 2 {
+                150.0 - i as f64 * 3.0
+            } else {
+                150.0 - (n / 2) as f64 * 3.0 + (i - n / 2) as f64 * 4.0
+            };
+            bar(i as i64 * 60_000, price.max(1.0))
+        }).collect()
+    }
+
+    #[test]
+    fn no_signal_before_warmup() {
+        let mut s = StochasticCrossover::new(14, 3, 20.0, 80.0);
+        for i in 0..15 {
+            assert!(s.on_bar(&bar(i, 100.0)).is_empty());
+        }
+    }
+
+    #[test]
+    fn parity_dynamic() {
+        let bars = v_bars(150);
+        let mut hc = StochasticCrossover::new(14, 3, 20.0, 80.0);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": { "stoch": { "type": "stochastic", "k_period": 14, "d_period": 3 } },
+            "entry": {
+                "logic": "and",
+                "rules": [
+                    { "source": "stoch", "field": "k", "op": "cross_above",
+                      "compare": "stoch", "compare_field": "d" },
+                    { "source": "stoch", "field": "d", "op": "lt", "value": 20.0 }
+                ]
+            },
+            "exit": {
+                "logic": "and",
+                "rules": [
+                    { "source": "stoch", "field": "k", "op": "cross_below",
+                      "compare": "stoch", "compare_field": "d" },
+                    { "source": "stoch", "field": "d", "op": "gt", "value": 80.0 }
+                ]
+            }
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "no signals produced");
+        assert_eq!(hc_sigs, dyn_sigs, "hardcoded vs dynamic mismatch");
+    }
+
+    #[test]
+    fn parity_cel() {
+        let bars = v_bars(150);
+        let mut hc = StochasticCrossover::new(14, 3, 20.0, 80.0);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "prev_stoch_k(14) <= prev_stoch_d(14) && stoch_k(14) > stoch_d(14) && stoch_d(14) < 20.0",
+            "exit":  "prev_stoch_k(14) >= prev_stoch_d(14) && stoch_k(14) < stoch_d(14) && stoch_d(14) > 80.0"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert_eq!(hc_sigs, cel_sigs, "hardcoded vs cel mismatch");
+    }
+
+    #[test]
+    fn parity_reset() {
+        let bars = v_bars(150);
+        let mut hc = StochasticCrossover::new(14, 3, 20.0, 80.0);
+        let r1 = run(&mut hc, &bars);
+        hc.reset();
+        let r2 = run(&mut hc, &bars);
+        assert_eq!(r1, r2, "reset parity failed");
+    }
+}

@@ -26,18 +26,15 @@ func roundTick(price, tick float64) float64 {
 	return math.Round(price/tick) * tick
 }
 
-func demoClient(t *testing.T) *Client {
+func demoClient(t *testing.T) (*Client, exchange.Credentials) {
 	t.Helper()
 	key := os.Getenv("BINANCE_API_KEY")
 	secret := os.Getenv("BINANCE_API_SECRET")
 	if key == "" || secret == "" {
 		t.Skip("BINANCE_API_KEY / BINANCE_API_SECRET not set")
 	}
-	return New(Config{
-		APIKey:    key,
-		APISecret: secret,
-		Testnet:   true, // routes to demo-api.binance.com
-	})
+	creds := exchange.Credentials{APIKey: key, APISecret: secret}
+	return New(true), creds // true = testnet/demo-api.binance.com
 }
 
 func ctx() (context.Context, context.CancelFunc) {
@@ -47,7 +44,7 @@ func ctx() (context.Context, context.CancelFunc) {
 // ── Connectivity ──────────────────────────────────────────────────────────────
 
 func TestDemo_ServerTime(t *testing.T) {
-	c := demoClient(t)
+	c, _ := demoClient(t)
 	cx, cancel := ctx()
 	defer cancel()
 
@@ -61,11 +58,11 @@ func TestDemo_ServerTime(t *testing.T) {
 // ── Account ───────────────────────────────────────────────────────────────────
 
 func TestDemo_GetAccount(t *testing.T) {
-	c := demoClient(t)
+	c, creds := demoClient(t)
 	cx, cancel := ctx()
 	defer cancel()
 
-	info, err := c.GetAccount(cx)
+	info, err := c.GetAccount(cx, creds)
 	if err != nil {
 		t.Fatalf("GetAccount: %v", err)
 	}
@@ -76,11 +73,11 @@ func TestDemo_GetAccount(t *testing.T) {
 }
 
 func TestDemo_GetBalance(t *testing.T) {
-	c := demoClient(t)
+	c, creds := demoClient(t)
 	cx, cancel := ctx()
 	defer cancel()
 
-	b, err := c.GetBalance(cx, "USDT")
+	b, err := c.GetBalance(cx, creds, "USDT")
 	if err != nil {
 		t.Fatalf("GetBalance USDT: %v", err)
 	}
@@ -88,11 +85,11 @@ func TestDemo_GetBalance(t *testing.T) {
 }
 
 func TestDemo_SpotBalance(t *testing.T) {
-	c := demoClient(t)
+	c, creds := demoClient(t)
 	cx, cancel := ctx()
 	defer cancel()
 
-	free, err := c.SpotBalance(cx, "USDT")
+	free, err := c.SpotBalance(cx, creds, "USDT")
 	if err != nil {
 		t.Fatalf("SpotBalance USDT: %v", err)
 	}
@@ -100,11 +97,11 @@ func TestDemo_SpotBalance(t *testing.T) {
 }
 
 func TestDemo_SyncAccount(t *testing.T) {
-	c := demoClient(t)
+	c, creds := demoClient(t)
 	cx, cancel := ctx()
 	defer cancel()
 
-	snap, err := c.SyncAccount(cx, nil)
+	snap, err := c.SyncAccount(cx, creds, nil)
 	if err != nil {
 		t.Fatalf("SyncAccount: %v", err)
 	}
@@ -117,11 +114,11 @@ func TestDemo_SyncAccount(t *testing.T) {
 // ── Market data ───────────────────────────────────────────────────────────────
 
 func TestDemo_GetCurrentPrice(t *testing.T) {
-	c := demoClient(t)
+	c, creds := demoClient(t)
 	cx, cancel := ctx()
 	defer cancel()
 
-	price, err := c.GetCurrentPrice(cx, "BTCUSDT")
+	price, err := c.GetCurrentPrice(cx, creds, "BTCUSDT")
 	if err != nil {
 		t.Fatalf("GetCurrentPrice BTCUSDT: %v", err)
 	}
@@ -129,7 +126,7 @@ func TestDemo_GetCurrentPrice(t *testing.T) {
 }
 
 func TestDemo_GetExchangeAsset(t *testing.T) {
-	c := demoClient(t)
+	c, _ := demoClient(t)
 	cx, cancel := ctx()
 	defer cancel()
 
@@ -144,11 +141,11 @@ func TestDemo_GetExchangeAsset(t *testing.T) {
 // ── Spot orders ───────────────────────────────────────────────────────────────
 
 func TestDemo_SpotMarketOrder(t *testing.T) {
-	c := demoClient(t)
+	c, creds := demoClient(t)
 	cx, cancel := ctx()
 	defer cancel()
 
-	result, err := c.PlaceOrder(cx, exchange.OrderRequest{
+	result, err := c.PlaceOrder(cx, creds, exchange.OrderRequest{
 		Symbol: "BTCUSDT",
 		Side:   exchange.Buy,
 		Type:   exchange.Market,
@@ -163,7 +160,7 @@ func TestDemo_SpotMarketOrder(t *testing.T) {
 	// GetOrder
 	cx2, cancel2 := ctx()
 	defer cancel2()
-	got, err := c.GetOrder(cx2, result.ID)
+	got, err := c.GetOrder(cx2, creds, result.ID)
 	if err != nil {
 		t.Fatalf("GetOrder: %v", err)
 	}
@@ -171,12 +168,12 @@ func TestDemo_SpotMarketOrder(t *testing.T) {
 }
 
 func TestDemo_SpotLimitOrder_ThenCancel(t *testing.T) {
-	c := demoClient(t)
+	c, creds := demoClient(t)
 
 	// Get current price first to set a realistic limit price
 	cx0, cancel0 := ctx()
 	defer cancel0()
-	price, err := c.GetCurrentPrice(cx0, "BTCUSDT")
+	price, err := c.GetCurrentPrice(cx0, creds, "BTCUSDT")
 	if err != nil {
 		t.Fatalf("GetCurrentPrice: %v", err)
 	}
@@ -184,7 +181,7 @@ func TestDemo_SpotLimitOrder_ThenCancel(t *testing.T) {
 
 	cx, cancel := ctx()
 	defer cancel()
-	result, err := c.PlaceOrder(cx, exchange.OrderRequest{
+	result, err := c.PlaceOrder(cx, creds, exchange.OrderRequest{
 		Symbol: "BTCUSDT",
 		Side:   exchange.Buy,
 		Type:   exchange.Limit,
@@ -199,7 +196,7 @@ func TestDemo_SpotLimitOrder_ThenCancel(t *testing.T) {
 	// Cancel it
 	cx2, cancel2 := ctx()
 	defer cancel2()
-	if err := c.CancelOrder(cx2, result.ID); err != nil {
+	if err := c.CancelOrder(cx2, creds, result.ID); err != nil {
 		t.Fatalf("CancelOrder: %v", err)
 	}
 	t.Logf("order %s cancelled", result.ID)
@@ -207,7 +204,7 @@ func TestDemo_SpotLimitOrder_ThenCancel(t *testing.T) {
 	// Verify cancelled
 	cx3, cancel3 := ctx()
 	defer cancel3()
-	got, err := c.GetOrder(cx3, result.ID)
+	got, err := c.GetOrder(cx3, creds, result.ID)
 	if err != nil {
 		t.Fatalf("GetOrder after cancel: %v", err)
 	}
@@ -215,12 +212,12 @@ func TestDemo_SpotLimitOrder_ThenCancel(t *testing.T) {
 }
 
 func TestDemo_SpotSellOrder(t *testing.T) {
-	c := demoClient(t)
+	c, creds := demoClient(t)
 
 	// Check BTC balance first — buy some if needed
 	cx0, cancel0 := ctx()
 	defer cancel0()
-	bal, err := c.GetBalance(cx0, "BTC")
+	bal, err := c.GetBalance(cx0, creds, "BTC")
 	if err != nil {
 		t.Fatalf("GetBalance BTC: %v", err)
 	}
@@ -228,7 +225,7 @@ func TestDemo_SpotSellOrder(t *testing.T) {
 		t.Logf("BTC balance %.8f < 0.001, buying first...", bal.Free)
 		cxb, cancelb := ctx()
 		defer cancelb()
-		if _, err := c.PlaceOrder(cxb, exchange.OrderRequest{
+		if _, err := c.PlaceOrder(cxb, creds, exchange.OrderRequest{
 			Symbol: "BTCUSDT",
 			Side:   exchange.Buy,
 			Type:   exchange.Market,
@@ -239,7 +236,7 @@ func TestDemo_SpotSellOrder(t *testing.T) {
 		time.Sleep(500 * time.Millisecond)
 		cx1, cancel1 := ctx()
 		defer cancel1()
-		bal, err = c.GetBalance(cx1, "BTC")
+		bal, err = c.GetBalance(cx1, creds, "BTC")
 		if err != nil || bal.Free < 0.001 {
 			t.Skipf("still insufficient BTC after buy: free=%.8f", bal.Free)
 		}
@@ -248,7 +245,7 @@ func TestDemo_SpotSellOrder(t *testing.T) {
 
 	cx, cancel := ctx()
 	defer cancel()
-	result, err := c.PlaceOrder(cx, exchange.OrderRequest{
+	result, err := c.PlaceOrder(cx, creds, exchange.OrderRequest{
 		Symbol: "BTCUSDT",
 		Side:   exchange.Sell,
 		Type:   exchange.Market,
@@ -283,7 +280,7 @@ func bookTicker(symbol string) (bid, ask float64, err error) {
 }
 
 func TestDemo_Slippage(t *testing.T) {
-	c := demoClient(t)
+	c, creds := demoClient(t)
 
 	type result struct {
 		side      string
@@ -300,11 +297,11 @@ func TestDemo_Slippage(t *testing.T) {
 		// Ensure BTC balance for sell
 		if side == exchange.Sell {
 			cx, cancel := ctx()
-			bal, _ := c.GetBalance(cx, "BTC")
+			bal, _ := c.GetBalance(cx, creds, "BTC")
 			cancel()
 			if bal == nil || bal.Free < 0.001 {
 				cxb, cancelb := ctx()
-				c.PlaceOrder(cxb, exchange.OrderRequest{ //nolint
+				c.PlaceOrder(cxb, creds, exchange.OrderRequest{ //nolint
 					Symbol: "BTCUSDT", Side: exchange.Buy, Type: exchange.Market, Qty: decimal.NewFromFloat(0.001),
 				})
 				cancelb()
@@ -321,7 +318,7 @@ func TestDemo_Slippage(t *testing.T) {
 		spreadBps := (ask - bid) / mid * 10000
 
 		cx, cancel := ctx()
-		resp, err := c.PlaceOrder(cx, exchange.OrderRequest{
+		resp, err := c.PlaceOrder(cx, creds, exchange.OrderRequest{
 			Symbol: "BTCUSDT",
 			Side:   side,
 			Type:   exchange.Market,
@@ -370,12 +367,12 @@ func TestDemo_Slippage(t *testing.T) {
 // TestDemo_StreamOrders subscribes to the demo order stream via signature-based auth
 // (wss://demo-ws-api.binance.com/ws-api/v3), then places a market order to trigger events.
 func TestDemo_StreamOrders(t *testing.T) {
-	c := demoClient(t)
+	c, creds := demoClient(t)
 	cx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
 	events := make(chan exchange.OrderEvent, 8)
-	if err := c.StreamOrders(cx, func(e exchange.OrderEvent) {
+	if err := c.StreamOrders(cx, creds, func(e exchange.OrderEvent) {
 		events <- e
 	}); err != nil {
 		t.Fatalf("StreamOrders: %v", err)
@@ -385,7 +382,7 @@ func TestDemo_StreamOrders(t *testing.T) {
 
 	cx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel2()
-	_, err := c.PlaceOrder(cx2, exchange.OrderRequest{
+	_, err := c.PlaceOrder(cx2, creds, exchange.OrderRequest{
 		Symbol: "BTCUSDT",
 		Side:   exchange.Buy,
 		Type:   exchange.Market,

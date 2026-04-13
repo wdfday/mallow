@@ -1,9 +1,34 @@
 use crate::Ema;
 
-/// Average True Range — measures volatility.
+/// Average True Range (ATR) — đo volatility của thị trường.
 ///
-/// TR = max(high - low, |high - prev_close|, |low - prev_close|)
+/// Được Welles Wilder phát triển năm 1978. ATR không cho biết hướng giá —
+/// chỉ đo mức độ biến động. Là nền tảng của nhiều indicator khác (SuperTrend,
+/// Keltner, Chandelier Exit, Chande Kroll Stop, v.v.).
+///
+/// # Công thức
+/// ```text
+/// TR = max(
+///   high - low,              ← biên độ trong bar
+///   |high - prev_close|,     ← gap lên + high
+///   |low  - prev_close|      ← gap xuống + low
+/// )
+///
 /// ATR = EMA(TR, period)
+/// ```
+/// Note: Wilder gốc dùng SMMA (alpha=1/n); codebase này dùng EMA (alpha=2/(n+1))
+/// vì EMA phổ biến hơn trong các thư viện hiện đại. Kết quả gần tương đương.
+///
+/// # Ứng dụng thực tế
+/// - **Position sizing**: risk = ATR × lot_size (1 ATR = 1 unit risk)
+/// - **Stop loss**: đặt stop cách entry 1.5–3× ATR
+/// - **Trailing stop**: Chandelier Exit = HH − 3×ATR
+/// - **Volatility filter**: chỉ giao dịch khi ATR > ngưỡng tối thiểu
+/// - **Breakout xác nhận**: breakout đáng tin khi volume cao và ATR mở rộng
+///
+/// # Warmup
+/// Bar đầu tiên: không có `prev_close` → TR = high - low.
+/// Cần `period` bar để EMA warm up.
 #[derive(Debug, Clone)]
 pub struct Atr {
     _period: usize,
@@ -11,10 +36,12 @@ pub struct Atr {
     prev_close: Option<f64>,
 }
 
-/// ATR output: true_range and smoothed atr value.
+/// Kết quả ATR: true range của bar hiện tại và ATR đã smoothed.
 #[derive(Debug, Clone, Copy)]
 pub struct AtrValue {
+    /// True Range của bar hiện tại (chưa smoothed)
     pub tr: f64,
+    /// ATR: EMA của TR (đã smoothed)
     pub atr: f64,
 }
 

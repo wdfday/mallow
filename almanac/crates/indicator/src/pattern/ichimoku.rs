@@ -16,10 +16,50 @@ pub struct IchimokuValue {
     pub above_cloud: bool,
 }
 
-/// Ichimoku Kinko Hyo.
+/// Ichimoku Kinko Hyo — hệ thống phân tích toàn diện trong một indicator.
 ///
-/// Standard periods: tenkan=9, kijun=26, senkou_b=52.
-/// All values returned are non-displaced (no forward/back shift) for backtesting purposes.
+/// "Ichimoku Kinko Hyo" tiếng Nhật nghĩa là "biểu đồ nhìn một lần cân bằng".
+/// Được Goichi Hosoda (bút danh Ichimoku Sanjin) phát triển trong thập niên 1930–1960.
+/// Là một trong số ít indicator cung cấp **hỗ trợ/kháng cự, momentum, xu hướng, và
+/// tín hiệu** trong cùng một công cụ.
+///
+/// # Năm thành phần
+/// ```text
+/// Tenkan-sen (Conversion Line): (HH + LL) / 2 trong tenkan bar
+///   → midpoint của range 9 bar, giống EMA nhưng dựa trên H/L
+///
+/// Kijun-sen (Base Line): (HH + LL) / 2 trong kijun bar
+///   → midpoint của range 26 bar; hỗ trợ/kháng cự quan trọng
+///
+/// Senkou Span A: (Tenkan + Kijun) / 2 → plotted kijun bar về phía trước
+///   → cạnh trên/dưới của cloud (mây)
+///
+/// Senkou Span B: (HH + LL) / 2 trong senkou_b bar → plotted kijun bar về phía trước
+///   → cạnh còn lại của cloud
+///
+/// Chikou Span: Close hiện tại → plotted kijun bar về phía sau
+///   → so sánh close hôm nay với giá kijun bar trước
+/// ```
+///
+/// **Cloud (Kumo)**: vùng giữa Senkou A và B. Giá trên cloud = bullish;
+/// dưới cloud = bearish; trong cloud = không rõ ràng (sideways).
+///
+/// **Note**: Implementation này trả về giá trị không displaced (không shift) để
+/// backtesting signal-generation hoạt động đúng theo bar thực tế.
+///
+/// # Tín hiệu chính
+/// - **TK Cross**: Tenkan cắt Kijun từ dưới → long signal (nếu giá trên cloud)
+/// - **Giá phá cloud từ dưới lên**: bullish breakout
+/// - **Chikou trên giá cách kijun bar**: xác nhận bullish
+///
+/// # Tham số chuẩn
+/// - tenkan = 9: ngắn hạn
+/// - kijun = 26: trung hạn (tương đương 1 tháng giao dịch)
+/// - senkou_b = 52: dài hạn (tương đương 2 tháng)
+///
+/// # Warmup
+/// Cần `senkou_b_period` bar (52 bar với tham số chuẩn).
+#[derive(Clone)]
 pub struct Ichimoku {
     tenkan: usize,
     kijun: usize,

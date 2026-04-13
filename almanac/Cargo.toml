@@ -9,7 +9,7 @@ members = [
     "crates/report",
     "crates/chart",
     "crates/pattern",
-    "crates/vectorized",
+    # "crates/vectorized",   # deferred — grid search / batch optimisation, re-enable when needed
     "crates/herald",
     "crates/logbook",
 ]

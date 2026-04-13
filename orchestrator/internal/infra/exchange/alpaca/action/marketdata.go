@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata"
+
+	"orchestrator/internal/infra/exchange"
 )
 
 // Bar is a simplified OHLCV candle.
@@ -43,9 +45,9 @@ type Snapshot struct {
 }
 
 // GetLatestBar returns the most recent completed bar for a symbol.
-func (c *Client) GetLatestBar(symbol string, timeframe marketdata.TimeFrame) (*Bar, error) {
+func (c *Client) GetLatestBar(creds exchange.Credentials, symbol string, timeframe marketdata.TimeFrame) (*Bar, error) {
 	feed := feedFor(symbol)
-	bars, err := c.md.GetBars(symbol, marketdata.GetBarsRequest{
+	bars, err := c.newMD(creds).GetBars(symbol, marketdata.GetBarsRequest{
 		TimeFrame: timeframe,
 		Feed:      feed,
 	})
@@ -68,9 +70,9 @@ func (c *Client) GetLatestBar(symbol string, timeframe marketdata.TimeFrame) (*B
 }
 
 // GetBars returns historical bars for a symbol in the given time range.
-func (c *Client) GetBars(symbol string, timeframe marketdata.TimeFrame, start, end time.Time) ([]Bar, error) {
+func (c *Client) GetBars(creds exchange.Credentials, symbol string, timeframe marketdata.TimeFrame, start, end time.Time) ([]Bar, error) {
 	feed := feedFor(symbol)
-	raw, err := c.md.GetBars(symbol, marketdata.GetBarsRequest{
+	raw, err := c.newMD(creds).GetBars(symbol, marketdata.GetBarsRequest{
 		TimeFrame: timeframe,
 		Start:     start,
 		End:       end,
@@ -95,9 +97,9 @@ func (c *Client) GetBars(symbol string, timeframe marketdata.TimeFrame, start, e
 }
 
 // GetLatestQuote returns the current best bid/ask for a symbol.
-func (c *Client) GetLatestQuote(symbol string) (*Quote, error) {
+func (c *Client) GetLatestQuote(creds exchange.Credentials, symbol string) (*Quote, error) {
 	feed := feedFor(symbol)
-	q, err := c.md.GetLatestQuote(symbol, marketdata.GetLatestQuoteRequest{Feed: feed})
+	q, err := c.newMD(creds).GetLatestQuote(symbol, marketdata.GetLatestQuoteRequest{Feed: feed})
 	if err != nil {
 		return nil, fmt.Errorf("alpaca get quote %s: %w", symbol, err)
 	}
@@ -111,9 +113,9 @@ func (c *Client) GetLatestQuote(symbol string) (*Quote, error) {
 }
 
 // GetSnapshot returns a point-in-time market snapshot for a symbol.
-func (c *Client) GetSnapshot(symbol string) (*Snapshot, error) {
+func (c *Client) GetSnapshot(creds exchange.Credentials, symbol string) (*Snapshot, error) {
 	feed := feedFor(symbol)
-	snap, err := c.md.GetSnapshot(symbol, marketdata.GetSnapshotRequest{Feed: feed})
+	snap, err := c.newMD(creds).GetSnapshot(symbol, marketdata.GetSnapshotRequest{Feed: feed})
 	if err != nil {
 		return nil, fmt.Errorf("alpaca get snapshot %s: %w", symbol, err)
 	}
@@ -140,12 +142,12 @@ func (c *Client) GetSnapshot(symbol string) (*Snapshot, error) {
 }
 
 // GetSnapshots returns point-in-time snapshots for multiple symbols in one call.
-func (c *Client) GetSnapshots(symbols []string) (map[string]*Snapshot, error) {
+func (c *Client) GetSnapshots(creds exchange.Credentials, symbols []string) (map[string]*Snapshot, error) {
 	feed := ""
 	if len(symbols) > 0 {
 		feed = feedFor(symbols[0])
 	}
-	raw, err := c.md.GetSnapshots(symbols, marketdata.GetSnapshotRequest{Feed: feed})
+	raw, err := c.newMD(creds).GetSnapshots(symbols, marketdata.GetSnapshotRequest{Feed: feed})
 	if err != nil {
 		return nil, fmt.Errorf("alpaca get snapshots: %w", err)
 	}

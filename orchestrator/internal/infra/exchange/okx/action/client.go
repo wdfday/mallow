@@ -13,35 +13,41 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
+
+	"orchestrator/internal/infra/exchange"
 )
 
-// Config holds OKX API credentials.
+// Config holds OKX process-level settings (no credentials).
 type Config struct {
-	APIKey     string
-	APISecret  string
-	Passphrase string
-	BaseURL    string // default: https://www.okx.com
-	Demo       bool   // true → x-simulated-trading: 1
+	BaseURL string // default: https://www.okx.com
+	Demo    bool   // true → x-simulated-trading: 1
 }
 
-// Client wraps the OKX V5 REST API.
+// Client is a stateless OKX V5 REST client.
+// One instance is shared across all OKX accounts; credentials are passed per-call.
 type Client struct {
-	cfg    Config
-	client *http.Client
+	baseURL string
+	demo    bool
+	client  *http.Client // shared connection pool
 }
 
-// New creates a new OKX action client.
+// New creates a shared stateless OKX client.
 func New(cfg Config) *Client {
-	if cfg.BaseURL == "" {
-		cfg.BaseURL = "https://www.okx.com"
+	baseURL := cfg.BaseURL
+	if baseURL == "" {
+		baseURL = "https://www.okx.com"
 	}
-	return &Client{cfg: cfg, client: &http.Client{Timeout: 10 * time.Second}}
+	return &Client{
+		baseURL: baseURL,
+		demo:    cfg.Demo,
+		client:  &http.Client{Timeout: 10 * time.Second},
+	}
 }
 
 func (c *Client) Name() string { return "okx" }
 
-// doRequest performs a signed HTTP request to the OKX V5 API.
-func (c *Client) doRequest(ctx context.Context, method, path string, body any, out any) error {
+// doRequest performs a signed HTTP request to the OKX V5 API using the given credentials.
+func (c *Client) doRequest(ctx context.Context, creds exchange.Credentials, method, path string, body any, out any) error {
 	var payload []byte
 	if body != nil {
 		var err error
@@ -51,7 +57,7 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any, o
 		}
 	}
 
-	url := c.cfg.BaseURL + path
+	url := c.baseURL + path
 	var bodyReader io.Reader
 	if payload != nil {
 		bodyReader = bytes.NewReader(payload)
@@ -67,16 +73,16 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any, o
 	if payload != nil {
 		preSign += string(payload)
 	}
-	mac := hmac.New(sha256.New, []byte(c.cfg.APISecret))
+	mac := hmac.New(sha256.New, []byte(creds.APISecret))
 	mac.Write([]byte(preSign))
 	signature := base64.StdEncoding.EncodeToString(mac.Sum(nil))
 
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("OK-ACCESS-KEY", c.cfg.APIKey)
+	req.Header.Set("OK-ACCESS-KEY", creds.APIKey)
 	req.Header.Set("OK-ACCESS-SIGN", signature)
 	req.Header.Set("OK-ACCESS-TIMESTAMP", timestamp)
-	req.Header.Set("OK-ACCESS-PASSPHRASE", c.cfg.Passphrase)
-	if c.cfg.Demo {
+	req.Header.Set("OK-ACCESS-PASSPHRASE", creds.Passphrase)
+	if c.demo {
 		req.Header.Set("x-simulated-trading", "1")
 	}
 

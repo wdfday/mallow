@@ -13,15 +13,15 @@ import (
 )
 
 // SyncAccount implements exchange.AccountSyncer.
-// Fetches current cash, positions, and recent filled orders from Alpaca REST API.
-// If since is non-nil, only orders filled after that time are returned.
-func (c *Client) SyncAccount(_ context.Context, since *time.Time) (*exchange.AccountSnapshot, error) {
-	acct, err := c.sdk.GetAccount()
+func (c *Client) SyncAccount(_ context.Context, creds exchange.Credentials, since *time.Time) (*exchange.AccountSnapshot, error) {
+	sdk := c.newSDK(creds)
+
+	acct, err := sdk.GetAccount()
 	if err != nil {
 		return nil, fmt.Errorf("alpaca sync: get account: %w", err)
 	}
 
-	sdkPositions, err := c.sdk.GetPositions()
+	sdkPositions, err := sdk.GetPositions()
 	if err != nil {
 		return nil, fmt.Errorf("alpaca sync: get positions: %w", err)
 	}
@@ -40,8 +40,6 @@ func (c *Client) SyncAccount(_ context.Context, since *time.Time) (*exchange.Acc
 		}
 	}
 
-	// Fetch filled orders. When since is provided, restrict to orders after that time
-	// so restarts only replay the gap, not the full history.
 	ordersReq := alpacasdk.GetOrdersRequest{
 		Status: "filled",
 		Limit:  500,
@@ -49,9 +47,8 @@ func (c *Client) SyncAccount(_ context.Context, since *time.Time) (*exchange.Acc
 	if since != nil {
 		ordersReq.After = *since
 	}
-	filledOrders, err := c.sdk.GetOrders(ordersReq)
+	filledOrders, err := sdk.GetOrders(ordersReq)
 	if err != nil {
-		// Non-critical: log and continue without transactions.
 		slog.Warn("alpaca sync: failed to fetch filled orders", "err", err)
 		filledOrders = nil
 	}

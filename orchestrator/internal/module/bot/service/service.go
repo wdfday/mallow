@@ -57,6 +57,7 @@ func (s *Service) hydrate(data *domain.BotInstance) (*runtime.BotInstance, error
 	setMeta(bot, data.Config)
 	rt.AddBot(bot)
 	if data.Status == "running" {
+		s.heraldRegister(data.ID, data.Config)
 		bot.Start()
 	}
 	return &runtime.BotInstance{Data: data, Bot: bot, Exchange: rt.Exchange}, nil

@@ -9,16 +9,38 @@ pub struct HaBar {
     pub is_bullish: bool,
 }
 
-/// Heiken Ashi candles, with optional EMA smoothing.
+/// Heiken Ashi — nến Nhật biến thể làm mượt nhiễu.
 ///
-/// Standard HA:
-/// - HA_Close = (O + H + L + C) / 4
-/// - HA_Open  = (prev_HA_Open + prev_HA_Close) / 2
-/// - HA_High  = max(H, HA_Open, HA_Close)
-/// - HA_Low   = min(L, HA_Open, HA_Close)
+/// "Heiken Ashi" tiếng Nhật nghĩa là "thanh trung bình". HA biến đổi OHLC truyền
+/// thống thành dạng nến làm mượt, giúp xu hướng dễ nhìn hơn: nến HA xanh liên tục
+/// = uptrend; nến HA đỏ liên tục = downtrend. Không có upper/lower shadow = trend mạnh.
 ///
-/// Smooth HA applies EMA to each component before computing HA.
-/// `smooth = 1` means no smoothing (standard HA).
+/// # Công thức
+/// ```text
+/// HA_Close = (Open + High + Low + Close) / 4
+/// HA_Open  = (prev_HA_Open + prev_HA_Close) / 2   (lần đầu = (Open+Close)/2)
+/// HA_High  = max(High, HA_Open, HA_Close)
+/// HA_Low   = min(Low,  HA_Open, HA_Close)
+/// ```
+///
+/// # Smooth Heiken Ashi
+/// Khi `smooth > 1`, từng thành phần OHLC được EMA(smooth) trước khi tính HA.
+/// Kết quả mượt hơn nhiều nhưng lag nhiều hơn. Dùng cho signal confirmation hơn
+/// là timing entry chính xác.
+///
+/// # Cách đọc tín hiệu
+/// - **Nến xanh không có lower shadow**: uptrend mạnh — không bán
+/// - **Nến đỏ không có upper shadow**: downtrend mạnh — không mua
+/// - **Nến nhỏ có cả hai shadow**: consolidation / potential reversal
+/// - **Màu đổi từ đỏ → xanh**: reversal signal (không chính xác như candlestick thật)
+///
+/// # Hạn chế
+/// - HA không phản ánh giá thực → không thể dùng để xác định entry/exit giá chính xác
+/// - Chỉ dùng để phân tích xu hướng; cần nến thật để đặt lệnh
+///
+/// # Warmup
+/// Standard (smooth=1): trả về ngay từ bar đầu tiên (seed bar).
+/// Smooth > 1: cần `smooth × 4 - 3` bar do cascade EMA của 4 components.
 #[derive(Debug, Clone)]
 pub struct HeikenAshi {
     smooth: usize,

@@ -1,17 +1,36 @@
 use std::collections::VecDeque;
 
-/// Choppiness Index (CHOP).
+/// Choppiness Index (CHOP) — đo mức độ "lộn xộn" vs. xu hướng của thị trường.
 ///
-/// Measures whether the market is trending or ranging:
-///   CHOP = 100 * log10(SUM(ATR(1), n) / (MAX(high, n) - MIN(low, n))) / log10(n)
+/// Được E.W. Dreiss phát triển. CHOP trả lời câu hỏi: "Thị trường đang trending
+/// hay sideways?" mà không chỉ ra hướng. Dùng để filter: chỉ dùng trend-following
+/// indicator khi CHOP thấp; dùng mean-reversion khi CHOP cao.
 ///
-/// Range: ~0..100
-///   > 61.8 = choppy / ranging
-///   < 38.2 = strongly trending
+/// # Công thức
+/// ```text
+/// Σ TR   = tổng True Range(1) của n bar (TR không smoothed)
+/// HH     = max(High) trong n bar
+/// LL     = min(Low) trong n bar
 ///
-/// Default: period=14
+/// CHOP = 100 × log10(Σ TR / (HH − LL)) / log10(n)
+/// ```
 ///
-/// Note: ATR(1) here means the 1-period true range (not smoothed).
+/// Giải thích: Nếu thị trường trending hoàn hảo, toàn bộ TR được "sử dụng" để đi
+/// theo một hướng → Σ TR ≈ HH − LL → CHOP thấp. Nếu choppy, TR bị "lãng phí"
+/// đi lên rồi xuống → Σ TR >> HH − LL → CHOP cao.
+///
+/// # Ngưỡng (dựa trên Golden Ratio 61.8 và 38.2)
+/// - **CHOP > 61.8**: thị trường choppy / ranging → dùng range-bound strategy
+/// - **CHOP < 38.2**: thị trường trending mạnh → dùng trend-following
+/// - **38.2 ≤ CHOP ≤ 61.8**: trung lập
+///
+/// # Ứng dụng thực tế
+/// - Kết hợp với MACD/EMA crossover: chỉ trade khi CHOP < 50
+/// - Dùng trước Bollinger Bands Squeeze: khi CHOP cao + squeeze → sắp có breakout lớn
+/// - Tránh whipsaw: stop trading nếu CHOP > 61.8 liên tục nhiều bar
+///
+/// # Warmup
+/// Cần `period + 1` bar (cần prev_close để tính TR của bar đầu trong window).
 #[derive(Debug, Clone)]
 pub struct Chop {
     period: usize,

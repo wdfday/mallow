@@ -1,15 +1,43 @@
 use crate::Ema;
 
-/// True Strength Index (TSI).
+/// True Strength Index (TSI) — momentum oscillator double-smoothed.
 ///
-/// Double-smoothed momentum indicator:
-///   pc    = close - prev_close
-///   PCDS  = EMA(second, EMA(first, pc))
-///   APCDS = EMA(second, EMA(first, |pc|))
-///   TSI   = (PCDS / APCDS) * 100
+/// Được William Blau phát triển năm 1991. TSI chuẩn hóa momentum (price change)
+/// bằng cách chia cho absolute price change đã được double-smooth. Kết quả là
+/// oscillator trong khoảng −100..+100, phản ứng với trend nhưng ít noise hơn ROC.
 ///
-/// Range: -100..+100, 0 = neutral
-/// Defaults: first=25, second=13
+/// # Công thức
+/// ```text
+/// PC   = Close − prev_Close                     ← price change
+/// |PC| = |Close − prev_Close|                   ← absolute price change
+///
+/// PCDS  = EMA(EMA(PC,  first), second)           ← double-smoothed momentum
+/// APCDS = EMA(EMA(|PC|, first), second)          ← double-smoothed magnitude
+///
+/// TSI = (PCDS / APCDS) × 100
+/// ```
+///
+/// - **Numerator** (PCDS): smooth momentum, giảm noise
+/// - **Denominator** (APCDS): chuẩn hóa theo biến động → range −100..+100
+///
+/// # Tham số mặc định
+/// - `first = 25`: EMA dài → loại bỏ noise
+/// - `second = 13`: EMA ngắn hơn → thêm một lớp smooth
+///
+/// # Cách đọc tín hiệu
+/// - **TSI > 0**: momentum positive (uptrend)
+/// - **TSI < 0**: momentum negative (downtrend)
+/// - **TSI cắt 0**: trend change signal
+/// - **TSI cắt signal line** (EMA của TSI): buy/sell signal nhanh hơn
+/// - **Divergence** TSI vs giá: reversal mạnh
+///
+/// # Ưu điểm vs RSI
+/// - TSI không bị overbought/oversold cứng nhắc → phù hợp cho trending market
+/// - Double smoothing → ít whipsaw trong sideways hơn RSI
+///
+/// # Warmup
+/// Cần `first + second + 1` bar (double cascade EMA + prev_close).
+/// Ví dụ: TSI(25,13) cần ~38 bar.
 #[derive(Debug, Clone)]
 pub struct Tsi {
     first: usize,

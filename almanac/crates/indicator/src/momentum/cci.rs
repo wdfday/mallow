@@ -1,16 +1,38 @@
 use std::collections::VecDeque;
 
-/// Commodity Channel Index (CCI).
+/// Commodity Channel Index (CCI) — đo mức độ lệch của giá so với trung bình thống kê.
 ///
-/// CCI = (TP − SMA(TP, n)) / (0.015 × mean_deviation)
+/// Được Donald Lambert phát triển năm 1980 cho commodity futures, nhưng ngày nay
+/// được dùng rộng rãi cho cổ phiếu, forex, crypto. CCI đo khoảng cách giữa
+/// Typical Price và SMA của nó, chuẩn hóa bằng mean deviation.
 ///
-/// where:
-/// - TP = (High + Low + Close) / 3  (Typical Price)
-/// - mean_deviation = (1/n) × Σ|TP_i − SMA(TP)|
+/// # Công thức
+/// ```text
+/// TP = (High + Low + Close) / 3          ← Typical Price
+/// SMA = (1/n) × Σ TP_i                  ← trung bình TP trong n bar
+/// MeanDev = (1/n) × Σ|TP_i − SMA|       ← mean absolute deviation
 ///
-/// Interpretation:
-/// - CCI > +100  → overbought / strong uptrend
-/// - CCI < −100  → oversold  / strong downtrend
+/// CCI = (TP − SMA) / (0.015 × MeanDev)
+/// ```
+///
+/// Hằng số 0.015 được Donald Lambert chọn để khoảng 70–80% giá trị CCI
+/// nằm trong dải −100 đến +100 với phân phối thông thường.
+///
+/// # Ngưỡng và cách đọc
+/// - **CCI > +100**: overbought / strong uptrend — giá vượt xa trung bình thống kê
+/// - **CCI < −100**: oversold / strong downtrend
+/// - **CCI cắt +100 từ dưới lên**: buy signal (breakout upward)
+/// - **CCI cắt −100 từ trên xuống**: sell signal
+/// - **CCI cắt 0**: momentum đổi hướng
+/// - **Divergence** CCI vs giá: tín hiệu đảo chiều
+///
+/// # Ứng dụng thực tế
+/// - Kết hợp với ADX: chỉ trade CCI signal khi ADX > 25 (trend đủ mạnh)
+/// - Dùng period ngắn (14–20) cho swing trade; period dài (40–50) cho position trade
+///
+/// # Warmup
+/// Cần đúng `period` bar.
+#[derive(Clone)]
 pub struct Cci {
     period: usize,
     buffer: VecDeque<f64>,

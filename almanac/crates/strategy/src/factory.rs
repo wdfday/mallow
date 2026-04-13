@@ -442,13 +442,7 @@ pub fn build_strategy(name: &str, params: &Value) -> Result<Box<dyn Strategy>> {
 
         // ── CEL (cel-interpreter, ema(9) function-call syntax) ───────────────
         // params: { "entry": "<cel expr>", "exit": "<cel expr>" }
-        "cel" | "cel2" | "evalexpr" => {
-            let entry = p.get("entry").and_then(|v| v.as_str()).unwrap_or("false");
-            let exit  = p.get("exit").and_then(|v| v.as_str()).unwrap_or("false");
-            let tp = p.get("tp").and_then(Value::as_f64);
-            let sl = p.get("sl").and_then(Value::as_f64);
-            Box::new(CelStrategy::with_risk(entry, exit, tp, sl)?)
-        }
+        "cel" | "cel2" | "evalexpr" => Box::new(CelStrategy::from_params(p)?),
 
         // ── Dynamic (declarative JSON conditions) ─────────────────────────────
         "dynamic" => Box::new(DynamicStrategy::from_params(p)?),

@@ -18,13 +18,12 @@ import (
 var wsMu sync.Mutex
 
 // StreamOrders implements exchange.AccountStreamer.
-// For spot it uses WsUserDataServeSignature (signature-based, works on demo/testnet)
-// or WsUserDataServe (listen-key, production fallback).
-// Futures streaming uses the listen-key flow (production only).
-func (c *Client) StreamOrders(ctx context.Context, handler func(exchange.OrderEvent)) error {
-	go c.streamSpotOrders(ctx, handler)
+func (c *Client) StreamOrders(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent)) error {
+	spot := c.newSpot(creds)
+	go c.streamSpotOrders(ctx, creds, spot, handler)
 	if !c.testnet {
-		go c.streamFuturesOrders(ctx, handler)
+		fut := c.newFut(creds)
+		go c.streamFuturesOrders(ctx, fut, handler)
 	} else {
 		slog.Info("binance: futures order streaming skipped on demo/testnet")
 	}
@@ -34,12 +33,12 @@ func (c *Client) StreamOrders(ctx context.Context, handler func(exchange.OrderEv
 
 // ── Spot ──────────────────────────────────────────────────────────────────────
 
-func (c *Client) streamSpotOrders(ctx context.Context, handler func(exchange.OrderEvent)) {
+func (c *Client) streamSpotOrders(ctx context.Context, creds exchange.Credentials, spot *gobinance.Client, handler func(exchange.OrderEvent)) {
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		err := c.streamSpotOrdersOnce(ctx, handler)
+		err := c.streamSpotOrdersOnce(ctx, creds, spot, handler)
 		if ctx.Err() != nil {
 			return
 		}
@@ -52,21 +51,19 @@ func (c *Client) streamSpotOrders(ctx context.Context, handler func(exchange.Ord
 	}
 }
 
-func (c *Client) streamSpotOrdersOnce(ctx context.Context, handler func(exchange.OrderEvent)) error {
+func (c *Client) streamSpotOrdersOnce(ctx context.Context, creds exchange.Credentials, spot *gobinance.Client, handler func(exchange.OrderEvent)) error {
 	if c.testnet {
-		return c.streamSpotOrdersSignature(ctx, handler)
+		return c.streamSpotOrdersSignature(ctx, creds, handler)
 	}
-	return c.streamSpotOrdersListenKey(ctx, handler)
+	return c.streamSpotOrdersListenKey(ctx, spot, handler)
 }
 
-// streamSpotOrdersSignature uses WsUserDataServeSignature — no listen key needed.
-// Works on demo (wss://demo-ws-api.binance.com/ws-api/v3) and production.
-func (c *Client) streamSpotOrdersSignature(ctx context.Context, handler func(exchange.OrderEvent)) error {
+func (c *Client) streamSpotOrdersSignature(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent)) error {
 	wsMu.Lock()
 	gobinance.UseDemo = c.testnet
 	doneC, stopC, err := gobinance.WsUserDataServeSignature(
-		c.apiKey, c.apiSecret, "HMAC", 0,
-		c.spotOrderHandler(handler),
+		creds.APIKey, creds.APISecret, "HMAC", 0,
+		spotOrderHandler(handler),
 		func(err error) { slog.Warn("binance: spot ws error", "err", err) },
 	)
 	gobinance.UseDemo = false
@@ -74,29 +71,27 @@ func (c *Client) streamSpotOrdersSignature(ctx context.Context, handler func(exc
 	if err != nil {
 		return fmt.Errorf("ws spot user data (signature): %w", err)
 	}
-	return c.waitSpotStream(ctx, stopC, doneC, "", false)
+	return waitSpotStream(ctx, stopC, doneC, "", false, nil)
 }
 
-// streamSpotOrdersListenKey is the classic listen-key flow (production only).
-func (c *Client) streamSpotOrdersListenKey(ctx context.Context, handler func(exchange.OrderEvent)) error {
-	listenKey, err := c.spot.NewStartUserStreamService().Do(ctx)
+func (c *Client) streamSpotOrdersListenKey(ctx context.Context, spot *gobinance.Client, handler func(exchange.OrderEvent)) error {
+	listenKey, err := spot.NewStartUserStreamService().Do(ctx)
 	if err != nil {
 		return fmt.Errorf("start spot user stream: %w", err)
 	}
 
 	wsMu.Lock()
-	doneC, stopC, err := gobinance.WsUserDataServe(listenKey, c.spotOrderHandler(handler), func(err error) {
+	doneC, stopC, err := gobinance.WsUserDataServe(listenKey, spotOrderHandler(handler), func(err error) {
 		slog.Warn("binance: spot ws error", "err", err)
 	})
 	wsMu.Unlock()
 	if err != nil {
 		return fmt.Errorf("ws spot user data: %w", err)
 	}
-	return c.waitSpotStream(ctx, stopC, doneC, listenKey, true)
+	return waitSpotStream(ctx, stopC, doneC, listenKey, true, spot)
 }
 
-// spotOrderHandler returns a WsUserDataHandler that converts execution reports to OrderEvents.
-func (c *Client) spotOrderHandler(handler func(exchange.OrderEvent)) gobinance.WsUserDataHandler {
+func spotOrderHandler(handler func(exchange.OrderEvent)) gobinance.WsUserDataHandler {
 	return func(event *gobinance.WsUserDataEvent) {
 		if event.Event != gobinance.UserDataEventTypeExecutionReport {
 			return
@@ -151,12 +146,10 @@ func (c *Client) spotOrderHandler(handler func(exchange.OrderEvent)) gobinance.W
 	}
 }
 
-// waitSpotStream blocks until ctx is done or the stream closes.
-// If keepAlive=true it sends periodic keep-alives for the given listenKey.
-func (c *Client) waitSpotStream(ctx context.Context, stopC, doneC chan struct{}, listenKey string, keepAlive bool) error {
+func waitSpotStream(ctx context.Context, stopC, doneC chan struct{}, listenKey string, keepAlive bool, spot *gobinance.Client) error {
 	var ticker *time.Ticker
 	var tickC <-chan time.Time
-	if keepAlive && listenKey != "" {
+	if keepAlive && listenKey != "" && spot != nil {
 		ticker = time.NewTicker(25 * time.Minute)
 		tickC = ticker.C
 		defer ticker.Stop()
@@ -168,7 +161,7 @@ func (c *Client) waitSpotStream(ctx context.Context, stopC, doneC chan struct{},
 			close(stopC)
 			return nil
 		case <-tickC:
-			if err := c.spot.NewKeepaliveUserStreamService().ListenKey(listenKey).Do(ctx); err != nil {
+			if err := spot.NewKeepaliveUserStreamService().ListenKey(listenKey).Do(ctx); err != nil {
 				slog.Warn("binance: spot listen key keep-alive failed", "err", err)
 			}
 		case <-doneC:
@@ -179,12 +172,12 @@ func (c *Client) waitSpotStream(ctx context.Context, stopC, doneC chan struct{},
 
 // ── Futures ───────────────────────────────────────────────────────────────────
 
-func (c *Client) streamFuturesOrders(ctx context.Context, handler func(exchange.OrderEvent)) {
+func (c *Client) streamFuturesOrders(ctx context.Context, fut *futures.Client, handler func(exchange.OrderEvent)) {
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		err := c.streamFuturesOrdersOnce(ctx, handler)
+		err := c.streamFuturesOrdersOnce(ctx, fut, handler)
 		if ctx.Err() != nil {
 			return
 		}
@@ -197,8 +190,8 @@ func (c *Client) streamFuturesOrders(ctx context.Context, handler func(exchange.
 	}
 }
 
-func (c *Client) streamFuturesOrdersOnce(ctx context.Context, handler func(exchange.OrderEvent)) error {
-	listenKey, err := c.fut.NewStartUserStreamService().Do(ctx)
+func (c *Client) streamFuturesOrdersOnce(ctx context.Context, fut *futures.Client, handler func(exchange.OrderEvent)) error {
+	listenKey, err := fut.NewStartUserStreamService().Do(ctx)
 	if err != nil {
 		return fmt.Errorf("start futures user stream: %w", err)
 	}
@@ -270,7 +263,7 @@ func (c *Client) streamFuturesOrdersOnce(ctx context.Context, handler func(excha
 			close(stopC)
 			return nil
 		case <-keepAlive.C:
-			if err := c.fut.NewKeepaliveUserStreamService().ListenKey(listenKey).Do(ctx); err != nil {
+			if err := fut.NewKeepaliveUserStreamService().ListenKey(listenKey).Do(ctx); err != nil {
 				slog.Warn("binance: futures listen key keep-alive failed", "err", err)
 			}
 		case <-doneC:

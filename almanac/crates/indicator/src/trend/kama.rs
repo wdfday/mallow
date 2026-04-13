@@ -1,15 +1,36 @@
 use std::collections::VecDeque;
 
-/// Kaufman's Adaptive Moving Average (KAMA).
+/// Kaufman's Adaptive Moving Average (KAMA) — MA thích nghi với điều kiện thị trường.
 ///
-/// Adapts its smoothing based on the Efficiency Ratio (ER):
-///   ER         = |Close - Close[n]| / Sum(|Close - PrevClose|, n)
-///   fast_sc    = 2 / (fast + 1)
-///   slow_sc    = 2 / (slow + 1)
-///   SC         = (ER * (fast_sc - slow_sc) + slow_sc)^2
-///   KAMA       = prevKAMA + SC * (close - prevKAMA)
+/// Được Perry Kaufman phát triển. KAMA tự động điều chỉnh tốc độ smoothing dựa trên
+/// Efficiency Ratio (ER) — tỷ lệ giữa chuyển động thực sự và tổng biến động.
+/// Khi thị trường trending (ER cao): KAMA nhanh như EMA(2).
+/// Khi thị trường choppy (ER thấp): KAMA chậm như EMA(30).
 ///
-/// Defaults: er_period=10, fast=2, slow=30
+/// # Công thức
+/// ```text
+/// ER  = |Close - Close[n]| / Σ|Closeᵢ - Closeᵢ₋₁|   (range 0..1)
+/// fast_sc = 2 / (fast + 1)
+/// slow_sc = 2 / (slow + 1)
+/// SC  = (ER × (fast_sc - slow_sc) + slow_sc)²
+/// KAMA(t) = KAMA(t-1) + SC × (Close - KAMA(t-1))
+/// ```
+///
+/// - **ER = 1** (trending hoàn hảo): SC = fast_sc² → KAMA rất nhanh
+/// - **ER = 0** (choppy hoàn toàn): SC = slow_sc² → KAMA gần như không đổi
+///
+/// # Tham số mặc định
+/// - `er_period = 10`: cửa sổ tính ER
+/// - `fast = 2`: EMA tương đương nhanh (alpha = 2/3)
+/// - `slow = 30`: EMA tương đương chậm (alpha = 2/31 ≈ 0.064)
+///
+/// # Ứng dụng
+/// - KAMA thích hợp cho các market có volatility thay đổi nhiều
+/// - Giảm whipsaw trong thị trường sideways hơn EMA nhiều
+/// - Crossover KAMA vs giá: tín hiệu trend change đáng tin khi ER cao
+///
+/// # Warmup
+/// Cần `er_period + 1` bar để tính ER đầu tiên.
 #[derive(Debug, Clone)]
 pub struct Kama {
     er_period: usize,

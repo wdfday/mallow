@@ -15,7 +15,7 @@ import (
 
 // PlaceOrder submits an order to OANDA.
 // Symbols should be OANDA instrument format, e.g. "EUR_USD".
-func (c *Client) PlaceOrder(ctx context.Context, req exchange.OrderRequest) (*exchange.OrderResult, error) {
+func (c *Client) PlaceOrder(ctx context.Context, creds exchange.Credentials, req exchange.OrderRequest) (*exchange.OrderResult, error) {
 	units := req.Qty
 	if req.Side == exchange.Sell {
 		units = units.Neg()
@@ -45,9 +45,9 @@ func (c *Client) PlaceOrder(ctx context.Context, req exchange.OrderRequest) (*ex
 
 	slog.Info("oanda: placing order", "instrument", req.Symbol, "side", req.Side, "qty", req.Qty)
 
-	path := fmt.Sprintf("/v3/accounts/%s/orders", c.cfg.AccountID)
+	path := fmt.Sprintf("/v3/accounts/%s/orders", creds.AccountID)
 	var resp orderCreateResponse
-	if err := c.doRequest(ctx, http.MethodPost, path, orderReq, &resp); err != nil {
+	if err := c.doRequest(ctx, creds, http.MethodPost, path, orderReq, &resp); err != nil {
 		return nil, fmt.Errorf("place order: %w", err)
 	}
 
@@ -73,10 +73,10 @@ func (c *Client) PlaceOrder(ctx context.Context, req exchange.OrderRequest) (*ex
 }
 
 // GetOrder retrieves order status.
-func (c *Client) GetOrder(ctx context.Context, orderID string) (*exchange.OrderResult, error) {
-	path := fmt.Sprintf("/v3/accounts/%s/orders/%s", c.cfg.AccountID, orderID)
+func (c *Client) GetOrder(ctx context.Context, creds exchange.Credentials, orderID string) (*exchange.OrderResult, error) {
+	path := fmt.Sprintf("/v3/accounts/%s/orders/%s", creds.AccountID, orderID)
 	var resp orderGetResponse
-	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+	if err := c.doRequest(ctx, creds, http.MethodGet, path, nil, &resp); err != nil {
 		return nil, fmt.Errorf("get order: %w", err)
 	}
 
@@ -89,9 +89,9 @@ func (c *Client) GetOrder(ctx context.Context, orderID string) (*exchange.OrderR
 	}, nil
 }
 
-// GetPendingOrders returns all pending orders.
-func (c *Client) GetPendingOrders(ctx context.Context) ([]exchange.OrderResult, error) {
-	path := fmt.Sprintf("/v3/accounts/%s/pendingOrders", c.cfg.AccountID)
+// GetPendingOrders returns all pending orders for the given symbol (ignored by OANDA — returns all).
+func (c *Client) GetPendingOrders(ctx context.Context, creds exchange.Credentials, _ string) ([]exchange.OrderResult, error) {
+	path := fmt.Sprintf("/v3/accounts/%s/pendingOrders", creds.AccountID)
 	var resp struct {
 		Orders []struct {
 			ID         string `json:"id"`
@@ -102,7 +102,7 @@ func (c *Client) GetPendingOrders(ctx context.Context) ([]exchange.OrderResult, 
 			Price      string `json:"price"`
 		} `json:"orders"`
 	}
-	if err := c.doRequest(ctx, http.MethodGet, path, nil, &resp); err != nil {
+	if err := c.doRequest(ctx, creds, http.MethodGet, path, nil, &resp); err != nil {
 		return nil, fmt.Errorf("oanda pending orders: %w", err)
 	}
 
@@ -119,10 +119,10 @@ func (c *Client) GetPendingOrders(ctx context.Context) ([]exchange.OrderResult, 
 }
 
 // CancelOrder cancels a pending order.
-func (c *Client) CancelOrder(ctx context.Context, orderID string) error {
-	path := fmt.Sprintf("/v3/accounts/%s/orders/%s/cancel", c.cfg.AccountID, orderID)
+func (c *Client) CancelOrder(ctx context.Context, creds exchange.Credentials, orderID string) error {
+	path := fmt.Sprintf("/v3/accounts/%s/orders/%s/cancel", creds.AccountID, orderID)
 	var resp json.RawMessage
-	if err := c.doRequest(ctx, http.MethodPut, path, nil, &resp); err != nil {
+	if err := c.doRequest(ctx, creds, http.MethodPut, path, nil, &resp); err != nil {
 		return fmt.Errorf("cancel order: %w", err)
 	}
 	return nil

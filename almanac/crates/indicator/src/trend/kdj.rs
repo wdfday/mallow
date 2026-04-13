@@ -1,15 +1,36 @@
-//! KDJ Indicator (Random Index)
+//! KDJ — Random Index, biến thể Stochastic phổ biến tại thị trường châu Á.
 //!
-//! Popular in Asian markets (Vietnam, China, etc.). Derivative of Stochastic.
+//! KDJ là phiên bản mở rộng của Stochastic Oscillator, thêm đường J để tăng
+//! độ nhạy. Rất phổ biến tại Việt Nam, Trung Quốc, Đài Loan và các thị trường
+//! châu Á khác. J-line có thể vượt ra ngoài 0–100, cho tín hiệu sớm hơn K/D.
 //!
-//! RSV = (Close - Min(Low, n)) / (Max(High, n) - Min(Low, n)) * 100
-//! K = SMA(RSV, k_period)
-//! D = SMA(K, d_period)
-//! J = 3*K - 2*D
+//! # Công thức
+//! ```text
+//! RSV = (Close - LowestLow(n)) / (HighestHigh(n) - LowestLow(n)) × 100
+//!       (Raw Stochastic Value — vị trí giá trong range n bar)
 //!
-//! Overbought: K/D > 80, Oversold: K/D < 20. J can exceed 0–100 range.
+//! K = SMA(RSV, k_period)      ← %K smoothed
+//! D = SMA(K,   d_period)      ← %D thêm smoothed
+//! J = 3×K − 2×D               ← extrapolation; thường vượt 0–100
+//! ```
+//!
+//! # Ngưỡng thông dụng
+//! - K/D > 80: overbought — xem xét bán
+//! - K/D < 20: oversold  — xem xét mua
+//! - J > 100: cực kỳ overbought; J < 0: cực kỳ oversold (nhưng không đảo chiều ngay)
+//!
+//! # Tín hiệu giao dịch
+//! - **K cắt D từ dưới lên** (death cross ngược): long signal
+//! - **K cắt D từ trên xuống**: short signal
+//! - **J < 0 trong downtrend rồi bật lên**: mua mạnh
+//! - **J > 100 trong uptrend rồi quay xuống**: bán mạnh
+//!
+//! # Warmup
+//! Cần `period + k_period + d_period - 2` bar để tất cả SMA warm up.
+//! Ví dụ: KDJ(9, 3, 3) cần 9 + 2 + 2 = 13 bar.
 
 use std::collections::VecDeque;
+use crate::util::{RollingMax, RollingMin};
 
 pub struct KdjValue {
     pub k: f64,
@@ -17,6 +38,7 @@ pub struct KdjValue {
     pub j: f64,
 }
 
+#[derive(Clone)]
 struct RollingSma {
     period: usize,
     buf: VecDeque<f64>,
@@ -45,10 +67,10 @@ impl RollingSma {
     }
 }
 
+#[derive(Clone)]
 pub struct Kdj {
-    period: usize,
-    high_buf: VecDeque<f64>,
-    low_buf: VecDeque<f64>,
+    max_high: RollingMax,
+    min_low: RollingMin,
     k_sma: RollingSma,
     d_sma: RollingSma,
 }
@@ -56,27 +78,20 @@ pub struct Kdj {
 impl Kdj {
     pub fn new(period: usize, k_period: usize, d_period: usize) -> Self {
         Self {
-            period,
-            high_buf: VecDeque::with_capacity(period),
-            low_buf: VecDeque::with_capacity(period),
+            max_high: RollingMax::new(period),
+            min_low: RollingMin::new(period),
             k_sma: RollingSma::new(k_period),
             d_sma: RollingSma::new(d_period),
         }
     }
 
     pub fn update(&mut self, high: f64, low: f64, close: f64) -> Option<KdjValue> {
-        self.high_buf.push_back(high);
-        self.low_buf.push_back(low);
-        if self.high_buf.len() > self.period {
-            self.high_buf.pop_front();
-            self.low_buf.pop_front();
-        }
-        if self.high_buf.len() < self.period {
-            return None;
-        }
-
-        let highest = self.high_buf.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let lowest = self.low_buf.iter().cloned().fold(f64::INFINITY, f64::min);
+        let highest = self.max_high.push(high);
+        let lowest = self.min_low.push(low);
+        let (highest, lowest) = match (highest, lowest) {
+            (Some(h), Some(l)) => (h, l),
+            _ => return None,
+        };
 
         let rsv = if (highest - lowest).abs() > f64::EPSILON {
             (close - lowest) / (highest - lowest) * 100.0
@@ -92,8 +107,8 @@ impl Kdj {
     }
 
     pub fn reset(&mut self) {
-        self.high_buf.clear();
-        self.low_buf.clear();
+        self.max_high.reset();
+        self.min_low.reset();
         self.k_sma.reset();
         self.d_sma.reset();
     }

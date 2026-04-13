@@ -161,7 +161,13 @@ func (r *Registry) Spawn(cfg *orchdomain.OrchestratorConfig) error {
 	}
 	r.mu.Unlock()
 
-	rt := NewOrchestrator(cfg.ID, cfg.AccountID, cfg.UserID, cfg.Exchange.BrokerType, pf, riskMgr, ob, ex, cfg.LastSyncedAt)
+	creds := exchange.Credentials{
+		APIKey:     cfg.Exchange.APIKey,
+		APISecret:  cfg.Exchange.APISecret,
+		Passphrase: cfg.Exchange.Passphrase,
+		AccountID:  cfg.Exchange.AccountID,
+	}
+	rt := NewOrchestrator(cfg.ID, cfg.AccountID, cfg.UserID, cfg.Exchange.BrokerType, pf, riskMgr, ob, ex, creds, cfg.LastSyncedAt)
 
 	// Register this runtime's price updater with the shared market streamer.
 	r.mu.RLock()
@@ -381,7 +387,7 @@ func (r *Registry) reconcileOrders(ctx context.Context, rt *Orchestrator) {
 		return
 	}
 	// Fetch all open orders (symbol="" = all instruments).
-	orders, err := reconciler.GetPendingOrders(ctx, "")
+	orders, err := reconciler.GetPendingOrders(ctx, rt.Creds, "")
 	if err != nil {
 		slog.Warn("reconcile orders: fetch failed",
 			"orchestrator_id", rt.OrchestratorID, "err", err)
@@ -441,7 +447,7 @@ func (r *Registry) startFillStream(ctx context.Context, nc *nats.Conn, rt *Orche
 		return
 	}
 	// WS callback only enqueues — never blocks on NATS.
-	if err := streamer.StreamOrders(ctx, rt.EnqueueOrderEvent); err != nil {
+	if err := streamer.StreamOrders(ctx, rt.Creds, rt.EnqueueOrderEvent); err != nil {
 		slog.Error("order stream start failed", "orchestrator_id", rt.OrchestratorID, "err", err)
 		return
 	}

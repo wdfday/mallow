@@ -11,7 +11,7 @@ import (
 )
 
 // PlaceOrder routes to spot or linear (perpetual) category based on req.Market.
-func (c *Client) PlaceOrder(ctx context.Context, req exchange.OrderRequest) (*exchange.OrderResult, error) {
+func (c *Client) PlaceOrder(ctx context.Context, creds exchange.Credentials, req exchange.OrderRequest) (*exchange.OrderResult, error) {
 	category := "spot"
 	if req.Market == exchange.MarketFutures {
 		category = "linear"
@@ -38,7 +38,7 @@ func (c *Client) PlaceOrder(ctx context.Context, req exchange.OrderRequest) (*ex
 	slog.Info("bybit: placing order", "symbol", req.Symbol, "side", req.Side, "qty", req.Qty, "category", category)
 
 	var resp apiResponse[createOrderResult]
-	if err := c.doSigned(ctx, "POST", "/v5/order/create", body, &resp); err != nil {
+	if err := c.doSigned(ctx, creds, "POST", "/v5/order/create", body, &resp); err != nil {
 		return nil, fmt.Errorf("place order: %w", err)
 	}
 	if resp.RetCode != 0 {
@@ -55,11 +55,11 @@ func (c *Client) PlaceOrder(ctx context.Context, req exchange.OrderRequest) (*ex
 }
 
 // GetOrder retrieves order status by ID (searches spot category by default).
-func (c *Client) GetOrder(ctx context.Context, orderID string) (*exchange.OrderResult, error) {
+func (c *Client) GetOrder(ctx context.Context, creds exchange.Credentials, orderID string) (*exchange.OrderResult, error) {
 	body := map[string]string{"category": "spot", "orderId": orderID}
 
 	var resp apiResponse[orderListResult]
-	if err := c.doSigned(ctx, "GET", "/v5/order/realtime", body, &resp); err != nil {
+	if err := c.doSigned(ctx, creds, "GET", "/v5/order/realtime", body, &resp); err != nil {
 		return nil, fmt.Errorf("get order: %w", err)
 	}
 	if resp.RetCode != 0 || len(resp.Result.List) == 0 {
@@ -69,7 +69,7 @@ func (c *Client) GetOrder(ctx context.Context, orderID string) (*exchange.OrderR
 }
 
 // GetOrders lists orders with optional status filter.
-func (c *Client) GetOrders(ctx context.Context, category, symbol, status string) ([]exchange.OrderResult, error) {
+func (c *Client) GetOrders(ctx context.Context, creds exchange.Credentials, category, symbol, status string) ([]exchange.OrderResult, error) {
 	body := map[string]string{"category": category}
 	if symbol != "" {
 		body["symbol"] = symbol
@@ -79,7 +79,7 @@ func (c *Client) GetOrders(ctx context.Context, category, symbol, status string)
 	}
 
 	var resp apiResponse[orderListResult]
-	if err := c.doSigned(ctx, "GET", "/v5/order/realtime", body, &resp); err != nil {
+	if err := c.doSigned(ctx, creds, "GET", "/v5/order/realtime", body, &resp); err != nil {
 		return nil, fmt.Errorf("get orders: %w", err)
 	}
 	if resp.RetCode != 0 {
@@ -94,10 +94,10 @@ func (c *Client) GetOrders(ctx context.Context, category, symbol, status string)
 }
 
 // CancelOrder cancels a pending order by ID.
-func (c *Client) CancelOrder(ctx context.Context, orderID string) error {
+func (c *Client) CancelOrder(ctx context.Context, creds exchange.Credentials, orderID string) error {
 	body := cancelOrderRequest{Category: "spot", OrderID: orderID}
 	var resp apiResponse[json.RawMessage]
-	if err := c.doSigned(ctx, "POST", "/v5/order/cancel", body, &resp); err != nil {
+	if err := c.doSigned(ctx, creds, "POST", "/v5/order/cancel", body, &resp); err != nil {
 		return fmt.Errorf("cancel order: %w", err)
 	}
 	if resp.RetCode != 0 {
@@ -107,7 +107,7 @@ func (c *Client) CancelOrder(ctx context.Context, orderID string) error {
 }
 
 // AmendOrder modifies an existing order's qty or price.
-func (c *Client) AmendOrder(ctx context.Context, category, symbol, orderID, newQty, newPrice string) error {
+func (c *Client) AmendOrder(ctx context.Context, creds exchange.Credentials, category, symbol, orderID, newQty, newPrice string) error {
 	body := map[string]string{"category": category, "symbol": symbol, "orderId": orderID}
 	if newQty != "" {
 		body["qty"] = newQty
@@ -116,7 +116,7 @@ func (c *Client) AmendOrder(ctx context.Context, category, symbol, orderID, newQ
 		body["price"] = newPrice
 	}
 	var resp apiResponse[json.RawMessage]
-	if err := c.doSigned(ctx, "POST", "/v5/order/amend", body, &resp); err != nil {
+	if err := c.doSigned(ctx, creds, "POST", "/v5/order/amend", body, &resp); err != nil {
 		return fmt.Errorf("amend order: %w", err)
 	}
 	if resp.RetCode != 0 {

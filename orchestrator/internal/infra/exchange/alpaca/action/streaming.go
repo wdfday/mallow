@@ -11,34 +11,21 @@ import (
 	"orchestrator/internal/infra/exchange"
 )
 
-// TradeUpdateHandler is a callback invoked on each order lifecycle event
-// (fill, partial_fill, canceled, expired, etc).
+// TradeUpdateHandler is a callback invoked on each order lifecycle event.
 type TradeUpdateHandler func(update alpacasdk.TradeUpdate)
 
-// StreamTradeUpdates subscribes to real-time order lifecycle events.
-// Blocks until ctx is cancelled or an unrecoverable error occurs.
-// Events: new, fill, partial_fill, canceled, expired, replaced, rejected, etc.
-func (c *Client) StreamTradeUpdates(ctx context.Context, handler TradeUpdateHandler) error {
+// StreamTradeUpdates subscribes to real-time order lifecycle events (raw SDK events).
+func (c *Client) StreamTradeUpdates(ctx context.Context, creds exchange.Credentials, handler TradeUpdateHandler) error {
 	slog.Info("alpaca: starting trade updates stream")
-	return c.sdk.StreamTradeUpdates(ctx, func(tu alpacasdk.TradeUpdate) {
+	return c.newSDK(creds).StreamTradeUpdates(ctx, func(tu alpacasdk.TradeUpdate) {
 		handler(tu)
 	}, alpacasdk.StreamTradeUpdatesRequest{})
 }
 
-// StreamTradeUpdatesInBackground starts listening for trade updates in a
-// background goroutine. It automatically reconnects on failure.
-func (c *Client) StreamTradeUpdatesInBackground(ctx context.Context, handler TradeUpdateHandler) {
-	slog.Info("alpaca: starting trade updates stream (background)")
-	c.sdk.StreamTradeUpdatesInBackground(ctx, func(tu alpacasdk.TradeUpdate) {
-		handler(tu)
-	})
-}
-
-// StreamOrders implements exchange.AccountStreamer. Starts a background WebSocket
-// listener for all order lifecycle events; reconnects automatically on failure.
-func (c *Client) StreamOrders(ctx context.Context, handler func(exchange.OrderEvent)) error {
+// StreamOrders implements exchange.AccountStreamer.
+func (c *Client) StreamOrders(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent)) error {
 	slog.Info("alpaca: starting order stream")
-	c.sdk.StreamTradeUpdatesInBackground(ctx, func(tu alpacasdk.TradeUpdate) {
+	c.newSDK(creds).StreamTradeUpdatesInBackground(ctx, func(tu alpacasdk.TradeUpdate) {
 		side := exchange.Buy
 		if string(tu.Order.Side) == "sell" {
 			side = exchange.Sell

@@ -38,6 +38,7 @@ type Orchestrator struct {
 	RiskMgr   RiskManager
 	OrderBook orderbook.OrderBook
 	Exchange  exchange.Exchange
+	Creds     exchange.Credentials // per-account credentials passed to all Exchange calls
 
 	// orderCh decouples the broker WS goroutine from NATS publishing.
 	orderCh chan exchange.OrderEvent
@@ -93,7 +94,7 @@ func (r *Orchestrator) Sync(ctx context.Context, nc *nats.Conn, js nats.JetStrea
 	if prev := r.LastSyncAt(); !prev.IsZero() {
 		since = &prev
 	}
-	snap, err := syncer.SyncAccount(ctx, since)
+	snap, err := syncer.SyncAccount(ctx, r.Creds, since)
 	if err != nil {
 		return err
 	}
@@ -177,6 +178,7 @@ func NewOrchestrator(
 	riskMgr RiskManager,
 	ob orderbook.OrderBook,
 	ex exchange.Exchange,
+	creds exchange.Credentials,
 	lastSyncedAt *time.Time,
 ) *Orchestrator {
 	rt := &Orchestrator{
@@ -188,6 +190,7 @@ func NewOrchestrator(
 		RiskMgr:        riskMgr,
 		OrderBook:      ob,
 		Exchange:       ex,
+		Creds:          creds,
 		orderCh:        make(chan exchange.OrderEvent, 128),
 		bots:           make(map[string]*Bot),
 		prices:         make(map[string]decimal.Decimal),
@@ -242,7 +245,7 @@ func (r *Orchestrator) ProcessTrade(
 	}
 	if price.IsZero() {
 		if pf, ok := r.Exchange.(exchange.PriceFetcher); ok {
-			if p, err := pf.GetCurrentPrice(ctx, proposal.Symbol); err == nil && p.IsPositive() {
+			if p, err := pf.GetCurrentPrice(ctx, r.Creds, proposal.Symbol); err == nil && p.IsPositive() {
 				price = p
 				r.pricesMu.Lock()
 				r.prices[proposal.Symbol] = p

@@ -1,11 +1,37 @@
 use crate::Ema;
 
-/// Average Directional Index — measures trend strength (0-100).
+/// Average Directional Index (ADX) — đo độ mạnh của xu hướng (0–100).
 ///
-/// +DI = EMA(+DM) / ATR * 100
-/// -DI = EMA(-DM) / ATR * 100
-/// DX  = |+DI - -DI| / (+DI + -DI) * 100
-/// ADX = EMA(DX)
+/// Được Welles Wilder phát triển năm 1978, cùng với DMI. ADX đo **mức độ
+/// mạnh yếu** của trend mà không cho biết hướng. ADX cao = trend mạnh (dù
+/// tăng hay giảm); ADX thấp = sideways/choppy.
+///
+/// # Công thức (dùng EMA thay vì SMMA gốc của Wilder trong codebase này)
+/// ```text
+/// +DM(t) = max(high - prev_high, 0) nếu > -DM, ngược lại = 0
+/// -DM(t) = max(prev_low - low, 0)   nếu > +DM, ngược lại = 0
+/// TR(t)  = max(H-L, |H-PC|, |L-PC|)
+///
+/// +DI = EMA(+DM, n) / EMA(TR, n) × 100
+/// -DI = EMA(-DM, n) / EMA(TR, n) × 100
+/// DX  = |+DI − -DI| / (+DI + -DI) × 100
+/// ADX = EMA(DX, n)
+/// ```
+///
+/// # Ngưỡng thông dụng
+/// - ADX < 20: không có xu hướng rõ ràng (sideways)
+/// - ADX 20–25: xu hướng bắt đầu hình thành
+/// - ADX > 25: xu hướng mạnh
+/// - ADX > 50: xu hướng rất mạnh (có thể sắp kiệt sức)
+///
+/// # Cách dùng ADX + DI lines
+/// - ADX > 25 VÀ +DI > -DI → long signal mạnh
+/// - ADX > 25 VÀ -DI > +DI → short signal mạnh
+/// - ADX đang tăng → trend đang mạnh lên (momentum)
+/// - ADX đang giảm → trend yếu đi / sắp reversal
+///
+/// # Warmup
+/// Do cascade EMA: cần khoảng `2 × period` bar để ADX EMA warm up đầy đủ.
 #[derive(Debug, Clone)]
 pub struct Adx {
     _period: usize,
@@ -39,7 +65,7 @@ impl Adx {
         }
     }
 
-    /// Standard ADX(14)
+    /// ADX(14) — period Wilder khuyến nghị.
     pub fn standard() -> Self {
         Self::new(14)
     }

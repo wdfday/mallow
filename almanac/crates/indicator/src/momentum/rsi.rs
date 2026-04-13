@@ -1,4 +1,40 @@
-/// Relative Strength Index — Wilder's smoothing method.
+/// Relative Strength Index (RSI) — chỉ báo momentum đo tốc độ và mức độ thay đổi giá.
+///
+/// Được J. Welles Wilder Jr. phát triển năm 1978 trong cuốn *New Concepts in
+/// Technical Trading Systems*. RSI là một trong những oscillator được dùng nhiều
+/// nhất trong giao dịch.
+///
+/// # Công thức (Wilder's smoothing)
+/// ```text
+/// gain = max(close - prev_close, 0)
+/// loss = max(prev_close - close, 0)
+///
+/// Seed (n bar đầu):
+///   avg_gain = SMA(gain, n)
+///   avg_loss = SMA(loss, n)
+///
+/// Các bar sau (Wilder's exponential):
+///   avg_gain = avg_gain_prev × (n-1)/n + gain / n
+///   avg_loss = avg_loss_prev × (n-1)/n + loss / n
+///
+/// RS  = avg_gain / avg_loss
+/// RSI = 100 − 100 / (1 + RS)
+/// ```
+/// Note: Wilder dùng alpha = 1/n (SMMA), không phải 2/(n+1) (EMA).
+///
+/// # Range và ngưỡng thông dụng
+/// - RSI ∈ [0, 100]
+/// - RSI > 70 → overbought (xem xét sell/short)
+/// - RSI < 30 → oversold (xem xét buy/long)
+/// - RSI = 50 → midpoint (không momentum rõ ràng)
+///
+/// # Divergence
+/// Kỹ thuật quan trọng hơn ngưỡng overbought/oversold:
+/// - Bullish divergence: giá tạo đáy mới nhưng RSI tạo đáy cao hơn → sắp đảo chiều lên
+/// - Bearish divergence: giá tạo đỉnh mới nhưng RSI tạo đỉnh thấp hơn → sắp đảo chiều xuống
+///
+/// # Warmup
+/// Cần `period + 1` bar: `period` bar để seed SMA, thêm 1 bar để tính delta đầu tiên.
 #[derive(Debug, Clone)]
 pub struct Rsi {
     period: usize,
@@ -24,7 +60,7 @@ impl Rsi {
         }
     }
 
-    /// Feed a new closing price. Returns `Some(rsi)` after `period + 1` bars.
+    /// Feed một giá đóng cửa. Trả về `Some(rsi)` sau `period + 1` bar.
     pub fn update(&mut self, close: f64) -> Option<f64> {
         let Some(prev) = self.prev_close else {
             self.prev_close = Some(close);

@@ -1,8 +1,33 @@
-/// On-Balance Volume — cumulative volume based on price direction.
+/// On-Balance Volume (OBV) — volume lũy kế theo hướng giá.
 ///
-/// If close > prev_close: OBV += volume
-/// If close < prev_close: OBV -= volume
-/// If close == prev_close: OBV unchanged
+/// Được Joseph Granville phát triển năm 1963. OBV dựa trên lý thuyết:
+/// volume dẫn trước giá (volume leads price). Khi OBV tăng trong khi giá đi
+/// ngang hoặc giảm → tiền đang tích lũy → sắp có uptrend.
+///
+/// # Công thức
+/// ```text
+/// close > prev_close: OBV += volume   ← bar tăng, volume vào (buying pressure)
+/// close < prev_close: OBV -= volume   ← bar giảm, volume ra (selling pressure)
+/// close = prev_close: OBV không đổi  ← trung lập
+/// ```
+///
+/// OBV là chỉ số tuyệt đối (không có range). Giá trị tuyệt đối không quan trọng;
+/// **hướng và divergence** mới quan trọng.
+///
+/// # Tín hiệu giao dịch
+/// - **OBV tăng + giá tăng**: uptrend được volume xác nhận → bullish
+/// - **OBV giảm + giá giảm**: downtrend được xác nhận → bearish
+/// - **Bullish divergence**: giá tạo lower low nhưng OBV tạo higher low → reversal lên sắp xảy ra
+/// - **Bearish divergence**: giá tạo higher high nhưng OBV tạo lower high → reversal xuống
+/// - **OBV breakout trước giá**: OBV phá resistance trong khi giá chưa → sắp breakout
+///
+/// # Hạn chế
+/// - Nhạy cảm với "gap" volume — bar có gap up với volume lớn ảnh hưởng mạnh
+/// - Không chuẩn hóa → khó so sánh giữa các cổ phiếu/asset khác nhau
+/// - CMF và MFI bổ sung Typical Price nên phân biệt được quality của volume tốt hơn
+///
+/// # Warmup
+/// Trả về giá trị từ bar thứ 1 (không có warmup). Bar đầu tiên: OBV = 0 (không có prev_close).
 #[derive(Debug, Clone)]
 pub struct Obv {
     value: f64,

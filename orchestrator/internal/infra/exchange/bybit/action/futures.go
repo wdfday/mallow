@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/shopspring/decimal"
+
+	"orchestrator/internal/infra/exchange"
 )
 
 // SupportsFutures implements exchange.FuturesTrader — Bybit supports linear perpetuals.
@@ -13,7 +15,7 @@ func (c *Client) SupportsFutures() bool { return true }
 
 // SetLeverage sets buy/sell leverage for a linear perpetual symbol.
 // marginType: "cross" | "isolated"
-func (c *Client) SetLeverage(ctx context.Context, symbol string, leverage int, marginType string) error {
+func (c *Client) SetLeverage(ctx context.Context, creds exchange.Credentials, symbol string, leverage int, marginType string) error {
 	lev := fmt.Sprintf("%d", leverage)
 	body := map[string]any{
 		"category":     "linear",
@@ -23,7 +25,7 @@ func (c *Client) SetLeverage(ctx context.Context, symbol string, leverage int, m
 	}
 
 	var resp apiResponse[struct{}]
-	if err := c.doSigned(ctx, "POST", "/v5/position/set-leverage", body, &resp); err != nil {
+	if err := c.doSigned(ctx, creds, "POST", "/v5/position/set-leverage", body, &resp); err != nil {
 		return fmt.Errorf("bybit set leverage %s x%d: %w", symbol, leverage, err)
 	}
 	// retCode 110043 = leverage not modified (already set) — non-fatal
@@ -44,7 +46,7 @@ func (c *Client) SetLeverage(ctx context.Context, symbol string, leverage int, m
 		"sellLeverage": lev,
 	}
 	var modeResp apiResponse[struct{}]
-	if err := c.doSigned(ctx, "POST", "/v5/position/switch-isolated", modeBody, &modeResp); err != nil {
+	if err := c.doSigned(ctx, creds, "POST", "/v5/position/switch-isolated", modeBody, &modeResp); err != nil {
 		return fmt.Errorf("bybit set margin mode %s: %w", symbol, err)
 	}
 	// 110026 = margin mode already set — non-fatal
@@ -55,7 +57,7 @@ func (c *Client) SetLeverage(ctx context.Context, symbol string, leverage int, m
 }
 
 // FundingRate returns the latest funding rate for a linear perpetual symbol.
-func (c *Client) FundingRate(ctx context.Context, symbol string) (decimal.Decimal, error) {
+func (c *Client) FundingRate(ctx context.Context, creds exchange.Credentials, symbol string) (decimal.Decimal, error) {
 	body := map[string]string{
 		"category": "linear",
 		"symbol":   symbol,
@@ -63,7 +65,7 @@ func (c *Client) FundingRate(ctx context.Context, symbol string) (decimal.Decima
 	}
 
 	var resp apiResponse[fundingHistoryResult]
-	if err := c.doSigned(ctx, "GET", "/v5/market/funding/history", body, &resp); err != nil {
+	if err := c.doSigned(ctx, creds, "GET", "/v5/market/funding/history", body, &resp); err != nil {
 		return decimal.Zero, fmt.Errorf("bybit funding rate %s: %w", symbol, err)
 	}
 	if resp.RetCode != 0 || len(resp.Result.List) == 0 {
@@ -73,11 +75,11 @@ func (c *Client) FundingRate(ctx context.Context, symbol string) (decimal.Decima
 }
 
 // MarkPrice returns the current mark price for a linear perpetual symbol.
-func (c *Client) MarkPrice(ctx context.Context, symbol string) (decimal.Decimal, error) {
+func (c *Client) MarkPrice(ctx context.Context, creds exchange.Credentials, symbol string) (decimal.Decimal, error) {
 	body := map[string]string{"category": "linear", "symbol": symbol}
 
 	var resp apiResponse[tickerResult]
-	if err := c.doSigned(ctx, "GET", "/v5/market/tickers", body, &resp); err != nil {
+	if err := c.doSigned(ctx, creds, "GET", "/v5/market/tickers", body, &resp); err != nil {
 		return decimal.Zero, fmt.Errorf("bybit mark price %s: %w", symbol, err)
 	}
 	if resp.RetCode != 0 || len(resp.Result.List) == 0 {

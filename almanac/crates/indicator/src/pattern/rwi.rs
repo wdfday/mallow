@@ -10,13 +10,38 @@ pub struct RwiValue {
     pub rwi_low: f64,
 }
 
-/// Random Walk Index (Schwager).
+/// Random Walk Index (RWI) — phân biệt trend thực sự vs. biến động ngẫu nhiên.
 ///
-/// Compares the magnitude of price moves to what would be expected from a
-/// random walk.  Values > 1.0 suggest a genuine trend.
+/// Được Michael Poulos phát triển năm 1992. RWI so sánh magnitude của price move
+/// với những gì được kỳ vọng từ một random walk (bước đi ngẫu nhiên). Nếu giá
+/// di chuyển nhiều hơn random walk dự đoán → đó là trend thực sự, không phải noise.
 ///
-/// RWI_High = max over n∈[2..period] of (High[0] − Low[n]) / (ATR × √n)
-/// RWI_Low  = max over n∈[2..period] of (High[n] − Low[0]) / (ATR × √n)
+/// # Công thức
+/// ```text
+/// ATR  = simple average của True Range trong period bar
+///
+/// RWI_High = max { (High[0] − Low[n]) / (ATR × √n) }   n ∈ [2..period]
+///   → highest high hiện tại so với lowest low n bar trước
+///   → chuẩn hóa bằng ATR × √n (expected random walk step size)
+///
+/// RWI_Low  = max { (High[n] − Low[0]) / (ATR × √n) }   n ∈ [2..period]
+///   → highest high n bar trước so với lowest low hiện tại
+/// ```
+///
+/// # Diễn giải
+/// - **RWI_High > 1.0**: upward movement lớn hơn random walk → genuine uptrend
+/// - **RWI_Low > 1.0**: downward movement lớn hơn random walk → genuine downtrend
+/// - **Cả hai < 1.0**: thị trường choppy / không có trend thực sự
+/// - **Cả hai > 1.0 cùng lúc**: hiếm, xảy ra khi có swing mạnh cả hai chiều
+///
+/// # Ứng dụng
+/// - Trend filter: chỉ dùng trend-following strategy khi RWI_High hoặc RWI_Low > 1.0
+/// - Entry confirmation: RWI_High vừa vượt 1.0 → uptrend bắt đầu → long signal
+/// - Kết hợp với Donchian: Donchian breakout + RWI > 1.0 → breakout đáng tin
+///
+/// # Warmup
+/// Cần `period + 1` bar.
+#[derive(Clone)]
 pub struct Rwi {
     period: usize,
     highs: VecDeque<f64>,

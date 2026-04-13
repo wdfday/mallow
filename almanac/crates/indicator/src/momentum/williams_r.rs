@@ -1,25 +1,50 @@
-use std::collections::VecDeque;
+use crate::util::{RollingMax, RollingMin};
 
-/// Williams %R — momentum oscillator (-100 to 0).
+/// Williams %R — momentum oscillator đo vị trí close so với highest high.
 ///
-/// %R = (highest_high - close) / (highest_high - lowest_low) * -100
+/// Được Larry Williams phát triển. Về mặt toán học là nghịch đảo của Stochastic %K:
+/// thay vì đo close so với lowest low (%K = 0..100), %R đo từ highest high xuống
+/// (range: −100..0). Chỉ là một cách nhìn khác của cùng một thông tin.
 ///
-/// -80 to -100: oversold
-///   0 to -20: overbought
+/// # Công thức
+/// ```text
+/// %R = (HighestHigh(n) − Close) / (HighestHigh(n) − LowestLow(n)) × (−100)
+/// ```
+///
+/// - **%R = 0**: close = HighestHigh → giá ở đỉnh của range → overbought signal
+/// - **%R = −100**: close = LowestLow → giá ở đáy của range → oversold signal
+///
+/// # Ngưỡng thông dụng
+/// - **0 đến −20**: overbought — giá gần đỉnh range → xem xét bán
+/// - **−80 đến −100**: oversold — giá gần đáy range → xem xét mua
+///
+/// # Cách đọc tín hiệu
+/// - **%R thoát vùng oversold (vượt −80 lên)**: buy signal
+/// - **%R thoát vùng overbought (xuống dưới −20)**: sell signal
+/// - **%R giữ vùng −20 trong uptrend**: trend mạnh, giá liên tục đóng gần high
+///
+/// # So sánh với Stochastic
+/// - Williams %R(n) = −100 × (1 − Stochastic %K(n)) — về toán học tương đương
+/// - Williams %R thường không smooth (không có %D), nhạy hơn
+/// - Stochastic thêm %D (SMA của %K) → ít whipsaw hơn
+///
+/// # Flat market
+/// Khi HighestHigh = LowestLow: trả về −50.0 (trung lập).
+///
+/// # Warmup
+/// Cần đúng `period` bar.
 #[derive(Debug, Clone)]
 pub struct WilliamsR {
-    period: usize,
-    highs: VecDeque<f64>,
-    lows: VecDeque<f64>,
+    max_high: RollingMax,
+    min_low: RollingMin,
 }
 
 impl WilliamsR {
     pub fn new(period: usize) -> Self {
         assert!(period > 0);
         Self {
-            period,
-            highs: VecDeque::with_capacity(period + 1),
-            lows: VecDeque::with_capacity(period + 1),
+            max_high: RollingMax::new(period),
+            min_low: RollingMin::new(period),
         }
     }
 
@@ -29,20 +54,12 @@ impl WilliamsR {
     }
 
     pub fn update(&mut self, high: f64, low: f64, close: f64) -> Option<f64> {
-        self.highs.push_back(high);
-        self.lows.push_back(low);
-
-        if self.highs.len() > self.period {
-            self.highs.pop_front();
-            self.lows.pop_front();
-        }
-
-        if self.highs.len() < self.period {
-            return None;
-        }
-
-        let highest = self.highs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let lowest = self.lows.iter().cloned().fold(f64::INFINITY, f64::min);
+        let highest = self.max_high.push(high);
+        let lowest = self.min_low.push(low);
+        let (highest, lowest) = match (highest, lowest) {
+            (Some(h), Some(l)) => (h, l),
+            _ => return None,
+        };
         let range = highest - lowest;
 
         if range < f64::EPSILON {
@@ -53,12 +70,12 @@ impl WilliamsR {
     }
 
     pub fn is_ready(&self) -> bool {
-        self.highs.len() == self.period
+        self.max_high.value().is_some()
     }
 
     pub fn reset(&mut self) {
-        self.highs.clear();
-        self.lows.clear();
+        self.max_high.reset();
+        self.min_low.reset();
     }
 }
 

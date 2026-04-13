@@ -5,6 +5,8 @@ import (
 	"time"
 
 	alpacasdk "github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
+
+	"orchestrator/internal/infra/exchange"
 )
 
 // AccountInfo is a simplified view of an Alpaca account.
@@ -45,8 +47,8 @@ type ClockInfo struct {
 }
 
 // GetAccount returns the current account information.
-func (c *Client) GetAccount() (*AccountInfo, error) {
-	acct, err := c.sdk.GetAccount()
+func (c *Client) GetAccount(creds exchange.Credentials) (*AccountInfo, error) {
+	acct, err := c.newSDK(creds).GetAccount()
 	if err != nil {
 		return nil, fmt.Errorf("alpaca get account: %w", err)
 	}
@@ -66,18 +68,18 @@ func (c *Client) GetAccount() (*AccountInfo, error) {
 	}, nil
 }
 
-// GetAsset returns information about a single tradeable asset.
+// GetAsset returns information about a single tradeable asset (public endpoint).
 func (c *Client) GetAsset(symbol string) (*AssetInfo, error) {
-	asset, err := c.sdk.GetAsset(symbol)
+	asset, err := c.newSDK(exchange.Credentials{}).GetAsset(symbol)
 	if err != nil {
 		return nil, fmt.Errorf("alpaca get asset %s: %w", symbol, err)
 	}
 	return mapAsset(asset), nil
 }
 
-// GetAssets returns a list of assets matching the given filters.
+// GetAssets returns a list of assets matching the given filters (public endpoint).
 func (c *Client) GetAssets(req alpacasdk.GetAssetsRequest) ([]AssetInfo, error) {
-	assets, err := c.sdk.GetAssets(req)
+	assets, err := c.newSDK(exchange.Credentials{}).GetAssets(req)
 	if err != nil {
 		return nil, fmt.Errorf("alpaca get assets: %w", err)
 	}
@@ -88,9 +90,9 @@ func (c *Client) GetAssets(req alpacasdk.GetAssetsRequest) ([]AssetInfo, error) 
 	return result, nil
 }
 
-// GetClock returns the current market clock (open/close times).
+// GetClock returns the current market clock (public endpoint).
 func (c *Client) GetClock() (*ClockInfo, error) {
-	clock, err := c.sdk.GetClock()
+	clock, err := c.newSDK(exchange.Credentials{}).GetClock()
 	if err != nil {
 		return nil, fmt.Errorf("alpaca get clock: %w", err)
 	}
@@ -103,8 +105,8 @@ func (c *Client) GetClock() (*ClockInfo, error) {
 }
 
 // GetPortfolioHistory returns historical portfolio snapshots.
-func (c *Client) GetPortfolioHistory(req alpacasdk.GetPortfolioHistoryRequest) (*alpacasdk.PortfolioHistory, error) {
-	history, err := c.sdk.GetPortfolioHistory(req)
+func (c *Client) GetPortfolioHistory(creds exchange.Credentials, req alpacasdk.GetPortfolioHistoryRequest) (*alpacasdk.PortfolioHistory, error) {
+	history, err := c.newSDK(creds).GetPortfolioHistory(req)
 	if err != nil {
 		return nil, fmt.Errorf("alpaca get portfolio history: %w", err)
 	}

@@ -8,36 +8,39 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"orchestrator/internal/infra/exchange"
 )
 
-// Config holds OANDA API credentials.
+// Config holds OANDA process-level settings (no credentials).
 type Config struct {
-	Token     string // Personal Access Token (Bearer)
-	AccountID string // OANDA account ID (e.g. "101-001-12345-001")
-	BaseURL   string // default: https://api-fxpractice.oanda.com
+	BaseURL string // default: https://api-fxpractice.oanda.com
 }
 
-// Client implements exchange.Exchange for OANDA v20 REST API.
+// Client is a stateless OANDA v20 REST client.
+// One instance is shared across all OANDA accounts; credentials are passed per-call.
 type Client struct {
-	cfg    Config
-	client *http.Client
+	baseURL string
+	client  *http.Client
 }
 
-// New creates a new OANDA exchange client.
+// New creates a shared stateless OANDA client.
 func New(cfg Config) *Client {
-	if cfg.BaseURL == "" {
-		cfg.BaseURL = "https://api-fxpractice.oanda.com"
+	baseURL := cfg.BaseURL
+	if baseURL == "" {
+		baseURL = "https://api-fxpractice.oanda.com"
 	}
 	return &Client{
-		cfg:    cfg,
-		client: &http.Client{Timeout: 10 * time.Second},
+		baseURL: baseURL,
+		client:  &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
 func (c *Client) Name() string { return "oanda" }
 
-// doRequest performs an authenticated HTTP request to OANDA v20 API.
-func (c *Client) doRequest(ctx context.Context, method, path string, body any, out any) error {
+// doRequest performs an authenticated HTTP request to OANDA v20 API using the given credentials.
+// creds.APIKey is the Personal Access Token; creds.AccountID is the OANDA account ID.
+func (c *Client) doRequest(ctx context.Context, creds exchange.Credentials, method, path string, body any, out any) error {
 	var bodyReader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -47,13 +50,13 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body any, o
 		bodyReader = strings.NewReader(string(data))
 	}
 
-	url := c.cfg.BaseURL + path
+	url := c.baseURL + path
 	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+c.cfg.Token)
+	req.Header.Set("Authorization", "Bearer "+creds.APIKey)
 
 	resp, err := c.client.Do(req)
 	if err != nil {

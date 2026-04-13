@@ -7,6 +7,8 @@ import (
 
 	"github.com/adshao/go-binance/v2/futures"
 	"github.com/shopspring/decimal"
+
+	"orchestrator/internal/infra/exchange"
 )
 
 // SupportsFutures implements exchange.FuturesTrader — Binance supports futures.
@@ -14,8 +16,9 @@ func (c *Client) SupportsFutures() bool { return true }
 
 // SetLeverage sets the leverage for a futures symbol.
 // marginType: "ISOLATED" | "CROSSED"
-func (c *Client) SetLeverage(ctx context.Context, symbol string, leverage int, marginType string) error {
-	_, err := c.fut.NewChangeLeverageService().
+func (c *Client) SetLeverage(ctx context.Context, creds exchange.Credentials, symbol string, leverage int, marginType string) error {
+	fut := c.newFut(creds)
+	_, err := fut.NewChangeLeverageService().
 		Symbol(symbol).
 		Leverage(leverage).
 		Do(ctx)
@@ -27,7 +30,7 @@ func (c *Client) SetLeverage(ctx context.Context, symbol string, leverage int, m
 	if strings.ToUpper(marginType) == "CROSSED" {
 		mt = futures.MarginTypeCrossed
 	}
-	err = c.fut.NewChangeMarginTypeService().
+	err = fut.NewChangeMarginTypeService().
 		Symbol(symbol).
 		MarginType(mt).
 		Do(ctx)
@@ -43,7 +46,8 @@ func (c *Client) SetLeverage(ctx context.Context, symbol string, leverage int, m
 
 // FundingRate returns the latest funding rate for a futures symbol.
 func (c *Client) FundingRate(ctx context.Context, symbol string) (decimal.Decimal, error) {
-	rates, err := c.fut.NewFundingRateService().Symbol(symbol).Limit(1).Do(ctx)
+	// Public endpoint — no credentials needed.
+	rates, err := c.newFut(exchange.Credentials{}).NewFundingRateService().Symbol(symbol).Limit(1).Do(ctx)
 	if err != nil {
 		return decimal.Zero, fmt.Errorf("binance funding rate %s: %w", symbol, err)
 	}
@@ -55,7 +59,8 @@ func (c *Client) FundingRate(ctx context.Context, symbol string) (decimal.Decima
 
 // MarkPrice returns the current mark price for a futures symbol.
 func (c *Client) MarkPrice(ctx context.Context, symbol string) (decimal.Decimal, error) {
-	prices, err := c.fut.NewPremiumIndexService().Symbol(symbol).Do(ctx)
+	// Public endpoint — no credentials needed.
+	prices, err := c.newFut(exchange.Credentials{}).NewPremiumIndexService().Symbol(symbol).Do(ctx)
 	if err != nil {
 		return decimal.Zero, fmt.Errorf("binance mark price %s: %w", symbol, err)
 	}

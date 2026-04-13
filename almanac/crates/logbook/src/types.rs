@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 
 // ── Request ───────────────────────────────────────────────────────────────────
 
@@ -319,6 +319,58 @@ pub struct DynamicBacktestRequest {
     /// Asset class — controls lot sizing.
     /// `"crypto"` → fractional qty (default). `"stock"` → whole shares. `"vn_stock"` → lots of 100.
     pub asset_type: Option<String>,
+}
+
+// ── Data API ──────────────────────────────────────────────────────────────────
+
+/// A single OHLCV bar as returned by `GET /api/data/{symbol}`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BarRecord {
+    /// Unix timestamp in milliseconds (UTC).
+    pub t: i64,
+    pub o: f64,
+    pub h: f64,
+    pub l: f64,
+    pub c: f64,
+    pub v: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vwap: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub n: Option<i64>,
+}
+
+/// Response envelope for `GET /api/data/{symbol}`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DataResponse {
+    pub symbol: String,
+    pub count: usize,
+    pub bars: Vec<BarRecord>,
+}
+
+/// Query parameters for `GET /api/data/{symbol}/latest`.
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct LatestQuery {
+    /// Number of bars to return (default: 500, max: 5000).
+    pub n: Option<usize>,
+    /// If `true`, only include bars within regular market hours.
+    pub market_hours_only: Option<bool>,
+    /// Exchange for market-hours filtering: `"us"` (default) or `"vn"`.
+    pub exchange: Option<String>,
+}
+
+/// Query parameters for `GET /api/data/{symbol}`.
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct DataQuery {
+    /// Start date inclusive, format `YYYY-MM-DD`.
+    pub from: Option<String>,
+    /// End date inclusive, format `YYYY-MM-DD`.
+    pub to: Option<String>,
+    /// Maximum number of bars to return (default: 5000, max: 50000).
+    pub limit: Option<usize>,
+    /// If `true`, only include bars within regular market hours.
+    pub market_hours_only: Option<bool>,
+    /// Exchange for market-hours filtering: `"us"` (default) or `"vn"`.
+    pub exchange: Option<String>,
 }
 
 // ── Indicator API ─────────────────────────────────────────────────────────────

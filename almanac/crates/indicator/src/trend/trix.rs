@@ -1,21 +1,49 @@
 use crate::Ema;
 
+/// TRIX — oscillator đo tốc độ thay đổi của Triple EMA.
+///
+/// Được Jack Hutson phát triển năm 1983. TRIX lọc bỏ các minor cycle bằng triple
+/// smoothing (EMA của EMA của EMA), chỉ phản ứng với các chu kỳ quan trọng hơn.
+/// Kết quả là oscillator rất ít bị nhiễu nhiễu nhỏ.
+///
+/// # Công thức
+/// ```text
+/// EMA1 = EMA(close, n)
+/// EMA2 = EMA(EMA1, n)
+/// EMA3 = EMA(EMA2, n)
+///
+/// TRIX = (EMA3 − prev_EMA3) / prev_EMA3 × 100   ← % change của EMA3
+/// Signal = EMA(TRIX, signal_period)
+/// Histogram = TRIX − Signal
+/// ```
+///
+/// # Tín hiệu giao dịch
+/// - **TRIX cắt Signal từ dưới lên**: long signal
+/// - **TRIX cắt Signal từ trên xuống**: short signal
+/// - **TRIX > 0**: EMA3 đang tăng → momentum bullish
+/// - **TRIX < 0**: EMA3 đang giảm → momentum bearish
+/// - **Divergence TRIX vs giá**: tín hiệu đảo chiều sớm
+///
+/// # Ưu điểm
+/// - Ít false signal hơn MACD vì triple smoothing lọc noise tốt hơn
+/// - Hoạt động tốt trong trending market
+/// - Kém hiệu quả hơn trong sideways (do lag của triple EMA)
+///
+/// # Warmup
+/// Cần khoảng `3 × (period - 1) + signal_period` bar.
 #[derive(Debug, Clone)]
 pub struct TrixValue {
-    /// Triple-smoothed EMA percentage change.
+    /// TRIX: % thay đổi của triple EMA so với bar trước
     pub trix: f64,
-    /// Signal line: EMA of TRIX.
+    /// Signal line: EMA của TRIX
     pub signal: f64,
-    /// Histogram: trix − signal.
+    /// Histogram: TRIX − Signal (dương khi TRIX > Signal)
     pub histogram: f64,
 }
 
-/// TRIX — Triple Exponential Moving Average oscillator.
-///
-/// TRIX = (EMA₃ − prev_EMA₃) / prev_EMA₃ × 100
-/// Signal = EMA(TRIX, signal_period)
-///
-/// Trading rule: Long when TRIX > 0 (or crosses signal); Short when TRIX < 0.
+/// TRIX — Triple EMA oscillator đo tốc độ thay đổi của EMA3.
+#[allow(missing_docs)]
+#[derive(Clone)]
 pub struct Trix {
     ema1: Ema,
     ema2: Ema,

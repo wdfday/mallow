@@ -1,17 +1,46 @@
 use std::collections::VecDeque;
 
+/// Aroon — đo **thời gian** kể từ lần đạt high/low cao nhất/thấp nhất gần đây.
+///
+/// Được Tushar Chande phát triển năm 1995. Khác với hầu hết oscillator đo giá,
+/// Aroon đo *khoảng cách thời gian* từ lần cao/thấp nhất trong `period` bar.
+/// Indicator này giỏi phát hiện khi nào trend đang bắt đầu hoặc kết thúc.
+///
+/// # Công thức
+/// ```text
+/// Aroon Up   = ((period - bars_since_high) / period) × 100
+/// Aroon Down = ((period - bars_since_low)  / period) × 100
+/// Oscillator = Aroon Up − Aroon Down   (range: −100 đến +100)
+/// ```
+///
+/// - `bars_since_high` = số bar tính từ khi đạt highest high (0 = bar hiện tại)
+/// - `bars_since_low`  = số bar tính từ khi đạt lowest low
+///
+/// # Cách đọc tín hiệu
+/// - **Aroon Up = 100**: high mới vừa đạt trong bar hiện tại → bullish mạnh
+/// - **Aroon Down = 100**: low mới vừa đạt → bearish mạnh
+/// - **Aroon Up > 70, Aroon Down < 30**: uptrend mạnh đang hình thành
+/// - **Oscillator cắt 0 từ dưới lên**: chuyển từ bearish → bullish
+/// - **Cả hai ~50**: consolidation, không có xu hướng rõ ràng
+///
+/// # So sánh với ADX
+/// - ADX đo *độ mạnh* của trend; Aroon đo *thời gian* từ last extreme
+/// - Aroon tốt hơn để phát hiện breakout sớm; ADX tốt hơn để xác nhận trend mạnh
+///
+/// # Warmup
+/// Cần `period + 1` bar (period + bar hiện tại).
 #[derive(Debug, Clone)]
 pub struct AroonValue {
+    /// Aroon Up: 100 = high vừa đạt trong bar hiện tại, 0 = high cách đây period bar
     pub up: f64,
+    /// Aroon Down: 100 = low vừa đạt trong bar hiện tại, 0 = low cách đây period bar
     pub down: f64,
-    /// Aroon Oscillator = Aroon Up - Aroon Down (-100..+100)
+    /// Aroon Oscillator = Aroon Up − Aroon Down (−100 đến +100)
     pub oscillator: f64,
 }
 
-/// Aroon indicator — measures time since highest high / lowest low over N bars.
-///
-/// Aroon Up   = ((period - bars_since_high) / period) * 100
-/// Aroon Down = ((period - bars_since_low)  / period) * 100
+/// Aroon indicator — đo thời gian kể từ highest high / lowest low trong N bar.
+#[allow(missing_docs)]
 #[derive(Debug, Clone)]
 pub struct Aroon {
     period: usize,

@@ -1,19 +1,50 @@
 use std::collections::VecDeque;
 
-/// Bollinger Bands value snapshot.
+/// Giá trị snapshot của Bollinger Bands.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BBandsValue {
+    /// Middle band: SMA(period)
     pub middle: f64,
+    /// Upper band: middle + k × stddev
     pub upper: f64,
+    /// Lower band: middle − k × stddev
     pub lower: f64,
-    /// Bandwidth: (upper - lower) / middle
+    /// Bandwidth: (upper − lower) / middle — đo mức độ "nở" của dải
     pub bandwidth: f64,
-    /// %B: (price - lower) / (upper - lower)
+    /// %B: (price − lower) / (upper − lower)
+    /// 1.0 = giá ở upper band, 0.0 = giá ở lower band, 0.5 = giá ở middle
     pub percent_b: f64,
 }
 
-/// Bollinger Bands — SMA ± k * stddev.
-/// Classic params: period=20, k=2.0.
+/// Bollinger Bands — dải biến động dựa trên SMA ± k × độ lệch chuẩn.
+///
+/// Được John Bollinger phát triển và phổ biến hoá qua cuốn *Bollinger on
+/// Bollinger Bands* (2001). Là một trong những indicator được dùng nhiều nhất
+/// để đo volatility và xác định vùng giá bất thường.
+///
+/// # Công thức (tham số cổ điển: period=20, k=2.0)
+/// ```text
+/// Middle = SMA(close, period)
+/// stddev = sqrt(Σ(closeᵢ − Middle)² / period)   ← population stddev
+///
+/// Upper = Middle + k × stddev
+/// Lower = Middle − k × stddev
+/// ```
+///
+/// # Ý nghĩa các thành phần
+/// - **Middle**: dynamic support/resistance; xu hướng khi giá ở một phía
+/// - **Upper/Lower**: 2 stddev từ mean → ~95% dữ liệu nằm trong dải (với phân phối chuẩn)
+/// - **Bandwidth**: đo độ "co/nở" của dải — thấp = consolidation, cao = breakout
+/// - **%B**: vị trí tương đối của giá trong dải; > 1.0 hoặc < 0.0 → vượt band
+///
+/// # Ứng dụng thực tế
+/// - Squeeze (bandwidth thấp) → breakout sắp xảy ra
+/// - Giá chạm upper band trong uptrend mạnh → KHÔNG nhất thiết là sell signal
+/// - Double bottom ngoài lower band → tín hiệu reversal có thể tin cậy
+/// - Divergence %B vs price → momentum yếu dần
+///
+/// # Warmup
+/// Cần `period` bar. Dùng population stddev (chia n) để khớp với TradingView mặc định.
 #[derive(Debug, Clone)]
 pub struct BBands {
     period: usize,
@@ -33,7 +64,7 @@ impl BBands {
         }
     }
 
-    /// Standard BBands(20, 2.0)
+    /// BBands(20, 2.0) — tham số John Bollinger khuyến nghị.
     pub fn standard() -> Self {
         Self::new(20, 2.0)
     }

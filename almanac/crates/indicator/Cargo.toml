@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-# Pure math — zero external deps at runtime
+alm-core = { workspace = true }
 
 [dev-dependencies]
 ta = "0.5"

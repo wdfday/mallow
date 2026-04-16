@@ -514,6 +514,8 @@ fn make_binding(base: &str, args: &[f64], interval_ms: Option<i64>) -> Result<Op
         "bb_upper"    => bind!(json!({"type":"bbands","period":n,"multiplier":2.0}),                                "upper"),
         "bb_lower"    => bind!(json!({"type":"bbands","period":n,"multiplier":2.0}),                                "lower"),
         "bb_mid"      => bind!(json!({"type":"bbands","period":n,"multiplier":2.0}),                                "middle"),
+        "bb_pct"      => bind!(json!({"type":"bbands","period":n,"multiplier":2.0}),                                "percent_b"),
+        "bb_bw"       => bind!(json!({"type":"bbands","period":n,"multiplier":2.0}),                                "bandwidth"),
         "stoch_k"     => bind!(json!({"type":"stochastic","k_period":n,"d_period":3}),                             "k"),
         "stoch_d"     => bind!(json!({"type":"stochastic","k_period":n,"d_period":3}),                             "d"),
         "srsi_k"      => bind!(json!({"type":"stoch_rsi","rsi_period":n,"smooth_d":3}),                             "k"),
@@ -651,7 +653,7 @@ const ONE_ARG_FUNCS: &[&str] = &[
     "smi_line", "smi_sig",
     // volatility
     "atr",
-    "bb_upper", "bb_lower", "bb_mid",
+    "bb_upper", "bb_lower", "bb_mid", "bb_pct", "bb_bw",
     "donchian_upper", "donchian_lower", "donchian_mid",
     "chandelier_long", "chandelier_short",
     "chop_angle",
@@ -667,6 +669,113 @@ const ZERO_ARG_FUNCS: &[&str] = &[
     "chande_kroll_long", "chande_kroll_short",
     "fractal_bull", "fractal_bear",
 ];
+
+// ── CEL script parser ─────────────────────────────────────────────────────────
+
+/// Parsed representation of a multi-line CEL script.
+///
+/// The script format lets a UI send a single textarea value instead of
+/// separate JSON fields:
+///
+/// ```text
+/// entry: rsi(14) < 30.0 && close > ema(50)
+/// exit:  rsi(14) > 70.0 || close < ema(50)
+/// tp:    0.05
+/// sl:    0.02
+/// # comment — ignored
+/// candle_type: heiken_ashi
+/// ```
+///
+/// Rules:
+/// - Lines starting with `#` or blank are ignored.
+/// - Continuation lines (no recognised `key:` prefix) are joined with a
+///   space onto the previous `entry` or `exit` section — useful for
+///   multi-line expressions with leading `&&` / `||`.
+/// - JSON params in `from_params` override the same keys from the script.
+pub struct CelScript {
+    pub entry:       String,
+    pub exit:        String,
+    pub tp:          Option<f64>,
+    pub sl:          Option<f64>,
+    pub tp_atr:      Option<f64>,
+    pub sl_atr:      Option<f64>,
+    pub trail_pct:   Option<f64>,
+    pub trail_atr:   Option<f64>,
+    pub atr_period:  Option<usize>,
+    pub candle_type: String,
+    pub ha_smooth:   usize,
+}
+
+impl CelScript {
+    pub fn parse(script: &str) -> anyhow::Result<Self> {
+        let mut entry       = String::new();
+        let mut exit        = String::new();
+        let mut tp:         Option<f64>   = None;
+        let mut sl:         Option<f64>   = None;
+        let mut tp_atr:     Option<f64>   = None;
+        let mut sl_atr:     Option<f64>   = None;
+        let mut trail_pct:  Option<f64>   = None;
+        let mut trail_atr:  Option<f64>   = None;
+        let mut atr_period: Option<usize> = None;
+        let mut candle_type = String::from("raw");
+        let mut ha_smooth: usize = 2;
+        // 0 = entry section, 1 = exit section, None = numeric/string key
+        let mut last_section: Option<u8> = None;
+
+        for raw in script.lines() {
+            let line = raw.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            macro_rules! pf {
+                ($rest:expr, $dst:ident) => {
+                    $dst = $rest.trim().parse::<f64>().ok();
+                    last_section = None;
+                };
+            }
+
+            if let Some(rest) = line.strip_prefix("entry:") {
+                if !entry.is_empty() { entry.push(' '); }
+                entry.push_str(rest.trim());
+                last_section = Some(0);
+            } else if let Some(rest) = line.strip_prefix("exit:") {
+                if !exit.is_empty() { exit.push(' '); }
+                exit.push_str(rest.trim());
+                last_section = Some(1);
+            } else if let Some(rest) = line.strip_prefix("tp:")         { pf!(rest, tp); }
+            else if let Some(rest) = line.strip_prefix("sl:")           { pf!(rest, sl); }
+            else if let Some(rest) = line.strip_prefix("tp_atr:")       { pf!(rest, tp_atr); }
+            else if let Some(rest) = line.strip_prefix("sl_atr:")       { pf!(rest, sl_atr); }
+            else if let Some(rest) = line.strip_prefix("trail_pct:")    { pf!(rest, trail_pct); }
+            else if let Some(rest) = line.strip_prefix("trail_atr:")    { pf!(rest, trail_atr); }
+            else if let Some(rest) = line.strip_prefix("atr_period:") {
+                atr_period = rest.trim().parse::<usize>().ok();
+                last_section = None;
+            } else if let Some(rest) = line.strip_prefix("candle_type:") {
+                candle_type = rest.trim().to_string();
+                last_section = None;
+            } else if let Some(rest) = line.strip_prefix("ha_smooth:") {
+                ha_smooth = rest.trim().parse::<usize>().unwrap_or(2);
+                last_section = None;
+            } else {
+                // Continuation: join onto last expression section
+                match last_section {
+                    Some(0) => { entry.push(' '); entry.push_str(line); }
+                    Some(1) => { exit.push(' ');  exit.push_str(line); }
+                    _ => anyhow::bail!(
+                        "CEL script: unexpected line with no active section: {line:?}"
+                    ),
+                }
+            }
+        }
+
+        anyhow::ensure!(!entry.is_empty(), "CEL script must contain an 'entry:' line");
+
+        Ok(Self { entry, exit, tp, sl, tp_atr, sl_atr, trail_pct, trail_atr,
+                  atr_period, candle_type, ha_smooth })
+    }
+}
 
 // ── Strategy ──────────────────────────────────────────────────────────────────
 
@@ -718,9 +827,40 @@ impl CelStrategy {
     }
 
     pub fn from_params(p: &serde_json::Value) -> Result<Self> {
+        // ── Script format (single textarea) ──────────────────────────────────
+        // If "script" is present, parse it first; JSON fields act as overrides.
+        if let Some(script) = p.get("script").and_then(|v| v.as_str()) {
+            let s = CelScript::parse(script)?;
+            let ha_smooth = p.get("ha_smooth").and_then(serde_json::Value::as_f64)
+                .map(|v| v as usize).unwrap_or(s.ha_smooth);
+            let candle_type = CandleType::from_str(
+                p.get("candle_type").and_then(|v| v.as_str()).unwrap_or(&s.candle_type),
+                ha_smooth,
+            );
+            return Self::build(
+                &s.entry,
+                if s.exit.is_empty() { "false" } else { &s.exit },
+                p.get("tp").and_then(serde_json::Value::as_f64).or(s.tp),
+                p.get("sl").and_then(serde_json::Value::as_f64).or(s.sl),
+                p.get("tp_atr").and_then(serde_json::Value::as_f64).or(s.tp_atr),
+                p.get("sl_atr").and_then(serde_json::Value::as_f64).or(s.sl_atr),
+                p.get("trail_pct").and_then(serde_json::Value::as_f64).or(s.trail_pct),
+                p.get("trail_atr").and_then(serde_json::Value::as_f64).or(s.trail_atr),
+                p.get("atr_period").and_then(serde_json::Value::as_f64)
+                    .map(|v| v as usize).or(s.atr_period),
+                candle_type,
+            );
+        }
+
+        // ── Legacy: separate entry / exit fields ──────────────────────────────
         let entry = p.get("entry").and_then(|v| v.as_str()).unwrap_or("false");
         let exit  = p.get("exit").and_then(|v| v.as_str()).unwrap_or("false");
         let atr_period = p.get("atr_period").and_then(serde_json::Value::as_f64).map(|v| v as usize);
+        let ha_smooth = p.get("ha_smooth").and_then(serde_json::Value::as_f64).map(|v| v as usize).unwrap_or(2);
+        let candle_type = CandleType::from_str(
+            p.get("candle_type").and_then(|v| v.as_str()).unwrap_or("raw"),
+            ha_smooth,
+        );
         Self::build(
             entry, exit,
             p.get("tp").and_then(serde_json::Value::as_f64),
@@ -730,7 +870,7 @@ impl CelStrategy {
             p.get("trail_pct").and_then(serde_json::Value::as_f64),
             p.get("trail_atr").and_then(serde_json::Value::as_f64),
             atr_period,
-            CandleType::Raw,
+            candle_type,
         )
     }
 
@@ -937,6 +1077,109 @@ mod tests {
 
     fn bar(ts: i64, c: f64) -> Bar {
         Bar::new(ts, "T", c, c * 1.01, c * 0.99, c, 1_000.0)
+    }
+
+    // ── CelScript::parse ─────────────────────────────────────────────────────
+
+    #[test]
+    fn script_basic() {
+        let s = CelScript::parse(
+            "entry: rsi(14) < 30.0 && close > ema(50)\n\
+             exit:  rsi(14) > 70.0\n\
+             tp:    0.05\n\
+             sl:    0.02",
+        ).unwrap();
+        assert_eq!(s.entry, "rsi(14) < 30.0 && close > ema(50)");
+        assert_eq!(s.exit,  "rsi(14) > 70.0");
+        assert_eq!(s.tp,    Some(0.05));
+        assert_eq!(s.sl,    Some(0.02));
+    }
+
+    #[test]
+    fn script_comments_and_blanks() {
+        let s = CelScript::parse(
+            "# This is a comment\n\
+             \n\
+             entry: rsi(14) < 30.0\n\
+             # another comment\n\
+             exit:  rsi(14) > 70.0",
+        ).unwrap();
+        assert_eq!(s.entry, "rsi(14) < 30.0");
+        assert_eq!(s.exit,  "rsi(14) > 70.0");
+    }
+
+    #[test]
+    fn script_multiline_entry() {
+        let s = CelScript::parse(
+            "entry: rsi(14) < 30.0\n\
+             \t&& close > ema(50)\n\
+             \t&& adx(14) > 25.0\n\
+             exit:  rsi(14) > 70.0",
+        ).unwrap();
+        assert_eq!(s.entry, "rsi(14) < 30.0 && close > ema(50) && adx(14) > 25.0");
+    }
+
+    #[test]
+    fn script_no_exit_is_ok() {
+        let s = CelScript::parse("entry: rsi(14) < 30.0\ntp: 0.10").unwrap();
+        assert!(s.exit.is_empty());
+        assert_eq!(s.tp, Some(0.10));
+    }
+
+    #[test]
+    fn script_candle_type() {
+        let s = CelScript::parse(
+            "entry: close > ema(50)\n\
+             candle_type: heiken_ashi\n\
+             ha_smooth: 3",
+        ).unwrap();
+        assert_eq!(s.candle_type, "heiken_ashi");
+        assert_eq!(s.ha_smooth, 3);
+    }
+
+    #[test]
+    fn script_all_risk_params() {
+        let s = CelScript::parse(
+            "entry: close > ema(50)\n\
+             tp_atr: 2.0\n\
+             sl_atr: 1.0\n\
+             trail_pct: 0.03\n\
+             trail_atr: 1.5\n\
+             atr_period: 10",
+        ).unwrap();
+        assert_eq!(s.tp_atr,     Some(2.0));
+        assert_eq!(s.sl_atr,     Some(1.0));
+        assert_eq!(s.trail_pct,  Some(0.03));
+        assert_eq!(s.trail_atr,  Some(1.5));
+        assert_eq!(s.atr_period, Some(10));
+    }
+
+    #[test]
+    fn script_missing_entry_errors() {
+        assert!(CelScript::parse("exit: rsi(14) > 70.0\ntp: 0.05").is_err());
+    }
+
+    #[test]
+    fn script_unknown_line_without_section_errors() {
+        assert!(CelScript::parse("tp: 0.05\njunk line here").is_err());
+    }
+
+    #[test]
+    fn from_params_script_field() {
+        let p = serde_json::json!({
+            "script": "entry: rsi(14) < 30.0 && close > ema(50)\nexit: rsi(14) > 70.0\ntp: 0.05"
+        });
+        assert!(CelStrategy::from_params(&p).is_ok());
+    }
+
+    #[test]
+    fn from_params_json_overrides_script() {
+        // JSON fields override script — just ensure it builds without error
+        let p = serde_json::json!({
+            "script": "entry: rsi(14) < 30.0\ntp: 0.05",
+            "tp": 0.10
+        });
+        assert!(CelStrategy::from_params(&p).is_ok());
     }
 
     // ── expand_indicators ────────────────────────────────────────────────────

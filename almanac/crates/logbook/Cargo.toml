@@ -25,9 +25,7 @@ alm-data     = { path = "../data" }
 alm-engine   = { path = "../engine" }
 alm-report   = { path = "../report" }
 alm-strategy    = { path = "../strategy" }
-alm-chart       = { path = "../chart" }
 alm-indicator   = { path = "../indicator" }
-alm-vectorized  = { path = "../vectorized", optional = true }
 polars         = { version = "0.46", default-features = false, features = ["lazy", "parquet", "dtype-date", "dtype-datetime"] }
 anyhow      = { workspace = true }
 serde       = { workspace = true }
@@ -48,12 +46,6 @@ axum              = { version = "0.7", features = ["macros"] }
 tower-http        = { version = "0.5", features = ["cors", "trace"] }
 utoipa            = { version = "4",   features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "7",   features = ["axum"] }
-
-[features]
-# Grid search / batch param optimisation (Polars + rayon vectorized engine).
-# Deferred — re-enable when the optimisation workflow is needed.
-# Usage: cargo build -p logbook --features grid-search
-grid-search = ["alm-vectorized"]
 
 [dev-dependencies]
 alm-indicator = { path = "../indicator" }

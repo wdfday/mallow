@@ -1,0 +1,22 @@
+# Paper / Demo Trading Keys
+# All sandbox environments — safe to commit
+
+## Alpaca Paper Trading
+ALPACA_API_KEY=PKAWAE642USRBBET32KRAXCUNN
+ALPACA_API_SECRET=4uifodhnR1jmgdNYwwkJ9B3RTfNj852rC1y9uCgfKETz
+# URL: paper-api.alpaca.markets
+# Run: ALPACA_API_KEY=... ALPACA_API_SECRET=... go test -v -run TestPaper ./orchestrator/internal/infra/exchange/alpaca/action/
+
+## Binance Demo API
+# (keys not provided yet — use your demo-api.binance.com keys)
+BINANCE_API_KEY=VyyHUg0mh4MBpocso4WtODpmNlYIIGexmFuRBURu7ic2mRxmNMyD2TtCvglaFrWo
+BINANCE_API_SECRET=BuJksfTP6St3ODoTCC0eD1XtuuQgKgkseibNSbAPkbQSxIlg7y42y36pGgDeVytT
+# URL: demo-api.binance.com
+# Run: BINANCE_API_KEY=... BINANCE_API_SECRET=... go test -v -run TestDemo ./orchestrator/internal/infra/exchange/binance/action/
+
+## OKX Simulated Trading
+OKX_API_KEY=60b72f41-0601-4d89-9221-22df0c0c9020
+OKX_API_SECRET=4E31C3842E8912D8A3327AEDF897C2FF
+OKX_PASSPHRASE=p6NKqBLy5yz9N_Z
+# Header: x-simulated-trading: 1
+# WS: wss://wspap.okx.com:8443/ws/v5/private

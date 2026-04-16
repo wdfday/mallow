@@ -1,5 +1,5 @@
 use crate::metrics;
-use alm_core::portfolio::Portfolio;
+use alm_core::{portfolio::Portfolio, regime::RegimeSummary};
 use serde::{Deserialize, Serialize};
 
 /// Full backtest result — trading metrics for strategy evaluation.
@@ -9,7 +9,6 @@ pub struct BacktestReport {
     pub symbol: String,
 
     // Capital
-    
     pub initial_capital: f64,
     pub final_equity: f64,
 
@@ -37,6 +36,20 @@ pub struct BacktestReport {
     pub avg_loss_pct: f64,
     pub avg_trade_duration_hours: f64,
     pub max_consecutive_losses: usize,
+
+    // Advanced risk metrics
+    pub var_95: f64,
+    pub cvar_95: f64,
+    pub omega_ratio: f64,
+    pub tail_ratio: f64,
+    pub recovery_factor: f64,
+
+    // Rolling metrics (per-bar arrays, window = 30)
+    pub rolling_sharpe: Vec<f64>,
+    pub rolling_drawdown: Vec<f64>,
+
+    // Regime summary (populated by Engine after run)
+    pub regime_summary: Option<RegimeSummary>,
 }
 
 impl BacktestReport {
@@ -92,6 +105,16 @@ impl BacktestReport {
         };
         let max_consec_losses = metrics::max_consecutive_losses(trades);
 
+        // Advanced risk metrics
+        let (var_95, cvar_95) = metrics::var_cvar_95(&daily_returns);
+        let omega = metrics::omega_ratio(&daily_returns, 0.0);
+        let tail = metrics::tail_ratio(&daily_returns);
+        let recovery = metrics::recovery_factor(total_return / 100.0, max_dd);
+
+        // Rolling metrics (window = 30 bars)
+        let rolling_sharpe = metrics::rolling_sharpe(&equity, 30);
+        let rolling_drawdown = metrics::rolling_drawdown(&equity);
+
         Self {
             strategy: strategy_name.to_string(),
             symbol: symbol.to_string(),
@@ -114,6 +137,14 @@ impl BacktestReport {
             avg_loss_pct: avg_loss * 100.0,
             avg_trade_duration_hours: avg_duration,
             max_consecutive_losses: max_consec_losses,
+            var_95,
+            cvar_95,
+            omega_ratio: omega,
+            tail_ratio: tail,
+            recovery_factor: recovery,
+            rolling_sharpe,
+            rolling_drawdown,
+            regime_summary: None, // populated by Engine after run()
         }
     }
 }

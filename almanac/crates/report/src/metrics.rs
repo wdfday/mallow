@@ -181,6 +181,117 @@ pub fn max_consecutive_losses(trades: &[Trade]) -> usize {
     max
 }
 
+// ── Rolling metrics ───────────────────────────────────────────────────────────
+
+/// Rolling Sharpe ratio over a sliding window of equity-curve returns.
+/// Returns a Vec with the same length as `equity` (zero-padded for the warm-up).
+pub fn rolling_sharpe(equity: &[f64], window: usize) -> Vec<f64> {
+    if equity.len() < 2 {
+        return vec![0.0; equity.len()];
+    }
+    let returns = daily_returns(equity);
+    let mut result = vec![0.0_f64; equity.len()];
+    let sqrt252 = (252_f64).sqrt();
+    for i in 0..returns.len() {
+        if i + 1 < window {
+            // warm-up: not enough bars yet
+            result[i + 1] = 0.0;
+            continue;
+        }
+        let slice = &returns[(i + 1 - window)..=i];
+        let m = mean(slice);
+        let s = std_dev(slice);
+        result[i + 1] = if s < f64::EPSILON { 0.0 } else { m / s * sqrt252 };
+    }
+    result
+}
+
+/// Rolling drawdown percentage at each bar.
+/// Returns a Vec with the same length as `equity`.
+pub fn rolling_drawdown(equity: &[f64]) -> Vec<f64> {
+    if equity.is_empty() {
+        return vec![];
+    }
+    let mut peak = equity[0];
+    equity
+        .iter()
+        .map(|&eq| {
+            if eq > peak {
+                peak = eq;
+            }
+            (peak - eq) / peak * 100.0
+        })
+        .collect()
+}
+
+// ── Advanced scalar risk metrics ──────────────────────────────────────────────
+
+/// Value at Risk (95%) and Conditional VaR (CVaR/ES) from daily returns.
+/// Returns `(var_95, cvar_95)` as positive fractions.
+pub fn var_cvar_95(daily_returns: &[f64]) -> (f64, f64) {
+    if daily_returns.is_empty() {
+        return (0.0, 0.0);
+    }
+    let mut sorted = daily_returns.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = sorted.len();
+    // VaR 95%: the 5th percentile (worst 5%)
+    let var_idx = ((n as f64) * 0.05).ceil() as usize;
+    let var_idx = var_idx.min(n).saturating_sub(1);
+    let var_95 = -sorted[var_idx]; // report as positive loss
+
+    // CVaR 95%: mean of the worst 5%
+    let tail_end = var_idx + 1; // inclusive end for tail slice
+    let tail = &sorted[..tail_end];
+    let cvar_95 = if tail.is_empty() {
+        var_95
+    } else {
+        -mean(tail) // mean of negative returns → positive
+    };
+
+    (var_95.max(0.0), cvar_95.max(0.0))
+}
+
+/// Omega ratio: sum of gains / sum of losses above/below `threshold`.
+/// `threshold = 0.0` by default (absolute returns).
+pub fn omega_ratio(daily_returns: &[f64], threshold: f64) -> f64 {
+    if daily_returns.is_empty() {
+        return 0.0;
+    }
+    let gains: f64 = daily_returns.iter().map(|&r| (r - threshold).max(0.0)).sum();
+    let losses: f64 = daily_returns.iter().map(|&r| (threshold - r).max(0.0)).sum();
+    if losses < f64::EPSILON {
+        if gains > 0.0 { f64::INFINITY } else { 0.0 }
+    } else {
+        gains / losses
+    }
+}
+
+/// Tail ratio: abs(95th percentile return) / abs(5th percentile return).
+/// Measures the ratio of right-tail gains to left-tail losses.
+pub fn tail_ratio(daily_returns: &[f64]) -> f64 {
+    if daily_returns.len() < 20 {
+        return 0.0;
+    }
+    let mut sorted = daily_returns.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = sorted.len();
+    let p95_idx = ((n as f64) * 0.95) as usize;
+    let p5_idx = ((n as f64) * 0.05) as usize;
+    let p95 = sorted[p95_idx.min(n - 1)].abs();
+    let p5 = sorted[p5_idx].abs();
+    if p5 < f64::EPSILON { 0.0 } else { p95 / p5 }
+}
+
+/// Recovery factor: total_return / max_drawdown (both as raw fractions, not pct).
+pub fn recovery_factor(total_return: f64, max_drawdown: f64) -> f64 {
+    if max_drawdown.abs() < f64::EPSILON {
+        0.0
+    } else {
+        total_return / max_drawdown.abs()
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]

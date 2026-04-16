@@ -155,10 +155,33 @@ pub enum Logic {
 }
 
 /// A group of conditions combined with AND or OR logic.
+///
+/// Supports flat rules and nested sub-groups:
+///
+/// ```json
+/// {
+///   "logic": "or",
+///   "groups": [
+///     { "logic": "and", "rules": [
+///         { "source": "rsi14", "field": "value", "op": "lt", "value": 30 },
+///         { "source": "close",  "op": "gt", "compare": "ema200" }
+///     ]},
+///     { "logic": "and", "rules": [
+///         { "source": "macd", "field": "histogram", "op": "cross_above", "value": 0 },
+///         { "source": "adx",  "field": "adx", "op": "gt", "value": 25 }
+///     ]}
+///   ]
+/// }
+/// ```
+///
+/// `rules` and `groups` can coexist and are evaluated together under the same logic.
 #[derive(Debug, Clone)]
 pub struct ConditionGroup {
     pub logic: Logic,
+    /// Leaf conditions (direct comparisons).
     pub rules: Vec<Condition>,
+    /// Nested sub-groups — each evaluates to a bool, then combined with siblings under `logic`.
+    pub groups: Vec<ConditionGroup>,
 }
 
 impl ConditionGroup {
@@ -166,38 +189,47 @@ impl ConditionGroup {
         let logic_str = v.get("logic").and_then(Value::as_str).unwrap_or("and");
         let logic = match logic_str {
             "and" => Logic::And,
-            "or" => Logic::Or,
+            "or"  => Logic::Or,
             other => bail!("unknown logic: '{other}'"),
         };
 
-        let rules_val = v
-            .get("rules")
-            .and_then(Value::as_array)
-            .ok_or_else(|| anyhow::anyhow!("condition group missing 'rules' array"))?;
+        // Flat rules (optional when using nested groups)
+        let rules = if let Some(arr) = v.get("rules").and_then(Value::as_array) {
+            arr.iter().map(Condition::from_value).collect::<Result<Vec<_>>>()?
+        } else {
+            vec![]
+        };
 
-        let rules = rules_val
-            .iter()
-            .map(Condition::from_value)
-            .collect::<Result<Vec<_>>>()?;
+        // Nested sub-groups (optional)
+        let groups = if let Some(arr) = v.get("groups").and_then(Value::as_array) {
+            arr.iter().map(Self::from_value).collect::<Result<Vec<_>>>()?
+        } else {
+            vec![]
+        };
 
-        Ok(Self { logic, rules })
+        if rules.is_empty() && groups.is_empty() {
+            bail!("condition group must have at least one 'rules' item or 'groups' entry");
+        }
+
+        Ok(Self { logic, rules, groups })
     }
 
     pub fn evaluate(
         &self,
-        current: &HashMap<String, HashMap<String, f64>>,
-        previous: &HashMap<String, HashMap<String, f64>>,
+        current:    &HashMap<String, HashMap<String, f64>>,
+        previous:   &HashMap<String, HashMap<String, f64>>,
         bar_fields: &HashMap<String, f64>,
     ) -> bool {
+        // Collect bool results from leaf rules + nested groups
+        let rule_results  = self.rules.iter().map(|r| r.evaluate(current, previous, bar_fields));
+        let group_results = self.groups.iter().map(|g| g.evaluate(current, previous, bar_fields));
+        let all: Vec<bool> = rule_results.chain(group_results).collect();
+
+        if all.is_empty() { return false; }
+
         match self.logic {
-            Logic::And => self
-                .rules
-                .iter()
-                .all(|r| r.evaluate(current, previous, bar_fields)),
-            Logic::Or => self
-                .rules
-                .iter()
-                .any(|r| r.evaluate(current, previous, bar_fields)),
+            Logic::And => all.iter().all(|&b| b),
+            Logic::Or  => all.iter().any(|&b| b),
         }
     }
 }

@@ -1,0 +1,20 @@
+[build-system]
+requires = ["maturin>=1.5,<2.0"]
+build-backend = "maturin"
+
+[project]
+name = "alm-py"
+version = "0.1.0"
+description = "Python bindings for the almanac backtesting engine"
+requires-python = ">=3.8"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+]
+
+[tool.maturin]
+# Cargo.toml is one level up from pyproject.toml location — point maturin at it
+# (maturin auto-discovers when pyproject.toml sits next to Cargo.toml)
+features    = ["pyo3/extension-module"]
+module-name = "alm_py"

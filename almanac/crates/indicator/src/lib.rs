@@ -1,17 +1,21 @@
 pub mod momentum;
 pub mod pattern;
+pub mod regime;
 pub mod trend;
 pub mod util;
 pub mod volatility;
 pub mod volume;
+
+pub use regime::RegimeDetector;
 
 pub use util::{RollingMax, RollingMin};
 
 // Trend + MA family
 pub use trend::{
     Adx, AdxValue, Alligator, AlligatorValue, Alma, Aroon, AroonValue, Dema, Dmi, DmiValue, Ema,
-    Gmma, GmmaValue, Hma, Kama, Kdj, KdjValue, Lsma, LsmaValue, Macd, MacdValue,
-    McGinleyDynamic, Sma, Smma, Tema, Trix, TrixValue, Vortex, VortexValue, Vwma, Wma,
+    Gmma, GmmaValue, Hma, Kama, KalmanFilter, KalmanValue, Kdj, KdjValue, Lsma, LsmaValue,
+    Macd, MacdValue, McGinleyDynamic, Sma, Smma, Tema, Trix, TrixValue, Vortex, VortexValue,
+    Vwma, Wma,
 };
 
 // Momentum + Oscillators

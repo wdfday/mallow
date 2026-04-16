@@ -4,7 +4,7 @@ use anyhow::{bail, Result};
 use alm_core::Bar;
 use alm_indicator::{
     // Trend / MA
-    Adx, Alligator, Alma, Aroon, Dema, Dmi, Ema, Gmma, Hma, Kama, Kdj, Lsma, Macd,
+    Adx, Alligator, Alma, Aroon, Dema, Dmi, Ema, Gmma, Hma, Kama, KalmanFilter, Kdj, Lsma, Macd,
     McGinleyDynamic, Sma, Smma, Tema, Trix, Vortex, Vwma, Wma,
     // Momentum
     AwesomeOscillator, Bop, BullBearPower, Cci, Cmo, ConnorsRsi, Coppock, Dpo, Fisher, Kst,
@@ -45,6 +45,7 @@ pub enum IndicatorBox {
     Alligator(Alligator),
     Gmma(Gmma),
     Kdj(Kdj),
+    Kalman(KalmanFilter),
     // ── Momentum / Oscillator ─────────────────────────────────────────────────
     Rsi(Rsi),
     Cci(Cci),
@@ -158,6 +159,11 @@ impl IndicatorBox {
                 get_usize(cfg, "period", 9),
                 get_usize(cfg, "k_period", 3),
                 get_usize(cfg, "d_period", 3),
+            )),
+            "kalman"    => Self::Kalman(KalmanFilter::new(
+                get_f64(cfg, "q_pos", 0.001),
+                get_f64(cfg, "q_vel", 0.001),
+                get_f64(cfg, "r", 1.0),
             )),
             // ── Momentum / Oscillator ─────────────────────────────────────────
             "rsi"         => Self::Rsi(Rsi::new(get_usize(cfg, "period", 14))),
@@ -356,6 +362,13 @@ impl IndicatorBox {
                 m.insert("k".into(), v.k);
                 m.insert("d".into(), v.d);
                 m.insert("j".into(), v.j);
+                Some(m)
+            }
+            Self::Kalman(i) => {
+                let v = i.update(bar.close);
+                let mut m = HashMap::new();
+                m.insert("value".into(), v.value);
+                m.insert("velocity".into(), v.velocity);
                 Some(m)
             }
             // ── Momentum / Oscillator ─────────────────────────────────────────
@@ -585,6 +598,7 @@ impl IndicatorBox {
             Self::Alligator(i)      => i.reset(),
             Self::Gmma(i)           => i.reset(),
             Self::Kdj(i)            => i.reset(),
+            Self::Kalman(i)         => i.reset(),
             Self::Rsi(i)            => i.reset(),
             Self::Cci(i)            => i.reset(),
             Self::Roc(i)            => i.reset(),

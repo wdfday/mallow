@@ -6,12 +6,14 @@ use alm_core::{
     bus::EventBus,
     event::{EquityEvent, Event, FillEvent, MarketEvent},
     exit::{ExitRules, PositionTracker},
-    order::{OrderRequest, Side},
+    order::{Fill, OrderRequest, Side},
     portfolio::Portfolio,
+    regime::{RegimeState, RegimeSummary, TrendRegime, VolRegime},
     signal::{Direction, Signal},
     strategy::{RiskManager, Strategy},
 };
 use alm_data::BarFeed;
+use alm_indicator::RegimeDetector;
 use alm_report::BacktestReport;
 use tracing::debug;
 
@@ -44,6 +46,26 @@ pub struct Engine<S: Strategy, R: RiskManager, B: EventBus> {
     exit_rules: ExitRules,
     /// Per-position state for evaluating exit rules.
     position_trackers: HashMap<String, PositionTracker>,
+    /// When true, signals from bar[i] are buffered and executed at bar[i+1].open.
+    /// When false (default), signals flow through the broker pending queue
+    /// which also fills at next bar's open.
+    next_bar: bool,
+    /// Signals buffered when `next_bar = true`.
+    pending_signals: Vec<Signal>,
+    /// When true, the engine itself blocks Long/Short signals for a symbol that
+    /// already has an open position in the same direction.  This is a safety net
+    /// on top of RiskManager.validate() — useful for multi-symbol strategies whose
+    /// individual strategies don't track in-position state.
+    single_entry: bool,
+    // ── Regime detection ──────────────────────────────────────────────────────
+    regime_detector: RegimeDetector,
+    /// Regime transitions recorded on-change: (timestamp_ms, RegimeState).
+    regime_changes: Vec<(i64, RegimeState)>,
+    last_regime: Option<RegimeState>,
+    /// Bar counts per (TrendRegime, VolRegime) pair for summary statistics.
+    regime_bar_counts: HashMap<(TrendRegime, VolRegime), usize>,
+    /// Total bars processed (including warm-up bars without a regime).
+    total_bars: usize,
 }
 
 // ── Constructors ─────────────────────────────────────────────────────────────
@@ -68,6 +90,14 @@ impl<S: Strategy, R: RiskManager> Engine<S, R, SyncBus> {
             window_size: DEFAULT_WINDOW_SIZE,
             exit_rules: ExitRules::default(),
             position_trackers: HashMap::new(),
+            next_bar: false,
+            pending_signals: Vec::new(),
+            single_entry: false,
+            regime_detector: RegimeDetector::new(),
+            regime_changes: Vec::new(),
+            last_regime: None,
+            regime_bar_counts: HashMap::new(),
+            total_bars: 0,
         }
     }
 }
@@ -92,6 +122,14 @@ impl<S: Strategy, R: RiskManager> Engine<S, R, TokioBus> {
             window_size: DEFAULT_WINDOW_SIZE,
             exit_rules: ExitRules::default(),
             position_trackers: HashMap::new(),
+            next_bar: false,
+            pending_signals: Vec::new(),
+            single_entry: false,
+            regime_detector: RegimeDetector::new(),
+            regime_changes: Vec::new(),
+            last_regime: None,
+            regime_bar_counts: HashMap::new(),
+            total_bars: 0,
         }
     }
 
@@ -107,6 +145,51 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
     /// Override the sliding window size (default: 200 bars).
     pub fn with_window(mut self, size: usize) -> Self {
         self.window_size = size.max(1);
+        self
+    }
+
+    /// Customise regime detection thresholds.
+    ///
+    /// - `adx_threshold`: ADX above which market is Trending (default 25.0).
+    /// - `chop_threshold`: Chop above which market is Ranging (default 61.8).
+    /// - `vol_high_ratio`: ATR(14)/ATR(50) above which vol is High (default 1.3).
+    /// - `vol_low_ratio`: ATR(14)/ATR(50) below which vol is Low (default 0.7).
+    pub fn with_regime_thresholds(
+        mut self,
+        adx_threshold: f64,
+        chop_threshold: f64,
+        vol_high_ratio: f64,
+        vol_low_ratio: f64,
+    ) -> Self {
+        self.regime_detector = RegimeDetector::new().with_thresholds(
+            adx_threshold,
+            chop_threshold,
+            vol_high_ratio,
+            vol_low_ratio,
+        );
+        self
+    }
+
+    /// Enable next-bar execution mode.
+    ///
+    /// When `true`, signals from bar[i] are buffered and executed at bar[i+1].open
+    /// via a direct fill, making the execution timing explicit.
+    /// When `false` (default), signals flow through the broker pending queue
+    /// which also fills at next bar's open (same effective timing).
+    pub fn with_next_bar(mut self, enabled: bool) -> Self {
+        self.next_bar = enabled;
+        self
+    }
+
+    /// Enable single-entry guard: the engine blocks Long/Short signals for a symbol
+    /// that already has an open position in the same direction, independently of
+    /// what `RiskManager::validate()` returns.
+    ///
+    /// Use this for multi-symbol strategies whose individual sub-strategies don't
+    /// track their own `in_position` state.  Off by default (single-symbol strategies
+    /// already manage `in_position` themselves, so the guard is harmless but redundant).
+    pub fn with_single_entry(mut self) -> Self {
+        self.single_entry = true;
         self
     }
 
@@ -130,6 +213,14 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
         let symbol = feed.symbol().to_string();
 
         while let Some(bar) = feed.next() {
+            // Flush next-bar pending signals: execute at this bar's open.
+            if self.next_bar && !self.pending_signals.is_empty() {
+                let pending = std::mem::take(&mut self.pending_signals);
+                for sig in pending {
+                    self.execute_signal_at_open(&sig, &bar);
+                }
+            }
+
             // Update sliding window before dispatch so on_window() sees the current bar.
             self.bar_window.push_back(bar.clone());
             if self.bar_window.len() > self.window_size {
@@ -163,12 +254,83 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
             }
         }
 
-        BacktestReport::generate(
+        let mut report = BacktestReport::generate(
             self.strategy.name(),
             &symbol,
             &self.portfolio,
             risk_free_annual,
-        )
+        );
+        report.regime_summary = Some(self.compute_regime_summary());
+        report
+    }
+
+    /// Execute a buffered signal directly at bar.open (used when `next_bar = true`).
+    fn execute_signal_at_open(&mut self, signal: &Signal, bar: &Bar) {
+        match signal.direction {
+            Direction::Close => {
+                if let Some(pos) = self.portfolio.positions.get(&signal.symbol) {
+                    let qty = pos.qty.abs();
+                    if qty > f64::EPSILON {
+                        let side = if pos.is_long() { Side::Sell } else { Side::Buy };
+                        let fill =
+                            self.broker.force_close(&signal.symbol, qty, side, bar.timestamp, bar.open);
+                        self.portfolio.apply_fill(&fill);
+                        self.position_trackers.remove(&signal.symbol);
+                        debug!(symbol = %signal.symbol, qty, ?side, "next-bar close fill at open");
+                    }
+                }
+            }
+            Direction::Long => {
+                if self.single_entry && self.portfolio.positions.get(&signal.symbol)
+                    .map_or(false, |p| p.is_long()) { return; }
+                if self.risk.validate(signal, &self.portfolio) {
+                    let qty = self.risk.size(signal, &self.portfolio, bar.open);
+                    if qty > f64::EPSILON {
+                        let slip = 1.0 + self.broker.slippage_pct;
+                        let fill_price = bar.open * slip;
+                        let commission = fill_price * qty * self.broker.commission_pct;
+                        let fill = Fill {
+                            timestamp: bar.timestamp,
+                            symbol: signal.symbol.clone(),
+                            side: Side::Buy,
+                            qty,
+                            price: fill_price,
+                            commission,
+                        };
+                        self.portfolio.apply_fill(&fill);
+                        self.position_trackers
+                            .entry(signal.symbol.clone())
+                            .or_insert_with(|| PositionTracker::new(fill_price));
+                        debug!(symbol = %signal.symbol, qty, "next-bar long fill at open");
+                    }
+                }
+            }
+            Direction::Short => {
+                if self.single_entry && self.portfolio.positions.get(&signal.symbol)
+                    .map_or(false, |p| p.is_short()) { return; }
+                if self.risk.validate(signal, &self.portfolio) {
+                    let qty = self.risk.size(signal, &self.portfolio, bar.open);
+                    if qty > f64::EPSILON {
+                        let slip = 1.0 - self.broker.slippage_pct;
+                        let fill_price = bar.open * slip;
+                        let commission = fill_price * qty * self.broker.commission_pct;
+                        let fill = Fill {
+                            timestamp: bar.timestamp,
+                            symbol: signal.symbol.clone(),
+                            side: Side::Sell,
+                            qty,
+                            price: fill_price,
+                            commission,
+                        };
+                        self.portfolio.apply_fill(&fill);
+                        self.position_trackers
+                            .entry(signal.symbol.clone())
+                            .or_insert_with(|| PositionTracker::new(fill_price));
+                        debug!(symbol = %signal.symbol, qty, "next-bar short fill at open");
+                    }
+                }
+            }
+        }
     }
 
     /// Dispatch a single event — may produce new events via the bus.
@@ -177,6 +339,26 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
             Event::Market(ref market) => {
                 let bar = &market.bar;
                 self.last_prices.insert(bar.symbol.clone(), bar.close);
+
+                // Notify risk manager with current bar (e.g. for ATR-based sizing).
+                self.risk.on_bar(bar);
+
+                // ── Regime detection ──────────────────────────────────────────
+                self.total_bars += 1;
+                if let Some(regime) = self.regime_detector.update(bar) {
+                    *self
+                        .regime_bar_counts
+                        .entry((regime.trend.clone(), regime.volatility.clone()))
+                        .or_insert(0) += 1;
+                    let changed =
+                        self.last_regime.as_ref().map_or(true, |last| *last != regime);
+                    if changed {
+                        self.regime_changes.push((bar.timestamp, regime.clone()));
+                        self.last_regime = Some(regime.clone());
+                        debug!(regime = %regime.label(), "regime change");
+                    }
+                    self.strategy.on_regime(&regime);
+                }
 
                 // Process pending orders at this bar's open (avoids look-ahead bias).
                 let fills = self.broker.process_pending(bar);
@@ -251,6 +433,11 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
             }
 
             Event::Signal(ref sig_event) => {
+                // In next-bar mode: buffer signals to be executed at the next bar's open.
+                if self.next_bar {
+                    self.pending_signals.push(sig_event.signal.clone());
+                    return;
+                }
                 let signal = &sig_event.signal;
                 match signal.direction {
                     Direction::Close => {
@@ -272,6 +459,10 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                         }
                     }
                     Direction::Long => {
+                        if self.single_entry {
+                            if self.portfolio.positions.get(&signal.symbol)
+                                .map_or(false, |p| p.is_long()) { return; }
+                        }
                         if self.risk.validate(signal, &self.portfolio) {
                             let price =
                                 self.last_prices.get(&signal.symbol).copied().unwrap_or(0.0);
@@ -290,6 +481,10 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                         }
                     }
                     Direction::Short => {
+                        if self.single_entry {
+                            if self.portfolio.positions.get(&signal.symbol)
+                                .map_or(false, |p| p.is_short()) { return; }
+                        }
                         if self.risk.validate(signal, &self.portfolio) {
                             let price =
                                 self.last_prices.get(&signal.symbol).copied().unwrap_or(0.0);
@@ -349,6 +544,66 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
         self.portfolio = Portfolio::new(initial_capital);
         self.bar_window.clear();
         self.position_trackers.clear();
+        self.pending_signals.clear();
+        self.regime_detector.reset();
+        self.regime_changes.clear();
+        self.last_regime = None;
+        self.regime_bar_counts.clear();
+        self.total_bars = 0;
         self.strategy.reset();
+    }
+
+    /// Compute regime summary statistics from bar counts accumulated during `run()`.
+    fn compute_regime_summary(&self) -> RegimeSummary {
+        let detected_bars: usize = self.regime_bar_counts.values().sum();
+        let pct = |count: usize| -> f64 {
+            if detected_bars == 0 { 0.0 } else { count as f64 / detected_bars as f64 * 100.0 }
+        };
+
+        let trending = self
+            .regime_bar_counts
+            .iter()
+            .filter(|((t, _), _)| *t == TrendRegime::Trending)
+            .map(|(_, &c)| c)
+            .sum::<usize>();
+        let ranging = self
+            .regime_bar_counts
+            .iter()
+            .filter(|((t, _), _)| *t == TrendRegime::Ranging)
+            .map(|(_, &c)| c)
+            .sum::<usize>();
+        let neutral = self
+            .regime_bar_counts
+            .iter()
+            .filter(|((t, _), _)| *t == TrendRegime::Neutral)
+            .map(|(_, &c)| c)
+            .sum::<usize>();
+        let high_vol = self
+            .regime_bar_counts
+            .iter()
+            .filter(|((_, v), _)| *v == VolRegime::High)
+            .map(|(_, &c)| c)
+            .sum::<usize>();
+        let low_vol = self
+            .regime_bar_counts
+            .iter()
+            .filter(|((_, v), _)| *v == VolRegime::Low)
+            .map(|(_, &c)| c)
+            .sum::<usize>();
+
+        let changes = self
+            .regime_changes
+            .iter()
+            .map(|(ts, r)| (*ts, r.label()))
+            .collect();
+
+        RegimeSummary {
+            trending_pct: pct(trending),
+            ranging_pct: pct(ranging),
+            neutral_pct: pct(neutral),
+            high_vol_pct: pct(high_vol),
+            low_vol_pct: pct(low_vol),
+            changes,
+        }
     }
 }

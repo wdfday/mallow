@@ -1,4 +1,4 @@
-use crate::{bar::Bar, portfolio::{Portfolio, PortfolioSnapshot}, signal::Signal};
+use crate::{bar::Bar, portfolio::{Portfolio, PortfolioSnapshot}, regime::RegimeState, signal::Signal};
 
 /// Core strategy interface.
 /// Strategies are stateful — they hold indicator state and are updated bar-by-bar.
@@ -38,6 +38,17 @@ pub trait Strategy: Send {
     /// }
     /// ```
     fn set_portfolio_snapshot(&mut self, _snapshot: &PortfolioSnapshot) {}
+
+    /// Called once per bar with the current detected market regime, before `on_bar`.
+    /// Default is a no-op — override to adapt strategy behaviour by regime.
+    ///
+    /// # Example
+    /// ```rust,ignore
+    /// fn on_regime(&mut self, regime: &RegimeState) {
+    ///     self.active = regime.is_trending(); // only trade in trending markets
+    /// }
+    /// ```
+    fn on_regime(&mut self, _regime: &RegimeState) {}
 }
 
 /// Blanket impl so `Box<dyn Strategy>` can be used as a concrete `Strategy`.
@@ -57,6 +68,9 @@ impl Strategy for Box<dyn Strategy> {
     fn set_portfolio_snapshot(&mut self, snapshot: &PortfolioSnapshot) {
         (**self).set_portfolio_snapshot(snapshot)
     }
+    fn on_regime(&mut self, regime: &RegimeState) {
+        (**self).on_regime(regime)
+    }
 }
 
 /// Risk management — validates signals and sizes positions.
@@ -66,4 +80,21 @@ pub trait RiskManager: Send {
 
     /// Return the quantity to trade (in units of the asset).
     fn size(&self, signal: &Signal, portfolio: &Portfolio, price: f64) -> f64;
+
+    /// Called once per bar with the current bar data, before signal processing.
+    /// Default is a no-op — override for ATR-based or other bar-aware sizing.
+    fn on_bar(&mut self, _bar: &Bar) {}
+}
+
+/// Blanket impl so `Box<dyn RiskManager>` can be used as a concrete `RiskManager`.
+impl RiskManager for Box<dyn RiskManager> {
+    fn validate(&self, signal: &Signal, portfolio: &Portfolio) -> bool {
+        (**self).validate(signal, portfolio)
+    }
+    fn size(&self, signal: &Signal, portfolio: &Portfolio, price: f64) -> f64 {
+        (**self).size(signal, portfolio, price)
+    }
+    fn on_bar(&mut self, bar: &Bar) {
+        (**self).on_bar(bar)
+    }
 }

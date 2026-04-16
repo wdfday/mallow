@@ -62,10 +62,13 @@ impl Macd {
     }
 
     /// Feed một giá đóng cửa. Trả về `Some(MacdValue)` sau khi tất cả EMA warm up.
+    ///
+    /// Cả fast và slow EMA đều được feed *mọi bar* (song song),
+    /// tránh lỗi cascading `?` làm slow chỉ chạy sau khi fast warm-up.
     pub fn update(&mut self, close: f64) -> Option<MacdValue> {
-        let fast = self.fast.update(close)?;
-        let slow = self.slow.update(close)?;
-        let macd_line = fast - slow;
+        let fast = self.fast.update(close);
+        let slow = self.slow.update(close);
+        let macd_line = fast? - slow?;
         let signal_line = self.signal.update(macd_line)?;
         Some(MacdValue {
             macd: macd_line,

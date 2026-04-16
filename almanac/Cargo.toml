@@ -7,11 +7,10 @@ members = [
     "crates/strategy",
     "crates/engine",
     "crates/report",
-    "crates/chart",
     "crates/pattern",
-    # "crates/vectorized",   # deferred — grid search / batch optimisation, re-enable when needed
     "crates/herald",
     "crates/logbook",
+    "crates/alm-py",
 ]
 
 [workspace.dependencies]
@@ -21,7 +20,6 @@ alm-data      = { path = "./crates/data" }
 alm-indicator = { path = "./crates/indicator" }
 alm-strategy  = { path = "./crates/strategy" }
 alm-report    = { path = "./crates/report" }
-alm-chart     = { path = "./crates/chart" }
 alm-pattern   = { path = "./crates/pattern" }
 
 # Async

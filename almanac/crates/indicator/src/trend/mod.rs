@@ -17,6 +17,7 @@ pub mod wma;
 pub mod adx;
 pub mod aroon;
 pub mod dmi;
+pub mod kalman;
 pub mod kama;
 pub mod kdj;
 pub mod macd;
@@ -39,6 +40,7 @@ pub use wma::Wma;
 
 pub use adx::{Adx, AdxValue};
 pub use aroon::{Aroon, AroonValue};
+pub use kalman::{KalmanFilter, KalmanValue};
 pub use dmi::{Dmi, DmiValue};
 pub use kama::Kama;
 pub use kdj::{Kdj, KdjValue};

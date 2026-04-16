@@ -556,6 +556,42 @@ mod tests {
         assert_eq!(r1, r2, "reset parity failed");
     }
 
+    // ── nested condition groups ───────────────────────────────────────────────
+
+    #[test]
+    fn nested_groups_or_of_ands() {
+        // entry: (rsi < 25) OR (rsi < 35 AND close < 60)
+        // bars: giảm xuống RSI < 35, giá < 60 → group 2 fires
+        let params = json!({
+            "indicators": {
+                "rsi":  { "type": "rsi", "period": 14 },
+                "ema50": { "type": "ema", "period": 50 }
+            },
+            "entry": {
+                "logic": "or",
+                "groups": [
+                    {
+                        "logic": "and",
+                        "rules": [
+                            { "source": "rsi", "field": "value", "op": "lt", "value": 25.0 }
+                        ]
+                    },
+                    {
+                        "logic": "and",
+                        "rules": [
+                            { "source": "rsi",  "field": "value", "op": "lt", "value": 35.0 },
+                            { "source": "close",              "op": "lt", "value": 60.0  }
+                        ]
+                    }
+                ]
+            }
+        });
+        let mut s = DynamicStrategy::from_params(&params).unwrap();
+        let bars: Vec<Bar> = (0..60).map(|i| bar(i, 100.0 - i as f64 * 1.5)).collect();
+        let sigs: Vec<_> = bars.iter().flat_map(|b| s.on_bar(b)).collect();
+        assert!(sigs.iter().any(|s| s.direction == Direction::Long), "nested OR-of-ANDs failed to entry");
+    }
+
     // ── no exit condition — only TP/SL ───────────────────────────────────────
 
     #[test]

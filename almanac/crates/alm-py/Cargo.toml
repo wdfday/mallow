@@ -1,0 +1,27 @@
+[package]
+name = "alm-py"
+version = "0.1.0"
+edition = "2021"
+description = "PyO3 Python bindings for the almanac backtesting engine"
+
+[lib]
+name = "alm_py"
+# cdylib  → .so/.pyd for Python import
+# rlib    → allows `cargo test` to link the lib
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+alm-core      = { path = "../core" }
+alm-data      = { path = "../data" }
+alm-engine    = { path = "../engine" }
+alm-strategy  = { path = "../strategy" }
+alm-report    = { path = "../report" }
+alm-indicator = { path = "../indicator" }
+
+# abi3 = stable ABI, works with Python 3.8+ without recompiling per minor version
+pyo3       = { version = "0.22", features = ["extension-module", "abi3-py38"] }
+serde_json = { workspace = true }
+anyhow     = { workspace = true }
+
+[dev-dependencies]
+pyo3 = { version = "0.22", features = ["abi3-py38"] }

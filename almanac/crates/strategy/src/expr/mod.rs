@@ -7,4 +7,4 @@
 //! For declarative JSON-based strategies see [`crate::dynamic`].
 
 pub mod cel;
-pub use cel::{CelStrategy, parse_cel_indicator};
+pub use cel::{CelScript, CelStrategy, parse_cel_indicator};

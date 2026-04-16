@@ -26,6 +26,7 @@ path = "src/tournament.rs"
 [dependencies]
 alm-core      = { workspace = true }
 alm-data      = { path = "../data" }
+alm-indicator = { path = "../indicator" }
 alm-strategy  = { path = "../strategy" }
 alm-report    = { path = "../report" }
 thiserror    = { workspace = true }

@@ -24,11 +24,14 @@ use walkdir::WalkDir;
 use crate::catalog::{self, IndicatorMeta, ParamDef, STRATEGY_KEYS};
 use crate::data::{find_parquet_files, load_bars, parse_date_ms};
 use crate::types::{
-    BacktestRequest, BacktestResponse, BarRecord, CelBacktestRequest, CurvePoint,
-    DataQuery, DataResponse, DynamicBacktestRequest, ErrorResponse, ExitConfig,
-    IndicatorConfig, IndicatorRequest, IndicatorResponse, LatestQuery, TradeResponse,
+    BacktestRequest, BacktestResponse, BarRecord, BuyHoldBenchmarkResponse, CandlesQuery,
+    CandlesResult, CelBacktestRequest, CurvePoint, DataQuery, DataResponse,
+    DynamicBacktestRequest, ErrorResponse, ExitConfig, ExitLevel, IndicatorConfig, IndicatorPoint,
+    IndicatorRequest, IndicatorResponse, LatestQuery, RegimeSummaryResponse, TradeResponse,
+    UnifiedDataRequest, UnifiedDataResponse,
 };
 use crate::{backtest, indicator};
+use crate::indicator::run_indicators_on_bars;
 
 // ── App state ─────────────────────────────────────────────────────────────────
 
@@ -73,6 +76,7 @@ impl Modify for SecurityAddon {
         list_indicators,
         get_data,
         get_latest,
+        unified_data,
         run_backtest,
         run_backtest_cel,
         run_backtest_dynamic,
@@ -83,14 +87,22 @@ impl Modify for SecurityAddon {
         CelBacktestRequest,
         DynamicBacktestRequest,
         ExitConfig,
+        ExitLevel,
         BacktestResponse,
         TradeResponse,
         CurvePoint,
+        BuyHoldBenchmarkResponse,
+        RegimeSummaryResponse,
         ErrorResponse,
         BarRecord,
         DataResponse,
+        CandlesQuery,
+        CandlesResult,
+        UnifiedDataRequest,
+        UnifiedDataResponse,
         IndicatorRequest,
         IndicatorConfig,
+        IndicatorPoint,
         IndicatorResponse,
         IndicatorMeta,
         ParamDef,
@@ -111,7 +123,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/strategies",            get(list_strategies))
         .route("/api/symbols",               get(list_symbols))
         .route("/api/indicators",            get(list_indicators))
-        .route("/api/data/{symbol}",         get(get_data))
+        .route("/api/data/{symbol}",         get(get_data).post(unified_data))
         .route("/api/data/{symbol}/latest",  get(get_latest))
         .route("/api/backtest",              post(run_backtest))
         .route("/api/backtest/cel",          post(run_backtest_cel))
@@ -194,9 +206,10 @@ async fn get_data(
         parse_date_ms(s).map(|ms| ms + 86_400_000 - 1)
     });
 
+    let timeframe = q.timeframe.clone();
     let symbol_clone = symbol.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let files = find_parquet_files(&data_dir, &symbol_clone);
+        let files = find_parquet_files(&data_dir, &symbol_clone, timeframe.as_deref());
         load_bars(&files, &symbol_clone, from_ms, to_ms, market_hours_only, &exchange)
     }).await;
 
@@ -233,9 +246,7 @@ async fn get_data(
     security(("BearerAuth" = [])),
     params(
         ("symbol" = String, Path, description = "Asset symbol, e.g. `BTCUSDT`"),
-        ("n" = Option<usize>, Query, description = "Number of bars (default 500, max 5000)"),
-        ("market_hours_only" = Option<bool>, Query, description = "Filter to regular market hours"),
-        ("exchange" = Option<String>, Query, description = "`\"us\"` or `\"vn\"`"),
+        LatestQuery,
     ),
     responses(
         (status = 200, description = "Latest N OHLCV bars", body = DataResponse),
@@ -251,10 +262,11 @@ async fn get_latest(
     let limit = q.n.unwrap_or(500).min(5_000).max(1);
     let market_hours_only = q.market_hours_only.unwrap_or(false);
     let exchange = q.exchange.clone().unwrap_or_else(|| "us".to_string());
+    let timeframe = q.timeframe.clone();
     let symbol_clone = symbol.clone();
 
     let result = tokio::task::spawn_blocking(move || {
-        let files = find_parquet_files(&data_dir, &symbol_clone);
+        let files = find_parquet_files(&data_dir, &symbol_clone, timeframe.as_deref());
         load_bars(&files, &symbol_clone, None, None, market_hours_only, &exchange)
     }).await;
 
@@ -299,18 +311,18 @@ async fn get_latest(
                     "strategy": "rsi_mean_rev", "symbol": "BTCUSDT",
                     "from": "2022-06-01", "to": "2024-01-01",
                     "params": { "period": 14, "oversold": 30, "overbought": 70 },
-                    "exit": { "stop_loss_pct": 0.05, "trailing_stop_pct": 0.03 },
+                    "exit": { "stop_loss_pct": 0.05 },
                     "initial_capital": 10000.0, "commission_pct": 0.001
                 })
             )),
-            ("MACD — AAPL" = (
-                summary = "MACD crossover on AAPL 1min (2024–2026)",
+            ("MACD — BNBUSDT" = (
+                summary = "MACD crossover on BNBUSDT 1min (2024–2026)",
                 value = json!({
-                    "strategy": "macd_crossover", "symbol": "AAPL",
+                    "strategy": "macd_crossover", "symbol": "BNBUSDT",
                     "from": "2024-04-01", "to": "2026-01-01",
                     "params": { "fast": 12, "slow": 26, "signal": 9 },
-                    "market_hours_only": true, "exchange": "us",
-                    "commission_pct": 0.0, "initial_capital": 10000.0
+                    "commission_pct": 0.001, "initial_capital": 10000.0,
+                    "asset_type": "crypto", "timeframe": "M1"
                 })
             )),
             ("EMA crossover — FPT" = (
@@ -351,39 +363,43 @@ async fn run_backtest(State(state): State<AppState>, Json(req): Json<BacktestReq
         content = CelBacktestRequest,
         examples(
             ("RSI + EMA — BTCUSDT" = (
-                summary = "RSI oversold + price above EMA200 on BTCUSDT 1m",
+                summary = "RSI oversold + EMA200 filter, ATR-based tp/sl, peak trailing",
                 value = json!({
                     "symbol": "BTCUSDT",
-                    "entry": "rsi(14) < 30 && close > ema(200)",
-                    "exit": "rsi(14) > 70",
-                    "sl": 0.05, "tp": 0.15,
+                    "entry_expr": "rsi(14) < 30 && close > ema(200)",
+                    "exit_expr":  "rsi(14) > 70 || close < peak - 2.0*atr(14)",
+                    "exit": { "tp": "3*atr(14)", "sl": "1.5*atr(14)", "max_bars": 200 },
+                    "position_size_pct": 0.95, "max_positions": 1,
                     "from": "2022-06-01", "to": "2024-01-01",
                     "initial_capital": 10000.0, "commission_pct": 0.001
                 })
             )),
-            ("EMA crossover — AAPL" = (
-                summary = "EMA 9/21 crossover signal on AAPL 1min",
+            ("EMA crossover — ETHUSDT" = (
+                summary = "EMA 9/21 crossover on ETHUSDT 1min with Heiken Ashi",
                 value = json!({
-                    "symbol": "AAPL",
-                    "entry": "prev_ema(9) < prev_ema(21) && ema(9) > ema(21)",
-                    "exit": "prev_ema(9) > prev_ema(21) && ema(9) < ema(21)",
-                    "sl": 0.04,
+                    "symbol": "ETHUSDT",
+                    "entry_expr": "prev_ema(9) < prev_ema(21) && ema(9) > ema(21)",
+                    "exit_expr":  "prev_ema(9) > prev_ema(21) && ema(9) < ema(21)",
+                    "exit": { "sl": 0.04 },
+                    "candle_type": "heiken_ashi",
+                    "position_size_pct": 0.95, "max_positions": 1,
                     "from": "2024-04-01", "to": "2026-01-01",
-                    "market_hours_only": true, "exchange": "us",
-                    "commission_pct": 0.0, "initial_capital": 10000.0,
-                    "exit_config": { "trailing_stop_pct": 0.03 }
+                    "commission_pct": 0.001, "initial_capital": 10000.0,
+                    "asset_type": "crypto", "timeframe": "M1"
                 })
             )),
             ("MACD histogram — FPT" = (
-                summary = "MACD histogram cross zero on FPT (VN)",
+                summary = "MACD zero-cross on FPT (VN stock), fixed $-amount sizing",
                 value = json!({
                     "symbol": "FPT",
-                    "entry": "prev_macd(12,26,9).histogram < 0 && macd(12,26,9).histogram > 0",
-                    "exit": "prev_macd(12,26,9).histogram > 0 && macd(12,26,9).histogram < 0",
-                    "sl": 0.05,
+                    "entry_expr": "prev_macd_hist(12) < 0 && macd_hist(12) > 0 && adx(14) > 20",
+                    "exit_expr":  "prev_macd_hist(12) > 0 && macd_hist(12) < 0",
+                    "exit": { "sl": 0.05, "tp": 0.15 },
+                    "position_size_usd": 10000000.0, "max_positions": 3,
                     "from": "2024-01-01", "to": "2026-01-01",
                     "market_hours_only": true, "exchange": "vn",
-                    "commission_pct": 0.0015, "initial_capital": 100000000.0
+                    "commission_pct": 0.0015, "initial_capital": 100000000.0,
+                    "asset_type": "vn_stock"
                 })
             ))
         )
@@ -434,16 +450,16 @@ async fn run_backtest_cel(
                     "exit": { "logic": "or", "rules": [
                         { "source": "rsi14", "field": "value", "op": "gt", "value": 70 }
                     ]},
-                    "exit_config": { "stop_loss_pct": 0.05, "trailing_stop_pct": 0.03 }
+                    "exit_config": { "stop_loss_pct": 0.05 }
                 })
             )),
-            ("MACD + RSI — AAPL" = (
-                summary = "MACD histogram cross với RSI confirmation trên AAPL 1min",
+            ("MACD + RSI — BNBUSDT" = (
+                summary = "MACD histogram cross với RSI confirmation trên BNBUSDT 1min",
                 value = json!({
-                    "symbol": "AAPL",
+                    "symbol": "BNBUSDT",
                     "from": "2024-04-01", "to": "2026-01-01",
-                    "initial_capital": 10000.0, "commission_pct": 0.0,
-                    "market_hours_only": true, "exchange": "us",
+                    "initial_capital": 10000.0, "commission_pct": 0.001,
+                    "asset_type": "crypto", "timeframe": "M1",
                     "indicators": {
                         "macd":  { "type": "macd", "fast": 12, "slow": 26, "signal": 9 },
                         "rsi14": { "type": "rsi",  "period": 14 }
@@ -504,7 +520,157 @@ async fn run_backtest_dynamic(
     backtest_response(result)
 }
 
-/// Compute indicators over historical data.
+/// Unified OHLCV + indicator query for a symbol.
+///
+/// Two independent sections control what is returned:
+/// - `candles` present → include OHLCV bars; `candles.limit` without `from`/`to` = last N bars
+/// - `indicators` present and non-empty → compute and include indicator series
+/// - both present → bars + series in one round-trip (chart init)
+/// - only `indicators` → series only (caller already has bars)
+#[utoipa::path(
+    post, path = "/api/data/{symbol}", tag = "data",
+    security(("BearerAuth" = [])),
+    params(("symbol" = String, Path, description = "Asset symbol, e.g. `BTCUSDT` or `NVDA`")),
+    request_body(
+        content = UnifiedDataRequest,
+        examples(
+            ("Candles + EMA/RSI — BTCUSDT" = (
+                summary = "H1 Heiken Ashi bars + EMA20 + RSI14 in one round-trip",
+                value = json!({
+                    "from": "2024-01-01", "to": "2024-06-30",
+                    "timeframe": "H1",
+                    "candles": { "candle_type": "heiken_ashi" },
+                    "indicators": [
+                        { "type": "ema", "period": 20, "label": "ema20" },
+                        { "type": "rsi", "period": 14, "label": "rsi14" }
+                    ]
+                })
+            )),
+            ("Indicator-only — ETHUSDT" = (
+                summary = "Only MACD series, caller already has candles",
+                value = json!({
+                    "from": "2024-01-01", "to": "2024-06-30",
+                    "timeframe": "H1",
+                    "indicators": [
+                        { "type": "macd", "fast": 12, "slow": 26, "signal": 9 }
+                    ]
+                })
+            )),
+            ("Latest 500 bars — FPT" = (
+                summary = "Last 500 VN market-hours bars, no indicators",
+                value = json!({
+                    "market_hours_only": true, "exchange": "vn",
+                    "candles": { "limit": 500 }
+                })
+            ))
+        )
+    ),
+    responses(
+        (status = 200, description = "Bars and/or indicator series",             body = UnifiedDataResponse),
+        (status = 400, description = "Symbol not found or bad request",          body = ErrorResponse),
+        (status = 429, description = "Too many concurrent requests",             body = ErrorResponse),
+        (status = 500, description = "Internal error",                           body = ErrorResponse),
+    )
+)]
+async fn unified_data(
+    State(state): State<AppState>,
+    Path(symbol): Path<String>,
+    Json(req): Json<UnifiedDataRequest>,
+) -> Response {
+    let _permit = match state.semaphore.try_acquire() {
+        Ok(p) => p,
+        Err(_) => return too_many_requests(),
+    };
+    tracing::info!(symbol = %symbol, "unified data request");
+
+    let data_dir  = Arc::clone(&state.data_dir);
+    let from_ms   = req.from.as_deref().and_then(parse_date_ms);
+    let to_ms     = req.to.as_deref().and_then(|s| {
+        parse_date_ms(s).map(|ms| ms + 86_400_000 - 1)
+    });
+    let market_hours_only = req.market_hours_only.unwrap_or(false);
+    let exchange          = req.exchange.clone().unwrap_or_else(|| "us".to_string());
+    let timeframe         = req.timeframe.clone();
+
+    let candles_query   = req.candles;
+    let want_candles    = candles_query.is_some();
+    let limit           = candles_query.as_ref().and_then(|c| c.limit);
+    let latest_mode     = from_ms.is_none() && to_ms.is_none() && limit.is_some();
+    let candle_type_str = candles_query.as_ref().and_then(|c| c.candle_type.clone());
+    let ha_smooth       = candles_query.as_ref().and_then(|c| c.ha_smooth).unwrap_or(2);
+
+    let ind_configs     = req.indicators.unwrap_or_default();
+    let want_indicators = !ind_configs.is_empty();
+
+    let result = tokio::task::spawn_blocking(move || {
+        use alm_data::BarFeed;
+        use alm_strategy::candle_type::{CandleTransform, CandleType};
+
+        let files = find_parquet_files(&data_dir, &symbol, timeframe.as_deref());
+        let mut feed = load_bars(&files, &symbol, from_ms, to_ms, market_hours_only, &exchange)?;
+
+        let total = feed.len();
+        let mut raw_bars: Vec<alm_core::Bar> = Vec::with_capacity(total);
+        while let Some(b) = feed.next() {
+            raw_bars.push(b);
+        }
+
+        // Apply candle transform (raw / heiken_ashi / smooth_ha).
+        // Both indicator series and returned bars reflect the same transform.
+        let transformed: Vec<alm_core::Bar> = if let Some(ref ct) = candle_type_str {
+            let kind = CandleType::from_str(ct, ha_smooth);
+            let mut xform = CandleTransform::new(kind);
+            raw_bars.iter().filter_map(|b| xform.apply(b)).collect()
+        } else {
+            raw_bars
+        };
+
+        let bars_slice: &[alm_core::Bar] = if let Some(n) = limit {
+            if latest_mode {
+                let start = transformed.len().saturating_sub(n);
+                &transformed[start..]
+            } else {
+                &transformed[..n.min(transformed.len())]
+            }
+        } else {
+            &transformed
+        };
+
+        let indicators_out = if want_indicators {
+            Some(run_indicators_on_bars(bars_slice, &ind_configs)?)
+        } else {
+            None
+        };
+
+        let candles_out = if want_candles {
+            let bars = bars_slice.iter().map(|b| BarRecord {
+                t: b.timestamp, o: b.open, h: b.high,
+                l: b.low,       c: b.close, v: b.volume,
+                vwap: b.vwap, n: b.transactions,
+            }).collect::<Vec<_>>();
+            Some(CandlesResult { count: bars.len(), bars })
+        } else {
+            None
+        };
+
+        anyhow::Ok(UnifiedDataResponse { symbol, candles: candles_out, indicators: indicators_out })
+    }).await;
+
+    match result {
+        Ok(Ok(resp))  => (StatusCode::OK, Json(resp)).into_response(),
+        Ok(Err(e)) => {
+            tracing::warn!("unified data error: {:#}", e);
+            (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e.to_string() })).into_response()
+        }
+        Err(e) => {
+            tracing::error!("spawn_blocking panicked: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "internal error".into() }))
+                .into_response()
+        }
+    }
+}
+
+/// ⚠ Deprecated — use `POST /api/data/{symbol}` instead.
 #[utoipa::path(
     post, path = "/api/indicator", tag = "data",
     security(("BearerAuth" = [])),
@@ -552,24 +718,32 @@ async fn compute_indicator(
 impl From<CelBacktestRequest> for BacktestRequest {
     fn from(req: CelBacktestRequest) -> Self {
         let mut params = serde_json::Map::new();
-        params.insert("entry".into(), serde_json::Value::String(req.entry));
-        params.insert("exit".into(),  serde_json::Value::String(req.exit));
-        if let Some(tp) = req.tp { params.insert("tp".into(), json!(tp)); }
-        if let Some(sl) = req.sl { params.insert("sl".into(), json!(sl)); }
+        params.insert("entry".into(), json!(req.entry_expr));
+        params.insert("exit".into(),  json!(req.exit_expr));
+        if let Some(v) = req.candle_type { params.insert("candle_type".into(), json!(v)); }
+        if let Some(v) = req.ha_smooth   { params.insert("ha_smooth".into(),   json!(v)); }
+        // ATR-based tp/sl/trail from ExitConfig → injected into CEL params
+        if let Some(ref cfg) = req.exit {
+            crate::backtest::inject_atr_exit_into_cel_params(cfg, &mut params);
+        }
         BacktestRequest {
             strategy: "cel".into(),
             symbol: req.symbol,
             params: Some(serde_json::Value::Object(params)),
-            exit: req.exit_config,
+            exit: req.exit,
             from: req.from, to: req.to,
             initial_capital: req.initial_capital,
             commission_pct: req.commission_pct,
             slippage_pct: req.slippage_pct,
             risk_free_annual: req.risk_free_annual,
             position_size_pct: req.position_size_pct,
+            position_size_usd: req.position_size_usd,
+            position_size_quantity: req.position_size_quantity,
+            max_positions: req.max_positions,
             market_hours_only: req.market_hours_only,
             exchange: req.exchange,
             asset_type: req.asset_type,
+            timeframe: req.timeframe,
         }
     }
 }
@@ -584,16 +758,20 @@ impl From<DynamicBacktestRequest> for BacktestRequest {
             strategy: "dynamic".into(),
             symbol: req.symbol,
             params: Some(serde_json::Value::Object(params)),
-            exit: req.exit_config,
+            exit: req.exit_rules,
             from: req.from, to: req.to,
             initial_capital: req.initial_capital,
             commission_pct: req.commission_pct,
             slippage_pct: req.slippage_pct,
             risk_free_annual: req.risk_free_annual,
             position_size_pct: req.position_size_pct,
+            position_size_usd: req.position_size_usd,
+            position_size_quantity: req.position_size_quantity,
+            max_positions: req.max_positions,
             market_hours_only: req.market_hours_only,
             exchange: req.exchange,
             asset_type: req.asset_type,
+            timeframe: req.timeframe,
         }
     }
 }

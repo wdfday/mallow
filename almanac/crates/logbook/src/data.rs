@@ -10,8 +10,15 @@ use walkdir::WalkDir;
 
 /// Walk `data_dir` and collect all `.parquet` files located inside any
 /// directory whose name matches `symbol` (case-insensitive).
-pub fn find_parquet_files(data_dir: &Path, symbol: &str) -> Vec<PathBuf> {
-    let symbol_lower = symbol.to_lowercase();
+///
+/// When `timeframe` is `Some("H1")` (or any candle-type directory name), only
+/// files whose grandparent directory matches that string are included.  This
+/// prevents mixing bars from different timeframes when the on-disk layout is
+/// `{exchange}/{timeframe}/{symbol}/*.parquet`.
+pub fn find_parquet_files(data_dir: &Path, symbol: &str, timeframe: Option<&str>) -> Vec<PathBuf> {
+    let symbol_lower    = symbol.to_lowercase();
+    let timeframe_lower = timeframe.map(|t| t.to_lowercase());
+
     let mut files: Vec<PathBuf> = WalkDir::new(data_dir)
         .follow_links(false)
         .into_iter()
@@ -33,11 +40,28 @@ pub fn find_parquet_files(data_dir: &Path, symbol: &str) -> Vec<PathBuf> {
                 return false;
             }
             // Parent directory name must match symbol
-            path.parent()
+            let parent = path.parent();
+            let parent_matches = parent
                 .and_then(|p| p.file_name())
                 .and_then(|n| n.to_str())
                 .map(|n| n.to_lowercase() == symbol_lower)
-                .unwrap_or(false)
+                .unwrap_or(false);
+            if !parent_matches {
+                return false;
+            }
+            // Grandparent directory must match timeframe when specified
+            if let Some(ref tf) = timeframe_lower {
+                let grandparent_matches = parent
+                    .and_then(|p| p.parent())
+                    .and_then(|p| p.file_name())
+                    .and_then(|n| n.to_str())
+                    .map(|n| n.to_lowercase() == *tf)
+                    .unwrap_or(false);
+                if !grandparent_matches {
+                    return false;
+                }
+            }
+            true
         })
         .map(|e| e.into_path())
         .collect();

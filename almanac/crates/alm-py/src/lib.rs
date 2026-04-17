@@ -164,6 +164,8 @@ fn report_to_pydict<'py>(
     // Rolling arrays
     out.set_item("rolling_sharpe",   report.rolling_sharpe.clone())?;
     out.set_item("rolling_drawdown", report.rolling_drawdown.clone())?;
+    // Timeframe
+    out.set_item("timeframe", report.timeframe.to_string())?;
 
     // Regime summary
     if let Some(rs) = &report.regime_summary {

@@ -133,13 +133,26 @@
 //!
 //! Bar fields always in scope: `open`, `high`, `low`, `close`, `volume`.
 //!
-//! ## Previous-bar values
+//! ## History indexing
 //!
-//! Prefix any indicator function with `prev_` to read the previous bar's value.
-//! This is the standard way to detect crossovers — no special operator needed.
+//! Use `[N]` to access values N bars ago. Works on both bar fields and indicator calls.
+//! `[0]` = current bar, `[1]` = one bar ago, `[2]` = two bars ago, and so on.
 //!
 //! ```text
-//! // EMA cross-above
+//! close[1] > close[0]          // price dropped from previous bar
+//! ema(9)[1] < ema(9)[0]        // EMA rising
+//! close[2] > close[1] && close[1] > close[0]  // two consecutive drops
+//! ```
+//!
+//! The maximum index used in any expression determines the lookback buffer depth.
+//!
+//! ## Previous-bar shorthand
+//!
+//! `prev_ema(9)` is equivalent to `ema(9)[1]` — kept for backward compatibility.
+//! Prefer `[N]` syntax for consistency when mixing multiple lookback depths.
+//!
+//! ```text
+//! // EMA cross-above (classic form)
 //! prev_ema(9) <= prev_ema(21) && ema(9) > ema(21)
 //!
 //! // MACD histogram zero-cross
@@ -163,7 +176,7 @@
 //! exit:  "close < bb_mid(20) || rsi(14) > 75.0"
 //! ```
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use anyhow::Result;
 use cel_interpreter::{Context, Program, Value};
@@ -182,6 +195,8 @@ struct VarBinding {
     cached:    Option<f64>,   // last confirmed value (HTF bar fully closed)
     live:      Option<f64>,   // forming value (HTF bar in progress); = cached for base-TF
     prev:      Option<f64>,
+    /// Ring buffer of confirmed values, newest at back. Used for `ema(9)[N]` indexing.
+    history:   VecDeque<f64>,
     /// Time-based resampler for MTF indicators (`H1.ema`, `M15.rsi`, etc.).
     /// `None` = same timeframe as the base bars.
     resampler: Option<TimeBarResampler>,
@@ -201,6 +216,12 @@ impl VarBinding {
         if let Some(b) = &agg {
             let fields = self.ind.update(b)?;
             self.cached = fields.get(&self.field).copied();
+            if let Some(v) = self.cached {
+                self.history.push_back(v);
+                if self.history.len() > self.history.capacity() {
+                    self.history.pop_front();
+                }
+            }
         }
 
         // Live/forming value: clone confirmed state, feed the forming HTF bar.
@@ -228,6 +249,7 @@ impl VarBinding {
         self.cached = None;
         self.live   = None;
         self.prev   = None;
+        self.history.clear();
     }
 }
 
@@ -266,6 +288,60 @@ fn normalize_cel_expr(expr: &str) -> String {
         }
     }
     out
+}
+
+const BAR_FIELDS: &[&str] = &["open", "high", "low", "close", "volume"];
+
+/// Second-pass expander: rewrites `varname[N]` → `varname_hN`.
+///
+/// Runs after `expand_indicators` so indicator calls have already been
+/// flattened to underscore form (`ema_9`, `rsi_14`, …).
+///
+/// Returns `(new_expr, lookback)` where `lookback` is the maximum index seen.
+/// `lookback = 0` means no history indexing was used.
+fn expand_history_indices(expr: &str) -> (String, usize) {
+    let b = expr.as_bytes();
+    let n = b.len();
+    let mut out = String::with_capacity(expr.len());
+    let mut max_idx: usize = 0;
+    let mut i = 0;
+
+    while i < n {
+        if b[i].is_ascii_alphabetic() || b[i] == b'_' {
+            // Collect identifier
+            let id_start = i;
+            while i < n && (b[i].is_ascii_alphanumeric() || b[i] == b'_') { i += 1; }
+            let id = &expr[id_start..i];
+
+            // Check for `[N]` immediately after
+            if i < n && b[i] == b'[' {
+                let bracket_start = i;
+                i += 1;
+                let num_start = i;
+                while i < n && b[i].is_ascii_digit() { i += 1; }
+                if i < n && b[i] == b']' && i > num_start {
+                    let idx: usize = expr[num_start..i].parse().unwrap_or(0);
+                    i += 1; // consume ']'
+                    if idx > max_idx { max_idx = idx; }
+                    out.push_str(id);
+                    out.push_str("_h");
+                    out.push_str(&idx.to_string());
+                    continue;
+                } else {
+                    // Not a clean `[N]` — emit as-is
+                    out.push_str(id);
+                    out.push_str(&expr[bracket_start..i]);
+                    continue;
+                }
+            }
+
+            out.push_str(id);
+        } else {
+            out.push(b[i] as char);
+            i += 1;
+        }
+    }
+    (out, max_idx)
 }
 
 // ── TF prefix helpers ─────────────────────────────────────────────────────────
@@ -473,18 +549,20 @@ fn try_match_indicator(expr: &str, start: usize) -> Option<(usize, Call, String)
 
 // ── Indicator factory ─────────────────────────────────────────────────────────
 
-fn make_binding(base: &str, args: &[f64], interval_ms: Option<i64>) -> Result<Option<VarBinding>> {
+fn make_binding(base: &str, args: &[f64], interval_ms: Option<i64>, lookback: usize) -> Result<Option<VarBinding>> {
     let n = args.first().copied().unwrap_or(0.0) as usize;
 
     macro_rules! bind {
         ($cfg:expr, $field:expr) => {{
             let resampler = interval_ms.map(TimeBarResampler::new);
+            let cap = lookback + 1;
             Ok(Some(VarBinding {
                 ind:       IndicatorBox::from_config(&$cfg)?,
                 field:     $field.into(),
                 cached:    None,
                 live:      None,
                 prev:      None,
+                history:   VecDeque::with_capacity(cap),
                 resampler,
             }))
         }};
@@ -615,13 +693,13 @@ pub fn parse_cel_indicator(expr: &str) -> Result<(String, Vec<f64>, Option<i64>)
     Ok((base.to_string(), call.args.clone(), interval_ms))
 }
 
-fn build_bindings_from_calls(calls: impl IntoIterator<Item = Call>) -> Result<HashMap<String, VarBinding>> {
+fn build_bindings_from_calls(calls: impl IntoIterator<Item = Call>, lookback: usize) -> Result<HashMap<String, VarBinding>> {
     let mut map: HashMap<String, VarBinding> = HashMap::new();
     for call in calls {
         let (base, _, interval_ms) = call.parts();
         let key = call.key();
         if !map.contains_key(&key) {
-            if let Some(b) = make_binding(base, &call.args, interval_ms)? {
+            if let Some(b) = make_binding(base, &call.args, interval_ms, lookback)? {
                 map.insert(key, b);
             }
         }
@@ -686,6 +764,15 @@ const ZERO_ARG_FUNCS: &[&str] = &[
 /// candle_type: heiken_ashi
 /// ```
 ///
+/// History indexing `[N]` works in both entry and exit expressions:
+/// ```text
+/// entry: close[1] > close[0] && rsi(14)[1] < 30.0
+/// exit:  ema(9)[0] < ema(9)[1]
+/// ```
+///
+/// Supported keys: `entry`, `exit`, `tp`, `sl`, `tp_atr`, `sl_atr`,
+/// `atr_period`, `candle_type`, `ha_smooth`.
+///
 /// Rules:
 /// - Lines starting with `#` or blank are ignored.
 /// - Continuation lines (no recognised `key:` prefix) are joined with a
@@ -699,8 +786,6 @@ pub struct CelScript {
     pub sl:          Option<f64>,
     pub tp_atr:      Option<f64>,
     pub sl_atr:      Option<f64>,
-    pub trail_pct:   Option<f64>,
-    pub trail_atr:   Option<f64>,
     pub atr_period:  Option<usize>,
     pub candle_type: String,
     pub ha_smooth:   usize,
@@ -714,8 +799,6 @@ impl CelScript {
         let mut sl:         Option<f64>   = None;
         let mut tp_atr:     Option<f64>   = None;
         let mut sl_atr:     Option<f64>   = None;
-        let mut trail_pct:  Option<f64>   = None;
-        let mut trail_atr:  Option<f64>   = None;
         let mut atr_period: Option<usize> = None;
         let mut candle_type = String::from("raw");
         let mut ha_smooth: usize = 2;
@@ -747,8 +830,6 @@ impl CelScript {
             else if let Some(rest) = line.strip_prefix("sl:")           { pf!(rest, sl); }
             else if let Some(rest) = line.strip_prefix("tp_atr:")       { pf!(rest, tp_atr); }
             else if let Some(rest) = line.strip_prefix("sl_atr:")       { pf!(rest, sl_atr); }
-            else if let Some(rest) = line.strip_prefix("trail_pct:")    { pf!(rest, trail_pct); }
-            else if let Some(rest) = line.strip_prefix("trail_atr:")    { pf!(rest, trail_atr); }
             else if let Some(rest) = line.strip_prefix("atr_period:") {
                 atr_period = rest.trim().parse::<usize>().ok();
                 last_section = None;
@@ -772,7 +853,7 @@ impl CelScript {
 
         anyhow::ensure!(!entry.is_empty(), "CEL script must contain an 'entry:' line");
 
-        Ok(Self { entry, exit, tp, sl, tp_atr, sl_atr, trail_pct, trail_atr,
+        Ok(Self { entry, exit, tp, sl, tp_atr, sl_atr,
                   atr_period, candle_type, ha_smooth })
     }
 }
@@ -788,9 +869,16 @@ pub struct CelStrategy {
     /// Pre-allocated `(current_var_name, prev_var_name, live_var_name)` strings for the hot path.
     /// Order matches `bindings.keys()` at construction time.
     var_keys:    Vec<(String, String, String)>,
+    /// Ring buffer of effective (post-transform) bars for `close[N]` etc.
+    /// Capacity = `lookback + 1`; index 0 = oldest, back = newest (current).
+    bar_buf:     VecDeque<Bar>,
+    /// Maximum history index used in expressions (`close[N]` → N). 0 = no indexing used.
+    lookback:    usize,
+    /// Accumulated indicator series — drained by `take_indicator_series()`.
+    /// Key = binding key (e.g. `"ema_9"`), value = `(timestamp_ms, value)` per bar.
+    indicator_series: HashMap<String, Vec<(i64, f64)>>,
     in_position: bool,
     entry_price: f64,
-    peak_price:  f64,
     /// Fixed % TP/SL from entry price.
     tp_pct:      Option<f64>,
     sl_pct:      Option<f64>,
@@ -799,9 +887,6 @@ pub struct CelStrategy {
     sl_atr_mult: Option<f64>,
     tp_atr_level: f64,
     sl_atr_level: f64,
-    /// Trailing stop.
-    trail_pct:      Option<f64>,
-    trail_atr_mult: Option<f64>,
     /// Internal ATR — only allocated when any ATR mode is active.
     atr:      Option<alm_indicator::Atr>,
     last_atr: f64,
@@ -814,7 +899,7 @@ pub struct CelStrategy {
 
 impl CelStrategy {
     pub fn new(entry: &str, exit: &str) -> Result<Self> {
-        Self::build(entry, exit, None, None, None, None, None, None, None, CandleType::Raw)
+        Self::build(entry, exit, None, None, None, None, None, CandleType::Raw)
     }
 
     pub fn with_risk(
@@ -823,7 +908,7 @@ impl CelStrategy {
         tp_pct: Option<f64>,
         sl_pct: Option<f64>,
     ) -> Result<Self> {
-        Self::build(entry, exit, tp_pct, sl_pct, None, None, None, None, None, CandleType::Raw)
+        Self::build(entry, exit, tp_pct, sl_pct, None, None, None, CandleType::Raw)
     }
 
     pub fn from_params(p: &serde_json::Value) -> Result<Self> {
@@ -844,8 +929,6 @@ impl CelStrategy {
                 p.get("sl").and_then(serde_json::Value::as_f64).or(s.sl),
                 p.get("tp_atr").and_then(serde_json::Value::as_f64).or(s.tp_atr),
                 p.get("sl_atr").and_then(serde_json::Value::as_f64).or(s.sl_atr),
-                p.get("trail_pct").and_then(serde_json::Value::as_f64).or(s.trail_pct),
-                p.get("trail_atr").and_then(serde_json::Value::as_f64).or(s.trail_atr),
                 p.get("atr_period").and_then(serde_json::Value::as_f64)
                     .map(|v| v as usize).or(s.atr_period),
                 candle_type,
@@ -867,8 +950,6 @@ impl CelStrategy {
             p.get("sl").and_then(serde_json::Value::as_f64),
             p.get("tp_atr").and_then(serde_json::Value::as_f64),
             p.get("sl_atr").and_then(serde_json::Value::as_f64),
-            p.get("trail_pct").and_then(serde_json::Value::as_f64),
-            p.get("trail_atr").and_then(serde_json::Value::as_f64),
             atr_period,
             candle_type,
         )
@@ -880,7 +961,6 @@ impl CelStrategy {
         self
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn build(
         entry:          &str,
         exit:           &str,
@@ -888,64 +968,89 @@ impl CelStrategy {
         sl_pct:         Option<f64>,
         tp_atr_mult:    Option<f64>,
         sl_atr_mult:    Option<f64>,
-        trail_pct:      Option<f64>,
-        trail_atr_mult: Option<f64>,
         atr_period:     Option<usize>,
         candle_type:    CandleType,
     ) -> Result<Self> {
-        // Pipeline (single pass):
-        //   H1.ema(200) > close && rsi(14) < 30
-        //   → expand_indicators → H1_ema_200 > close && rsi_14 < 30
-        //   → normalize_cel_expr → H1_ema_200 > close && rsi_14 < 30.0
-        let (entry_raw, entry_calls) = expand_indicators(entry);
-        let (exit_raw,  exit_calls)  = expand_indicators(exit);
-        let entry_n = normalize_cel_expr(&entry_raw);
-        let exit_n  = normalize_cel_expr(&exit_raw);
+        // Pipeline:
+        //   H1.ema(200) > close[1] && rsi(14) < 30
+        //   → expand_indicators  → H1_ema_200 > close[1] && rsi_14 < 30
+        //   → expand_history_indices → H1_ema_200_h0 ... wait, no —
+        //     close[1] → close_h1   (bar field history)
+        //     H1_ema_200[1] → H1_ema_200_h1  (indicator history)
+        //   → normalize_cel_expr → final float-literal form
+        let (entry_ind, entry_calls) = expand_indicators(entry);
+        let (exit_ind,  exit_calls)  = expand_indicators(exit);
+        let (entry_hist, entry_lb) = expand_history_indices(&entry_ind);
+        let (exit_hist,  exit_lb)  = expand_history_indices(&exit_ind);
+        let lookback = entry_lb.max(exit_lb);
+        let entry_n = normalize_cel_expr(&entry_hist);
+        let exit_n  = normalize_cel_expr(&exit_hist);
 
-        let bindings = build_bindings_from_calls(entry_calls.into_iter().chain(exit_calls))?;
+        let bindings = build_bindings_from_calls(
+            entry_calls.into_iter().chain(exit_calls), lookback,
+        )?;
 
         // Pre-allocate the (current, prev, live) variable name strings once.
         let var_keys: Vec<(String, String, String)> = bindings.keys()
             .map(|k| (k.clone(), format!("prev_{k}"), format!("live_{k}")))
             .collect();
 
-        // Build a minimal context: only the 5 bar fields + indicator placeholders.
-        // No function closures — indicators are injected as plain variables each bar.
+        // Build a minimal context: bar fields + indicator placeholders (all as Float(0.0)).
+        // No function closures — all values written as plain variables each bar.
         let mut ctx = Context::default();
-        ctx.add_variable_from_value("open",   Value::Float(0.0));
-        ctx.add_variable_from_value("high",   Value::Float(0.0));
-        ctx.add_variable_from_value("low",    Value::Float(0.0));
-        ctx.add_variable_from_value("close",  Value::Float(0.0));
-        ctx.add_variable_from_value("volume", Value::Float(0.0));
+        ctx.add_variable_from_value("open",        Value::Float(0.0));
+        ctx.add_variable_from_value("high",        Value::Float(0.0));
+        ctx.add_variable_from_value("low",         Value::Float(0.0));
+        ctx.add_variable_from_value("close",       Value::Float(0.0));
+        ctx.add_variable_from_value("volume",      Value::Float(0.0));
+        ctx.add_variable_from_value("entry_price", Value::Float(0.0));
+        // Register `field_hN` vars for bar-field history indexing.
+        if lookback > 0 {
+            for field in BAR_FIELDS {
+                for n in 0..=lookback {
+                    let key = format!("{field}_h{n}");
+                    ctx.add_variable_from_value(key.as_str(), Value::Float(0.0));
+                }
+            }
+        }
         for (cur, prev, live) in &var_keys {
             ctx.add_variable_from_value(cur.as_str(),  Value::Float(0.0));
             ctx.add_variable_from_value(prev.as_str(), Value::Float(0.0));
             ctx.add_variable_from_value(live.as_str(), Value::Float(0.0));
+            // Register `indicator_hN` vars for indicator history indexing.
+            if lookback > 0 {
+                for n in 0..=lookback {
+                    let key = format!("{cur}_h{n}");
+                    ctx.add_variable_from_value(key.as_str(), Value::Float(0.0));
+                }
+            }
         }
 
-        let needs_atr = tp_atr_mult.is_some() || sl_atr_mult.is_some() || trail_atr_mult.is_some();
+        let needs_atr = tp_atr_mult.is_some() || sl_atr_mult.is_some();
         let atr = if needs_atr {
             Some(alm_indicator::Atr::new(atr_period.unwrap_or(14)))
         } else {
             None
         };
 
+        let bar_cap = lookback + 1;
+        let indicator_series: HashMap<String, Vec<(i64, f64)>> = HashMap::new();
         Ok(Self {
             entry_prog:  Program::compile(&entry_n)?,
             exit_prog:   Program::compile(&exit_n)?,
             bindings,
             var_keys,
+            bar_buf:     VecDeque::with_capacity(bar_cap),
+            lookback,
+            indicator_series,
             in_position: false,
             entry_price: 0.0,
-            peak_price:  0.0,
             tp_pct,
             sl_pct,
             tp_atr_mult,
             sl_atr_mult,
             tp_atr_level: 0.0,
             sl_atr_level: 0.0,
-            trail_pct,
-            trail_atr_mult,
             atr,
             last_atr: 0.0,
             ctx,
@@ -973,15 +1078,45 @@ impl Strategy for CelStrategy {
             return vec![];
         }
 
-        // ── 2. Write bar fields into context ──────────────────────────────────
-        // Dùng effective bar (HA nếu có) để expression nhất quán với indicators.
-        self.ctx.add_variable_from_value("open",   Value::Float(effective.open));
-        self.ctx.add_variable_from_value("high",   Value::Float(effective.high));
-        self.ctx.add_variable_from_value("low",    Value::Float(effective.low));
-        self.ctx.add_variable_from_value("close",  Value::Float(effective.close));
-        self.ctx.add_variable_from_value("volume", Value::Float(effective.volume));
+        // ── 2. Push bar into history buffer ───────────────────────────────────
+        if self.lookback > 0 {
+            if self.bar_buf.len() == self.bar_buf.capacity() {
+                self.bar_buf.pop_front();
+            }
+            self.bar_buf.push_back(effective.clone());
+        }
 
-        // ── 3. Write indicator values as variables (no Mutex, no format!) ─────
+        // ── 3. Write bar fields into context ──────────────────────────────────
+        // Dùng effective bar (HA nếu có) để expression nhất quán với indicators.
+        self.ctx.add_variable_from_value("open",        Value::Float(effective.open));
+        self.ctx.add_variable_from_value("high",        Value::Float(effective.high));
+        self.ctx.add_variable_from_value("low",         Value::Float(effective.low));
+        self.ctx.add_variable_from_value("close",       Value::Float(effective.close));
+        self.ctx.add_variable_from_value("volume",      Value::Float(effective.volume));
+        // `entry_price` = fill price of the current open position (0.0 when flat).
+        self.ctx.add_variable_from_value("entry_price", Value::Float(self.entry_price));
+
+        // Write `field_hN`: index 0 = current bar, 1 = one bar ago, …
+        if self.lookback > 0 {
+            let buf_len = self.bar_buf.len();
+            for n in 0..=self.lookback {
+                let bar_opt = if n < buf_len {
+                    self.bar_buf.get(buf_len - 1 - n)
+                } else {
+                    None
+                };
+                let (o, h, l, c, v) = bar_opt
+                    .map(|b| (b.open, b.high, b.low, b.close, b.volume))
+                    .unwrap_or((0.0, 0.0, 0.0, 0.0, 0.0));
+                self.ctx.add_variable_from_value(format!("open_h{n}").as_str(),   Value::Float(o));
+                self.ctx.add_variable_from_value(format!("high_h{n}").as_str(),   Value::Float(h));
+                self.ctx.add_variable_from_value(format!("low_h{n}").as_str(),    Value::Float(l));
+                self.ctx.add_variable_from_value(format!("close_h{n}").as_str(),  Value::Float(c));
+                self.ctx.add_variable_from_value(format!("volume_h{n}").as_str(), Value::Float(v));
+            }
+        }
+
+        // ── 4. Write indicator values as variables (no Mutex, no format!) ─────
         for (cur_key, prev_key, live_key) in &self.var_keys {
             if let Some(b) = self.bindings.get(cur_key) {
                 if let Some(v) = b.cached {
@@ -993,23 +1128,49 @@ impl Strategy for CelStrategy {
                 if let Some(l) = b.live {
                     self.ctx.add_variable_from_value(live_key.as_str(), Value::Float(l));
                 }
+                // Write `indicator_hN` for history indexing.
+                if self.lookback > 0 {
+                    let hist_len = b.history.len();
+                    for n in 0..=self.lookback {
+                        let val = if n < hist_len {
+                            b.history[hist_len - 1 - n]
+                        } else {
+                            0.0
+                        };
+                        self.ctx.add_variable_from_value(
+                            format!("{cur_key}_h{n}").as_str(),
+                            Value::Float(val),
+                        );
+                    }
+                }
             }
         }
 
-        // ── 4. Update internal ATR ────────────────────────────────────────────
+        // ── 4b. Append to indicator series ───────────────────────────────────
+        for (cur_key, _, _) in &self.var_keys {
+            if let Some(b) = self.bindings.get(cur_key) {
+                if let Some(v) = b.cached {
+                    self.indicator_series
+                        .entry(cur_key.clone())
+                        .or_default()
+                        .push((effective.timestamp, v));
+                }
+            }
+        }
+
+        // ── 5. Update internal ATR ────────────────────────────────────────────
         if let Some(atr) = &mut self.atr {
             if let Some(v) = atr.update(bar.high, bar.low, bar.close) {
                 self.last_atr = v.atr;
             }
         }
 
-        // ── 5. Evaluate the appropriate program ───────────────────────────────
+        // ── 6. Evaluate the appropriate program ───────────────────────────────
         if !self.in_position {
             let fire = matches!(self.entry_prog.execute(&self.ctx), Ok(Value::Bool(true)));
             if fire {
                 self.in_position = true;
                 self.entry_price = bar.close;
-                self.peak_price  = bar.close;
                 self.tp_atr_level = self.tp_atr_mult
                     .filter(|_| self.last_atr > 0.0)
                     .map(|m| bar.close + m * self.last_atr)
@@ -1021,29 +1182,21 @@ impl Strategy for CelStrategy {
                 return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
             }
         } else {
-            if bar.close > self.peak_price { self.peak_price = bar.close; }
-
             let tp_hit = self.tp_pct
                 .map(|pct| bar.close >= self.entry_price * (1.0 + pct))
                 .unwrap_or(false)
                 || (self.tp_atr_level > 0.0 && bar.close >= self.tp_atr_level);
 
-            let trail_sl = self.trail_pct
-                .map(|pct| self.peak_price * (1.0 - pct))
-                .or_else(|| self.trail_atr_mult.map(|m| self.peak_price - m * self.last_atr));
-
             let sl_hit = self.sl_pct
                 .map(|pct| bar.close <= self.entry_price * (1.0 - pct))
                 .unwrap_or(false)
-                || (self.sl_atr_level > 0.0 && bar.close <= self.sl_atr_level)
-                || trail_sl.map(|sl| bar.close <= sl).unwrap_or(false);
+                || (self.sl_atr_level > 0.0 && bar.close <= self.sl_atr_level);
 
             let exit_hit = matches!(self.exit_prog.execute(&self.ctx), Ok(Value::Bool(true)));
 
             if tp_hit || sl_hit || exit_hit {
                 self.in_position = false;
                 self.entry_price = 0.0;
-                self.peak_price  = 0.0;
                 self.tp_atr_level = 0.0;
                 self.sl_atr_level = 0.0;
                 return vec![Signal::close(bar.timestamp, &bar.symbol)];
@@ -1059,12 +1212,16 @@ impl Strategy for CelStrategy {
         for b in self.bindings.values_mut() { b.reset(); }
         if let Some(atr) = &mut self.atr { atr.reset(); }
         self.transform.reset();
+        self.bar_buf.clear();
         self.in_position = false;
         self.entry_price = 0.0;
-        self.peak_price  = 0.0;
         self.tp_atr_level = 0.0;
         self.sl_atr_level = 0.0;
         self.last_atr = 0.0;
+    }
+
+    fn take_indicator_series(&mut self) -> std::collections::HashMap<String, Vec<(i64, f64)>> {
+        std::mem::take(&mut self.indicator_series)
     }
 }
 
@@ -1143,14 +1300,10 @@ mod tests {
             "entry: close > ema(50)\n\
              tp_atr: 2.0\n\
              sl_atr: 1.0\n\
-             trail_pct: 0.03\n\
-             trail_atr: 1.5\n\
              atr_period: 10",
         ).unwrap();
         assert_eq!(s.tp_atr,     Some(2.0));
         assert_eq!(s.sl_atr,     Some(1.0));
-        assert_eq!(s.trail_pct,  Some(0.03));
-        assert_eq!(s.trail_atr,  Some(1.5));
         assert_eq!(s.atr_period, Some(10));
     }
 
@@ -1486,5 +1639,62 @@ mod tests {
         assert_eq!(strip_tf_prefix("ema"),       ("ema",  None));
         assert_eq!(strip_tf_prefix("H_ema"),     ("H_ema", None)); // no digits
         assert_eq!(strip_tf_prefix("X1_ema"),    ("X1_ema", None)); // unknown unit
+    }
+
+    // ── History indexing ─────────────────────────────────────────────────────
+
+    #[test]
+    fn expand_history_indices_bar_field() {
+        let (out, lb) = expand_history_indices("close[1] > close[2]");
+        assert_eq!(out, "close_h1 > close_h2");
+        assert_eq!(lb, 2);
+    }
+
+    #[test]
+    fn expand_history_indices_indicator() {
+        // After expand_indicators, ema(9) becomes ema_9, then [1] → ema_9_h1
+        let (ind, _) = expand_indicators("ema(9)[1] < ema(9)[0]");
+        let (out, lb) = expand_history_indices(&ind);
+        assert_eq!(out, "ema_9_h1 < ema_9_h0");
+        assert_eq!(lb, 1);
+    }
+
+    #[test]
+    fn expand_history_indices_zero_lookback() {
+        let (out, lb) = expand_history_indices("close > ema_9 && rsi_14 < 30");
+        assert_eq!(out, "close > ema_9 && rsi_14 < 30");
+        assert_eq!(lb, 0);
+    }
+
+    #[test]
+    fn strategy_builds_with_history_indexing() {
+        // Verify that [N] syntax compiles into a valid CEL strategy.
+        let s = CelStrategy::new(
+            "close[1] > ema(50) && close[0] < ema(50)",
+            "close[0] > ema(50)",
+        ).unwrap();
+        assert_eq!(s.lookback, 1);
+    }
+
+    #[test]
+    fn history_index_produces_correct_value() {
+        // entry when current close dropped from previous close
+        let mut s = CelStrategy::new("close[1] > close[0]", "false").unwrap();
+        let mut sigs = vec![];
+        sigs.extend(s.on_bar(&bar(1, 100.0))); // no prev yet
+        sigs.extend(s.on_bar(&bar(2, 95.0)));  // close[1]=100 > close[0]=95 → Long
+        use alm_core::signal::Direction;
+        assert!(sigs.iter().any(|s| s.direction == Direction::Long), "expected Long on drop");
+    }
+
+    #[test]
+    fn history_index_no_signal_on_rise() {
+        // entry when current close dropped from previous — should NOT fire on rise
+        let mut s = CelStrategy::new("close[1] > close[0]", "false").unwrap();
+        let mut sigs = vec![];
+        sigs.extend(s.on_bar(&bar(1, 100.0)));
+        sigs.extend(s.on_bar(&bar(2, 110.0))); // close[1]=100 < close[0]=110 → no signal
+        use alm_core::signal::Direction;
+        assert!(!sigs.iter().any(|s| s.direction == Direction::Long), "should not fire on rise");
     }
 }

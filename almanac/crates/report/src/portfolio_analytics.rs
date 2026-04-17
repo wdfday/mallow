@@ -213,6 +213,7 @@ mod tests {
             recovery_factor: 0.0,
             rolling_sharpe: vec![],
             rolling_drawdown: vec![],
+            timeframe: alm_core::Timeframe::D1,
             regime_summary: None,
         }
     }

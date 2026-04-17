@@ -9,6 +9,7 @@ pub mod portfolio;
 pub mod regime;
 pub mod signal;
 pub mod strategy;
+pub mod timeframe;
 pub mod trade;
 
 pub use bar::{Bar, Tick};
@@ -22,4 +23,5 @@ pub use portfolio::{EquityPoint, Portfolio, Position};
 pub use regime::{RegimeState, RegimeSummary, TrendRegime, VolRegime};
 pub use signal::{Direction, PatternMeta, Signal};
 pub use strategy::{RiskManager, Strategy};
+pub use timeframe::Timeframe;
 pub use trade::Trade;

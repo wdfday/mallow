@@ -1,7 +1,18 @@
 use alm_core::trade::Trade;
 
-pub fn daily_returns(equity: &[f64]) -> Vec<f64> {
+/// Compute bar-to-bar returns from an equity curve.
+///
+/// Each element is `(equity[i+1] - equity[i]) / equity[i]`.
+/// Depending on the bar frequency these may be 1-minute, hourly, or daily
+/// returns — use `ann_factor = bars_per_year` when annualizing.
+pub fn bar_returns(equity: &[f64]) -> Vec<f64> {
     equity.windows(2).map(|w| (w[1] - w[0]) / w[0]).collect()
+}
+
+/// Alias kept for backwards-compat within this crate; prefer `bar_returns`.
+#[inline]
+pub fn daily_returns(equity: &[f64]) -> Vec<f64> {
+    bar_returns(equity)
 }
 
 pub fn mean(v: &[f64]) -> f64 {
@@ -20,75 +31,86 @@ pub fn std_dev(v: &[f64]) -> f64 {
     var.sqrt()
 }
 
-pub fn sharpe_ratio(daily_returns: &[f64], risk_free_daily: f64) -> f64 {
-    if daily_returns.len() < 2 {
+/// Sharpe ratio.
+///
+/// `ann_factor` = bars_per_year (e.g. 525_960 for M1 crypto, 252 for daily stocks).
+/// Use `BacktestReport`'s auto-computed value rather than a hardcoded constant.
+pub fn sharpe_ratio(bar_returns: &[f64], risk_free_per_bar: f64, ann_factor: f64) -> f64 {
+    let n = bar_returns.len();
+    if n < 2 {
         return 0.0;
     }
-    let excess: Vec<f64> = daily_returns.iter().map(|r| r - risk_free_daily).collect();
+    let excess: Vec<f64> = bar_returns.iter().map(|r| r - risk_free_per_bar).collect();
     let m = mean(&excess);
     let s = std_dev(&excess);
     if s < f64::EPSILON {
         return 0.0;
     }
-    m / s * (252_f64).sqrt()
+    m / s * ann_factor.sqrt()
 }
 
-pub fn sortino_ratio(daily_returns: &[f64], risk_free_daily: f64) -> f64 {
-    if daily_returns.len() < 2 {
+/// Sortino ratio (standard definition: downside deviation over **all** periods).
+///
+/// `ann_factor` = bars_per_year.
+pub fn sortino_ratio(bar_returns: &[f64], risk_free_per_bar: f64, ann_factor: f64) -> f64 {
+    let n = bar_returns.len();
+    if n < 2 {
         return 0.0;
     }
-    let excess: Vec<f64> = daily_returns.iter().map(|r| r - risk_free_daily).collect();
+    let excess: Vec<f64> = bar_returns.iter().map(|r| r - risk_free_per_bar).collect();
     let m = mean(&excess);
-    let downside: Vec<f64> = excess
-        .iter()
-        .filter(|&&r| r < 0.0)
-        .map(|&r| r.powi(2))
-        .collect();
-    if downside.is_empty() {
+    // Standard Sortino: divide by n (all periods), not just negative periods.
+    let downside_sq_sum: f64 = excess.iter().map(|&e| if e < 0.0 { e * e } else { 0.0 }).sum();
+    if downside_sq_sum < f64::EPSILON {
         return f64::INFINITY;
     }
-    let downside_dev = (downside.iter().sum::<f64>() / downside.len() as f64).sqrt();
+    let downside_dev = (downside_sq_sum / n as f64).sqrt();
     if downside_dev < f64::EPSILON {
         return 0.0;
     }
-    m / downside_dev * (252_f64).sqrt()
+    m / downside_dev * ann_factor.sqrt()
 }
 
-/// Compute Sharpe and Sortino ratios in a single pass over `daily_returns`,
-/// avoiding two separate `excess: Vec<f64>` allocations.
-pub fn sharpe_sortino(daily_returns: &[f64], risk_free_daily: f64) -> (f64, f64) {
-    let n = daily_returns.len();
+/// Compute Sharpe and Sortino ratios in a single pass over `bar_returns`.
+///
+/// - `ann_factor` = bars_per_year — use the value auto-computed from the equity
+///   curve timestamps in `BacktestReport::generate()`, not a hardcoded constant.
+/// - Sortino uses the **standard** denominator (all n periods), not just
+///   the count of negative periods.
+pub fn sharpe_sortino(bar_returns: &[f64], risk_free_per_bar: f64, ann_factor: f64) -> (f64, f64) {
+    let n = bar_returns.len();
     if n < 2 {
         return (0.0, 0.0);
     }
 
     // Pass 1: mean of excess returns.
     let excess_mean =
-        daily_returns.iter().map(|r| r - risk_free_daily).sum::<f64>() / n as f64;
+        bar_returns.iter().map(|r| r - risk_free_per_bar).sum::<f64>() / n as f64;
 
-    // Pass 2: variance of excess + downside deviation simultaneously.
-    let mut sum_sq_dev = 0.0_f64;
-    let mut downside_sq_sum = 0.0_f64;
-    let mut downside_count = 0usize;
-    for &r in daily_returns {
-        let e = r - risk_free_daily;
+    // Pass 2: variance of excess + downside sum simultaneously.
+    let mut sum_sq_dev    = 0.0_f64;
+    let mut downside_sq   = 0.0_f64;
+    let mut has_downside  = false;
+    for &r in bar_returns {
+        let e   = r - risk_free_per_bar;
         let dev = e - excess_mean;
         sum_sq_dev += dev * dev;
         if e < 0.0 {
-            downside_sq_sum += e * e;
-            downside_count += 1;
+            downside_sq  += e * e;
+            has_downside  = true;
         }
     }
 
-    let sqrt252 = (252_f64).sqrt();
+    let sqrt_ann = ann_factor.sqrt();
     let std = (sum_sq_dev / (n - 1) as f64).sqrt();
-    let sharpe = if std < f64::EPSILON { 0.0 } else { excess_mean / std * sqrt252 };
+    let sharpe = if std < f64::EPSILON { 0.0 } else { excess_mean / std * sqrt_ann };
 
-    let sortino = if downside_count == 0 {
+    // Standard Sortino: downside deviation = sqrt(mean of squared negatives over ALL n).
+    let sortino = if !has_downside {
         f64::INFINITY
     } else {
-        let downside_dev = (downside_sq_sum / downside_count as f64).sqrt();
-        if downside_dev < f64::EPSILON { 0.0 } else { excess_mean / downside_dev * sqrt252 }
+        let downside_dev = (downside_sq / n as f64).sqrt();
+        if downside_dev < f64::EPSILON { 0.0 } else { excess_mean / downside_dev * sqrt_ann }
     };
 
     (sharpe, sortino)
@@ -185,23 +207,24 @@ pub fn max_consecutive_losses(trades: &[Trade]) -> usize {
 
 /// Rolling Sharpe ratio over a sliding window of equity-curve returns.
 /// Returns a Vec with the same length as `equity` (zero-padded for the warm-up).
-pub fn rolling_sharpe(equity: &[f64], window: usize) -> Vec<f64> {
+///
+/// `ann_factor` = bars_per_year (same value used in `sharpe_sortino`).
+pub fn rolling_sharpe(equity: &[f64], window: usize, ann_factor: f64) -> Vec<f64> {
     if equity.len() < 2 {
         return vec![0.0; equity.len()];
     }
-    let returns = daily_returns(equity);
+    let returns = bar_returns(equity);
     let mut result = vec![0.0_f64; equity.len()];
-    let sqrt252 = (252_f64).sqrt();
+    let sqrt_ann = ann_factor.sqrt();
     for i in 0..returns.len() {
         if i + 1 < window {
-            // warm-up: not enough bars yet
             result[i + 1] = 0.0;
             continue;
         }
         let slice = &returns[(i + 1 - window)..=i];
         let m = mean(slice);
         let s = std_dev(slice);
-        result[i + 1] = if s < f64::EPSILON { 0.0 } else { m / s * sqrt252 };
+        result[i + 1] = if s < f64::EPSILON { 0.0 } else { m / s * sqrt_ann };
     }
     result
 }
@@ -371,28 +394,28 @@ mod tests {
 
     #[test]
     fn sharpe_empty() {
-        assert_eq!(sharpe_ratio(&[], 0.0), 0.0);
+        assert_eq!(sharpe_ratio(&[], 0.0, 252.0), 0.0);
     }
 
     #[test]
     fn sharpe_flat_returns() {
         // All returns equal rf → excess always 0 → sharpe = 0
         let r = vec![0.001; 252];
-        assert_eq!(sharpe_ratio(&r, 0.001), 0.0);
+        assert_eq!(sharpe_ratio(&r, 0.001, 252.0), 0.0);
     }
 
     #[test]
     fn sharpe_positive() {
         // Alternating +0.01 / +0.005 → mean > 0, std > 0 → Sharpe > 0
         let r: Vec<f64> = (0..252).map(|i| if i % 2 == 0 { 0.01 } else { 0.005 }).collect();
-        assert!(sharpe_ratio(&r, 0.0) > 0.0);
+        assert!(sharpe_ratio(&r, 0.0, 252.0) > 0.0);
     }
 
     #[test]
     fn sharpe_negative() {
         // Alternating -0.01 / -0.005 → mean < 0 → Sharpe < 0
         let r: Vec<f64> = (0..252).map(|i| if i % 2 == 0 { -0.01 } else { -0.005 }).collect();
-        assert!(sharpe_ratio(&r, 0.0) < 0.0);
+        assert!(sharpe_ratio(&r, 0.0, 252.0) < 0.0);
     }
 
     // ── sortino_ratio ──────────────────────────────────────────────────────────
@@ -401,14 +424,14 @@ mod tests {
     fn sortino_no_downside() {
         // Only positive returns → sortino = +inf
         let r = vec![0.005; 100];
-        assert_eq!(sortino_ratio(&r, 0.0), f64::INFINITY);
+        assert_eq!(sortino_ratio(&r, 0.0, 252.0), f64::INFINITY);
     }
 
     #[test]
     fn sortino_positive() {
         let mut r = vec![0.003; 100];
         r.extend(vec![-0.001; 20]);
-        assert!(sortino_ratio(&r, 0.0) > 0.0);
+        assert!(sortino_ratio(&r, 0.0, 252.0) > 0.0);
     }
 
     // ── drawdown_stats ─────────────────────────────────────────────────────────

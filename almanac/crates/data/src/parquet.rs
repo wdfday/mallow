@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use alm_core::Bar;
+use alm_core::{Bar, Timeframe};
 use polars::prelude::*;
 use std::path::Path;
 use std::sync::Arc;
@@ -18,6 +18,7 @@ pub struct ParquetFeed {
     symbol: Arc<str>,
     cursor: usize,
     len: usize,
+    timeframe: Timeframe,
     // pre-extracted column refs for O(1) index access
     t_col: Vec<i64>,
     o_col: Vec<f64>,
@@ -77,7 +78,7 @@ impl ParquetFeed {
 
         // Extract primitive slices once — O(n) copy of the numeric columns into
         // plain Vec<primitive>, still much cheaper than Vec<Bar> with Strings.
-        let t_col  = df.column("t")?.i64()?.into_no_null_iter().collect();
+        let t_col: Vec<i64> = df.column("t")?.i64()?.into_no_null_iter().collect();
         let o_col  = df.column("o")?.f64()?.into_no_null_iter().collect();
         let h_col  = df.column("h")?.f64()?.into_no_null_iter().collect();
         let l_col  = df.column("l")?.f64()?.into_no_null_iter().collect();
@@ -90,7 +91,9 @@ impl ParquetFeed {
             .and_then(|s| s.i64().ok())
             .map(|ca| ca.into_iter().map(|v| v.unwrap_or(0)).collect());
 
-        Ok(Self { symbol, cursor: 0, len, t_col, o_col, h_col, l_col, c_col, v_col, vw_col, n_col })
+        let timeframe = Timeframe::detect(&t_col);
+
+        Ok(Self { symbol, cursor: 0, len, timeframe, t_col, o_col, h_col, l_col, c_col, v_col, vw_col, n_col })
     }
 }
 
@@ -117,9 +120,10 @@ impl BarFeed for ParquetFeed {
         Some(bar)
     }
 
-    fn symbol(&self) -> &str { &self.symbol }
-    fn len(&self)    -> usize { self.len }
-    fn reset(&mut self)       { self.cursor = 0; }
+    fn symbol(&self)    -> &str      { &self.symbol }
+    fn len(&self)       -> usize     { self.len }
+    fn reset(&mut self)              { self.cursor = 0; }
+    fn timeframe(&self) -> Timeframe { self.timeframe }
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────

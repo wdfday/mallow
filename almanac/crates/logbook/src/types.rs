@@ -48,7 +48,21 @@ pub struct BacktestRequest {
 
     /// Fraction of equity to allocate per trade (default: 0.95 = 95%).
     /// Lower values leave a cash buffer, e.g. 0.1 for 10%-per-trade Kelly sizing.
+    /// Ignored when `position_size_usd` or `position_size_quantity` is set.
     pub position_size_pct: Option<f64>,
+
+    /// Fixed dollar amount to allocate per trade (e.g. `500.0` = always use $500).
+    /// Takes priority over `position_size_pct`.
+    /// Ignored when `position_size_quantity` is set.
+    pub position_size_usd: Option<f64>,
+
+    /// Fixed quantity to trade per entry (e.g. `0.01` for 0.01 BTC, `100` for 100 shares).
+    /// Highest priority — overrides both `position_size_pct` and `position_size_usd`.
+    pub position_size_quantity: Option<f64>,
+
+    /// Maximum number of simultaneous open positions (default: 1).
+    /// When the limit is reached, new entry signals are rejected until a position closes.
+    pub max_positions: Option<usize>,
 
     /// If true, drop bars outside regular trading hours for the given exchange.
     /// Requires `exchange` to be set; defaults to `"us"` if omitted.
@@ -64,31 +78,85 @@ pub struct BacktestRequest {
     /// `"stock"`  → whole shares (floor to 1).
     /// `"vn_stock"` → HOSE lots (floor to 100).
     pub asset_type: Option<String>,
+
+    /// Timeframe subdirectory to load, e.g. `"H1"`, `"M1"`, `"D1"`.
+    /// Required when `data_dir` contains multiple timeframes under
+    /// `{exchange}/{timeframe}/{symbol}/` layout.
+    /// Omit to load all timeframes (legacy flat layout).
+    pub timeframe: Option<String>,
 }
 
-/// Optional exit / risk-management overrides applied on top of the strategy's
-/// own signal-based exit logic.
+/// An exit level expressed as either a fixed fraction **or** an ATR multiple.
 ///
-/// The engine evaluates rules every bar while in a position, in order:
-/// stop-loss → take-profit → trailing-stop → max-bars-held.
-/// The first rule that fires emits a `Close` signal immediately.
-#[derive(Debug, Deserialize, Default, ToSchema)]
+/// JSON examples:
+/// - `0.05`          → fixed 5% from entry
+/// - `"1.5*atr"`     → 1.5 × ATR(14) — period defaults to 14
+/// - `"2*atr(21)"`   → 2 × ATR(21)
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum ExitLevel {
+    /// Fixed fraction of entry price (e.g. `0.05` = 5%).
+    Pct(f64),
+    /// ATR multiple expression: `"N*atr"` or `"N*atr(P)"`.
+    Expr(String),
+}
+
+impl ExitLevel {
+    /// Parse an ATR-multiple expression → `(multiplier, period)`.
+    /// Returns `None` if the string is not a recognised ATR expression.
+    pub fn as_atr(&self) -> Option<(f64, usize)> {
+        let s = match self {
+            Self::Expr(s) => s.trim(),
+            Self::Pct(_)  => return None,
+        };
+        // Accept "N*atr" or "N*atr(P)", case-insensitive
+        let s_low = s.to_lowercase();
+        let base = s_low.strip_suffix(')')
+            .and_then(|b| {
+                let idx = b.find("*atr(")?;
+                Some((&b[..idx], &b[idx + 5..]))
+            });
+
+        if let Some((mult_str, period_str)) = base {
+            let mult   = mult_str.trim().parse::<f64>().ok()?;
+            let period = period_str.trim().parse::<usize>().ok()?;
+            return Some((mult, period));
+        }
+
+        // No parentheses — "N*atr"
+        if let Some(mult_str) = s_low.strip_suffix("*atr") {
+            let mult = mult_str.trim().parse::<f64>().ok()?;
+            return Some((mult, 14));
+        }
+
+        None
+    }
+
+    /// Fixed-pct value, or `None` when this is an ATR expression.
+    pub fn as_pct(&self) -> Option<f64> {
+        match self { Self::Pct(v) => Some(*v), Self::Expr(_) => None }
+    }
+}
+
+/// Exit / risk-management overrides applied on top of strategy signal logic.
+///
+/// `tp` and `sl` accept either a fixed fraction **or** an ATR-multiple expression:
+/// ```json
+/// { "sl": 0.05, "tp": "3*atr(14)", "max_bars": 50 }
+/// ```
+///
+#[derive(Debug, Clone, Deserialize, Default, ToSchema)]
 pub struct ExitConfig {
-    /// Cut-loss: close if price falls this fraction below entry price.
-    /// E.g. `0.05` cuts at 5 % loss.
-    pub stop_loss_pct: Option<f64>,
+    /// Take-profit: close when price rises to this level above entry.
+    /// Fixed: `0.10` (10%). ATR: `"3*atr(14)"` (3× ATR(14) above entry).
+    pub tp: Option<ExitLevel>,
 
-    /// Take-profit: close if price rises this fraction above entry price.
-    /// E.g. `0.10` takes profit at 10 % gain.
-    pub take_profit_pct: Option<f64>,
+    /// Stop-loss: close when price falls to this level below entry.
+    /// Fixed: `0.05` (5%). ATR: `"1.5*atr"` (1.5× ATR(14) below entry).
+    pub sl: Option<ExitLevel>,
 
-    /// Trailing stop: close if price retreats this fraction from the highest
-    /// price seen since entry.  E.g. `0.02` = 2 % trail.
-    pub trailing_stop_pct: Option<f64>,
-
-    /// Time-based exit: force-close after this many bars regardless of other
-    /// conditions.  Useful for mean-reversion strategies with a holding-period cap.
-    pub max_bars_held: Option<usize>,
+    /// Time-based exit: force-close after this many bars in position.
+    pub max_bars: Option<usize>,
 }
 
 // ── Response ──────────────────────────────────────────────────────────────────
@@ -145,6 +213,67 @@ pub struct BacktestResponse {
 
     /// Bar-by-bar drawdown series: `[{t, v}]` where `v` is drawdown as fraction (e.g. -0.15 = -15%).
     pub drawdown_curve: Vec<CurvePoint>,
+
+    /// Per-indicator time series — only populated for CEL and Dynamic strategies.
+    /// Keys: `"ema_9"`, `"rsi_14"` (CEL) or `"rsi14.value"`, `"macd.histogram"` (Dynamic).
+    /// Each value is a `[{t, v}]` series aligned to bar timestamps.
+    #[serde(skip_serializing_if = "std::collections::HashMap::is_empty")]
+    pub indicator_series: std::collections::HashMap<String, Vec<CurvePoint>>,
+
+    // Advanced risk metrics
+    pub var_95: f64,
+    pub cvar_95: f64,
+    pub omega_ratio: f64,
+    pub tail_ratio: f64,
+    pub recovery_factor: f64,
+
+    // Rolling metrics (window = 30 bars)
+    pub rolling_sharpe: Vec<f64>,
+    pub rolling_drawdown: Vec<f64>,
+
+    /// Detected bar timeframe, e.g. `"M1"`, `"H1"`, `"D1"`.
+    pub timeframe: String,
+
+    /// % of total bars the strategy held an open position.
+    pub exposure_pct: f64,
+
+    /// Market regime breakdown — `None` if regime detector didn't warm up.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub regime_summary: Option<RegimeSummaryResponse>,
+
+    /// Buy-and-hold benchmark on the same period and asset.
+    /// `None` when fewer than 2 bars are available.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub benchmark: Option<BuyHoldBenchmarkResponse>,
+}
+
+/// Market regime breakdown from a completed backtest.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RegimeSummaryResponse {
+    /// % of detected bars in Trending regime.
+    pub trending_pct: f64,
+    /// % of detected bars in Ranging regime.
+    pub ranging_pct: f64,
+    /// % of detected bars in Neutral regime.
+    pub neutral_pct: f64,
+    /// % of detected bars in High volatility regime.
+    pub high_vol_pct: f64,
+    /// % of detected bars in Low volatility regime.
+    pub low_vol_pct: f64,
+    /// On-change regime transitions: `[timestamp_ms, label]` pairs.
+    pub changes: Vec<(i64, String)>,
+}
+
+/// Buy-and-hold benchmark stats — buy at first bar open, hold to last bar close.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BuyHoldBenchmarkResponse {
+    pub total_return_pct: f64,
+    pub cagr_pct: f64,
+    pub annualized_volatility_pct: f64,
+    pub sharpe_ratio: f64,
+    pub sortino_ratio: f64,
+    pub max_drawdown_pct: f64,
+    pub max_dd_duration_bars: usize,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -175,18 +304,22 @@ pub struct ErrorResponse {
 
 /// Request body for `POST /api/backtest/cel` — CEL expression strategy.
 ///
-/// Entry/exit are written as CEL expressions with built-in indicator functions:
-/// `ema(period)`, `rsi(period)`, `macd(fast, slow, signal)`, `atr(period)`, etc.
-/// Prefix `prev_` to access the previous bar's value, e.g. `prev_ema(9)`.
+/// Entry/exit are CEL expressions with built-in indicator functions.
 ///
-/// Example:
+/// Bar fields in scope: `open`, `high`, `low`, `close`, `volume`, `peak`, `entry_price`.
+/// Indicators: `ema(N)`, `rsi(N)`, `macd_hist(N)`, `atr(N)`, `bb_upper(N)`, etc.
+/// MTF prefix: `H1.ema(200)`, `M15.rsi(14)`, etc.
+/// Previous bar: `prev_ema(9)`, `prev_rsi(14)`, etc.
+///
+/// Example — ATR-based exits + Heiken Ashi:
 /// ```json
 /// {
 ///   "symbol": "BTCUSDT",
-///   "entry": "rsi(14) < 30 && close > ema(200)",
-///   "exit": "rsi(14) > 70",
-///   "sl": 0.05,
-///   "tp": 0.15
+///   "entry_expr": "rsi(14) < 30 && close > ema(200)",
+///   "exit_expr":  "rsi(14) > 70 || close < peak - 2*atr(14)",
+///   "exit": { "sl": "1.5*atr(14)", "tp": 0.20, "max_bars": 100 },
+///   "candle_type": "heiken_ashi",
+///   "from": "2023-01-01", "to": "2024-01-01"
 /// }
 /// ```
 #[derive(Debug, Deserialize, ToSchema)]
@@ -194,26 +327,35 @@ pub struct CelBacktestRequest {
     /// Asset symbol, e.g. `"BTCUSDT"`.
     pub symbol: String,
 
-    /// CEL entry expression.
-    pub entry: String,
+    /// CEL entry expression, e.g. `"rsi(14) < 30 && close > ema(200)"`.
+    pub entry_expr: String,
 
-    /// CEL exit expression.
-    pub exit: String,
+    /// CEL exit expression, e.g. `"rsi(14) > 70 || close < peak * 0.97"`.
+    /// Use `"false"` to rely solely on `exit` config.
+    /// Variables: `open` `high` `low` `close` `volume` `peak` `entry_price` + all indicators.
+    pub exit_expr: String,
 
-    /// Take-profit fraction of entry price, e.g. `0.10` = 10 % gain.
-    pub tp: Option<f64>,
+    // ── Exit / risk params ────────────────────────────────────────────────────
 
-    /// Stop-loss fraction of entry price, e.g. `0.05` = 5 % loss.
-    pub sl: Option<f64>,
+    /// Exit rules: `tp`, `sl` (fixed % or ATR expression), `max_bars`.
+    pub exit: Option<ExitConfig>,
 
-    /// Engine-level exit rules (stop-loss / trailing / max-bars) applied on top of the exit expression.
-    pub exit_config: Option<ExitConfig>,
+    /// Candle transform applied before evaluating expressions and indicators.
+    /// `"raw"` (default) · `"heiken_ashi"` · `"smooth_ha"`.
+    pub candle_type: Option<String>,
+
+    /// Smoothing period for `"smooth_ha"` candle type (default: 2).
+    pub ha_smooth: Option<usize>,
+
+    // ── Date range ────────────────────────────────────────────────────────────
 
     /// Date range start, inclusive.  Format: `"YYYY-MM-DD"`.
     pub from: Option<String>,
 
     /// Date range end, inclusive.  Format: `"YYYY-MM-DD"`.
     pub to: Option<String>,
+
+    // ── Engine params ─────────────────────────────────────────────────────────
 
     /// Starting capital in USD (default: 10 000).
     pub initial_capital: Option<f64>,
@@ -228,7 +370,19 @@ pub struct CelBacktestRequest {
     pub risk_free_annual: Option<f64>,
 
     /// Fraction of equity per trade (default: 0.95).
+    /// Ignored when `position_size_usd` or `position_size_quantity` is set.
     pub position_size_pct: Option<f64>,
+
+    /// Fixed dollar amount per trade (e.g. `500.0`).
+    /// Takes priority over `position_size_pct`.
+    pub position_size_usd: Option<f64>,
+
+    /// Fixed quantity per trade (e.g. `0.01` BTC, `100` shares).
+    /// Highest priority — overrides both `position_size_pct` and `position_size_usd`.
+    pub position_size_quantity: Option<f64>,
+
+    /// Maximum simultaneous open positions (default: 1).
+    pub max_positions: Option<usize>,
 
     /// Drop bars outside regular market hours.
     pub market_hours_only: Option<bool>,
@@ -239,6 +393,9 @@ pub struct CelBacktestRequest {
     /// Asset class — controls lot sizing.
     /// `"crypto"` → fractional qty (default). `"stock"` → whole shares. `"vn_stock"` → lots of 100.
     pub asset_type: Option<String>,
+
+    /// Timeframe subdirectory, e.g. `"H1"`, `"M1"`, `"D1"`. See `BacktestRequest.timeframe`.
+    pub timeframe: Option<String>,
 }
 
 // ── Dynamic backtest request ──────────────────────────────────────────────────
@@ -286,8 +443,8 @@ pub struct DynamicBacktestRequest {
     /// Exit condition tree.
     pub exit: serde_json::Value,
 
-    /// Engine-level exit rules applied on top of the condition tree.
-    pub exit_config: Option<ExitConfig>,
+    /// Exit rules: `tp`, `sl` (fixed % or ATR expression), `max_bars`.
+    pub exit_rules: Option<ExitConfig>,
 
     /// Date range start, inclusive.  Format: `"YYYY-MM-DD"`.
     pub from: Option<String>,
@@ -308,7 +465,19 @@ pub struct DynamicBacktestRequest {
     pub risk_free_annual: Option<f64>,
 
     /// Fraction of equity per trade (default: 0.95).
+    /// Ignored when `position_size_usd` or `position_size_quantity` is set.
     pub position_size_pct: Option<f64>,
+
+    /// Fixed dollar amount per trade (e.g. `500.0`).
+    /// Takes priority over `position_size_pct`.
+    pub position_size_usd: Option<f64>,
+
+    /// Fixed quantity per trade (e.g. `0.01` BTC, `100` shares).
+    /// Highest priority — overrides both `position_size_pct` and `position_size_usd`.
+    pub position_size_quantity: Option<f64>,
+
+    /// Maximum simultaneous open positions (default: 1).
+    pub max_positions: Option<usize>,
 
     /// Drop bars outside regular market hours.
     pub market_hours_only: Option<bool>,
@@ -319,6 +488,9 @@ pub struct DynamicBacktestRequest {
     /// Asset class — controls lot sizing.
     /// `"crypto"` → fractional qty (default). `"stock"` → whole shares. `"vn_stock"` → lots of 100.
     pub asset_type: Option<String>,
+
+    /// Timeframe subdirectory, e.g. `"H1"`, `"M1"`, `"D1"`. See `BacktestRequest.timeframe`.
+    pub timeframe: Option<String>,
 }
 
 // ── Data API ──────────────────────────────────────────────────────────────────
@@ -356,6 +528,8 @@ pub struct LatestQuery {
     pub market_hours_only: Option<bool>,
     /// Exchange for market-hours filtering: `"us"` (default) or `"vn"`.
     pub exchange: Option<String>,
+    /// Timeframe subdirectory, e.g. `"H1"`, `"M1"`, `"D1"`. See `BacktestRequest.timeframe`.
+    pub timeframe: Option<String>,
 }
 
 /// Query parameters for `GET /api/data/{symbol}`.
@@ -371,6 +545,87 @@ pub struct DataQuery {
     pub market_hours_only: Option<bool>,
     /// Exchange for market-hours filtering: `"us"` (default) or `"vn"`.
     pub exchange: Option<String>,
+    /// Timeframe subdirectory, e.g. `"H1"`, `"M1"`, `"D1"`. See `BacktestRequest.timeframe`.
+    pub timeframe: Option<String>,
+}
+
+// ── Unified data API ──────────────────────────────────────────────────────────
+
+/// Candle-section options inside `UnifiedDataRequest`.
+///
+/// Presence of this object signals that OHLCV bars should be included in the response.
+/// Absence means "skip bars" (indicator-only mode).
+///
+/// **`limit` semantics:**
+/// - with top-level `from`/`to` → first N bars of the range
+/// - without `from`/`to` → *last* N bars (equivalent to `GET /api/data/{symbol}/latest`)
+///
+/// **`candle_type`** is applied before indicators are computed, so both bars and
+/// indicator series in the response reflect the same candle transform.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct CandlesQuery {
+    /// Max bars to return. Without `from`/`to`, returns the *last* N bars.
+    pub limit: Option<usize>,
+
+    /// Candle transform applied to bars before indicators are computed.
+    /// `"raw"` (default) · `"heiken_ashi"` · `"smooth_ha"`
+    pub candle_type: Option<String>,
+
+    /// EMA smoothing period for `"smooth_ha"` (default: 2, minimum: 2).
+    pub ha_smooth: Option<usize>,
+}
+
+/// Candles section of `UnifiedDataResponse`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct CandlesResult {
+    /// Number of bars in this response (after limit).
+    pub count: usize,
+    pub bars: Vec<BarRecord>,
+}
+
+/// Request body for `POST /api/data/{symbol}` — unified OHLCV + indicator query.
+///
+/// Two independent sections control what is returned:
+/// - `candles` present → include OHLCV bars (with optional limit)
+/// - `indicators` present and non-empty → compute and include indicator series
+/// - both present → bars + series in one round-trip (chart init)
+/// - only `indicators` → indicator-only (caller already has bars)
+/// - only `candles` → bars-only (equivalent to `GET /api/data/{symbol}`)
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UnifiedDataRequest {
+    /// Date range start, inclusive.  Format: `"YYYY-MM-DD"`.
+    pub from: Option<String>,
+
+    /// Date range end, inclusive.  Format: `"YYYY-MM-DD"`.
+    pub to: Option<String>,
+
+    /// Timeframe subdirectory, e.g. `"H1"`, `"M1"`, `"D1"`. See `BacktestRequest.timeframe`.
+    pub timeframe: Option<String>,
+
+    /// Drop bars outside regular market hours (default: false).
+    pub market_hours_only: Option<bool>,
+
+    /// Exchange for market-hours filtering: `"us"` (default) or `"vn"`.
+    pub exchange: Option<String>,
+
+    /// Candle options. Presence = include OHLCV bars in response.
+    pub candles: Option<CandlesQuery>,
+
+    /// Indicators to compute over the loaded bars.
+    /// Presence with non-empty list = include indicator series in response.
+    pub indicators: Option<Vec<IndicatorConfig>>,
+}
+
+/// Response for `POST /api/data/{symbol}`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct UnifiedDataResponse {
+    pub symbol: String,
+    /// OHLCV bars — present when `candles` was requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candles: Option<CandlesResult>,
+    /// Indicator series keyed by label — present when `indicators` were requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub indicators: Option<HashMap<String, Vec<IndicatorPoint>>>,
 }
 
 // ── Indicator API ─────────────────────────────────────────────────────────────
@@ -395,6 +650,9 @@ pub struct IndicatorRequest {
 
     /// One or more indicators to compute.
     pub indicators: Vec<IndicatorConfig>,
+
+    /// Timeframe subdirectory, e.g. `"H1"`, `"M1"`, `"D1"`. See `BacktestRequest.timeframe`.
+    pub timeframe: Option<String>,
 }
 
 /// Single indicator specification.

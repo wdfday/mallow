@@ -1,5 +1,5 @@
 use crate::metrics;
-use alm_core::{portfolio::Portfolio, regime::RegimeSummary};
+use alm_core::{portfolio::Portfolio, regime::RegimeSummary, Timeframe};
 use serde::{Deserialize, Serialize};
 
 /// Full backtest result — trading metrics for strategy evaluation.
@@ -48,6 +48,9 @@ pub struct BacktestReport {
     pub rolling_sharpe: Vec<f64>,
     pub rolling_drawdown: Vec<f64>,
 
+    // Detected bar timeframe (from equity curve timestamps)
+    pub timeframe: Timeframe,
+
     // Regime summary (populated by Engine after run)
     pub regime_summary: Option<RegimeSummary>,
 }
@@ -81,11 +84,25 @@ impl BacktestReport {
             0.0
         };
 
-        let daily_returns = metrics::daily_returns(&equity);
-        let ann_vol = metrics::std_dev(&daily_returns) * (252_f64).sqrt() * 100.0;
+        // Detect timeframe from equity curve timestamps.
+        let timeframe = Timeframe::detect(
+            &portfolio.equity_curve.iter().map(|p| p.timestamp).collect::<Vec<_>>(),
+        );
 
-        let risk_free_daily = (1.0 + risk_free_annual).powf(1.0 / 252.0) - 1.0;
-        let (sharpe, sortino) = metrics::sharpe_sortino(&daily_returns, risk_free_daily);
+        // --- Annualization via daily returns -----------------------------------
+        // Aggregate the equity curve to one value per calendar day (last bar of day).
+        // Sharpe/Sortino are always expressed in daily units regardless of bar freq:
+        //   - M1 and H1 backtests become comparable
+        //   - Consecutive identical bars (no open position) don't inflate variance
+        // `days_per_year` is empirical (actual trading days / calendar years):
+        //   US stocks → ~252, crypto → ~365, both correct automatically.
+        let (daily_equity, days_per_year) = aggregate_to_daily(portfolio);
+        let daily_returns = metrics::bar_returns(&daily_equity);
+
+        let ann_vol = metrics::std_dev(&daily_returns) * days_per_year.sqrt() * 100.0;
+
+        let risk_free_daily = (1.0 + risk_free_annual).powf(1.0 / days_per_year) - 1.0;
+        let (sharpe_raw, sortino_raw) = metrics::sharpe_sortino(&daily_returns, risk_free_daily, days_per_year);
 
         let (max_dd, max_dd_bars, avg_dd) = metrics::drawdown_stats(&equity);
         let calmar = if max_dd.abs() > f64::EPSILON {
@@ -97,6 +114,12 @@ impl BacktestReport {
         let trades = &portfolio.trades;
         let total_trades = trades.len();
 
+        // Guard: ratio metrics are meaningless (and noisy) with no trades.
+        // e.g. flat equity + positive risk-free → negative mean excess → negative Sortino.
+        let no_trades = total_trades == 0;
+        let sharpe  = if no_trades { 0.0 } else { sharpe_raw };
+        let sortino = if no_trades { 0.0 } else { sortino_raw };
+
         let (win_rate, pf, expectancy, avg_win, avg_loss) = metrics::trade_stats(trades);
         let avg_duration = if total_trades > 0 {
             trades.iter().map(|t| t.duration_hours()).sum::<f64>() / total_trades as f64
@@ -105,14 +128,15 @@ impl BacktestReport {
         };
         let max_consec_losses = metrics::max_consecutive_losses(trades);
 
-        // Advanced risk metrics
+        // Advanced risk metrics — also daily-basis for consistency
         let (var_95, cvar_95) = metrics::var_cvar_95(&daily_returns);
         let omega = metrics::omega_ratio(&daily_returns, 0.0);
         let tail = metrics::tail_ratio(&daily_returns);
         let recovery = metrics::recovery_factor(total_return / 100.0, max_dd);
 
-        // Rolling metrics (window = 30 bars)
-        let rolling_sharpe = metrics::rolling_sharpe(&equity, 30);
+        // Rolling Sharpe uses bar-level granularity (visual sparkline).
+        // ann_factor = days_per_year keeps the scale consistent with headline Sharpe.
+        let rolling_sharpe = metrics::rolling_sharpe(&equity, 30, days_per_year);
         let rolling_drawdown = metrics::rolling_drawdown(&equity);
 
         Self {
@@ -144,9 +168,54 @@ impl BacktestReport {
             recovery_factor: recovery,
             rolling_sharpe,
             rolling_drawdown,
+            timeframe,
             regime_summary: None, // populated by Engine after run()
         }
     }
+}
+
+/// Collapse the equity curve to one value per calendar day (last bar of each day),
+/// and return the daily-equity series alongside an empirical `days_per_year`.
+///
+/// `days_per_year` = actual trading days observed / elapsed calendar years:
+///   - US stocks → ~252 (weekdays only)
+///   - Crypto    → ~365 (24/7)
+///   - Both correct without any hardcoded constant
+///
+/// Using daily returns as the base unit for Sharpe/Sortino:
+///   1. Makes M1 and H1 backtests directly comparable
+///   2. Avoids the variance inflation from consecutive zero-return bars
+///      (equity unchanged while no position is open)
+fn aggregate_to_daily(portfolio: &Portfolio) -> (Vec<f64>, f64) {
+    use std::collections::BTreeMap;
+
+    if portfolio.equity_curve.is_empty() {
+        return (vec![], 252.0);
+    }
+
+    // Key = calendar day (ms → day index), value = last equity of that day.
+    let mut days: BTreeMap<i64, f64> = BTreeMap::new();
+    for p in &portfolio.equity_curve {
+        let day = p.timestamp / 86_400_000;
+        days.insert(day, p.equity);
+    }
+
+    let daily_equity: Vec<f64> = days.values().copied().collect();
+    let n = daily_equity.len();
+    if n < 2 {
+        return (daily_equity, 252.0);
+    }
+
+    let first_day = *days.keys().next().unwrap() as f64;
+    let last_day  = *days.keys().last().unwrap() as f64;
+    let elapsed_years = (last_day - first_day) / 365.25;  // day index units
+    let days_per_year = if elapsed_years > 1e-6 {
+        (n - 1) as f64 / elapsed_years
+    } else {
+        252.0
+    };
+
+    (daily_equity, days_per_year)
 }
 
 #[cfg(test)]

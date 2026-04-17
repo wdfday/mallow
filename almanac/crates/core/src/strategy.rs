@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use crate::{bar::Bar, portfolio::{Portfolio, PortfolioSnapshot}, regime::RegimeState, signal::Signal};
 
 /// Core strategy interface.
@@ -49,6 +50,16 @@ pub trait Strategy: Send {
     /// }
     /// ```
     fn on_regime(&mut self, _regime: &RegimeState) {}
+
+    /// Drain and return all collected indicator series since the last call (or since construction).
+    ///
+    /// Keys: `"ema_9"`, `"rsi_14"` for CEL; `"rsi14.value"`, `"macd.histogram"` for Dynamic.
+    /// Values: chronological `(timestamp_ms, value)` pairs — one per bar after warmup.
+    ///
+    /// Default returns empty — only CEL and Dynamic strategies populate this.
+    fn take_indicator_series(&mut self) -> HashMap<String, Vec<(i64, f64)>> {
+        HashMap::new()
+    }
 }
 
 /// Blanket impl so `Box<dyn Strategy>` can be used as a concrete `Strategy`.
@@ -70,6 +81,9 @@ impl Strategy for Box<dyn Strategy> {
     }
     fn on_regime(&mut self, regime: &RegimeState) {
         (**self).on_regime(regime)
+    }
+    fn take_indicator_series(&mut self) -> HashMap<String, Vec<(i64, f64)>> {
+        (**self).take_indicator_series()
     }
 }
 

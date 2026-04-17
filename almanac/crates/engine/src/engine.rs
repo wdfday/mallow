@@ -199,7 +199,6 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
     /// let engine = Engine::sync(10_000.0, strategy, risk, 0.001, 0.0005)
     ///     .with_exit_rules(ExitRules {
     ///         stop_loss_pct: Some(0.05),
-    ///         trailing_stop_pct: Some(0.02),
     ///         ..Default::default()
     ///     });
     /// ```

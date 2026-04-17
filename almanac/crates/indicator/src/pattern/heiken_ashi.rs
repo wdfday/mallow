@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn test_ha_smooth_requires_warmup() {
-        // Due to cascading ? (ema_open→ema_high→ema_low→ema_close), smooth=3 needs
+        // Due to cascading ? (ema_open → ema_high → ema_low → ema_close), smooth=3 needs
         // 3 + 2 + 2 + 2 = 9 bars before first value. Verify it eventually produces one.
         let mut ha = HeikenAshi::new(3);
         let mut got = false;

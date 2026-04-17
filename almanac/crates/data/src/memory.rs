@@ -1,20 +1,25 @@
 use crate::feed::BarFeed;
-use alm_core::Bar;
+use alm_core::{Bar, Timeframe};
 
 /// In-memory bar feed for batch optimization (avoids repeated Parquet IO).
 pub struct InMemoryFeed {
     bars: Vec<Bar>,
     cursor: usize,
     symbol: String,
+    timeframe: Timeframe,
 }
 
 impl InMemoryFeed {
     pub fn new(bars: Vec<Bar>, symbol: String) -> Self {
-        Self {
-            bars,
-            cursor: 0,
-            symbol,
-        }
+        let timeframe = Timeframe::detect(
+            &bars.iter().map(|b| b.timestamp).collect::<Vec<_>>(),
+        );
+        Self { bars, cursor: 0, symbol, timeframe }
+    }
+
+    /// Create with an explicit timeframe (skip auto-detection).
+    pub fn with_timeframe(bars: Vec<Bar>, symbol: String, timeframe: Timeframe) -> Self {
+        Self { bars, cursor: 0, symbol, timeframe }
     }
 }
 
@@ -28,13 +33,8 @@ impl BarFeed for InMemoryFeed {
             None
         }
     }
-    fn symbol(&self) -> &str {
-        &self.symbol
-    }
-    fn len(&self) -> usize {
-        self.bars.len()
-    }
-    fn reset(&mut self) {
-        self.cursor = 0;
-    }
+    fn symbol(&self)    -> &str      { &self.symbol }
+    fn len(&self)       -> usize     { self.bars.len() }
+    fn reset(&mut self)              { self.cursor = 0; }
+    fn timeframe(&self) -> Timeframe { self.timeframe }
 }

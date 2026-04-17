@@ -189,6 +189,134 @@ impl RiskManager for EqualWeight {
     }
 }
 
+/// Fixed-USD position sizing: allocates a fixed dollar amount per trade.
+///
+/// `qty = amount_usd / price`
+///
+/// Useful when you want every position to represent the same notional value
+/// regardless of current equity (e.g. "always put $500 per trade").
+pub struct FixedUsd {
+    /// Dollar amount to allocate per trade.
+    pub amount_usd: f64,
+    /// Maximum simultaneous open positions.
+    pub max_positions: usize,
+    /// Minimum tradeable lot.  `0.0` → fractional.  `1.0` → whole shares.  `100.0` → HOSE.
+    pub lot_size: f64,
+}
+
+impl FixedUsd {
+    pub fn new(amount_usd: f64, max_positions: usize) -> Self {
+        Self { amount_usd, max_positions, lot_size: 0.0 }
+    }
+
+    pub fn with_lot_size(mut self, lot_size: f64) -> Self {
+        self.lot_size = lot_size;
+        self
+    }
+}
+
+impl RiskManager for FixedUsd {
+    fn validate(&self, signal: &Signal, portfolio: &Portfolio) -> bool {
+        if signal.direction == Direction::Close { return true; }
+        if let Some(pos) = portfolio.positions.get(&signal.symbol) {
+            let same_dir = matches!(
+                (signal.direction, pos.is_long()),
+                (Direction::Long, true) | (Direction::Short, false)
+            ) && pos.qty.abs() > f64::EPSILON;
+            if same_dir { return false; }
+        }
+        // Also reject if we don't have enough cash for the fixed amount
+        if portfolio.cash < self.amount_usd { return false; }
+        portfolio.positions.len() < self.max_positions
+    }
+
+    fn size(&self, _signal: &Signal, _portfolio: &Portfolio, price: f64) -> f64 {
+        if price <= f64::EPSILON { return 0.0; }
+        let raw = self.amount_usd / price;
+        if self.lot_size > f64::EPSILON {
+            (raw / self.lot_size).floor() * self.lot_size
+        } else {
+            raw
+        }
+    }
+}
+
+/// Fixed-quantity position sizing: always trades exactly `qty` units.
+///
+/// Useful for strategies where lot size is fixed by convention (e.g. "always trade
+/// 1 BTC" or "always trade 100 shares").  Signal strength is ignored.
+pub struct FixedQuantity {
+    /// Number of units to buy/sell per trade.
+    pub qty: f64,
+    /// Maximum simultaneous open positions.
+    pub max_positions: usize,
+}
+
+impl FixedQuantity {
+    pub fn new(qty: f64, max_positions: usize) -> Self {
+        Self { qty, max_positions }
+    }
+}
+
+impl RiskManager for FixedQuantity {
+    fn validate(&self, signal: &Signal, portfolio: &Portfolio) -> bool {
+        if signal.direction == Direction::Close { return true; }
+        if let Some(pos) = portfolio.positions.get(&signal.symbol) {
+            let same_dir = matches!(
+                (signal.direction, pos.is_long()),
+                (Direction::Long, true) | (Direction::Short, false)
+            ) && pos.qty.abs() > f64::EPSILON;
+            if same_dir { return false; }
+        }
+        portfolio.positions.len() < self.max_positions
+    }
+
+    fn size(&self, _signal: &Signal, _portfolio: &Portfolio, _price: f64) -> f64 {
+        self.qty
+    }
+}
+
+/// Runtime-selectable sizer — wraps all sizing strategies behind one concrete type.
+///
+/// Allows `backtest::run()` to choose the sizer at runtime based on request fields
+/// without boxing or trait objects.
+pub enum AnySizer {
+    FixedFractional(FixedFractional),
+    FixedUsd(FixedUsd),
+    FixedQuantity(FixedQuantity),
+    EqualWeight(EqualWeight),
+}
+
+impl RiskManager for AnySizer {
+    fn validate(&self, signal: &Signal, portfolio: &Portfolio) -> bool {
+        match self {
+            Self::FixedFractional(s) => s.validate(signal, portfolio),
+            Self::FixedUsd(s)        => s.validate(signal, portfolio),
+            Self::FixedQuantity(s)   => s.validate(signal, portfolio),
+            Self::EqualWeight(s)     => s.validate(signal, portfolio),
+        }
+    }
+
+    fn size(&self, signal: &Signal, portfolio: &Portfolio, price: f64) -> f64 {
+        match self {
+            Self::FixedFractional(s) => s.size(signal, portfolio, price),
+            Self::FixedUsd(s)        => s.size(signal, portfolio, price),
+            Self::FixedQuantity(s)   => s.size(signal, portfolio, price),
+            Self::EqualWeight(s)     => s.size(signal, portfolio, price),
+        }
+    }
+
+    fn on_bar(&mut self, bar: &Bar) {
+        match self {
+            Self::FixedFractional(_) => {},
+            Self::FixedUsd(_)        => {},
+            Self::FixedQuantity(_)   => {},
+            Self::EqualWeight(_)     => {},
+        }
+        let _ = bar;
+    }
+}
+
 /// Kelly criterion position sizing.
 ///
 /// Uses historical trade statistics from the portfolio to compute the Kelly fraction.

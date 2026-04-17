@@ -37,12 +37,20 @@ impl BuyHoldBenchmark {
 
         // Equity curve = initial * (close / first_close) at each bar
         let equity: Vec<f64> = closes.iter().map(|c| c / first).collect();
-        let bar_returns = metrics::daily_returns(&equity);
-        let ann_vol = metrics::std_dev(&bar_returns) * (252_f64).sqrt() * 100.0;
+        let bar_returns = metrics::bar_returns(&equity);
 
-        let rf_daily = (1.0 + risk_free_annual).powf(1.0 / 252.0) - 1.0;
-        let sharpe = metrics::sharpe_ratio(&bar_returns, rf_daily);
-        let sortino = metrics::sortino_ratio(&bar_returns, rf_daily);
+        // Annualization factor: empirical bars-per-year from timestamps
+        let bars_per_year = if duration_years > 1e-9 {
+            (n - 1) as f64 / duration_years
+        } else {
+            252.0
+        };
+
+        let ann_vol = metrics::std_dev(&bar_returns) * bars_per_year.sqrt() * 100.0;
+
+        let rf_per_bar = (1.0 + risk_free_annual).powf(1.0 / bars_per_year) - 1.0;
+        let sharpe  = metrics::sharpe_ratio(&bar_returns, rf_per_bar, bars_per_year);
+        let sortino = metrics::sortino_ratio(&bar_returns, rf_per_bar, bars_per_year);
 
         let (max_dd, max_dd_bars, _) = metrics::drawdown_stats(&equity);
 

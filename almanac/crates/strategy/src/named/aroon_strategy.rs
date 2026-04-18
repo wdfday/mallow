@@ -64,6 +64,7 @@ mod tests {
     use alm_core::signal::Direction;
     use serde_json::json;
     use crate::factory::build_strategy;
+    use crate::test_utils::*;
 
     fn bar(ts: i64, h: f64, l: f64) -> Bar {
         Bar::new(ts, "T", h, h, l, (h + l) / 2.0, 1000.0)
@@ -145,5 +146,45 @@ mod tests {
         hc.reset();
         let r2 = run(&mut hc, &bars);
         assert_eq!(r1, r2, "reset parity failed");
+    }
+
+    #[test]
+    fn aroon_trend_parity() {
+        let bars = trending_bars(300);
+
+        // 1. hardcoded (period=25, bull=70, bear=30)
+        let mut hc = AroonTrend::new(25, 70.0, 30.0);
+        let hc_sigs = run(&mut hc, &bars);
+
+        // 2. dynamic JSON — entry: up>70 AND down<30; exit: up<down (plain lt, no cross)
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": { "aroon": { "type": "aroon", "period": 25 } },
+            "entry": {
+                "logic": "and",
+                "rules": [
+                    { "source": "aroon", "field": "up",   "op": "gt", "value": 70.0 },
+                    { "source": "aroon", "field": "down",  "op": "lt", "value": 30.0 }
+                ]
+            },
+            "exit": {
+                "logic": "and",
+                "rules": [
+                    { "source": "aroon", "field": "up", "op": "lt",
+                      "compare": "aroon", "compare_field": "down" }
+                ]
+            }
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        // 3. CEL
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "aroon_up(25) > 70.0 && aroon_down(25) < 30.0",
+            "exit":  "aroon_up(25) < aroon_down(25)"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "aroon_trend: hardcoded produced no signals");
+        assert_parity("aroon hardcoded vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("aroon hardcoded vs cel",     &hc_sigs, &cel_sigs);
     }
 }

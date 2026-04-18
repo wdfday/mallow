@@ -186,3 +186,42 @@ impl Strategy for KeltnerBreakout {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn keltner_breakout_parity() {
+        let bars = trending_bars(300);
+
+        let mut hc = build_strategy("keltner_breakout", &json!({})).unwrap();
+        let hc_sigs = run(hc.as_mut(), &bars);
+
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": { "kc": { "type": "keltner", "period": 20, "atr_period": 10, "multiplier": 2.0 } },
+            "entry": { "logic": "and", "rules": [
+                { "source": "close", "field": "value", "op": "gt",
+                  "compare": "kc", "compare_field": "upper" }
+            ]},
+            "exit": { "logic": "and", "rules": [
+                { "source": "close", "field": "value", "op": "lt",
+                  "compare": "kc", "compare_field": "middle" }
+            ]}
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "close > keltner_upper(20)",
+            "exit":  "close < keltner_mid(20)"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "keltner_breakout: no signals");
+        assert_parity("keltner_breakout hc vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("keltner_breakout hc vs cel",     &hc_sigs, &cel_sigs);
+    }
+}

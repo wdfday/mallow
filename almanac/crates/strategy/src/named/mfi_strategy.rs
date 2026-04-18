@@ -118,3 +118,74 @@ impl Strategy for MfiRevert {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn mfi_trend_parity() {
+        let bars = trending_bars(200);
+
+        // 1. hardcoded (bull_threshold=50, bear_threshold=40)
+        let mut hc = MfiTrend::new(14, 50.0, 40.0);
+        let hc_sigs = run(&mut hc, &bars);
+
+        // 2. dynamic JSON — entry: cross_above 50; exit: lt 40
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": { "mfi": { "type": "mfi", "period": 14 } },
+            "entry": {
+                "logic": "and",
+                "rules": [{ "source": "mfi", "field": "value", "op": "cross_above", "value": 50.0 }]
+            },
+            "exit": {
+                "logic": "and",
+                "rules": [{ "source": "mfi", "field": "value", "op": "lt", "value": 40.0 }]
+            }
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        // 3. CEL
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "prev_mfi(14) <= 50.0 && mfi(14) > 50.0",
+            "exit":  "mfi(14) < 40.0"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "mfi_trend: hardcoded produced no signals");
+        assert_parity("mfi hardcoded vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("mfi hardcoded vs cel",     &hc_sigs, &cel_sigs);
+    }
+
+    #[test]
+    fn mfi_revert_parity() {
+        let bars = rsi_bars(200);
+
+        let mut hc = MfiRevert::new(14, 20.0, 80.0);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": { "mfi": { "type": "mfi", "period": 14 } },
+            "entry": { "logic": "and", "rules": [
+                { "source": "mfi", "field": "value", "op": "cross_above", "value": 20.0 }
+            ]},
+            "exit": { "logic": "and", "rules": [
+                { "source": "mfi", "field": "value", "op": "cross_above", "value": 80.0 }
+            ]}
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "prev_mfi(14) <= 20.0 && mfi(14) > 20.0",
+            "exit":  "prev_mfi(14) <= 80.0 && mfi(14) > 80.0"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "mfi_revert: no signals");
+        assert_parity("mfi_revert hc vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("mfi_revert hc vs cel",     &hc_sigs, &cel_sigs);
+    }
+}

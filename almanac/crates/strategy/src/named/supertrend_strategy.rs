@@ -126,3 +126,71 @@ impl Strategy for SupertrendMacd {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn supertrend_macd_parity() {
+        let bars = trending_bars(300);
+
+        let mut hc = SupertrendMacd::new(10, 3.0, 12, 26, 9);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": {
+                "st":   { "type": "supertrend", "period": 10, "multiplier": 3.0 },
+                "macd": { "type": "macd", "fast": 12, "slow": 26, "signal": 9 }
+            },
+            "entry": { "logic": "and", "rules": [
+                { "source": "st",   "field": "bullish",   "op": "gt", "value": 0.5 },
+                { "source": "macd", "field": "histogram", "op": "gt", "value": 0.0 }
+            ]},
+            "exit": { "logic": "and", "rules": [
+                { "source": "st", "field": "bullish", "op": "lt", "value": 0.5 }
+            ]}
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "st_bull(10) >= 1.0 && macd_hist(12) > 0.0",
+            "exit":  "st_bull(10) < 1.0"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "supertrend_macd: no signals");
+        assert_parity("supertrend_macd hc vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("supertrend_macd hc vs cel",     &hc_sigs, &cel_sigs);
+    }
+
+    #[test]
+    fn supertrend_dyn_cel_parity() {
+        let bars = trending_bars(300);
+
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": { "st": { "type": "supertrend", "period": 10, "multiplier": 3.0 } },
+            "entry": {
+                "logic": "and",
+                "rules": [{ "source": "st", "field": "bullish", "op": "cross_above", "value": 0.5 }]
+            },
+            "exit": {
+                "logic": "and",
+                "rules": [{ "source": "st", "field": "bullish", "op": "cross_below", "value": 0.5 }]
+            }
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "prev_st_bull(10) < 1.0 && st_bull(10) >= 1.0",
+            "exit":  "prev_st_bull(10) >= 1.0 && st_bull(10) < 1.0"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!dyn_sigs.is_empty(), "supertrend: dynamic produced no signals");
+        assert_parity("supertrend dynamic vs cel", &dyn_sigs, &cel_sigs);
+    }
+}

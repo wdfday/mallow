@@ -66,3 +66,40 @@ impl Strategy for UoReversal {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn uo_reversal_parity() {
+        let bars = rsi_bars(200);
+
+        let mut hc = UoReversal::new(7, 14, 28, 30.0, 70.0);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": { "uo": { "type": "uo", "fast": 7, "medium": 14, "slow": 28 } },
+            "entry": { "logic": "and", "rules": [
+                { "source": "uo", "field": "value", "op": "cross_above", "value": 30.0 }
+            ]},
+            "exit": { "logic": "and", "rules": [
+                { "source": "uo", "field": "value", "op": "gt", "value": 70.0 }
+            ]}
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "prev_uo() <= 30.0 && uo() > 30.0",
+            "exit":  "uo() > 70.0"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "uo_reversal: no signals");
+        assert_parity("uo_reversal hc vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("uo_reversal hc vs cel",     &hc_sigs, &cel_sigs);
+    }
+}

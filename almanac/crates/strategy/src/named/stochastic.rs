@@ -86,6 +86,7 @@ mod tests {
     use alm_core::signal::Direction;
     use serde_json::json;
     use crate::factory::build_strategy;
+    use crate::test_utils::*;
 
     fn bar(ts: i64, close: f64) -> Bar {
         Bar::new(ts, "T", close * 1.005, close * 1.005, close * 0.995, close, 1000.0)
@@ -169,5 +170,47 @@ mod tests {
         hc.reset();
         let r2 = run(&mut hc, &bars);
         assert_eq!(r1, r2, "reset parity failed");
+    }
+
+    #[test]
+    fn stochastic_crossover_parity() {
+        let bars = rsi_bars(150);
+
+        // 1. hardcoded (k=14, d=3, oversold=20, overbought=80)
+        let mut hc = StochasticCrossover::new(14, 3, 20.0, 80.0);
+        let hc_sigs = run(&mut hc, &bars);
+
+        // 2. dynamic JSON — K cross_above D while D<20; exit K cross_below D while D>80
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": { "stoch": { "type": "stochastic", "k_period": 14, "d_period": 3 } },
+            "entry": {
+                "logic": "and",
+                "rules": [
+                    { "source": "stoch", "field": "k", "op": "cross_above",
+                      "compare": "stoch", "compare_field": "d" },
+                    { "source": "stoch", "field": "d", "op": "lt", "value": 20.0 }
+                ]
+            },
+            "exit": {
+                "logic": "and",
+                "rules": [
+                    { "source": "stoch", "field": "k", "op": "cross_below",
+                      "compare": "stoch", "compare_field": "d" },
+                    { "source": "stoch", "field": "d", "op": "gt", "value": 80.0 }
+                ]
+            }
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        // 3. CEL
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "prev_stoch_k(14) <= prev_stoch_d(14) && stoch_k(14) > stoch_d(14) && stoch_d(14) < 20.0",
+            "exit":  "prev_stoch_k(14) >= prev_stoch_d(14) && stoch_k(14) < stoch_d(14) && stoch_d(14) > 80.0"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "stochastic_crossover: hardcoded produced no signals");
+        assert_parity("stoch hardcoded vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("stoch hardcoded vs cel",     &hc_sigs, &cel_sigs);
     }
 }

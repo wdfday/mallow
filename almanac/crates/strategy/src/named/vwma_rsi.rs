@@ -61,3 +61,45 @@ impl Strategy for VwmaRsi {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn vwma_rsi_parity() {
+        let bars = trending_bars(300);
+
+        let mut hc = VwmaRsi::new(20, 14, 50.0, 45.0);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": {
+                "vwma": { "type": "vwma", "period": 20 },
+                "rsi":  { "type": "rsi",  "period": 14 }
+            },
+            "entry": { "logic": "and", "rules": [
+                { "source": "close", "field": "value", "op": "gt", "compare": "vwma" },
+                { "source": "rsi",   "field": "value", "op": "gt", "value": 50.0 }
+            ]},
+            "exit": { "logic": "or", "rules": [
+                { "source": "close", "field": "value", "op": "lt", "compare": "vwma" },
+                { "source": "rsi",   "field": "value", "op": "lt", "value": 45.0 }
+            ]}
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "close > vwma(20) && rsi(14) > 50.0",
+            "exit":  "close < vwma(20) || rsi(14) < 45.0"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "vwma_rsi: no signals");
+        assert_parity("vwma_rsi hc vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("vwma_rsi hc vs cel",     &hc_sigs, &cel_sigs);
+    }
+}

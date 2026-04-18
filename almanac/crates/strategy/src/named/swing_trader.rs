@@ -71,3 +71,44 @@ impl Strategy for SwingTrader {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn swing_trader_parity() {
+        let bars = trending_bars(300);
+
+        let mut hc = SwingTrader::new(20, 14, 25.0);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": {
+                "cci": { "type": "cci", "period": 20 },
+                "adx": { "type": "adx", "period": 14 }
+            },
+            "entry": { "logic": "and", "rules": [
+                { "source": "cci", "field": "value", "op": "cross_above", "value": 100.0 },
+                { "source": "adx", "field": "adx",   "op": "gt", "value": 25.0 }
+            ]},
+            "exit": { "logic": "and", "rules": [
+                { "source": "cci", "field": "value", "op": "cross_below", "value": -100.0 }
+            ]}
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "prev_cci(20) <= 100.0 && cci(20) > 100.0 && adx(14) > 25.0",
+            "exit":  "prev_cci(20) >= -100.0 && cci(20) < -100.0"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "swing_trader: no signals");
+        assert_parity("swing_trader hc vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("swing_trader hc vs cel",     &hc_sigs, &cel_sigs);
+    }
+}

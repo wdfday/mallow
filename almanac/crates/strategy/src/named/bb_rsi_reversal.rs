@@ -67,3 +67,47 @@ impl Strategy for BbRsiReversal {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn bb_rsi_reversal_parity() {
+        let bars = bb_rsi_bars();
+
+        let mut hc = BbRsiReversal::new(20, 2.0, 14, 35.0, 65.0);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": {
+                "bb":  { "type": "bbands", "period": 20, "multiplier": 2.0 },
+                "rsi": { "type": "rsi",    "period": 14 }
+            },
+            "entry": { "logic": "and", "rules": [
+                { "source": "close", "field": "value", "op": "lt",
+                  "compare": "bb", "compare_field": "lower" },
+                { "source": "rsi", "field": "value", "op": "lt", "value": 35.0 }
+            ]},
+            "exit": { "logic": "or", "rules": [
+                { "source": "close", "field": "value", "op": "gt",
+                  "compare": "bb", "compare_field": "middle" },
+                { "source": "rsi", "field": "value", "op": "gt", "value": 65.0 }
+            ]}
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "close < bb_lower(20) && rsi(14) < 35.0",
+            "exit":  "close > bb_mid(20) || rsi(14) > 65.0"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "bb_rsi_reversal: no signals");
+        assert_parity("bb_rsi_reversal hc vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("bb_rsi_reversal hc vs cel",     &hc_sigs, &cel_sigs);
+    }
+}

@@ -80,6 +80,9 @@ impl Strategy for MaCrossover {
 mod tests {
     use super::*;
     use alm_core::bar::Bar;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
 
     fn bar(ts: i64, close: f64) -> Bar {
         Bar::new(ts, "TEST", close, close + 1.0, close - 1.0, close, 1000.0)
@@ -128,5 +131,52 @@ mod tests {
         // After reset, no signals until re-warmed
         let s = strat.on_bar(&bar(100, 200.0));
         assert!(s.is_empty());
+    }
+
+    #[test]
+    fn ma_crossover_parity() {
+        let bars = trending_bars(300);
+
+        // 1. hardcoded (fast=20, slow=50, both EMA)
+        let mut hc = MaCrossover::new(20, 50);
+        let hc_sigs = run(&mut hc, &bars);
+
+        // 2. dynamic JSON
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": {
+                "fast": { "type": "ema", "period": 20 },
+                "slow": { "type": "ema", "period": 50 }
+            },
+            "entry": {
+                "logic": "and",
+                "rules": [{
+                    "source": "fast", "field": "value",
+                    "op": "cross_above",
+                    "compare": "slow", "compare_field": "value"
+                }]
+            },
+            "exit": {
+                "logic": "and",
+                "rules": [{
+                    "source": "fast", "field": "value",
+                    "op": "cross_below",
+                    "compare": "slow", "compare_field": "value"
+                }]
+            }
+        }))
+        .unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        // 3. CEL with prev_
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "prev_ema(20) <= prev_ema(50) && ema(20) > ema(50)",
+            "exit":  "prev_ema(20) >= prev_ema(50) && ema(20) < ema(50)"
+        }))
+        .unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "ma_crossover: hardcoded produced no signals");
+        assert_parity("ma hardcoded vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("ma hardcoded vs cel",     &hc_sigs, &cel_sigs);
     }
 }

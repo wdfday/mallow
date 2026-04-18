@@ -72,3 +72,28 @@ impl Strategy for ElderRayStrategy {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn elder_ray_parity() {
+        let bars = elder_ray_bars();
+
+        let mut hc = ElderRayStrategy::new(13);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "ema(13) > prev_ema(13) && bear_power(13) < 0.0 && bear_power(13) > prev_bear_power(13)",
+            "exit":  "prev_bull_power(13) >= 0.0 && bull_power(13) < 0.0"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "elder_ray: no signals");
+        assert_parity("elder_ray hc vs cel", &hc_sigs, &cel_sigs);
+    }
+}

@@ -75,3 +75,47 @@ impl Strategy for ReversalCatcher {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn reversal_catcher_parity() {
+        let bars = rsi_bars(200);
+
+        let mut hc = ReversalCatcher::new(14, 3, 14);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": {
+                "stoch": { "type": "stochastic", "k_period": 14, "d_period": 3 },
+                "rsi":   { "type": "rsi", "period": 14 }
+            },
+            "entry": { "logic": "and", "rules": [
+                { "source": "stoch", "field": "k", "op": "cross_above",
+                  "compare": "stoch", "compare_field": "d" },
+                { "source": "rsi", "field": "value", "op": "lt", "value": 50.0 }
+            ]},
+            "exit": { "logic": "or", "rules": [
+                { "source": "stoch", "field": "k", "op": "cross_below",
+                  "compare": "stoch", "compare_field": "d" },
+                { "source": "rsi", "field": "value", "op": "gt", "value": 70.0 }
+            ]}
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "prev_stoch_k(14) <= prev_stoch_d(14) && stoch_k(14) > stoch_d(14) && rsi(14) < 50.0",
+            "exit":  "(prev_stoch_k(14) >= prev_stoch_d(14) && stoch_k(14) < stoch_d(14)) || rsi(14) > 70.0"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "reversal_catcher: no signals");
+        assert_parity("reversal_catcher hc vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("reversal_catcher hc vs cel",     &hc_sigs, &cel_sigs);
+    }
+}

@@ -1,3 +1,5 @@
+mod bench_utils;
+
 //! Benchmark: CelStrategy vs DynamicStrategy vs hardcoded struct.
 //!
 //! Tách rõ 2 phần:
@@ -15,15 +17,7 @@ use serde_json::json;
 
 // ── Synthetic data ────────────────────────────────────────────────────────────
 
-fn make_bars(n: usize) -> Vec<Bar> {
-    (0..n)
-        .map(|i| {
-            let t = i as f64;
-            let price = 100.0 + 30.0 * (t * 0.05).sin();
-            Bar::new(i as i64 * 60_000, "TEST", price, price * 1.005, price * 0.995, price, 1_000.0 + t)
-        })
-        .collect()
-}
+use bench_utils::make_bars;
 
 fn run_all(s: &mut dyn Strategy, bars: &[Bar]) -> usize {
     bars.iter().map(|b| s.on_bar(black_box(b)).len()).sum()

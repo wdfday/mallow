@@ -65,3 +65,42 @@ impl Strategy for FisherCrossover {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn fisher_crossover_parity() {
+        let bars = trending_bars(300);
+
+        let mut hc = FisherCrossover::new(10);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": { "f": { "type": "fisher", "period": 10 } },
+            "entry": { "logic": "and", "rules": [
+                { "source": "f", "field": "fisher", "op": "cross_above",
+                  "compare": "f", "compare_field": "signal" }
+            ]},
+            "exit": { "logic": "and", "rules": [
+                { "source": "f", "field": "fisher", "op": "cross_below",
+                  "compare": "f", "compare_field": "signal" }
+            ]}
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "prev_fisher_line(10) <= prev_fisher_sig(10) && fisher_line(10) > fisher_sig(10)",
+            "exit":  "prev_fisher_line(10) >= prev_fisher_sig(10) && fisher_line(10) < fisher_sig(10)"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "fisher_crossover: no signals");
+        assert_parity("fisher_crossover hc vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("fisher_crossover hc vs cel",     &hc_sigs, &cel_sigs);
+    }
+}

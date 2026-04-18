@@ -76,3 +76,28 @@ impl Strategy for OscillatorOverlord {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn oscillator_overlord_parity() {
+        let bars = rsi_bars(200);
+
+        let mut hc = OscillatorOverlord::new(14, 14, 3, 20);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "(rsi(14) < 30.0 && stoch_k(14) < 20.0) || (rsi(14) < 30.0 && cci(20) < -100.0) || (stoch_k(14) < 20.0 && cci(20) < -100.0)",
+            "exit":  "(rsi(14) > 70.0 && stoch_k(14) > 80.0) || (rsi(14) > 70.0 && cci(20) > 100.0) || (stoch_k(14) > 80.0 && cci(20) > 100.0)"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "oscillator_overlord: no signals");
+        assert_parity("oscillator_overlord hc vs cel", &hc_sigs, &cel_sigs);
+    }
+}

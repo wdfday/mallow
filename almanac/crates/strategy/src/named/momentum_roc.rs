@@ -121,3 +121,79 @@ impl Strategy for DualMomentum {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn momentum_roc_parity() {
+        let bars = trending_bars(300);
+
+        let mut hc = MomentumRoc::new(10, 50, 2.0, 0.0);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": {
+                "roc": { "type": "roc", "period": 10 },
+                "ema": { "type": "ema", "period": 50 }
+            },
+            "entry": { "logic": "and", "rules": [
+                { "source": "roc",   "field": "value", "op": "gt", "value": 2.0 },
+                { "source": "close", "field": "value", "op": "gt", "compare": "ema" }
+            ]},
+            "exit": { "logic": "or", "rules": [
+                { "source": "roc",   "field": "value", "op": "lt", "value": 0.0 },
+                { "source": "close", "field": "value", "op": "lt", "compare": "ema" }
+            ]}
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "roc(10) > 2.0 && close > ema(50)",
+            "exit":  "roc(10) < 0.0 || close < ema(50)"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "momentum_roc: no signals");
+        assert_parity("momentum_roc hc vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("momentum_roc hc vs cel",     &hc_sigs, &cel_sigs);
+    }
+
+    #[test]
+    fn dual_momentum_parity() {
+        let bars = trending_bars(300);
+
+        let mut hc = DualMomentum::new(10, 30);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": {
+                "fast": { "type": "roc", "period": 10 },
+                "slow": { "type": "roc", "period": 30 }
+            },
+            "entry": { "logic": "and", "rules": [
+                { "source": "fast", "field": "value", "op": "gt", "value": 0.0 },
+                { "source": "slow", "field": "value", "op": "gt", "value": 0.0 }
+            ]},
+            "exit": { "logic": "or", "rules": [
+                { "source": "fast", "field": "value", "op": "lt", "value": 0.0 },
+                { "source": "slow", "field": "value", "op": "lt", "value": 0.0 }
+            ]}
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "roc(10) > 0.0 && roc(30) > 0.0",
+            "exit":  "roc(10) < 0.0 || roc(30) < 0.0"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "dual_momentum: no signals");
+        assert_parity("dual_momentum hc vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("dual_momentum hc vs cel",     &hc_sigs, &cel_sigs);
+    }
+}

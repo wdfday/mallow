@@ -65,6 +65,7 @@ mod tests {
     use alm_core::signal::Direction;
     use serde_json::json;
     use crate::factory::build_strategy;
+    use crate::test_utils::*;
 
     fn bar(ts: i64, close: f64) -> Bar {
         Bar::new(ts, "T", close * 1.005, close * 1.005, close * 0.995, close, 1000.0)
@@ -127,5 +128,31 @@ mod tests {
         hc.reset();
         let r2 = run(&mut hc, &bars);
         assert_eq!(r1, r2, "reset parity failed");
+    }
+
+    #[test]
+    fn trix_parity() {
+        let bars = trending_bars(300);
+
+        // 1. hardcoded (period=18, signal=9)
+        let mut hc = TrixStrategy::new(18, 9);
+        let hc_sigs = run(&mut hc, &bars);
+
+        // 2. dynamic JSON — histogram cross_above/below 0
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": { "trix": { "type": "trix", "period": 18, "signal": 9 } },
+            "entry": {
+                "logic": "and",
+                "rules": [{ "source": "trix", "field": "histogram", "op": "cross_above", "value": 0.0 }]
+            },
+            "exit": {
+                "logic": "and",
+                "rules": [{ "source": "trix", "field": "histogram", "op": "cross_below", "value": 0.0 }]
+            }
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "trix: hardcoded produced no signals");
+        assert_parity("trix hardcoded vs dynamic", &hc_sigs, &dyn_sigs);
     }
 }

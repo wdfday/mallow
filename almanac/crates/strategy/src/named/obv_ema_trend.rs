@@ -62,3 +62,28 @@ impl Strategy for ObvEmaTrend {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn obv_ema_trend_parity() {
+        let bars = trending_bars(300);
+
+        let mut hc = ObvEmaTrend::new(20, 50);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "obv() > ema(20) && close > ema(50)",
+            "exit":  "obv() < ema(20) || close < ema(50)"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        // OBV is in volume units; EMA(20) is price-scale — exact parity not expected.
+        assert!(!hc_sigs.is_empty(), "obv_ema_trend: no signals");
+    }
+}

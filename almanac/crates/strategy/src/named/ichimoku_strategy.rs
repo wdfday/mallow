@@ -120,3 +120,58 @@ impl Strategy for IchimokuCross {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn ichimoku_cloud_parity() {
+        let bars = trending_bars(400);
+
+        let mut hc = IchimokuCloud::new(9, 26, 52);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": { "ichi": { "type": "ichimoku", "tenkan": 9, "kijun": 26, "senkou_b": 52 } },
+            "entry": { "logic": "and", "rules": [
+                { "source": "ichi", "field": "above_cloud", "op": "gt", "value": 0.5 }
+            ]},
+            "exit": { "logic": "and", "rules": [
+                { "source": "ichi", "field": "above_cloud", "op": "lt", "value": 0.5 }
+            ]}
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "ichimoku_cloud: no signals");
+        assert_parity("ichimoku_cloud hc vs dynamic", &hc_sigs, &dyn_sigs);
+    }
+
+    #[test]
+    fn ichimoku_cross_parity() {
+        let bars = trending_bars(600);
+
+        let mut hc = IchimokuCross::new(9, 26, 52);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": { "ichi": { "type": "ichimoku", "tenkan": 9, "kijun": 26, "senkou_b": 52 } },
+            "entry": { "logic": "and", "rules": [
+                { "source": "ichi", "field": "tenkan", "op": "cross_above",
+                  "compare": "ichi", "compare_field": "kijun" },
+                { "source": "ichi", "field": "above_cloud", "op": "gt", "value": 0.5 }
+            ]},
+            "exit": { "logic": "and", "rules": [
+                { "source": "ichi", "field": "tenkan", "op": "cross_below",
+                  "compare": "ichi", "compare_field": "kijun" }
+            ]}
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "ichimoku_cross: no signals");
+        assert_parity("ichimoku_cross hc vs dynamic", &hc_sigs, &dyn_sigs);
+    }
+}

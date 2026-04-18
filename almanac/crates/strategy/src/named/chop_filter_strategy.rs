@@ -102,6 +102,9 @@ impl Strategy for ChopFilterStrategy {
 mod tests {
     use super::*;
     use alm_core::bar::Bar;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
 
     fn bar(ts: i64, close: f64) -> Bar {
         Bar::new(ts, "TEST", close, close + 1.0, close - 1.0, close, 1000.0)
@@ -146,5 +149,41 @@ mod tests {
         assert!(!strat.in_position);
         assert!(strat.prev_fast.is_none());
         assert!(strat.prev_slow.is_none());
+    }
+
+    #[test]
+    fn chop_filter_parity() {
+        let bars = trending_bars(300);
+
+        let mut hc = ChopFilterStrategy::new(14, 8, 21, 61.8);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": {
+                "fast": { "type": "ema",  "period": 8 },
+                "slow": { "type": "ema",  "period": 21 },
+                "chop": { "type": "chop", "period": 14 }
+            },
+            "entry": { "logic": "and", "rules": [
+                { "source": "fast", "field": "value", "op": "cross_above",
+                  "compare": "slow", "compare_field": "value" },
+                { "source": "chop", "field": "value", "op": "lt", "value": 61.8 }
+            ]},
+            "exit": { "logic": "and", "rules": [
+                { "source": "fast", "field": "value", "op": "cross_below",
+                  "compare": "slow", "compare_field": "value" }
+            ]}
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "prev_ema(8) <= prev_ema(21) && ema(8) > ema(21) && chop(14) < 61.8",
+            "exit":  "prev_ema(8) >= prev_ema(21) && ema(8) < ema(21)"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "chop_filter: no signals");
+        assert_parity("chop_filter hc vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("chop_filter hc vs cel",     &hc_sigs, &cel_sigs);
     }
 }

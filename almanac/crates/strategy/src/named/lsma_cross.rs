@@ -79,3 +79,45 @@ impl Strategy for LsmaCross {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn lsma_cross_parity() {
+        let bars = trending_bars(300);
+
+        let mut hc = LsmaCross::new(20, 50);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": {
+                "fast": { "type": "lsma", "period": 20 },
+                "slow": { "type": "lsma", "period": 50 }
+            },
+            "entry": { "logic": "and", "rules": [
+                { "source": "fast", "field": "value", "op": "cross_above",
+                  "compare": "slow", "compare_field": "value" }
+            ]},
+            "exit": { "logic": "and", "rules": [
+                { "source": "fast", "field": "value", "op": "cross_below",
+                  "compare": "slow", "compare_field": "value" }
+            ]}
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "prev_lsma(20) <= prev_lsma(50) && lsma(20) > lsma(50)",
+            "exit":  "prev_lsma(20) >= prev_lsma(50) && lsma(20) < lsma(50)"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "lsma_cross: no signals");
+        assert_parity("lsma_cross hc vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("lsma_cross hc vs cel",     &hc_sigs, &cel_sigs);
+    }
+}

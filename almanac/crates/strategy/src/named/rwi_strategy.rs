@@ -49,3 +49,40 @@ impl Strategy for RwiStrategy {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn rwi_parity() {
+        let bars = trending_bars(300);
+
+        let mut hc = RwiStrategy::new(14, 1.0);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": { "rwi": { "type": "rwi", "period": 14 } },
+            "entry": { "logic": "and", "rules": [
+                { "source": "rwi", "field": "rwi_high", "op": "gt", "value": 1.0 }
+            ]},
+            "exit": { "logic": "and", "rules": [
+                { "source": "rwi", "field": "rwi_low", "op": "gt", "value": 1.0 }
+            ]}
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "rwi_high(14) > 1.0",
+            "exit":  "rwi_low(14) > 1.0"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "rwi: no signals");
+        assert_parity("rwi hc vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("rwi hc vs cel",     &hc_sigs, &cel_sigs);
+    }
+}

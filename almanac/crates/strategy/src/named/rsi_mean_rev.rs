@@ -61,6 +61,9 @@ impl Strategy for RsiMeanRev {
 mod tests {
     use super::*;
     use alm_core::bar::Bar;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
 
     fn bar(ts: i64, close: f64) -> Bar {
         Bar::new(ts, "TEST", close, close + 1.0, close - 1.0, close, 1000.0)
@@ -108,5 +111,76 @@ mod tests {
             signals.iter().any(|s| s.direction == Direction::Close),
             "should emit Close when RSI overbought"
         );
+    }
+
+    #[test]
+    fn rsi_mean_rev_parity() {
+        let bars = rsi_bars(80);
+
+        // 1. hardcoded
+        let mut hc = RsiMeanRev::new(14, 30.0, 70.0);
+        let hc_sigs = run(&mut hc, &bars);
+
+        // 2. dynamic JSON
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": {
+                "rsi": { "type": "rsi", "period": 14 }
+            },
+            "entry": {
+                "logic": "and",
+                "rules": [{ "source": "rsi", "field": "value", "op": "lt", "value": 30.0 }]
+            },
+            "exit": {
+                "logic": "and",
+                "rules": [{ "source": "rsi", "field": "value", "op": "gt", "value": 70.0 }]
+            }
+        }))
+        .unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        // 3. CEL
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "rsi(14) < 30.0",
+            "exit":  "rsi(14) > 70.0"
+        }))
+        .unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "rsi: hardcoded produced no signals");
+        assert_parity("rsi hardcoded vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("rsi hardcoded vs cel",     &hc_sigs, &cel_sigs);
+    }
+
+    #[test]
+    fn reset_parity() {
+        let bars = rsi_bars(80);
+
+        let mut hc  = RsiMeanRev::new(14, 30.0, 70.0);
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": { "rsi": { "type": "rsi", "period": 14 } },
+            "entry": { "logic": "and", "rules": [{ "source": "rsi", "field": "value", "op": "lt", "value": 30.0 }] },
+            "exit":  { "logic": "and", "rules": [{ "source": "rsi", "field": "value", "op": "gt", "value": 70.0 }] }
+        })).unwrap();
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "rsi(14) < 30.0",
+            "exit":  "rsi(14) > 70.0"
+        })).unwrap();
+
+        // first run
+        let hc_r1  = run(&mut hc,        &bars);
+        let dyn_r1 = run(dyn_s.as_mut(), &bars);
+        let cel_r1 = run(cel.as_mut(),   &bars);
+
+        // reset + second run
+        hc.reset();  dyn_s.reset();  cel.reset();
+        let hc_r2  = run(&mut hc,        &bars);
+        let dyn_r2 = run(dyn_s.as_mut(), &bars);
+        let cel_r2 = run(cel.as_mut(),   &bars);
+
+        assert_parity("rsi reset: hardcoded",  &hc_r1,  &hc_r2);
+        assert_parity("rsi reset: dynamic",    &dyn_r1, &dyn_r2);
+        assert_parity("rsi reset: cel",        &cel_r1, &cel_r2);
+        assert_parity("rsi reset: hc vs dyn",  &hc_r1,  &dyn_r2);
+        assert_parity("rsi reset: hc vs cel",  &hc_r1,  &cel_r2);
     }
 }

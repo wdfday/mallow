@@ -61,3 +61,45 @@ impl Strategy for CciReversal {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn cci_reversal_parity() {
+        let bars = rsi_bars(80); // strong V-shape pushes CCI through ±100
+
+        // 1. hardcoded (entry cross_above -100, exit cross_above +100)
+        let mut hc = CciReversal::new(14, -100.0, 100.0);
+        let hc_sigs = run(&mut hc, &bars);
+
+        // 2. dynamic JSON
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": { "cci": { "type": "cci", "period": 14 } },
+            "entry": {
+                "logic": "and",
+                "rules": [{ "source": "cci", "field": "value", "op": "cross_above", "value": -100.0 }]
+            },
+            "exit": {
+                "logic": "and",
+                "rules": [{ "source": "cci", "field": "value", "op": "cross_above", "value": 100.0 }]
+            }
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        // 3. CEL
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "prev_cci(14) <= -100.0 && cci(14) > -100.0",
+            "exit":  "prev_cci(14) <= 100.0 && cci(14) > 100.0"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "cci_reversal: hardcoded produced no signals");
+        assert_parity("cci hardcoded vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("cci hardcoded vs cel",     &hc_sigs, &cel_sigs);
+    }
+}

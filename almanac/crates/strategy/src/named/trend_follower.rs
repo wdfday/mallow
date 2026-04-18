@@ -89,3 +89,48 @@ impl Strategy for TrendFollower {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn trend_follower_parity() {
+        let bars = slow_trend_bars();
+
+        let mut hc = TrendFollower::new(50, 200, 12, 26, 9);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": {
+                "fast": { "type": "sma", "period": 50 },
+                "slow": { "type": "sma", "period": 200 },
+                "macd": { "type": "macd", "fast": 12, "slow": 26, "signal": 9 }
+            },
+            "entry": { "logic": "and", "rules": [
+                { "source": "fast", "field": "value", "op": "cross_above",
+                  "compare": "slow", "compare_field": "value" },
+                { "source": "macd", "field": "histogram", "op": "gt", "value": 0.0 }
+            ]},
+            "exit": { "logic": "or", "rules": [
+                { "source": "fast", "field": "value", "op": "cross_below",
+                  "compare": "slow", "compare_field": "value" },
+                { "source": "macd", "field": "histogram", "op": "lt", "value": 0.0 }
+            ]}
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "prev_sma(50) <= prev_sma(200) && sma(50) > sma(200) && macd_hist(12) > 0.0",
+            "exit":  "(prev_sma(50) >= prev_sma(200) && sma(50) < sma(200)) || macd_hist(12) < 0.0"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "trend_follower: no signals");
+        assert_parity("trend_follower hc vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("trend_follower hc vs cel",     &hc_sigs, &cel_sigs);
+    }
+}

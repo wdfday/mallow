@@ -138,3 +138,53 @@ impl Strategy for VwapTrend {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alm_core::bar::Bar;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn vwap_bounce_parity() {
+        let bars = vwap_bars();
+
+        let mut hc = VwapBounce::new(14, 40.0, 65.0, 60);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "prev_ema(1) <= prev_vwap() && ema(1) > vwap() && rsi(14) < 50.0",
+            "exit":  "(prev_ema(1) >= prev_vwap() && ema(1) < vwap()) || rsi(14) > 65.0"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "vwap_bounce: no signals");
+        assert_parity("vwap_bounce hc vs cel", &hc_sigs, &cel_sigs);
+    }
+
+    #[test]
+    fn vwap_trend_parity() {
+        let bars: Vec<Bar> = (0..200).map(|i| {
+            let price = if i < 100 {
+                100.0 + i as f64 * 0.8
+            } else {
+                180.0 - (i - 100) as f64 * 0.8
+            };
+            bar(i as i64 * 60_000, price.max(1.0))
+        }).collect();
+
+        let mut hc = VwapTrend::new(60);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "close > vwap() && vwap() > prev_vwap()",
+            "exit":  "close < vwap() || vwap() < prev_vwap()"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "vwap_trend: no signals");
+        assert_parity("vwap_trend hc vs cel", &hc_sigs, &cel_sigs);
+    }
+}

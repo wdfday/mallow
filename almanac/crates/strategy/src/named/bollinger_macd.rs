@@ -61,3 +61,45 @@ impl Strategy for BollingerMacd {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn bollinger_macd_parity() {
+        let bars = trending_bars(300);
+
+        let mut hc = BollingerMacd::new(20, 2.0, 12, 26, 9);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": {
+                "bb":   { "type": "bbands", "period": 20, "multiplier": 2.0 },
+                "macd": { "type": "macd",   "fast": 12, "slow": 26, "signal": 9 }
+            },
+            "entry": { "logic": "and", "rules": [
+                { "source": "close", "field": "value", "op": "gt", "compare": "bb", "compare_field": "upper" },
+                { "source": "macd",  "field": "histogram", "op": "gt", "value": 0.0 }
+            ]},
+            "exit": { "logic": "or", "rules": [
+                { "source": "close", "field": "value", "op": "lt", "compare": "bb", "compare_field": "middle" },
+                { "source": "macd",  "field": "histogram", "op": "lt", "value": 0.0 }
+            ]}
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "close > bb_upper(20) && macd_hist(12) > 0.0",
+            "exit":  "close < bb_mid(20) || macd_hist(12) < 0.0"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "bollinger_macd: no signals");
+        assert_parity("bollinger_macd hc vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("bollinger_macd hc vs cel",     &hc_sigs, &cel_sigs);
+    }
+}

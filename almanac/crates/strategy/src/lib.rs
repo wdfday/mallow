@@ -25,9 +25,10 @@ pub mod bar_resampler;
 pub mod named;
 pub use named::*;
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
+// ── Shared test utilities ─────────────────────────────────────────────────────
 #[cfg(test)]
-mod parity_tests;
+pub mod test_utils;
 
+// ── Tests ─────────────────────────────────────────────────────────────────────
 #[cfg(test)]
 mod edge_case_tests;

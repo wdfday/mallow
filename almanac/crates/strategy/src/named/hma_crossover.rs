@@ -81,6 +81,7 @@ mod tests {
     use alm_core::signal::Direction;
     use serde_json::json;
     use crate::factory::build_strategy;
+    use crate::test_utils::*;
 
     fn bar(ts: i64, close: f64) -> Bar {
         Bar::new(ts, "T", close * 1.005, close * 1.005, close * 0.995, close, 1000.0)
@@ -163,5 +164,44 @@ mod tests {
         hc.reset();
         let r2 = run(&mut hc, &bars);
         assert_eq!(r1, r2, "reset parity failed");
+    }
+
+    #[test]
+    fn hma_crossover_parity() {
+        let bars = trending_bars(300);
+
+        // 1. hardcoded (fast=9, slow=21)
+        let mut hc = HmaCrossover::new(9, 21);
+        let hc_sigs = run(&mut hc, &bars);
+
+        // 2. dynamic JSON
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": {
+                "fast": { "type": "hma", "period": 9 },
+                "slow": { "type": "hma", "period": 21 }
+            },
+            "entry": {
+                "logic": "and",
+                "rules": [{ "source": "fast", "field": "value", "op": "cross_above",
+                            "compare": "slow", "compare_field": "value" }]
+            },
+            "exit": {
+                "logic": "and",
+                "rules": [{ "source": "fast", "field": "value", "op": "cross_below",
+                            "compare": "slow", "compare_field": "value" }]
+            }
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        // 3. CEL
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "prev_hma(9) <= prev_hma(21) && hma(9) > hma(21)",
+            "exit":  "prev_hma(9) >= prev_hma(21) && hma(9) < hma(21)"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "hma_crossover: hardcoded produced no signals");
+        assert_parity("hma hardcoded vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("hma hardcoded vs cel",     &hc_sigs, &cel_sigs);
     }
 }

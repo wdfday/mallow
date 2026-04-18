@@ -53,3 +53,40 @@ impl Strategy for AlligatorStrategy {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn alligator_parity() {
+        let bars = trending_bars(300);
+
+        let mut hc = AlligatorStrategy::new(13, 8, 5);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": { "al": { "type": "alligator", "jaw": 13, "teeth": 8, "lips": 5 } },
+            "entry": { "logic": "and", "rules": [
+                { "source": "al", "field": "bullish", "op": "cross_above", "value": 0.5 }
+            ]},
+            "exit": { "logic": "and", "rules": [
+                { "source": "al", "field": "bullish", "op": "cross_below", "value": 0.5 }
+            ]}
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "prev_alligator_bull(13) < 1.0 && alligator_bull(13) >= 1.0",
+            "exit":  "prev_alligator_bull(13) >= 1.0 && alligator_bull(13) < 1.0"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "alligator: no signals");
+        assert_parity("alligator hc vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("alligator hc vs cel",     &hc_sigs, &cel_sigs);
+    }
+}

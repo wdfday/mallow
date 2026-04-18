@@ -85,3 +85,44 @@ impl Strategy for SmiReversal {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn smi_reversal_parity() {
+        let bars = rsi_bars(300);
+
+        let mut hc = SmiReversal::new(13, 25, 2, 9, -40.0, 40.0);
+        let hc_sigs = run(&mut hc, &bars);
+
+        let mut dyn_s = build_strategy("dynamic", &json!({
+            "indicators": { "smi": { "type": "smi" } },
+            "entry": { "logic": "and", "rules": [
+                { "source": "smi", "field": "smi",    "op": "cross_above",
+                  "compare": "smi", "compare_field": "signal" },
+                { "source": "smi", "field": "smi",    "op": "lt", "value": -40.0 }
+            ]},
+            "exit": { "logic": "or", "rules": [
+                { "source": "smi", "field": "smi", "op": "gt", "value": 40.0 },
+                { "source": "smi", "field": "smi", "op": "cross_below",
+                  "compare": "smi", "compare_field": "signal" }
+            ]}
+        })).unwrap();
+        let dyn_sigs = run(dyn_s.as_mut(), &bars);
+
+        let mut cel = build_strategy("cel", &json!({
+            "entry": "prev_smi_line() <= prev_smi_sig() && smi_line() > smi_sig() && prev_smi_line() < -40.0",
+            "exit":  "smi_line() > 40.0 || (prev_smi_line() >= prev_smi_sig() && smi_line() < smi_sig())"
+        })).unwrap();
+        let cel_sigs = run(cel.as_mut(), &bars);
+
+        assert!(!hc_sigs.is_empty(), "smi_reversal: no signals");
+        assert_parity("smi_reversal hc vs dynamic", &hc_sigs, &dyn_sigs);
+        assert_parity("smi_reversal hc vs cel",     &hc_sigs, &cel_sigs);
+    }
+}

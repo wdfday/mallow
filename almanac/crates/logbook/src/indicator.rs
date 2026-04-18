@@ -73,7 +73,7 @@ pub fn run_indicators_on_bars(
             if let Some(htf_bar) = agg {
                 if let Some(fields) = b.box_.update(&htf_bar) {
                     series.get_mut(&b.label).unwrap().push(IndicatorPoint {
-                        t: bar.timestamp,
+                        t: htf_bar.timestamp,
                         fields,
                     });
                 }

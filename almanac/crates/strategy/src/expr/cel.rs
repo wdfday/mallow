@@ -197,6 +197,8 @@ struct VarBinding {
     prev:      Option<f64>,
     /// Ring buffer of confirmed values, newest at back. Used for `ema(9)[N]` indexing.
     history:   VecDeque<f64>,
+    /// Fixed capacity of `history` (lookback + 1). VecDeque auto-grows so we track this manually.
+    hist_cap:  usize,
     /// Time-based resampler for MTF indicators (`H1.ema`, `M15.rsi`, etc.).
     /// `None` = same timeframe as the base bars.
     resampler: Option<TimeBarResampler>,
@@ -218,7 +220,7 @@ impl VarBinding {
             self.cached = fields.get(&self.field).copied();
             if let Some(v) = self.cached {
                 self.history.push_back(v);
-                if self.history.len() > self.history.capacity() {
+                if self.history.len() > self.hist_cap {
                     self.history.pop_front();
                 }
             }
@@ -563,6 +565,7 @@ fn make_binding(base: &str, args: &[f64], interval_ms: Option<i64>, lookback: us
                 live:      None,
                 prev:      None,
                 history:   VecDeque::with_capacity(cap),
+                hist_cap:  cap,
                 resampler,
             }))
         }};
@@ -1074,16 +1077,17 @@ impl Strategy for CelStrategy {
                 all_ready = false;
             }
         }
-        if !all_ready {
-            return vec![];
-        }
 
-        // ── 2. Push bar into history buffer ───────────────────────────────────
+        // ── 2. Push bar into history buffer (always, so close[N] is warm on first ready bar) ──
         if self.lookback > 0 {
             if self.bar_buf.len() == self.bar_buf.capacity() {
                 self.bar_buf.pop_front();
             }
             self.bar_buf.push_back(effective.clone());
+        }
+
+        if !all_ready {
+            return vec![];
         }
 
         // ── 3. Write bar fields into context ──────────────────────────────────

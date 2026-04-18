@@ -306,17 +306,17 @@ pub struct ErrorResponse {
 ///
 /// Entry/exit are CEL expressions with built-in indicator functions.
 ///
-/// Bar fields in scope: `open`, `high`, `low`, `close`, `volume`, `peak`, `entry_price`.
+/// Bar fields in scope: `open`, `high`, `low`, `close`, `volume`, `entry_price`.
 /// Indicators: `ema(N)`, `rsi(N)`, `macd_hist(N)`, `atr(N)`, `bb_upper(N)`, etc.
 /// MTF prefix: `H1.ema(200)`, `M15.rsi(14)`, etc.
-/// Previous bar: `prev_ema(9)`, `prev_rsi(14)`, etc.
+/// Previous bar: `prev_ema(9)`, `prev_rsi(14)`, or `ema(9)[1]`, `close[1]`, etc.
 ///
 /// Example — ATR-based exits + Heiken Ashi:
 /// ```json
 /// {
 ///   "symbol": "BTCUSDT",
 ///   "entry_expr": "rsi(14) < 30 && close > ema(200)",
-///   "exit_expr":  "rsi(14) > 70 || close < peak - 2*atr(14)",
+///   "exit_expr":  "rsi(14) > 70 || close < entry_price * 0.97",
 ///   "exit": { "sl": "1.5*atr(14)", "tp": 0.20, "max_bars": 100 },
 ///   "candle_type": "heiken_ashi",
 ///   "from": "2023-01-01", "to": "2024-01-01"
@@ -330,9 +330,9 @@ pub struct CelBacktestRequest {
     /// CEL entry expression, e.g. `"rsi(14) < 30 && close > ema(200)"`.
     pub entry_expr: String,
 
-    /// CEL exit expression, e.g. `"rsi(14) > 70 || close < peak * 0.97"`.
+    /// CEL exit expression, e.g. `"rsi(14) > 70 || close < entry_price * 0.97"`.
     /// Use `"false"` to rely solely on `exit` config.
-    /// Variables: `open` `high` `low` `close` `volume` `peak` `entry_price` + all indicators.
+    /// Variables: `open` `high` `low` `close` `volume` `entry_price` + all indicators.
     pub exit_expr: String,
 
     // ── Exit / risk params ────────────────────────────────────────────────────

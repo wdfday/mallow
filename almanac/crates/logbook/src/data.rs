@@ -66,7 +66,7 @@ pub fn find_parquet_files(data_dir: &Path, symbol: &str, timeframe: Option<&str>
         .map(|e| e.into_path())
         .collect();
 
-    files.sort(); // sort by filename for chronological order
+    files.sort_by_key(|p| p.file_name().and_then(|n| n.to_str()).map(|s| s.to_owned()).unwrap_or_default());
     files
 }
 

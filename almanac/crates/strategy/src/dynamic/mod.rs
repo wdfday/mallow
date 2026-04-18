@@ -240,6 +240,13 @@ impl DynamicStrategy {
 
 impl Strategy for DynamicStrategy {
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
+        // Update internal ATR on every raw bar so it's warm when HA finishes warming up
+        if let Some(atr) = &mut self.atr {
+            if let Some(v) = atr.update(bar.high, bar.low, bar.close) {
+                self.last_atr = v.atr;
+            }
+        }
+
         // Transform candle if needed (HA, etc.)
         let effective = match self.transform.apply(bar) {
             Some(b) => b,
@@ -249,13 +256,6 @@ impl Strategy for DynamicStrategy {
         // Advance all indicators
         for state in self.indicators.values_mut() {
             state.update(&effective);
-        }
-
-        // Update internal ATR (always, so it's warm at entry)
-        if let Some(atr) = &mut self.atr {
-            if let Some(v) = atr.update(bar.high, bar.low, bar.close) {
-                self.last_atr = v.atr;
-            }
         }
 
         // Check if any indicator is still warming up (empty current map)

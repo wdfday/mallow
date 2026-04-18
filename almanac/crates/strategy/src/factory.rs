@@ -19,17 +19,19 @@ use crate::{
     expr::cel::CelStrategy,
     dynamic::DynamicStrategy,
     layered::LayeredStrategy,
-    AlligatorStrategy, AroonTrend, AtrTrailingStop, BbKeltnerSqueeze, BbSqueeze, BollingerMacd,
-    CciReversal, ChandelierExit, ChopFilterStrategy, ConnorsRsiStrategy, DemaCrossover, DmiAdx,
-    DonchianBreakout, DualMomentum, ElderRayStrategy, EquilibriumExplorer, GmmaCrossover,
+    AdxEmaCross, AlmaCross, AlligatorStrategy, AroonTrend, AtrTrailingStop, BbKeltnerSqueeze,
+    BbRsiReversal, BbSqueeze, BollingerMacd, CciReversal, ChandelierExit, ChopFilterStrategy,
+    CmfEmaTrend, CmoZeroCross, ConnorsRsiStrategy, DemaCrossover, DmiAdx, DonchianBreakout,
+    DualMomentum, ElderRayStrategy, EquilibriumExplorer, FisherCrossover, GmmaCrossover,
     HaBreakout, HaColor, HaHarmonizer, HighestBreakout, HmaCrossover, IchimokuCloud, IchimokuCross,
-    KamaStrategy, KeltnerBreakout, MaCrossover, MaPullback, MacdCrossover, MacdMa, MeanReversion,
-    MfiRevert, MfiTrend, MomentumRoc, OrbBreakout, OscillatorOverlord, PatternBreakoutStrategy,
-    Pixel3, PriceActionSwing, RangeRover, ReversalCatcher, RocCrossover, RsiMeanRev, RwiStrategy,
-    SarStrategy, ScalpingEma, StochRsiStrategy, StochasticCrossover, StochasticDk, SupertrendMacd,
-    SupertrendStrategy, SwingTrader, TrendFollower, TrendTransition, TripleEma, TrixStrategy,
-    TsiStrategy, VolatilityRatioBreakout, VolatilitySqueezer, VolatilityVanguard, VwapBounce,
-    VwapTrend, WaddahAttar, Wolfstein,
+    KamaStrategy, KeltnerBreakout, LsmaCross, MaCrossover, MaPullback, MacdCrossover, MacdMa,
+    MeanReversion, MfiRevert, MfiTrend, MomentumRoc, ObvEmaTrend, OrbBreakout, OscillatorOverlord,
+    PatternBreakoutStrategy, Pixel3, PpoHistogram, PriceActionSwing, RangeRover, ReversalCatcher,
+    RocCrossover, RsiMaCross, RsiMeanRev, RwiStrategy, SarStrategy, ScalpingEma, SmiReversal,
+    StochRsiStrategy, StochasticCrossover, StochasticDk, SupertrendMacd, SupertrendStrategy,
+    SwingTrader, TrendFollower, TrendTransition, TripleEma, TrixStrategy,
+    TsiStrategy, UoReversal, VolatilityRatioBreakout, VolatilitySqueezer, VolatilityVanguard,
+    VortexTrend, VwapBounce, VwapTrend, VwmaRsi, WaddahAttar, WilliamsRMa, Wolfstein,
 };
 
 // ── Parameter helpers ──────────────────────────────────────────────────────────
@@ -440,6 +442,111 @@ pub fn build_strategy(name: &str, params: &Value) -> Result<Box<dyn Strategy>> {
             pu(p, "slow", 21),
         )),
 
+        // ── Williams %R ───────────────────────────────────────────────────────
+        "williams_r_ma" => Box::new(WilliamsRMa::new(
+            pu(p, "wr_period", 14),
+            pu(p, "ema_period", 50),
+            pf64(p, "oversold", -80.0),
+            pf64(p, "overbought", -20.0),
+        )),
+
+        // ── Fisher Transform ──────────────────────────────────────────────────
+        "fisher_crossover" => Box::new(FisherCrossover::new(pu(p, "period", 10))),
+
+        // ── Ultimate Oscillator ───────────────────────────────────────────────
+        "uo_reversal" => Box::new(UoReversal::new(
+            pu(p, "fast", 7),
+            pu(p, "medium", 14),
+            pu(p, "slow", 28),
+            pf64(p, "oversold", 30.0),
+            pf64(p, "overbought", 70.0),
+        )),
+
+        // ── Chande Momentum Oscillator ────────────────────────────────────────
+        "cmo_zero_cross" => Box::new(CmoZeroCross::new(
+            pu(p, "cmo_period", 14),
+            pu(p, "ema_period", 50),
+        )),
+
+        // ── Vortex Indicator ──────────────────────────────────────────────────
+        "vortex_trend" => Box::new(VortexTrend::new(pu(p, "period", 14))),
+
+        // ── Chaikin Money Flow ────────────────────────────────────────────────
+        "cmf_ema_trend" => Box::new(CmfEmaTrend::new(
+            pu(p, "cmf_period", 20),
+            pu(p, "ema_period", 50),
+            pf64(p, "bull_threshold", 0.1),
+            pf64(p, "bear_threshold", 0.1),
+        )),
+
+        // ── OBV + EMA ─────────────────────────────────────────────────────────
+        "obv_ema_trend" => Box::new(ObvEmaTrend::new(
+            pu(p, "obv_ema_period", 20),
+            pu(p, "price_ema_period", 50),
+        )),
+
+        // ── RSI + EMA Cross ───────────────────────────────────────────────────
+        "rsi_ma_cross" => Box::new(RsiMaCross::new(
+            pu(p, "fast", 20),
+            pu(p, "slow", 50),
+            pu(p, "rsi_period", 14),
+            pf64(p, "rsi_entry", 50.0),
+            pf64(p, "rsi_exit", 45.0),
+        )),
+
+        // ── BB + RSI reversal ─────────────────────────────────────────────────
+        "bb_rsi_reversal" => Box::new(BbRsiReversal::new(
+            pu(p, "bb_period", 20),
+            pf64(p, "bb_std", 2.0),
+            pu(p, "rsi_period", 14),
+            pf64(p, "oversold", 35.0),
+            pf64(p, "overbought", 65.0),
+        )),
+
+        // ── ADX + EMA Cross ───────────────────────────────────────────────────
+        "adx_ema_cross" => Box::new(AdxEmaCross::new(
+            pu(p, "fast", 20),
+            pu(p, "slow", 50),
+            pu(p, "adx_period", 14),
+            pf64(p, "adx_threshold", 25.0),
+        )),
+
+        // ── LSMA Cross ───────────────────────────────────────────────────────
+        "lsma_cross" => Box::new(LsmaCross::new(pu(p, "fast", 20), pu(p, "slow", 50))),
+
+        // ── ALMA Cross ───────────────────────────────────────────────────────
+        "alma_cross" => Box::new(AlmaCross::new(
+            pu(p, "fast", 9),
+            pu(p, "slow", 21),
+            pf64(p, "offset", 0.85),
+            pf64(p, "sigma", 6.0),
+        )),
+
+        // ── VWMA + RSI ────────────────────────────────────────────────────────
+        "vwma_rsi" => Box::new(VwmaRsi::new(
+            pu(p, "vwma_period", 20),
+            pu(p, "rsi_period", 14),
+            pf64(p, "rsi_entry", 50.0),
+            pf64(p, "rsi_exit", 45.0),
+        )),
+
+        // ── SMI Reversal ─────────────────────────────────────────────────────
+        "smi_reversal" => Box::new(SmiReversal::new(
+            pu(p, "period", 13),
+            pu(p, "smooth1", 25),
+            pu(p, "smooth2", 2),
+            pu(p, "signal_period", 9),
+            pf64(p, "oversold", -40.0),
+            pf64(p, "overbought", 40.0),
+        )),
+
+        // ── PPO Histogram ─────────────────────────────────────────────────────
+        "ppo_histogram" => Box::new(PpoHistogram::new(
+            pu(p, "fast", 12),
+            pu(p, "slow", 26),
+            pu(p, "signal", 9),
+        )),
+
         // ── CEL (cel-interpreter, ema(9) function-call syntax) ───────────────
         // params: { "entry": "<cel expr>", "exit": "<cel expr>" }
         "cel" | "cel2" | "evalexpr" => Box::new(CelStrategy::from_params(p)?),
@@ -580,6 +687,21 @@ mod tests {
             "kdj",
             "ao",
             "tema_crossover",
+            "williams_r_ma",
+            "fisher_crossover",
+            "uo_reversal",
+            "cmo_zero_cross",
+            "vortex_trend",
+            "cmf_ema_trend",
+            "obv_ema_trend",
+            "rsi_ma_cross",
+            "bb_rsi_reversal",
+            "adx_ema_cross",
+            "lsma_cross",
+            "alma_cross",
+            "vwma_rsi",
+            "smi_reversal",
+            "ppo_histogram",
         ];
         for name in &strategies {
             let result = build_strategy(name, &json!({}));
@@ -608,6 +730,10 @@ mod tests {
             "vwap_bounce", "vwap_trend", "momentum_roc", "dual_momentum",
             "price_action_swing", "pixel_3", "kama", "tsi", "stoch_rsi",
             "chop_filter", "connors_rsi", "kdj", "ao", "tema_crossover",
+            "williams_r_ma", "fisher_crossover", "uo_reversal", "cmo_zero_cross",
+            "vortex_trend", "cmf_ema_trend", "obv_ema_trend", "rsi_ma_cross",
+            "bb_rsi_reversal", "adx_ema_cross", "lsma_cross", "alma_cross",
+            "vwma_rsi", "smi_reversal", "ppo_histogram",
         ];
 
         // Trending-up then trending-down synthetic price series (200 bars)

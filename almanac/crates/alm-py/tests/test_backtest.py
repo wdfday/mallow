@@ -26,6 +26,8 @@ REQUIRED_KEYS = {
     "equity_curve", "trades", "pnl_pct",
     "trending_pct", "ranging_pct", "neutral_pct",
     "high_vol_pct", "low_vol_pct", "regime_changes",
+    # extended fields
+    "exposure_pct", "indicator_series", "benchmark",
 }
 
 
@@ -220,3 +222,123 @@ def test_run_indicators_rsi(trending_bars):
     rsi = result["rsi14"]["value"]
     non_none = [v for v in rsi if v is not None]
     assert all(0.0 <= v <= 100.0 for v in non_none)
+
+
+# ── extended fields ───────────────────────────────────────────────────────────
+
+def test_exposure_pct_in_range(trending_bars):
+    r = _run("ma_crossover", trending_bars, {"fast": 5, "slow": 20})
+    assert "exposure_pct" in r
+    assert 0.0 <= r["exposure_pct"] <= 100.0
+
+
+def test_indicator_series_is_dict(trending_bars):
+    r = _run("ma_crossover", trending_bars, {"fast": 5, "slow": 20})
+    assert isinstance(r["indicator_series"], dict)
+    # named strategies have no indicator series — empty dict is correct
+    assert r["indicator_series"] == {}
+
+
+def test_benchmark_keys(trending_bars):
+    r = _run("ma_crossover", trending_bars, {"fast": 5, "slow": 20})
+    bh = r["benchmark"]
+    for key in ("total_return_pct", "cagr_pct", "annualized_volatility_pct",
+                "sharpe_ratio", "sortino_ratio", "max_drawdown_pct", "max_dd_duration_bars"):
+        assert key in bh, f"benchmark missing '{key}'"
+
+
+def test_exit_config_stops_loss(trending_bars):
+    """With a very tight stop-loss, max drawdown should be limited."""
+    r_tight = _run("ma_crossover", trending_bars, {"fast": 5, "slow": 20},
+                   exit={"sl": 0.005})
+    r_none  = _run("ma_crossover", trending_bars, {"fast": 5, "slow": 20})
+    if r_tight["total_trades"] > 0 and r_none["total_trades"] > 0:
+        assert r_tight["max_drawdown_pct"] <= r_none["max_drawdown_pct"] + 5.0
+
+
+# ── run_cel_backtest ──────────────────────────────────────────────────────────
+
+def test_cel_basic(trending_bars):
+    r = alm.run_cel_backtest(
+        "BTCUSDT",
+        entry_expr="ema(9) > ema(21)",
+        exit_expr="ema(9) < ema(21)",
+        bars=trending_bars,
+    )
+    assert "total_trades" in r
+    assert "indicator_series" in r
+    assert "benchmark" in r
+
+
+def test_cel_indicator_series_populated(trending_bars):
+    """CEL strategy with ema(9) should expose it in indicator_series."""
+    r = alm.run_cel_backtest(
+        "BTCUSDT",
+        entry_expr="ema(9) > ema(21)",
+        exit_expr="ema(9) < ema(21)",
+        bars=trending_bars,
+    )
+    ind = r["indicator_series"]
+    assert len(ind) > 0, "CEL should produce indicator_series entries"
+    # each series has 't' and 'v' arrays of equal length
+    for name, series in ind.items():
+        assert "t" in series and "v" in series, f"{name} missing t/v"
+        assert len(series["t"]) == len(series["v"])
+
+
+def test_cel_with_exit_config(trending_bars):
+    r = alm.run_cel_backtest(
+        "BTCUSDT",
+        entry_expr="rsi(14) < 35.0",
+        exit_expr="rsi(14) > 65.0",
+        bars=trending_bars,
+        exit={"sl": 0.03, "tp": 0.06, "max_bars": 50},
+    )
+    assert "total_trades" in r
+    assert r["exposure_pct"] >= 0.0
+
+
+def test_cel_history_indexing(trending_bars):
+    """close[1] > close[0] is a valid CEL expression (two-bar comparison)."""
+    r = alm.run_cel_backtest(
+        "BTCUSDT",
+        entry_expr="close[1] < close[0] && rsi(14) < 40.0",
+        exit_expr="close[1] > close[0]",
+        bars=trending_bars,
+    )
+    assert isinstance(r["total_trades"], int)
+
+
+def test_cel_heiken_ashi(trending_bars):
+    r = alm.run_cel_backtest(
+        "BTCUSDT",
+        entry_expr="ema(9) > ema(21)",
+        exit_expr="ema(9) < ema(21)",
+        bars=trending_bars,
+        candle_type="heiken_ashi",
+    )
+    assert "total_trades" in r
+
+
+# ── buy_hold_benchmark ────────────────────────────────────────────────────────
+
+def test_buy_hold_benchmark_keys(trending_bars):
+    closes = trending_bars["c"]
+    timestamps = trending_bars["t"]
+    bh = alm.buy_hold_benchmark(closes, timestamps)
+    for key in ("total_return_pct", "cagr_pct", "annualized_volatility_pct",
+                "sharpe_ratio", "sortino_ratio", "max_drawdown_pct", "max_dd_duration_bars"):
+        assert key in bh, f"buy_hold_benchmark missing '{key}'"
+
+
+def test_buy_hold_benchmark_uptrend(trending_bars):
+    """Trending up data should give a positive total return."""
+    closes = trending_bars["c"]
+    timestamps = trending_bars["t"]
+    bh = alm.buy_hold_benchmark(closes, timestamps)
+    assert bh["total_return_pct"] > 0.0
+
+
+def test_buy_hold_benchmark_length_mismatch():
+    with pytest.raises(Exception):
+        alm.buy_hold_benchmark([1.0, 2.0], [1_000_000])

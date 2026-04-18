@@ -75,6 +75,23 @@ pub mod orb_breakout;
 pub mod pixel_3;
 pub mod scalping_ema;
 
+// ── New: lesser-used indicator strategies ────────────────────────────────────
+pub mod adx_ema_cross;
+pub mod alma_cross;
+pub mod bb_rsi_reversal;
+pub mod cmf_ema_trend;
+pub mod cmo_zero_cross;
+pub mod fisher_crossover;
+pub mod lsma_cross;
+pub mod obv_ema_trend;
+pub mod ppo_histogram;
+pub mod rsi_ma_cross;
+pub mod smi_reversal;
+pub mod uo_reversal;
+pub mod vortex_trend;
+pub mod vwma_rsi;
+pub mod williams_r_ma;
+
 // ── Re-exports ────────────────────────────────────────────────────────────────
 
 pub use alligator_strategy::AlligatorStrategy;
@@ -136,3 +153,19 @@ pub use volatility_vanguard::VolatilityVanguard;
 pub use vwap_strategy::{VwapBounce, VwapTrend};
 pub use waddah_attar::WaddahAttar;
 pub use wolfstein::Wolfstein;
+
+pub use adx_ema_cross::AdxEmaCross;
+pub use alma_cross::AlmaCross;
+pub use bb_rsi_reversal::BbRsiReversal;
+pub use cmf_ema_trend::CmfEmaTrend;
+pub use cmo_zero_cross::CmoZeroCross;
+pub use fisher_crossover::FisherCrossover;
+pub use lsma_cross::LsmaCross;
+pub use obv_ema_trend::ObvEmaTrend;
+pub use ppo_histogram::PpoHistogram;
+pub use rsi_ma_cross::RsiMaCross;
+pub use smi_reversal::SmiReversal;
+pub use uo_reversal::UoReversal;
+pub use vortex_trend::VortexTrend;
+pub use vwma_rsi::VwmaRsi;
+pub use williams_r_ma::WilliamsRMa;

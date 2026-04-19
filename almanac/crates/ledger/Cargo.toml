@@ -1,0 +1,20 @@
+[package]
+name = "alm-ledger"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+alm-core      = { workspace = true }
+alm-indicator = { workspace = true }
+alm-data      = { workspace = true }
+anyhow        = { workspace = true }
+serde         = { workspace = true }
+serde_json    = { workspace = true }
+tracing       = { workspace = true }
+parking_lot   = "0.12"
+dashmap       = "6"
+rayon         = "1"
+
+[dev-dependencies]
+tokio    = { workspace = true }
+tempfile = "3"

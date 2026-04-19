@@ -6,6 +6,9 @@ pub mod util;
 pub mod volatility;
 pub mod volume;
 
+mod box_;
+pub use box_::IndicatorBox;
+
 pub use regime::RegimeDetector;
 
 pub use util::{RollingMax, RollingMin};

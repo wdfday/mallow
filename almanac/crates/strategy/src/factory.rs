@@ -601,6 +601,72 @@ pub fn build_strategy(name: &str, params: &Value) -> Result<Box<dyn Strategy>> {
     Ok(s)
 }
 
+// ── Indicator dependency declaration ─────────────────────────────────────────
+
+/// A single indicator dependency declared by a strategy.
+///
+/// Used by `herald::Registry` to acquire live indicator handles from the ledger
+/// at registration time. This keeps live indicators warm for the lifetime of
+/// the bot — and makes the same values accessible to HTTP / chart overlays.
+///
+/// # Phase A scope
+///
+/// Only base-timeframe indicators are declared. Multi-timeframe (MTF) indicators
+/// declared in CEL (`H1.ema(200)`) or DynamicStrategy (`"tf": "H1"`) remain
+/// internal to the strategy — the ledger does not currently resample bars.
+#[derive(Debug, Clone)]
+pub struct IndicatorDep {
+    /// JSON config accepted by `alm_indicator::IndicatorBox::from_config`.
+    /// Example: `{"type":"ema","period":9}` or `{"type":"macd","fast":12,"slow":26,"signal":9}`.
+    pub config: Value,
+    /// MTF source timeframe. Phase A: always `None`.
+    ///
+    /// Reserved for when the ledger grows MTF resampling — at that point CEL's
+    /// `H1.ema(200)` would emit `source_tf = Some(Timeframe::H1)` and read from
+    /// the ledger instead of its internal resampler.
+    pub source_tf: Option<alm_core::Timeframe>,
+}
+
+/// Extract the indicator dependencies declared by a strategy's params.
+///
+/// Returns an empty vec for strategies that do not expose their dependency list
+/// (all 57 named strategies currently fall into this category — they instantiate
+/// indicators internally).
+pub fn indicator_deps(name: &str, params: &Value) -> Vec<IndicatorDep> {
+    match name {
+        "cel" | "cel2" | "evalexpr" => crate::expr::cel::cel_indicator_deps(params),
+        "dynamic" => crate::dynamic::dynamic_indicator_deps(params),
+        "layered" => {
+            let mut deps = Vec::new();
+            if let Some(filter_cfg) = params.get("filter") {
+                let fname = filter_cfg.get("name").and_then(Value::as_str).unwrap_or("");
+                let fparams = filter_cfg.get("params").unwrap_or(&Value::Null);
+                deps.extend(indicator_deps(fname, fparams));
+            }
+            if let Some(signal_cfg) = params.get("signal") {
+                let sname = signal_cfg.get("name").and_then(Value::as_str).unwrap_or("");
+                let sparams = signal_cfg.get("params").unwrap_or(&Value::Null);
+                deps.extend(indicator_deps(sname, sparams));
+            }
+            deps
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// Build a strategy **and** extract its declared indicator dependencies in one call.
+///
+/// Used by live systems (herald) that need to register bot + warm corresponding
+/// indicators atomically. Backtesting can stick with `build_strategy`.
+pub fn build_strategy_with_deps(
+    name: &str,
+    params: &Value,
+) -> Result<(Box<dyn Strategy>, Vec<IndicatorDep>)> {
+    let strat = build_strategy(name, params)?;
+    let deps = indicator_deps(name, params);
+    Ok((strat, deps))
+}
+
 /// Convert a `HashMap<String, f64>` (proto ConfigMsg.params) to a flat `Value::Object`.
 /// This lets the live herald reuse the same factory.
 pub fn params_from_map(map: &std::collections::HashMap<String, f64>) -> Value {
@@ -779,5 +845,96 @@ mod tests {
         let v = params_from_map(&map);
         assert_eq!(pf64(&v, "fast", 0.0), 12.0);
         assert_eq!(pf64(&v, "slow", 0.0), 26.0);
+    }
+
+    // ── indicator_deps ───────────────────────────────────────────────────────
+
+    /// Extract the `"type"` field from each dep config, sorted, for stable asserts.
+    fn dep_types(deps: &[IndicatorDep]) -> Vec<String> {
+        let mut t: Vec<String> = deps.iter()
+            .filter_map(|d| d.config.get("type").and_then(Value::as_str).map(str::to_string))
+            .collect();
+        t.sort();
+        t
+    }
+
+    #[test]
+    fn named_strategies_declare_no_deps() {
+        // Named strategies own their indicators internally and must not leak
+        // dependencies to the ledger (would double-allocate).
+        let (_, deps) = build_strategy_with_deps(
+            "ma_crossover",
+            &json!({"fast": 10, "slow": 30}),
+        ).unwrap();
+        assert!(deps.is_empty(), "named strategy must declare zero deps: {deps:?}");
+    }
+
+    #[test]
+    fn dynamic_declares_base_tf_deps_only() {
+        let params = json!({
+            "indicators": {
+                "rsi14":  { "type": "rsi",  "period": 14 },
+                "ema200": { "type": "ema",  "period": 200 },
+                "mtf_h1": { "type": "ema",  "period": 50, "tf": "H1" }
+            },
+            "entry": { "logic": "and", "rules": [
+                { "source": "rsi14", "field": "value", "op": "lt", "value": 30 }
+            ]}
+        });
+        let (_, deps) = build_strategy_with_deps("dynamic", &params).unwrap();
+
+        assert_eq!(dep_types(&deps), vec!["ema", "rsi"],
+            "MTF indicator with tf='H1' must be skipped (Phase A: base-TF only)");
+        assert!(deps.iter().all(|d| d.source_tf.is_none()),
+            "all deps must have source_tf=None in Phase A");
+        assert!(deps.iter().all(|d| d.config.get("tf").is_none()),
+            "the 'tf' key must be stripped from dep configs");
+    }
+
+    #[test]
+    fn cel_extracts_deps_from_entry_and_exit() {
+        let params = json!({
+            "entry": "rsi(14) < 30 && close > ema(50)",
+            "exit":  "rsi(14) > 70 || macd_hist(12) < 0"
+        });
+        let (_, deps) = build_strategy_with_deps("cel", &params).unwrap();
+        // Expect: rsi, ema, macd (dedup — one rsi even though used twice).
+        assert_eq!(dep_types(&deps), vec!["ema", "macd", "rsi"]);
+    }
+
+    #[test]
+    fn cel_skips_mtf_indicators() {
+        let params = json!({
+            "entry": "H1.ema(200) > close && rsi(14) < 30",
+            "exit":  "rsi(14) > 70"
+        });
+        let (_, deps) = build_strategy_with_deps("cel", &params).unwrap();
+        // Only base-TF rsi. H1.ema(200) is MTF → skipped.
+        assert_eq!(dep_types(&deps), vec!["rsi"]);
+    }
+
+    #[test]
+    fn cel_dedups_same_indicator() {
+        let params = json!({
+            "entry": "ema(9) > ema(21) && close > ema(9)",
+            "exit":  "ema(9) < ema(21)"
+        });
+        let (_, deps) = build_strategy_with_deps("cel", &params).unwrap();
+        // ema(9) and ema(21) are two distinct specs — ema(9) used 3× collapses to one.
+        assert_eq!(deps.len(), 2);
+        let periods: Vec<i64> = deps.iter()
+            .filter_map(|d| d.config.get("period").and_then(Value::as_i64))
+            .collect();
+        let mut p = periods; p.sort();
+        assert_eq!(p, vec![9, 21]);
+    }
+
+    #[test]
+    fn cel_script_form_extracts_deps() {
+        let params = json!({
+            "script": "entry: rsi(14) < 30\nexit: rsi(14) > 70"
+        });
+        let (_, deps) = build_strategy_with_deps("cel", &params).unwrap();
+        assert_eq!(dep_types(&deps), vec!["rsi"]);
     }
 }

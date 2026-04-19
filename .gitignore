@@ -10,7 +10,8 @@ deployment/.env
 # Built outputs next to cmd/ dirs
 **/cmd/*/*.exe
 **/cmd/*/$(basename $(pwd))
-
+tmp/*
+go.sum
 # ── Rust ─────────────────────────────────────────────────────────────────────
 almanac/target/
 

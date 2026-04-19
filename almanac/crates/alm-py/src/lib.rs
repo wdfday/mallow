@@ -28,10 +28,9 @@ use pyo3::types::{PyDict, PyList};
 use alm_core::{Bar, exit::ExitRules, order::Side, portfolio::EquityPoint};
 use alm_data::InMemoryFeed;
 use alm_engine::Engine;
-use alm_indicator::KalmanFilter;
+use alm_indicator::{IndicatorBox, KalmanFilter};
 use alm_report::{BuyHoldBenchmark, monte_carlo as mc_run, portfolio_analyze, MonteCarloConfig};
 use alm_strategy::{build_strategy, AtrSizing, FixedFractional, KellySizing};
-use alm_strategy::dynamic::indicator_box::IndicatorBox;
 use serde_json::{json, Map, Value};
 
 // ── Internal helpers ──────────────────────────────────────────────────────────

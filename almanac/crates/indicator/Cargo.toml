@@ -4,7 +4,9 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-alm-core = { workspace = true }
+alm-core   = { workspace = true }
+serde_json = { workspace = true }
+anyhow     = { workspace = true }
 
 [dev-dependencies]
 ta = "0.5"

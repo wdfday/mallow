@@ -7,10 +7,14 @@ edition = "2021"
 alm-core      = { workspace = true }
 alm-indicator = { workspace = true }
 alm-pattern   = { path = "../pattern" }
+serde           = { workspace = true }
 serde_json      = { workspace = true }
 anyhow          = { workspace = true }
 evalexpr        = { workspace = true }
 cel-interpreter = { workspace = true }
+# Derives for the strategy / indicator catalogue so HTTP layers can expose
+# the list via Swagger without cloning the schema.
+utoipa          = { version = "4", features = ["axum_extras"] }
 
 [dev-dependencies]
 criterion = { workspace = true }

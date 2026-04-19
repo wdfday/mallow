@@ -1,4 +1,4 @@
-//! Shared bar generators for benchmarks.
+/// Shared bar generators for benchmarks.
 
 use alm_core::bar::Bar;
 

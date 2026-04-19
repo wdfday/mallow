@@ -1,33 +1,33 @@
-//! Awesome Oscillator (AO) — momentum oscillator của Bill Williams.
-//!
-//! Được Bill Williams phát triển. AO đo sự khác biệt giữa momentum ngắn hạn (5 bar)
-//! và dài hạn (34 bar) của Median Price, cho biết liệu phe mua hay phe bán đang
-//! chiếm ưu thế trong timeframe hiện tại.
-//!
-//! # Công thức
-//! ```text
-//! Median Price = (High + Low) / 2
-//! AO = SMA(Median, 5) − SMA(Median, 34)
-//! ```
-//!
-//! # Cách đọc tín hiệu
-//! - **AO > 0**: momentum bullish (SMA nhanh > SMA chậm)
-//! - **AO < 0**: momentum bearish
-//! - **AO cắt 0 từ dưới lên**: buy signal (zero-line crossover)
-//! - **AO cắt 0 từ trên xuống**: sell signal
-//!
-//! # Bill Williams signals
-//! - **Saucer** (chén đĩa): 3 bar histogram liên tiếp; bar thứ 2 thấp nhất → buy
-//!   khi AO > 0 và 2 bar cuối tăng sau bar thứ 2
-//! - **Twin peaks** (đôi đỉnh): 2 đỉnh/đáy, đỉnh/đáy thứ 2 thấp/cao hơn → reversal
-//! - **Zero-line cross**: đơn giản nhất, ít signal nhất
-//!
-//! # Ưu điểm
-//! - Dùng Median Price (không có close) → ít bị distort bởi closing bias
-//! - Không có tham số tuỳ chỉnh (5 và 34 cố định) → ít overfitting
-//!
-//! # Warmup
-//! Cần đúng `slow_period` (34) bar để SMA chậm warm up.
+/// Awesome Oscillator (AO) — momentum oscillator của Bill Williams.
+///
+/// Được Bill Williams phát triển. AO đo sự khác biệt giữa momentum ngắn hạn (5 bar)
+/// và dài hạn (34 bar) của Median Price, cho biết liệu phe mua hay phe bán đang
+/// chiếm ưu thế trong timeframe hiện tại.
+///
+/// # Công thức
+/// ```text
+/// Median Price = (High + Low) / 2
+/// AO = SMA(Median, 5) − SMA(Median, 34)
+/// ```
+///
+/// # Cách đọc tín hiệu
+/// - **AO > 0**: momentum bullish (SMA nhanh > SMA chậm)
+/// - **AO < 0**: momentum bearish
+/// - **AO cắt 0 từ dưới lên**: buy signal (zero-line crossover)
+/// - **AO cắt 0 từ trên xuống**: sell signal
+///
+/// # Bill Williams signals
+/// - **Saucer** (chén đĩa): 3 bar histogram liên tiếp; bar thứ 2 thấp nhất → buy
+///   khi AO > 0 và 2 bar cuối tăng sau bar thứ 2
+/// - **Twin peaks** (đôi đỉnh): 2 đỉnh/đáy, đỉnh/đáy thứ 2 thấp/cao hơn → reversal
+/// - **Zero-line cross**: đơn giản nhất, ít signal nhất
+///
+/// # Ưu điểm
+/// - Dùng Median Price (không có close) → ít bị distort bởi closing bias
+/// - Không có tham số tuỳ chỉnh (5 và 34 cố định) → ít overfitting
+///
+/// # Warmup
+/// Cần đúng `slow_period` (34) bar để SMA chậm warm up.
 
 use std::collections::VecDeque;
 

@@ -35,23 +35,9 @@ run:
 run-debug:
     RUST_LOG=herald=debug cargo run -p herald
 
-# Hot-reload signal-engine on file changes (requires cargo-watch)
+# Hot-reload herald on file changes (requires cargo-watch)
 dev:
     cargo watch -x 'run -p herald'
-
-# Run logbook API server (Ctrl+C to stop)
-run-api:
-    NATS_USER=backtest_api \
-    NATS_PASS=${NATS_PASS_BACKTEST_API:-backtest-api-dev} \
-    DATA_DIR=${DATA_DIR:-../hist-data/data} \
-    cargo run -p logbook --bin logbook
-
-# Hot-reload logbook API server (requires cargo-watch)
-dev-api:
-    NATS_USER=backtest_api \
-    NATS_PASS=${NATS_PASS_BACKTEST_API:-backtest-api-dev} \
-    DATA_DIR=${DATA_DIR:-../hist-data/data} \
-    cargo watch -x 'run -p logbook --bin logbook'
 
 # ── Code quality ──────────────────────────────────────────────────────────────
 

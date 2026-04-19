@@ -1,14 +1,14 @@
 mod bench_utils;
 
-//! Benchmark: CelStrategy vs DynamicStrategy vs hardcoded struct.
-//!
-//! Tách rõ 2 phần:
-//!   construct/* — thời gian tạo strategy (1 lần)
-//!   run/*       — thời gian xử lý 1000 bar (vòng lặp thực sự)
-//!
-//! Chạy:
-//!   cargo bench -p alm-strategy
-//!   cargo bench -p alm-strategy -- rsi_run   (chỉ xem group run)
+/// Benchmark: CelStrategy vs DynamicStrategy vs hardcoded struct.
+///
+/// Tách rõ 2 phần:
+/// - construct - thời gian tạo strategy (1 lần)
+/// - run - thời gian xử lý 1000 bar (vòng lặp thực sự)
+///
+/// Chạy:
+/// - cargo bench -p alm-strategy
+/// - cargo bench -p alm-strategy -- rsi_run   (chỉ xem group run)
 
 use alm_core::{bar::Bar, strategy::Strategy};
 use alm_strategy::{factory::build_strategy, named::rsi_mean_rev::RsiMeanRev};

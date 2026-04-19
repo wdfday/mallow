@@ -1,15 +1,13 @@
 pub mod condition;
-pub mod indicator_box;
 
 use std::collections::HashMap;
 
 use anyhow::{bail, Result};
 use alm_core::{Bar, Signal, Strategy};
-use alm_indicator::Atr;
+use alm_indicator::{Atr, IndicatorBox};
 use serde_json::Value;
 
 use self::condition::ConditionGroup;
-use self::indicator_box::IndicatorBox;
 use crate::bar_resampler::{TimeBarResampler, parse_timeframe_ms};
 use crate::candle_type::{CandleTransform, CandleType};
 
@@ -129,6 +127,32 @@ pub struct DynamicStrategy {
     atr: Option<Atr>,
     last_atr: f64,
     transform: CandleTransform,
+}
+
+/// Extract the indicator dependencies declared in a DynamicStrategy params block.
+///
+/// Walks `params.indicators` and returns one `IndicatorDep` per entry — skipping
+/// any indicator configured with a non-empty `"tf"` field (MTF stays internal to
+/// the strategy until the ledger supports resampling).
+///
+/// Called by `alm_strategy::factory::build_strategy_with_deps`.
+pub fn dynamic_indicator_deps(params: &Value) -> Vec<crate::factory::IndicatorDep> {
+    let Some(ind_map) = params.get("indicators").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let mut deps = Vec::new();
+    for (_name, cfg) in ind_map {
+        let tf = cfg.get("tf").and_then(Value::as_str).unwrap_or("");
+        if !tf.is_empty() {
+            continue;
+        }
+        let mut clean = cfg.clone();
+        if let Some(obj) = clean.as_object_mut() {
+            obj.remove("tf");
+        }
+        deps.push(crate::factory::IndicatorDep { config: clean, source_tf: None });
+    }
+    deps
 }
 
 impl DynamicStrategy {

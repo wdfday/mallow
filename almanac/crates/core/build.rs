@@ -11,9 +11,9 @@ fn main() -> Result<()> {
         .join("..") // crates/
         .join("..") // almanac/
         .join("..") // mallow/
-        .join("proto")
-        .canonicalize()
-        .expect("failed to canonicalize proto dir — is mallow/proto/ present?");
+        .join("proto");
+        // .canonicalize()
+        // .expect("failed to canonicalize proto dir — is mallow/proto/ present?");
     let proto_file = proto_dir.join("market.proto");
 
     println!("cargo:rerun-if-changed={}", proto_file.display());

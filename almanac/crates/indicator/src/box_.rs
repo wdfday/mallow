@@ -1,8 +1,24 @@
+//! Uniform wrapper over every concrete indicator in this crate.
+//!
+//! `IndicatorBox` is the single enum that can be built from a JSON config
+//! (`{ "type": "rsi", "period": 14 }`) and feeds `Bar`s to produce a flat
+//! `HashMap<String, f64>` of named output fields. Used by:
+//!
+//! - `alm-ledger`  — the realtime state machine caches one `IndicatorBox`
+//!                   per `(symbol, tf, spec)` and advances it on every bar.
+//! - `alm-strategy::dynamic::DynamicStrategy` — declarative JSON strategy.
+//! - `alm-strategy::expr::cel::CelStrategy` — per-binding live indicator.
+//! - `alm-engine::backtest` / `alm-py` — batch compute on historical bars.
+//!
+//! Originally lived in `alm-strategy/src/dynamic/indicator_box.rs`; moved here
+//! so that `alm-ledger` can depend on it without pulling in `alm-strategy`
+//! (which would create a cycle once CEL/Dynamic consume ledger state).
+
 use std::collections::HashMap;
 
 use anyhow::{bail, Result};
 use alm_core::Bar;
-use alm_indicator::{
+use crate::{
     // Trend / MA
     Adx, Alligator, Alma, Aroon, Dema, Dmi, Ema, Gmma, Hma, Kama, KalmanFilter, Kdj, Lsma, Macd,
     McGinleyDynamic, Sma, Smma, Tema, Trix, Vortex, Vwma, Wma,
@@ -575,6 +591,132 @@ impl IndicatorBox {
         }
     }
 
+    /// Stable lower-snake-case identifier for this variant — matches the
+    /// `"type"` key accepted by `from_config`. Used for logging / diagnostics.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Self::Sma(_)            => "sma",
+            Self::Ema(_)            => "ema",
+            Self::Wma(_)            => "wma",
+            Self::Hma(_)            => "hma",
+            Self::Dema(_)           => "dema",
+            Self::Tema(_)           => "tema",
+            Self::Smma(_)           => "smma",
+            Self::Alma(_)           => "alma",
+            Self::McGinley(_)       => "mcginley",
+            Self::Lsma(_)           => "lsma",
+            Self::Vwma(_)           => "vwma",
+            Self::Kama(_)           => "kama",
+            Self::Macd(_)           => "macd",
+            Self::Trix(_)           => "trix",
+            Self::Adx(_)            => "adx",
+            Self::Dmi(_)            => "dmi",
+            Self::Aroon(_)          => "aroon",
+            Self::Vortex(_)         => "vortex",
+            Self::Alligator(_)      => "alligator",
+            Self::Gmma(_)           => "gmma",
+            Self::Kdj(_)            => "kdj",
+            Self::Kalman(_)         => "kalman",
+            Self::Rsi(_)            => "rsi",
+            Self::Cci(_)            => "cci",
+            Self::Roc(_)            => "roc",
+            Self::Mom(_)            => "mom",
+            Self::Cmo(_)            => "cmo",
+            Self::Dpo(_)            => "dpo",
+            Self::Mfi(_)            => "mfi",
+            Self::Bop(_)            => "bop",
+            Self::WilliamsR(_)      => "williams_r",
+            Self::Stochastic(_)     => "stochastic",
+            Self::StochRsi(_)       => "stoch_rsi",
+            Self::Tsi(_)            => "tsi",
+            Self::Rci(_)            => "rci",
+            Self::BullBear(_)       => "bull_bear",
+            Self::Fisher(_)         => "fisher",
+            Self::Kst(_)            => "kst",
+            Self::Pmo(_)            => "pmo",
+            Self::Ppo(_)            => "ppo",
+            Self::Rvi(_)            => "rvi",
+            Self::Smi(_)            => "smi",
+            Self::Uo(_)             => "uo",
+            Self::ConnorsRsi(_)     => "connors_rsi",
+            Self::Ao(_)             => "ao",
+            Self::Coppock(_)        => "coppock",
+            Self::Atr(_)            => "atr",
+            Self::BBands(_)         => "bbands",
+            Self::Keltner(_)        => "keltner",
+            Self::SuperTrend(_)     => "supertrend",
+            Self::Donchian(_)       => "donchian",
+            Self::Chop(_)           => "chop",
+            Self::ChopZone(_)       => "chop_zone",
+            Self::ChandelierExit(_) => "chandelier_exit",
+            Self::ChandeKroll(_)    => "chande_kroll",
+            Self::VolatilityRatio(_) => "volatility_ratio",
+            Self::Obv(_)            => "obv",
+            Self::Cmf(_)            => "cmf",
+            Self::Vwap(_)           => "vwap",
+            Self::Ichimoku(_)       => "ichimoku",
+            Self::ParabolicSar(_)   => "parabolic_sar",
+            Self::Rwi(_)            => "rwi",
+            Self::WilliamsFractal(_) => "fractal",
+        }
+    }
+
+    /// Static list of output field names produced by this indicator once
+    /// warmed up. Useful for API schema publishing (chart series, OpenAPI
+    /// responses) without actually running the indicator.
+    ///
+    /// Invariant: every key that can appear in `update(...)` output must
+    /// be listed here. Scalar indicators always report `["value"]`.
+    pub fn field_names(&self) -> &'static [&'static str] {
+        match self {
+            // Scalar — single "value" field
+            Self::Sma(_)       | Self::Ema(_)       | Self::Wma(_)       | Self::Hma(_)
+            | Self::Dema(_)    | Self::Tema(_)      | Self::Smma(_)      | Self::Alma(_)
+            | Self::McGinley(_) | Self::Vwma(_)     | Self::Kama(_)
+            | Self::Rsi(_)     | Self::Cci(_)       | Self::Roc(_)       | Self::Mom(_)
+            | Self::Cmo(_)     | Self::Dpo(_)       | Self::Mfi(_)       | Self::Bop(_)
+            | Self::WilliamsR(_) | Self::Tsi(_)     | Self::Rci(_)
+            | Self::Uo(_)      | Self::ConnorsRsi(_) | Self::Ao(_)       | Self::Coppock(_)
+            | Self::Chop(_)    | Self::VolatilityRatio(_)
+            | Self::Cmf(_)
+                => &["value"],
+            Self::Obv(_)       => &["value"],
+            Self::Vwap(_)      => &["value"],
+            Self::Lsma(_)      => &["value", "slope"],
+            Self::Macd(_)      => &["macd", "signal", "histogram"],
+            Self::Trix(_)      => &["trix", "signal", "histogram"],
+            Self::Adx(_)       => &["adx", "plus_di", "minus_di"],
+            Self::Dmi(_)       => &["plus_di", "minus_di", "dx"],
+            Self::Aroon(_)     => &["up", "down", "oscillator"],
+            Self::Vortex(_)    => &["plus_vi", "minus_vi"],
+            Self::Alligator(_) => &["jaw", "teeth", "lips", "bullish"],
+            Self::Gmma(_)      => &["short_avg", "long_avg", "bullish"],
+            Self::Kdj(_)       => &["k", "d", "j"],
+            Self::Kalman(_)    => &["value", "velocity"],
+            Self::Stochastic(_) => &["k", "d"],
+            Self::StochRsi(_)  => &["k", "d"],
+            Self::BullBear(_)  => &["bull", "bear", "ema"],
+            Self::Fisher(_)    => &["fisher", "signal"],
+            Self::Kst(_)       => &["kst", "signal", "histogram"],
+            Self::Pmo(_)       => &["pmo", "signal", "histogram"],
+            Self::Ppo(_)       => &["ppo", "signal", "histogram"],
+            Self::Rvi(_)       => &["rvi", "signal"],
+            Self::Smi(_)       => &["smi", "signal"],
+            Self::Atr(_)       => &["atr"],
+            Self::BBands(_)    => &["upper", "middle", "lower", "bandwidth", "percent_b"],
+            Self::Keltner(_)   => &["upper", "middle", "lower"],
+            Self::SuperTrend(_) => &["value", "bullish"],
+            Self::Donchian(_)  => &["upper", "middle", "lower"],
+            Self::ChopZone(_)  => &["angle", "zone"],
+            Self::ChandelierExit(_) => &["long_stop", "short_stop", "atr"],
+            Self::ChandeKroll(_) => &["stop_long", "stop_short"],
+            Self::Ichimoku(_)  => &["tenkan", "kijun", "senkou_a", "senkou_b", "chikou", "above_cloud"],
+            Self::ParabolicSar(_) => &["sar", "bullish"],
+            Self::Rwi(_)       => &["rwi_high", "rwi_low"],
+            Self::WilliamsFractal(_) => &["bullish", "bearish", "fractal_high", "fractal_low"],
+        }
+    }
+
     pub fn reset(&mut self) {
         match self {
             Self::Sma(i)            => i.reset(),
@@ -606,7 +748,7 @@ impl IndicatorBox {
             Self::Cmo(i)            => i.reset(),
             Self::Dpo(i)            => i.reset(),
             Self::Mfi(i)            => i.reset(),
-            Self::Bop(_)            => {} // stateless, nothing to reset
+            Self::Bop(_)            => {}
             Self::WilliamsR(i)      => i.reset(),
             Self::Stochastic(i)     => i.reset(),
             Self::StochRsi(i)       => i.reset(),
@@ -649,4 +791,67 @@ fn scalar(v: f64) -> Option<HashMap<String, f64>> {
     let mut m = HashMap::new();
     m.insert("value".into(), v);
     Some(m)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn mk_bar(t: i64, c: f64) -> Bar {
+        Bar::new(t, "TEST", c, c, c, c, 1.0)
+    }
+
+    #[test]
+    fn type_name_round_trips_with_from_config() {
+        for name in &[
+            "sma", "ema", "wma", "hma", "dema", "tema", "smma", "alma",
+            "mcginley", "lsma", "vwma", "kama", "macd", "trix", "adx",
+            "dmi", "aroon", "vortex", "alligator", "gmma", "kdj", "kalman",
+            "rsi", "cci", "roc", "mom", "cmo", "dpo", "mfi", "bop",
+            "williams_r", "stochastic", "stoch_rsi", "tsi", "rci",
+            "bull_bear", "fisher", "kst", "pmo", "ppo", "rvi", "smi",
+            "uo", "connors_rsi", "ao", "coppock",
+            "atr", "bbands", "keltner", "supertrend", "donchian",
+            "chop", "chop_zone", "chandelier_exit", "chande_kroll",
+            "volatility_ratio",
+            "obv", "cmf", "vwap",
+            "ichimoku", "parabolic_sar", "rwi", "fractal",
+        ] {
+            let ind = IndicatorBox::from_config(&json!({ "type": name })).unwrap();
+            assert_eq!(ind.type_name(), *name, "type_name mismatch for {name}");
+            assert!(!ind.field_names().is_empty(), "{name} must expose at least one field");
+        }
+    }
+
+    #[test]
+    fn field_names_cover_actual_output() {
+        // Sanity: after feeding enough bars, every advertised field must
+        // appear in the output map, and no extra keys must sneak in.
+        let cases: &[(&str, usize)] = &[
+            ("ema",         30),   // scalar
+            ("macd",       120),   // multi-field
+            ("bbands",      60),
+            ("aroon",       60),
+            ("stochastic",  60),
+            ("ichimoku",   200),
+        ];
+        for (name, warmup) in cases {
+            let mut ind = IndicatorBox::from_config(&json!({ "type": name })).unwrap();
+            let fields = ind.field_names();
+            let mut last = None;
+            for i in 1..=*warmup {
+                last = ind.update(&mk_bar((i as i64) * 60_000, 100.0 + (i as f64).sin()));
+            }
+            let out = last.expect(&format!("{name} should be warm after {warmup} bars"));
+            for f in fields {
+                assert!(out.contains_key(*f),
+                    "{name}: advertised field '{f}' missing from output {:?}", out.keys().collect::<Vec<_>>());
+            }
+            for k in out.keys() {
+                assert!(fields.iter().any(|f| f == k),
+                    "{name}: output has undocumented field '{k}' (advertised: {fields:?})");
+            }
+        }
+    }
 }

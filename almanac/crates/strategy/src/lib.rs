@@ -21,6 +21,12 @@ pub use layered::LayeredStrategy;
 // ── Bar resampler (MTF helper) ────────────────────────────────────────────────
 pub mod bar_resampler;
 
+// ── Strategy / indicator catalogue ────────────────────────────────────────────
+// Static metadata surfaced by HTTP (`GET /api/indicators`, `/api/strategies`)
+// and used by docs / UI pickers. Lives in strategy because the source of
+// truth for what strategies + indicators exist is this crate.
+pub mod catalog;
+
 // ── Concrete named strategies (58) ───────────────────────────────────────────
 pub mod named;
 pub use named::*;

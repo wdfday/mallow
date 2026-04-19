@@ -7,6 +7,6 @@ use (
 	./investment
 	./orchestrator
 	./pkg
-	./thstrategist
+	//./thstrategist
 	./stream-data
 )

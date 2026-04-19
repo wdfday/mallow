@@ -34,9 +34,14 @@ anyhow       = { workspace = true }
 serde        = { workspace = true }
 serde_json   = { workspace = true }
 chrono       = { workspace = true }
+chrono-tz    = { workspace = true }
 tracing      = { workspace = true }
 tracing-subscriber = { workspace = true }
 tokio        = { workspace = true }
+walkdir      = "2"
+# Derives for backtest DTOs so downstream services (herald HTTP) can
+# optionally wire them into Swagger without re-defining the schema.
+utoipa       = { version = "4", features = ["axum_extras"] }
 
 # Parallel batch optimization
 rayon = "1"

@@ -185,7 +185,7 @@ use serde_json::json;
 
 use crate::bar_resampler::{TimeBarResampler, parse_timeframe_ms};
 use crate::candle_type::{CandleTransform, CandleType};
-use crate::dynamic::indicator_box::IndicatorBox;
+use alm_indicator::IndicatorBox;
 
 // ── VarBinding ────────────────────────────────────────────────────────────────
 
@@ -679,6 +679,151 @@ fn make_binding(base: &str, args: &[f64], interval_ms: Option<i64>, lookback: us
 
         _             => Ok(None),
     }
+}
+
+/// Returns the `IndicatorBox`-compatible JSON config for a CEL indicator call.
+///
+/// Mirrors the dispatch in `make_binding`, but returns only the config (no
+/// `IndicatorBox` allocated). Used by `cel_indicator_deps` to declare
+/// dependencies without instantiating indicators.
+///
+/// Returns `None` for unrecognised base names — callers should treat this as
+/// "no dependency" rather than an error (CEL accepts arbitrary identifiers as
+/// CEL variables).
+pub fn cel_indicator_config(base: &str, args: &[f64]) -> Option<serde_json::Value> {
+    let n = args.first().copied().unwrap_or(0.0) as usize;
+    let cfg = match base {
+        // ── MA / trend ───────────────────────────────────────────────────────
+        "ema"          => json!({"type":"ema","period":n}),
+        "sma"          => json!({"type":"sma","period":n}),
+        "wma"          => json!({"type":"wma","period":n}),
+        "hma"          => json!({"type":"hma","period":n}),
+        "tema"         => json!({"type":"tema","period":n}),
+        "dema"         => json!({"type":"dema","period":n}),
+        "smma"         => json!({"type":"smma","period":n}),
+        "alma"         => json!({"type":"alma","period":n}),
+        "mcginley"     => json!({"type":"mcginley","period":n}),
+        "lsma" | "lsma_slope" => json!({"type":"lsma","period":n}),
+        "vwma"         => json!({"type":"vwma","period":n}),
+        "kama"         => json!({"type":"kama","er_period":n}),
+        "macd_hist" | "macd_line" => json!({"type":"macd","fast":n,"slow":26,"signal":9}),
+        "adx" | "plus_di" | "minus_di" => json!({"type":"adx","period":n}),
+        "dmi_plus" | "dmi_minus" | "dmi_dx" => json!({"type":"dmi","period":n}),
+        "aroon_up" | "aroon_down" | "aroon_osc" => json!({"type":"aroon","period":n}),
+        "vortex_plus" | "vortex_minus" => json!({"type":"vortex","period":n}),
+        "kdj_k" | "kdj_d" | "kdj_j" => json!({"type":"kdj","period":n}),
+        "supertrend" | "st_bull" => json!({"type":"supertrend","period":n,"multiplier":3.0}),
+
+        // ── Momentum ─────────────────────────────────────────────────────────
+        "rsi"          => json!({"type":"rsi","period":n}),
+        "cci"          => json!({"type":"cci","period":n}),
+        "roc"          => json!({"type":"roc","period":n}),
+        "mfi"          => json!({"type":"mfi","period":n}),
+        "williams"     => json!({"type":"williams_r","period":n}),
+        "tsi"          => json!({"type":"tsi","first":n,"second":13}),
+        "chop"         => json!({"type":"chop","period":n}),
+        "connors_rsi"  => json!({"type":"connors_rsi","rsi_period":n,"streak_period":2,"rank_period":100}),
+        "mom"          => json!({"type":"mom","period":n}),
+        "cmo"          => json!({"type":"cmo","period":n}),
+        "dpo"          => json!({"type":"dpo","period":n}),
+        "rci"          => json!({"type":"rci","period":n}),
+        "fisher_line" | "fisher_sig" => json!({"type":"fisher","period":n}),
+        "bull_power" | "bear_power"  => json!({"type":"bull_bear","period":n}),
+        "ppo_line" | "ppo_sig" | "ppo_hist" => json!({"type":"ppo","fast":n,"slow":26,"signal":9}),
+        "rvi_line" | "rvi_sig" => json!({"type":"rvi","period":n}),
+        "smi_line" | "smi_sig" => json!({"type":"smi"}),
+        "stoch_k" | "stoch_d"  => json!({"type":"stochastic","k_period":n,"d_period":3}),
+        "srsi_k" | "srsi_d"    => json!({"type":"stoch_rsi","rsi_period":n,"smooth_d":3}),
+
+        // ── Volatility ───────────────────────────────────────────────────────
+        "atr"          => json!({"type":"atr","period":n}),
+        "bb_upper" | "bb_lower" | "bb_mid" | "bb_pct" | "bb_bw" =>
+            json!({"type":"bbands","period":n,"multiplier":2.0}),
+        "donchian_upper" | "donchian_lower" | "donchian_mid" =>
+            json!({"type":"donchian","period":n}),
+        "keltner_upper" | "keltner_lower" | "keltner_mid" =>
+            json!({"type":"keltner","period":n,"atr_period":10,"multiplier":2.0}),
+        "rwi_high" | "rwi_low" => json!({"type":"rwi","period":n}),
+        "chandelier_long" | "chandelier_short" =>
+            json!({"type":"chandelier_exit","period":n,"multiplier":3.0}),
+        "chop_angle"   => json!({"type":"chop_zone","ema_period":n,"threshold":5.0}),
+
+        // ── Volume / pattern ─────────────────────────────────────────────────
+        "cmf"          => json!({"type":"cmf","period":n}),
+        "obv"          => json!({"type":"obv"}),
+        "ao"           => json!({"type":"ao","fast":5,"slow":34}),
+        "sar"          => json!({"type":"parabolic_sar","step":0.02,"max":0.2}),
+        "vwap"         => json!({"type":"vwap"}),
+
+        // ── Zero-arg ─────────────────────────────────────────────────────────
+        "bop"              => json!({"type":"bop"}),
+        "coppock"          => json!({"type":"coppock"}),
+        "kst_line" | "kst_sig" => json!({"type":"kst"}),
+        "pmo_line" | "pmo_sig" => json!({"type":"pmo"}),
+        "uo"               => json!({"type":"uo","fast":7,"medium":14,"slow":28}),
+        "alligator_jaw" | "alligator_teeth" | "alligator_lips" | "alligator_bull" =>
+            json!({"type":"alligator","jaw":13,"teeth":8,"lips":5}),
+        "gmma_bull"        => json!({"type":"gmma"}),
+        "chande_kroll_long" | "chande_kroll_short" =>
+            json!({"type":"chande_kroll","atr_period":10,"factor":1.5,"stop_period":9}),
+        "fractal_bull" | "fractal_bear" => json!({"type":"fractal"}),
+
+        _ => return None,
+    };
+    Some(cfg)
+}
+
+/// Extract the `entry` and `exit` expression strings from a CEL params object.
+///
+/// Mirrors `CelStrategy::from_params`: accepts either the `"script"` textarea
+/// form or the legacy `"entry"` / `"exit"` split form. Returns empty strings if
+/// parsing fails — callers treat that as "no deps" rather than propagating.
+fn extract_cel_entry_exit(p: &serde_json::Value) -> (String, String) {
+    if let Some(script) = p.get("script").and_then(|v| v.as_str()) {
+        if let Ok(s) = CelScript::parse(script) {
+            let entry = p.get("entry").and_then(|v| v.as_str()).map(str::to_string)
+                .unwrap_or(s.entry);
+            let exit = p.get("exit").and_then(|v| v.as_str()).map(str::to_string)
+                .unwrap_or(s.exit);
+            return (entry, exit);
+        }
+    }
+    let entry = p.get("entry").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    let exit  = p.get("exit").and_then(|v| v.as_str()).unwrap_or("").to_string();
+    (entry, exit)
+}
+
+/// Extract the indicator dependencies declared by a CEL strategy's params.
+///
+/// Parses both `entry` and `exit` expressions, collects every recognised
+/// indicator call, filters out MTF ones (those with a TF prefix — `H1.ema(200)`),
+/// and deduplicates by canonical config shape.
+///
+/// Called by `alm_strategy::factory::build_strategy_with_deps`.
+pub fn cel_indicator_deps(params: &serde_json::Value) -> Vec<crate::factory::IndicatorDep> {
+    use std::collections::BTreeSet;
+
+    let (entry, exit) = extract_cel_entry_exit(params);
+    let (_, entry_calls) = expand_indicators(&entry);
+    let (_, exit_calls)  = expand_indicators(&exit);
+
+    let mut seen: BTreeSet<String> = BTreeSet::new();
+    let mut deps = Vec::new();
+
+    for call in entry_calls.into_iter().chain(exit_calls.into_iter()) {
+        let (base, _is_prev, interval_ms) = call.parts();
+        if interval_ms.is_some() {
+            continue;
+        }
+        let Some(cfg) = cel_indicator_config(base, &call.args) else {
+            continue;
+        };
+        let key = cfg.to_string();
+        if seen.insert(key) {
+            deps.push(crate::factory::IndicatorDep { config: cfg, source_tf: None });
+        }
+    }
+    deps
 }
 
 /// Parse a single CEL-style indicator expression into its components.

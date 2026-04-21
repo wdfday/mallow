@@ -153,63 +153,41 @@ services:
       - stream-data-vol:/app/data
     restart: unless-stopped
 
-  signal-engine:
+  # Herald = signal-engine + logbook HTTP API in one process.
+  # Subscribes to `bars.*` → ledger → `signals.*`, AND serves live/backtest
+  # HTTP on :8090 (see almanac/crates/herald/src/http/mod.rs).
+  herald:
     build:
-      context: ../backtesting
-      dockerfile: Dockerfile.signal-engine
-    image: signal-engine:latest
-    container_name: signal-engine
+      context: ../almanac
+      dockerfile: Dockerfile.herald
+      additional_contexts:
+        # proto/ lives outside the almanac crate; surface it as a named
+        # build context so alm-core's build.rs can find market.proto at
+        # /proto inside the builder. See Dockerfile.herald + build.rs.
+        proto: ../proto
+    image: herald:latest
+    container_name: herald
+    ports:
+      - "8090:8090"
     depends_on:
       nats:
         condition: service_healthy
     environment:
       NATS_URL: nats://signal_engine:${NATS_PASS_SIGNAL_ENGINE:-signal-engine-dev}@nats:4222
-      RUST_LOG: signal_engine=info
-    restart: unless-stopped
-
-  backtest-api:
-    build:
-      context: ../backtesting
-      dockerfile: Dockerfile.backtest-api
-    image: backtest-api:latest
-    container_name: backtest-api
-    depends_on:
-      nats:
-        condition: service_healthy
-    environment:
-      NATS_URL: nats://gateway:${NATS_PASS_GATEWAY:-gateway-dev}@nats:4222
-      DATA_DIR: /data
-      RUST_LOG: backtest_api=info
-    volumes:
-      - stream-data-vol:/data/stream:ro
-      - ../hist-data/data:/data/hist:ro
-    restart: unless-stopped
-
-  logbook:
-    build:
-      context: ../almanac
-      dockerfile: Dockerfile.logbook
-    image: logbook:latest
-    container_name: logbook
-    ports:
-      - "8085:8085"
-    depends_on:
-      nats:
-        condition: service_healthy
-    environment:
-      NATS_URL: nats://gateway:${NATS_PASS_GATEWAY:-gateway-dev}@nats:4222
-      HTTP_ADDR: "0.0.0.0:8085"
-      DATA_DIR: /data
-      RUST_LOG: logbook=info
+      HERALD_HTTP_ADDR: "0.0.0.0:8090"
+      HERALD_DATA_DIR: /data
+      HERALD_MAX_BACKTESTS: ${HERALD_MAX_BACKTESTS:-4}
+      RUST_LOG: ${HERALD_RUST_LOG:-herald=info,alm_ledger=info}
     volumes:
       - stream-data-vol:/data/stream:ro
       - ../hist-data/data:/data/hist:ro
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8085/health"]
+      test: ["CMD", "wget", "-qO-", "http://localhost:8090/health"]
       interval: 10s
       timeout: 5s
       retries: 3
+      start_period: 20s
 
   orchestrator:
     build:
@@ -340,7 +318,7 @@ services:
         condition: service_healthy
       strategist:
         condition: service_healthy
-      logbook:
+      herald:
         condition: service_healthy
       redis:
         condition: service_healthy
@@ -352,7 +330,10 @@ services:
       INVESTMENT_URL: http://investment:8083
       ORCHESTRATOR_URL: http://orchestrator:8084
       STRATEGIST_URL: http://strategist:8081
-      LOGBOOK_URL: http://logbook:8085
+      # LOGBOOK_URL retained as the env key the Go gateway currently reads —
+      # points at herald. Rename to HERALD_URL in a follow-up once the Go
+      # side is refactored (cf. TODO `deployment_docker`).
+      LOGBOOK_URL: http://herald:8090
       REDIS_URL: redis://redis:6379
       GIN_MODE: ${GIN_MODE:-release}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}

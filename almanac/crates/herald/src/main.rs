@@ -23,6 +23,13 @@ async fn main() -> Result<()> {
         .init();
 
     let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".into());
+    // `async_nats::connect` ignores userinfo embedded in the URL — we must
+    // pull creds off ourselves and feed them through `ConnectOptions`.
+    // Accept either `nats://user:pass@host` or the separate NATS_USER /
+    // NATS_PASS env vars (legacy style used by the old backtest-api).
+    let (host_url, url_user, url_pass) = split_nats_userinfo(&nats_url);
+    let nats_user = std::env::var("NATS_USER").ok().or(url_user);
+    let nats_pass = std::env::var("NATS_PASS").ok().or(url_pass);
 
     // Herald operates at one timeframe — default M1 (matches stream-data
     // publisher default). Override with HERALD_TF=M5 / H1 / etc.
@@ -31,8 +38,15 @@ async fn main() -> Result<()> {
         .and_then(|s| parse_tf(&s))
         .unwrap_or(Timeframe::M1);
 
-    info!(url = %nats_url, ?tf, "connecting to NATS");
-    let client = async_nats::connect(&nats_url).await?;
+    info!(url = %host_url, user = ?nats_user, ?tf, "connecting to NATS");
+    let client = match (nats_user.as_deref(), nats_pass.as_deref()) {
+        (Some(u), Some(p)) => {
+            async_nats::ConnectOptions::with_user_and_password(u.into(), p.into())
+                .connect(&host_url)
+                .await?
+        }
+        _ => async_nats::connect(&host_url).await?,
+    };
     info!("connected to NATS");
 
     // ── Ledger + Registry wiring ──────────────────────────────────────────
@@ -137,6 +151,34 @@ async fn main() -> Result<()> {
     result?;
 
     Ok(())
+}
+
+/// Split `nats://user:pass@host:port` into `(host_url, user, pass)`.
+/// Returns the original URL untouched when no userinfo is present.
+fn split_nats_userinfo(url: &str) -> (String, Option<String>, Option<String>) {
+    // scheme://userinfo@host — find the first '@' before any '/' path separator
+    // after the scheme delimiter.
+    let scheme_end = url.find("://").map(|i| i + 3).unwrap_or(0);
+    let rest = &url[scheme_end..];
+    let path_start = rest
+        .find('/')
+        .map(|i| scheme_end + i)
+        .unwrap_or(url.len());
+    let authority = &url[scheme_end..path_start];
+    let Some(at_pos) = authority.find('@') else {
+        return (url.to_string(), None, None);
+    };
+    let (userinfo, host) = authority.split_at(at_pos);
+    let host = &host[1..]; // drop '@'
+    let (user, pass) = match userinfo.find(':') {
+        Some(i) => (
+            Some(userinfo[..i].to_string()),
+            Some(userinfo[i + 1..].to_string()),
+        ),
+        None => (Some(userinfo.to_string()), None),
+    };
+    let host_url = format!("{}{}{}", &url[..scheme_end], host, &url[path_start..]);
+    (host_url, user, pass)
 }
 
 fn parse_tf(s: &str) -> Option<Timeframe> {

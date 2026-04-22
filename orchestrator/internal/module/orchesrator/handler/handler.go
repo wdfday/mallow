@@ -9,8 +9,8 @@ import (
 	"github.com/shopspring/decimal"
 
 	pkgmw "mallow/pkg/middleware"
-	"orchestrator/internal/module/orchesrator/service"
 	botservice "orchestrator/internal/module/bot/service"
+	"orchestrator/internal/module/orchesrator/service"
 	"orchestrator/internal/runtime"
 	"orchestrator/internal/shared"
 )
@@ -44,6 +44,8 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 		o.POST("/:id/disable", h.disable)
 		o.POST("/:id/pause", h.pause)
 		o.POST("/:id/resume", h.resume)
+		o.POST("/:id/kill", h.kill)
+		o.POST("/:id/halt/reset", h.resetHalt)
 		o.GET("/:id/portfolio", h.portfolio)
 		o.GET("/:id/positions", h.positions)
 		o.GET("/:id/trades", h.trades)
@@ -234,6 +236,10 @@ func (h *Handler) update(c *gin.Context) {
 		Name:    req.Name,
 		Capital: decimal.NewFromFloat(req.Capital),
 	}
+	if req.Portfolio != nil {
+		p := req.Portfolio.ToDomain()
+		updateReq.Portfolio = &p
+	}
 	if req.Risk != nil {
 		r := req.Risk.ToDomain()
 		updateReq.Risk = &r
@@ -309,6 +315,70 @@ func (h *Handler) resume(c *gin.Context) {
 		return
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Orchestrator resumed successfully", ActionResp{Status: "resumed", ID: id})
+}
+
+// kill godoc
+// @Summary Kill orchestrator — flatten all bot positions and halt
+// @Tags orchestrators
+// @Security BearerAuth
+// @Produce json
+// @Param id path string true "Orchestrator ID"
+// @Success 200 {object} shared.SuccessResponse[ActionResp]
+// @Failure 400 {object} shared.ErrorResponse
+// @Failure 401 {object} shared.ErrorResponse
+// @Failure 404 {object} shared.ErrorResponse
+// @Router /api/orchestrators/{id}/kill [post]
+func (h *Handler) kill(c *gin.Context) {
+	userID, ok := callerUserID(c)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		shared.RespondWithError(c, http.StatusBadRequest, "invalid id")
+		return
+	}
+	if err := h.svc.CheckOwner(id, userID); err != nil {
+		shared.RespondWithError(c, http.StatusNotFound, "not found")
+		return
+	}
+	if err := h.svc.Kill(c.Request.Context(), id); err != nil {
+		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	shared.RespondWithSuccess(c, http.StatusOK, "Orchestrator killed successfully", ActionResp{Status: "halted", ID: id})
+}
+
+// resetHalt godoc
+// @Summary Reset orchestrator halt flag and restore to active
+// @Tags orchestrators
+// @Security BearerAuth
+// @Produce json
+// @Param id path string true "Orchestrator ID"
+// @Success 200 {object} shared.SuccessResponse[ActionResp]
+// @Failure 400 {object} shared.ErrorResponse
+// @Failure 401 {object} shared.ErrorResponse
+// @Failure 404 {object} shared.ErrorResponse
+// @Router /api/orchestrators/{id}/halt/reset [post]
+func (h *Handler) resetHalt(c *gin.Context) {
+	userID, ok := callerUserID(c)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		shared.RespondWithError(c, http.StatusBadRequest, "invalid id")
+		return
+	}
+	if err := h.svc.CheckOwner(id, userID); err != nil {
+		shared.RespondWithError(c, http.StatusNotFound, "not found")
+		return
+	}
+	if err := h.svc.ResetHalt(id); err != nil {
+		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	shared.RespondWithSuccess(c, http.StatusOK, "Orchestrator halt reset successfully", ActionResp{Status: "active", ID: id})
 }
 
 // --- Per-orchestrator runtime data ---

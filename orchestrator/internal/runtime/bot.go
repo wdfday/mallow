@@ -146,21 +146,21 @@ func NewBot(
 	}
 }
 
-// BuildBotComponents translates a BotConfig into a Strategy + Tactician.
-func BuildBotComponents(cfg domain.BotConfig) (strategy.Strategy, *tactics.Tactician) {
-	minStrength := cfg.Tactic.MinStrength
+// BuildBotComponents translates a BotInstance into a Strategy + Tactician.
+func BuildBotComponents(b *domain.BotInstance) (strategy.Strategy, *tactics.Tactician) {
+	minStrength := b.Strategy.MinStrength
 	if minStrength <= 0 {
 		minStrength = 0.3
 	}
 
 	var strat strategy.Strategy
-	switch cfg.Tactic.StrategyName() {
+	switch b.Strategy.Key() {
 	default:
 		strat = strategy.NewSignalFollower(minStrength)
 	}
 
 	sizingMode := tactics.SizingFixedFractional
-	switch cfg.Risk.SizeMode {
+	switch b.Position.SizeMode {
 	case "fixed_qty":
 		sizingMode = tactics.SizingFixedQty
 	case "volatility":
@@ -169,23 +169,30 @@ func BuildBotComponents(cfg domain.BotConfig) (strategy.Strategy, *tactics.Tacti
 		sizingMode = tactics.SizingPercentEquity
 	}
 
-	tact := tactics.New(tactics.SizingConfig{
-		Mode:              sizingMode,
-		AllocatedCapital:  cfg.Risk.AllocatedCapital,
-		AllocatedPct:      cfg.Risk.AllocatedPct,
-		UnitCapital:       cfg.Risk.UnitCapital,
-		UnitPct:           cfg.Risk.UnitPct,
-		MaxPositions:      cfg.Risk.MaxPositions,
-		RiskPerTradePct:   cfg.Risk.RiskPerTradePct,
-		MaxPositionPct:    cfg.Risk.MaxPositionPct,
-		FixedQty:          cfg.Risk.FixedQty,
-		StopLossATRMult:   cfg.Risk.StopLossATRMult,
-		TakeProfitATRMult: cfg.Risk.TakeProfitATRMult,
-		StopLossPct:       cfg.Risk.StopLossPct,
-		TakeProfitPct:     cfg.Risk.TakeProfitPct,
-		TrailingStopPct:   cfg.Risk.TrailingStopPct,
-		MaxBarsHeld:       cfg.Risk.MaxBarsHeld,
-	})
+	sc := tactics.SizingConfig{
+		Mode:             sizingMode,
+		AllocatedCapital: b.Position.AllocatedCapital,
+		AllocatedPct:     b.Position.AllocatedPct,
+		UnitCapital:      b.Position.UnitCapital,
+		UnitPct:          b.Position.UnitPct,
+		MaxPositions:     b.Position.MaxPositions,
+		RiskPerTradePct:  b.Position.RiskPerTradePct,
+		MaxPositionPct:   b.Position.MaxPositionPct,
+		FixedQty:         b.Position.FixedQty,
+		TrailingStopPct:  b.Risk.TrailingStopPct,
+	}
+	if e := b.Risk.Exit; e != nil {
+		if e.SL != nil {
+			sc.StopLossATRMult, sc.StopLossPct = e.SL.ATRMult(), e.SL.PctValue()
+		}
+		if e.TP != nil {
+			sc.TakeProfitATRMult, sc.TakeProfitPct = e.TP.ATRMult(), e.TP.PctValue()
+		}
+		if e.MaxBars != nil {
+			sc.MaxBarsHeld = *e.MaxBars
+		}
+	}
+	tact := tactics.New(sc)
 
 	return strat, tact
 }

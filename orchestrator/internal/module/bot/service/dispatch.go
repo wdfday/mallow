@@ -28,13 +28,13 @@ func (s *Service) SignalFollowerBots(symbol string) []*runtime.BotInstance {
 	defer s.mu.RUnlock()
 	var out []*runtime.BotInstance
 	for _, bi := range s.bots {
-		if bi.Data.Config.Type != domain.BotTypeSignalFollower {
+		if bi.Data.Type != domain.BotTypeSignalFollower {
 			continue
 		}
 		if !bi.Bot.IsRunning() {
 			continue
 		}
-		if watchesSymbol(bi.Data.Config.Symbols, symbol) {
+		if watchesSymbol([]string(bi.Data.Symbols), symbol) {
 			out = append(out, bi)
 		}
 	}

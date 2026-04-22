@@ -10,9 +10,9 @@ import (
 
 	pkgmw "mallow/pkg/middleware"
 	"orchestrator/internal/infra/engine"
-	orchsvc "orchestrator/internal/module/orchesrator/service"
 	"orchestrator/internal/module/bot/domain"
 	"orchestrator/internal/module/bot/service"
+	orchsvc "orchestrator/internal/module/orchesrator/service"
 	"orchestrator/internal/runtime"
 	"orchestrator/internal/shared"
 )
@@ -79,6 +79,7 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 		b.DELETE("/:id", h.delete)
 		b.POST("/:id/start", h.start)
 		b.POST("/:id/stop", h.stop)
+		b.POST("/:id/restart", h.restart)
 		b.POST("/:id/pause", h.pause)
 		b.POST("/:id/resume", h.resume)
 		b.POST("/:id/kill", h.kill)
@@ -261,8 +262,7 @@ func (h *Handler) update(c *gin.Context) {
 		return
 	}
 
-	merged := req.ToDomain(bi.Data.Config)
-	if err := h.botMgr.Update(id, merged); err != nil {
+	if err := h.botMgr.Update(id, req.ToDomain()); err != nil {
 		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -359,6 +359,34 @@ func (h *Handler) stop(c *gin.Context) {
 		return
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Bot stopped successfully", BotActionResp{Status: "stopped", ID: id})
+}
+
+// restart godoc
+// @Summary Restart bot — stop then start (re-registers with signal herald)
+// @Tags bots
+// @Security BearerAuth
+// @Produce json
+// @Param id path string true "Bot ID"
+// @Success 200 {object} shared.SuccessResponse[BotActionResp]
+// @Failure 400 {object} shared.ErrorResponse
+// @Failure 401 {object} shared.ErrorResponse
+// @Failure 404 {object} shared.ErrorResponse
+// @Router /api/bots/{id}/restart [post]
+func (h *Handler) restart(c *gin.Context) {
+	userID, ok := callerUserID(c)
+	if !ok {
+		return
+	}
+	id := c.Param("id")
+	if _, err := h.checkBotOwner(id, userID); err != nil {
+		shared.RespondWithError(c, http.StatusNotFound, "not found")
+		return
+	}
+	if err := h.botMgr.Restart(id); err != nil {
+		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	shared.RespondWithSuccess(c, http.StatusOK, "Bot restarted successfully", BotActionResp{Status: "running", ID: id})
 }
 
 // pause godoc

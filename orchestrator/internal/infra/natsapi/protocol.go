@@ -71,6 +71,8 @@ const (
 	SubjOrchDisable   = "orchestrator.orchestrators.disable"
 	SubjOrchPause     = "orchestrator.orchestrators.pause"
 	SubjOrchResume    = "orchestrator.orchestrators.resume"
+	SubjOrchKill      = "orchestrator.orchestrators.kill"
+	SubjOrchResetHalt = "orchestrator.orchestrators.halt.reset"
 	SubjOrchPortfolio = "orchestrator.orchestrators.portfolio"
 	SubjOrchPositions = "orchestrator.orchestrators.positions"
 	SubjOrchTrades    = "orchestrator.orchestrators.trades"
@@ -81,16 +83,17 @@ const (
 	SubjAccountLinked   = "orchestrator.accounts.linked"   // triggers auto-create orchestrator
 	SubjAccountUnlinked = "orchestrator.accounts.unlinked" // triggers auto-delete orchestrator
 
-	SubjBotList   = "orchestrator.bots.list"
-	SubjBotGet    = "orchestrator.bots.get"
-	SubjBotCreate = "orchestrator.bots.create"
-	SubjBotUpdate = "orchestrator.bots.update"
-	SubjBotDelete = "orchestrator.bots.delete"
-	SubjBotStart  = "orchestrator.bots.start"
-	SubjBotStop   = "orchestrator.bots.stop"
-	SubjBotPause  = "orchestrator.bots.pause"
-	SubjBotResume = "orchestrator.bots.resume"
-	SubjBotKill   = "orchestrator.bots.kill"
+	SubjBotList    = "orchestrator.bots.list"
+	SubjBotGet     = "orchestrator.bots.get"
+	SubjBotCreate  = "orchestrator.bots.create"
+	SubjBotUpdate  = "orchestrator.bots.update"
+	SubjBotDelete  = "orchestrator.bots.delete"
+	SubjBotStart   = "orchestrator.bots.start"
+	SubjBotStop    = "orchestrator.bots.stop"
+	SubjBotRestart = "orchestrator.bots.restart"
+	SubjBotPause   = "orchestrator.bots.pause"
+	SubjBotResume  = "orchestrator.bots.resume"
+	SubjBotKill    = "orchestrator.bots.kill"
 
 	// Events (fire-and-forget, not request/reply)
 	// Format with orchestrator_id: fmt.Sprintf(SubjTradeFilled, orchID)

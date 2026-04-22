@@ -1,7 +1,9 @@
 package domain
 
 import (
+	"database/sql/driver"
 	"encoding/json"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -25,108 +27,131 @@ const (
 	MarketTypeFutures MarketType = "futures"
 )
 
-// Strategy is the pure signal/entry logic definition for a bot.
-// It contains only what the signal-engine (herald) needs to generate signals.
-//
-// CEL tactic:   set Entry + Exit as expression strings; Name is ignored.
-// Named tactic: set Name + Params; Entry/Exit are empty.
-type Strategy struct {
-	// CEL expressions — used when Entry is non-empty.
-	// These are evaluated by the signal-engine (herald) via cel-interpreter.
-	Entry string `json:"entry,omitempty"` // e.g. "rsi_14 < 30 && close > ema_50"
-	// Tactic -> Execute Tactic
-	Exit string `json:"exit,omitempty"` // e.g. "rsi_14 > 70 || close < ema_50"
+// ── StrategyConfig ────────────────────────────────────────────────────────────
 
-	// Named strategy — used when Entry is empty.
-	// Name must match a key in almanac's build_strategy() factory (e.g. "ma_crossover").
+// StrategyConfig is the signal-generation config sent to herald.
+//
+// CEL mode  (Entry non-empty): entry/exit are cel-go expressions.
+// Named mode (Entry empty):    Name must match a key in almanac's build_strategy().
+type StrategyConfig struct {
+	// CEL expressions
+	Entry string `json:"entry,omitempty"` // e.g. "rsi_14 < 30 && close > ema_50"
+	Exit  string `json:"exit,omitempty"`  // e.g. "rsi_14 > 70 || close < ema_50"
+
+	// Named strategy
 	Name   string         `json:"name,omitempty"`
 	Params map[string]any `json:"params,omitempty"`
 
-	// MinStrength is the minimum signal strength [0–1] for the bot to act.
+	// Signal strength filter [0–1]
 	MinStrength float64 `json:"min_strength,omitempty"`
 }
 
-// StrategyName returns the strategy key sent to herald's build_strategy().
-// CEL tactic → "cel"; named tactic → the Name field.
-func (t Strategy) StrategyName() string {
-	if t.Entry != "" {
+// Key returns the strategy key for herald's build_strategy().
+func (s StrategyConfig) Key() string {
+	if s.Entry != "" {
 		return "cel"
 	}
-	return t.Name
+	return s.Name
 }
 
-// ParamsJSON serializes the tactic params into the JSON string expected by
-// herald's RegisterMsg.params_json field.
-//
-// CEL:   {"entry": "...", "exit": "..."}
-// Named: the Params map as-is.
-func (t Strategy) ParamsJSON() (string, error) {
+// ParamsJSON serialises strategy params for herald's RegisterMsg.params_json.
+func (s StrategyConfig) ParamsJSON() (string, error) {
 	var v any
-	if t.Entry != "" {
-		v = map[string]string{"entry": t.Entry, "exit": t.Exit}
+	if s.Entry != "" {
+		v = map[string]string{"entry": s.Entry, "exit": s.Exit}
 	} else {
-		v = t.Params
+		v = s.Params
 	}
 	b, err := json.Marshal(v)
 	return string(b), err
 }
 
-// BotRiskConfig defines per-bot position sizing, risk limits, and exit levels.
-// Distinct from orchestrator-level RiskConfig (portfolio-wide).
-type BotRiskConfig struct {
-	// Capital isolation — how much of the orchestrator's equity this bot can use.
+func (s StrategyConfig) Value() (driver.Value, error) { return jsonValue(s) }
+func (s *StrategyConfig) Scan(src any) error          { return jsonScan(src, s) }
+
+// ── PositionConfig ────────────────────────────────────────────────────────────
+
+// PositionConfig controls capital allocation and per-trade sizing.
+// Maps directly to BacktestRequest sizing fields.
+type PositionConfig struct {
+	// Capital slice for this bot.
 	// AllocatedCapital (fixed USDT) takes priority over AllocatedPct.
-	// If both are zero, the bot uses the full orchestrator equity.
-	AllocatedCapital decimal.Decimal `json:"allocated_capital,omitempty"` // e.g. 1000 USDT
-	AllocatedPct     float64         `json:"allocated_pct,omitempty"`     // e.g. 0.20 = 20% of equity
+	AllocatedCapital decimal.Decimal `json:"allocated_capital,omitempty"`
+	AllocatedPct     float64         `json:"allocated_pct,omitempty"` // 0.20 = 20%
 
-	// Position unit — capital deployed per entry (one trade).
+	// Per-trade unit.
 	// UnitCapital (fixed USDT) takes priority over UnitPct.
-	// If both are zero, defaults to UnitPct = 0.10 (10% of allocated capital).
-	UnitCapital decimal.Decimal `json:"unit_capital,omitempty"` // e.g. 100 USDT per entry
-	UnitPct     float64         `json:"unit_pct,omitempty"`     // e.g. 0.10 = 10% of allocated capital
+	UnitCapital decimal.Decimal `json:"unit_capital,omitempty"`
+	UnitPct     float64         `json:"unit_pct,omitempty"` // 0.10 = 10% of allocated
 
-	// MaxPositions limits concurrent open positions for this bot (default 1).
+	// Fixed qty mode — overrides USD/pct sizing.
+	FixedQty decimal.Decimal `json:"fixed_qty,omitempty"`
+
+	// Concurrent position cap.
 	MaxPositions int `json:"max_positions,omitempty"`
 
-	// Position sizing mode (how qty is derived from unit capital).
-	SizeMode        string          `json:"size_mode,omitempty"`
-	RiskPerTradePct float64         `json:"risk_per_trade_pct,omitempty"`
-	MaxPositionPct  float64         `json:"max_position_pct,omitempty"` // legacy fallback when UnitCapital/UnitPct unset
-	FixedQty        decimal.Decimal `json:"fixed_qty,omitempty"`
-
-	// ATR-based exits (preferred when ATR is available)
-	StopLossATRMult   float64 `json:"stop_loss_atr_mult,omitempty"`
-	TakeProfitATRMult float64 `json:"take_profit_atr_mult,omitempty"` // 0 = use 2x SL rule
-
-	// Percentage-based exits (fallback when ATR = 0)
-	StopLossPct     float64 `json:"stop_loss_pct,omitempty"`     // e.g. 0.02 = 2%
-	TakeProfitPct   float64 `json:"take_profit_pct,omitempty"`   // e.g. 0.04 = 4%
-	TrailingStopPct float64 `json:"trailing_stop_pct,omitempty"` // trailing stop as % of entry (0 = disabled)
-	MaxBarsHeld     int     `json:"max_bars_held,omitempty"`     // time-stop: close after N bars (0 = disabled)
+	// Sizing algorithm.
+	SizeMode        string  `json:"size_mode,omitempty"`          // fixed_fractional|fixed_qty|percent_equity|volatility
+	RiskPerTradePct float64 `json:"risk_per_trade_pct,omitempty"` // for volatility mode
+	MaxPositionPct  float64 `json:"max_position_pct,omitempty"`   // legacy fallback
 }
 
-// FuturesConfig holds futures-specific trading parameters.
-// Only meaningful when BotConfig.Market == MarketTypeFutures.
+func (p PositionConfig) Value() (driver.Value, error) { return jsonValue(p) }
+func (p *PositionConfig) Scan(src any) error          { return jsonScan(src, p) }
+
+// ── BotRiskConfig ─────────────────────────────────────────────────────────────
+
+// BotRiskConfig holds exit rules only.
+// Sizing lives in PositionConfig; portfolio-level risk lives in OrchestratorConfig.
+type BotRiskConfig struct {
+	// Exit rules — mirrors almanac's ExitConfig for backtest/live parity.
+	// sl/tp: fixed fraction (0.05) or ATR expression ("2*atr", "1.5*atr(21)").
+	Exit *ExitConfig `json:"exit,omitempty"`
+
+	// TrailingStopPct is live-only (not in backtest ExitConfig).
+	TrailingStopPct float64 `json:"trailing_stop_pct,omitempty"`
+}
+
+func (r BotRiskConfig) Value() (driver.Value, error) { return jsonValue(r) }
+func (r *BotRiskConfig) Scan(src any) error          { return jsonScan(src, r) }
+
+// ── FuturesConfig ─────────────────────────────────────────────────────────────
+
+// FuturesConfig holds futures-specific parameters.
+// Only meaningful when BotInstance.Market == MarketTypeFutures.
 type FuturesConfig struct {
 	Leverage   int    `json:"leverage"`    // e.g. 10 for 10x; 1 = no leverage
 	MarginType string `json:"margin_type"` // "isolated" | "cross"
 }
 
-// BotConfig is the complete, structured configuration for a trading bot instance.
-// OrchestratorID links the bot to its parent orchestrator (and thus its account + exchange).
+func (f FuturesConfig) Value() (driver.Value, error) { return jsonValue(f) }
+func (f *FuturesConfig) Scan(src any) error          { return jsonScan(src, f) }
+
+// ── StringSlice ───────────────────────────────────────────────────────────────
+
+// StringSlice is a []string that serialises as a JSONB array.
+type StringSlice []string
+
+func (s StringSlice) Value() (driver.Value, error) { return jsonValue(s) }
+func (s *StringSlice) Scan(src any) error          { return jsonScan(src, s) }
+
+// ── BotConfig ─────────────────────────────────────────────────────────────────
+
+// BotConfig is the create/update input. Not persisted directly —
+// the service maps it onto a BotInstance.
 type BotConfig struct {
-	Name           string         `json:"name"`
-	Type           BotType        `json:"type"`
-	Market         MarketType     `json:"market"`
-	OrchestratorID uuid.UUID      `json:"orchestrator_id"`
-	Symbols        []string       `json:"symbols"`
-	Tactic         Strategy       `json:"tactic"`
-	Risk           BotRiskConfig  `json:"risk"`
-	Futures        *FuturesConfig `json:"futures,omitempty"` // non-nil only when Market = futures
+	Name           string
+	Type           BotType
+	Market         MarketType
+	OrchestratorID uuid.UUID
+	Symbols        []string
+	Strategy       StrategyConfig
+	Position       PositionConfig
+	Risk           BotRiskConfig
+	Futures        *FuturesConfig
 }
 
-// Defaults fills in zero-value fields with sensible defaults.
+// Defaults fills zero-value fields with sensible values.
 func (c *BotConfig) Defaults() {
 	if c.Type == "" {
 		c.Type = BotTypeSignalFollower
@@ -137,25 +162,47 @@ func (c *BotConfig) Defaults() {
 	if c.Market == MarketTypeFutures && c.Futures == nil {
 		c.Futures = &FuturesConfig{Leverage: 1, MarginType: "isolated"}
 	}
-	if c.Risk.SizeMode == "" {
-		c.Risk.SizeMode = "fixed_fractional"
+	if c.Position.SizeMode == "" {
+		c.Position.SizeMode = "fixed_fractional"
 	}
-	if c.Risk.RiskPerTradePct == 0 {
-		c.Risk.RiskPerTradePct = 0.01
+	if c.Position.RiskPerTradePct == 0 {
+		c.Position.RiskPerTradePct = 0.01
 	}
-	if c.Risk.MaxPositionPct == 0 {
-		c.Risk.MaxPositionPct = 0.20
+	if c.Position.MaxPositionPct == 0 {
+		c.Position.MaxPositionPct = 0.20
 	}
-	if c.Risk.UnitCapital.IsZero() && c.Risk.UnitPct == 0 {
-		c.Risk.UnitPct = 0.10 // 10% of allocated capital per entry
+	if c.Position.UnitCapital.IsZero() && c.Position.UnitPct == 0 {
+		c.Position.UnitPct = 0.10
 	}
-	if c.Risk.MaxPositions == 0 {
-		c.Risk.MaxPositions = 1
+	if c.Position.MaxPositions == 0 {
+		c.Position.MaxPositions = 1
 	}
-	if c.Risk.StopLossATRMult == 0 {
-		c.Risk.StopLossATRMult = 2.0
+	if c.Risk.Exit == nil {
+		c.Risk.Exit = &ExitConfig{SL: ExitLevelATR(2.0)}
 	}
-	if c.Tactic.MinStrength == 0 {
-		c.Tactic.MinStrength = 0.3
+	if c.Strategy.MinStrength == 0 {
+		c.Strategy.MinStrength = 0.3
 	}
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+func jsonValue(v any) (driver.Value, error) {
+	b, err := json.Marshal(v)
+	return b, err
+}
+
+func jsonScan(src any, dst any) error {
+	var b []byte
+	switch v := src.(type) {
+	case []byte:
+		b = v
+	case string:
+		b = []byte(v)
+	case nil:
+		return nil
+	default:
+		return fmt.Errorf("jsonScan: unsupported type %T", src)
+	}
+	return json.Unmarshal(b, dst)
 }

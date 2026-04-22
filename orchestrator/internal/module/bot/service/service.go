@@ -52,12 +52,12 @@ func (s *Service) hydrate(data *domain.BotInstance) (*runtime.BotInstance, error
 	if err != nil {
 		return nil, fmt.Errorf("no runtime for orchestrator %q: %w", data.OrchestratorID, err)
 	}
-	strat, tact := runtime.BuildBotComponents(data.Config)
+	strat, tact := runtime.BuildBotComponents(data)
 	bot := runtime.NewBot(data.ID, data.OrchestratorID.String(), rt, strat, tact)
-	setMeta(bot, data.Config)
+	setMeta(bot, data)
 	rt.AddBot(bot)
 	if data.Status == "running" {
-		s.heraldRegister(data.ID, data.Config)
+		s.heraldRegister(data.ID, data)
 		bot.Start()
 	}
 	return &runtime.BotInstance{Data: data, Bot: bot, Exchange: rt.Exchange}, nil

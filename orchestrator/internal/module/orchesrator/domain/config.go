@@ -11,18 +11,19 @@ import (
 // Auto-created on account.linked event; never manually created/deleted via API.
 // Runtime state (portfolio, orderbook, running bots) lives in runtime.OrchestratorRuntime.
 type OrchestratorConfig struct {
-	ID           uuid.UUID      `json:"id"`
-	UserID       uuid.UUID      `json:"user_id"`    // owner — from identity.users.id
-	AccountID    uuid.UUID      `json:"account_id"` // → investment.accounts.id
-	Name         string         `json:"name"`
-	Capital      float64        `json:"capital"`
-	Exchange     ExchangeConfig `json:"exchange"`
-	Risk         RiskConfig     `json:"risk"`
-	Enabled      bool           `json:"enabled"`        // user toggle — gates bot create/delete
-	Status       string         `json:"status"`         // active | paused | halted (runtime state)
-	LastSyncedAt *time.Time     `json:"last_synced_at"` // persisted after each successful REST sync
-	CreatedAt    time.Time      `json:"created_at"`
-	UpdatedAt    time.Time      `json:"updated_at"`
+	ID           uuid.UUID       `json:"id"`
+	UserID       uuid.UUID       `json:"user_id"`    // owner — from identity.users.id
+	AccountID    uuid.UUID       `json:"account_id"` // → investment.accounts.id
+	Name         string          `json:"name"`
+	Capital      float64         `json:"capital"`
+	Exchange     ExchangeConfig  `json:"exchange"`
+	Portfolio    PortfolioConfig `json:"portfolio"`      // capital allocation at account level
+	Risk         RiskConfig      `json:"risk"`           // circuit-breakers / drawdown guards
+	Enabled      bool            `json:"enabled"`        // user toggle — gates bot create/delete
+	Status       string          `json:"status"`         // active | paused | halted (runtime state)
+	LastSyncedAt *time.Time      `json:"last_synced_at"` // persisted after each successful REST sync
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
 }
 
 // ExchangeConfig holds broker connection credentials for this orchestrator.
@@ -39,22 +40,48 @@ type ExchangeConfig struct {
 	Testnet    bool   `json:"testnet,omitempty"`
 }
 
-// RiskConfig is the portfolio-level risk configuration for one orchestrator.
+// PortfolioConfig manages how the orchestrator allocates capital across bots.
+// Think of it as the "sizing" layer at account level — analogous to bot.PositionConfig.
+type PortfolioConfig struct {
+	// MaxPositions is the account-wide cap on simultaneous open positions across all bots.
+	// Zero = no limit enforced here (trust each bot's own PositionConfig.MaxPositions).
+	MaxPositions int `json:"max_positions,omitempty"`
+
+	// MaxPositionPct is the maximum fraction of total equity any single open position may occupy.
+	// Applied by the risk manager before each order (e.g. 0.10 = 10%).
+	MaxPositionPct float64 `json:"max_position_pct,omitempty"`
+
+	// ReserveRatio is the fraction of total capital kept as uninvested cash reserve.
+	// Bots cannot deploy capital beyond (1 - ReserveRatio) × TotalCapital.
+	// E.g. 0.10 = always keep 10% in cash.
+	ReserveRatio float64 `json:"reserve_ratio,omitempty"`
+}
+
+// Defaults fills zero-value PortfolioConfig fields with sensible values.
+func (p *PortfolioConfig) Defaults() {
+	if p.MaxPositions == 0 {
+		p.MaxPositions = 5
+	}
+	if p.MaxPositionPct == 0 {
+		p.MaxPositionPct = 0.10
+	}
+	// ReserveRatio defaults to 0 (no forced cash reserve).
+}
+
+// RiskConfig holds account-level circuit-breakers — pure risk guards, no sizing.
+// Sizing lives in PortfolioConfig; per-bot exit rules live in bot.BotRiskConfig.
 type RiskConfig struct {
-	MaxPositions      int     `json:"max_positions"`
-	MaxPositionPct    float64 `json:"max_position_pct"`
-	DailyLossLimitPct float64 `json:"daily_loss_limit_pct"`
-	MaxDrawdownPct    float64 `json:"max_drawdown_pct"`
+	// DailyLossLimitPct halts trading for the rest of the day when daily PnL loss
+	// exceeds this fraction of equity (e.g. 0.02 = 2%).
+	DailyLossLimitPct float64 `json:"daily_loss_limit_pct,omitempty"`
+
+	// MaxDrawdownPct permanently halts all trading when the portfolio drawdown from
+	// peak equity exceeds this fraction (e.g. 0.10 = 10%).
+	MaxDrawdownPct float64 `json:"max_drawdown_pct,omitempty"`
 }
 
 // Defaults fills zero-value RiskConfig fields with sensible values.
 func (r *RiskConfig) Defaults() {
-	if r.MaxPositions == 0 {
-		r.MaxPositions = 5
-	}
-	if r.MaxPositionPct == 0 {
-		r.MaxPositionPct = 0.10
-	}
 	if r.DailyLossLimitPct == 0 {
 		r.DailyLossLimitPct = 0.02
 	}

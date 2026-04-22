@@ -14,17 +14,19 @@ import (
 // ── Request DTOs ───────────────────────────────────────────────────────────
 
 type CreateOrchestratorReq struct {
-	AccountID uuid.UUID         `json:"account_id" binding:"required"`
-	Name      string            `json:"name" binding:"required,min=1,max=128"`
-	Capital   float64           `json:"capital" binding:"required,gt=0"`
-	Exchange  ExchangeConfigDTO `json:"exchange" binding:"required"`
-	Risk      RiskConfigDTO     `json:"risk"`
+	AccountID uuid.UUID          `json:"account_id" binding:"required"`
+	Name      string             `json:"name" binding:"required,min=1,max=128"`
+	Capital   float64            `json:"capital" binding:"required,gt=0"`
+	Exchange  ExchangeConfigDTO  `json:"exchange" binding:"required"`
+	Portfolio PortfolioConfigDTO `json:"portfolio"`
+	Risk      RiskConfigDTO      `json:"risk"`
 }
 
 type UpdateOrchestratorReq struct {
-	Name    string         `json:"name" binding:"omitempty,min=1,max=128"`
-	Capital float64        `json:"capital" binding:"omitempty,gt=0"`
-	Risk    *RiskConfigDTO `json:"risk"`
+	Name      string              `json:"name" binding:"omitempty,min=1,max=128"`
+	Capital   float64             `json:"capital" binding:"omitempty,gt=0"`
+	Portfolio *PortfolioConfigDTO `json:"portfolio"`
+	Risk      *RiskConfigDTO      `json:"risk"`
 }
 
 type ExchangeConfigDTO struct {
@@ -39,9 +41,15 @@ type ExchangeConfigDTO struct {
 	Testnet    bool   `json:"testnet,omitempty"`
 }
 
+// PortfolioConfigDTO is the API shape for account-level capital allocation settings.
+type PortfolioConfigDTO struct {
+	MaxPositions   int     `json:"max_positions" binding:"omitempty,min=1"`
+	MaxPositionPct float64 `json:"max_position_pct" binding:"omitempty,gt=0,lte=1"`
+	ReserveRatio   float64 `json:"reserve_ratio" binding:"omitempty,gte=0,lt=1"`
+}
+
+// RiskConfigDTO is the API shape for account-level risk circuit-breakers.
 type RiskConfigDTO struct {
-	MaxPositions      int     `json:"max_positions" binding:"omitempty,min=1"`
-	MaxPositionPct    float64 `json:"max_position_pct" binding:"omitempty,gt=0,lte=1"`
 	DailyLossLimitPct float64 `json:"daily_loss_limit_pct" binding:"omitempty,gt=0,lte=1"`
 	MaxDrawdownPct    float64 `json:"max_drawdown_pct" binding:"omitempty,gt=0,lte=1"`
 }
@@ -54,6 +62,7 @@ type OrchestratorResp struct {
 	Name      string             `json:"name"`
 	Capital   decimal.Decimal    `json:"capital"`
 	Exchange  ExchangeConfigResp `json:"exchange"`
+	Portfolio PortfolioConfigDTO `json:"portfolio"`
 	Risk      RiskConfigDTO      `json:"risk"`
 	Enabled   bool               `json:"enabled"`
 	Status    string             `json:"status"`
@@ -68,7 +77,7 @@ type ExchangeConfigResp struct {
 	Testnet    bool   `json:"testnet,omitempty"`
 }
 
-type BotTacticResp struct {
+type BotStrategyResp struct {
 	Entry       string         `json:"entry,omitempty"`
 	Exit        string         `json:"exit,omitempty"`
 	Name        string         `json:"name,omitempty"`
@@ -76,17 +85,21 @@ type BotTacticResp struct {
 	MinStrength float64        `json:"min_strength,omitempty"`
 }
 
+type BotPositionResp struct {
+	SizeMode         string          `json:"size_mode,omitempty"`
+	AllocatedCapital decimal.Decimal `json:"allocated_capital,omitempty"`
+	AllocatedPct     float64         `json:"allocated_pct,omitempty"`
+	UnitCapital      decimal.Decimal `json:"unit_capital,omitempty"`
+	UnitPct          float64         `json:"unit_pct,omitempty"`
+	FixedQty         decimal.Decimal `json:"fixed_qty,omitempty"`
+	MaxPositions     int             `json:"max_positions,omitempty"`
+	RiskPerTradePct  float64         `json:"risk_per_trade_pct,omitempty"`
+	MaxPositionPct   float64         `json:"max_position_pct,omitempty"`
+}
+
 type BotRiskResp struct {
-	SizeMode          string          `json:"size_mode,omitempty"`
-	RiskPerTradePct   float64         `json:"risk_per_trade_pct,omitempty"`
-	MaxPositionPct    float64         `json:"max_position_pct,omitempty"`
-	FixedQty          decimal.Decimal `json:"fixed_qty,omitempty"`
-	StopLossATRMult   float64         `json:"stop_loss_atr_mult,omitempty"`
-	TakeProfitATRMult float64         `json:"take_profit_atr_mult,omitempty"`
-	StopLossPct       float64         `json:"stop_loss_pct,omitempty"`
-	TakeProfitPct     float64         `json:"take_profit_pct,omitempty"`
-	TrailingStopPct   float64         `json:"trailing_stop_pct,omitempty"`
-	MaxBarsHeld       int             `json:"max_bars_held,omitempty"`
+	Exit            *botdomain.ExitConfig `json:"exit,omitempty"`
+	TrailingStopPct float64               `json:"trailing_stop_pct,omitempty"`
 }
 
 type BotHealthResp struct {
@@ -112,19 +125,21 @@ type BotMetricsResp struct {
 }
 
 type BotSummaryResp struct {
-	ID             string         `json:"id"`
-	Name           string         `json:"name"`
-	Type           string         `json:"type"`
-	OrchestratorID uuid.UUID      `json:"orchestrator_id"`
-	Tactic         BotTacticResp  `json:"tactic"`
-	Risk           BotRiskResp    `json:"risk"`
-	Symbols        []string       `json:"symbols"`
-	Status         string         `json:"status"`
-	Running        bool           `json:"running"`
-	OrderCount     int            `json:"order_count"`
-	Health         BotHealthResp  `json:"health"`
-	Metrics        BotMetricsResp `json:"metrics"`
-	CreatedAt      time.Time      `json:"created_at"`
+	ID             string          `json:"id"`
+	Name           string          `json:"name"`
+	Type           string          `json:"type"`
+	Market         string          `json:"market"`
+	OrchestratorID uuid.UUID       `json:"orchestrator_id"`
+	Strategy       BotStrategyResp `json:"strategy"`
+	Position       BotPositionResp `json:"position"`
+	Risk           BotRiskResp     `json:"risk"`
+	Symbols        []string        `json:"symbols"`
+	Status         string          `json:"status"`
+	Running        bool            `json:"running"`
+	OrderCount     int             `json:"order_count"`
+	Health         BotHealthResp   `json:"health"`
+	Metrics        BotMetricsResp  `json:"metrics"`
+	CreatedAt      time.Time       `json:"created_at"`
 }
 
 type OrchestratorDetailResp struct {
@@ -192,10 +207,24 @@ func (d ExchangeConfigDTO) ToDomain() domain.ExchangeConfig {
 	}
 }
 
+func (d PortfolioConfigDTO) ToDomain() domain.PortfolioConfig {
+	return domain.PortfolioConfig{
+		MaxPositions:   d.MaxPositions,
+		MaxPositionPct: d.MaxPositionPct,
+		ReserveRatio:   d.ReserveRatio,
+	}
+}
+
+func portfolioToDTO(p domain.PortfolioConfig) PortfolioConfigDTO {
+	return PortfolioConfigDTO{
+		MaxPositions:   p.MaxPositions,
+		MaxPositionPct: p.MaxPositionPct,
+		ReserveRatio:   p.ReserveRatio,
+	}
+}
+
 func (d RiskConfigDTO) ToDomain() domain.RiskConfig {
 	return domain.RiskConfig{
-		MaxPositions:      d.MaxPositions,
-		MaxPositionPct:    d.MaxPositionPct,
 		DailyLossLimitPct: d.DailyLossLimitPct,
 		MaxDrawdownPct:    d.MaxDrawdownPct,
 	}
@@ -203,8 +232,6 @@ func (d RiskConfigDTO) ToDomain() domain.RiskConfig {
 
 func riskToDTO(r domain.RiskConfig) RiskConfigDTO {
 	return RiskConfigDTO{
-		MaxPositions:      r.MaxPositions,
-		MaxPositionPct:    r.MaxPositionPct,
 		DailyLossLimitPct: r.DailyLossLimitPct,
 		MaxDrawdownPct:    r.MaxDrawdownPct,
 	}
@@ -222,6 +249,7 @@ func orchToResp(cfg *domain.OrchestratorConfig) OrchestratorResp {
 			Demo:       cfg.Exchange.Demo,
 			Testnet:    cfg.Exchange.Testnet,
 		},
+		Portfolio: portfolioToDTO(cfg.Portfolio),
 		Risk:      riskToDTO(cfg.Risk),
 		Enabled:   cfg.Enabled,
 		Status:    cfg.Status,
@@ -243,25 +271,29 @@ func BotSummaryToResp(b botdomain.BotSummary) BotSummaryResp {
 		ID:             b.ID,
 		Name:           b.Name,
 		Type:           string(b.Type),
+		Market:         string(b.Market),
 		OrchestratorID: b.OrchestratorID,
-		Tactic: BotTacticResp{
+		Strategy: BotStrategyResp{
 			Entry:       b.Strategy.Entry,
 			Exit:        b.Strategy.Exit,
 			Name:        b.Strategy.Name,
 			Params:      b.Strategy.Params,
 			MinStrength: b.Strategy.MinStrength,
 		},
+		Position: BotPositionResp{
+			SizeMode:         b.Position.SizeMode,
+			AllocatedCapital: b.Position.AllocatedCapital,
+			AllocatedPct:     b.Position.AllocatedPct,
+			UnitCapital:      b.Position.UnitCapital,
+			UnitPct:          b.Position.UnitPct,
+			FixedQty:         b.Position.FixedQty,
+			MaxPositions:     b.Position.MaxPositions,
+			RiskPerTradePct:  b.Position.RiskPerTradePct,
+			MaxPositionPct:   b.Position.MaxPositionPct,
+		},
 		Risk: BotRiskResp{
-			SizeMode:          b.Risk.SizeMode,
-			RiskPerTradePct:   b.Risk.RiskPerTradePct,
-			MaxPositionPct:    b.Risk.MaxPositionPct,
-			FixedQty:          b.Risk.FixedQty,
-			StopLossATRMult:   b.Risk.StopLossATRMult,
-			TakeProfitATRMult: b.Risk.TakeProfitATRMult,
-			StopLossPct:       b.Risk.StopLossPct,
-			TakeProfitPct:     b.Risk.TakeProfitPct,
-			TrailingStopPct:   b.Risk.TrailingStopPct,
-			MaxBarsHeld:       b.Risk.MaxBarsHeld,
+			Exit:            b.Risk.Exit,
+			TrailingStopPct: b.Risk.TrailingStopPct,
 		},
 		Symbols:    b.Symbols,
 		Status:     b.Status,

@@ -137,8 +137,10 @@ func (r *Registry) Spawn(cfg *orchdomain.OrchestratorConfig) error {
 
 	pf := portfolio.New(decimal.NewFromFloat(cfg.Capital))
 	riskCfg := risk.Config{
-		MaxPositions:      cfg.Risk.MaxPositions,
-		MaxPositionPct:    cfg.Risk.MaxPositionPct,
+		// Sizing limits from PortfolioConfig
+		MaxPositions:   cfg.Portfolio.MaxPositions,
+		MaxPositionPct: cfg.Portfolio.MaxPositionPct,
+		// Circuit-breakers from RiskConfig
 		DailyLossLimitPct: cfg.Risk.DailyLossLimitPct,
 		MaxDrawdownPct:    cfg.Risk.MaxDrawdownPct,
 	}
@@ -242,6 +244,19 @@ func (r *Registry) Resume(id uuid.UUID) ([]string, error) {
 	toRestart := rt.Resume()
 	slog.Info("runtime: resumed", "orchestrator_id", id, "bots_restarting", len(toRestart))
 	return toRestart, nil
+}
+
+// ResetHalt clears the risk-manager halt flag for the given orchestrator.
+func (r *Registry) ResetHalt(id uuid.UUID) error {
+	r.mu.RLock()
+	rt, ok := r.runtimes[id]
+	r.mu.RUnlock()
+	if !ok {
+		return fmt.Errorf("registry: no runtime for orchestrator %q", id)
+	}
+	rt.ResetHalt()
+	slog.Info("runtime: halt reset", "orchestrator_id", id)
+	return nil
 }
 
 // Get returns the OrchestratorRuntime for the given orchestrator ID.

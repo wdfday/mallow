@@ -12,8 +12,10 @@ type BotSummary struct {
 	ID             string         `json:"id"`
 	Name           string         `json:"name"`
 	Type           BotType        `json:"type"`
+	Market         MarketType     `json:"market"`
 	OrchestratorID uuid.UUID      `json:"orchestrator_id"`
-	Strategy       Strategy       `json:"tactic"`
+	Strategy       StrategyConfig `json:"strategy"`
+	Position       PositionConfig `json:"position"`
 	Risk           BotRiskConfig  `json:"risk"`
 	Symbols        []string       `json:"symbols"`
 	Status         string         `json:"status"`
@@ -37,13 +39,13 @@ type BotHealthView struct {
 
 // BotMetricsView is the JSON-safe metrics snapshot.
 type BotMetricsView struct {
-	SignalsReceived int64   `json:"signals_received"`
-	SignalsFiltered int64   `json:"signals_filtered"`
-	TradesApproved  int64   `json:"trades_approved"`
-	OrdersPlaced    int64   `json:"orders_placed"`
-	OrdersFilled    int64   `json:"orders_filled"`
-	OrdersFailed    int64   `json:"orders_failed"`
+	SignalsReceived int64           `json:"signals_received"`
+	SignalsFiltered int64           `json:"signals_filtered"`
+	TradesApproved  int64           `json:"trades_approved"`
+	OrdersPlaced    int64           `json:"orders_placed"`
+	OrdersFilled    int64           `json:"orders_filled"`
+	OrdersFailed    int64           `json:"orders_failed"`
 	TotalPnL        decimal.Decimal `json:"total_pnl"`
-	WinCount        int64   `json:"win_count"`
-	LossCount       int64   `json:"loss_count"`
+	WinCount        int64           `json:"win_count"`
+	LossCount       int64           `json:"loss_count"`
 }

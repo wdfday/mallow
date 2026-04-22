@@ -9,8 +9,8 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"orchestrator/internal/infra/natsapi"
-	orchsvc "orchestrator/internal/module/orchesrator/service"
 	"orchestrator/internal/module/bot/service"
+	orchsvc "orchestrator/internal/module/orchesrator/service"
 )
 
 // NATSHandler is the NATS request/reply transport adapter for bot operations.
@@ -26,16 +26,17 @@ func NewNATSHandler(botMgr *service.Service, orchSvc *orchsvc.Service) *NATSHand
 
 func (h *NATSHandler) Subscribe(nc *nats.Conn) error {
 	routes := map[string]nats.MsgHandler{
-		natsapi.SubjBotList:   h.list,
-		natsapi.SubjBotGet:    h.get,
-		natsapi.SubjBotCreate: h.create,
-		natsapi.SubjBotUpdate: h.update,
-		natsapi.SubjBotDelete: h.delete,
-		natsapi.SubjBotStart:  h.start,
-		natsapi.SubjBotStop:   h.stop,
-		natsapi.SubjBotPause:  h.pause,
-		natsapi.SubjBotResume: h.resume,
-		natsapi.SubjBotKill:   h.kill,
+		natsapi.SubjBotList:    h.list,
+		natsapi.SubjBotGet:     h.get,
+		natsapi.SubjBotCreate:  h.create,
+		natsapi.SubjBotUpdate:  h.update,
+		natsapi.SubjBotDelete:  h.delete,
+		natsapi.SubjBotStart:   h.start,
+		natsapi.SubjBotStop:    h.stop,
+		natsapi.SubjBotRestart: h.restart,
+		natsapi.SubjBotPause:   h.pause,
+		natsapi.SubjBotResume:  h.resume,
+		natsapi.SubjBotKill:    h.kill,
 	}
 	for subj, fn := range routes {
 		sub, err := nc.Subscribe(subj, fn)
@@ -141,8 +142,7 @@ func (h *NATSHandler) update(msg *nats.Msg) {
 		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
 		return
 	}
-	merged := raw.UpdateBotReq.ToDomain(bi.Data.Config)
-	if err := h.botMgr.Update(raw.ID, merged); err != nil {
+	if err := h.botMgr.Update(raw.ID, raw.UpdateBotReq.ToDomain()); err != nil {
 		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
 		return
 	}
@@ -234,6 +234,21 @@ func (h *NATSHandler) kill(msg *nats.Msg) {
 	}
 	slog.Warn("nats: bot killed", "id", id, "caller_svc", caller.CallerSvc, "caller_user_id", caller.CallerUserID)
 	_ = msg.Respond(natsapi.ReplyOK(BotActionResp{Status: "stopped", ID: id}))
+}
+
+func (h *NATSHandler) restart(msg *nats.Msg) {
+	caller := natsapi.ParseCaller(msg.Data)
+	id, err := parseStringID(msg.Data)
+	if err != nil {
+		_ = msg.Respond(natsapi.ReplyErr("invalid json"))
+		return
+	}
+	if err := h.botMgr.Restart(id); err != nil {
+		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
+		return
+	}
+	slog.Info("nats: bot restarted", "id", id, "caller_svc", caller.CallerSvc, "caller_user_id", caller.CallerUserID)
+	_ = msg.Respond(natsapi.ReplyOK(BotActionResp{Status: "running", ID: id}))
 }
 
 func parseStringID(data []byte) (string, error) {

@@ -11,24 +11,24 @@ import (
 
 // heraldRegister sends engine.register to herald for every symbol the bot watches.
 // Errors are logged and non-fatal — the bot still starts locally.
-func (s *Service) heraldRegister(botID string, cfg domain.BotConfig) {
+func (s *Service) heraldRegister(botID string, b *domain.BotInstance) {
 	if s.herald == nil {
 		return
 	}
-	paramsJSON, err := cfg.Tactic.ParamsJSON()
+	paramsJSON, err := b.Strategy.ParamsJSON()
 	if err != nil {
 		slog.Warn("herald register: marshal params failed", "bot_id", botID, "err", err)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	for _, sym := range cfg.Symbols {
+	for _, sym := range b.Symbols {
 		req := &engine.RegisterMsg{
 			BotId:      botID,
 			Symbol:     sym,
-			Strategy:   cfg.Tactic.StrategyName(),
+			Strategy:   b.Strategy.Key(),
 			ParamsJson: paramsJSON,
-			OrchId:     cfg.OrchestratorID.String(),
+			OrchId:     b.OrchestratorID.String(),
 		}
 		if ack, err := s.herald.Register(ctx, req); err != nil {
 			slog.Warn("herald register failed", "bot_id", botID, "symbol", sym, "err", err)

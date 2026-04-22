@@ -2,24 +2,24 @@ package app
 
 import (
 	"context"
-	"database/sql"
 	"log/slog"
 
 	"github.com/gin-gonic/gin"
 	"go.uber.org/fx"
+	"gorm.io/gorm"
 
 	"orchestrator/internal/config"
 	"orchestrator/internal/infra"
 	"orchestrator/internal/infra/engine"
 	pgstore "orchestrator/internal/infra/postgres"
-	orchdomain "orchestrator/internal/module/orchesrator/domain"
-	orchhandler "orchestrator/internal/module/orchesrator/handler"
-	orchrepo "orchestrator/internal/module/orchesrator/repo"
-	orchservice "orchestrator/internal/module/orchesrator/service"
 	"orchestrator/internal/module/bot/domain"
 	bothandler "orchestrator/internal/module/bot/handler"
 	workerrepo "orchestrator/internal/module/bot/repo"
 	"orchestrator/internal/module/bot/service"
+	orchdomain "orchestrator/internal/module/orchesrator/domain"
+	orchhandler "orchestrator/internal/module/orchesrator/handler"
+	orchrepo "orchestrator/internal/module/orchesrator/repo"
+	orchservice "orchestrator/internal/module/orchesrator/service"
 	"orchestrator/internal/runtime"
 	"orchestrator/internal/runtime/core/tick"
 )
@@ -78,20 +78,20 @@ func asRuntimeFactory(f *exchangeFactory) runtime.ExchangeFactory { return f }
 // asStreamerFactory adapts *marketStreamerFactory to the runtime.MarketStreamerFactory interface.
 func asStreamerFactory(f *marketStreamerFactory) runtime.MarketStreamerFactory { return f }
 
-func newOrchestratorRepo(db *sql.DB) orchdomain.OrchestratorRepo {
+func newOrchestratorRepo(db *gorm.DB) orchdomain.OrchestratorRepo {
 	if db == nil {
 		slog.Info("orchestrator repo: using memory (no postgres)")
 		return orchrepo.NewMemoryOrchestratorStore()
 	}
-	return pgstore.NewOrchestratorStore(db)
+	return pgstore.NewGORMOrchestratorRepo(db)
 }
 
-func newBotRepo(db *sql.DB) domain.BotRepo {
+func newBotRepo(db *gorm.DB) domain.BotRepo {
 	if db == nil {
 		slog.Info("bot repo: using memory (no postgres)")
 		return workerrepo.NewMemoryStore()
 	}
-	return pgstore.NewBotStore(db)
+	return pgstore.NewGORMBotRepo(db)
 }
 
 func newOrchService(repo orchdomain.OrchestratorRepo, reg *runtime.Registry) *orchservice.Service {

@@ -23,6 +23,7 @@ import (
 // RiskManager is the interface for account-level risk controls.
 type RiskManager interface {
 	IsHalted() bool
+	ResetHalt()
 }
 
 // Orchestrator is the live in-memory state for one orchestrator instance.
@@ -439,6 +440,11 @@ func (r *Orchestrator) Resume() []string {
 		}
 	}
 	return toRestart
+}
+
+// ResetHalt clears the risk-manager halt flag on this runtime.
+func (r *Orchestrator) ResetHalt() {
+	r.RiskMgr.ResetHalt()
 }
 
 // AddBot registers a bot with this runtime.

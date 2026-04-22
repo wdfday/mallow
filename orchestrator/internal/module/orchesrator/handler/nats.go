@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 
@@ -9,9 +10,9 @@ import (
 	"github.com/shopspring/decimal"
 
 	"orchestrator/internal/infra/natsapi"
+	botservice "orchestrator/internal/module/bot/service"
 	"orchestrator/internal/module/orchesrator/domain"
 	"orchestrator/internal/module/orchesrator/service"
-	botservice "orchestrator/internal/module/bot/service"
 	"orchestrator/internal/runtime"
 )
 
@@ -37,6 +38,8 @@ func (h *NATSHandler) Subscribe(nc *nats.Conn) error {
 		natsapi.SubjOrchDisable:   h.disable,
 		natsapi.SubjOrchPause:     h.pause,
 		natsapi.SubjOrchResume:    h.resume,
+		natsapi.SubjOrchKill:      h.kill,
+		natsapi.SubjOrchResetHalt: h.resetHalt,
 		natsapi.SubjOrchPortfolio: h.portfolio,
 		natsapi.SubjOrchPositions: h.positions,
 		natsapi.SubjOrchTrades:    h.trades,
@@ -232,10 +235,11 @@ func (h *NATSHandler) update(msg *nats.Msg) {
 		return
 	}
 	var raw struct {
-		ID      string         `json:"id"`
-		Name    string         `json:"name"`
-		Capital float64        `json:"capital"`
-		Risk    *RiskConfigDTO `json:"risk"`
+		ID        string              `json:"id"`
+		Name      string              `json:"name"`
+		Capital   float64             `json:"capital"`
+		Portfolio *PortfolioConfigDTO `json:"portfolio"`
+		Risk      *RiskConfigDTO      `json:"risk"`
 	}
 	if err := json.Unmarshal(msg.Data, &raw); err != nil {
 		_ = msg.Respond(natsapi.ReplyErr("invalid json: " + err.Error()))
@@ -252,6 +256,10 @@ func (h *NATSHandler) update(msg *nats.Msg) {
 	}
 
 	updateReq := service.UpdateReq{Name: raw.Name, Capital: decimal.NewFromFloat(raw.Capital)}
+	if raw.Portfolio != nil {
+		p := raw.Portfolio.ToDomain()
+		updateReq.Portfolio = &p
+	}
 	if raw.Risk != nil {
 		r := raw.Risk.ToDomain()
 		updateReq.Risk = &r
@@ -311,6 +319,54 @@ func (h *NATSHandler) resume(msg *nats.Msg) {
 	}
 	slog.Info("nats: orchestrator resumed", "id", id, "caller_svc", caller.CallerSvc, "caller_user_id", caller.CallerUserID)
 	_ = msg.Respond(natsapi.ReplyOK(ActionResp{Status: "resumed", ID: id}))
+}
+
+func (h *NATSHandler) kill(msg *nats.Msg) {
+	caller := natsapi.ParseCaller(msg.Data)
+	userID, err := uuid.Parse(caller.CallerUserID)
+	if err != nil {
+		_ = msg.Respond(natsapi.ReplyErr("missing caller_user_id"))
+		return
+	}
+	id, err := natsapi.ParseID(msg.Data)
+	if err != nil {
+		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
+		return
+	}
+	if err := h.svc.CheckOwner(id, userID); err != nil {
+		_ = msg.Respond(natsapi.ReplyErr("not found"))
+		return
+	}
+	if err := h.svc.Kill(context.Background(), id); err != nil {
+		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
+		return
+	}
+	slog.Warn("nats: orchestrator killed", "id", id, "caller_svc", caller.CallerSvc, "caller_user_id", caller.CallerUserID)
+	_ = msg.Respond(natsapi.ReplyOK(ActionResp{Status: "halted", ID: id}))
+}
+
+func (h *NATSHandler) resetHalt(msg *nats.Msg) {
+	caller := natsapi.ParseCaller(msg.Data)
+	userID, err := uuid.Parse(caller.CallerUserID)
+	if err != nil {
+		_ = msg.Respond(natsapi.ReplyErr("missing caller_user_id"))
+		return
+	}
+	id, err := natsapi.ParseID(msg.Data)
+	if err != nil {
+		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
+		return
+	}
+	if err := h.svc.CheckOwner(id, userID); err != nil {
+		_ = msg.Respond(natsapi.ReplyErr("not found"))
+		return
+	}
+	if err := h.svc.ResetHalt(id); err != nil {
+		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
+		return
+	}
+	slog.Info("nats: orchestrator halt reset", "id", id, "caller_svc", caller.CallerSvc, "caller_user_id", caller.CallerUserID)
+	_ = msg.Respond(natsapi.ReplyOK(ActionResp{Status: "active", ID: id}))
 }
 
 func (h *NATSHandler) requireRuntime(data []byte) (*runtime.Orchestrator, error) {

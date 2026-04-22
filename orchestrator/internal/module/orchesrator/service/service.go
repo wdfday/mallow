@@ -14,15 +14,18 @@ type RuntimeSpawner interface {
 	Teardown(id uuid.UUID) []string
 	Pause(id uuid.UUID) (wasRunning []string, err error)
 	Resume(id uuid.UUID) (toRestart []string, err error)
+	// ResetHalt clears the risk-manager halt flag on the named runtime.
+	ResetHalt(id uuid.UUID) error
 	// SyncOne triggers an async portfolio sync for the given orchestrator (fire-and-forget).
 	SyncOne(id uuid.UUID)
 }
 
-// BotLifecycle is the port for cascading start/stop to bots.
-// Implemented by worker/service.Service.
+// BotLifecycle is the port for cascading start/stop/kill to bots.
+// Implemented by bot/service.Service.
 type BotLifecycle interface {
 	StopBots(ids []string)
 	StartBots(ids []string)
+	KillBots(ids []string)
 }
 
 // Service handles CRUD for orchestrator configs (orchestrators table).

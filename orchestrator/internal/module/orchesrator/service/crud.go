@@ -17,6 +17,7 @@ type CreateForAccountReq struct {
 	Name      string
 	Capital   decimal.Decimal
 	Exchange  domain.ExchangeConfig
+	Portfolio domain.PortfolioConfig
 	Risk      domain.RiskConfig
 }
 
@@ -32,6 +33,7 @@ func (s *Service) CreateForAccount(req CreateForAccountReq) (*domain.Orchestrato
 	if req.Name == "" {
 		req.Name = "My Orchestrator"
 	}
+	req.Portfolio.Defaults()
 	req.Risk.Defaults()
 
 	cfg := &domain.OrchestratorConfig{
@@ -41,6 +43,7 @@ func (s *Service) CreateForAccount(req CreateForAccountReq) (*domain.Orchestrato
 		Name:      req.Name,
 		Capital:   req.Capital.InexactFloat64(),
 		Exchange:  req.Exchange,
+		Portfolio: req.Portfolio,
 		Risk:      req.Risk,
 		Enabled:   false,
 		Status:    "active",
@@ -73,10 +76,10 @@ func (s *Service) DeleteForAccount(accountID uuid.UUID) error {
 
 // UpdateReq is the patch payload for updating an orchestrator config.
 type UpdateReq struct {
-	Name    string
-	Capital decimal.Decimal
-	Risk    *domain.RiskConfig
-	Status  string
+	Name      string
+	Capital   decimal.Decimal
+	Portfolio *domain.PortfolioConfig
+	Risk      *domain.RiskConfig
 }
 
 // Update patches an orchestrator config.
@@ -88,6 +91,9 @@ func (s *Service) Update(id uuid.UUID, req UpdateReq) (*domain.OrchestratorConfi
 		}
 		if req.Capital.IsPositive() {
 			o.Capital = req.Capital.InexactFloat64()
+		}
+		if req.Portfolio != nil {
+			o.Portfolio = *req.Portfolio
 		}
 		if req.Risk != nil {
 			o.Risk = *req.Risk

@@ -113,7 +113,7 @@ func (h *NATSHandler) get(msg *nats.Msg) {
 
 	_ = msg.Respond(natsapi.ReplyOK(OrchestratorDetailResp{
 		OrchestratorResp: orchToResp(cfg),
-		Bots:             BotSummariesToResp(bots),
+		Bots:             bots,
 		Running:          rtErr == nil,
 		Paused:           paused,
 	}))

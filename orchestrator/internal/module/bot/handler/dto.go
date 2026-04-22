@@ -22,10 +22,10 @@ type CreateBotReq struct {
 	Futures        *FuturesDTO       `json:"futures"`
 }
 
+// UpdateBotReq allows patching Name, Position sizing, and Risk exit rules only.
+// Symbols, Strategy, Type, and Market are immutable after creation.
 type UpdateBotReq struct {
 	Name     string            `json:"name" binding:"omitempty,min=1,max=128"`
-	Symbols  []string          `json:"symbols" binding:"omitempty,min=1"`
-	Strategy *StrategyDTO      `json:"strategy"`
 	Position *PositionDTO      `json:"position"`
 	Risk     *BotRiskConfigDTO `json:"risk"`
 }
@@ -119,13 +119,7 @@ func (r CreateBotReq) ToDomain() domain.BotConfig {
 }
 
 func (r UpdateBotReq) ToDomain() domain.BotConfig {
-	cfg := domain.BotConfig{
-		Name:    r.Name,
-		Symbols: r.Symbols,
-	}
-	if r.Strategy != nil {
-		cfg.Strategy = strategyToDomain(*r.Strategy)
-	}
+	cfg := domain.BotConfig{Name: r.Name}
 	if r.Position != nil {
 		cfg.Position = positionToDomain(*r.Position)
 	}

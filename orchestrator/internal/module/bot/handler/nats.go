@@ -30,7 +30,6 @@ func (h *NATSHandler) Subscribe(nc *nats.Conn) error {
 		natsapi.SubjBotGet:     h.get,
 		natsapi.SubjBotCreate:  h.create,
 		natsapi.SubjBotUpdate:  h.update,
-		natsapi.SubjBotDelete:  h.delete,
 		natsapi.SubjBotStart:   h.start,
 		natsapi.SubjBotStop:    h.stop,
 		natsapi.SubjBotRestart: h.restart,
@@ -119,7 +118,17 @@ func (h *NATSHandler) create(msg *nats.Msg) {
 		}
 		req.OrchestratorID = orch.ID
 	}
-	instance, err := h.botMgr.Create(req.ToDomain())
+	cfg := req.ToDomain()
+	orch, err := h.orchSvc.Get(cfg.OrchestratorID)
+	if err != nil {
+		_ = msg.Respond(natsapi.ReplyErr("orchestrator not found"))
+		return
+	}
+	if err := checkCapitalAllocation(orch, h.botMgr.ListByOrchestrator(cfg.OrchestratorID), cfg.Position, ""); err != nil {
+		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
+		return
+	}
+	instance, err := h.botMgr.Create(cfg)
 	if err != nil {
 		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
 		return
@@ -142,7 +151,20 @@ func (h *NATSHandler) update(msg *nats.Msg) {
 		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
 		return
 	}
-	if err := h.botMgr.Update(raw.ID, raw.UpdateBotReq.ToDomain()); err != nil {
+	patch := raw.UpdateBotReq.ToDomain()
+	// Validate capital allocation when sizing changes.
+	if raw.Position != nil && (raw.Position.AllocatedCapital > 0 || raw.Position.AllocatedPct > 0) {
+		orch, err := h.orchSvc.Get(bi.Data.OrchestratorID)
+		if err != nil {
+			_ = msg.Respond(natsapi.ReplyErr("orchestrator not found"))
+			return
+		}
+		if err := checkCapitalAllocation(orch, h.botMgr.ListByOrchestrator(bi.Data.OrchestratorID), patch.Position, raw.ID); err != nil {
+			_ = msg.Respond(natsapi.ReplyErr(err.Error()))
+			return
+		}
+	}
+	if err := h.botMgr.Update(raw.ID, patch); err != nil {
 		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
 		return
 	}

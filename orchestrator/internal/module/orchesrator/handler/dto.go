@@ -77,77 +77,14 @@ type ExchangeConfigResp struct {
 	Testnet    bool   `json:"testnet,omitempty"`
 }
 
-type BotStrategyResp struct {
-	Entry       string         `json:"entry,omitempty"`
-	Exit        string         `json:"exit,omitempty"`
-	Name        string         `json:"name,omitempty"`
-	Params      map[string]any `json:"params,omitempty"`
-	MinStrength float64        `json:"min_strength,omitempty"`
-}
-
-type BotPositionResp struct {
-	SizeMode         string          `json:"size_mode,omitempty"`
-	AllocatedCapital decimal.Decimal `json:"allocated_capital,omitempty"`
-	AllocatedPct     float64         `json:"allocated_pct,omitempty"`
-	UnitCapital      decimal.Decimal `json:"unit_capital,omitempty"`
-	UnitPct          float64         `json:"unit_pct,omitempty"`
-	FixedQty         decimal.Decimal `json:"fixed_qty,omitempty"`
-	MaxPositions     int             `json:"max_positions,omitempty"`
-	RiskPerTradePct  float64         `json:"risk_per_trade_pct,omitempty"`
-	MaxPositionPct   float64         `json:"max_position_pct,omitempty"`
-}
-
-type BotRiskResp struct {
-	Exit            *botdomain.ExitConfig `json:"exit,omitempty"`
-	TrailingStopPct float64               `json:"trailing_stop_pct,omitempty"`
-}
-
-type BotHealthResp struct {
-	Status       string `json:"status"`
-	StartedAt    string `json:"started_at,omitempty"`
-	LastSignalAt string `json:"last_signal_at,omitempty"`
-	LastOrderAt  string `json:"last_order_at,omitempty"`
-	LastErrorAt  string `json:"last_error_at,omitempty"`
-	LastError    string `json:"last_error,omitempty"`
-	Uptime       string `json:"uptime,omitempty"`
-}
-
-type BotMetricsResp struct {
-	SignalsReceived int64           `json:"signals_received"`
-	SignalsFiltered int64           `json:"signals_filtered"`
-	TradesApproved  int64           `json:"trades_approved"`
-	OrdersPlaced    int64           `json:"orders_placed"`
-	OrdersFilled    int64           `json:"orders_filled"`
-	OrdersFailed    int64           `json:"orders_failed"`
-	TotalPnL        decimal.Decimal `json:"total_pnl"`
-	WinCount        int64           `json:"win_count"`
-	LossCount       int64           `json:"loss_count"`
-}
-
-type BotSummaryResp struct {
-	ID             string          `json:"id"`
-	Name           string          `json:"name"`
-	Type           string          `json:"type"`
-	Market         string          `json:"market"`
-	OrchestratorID uuid.UUID       `json:"orchestrator_id"`
-	Strategy       BotStrategyResp `json:"strategy"`
-	Position       BotPositionResp `json:"position"`
-	Risk           BotRiskResp     `json:"risk"`
-	Symbols        []string        `json:"symbols"`
-	Status         string          `json:"status"`
-	Running        bool            `json:"running"`
-	OrderCount     int             `json:"order_count"`
-	Health         BotHealthResp   `json:"health"`
-	Metrics        BotMetricsResp  `json:"metrics"`
-	CreatedAt      time.Time       `json:"created_at"`
-}
-
+// OrchestratorDetailResp is the full orchestrator view including live bot summaries.
+// Bot fields use botdomain.BotSummary directly — no parallel "Resp" types needed.
 type OrchestratorDetailResp struct {
 	OrchestratorResp
-	Bots       []BotSummaryResp `json:"bots"`
-	Running    bool             `json:"running"`
-	Paused     bool             `json:"paused"`
-	LastSyncAt *time.Time       `json:"last_sync_at,omitempty"`
+	Bots       []botdomain.BotSummary `json:"bots"`
+	Running    bool                   `json:"running"`
+	Paused     bool                   `json:"paused"`
+	LastSyncAt *time.Time             `json:"last_sync_at,omitempty"`
 }
 
 type PortfolioResp struct {
@@ -262,71 +199,6 @@ func orchListToResp(cfgs []*domain.OrchestratorConfig) []OrchestratorResp {
 	out := make([]OrchestratorResp, len(cfgs))
 	for i, cfg := range cfgs {
 		out[i] = orchToResp(cfg)
-	}
-	return out
-}
-
-func BotSummaryToResp(b botdomain.BotSummary) BotSummaryResp {
-	return BotSummaryResp{
-		ID:             b.ID,
-		Name:           b.Name,
-		Type:           string(b.Type),
-		Market:         string(b.Market),
-		OrchestratorID: b.OrchestratorID,
-		Strategy: BotStrategyResp{
-			Entry:       b.Strategy.Entry,
-			Exit:        b.Strategy.Exit,
-			Name:        b.Strategy.Name,
-			Params:      b.Strategy.Params,
-			MinStrength: b.Strategy.MinStrength,
-		},
-		Position: BotPositionResp{
-			SizeMode:         b.Position.SizeMode,
-			AllocatedCapital: b.Position.AllocatedCapital,
-			AllocatedPct:     b.Position.AllocatedPct,
-			UnitCapital:      b.Position.UnitCapital,
-			UnitPct:          b.Position.UnitPct,
-			FixedQty:         b.Position.FixedQty,
-			MaxPositions:     b.Position.MaxPositions,
-			RiskPerTradePct:  b.Position.RiskPerTradePct,
-			MaxPositionPct:   b.Position.MaxPositionPct,
-		},
-		Risk: BotRiskResp{
-			Exit:            b.Risk.Exit,
-			TrailingStopPct: b.Risk.TrailingStopPct,
-		},
-		Symbols:    b.Symbols,
-		Status:     b.Status,
-		Running:    b.Running,
-		OrderCount: b.OrderCount,
-		Health: BotHealthResp{
-			Status:       b.Health.Status,
-			StartedAt:    b.Health.StartedAt,
-			LastSignalAt: b.Health.LastSignalAt,
-			LastOrderAt:  b.Health.LastOrderAt,
-			LastErrorAt:  b.Health.LastErrorAt,
-			LastError:    b.Health.LastError,
-			Uptime:       b.Health.Uptime,
-		},
-		Metrics: BotMetricsResp{
-			SignalsReceived: b.Metrics.SignalsReceived,
-			SignalsFiltered: b.Metrics.SignalsFiltered,
-			TradesApproved:  b.Metrics.TradesApproved,
-			OrdersPlaced:    b.Metrics.OrdersPlaced,
-			OrdersFilled:    b.Metrics.OrdersFilled,
-			OrdersFailed:    b.Metrics.OrdersFailed,
-			TotalPnL:        b.Metrics.TotalPnL,
-			WinCount:        b.Metrics.WinCount,
-			LossCount:       b.Metrics.LossCount,
-		},
-		CreatedAt: b.CreatedAt,
-	}
-}
-
-func BotSummariesToResp(items []botdomain.BotSummary) []BotSummaryResp {
-	out := make([]BotSummaryResp, len(items))
-	for i, item := range items {
-		out[i] = BotSummaryToResp(item)
 	}
 	return out
 }

@@ -45,3 +45,4 @@ Cargo.lock
 monitoring/grafana/provisioning/dashboards/*.json
 go.work.sum
 /reference
+*.json

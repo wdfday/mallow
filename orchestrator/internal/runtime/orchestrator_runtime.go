@@ -14,16 +14,18 @@ import (
 	"orchestrator/internal/infra/exchange"
 	"orchestrator/internal/infra/natsapi"
 	orchdomain "orchestrator/internal/module/orchesrator/domain"
+	"orchestrator/internal/runtime/core/orderbook"
 	"orchestrator/internal/runtime/core/portfolio"
+	"orchestrator/internal/runtime/core/risk"
 	"orchestrator/internal/runtime/core/strategy"
 	"orchestrator/internal/runtime/core/tactics"
-	"orchestrator/internal/runtime/orderbook"
 )
 
 // RiskManager is the interface for account-level risk controls.
 type RiskManager interface {
 	IsHalted() bool
 	ResetHalt()
+	UpdateConfig(cfg risk.Config)
 }
 
 // Orchestrator is the live in-memory state for one orchestrator instance.
@@ -445,6 +447,11 @@ func (r *Orchestrator) Resume() []string {
 // ResetHalt clears the risk-manager halt flag on this runtime.
 func (r *Orchestrator) ResetHalt() {
 	r.RiskMgr.ResetHalt()
+}
+
+// UpdateRiskConfig replaces the live risk parameters (portfolio + risk sliders).
+func (r *Orchestrator) UpdateRiskConfig(cfg risk.Config) {
+	r.RiskMgr.UpdateConfig(cfg)
 }
 
 // AddBot registers a bot with this runtime.

@@ -30,9 +30,9 @@ import (
 	binanceaction "orchestrator/internal/infra/exchange/binance/action"
 	"orchestrator/internal/infra/natsapi"
 	"orchestrator/internal/runtime"
+	"orchestrator/internal/runtime/core/orderbook"
 	"orchestrator/internal/runtime/core/portfolio"
 	"orchestrator/internal/runtime/core/risk"
-	"orchestrator/internal/runtime/orderbook"
 )
 
 func TestSync_E2E(t *testing.T) {

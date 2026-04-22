@@ -50,6 +50,9 @@ func (s *Service) Create(cfg domain.BotConfig) (*runtime.BotInstance, error) {
 	if cfg.OrchestratorID == uuid.Nil {
 		return nil, fmt.Errorf("orchestrator_id is required")
 	}
+	if len(cfg.Symbols) == 0 {
+		return nil, fmt.Errorf("at least one symbol is required")
+	}
 	cfg.Defaults()
 
 	rt, err := s.registry.Get(cfg.OrchestratorID)
@@ -88,6 +91,9 @@ func (s *Service) Create(cfg domain.BotConfig) (*runtime.BotInstance, error) {
 	return bi, nil
 }
 
+// Update patches mutable fields: Name, Position sizing, and Risk exit rules.
+// Symbols, Strategy, Type, and Market are immutable after creation.
+// The bot must be stopped before updating.
 func (s *Service) Update(id string, patch domain.BotConfig) error {
 	bi, err := s.getOrLoad(id)
 	if err != nil {
@@ -97,52 +103,42 @@ func (s *Service) Update(id string, patch domain.BotConfig) error {
 		return fmt.Errorf("bot %q is running — stop it first", id)
 	}
 
-	return s.repo.Update(id, func(d *domain.BotInstance) error {
+	orchID := bi.Data.OrchestratorID
+
+	// Phase 1: Persist to DB — pure domain mutation, no runtime side-effects.
+	if err := s.repo.Update(id, func(d *domain.BotInstance) error {
 		if patch.Name != "" {
 			d.Name = patch.Name
-		}
-		if patch.Type != "" {
-			d.Type = patch.Type
-		}
-		if patch.Symbols != nil {
-			d.Symbols = domain.StringSlice(patch.Symbols)
-		}
-		if patch.Strategy.Key() != "" {
-			d.Strategy = patch.Strategy
 		}
 		if patch.Position.SizeMode != "" {
 			d.Position = patch.Position
 		}
-		if patch.Risk.Exit != nil {
+		if patch.Risk.Exit != nil || patch.Risk.TrailingStopPct > 0 {
 			d.Risk = patch.Risk
 		}
-
-		if patch.OrchestratorID != uuid.Nil && patch.OrchestratorID != d.OrchestratorID {
-			rt, err := s.registry.Get(patch.OrchestratorID)
-			if err != nil {
-				return fmt.Errorf("new orchestrator runtime not found: %w", err)
-			}
-			if oldRT, _ := s.registry.Get(d.OrchestratorID); oldRT != nil {
-				oldRT.RemoveBot(id)
-			}
-			d.OrchestratorID = patch.OrchestratorID
-			strat, tact := runtime.BuildBotComponents(d)
-			bi.Exchange = rt.Exchange
-			bi.Bot = runtime.NewBot(d.ID, patch.OrchestratorID.String(), rt, strat, tact)
-			setMeta(bi.Bot, d)
-			rt.AddBot(bi.Bot)
-		} else {
-			if rt, _ := s.registry.Get(d.OrchestratorID); rt != nil {
-				rt.RemoveBot(d.ID)
-				strat, tact := runtime.BuildBotComponents(d)
-				bi.Bot = runtime.NewBot(d.ID, d.OrchestratorID.String(), rt, strat, tact)
-				setMeta(bi.Bot, d)
-				rt.AddBot(bi.Bot)
-			}
-		}
-		slog.Info("bot updated", "id", id)
 		return nil
-	})
+	}); err != nil {
+		return err
+	}
+
+	// Phase 2: Reload and rebuild in-memory bot with updated config.
+	updated, err := s.repo.Get(id)
+	if err != nil {
+		slog.Warn("bot updated in DB but reload failed — in-memory state stale", "id", id, "err", err)
+		return nil
+	}
+	bi.Data = updated
+
+	if rt, _ := s.registry.Get(orchID); rt != nil {
+		rt.RemoveBot(id)
+		strat, tact := runtime.BuildBotComponents(updated)
+		bi.Bot = runtime.NewBot(updated.ID, orchID.String(), rt, strat, tact)
+		setMeta(bi.Bot, updated)
+		rt.AddBot(bi.Bot)
+	}
+
+	slog.Info("bot updated", "id", id, "name", updated.Name)
+	return nil
 }
 
 func (s *Service) Delete(id string) error {

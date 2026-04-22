@@ -192,7 +192,7 @@ func (h *Handler) get(c *gin.Context) {
 
 	shared.RespondWithSuccess(c, http.StatusOK, "Orchestrator retrieved successfully", OrchestratorDetailResp{
 		OrchestratorResp: orchToResp(cfg),
-		Bots:             BotSummariesToResp(bots),
+		Bots:             bots,
 		Running:          rtErr == nil,
 		Paused:           paused,
 		LastSyncAt:       lastSyncAt,

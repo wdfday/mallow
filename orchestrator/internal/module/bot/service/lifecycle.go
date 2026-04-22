@@ -107,6 +107,16 @@ func (s *Service) StartBots(ids []string) {
 	}
 }
 
+// PurgeBots removes bot entries from the in-memory map. Called after orchestrator teardown.
+// Does not touch DB — callers are responsible for cascade deletes at the DB level.
+func (s *Service) PurgeBots(ids []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, id := range ids {
+		delete(s.bots, id)
+	}
+}
+
 // KillBots cascade-kills bots (flatten positions + stop) in-memory only. Called by orchestrator kill.
 func (s *Service) KillBots(ids []string) {
 	s.mu.RLock()

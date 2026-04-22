@@ -12,6 +12,7 @@ import (
 	"orchestrator/internal/infra/engine"
 	"orchestrator/internal/module/bot/domain"
 	"orchestrator/internal/module/bot/service"
+	orchdomain "orchestrator/internal/module/orchesrator/domain"
 	orchsvc "orchestrator/internal/module/orchesrator/service"
 	"orchestrator/internal/runtime"
 	"orchestrator/internal/shared"
@@ -76,7 +77,6 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 		b.GET("", h.list)
 		b.GET("/:id", h.get)
 		b.PUT("/:id", h.update)
-		b.DELETE("/:id", h.delete)
 		b.POST("/:id/start", h.start)
 		b.POST("/:id/stop", h.stop)
 		b.POST("/:id/restart", h.restart)
@@ -85,6 +85,44 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 		b.POST("/:id/kill", h.kill)
 	}
 	rg.POST("/signal-engine/configure", h.configureStrategy)
+}
+
+// checkCapitalAllocation validates that adding newPos to an orchestrator doesn't exceed
+// its configured capital. excludeBotID is the bot being updated (skip its existing allocation);
+// pass "" when creating a new bot.
+func checkCapitalAllocation(orch *orchdomain.OrchestratorConfig, existing []domain.BotSummary, newPos domain.PositionConfig, excludeBotID string) error {
+	// ── Fixed-USD allocation check ──────────────────────────────────────────
+	if newPos.AllocatedCapital.IsPositive() {
+		var used float64
+		for _, b := range existing {
+			if b.ID == excludeBotID {
+				continue
+			}
+			used += b.Position.AllocatedCapital.InexactFloat64()
+		}
+		available := orch.Capital - used
+		if newPos.AllocatedCapital.InexactFloat64() > available {
+			return fmt.Errorf("insufficient capital: requesting %.2f but only %.2f available (%.2f total, %.2f allocated to other bots)",
+				newPos.AllocatedCapital.InexactFloat64(), available, orch.Capital, used)
+		}
+	}
+
+	// ── Percentage allocation check ─────────────────────────────────────────
+	if newPos.AllocatedPct > 0 {
+		var usedPct float64
+		for _, b := range existing {
+			if b.ID == excludeBotID {
+				continue
+			}
+			usedPct += b.Position.AllocatedPct
+		}
+		available := 1.0 - usedPct
+		if newPos.AllocatedPct > available {
+			return fmt.Errorf("insufficient capital: requesting %.1f%% but only %.1f%% available (%.1f%% allocated to other bots)",
+				newPos.AllocatedPct*100, available*100, usedPct*100)
+		}
+	}
+	return nil
 }
 
 // create godoc
@@ -128,6 +166,10 @@ func (h *Handler) create(c *gin.Context) {
 	}
 	if !orch.Enabled {
 		shared.RespondWithError(c, http.StatusForbidden, "orchestrator is disabled")
+		return
+	}
+	if err := checkCapitalAllocation(orch, h.botMgr.ListByOrchestrator(orchID), cfg.Position, ""); err != nil {
+		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	instance, err := h.botMgr.Create(cfg)
@@ -246,13 +288,9 @@ func (h *Handler) update(c *gin.Context) {
 		return
 	}
 	id := c.Param("id")
-	if _, err := h.checkBotOwner(id, userID); err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "not found")
-		return
-	}
-	bi, err := h.botMgr.Get(id)
+	orchID, err := h.checkBotOwner(id, userID)
 	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, err.Error())
+		shared.RespondWithError(c, http.StatusNotFound, "not found")
 		return
 	}
 
@@ -262,11 +300,26 @@ func (h *Handler) update(c *gin.Context) {
 		return
 	}
 
-	if err := h.botMgr.Update(id, req.ToDomain()); err != nil {
+	patch := req.ToDomain()
+
+	// Validate capital allocation when sizing changes.
+	if req.Position != nil && (req.Position.AllocatedCapital > 0 || req.Position.AllocatedPct > 0) {
+		orch, err := h.orchSvc.Get(orchID)
+		if err != nil {
+			shared.RespondWithError(c, http.StatusNotFound, "orchestrator not found")
+			return
+		}
+		if err := checkCapitalAllocation(orch, h.botMgr.ListByOrchestrator(orchID), patch.Position, id); err != nil {
+			shared.RespondWithError(c, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
+	if err := h.botMgr.Update(id, patch); err != nil {
 		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	bi, _ = h.botMgr.Get(id)
+	bi, _ := h.botMgr.Get(id)
 	shared.RespondWithSuccess(c, http.StatusOK, "Bot updated successfully", bi.Summary())
 }
 

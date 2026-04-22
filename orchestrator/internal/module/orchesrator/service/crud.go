@@ -68,8 +68,11 @@ func (s *Service) DeleteForAccount(accountID uuid.UUID) error {
 		return err
 	}
 	botIDs := s.spawner.Teardown(cfg.ID)
-	if s.bots != nil && len(botIDs) > 0 {
-		s.bots.StopBots(botIDs)
+	if s.bots != nil {
+		if len(botIDs) > 0 {
+			s.bots.StopBots(botIDs) // deregister from herald + stop running bots
+		}
+		s.bots.PurgeBots(botIDs) // remove from in-memory map
 	}
 	return s.repo.Delete(cfg.ID)
 }
@@ -82,10 +85,10 @@ type UpdateReq struct {
 	Risk      *domain.RiskConfig
 }
 
-// Update patches an orchestrator config.
+// Update patches an orchestrator config and refreshes live risk parameters.
 func (s *Service) Update(id uuid.UUID, req UpdateReq) (*domain.OrchestratorConfig, error) {
 	var updated *domain.OrchestratorConfig
-	err := s.repo.Update(id, func(o *domain.OrchestratorConfig) error {
+	if err := s.repo.Update(id, func(o *domain.OrchestratorConfig) error {
 		if req.Name != "" {
 			o.Name = req.Name
 		}
@@ -100,15 +103,24 @@ func (s *Service) Update(id uuid.UUID, req UpdateReq) (*domain.OrchestratorConfi
 		}
 		updated = o
 		return nil
-	})
-	return updated, err
+	}); err != nil {
+		return nil, err
+	}
+	// Refresh live risk manager so new limits take effect immediately.
+	if req.Portfolio != nil || req.Risk != nil {
+		_ = s.spawner.UpdateRiskConfig(id, updated.Portfolio, updated.Risk)
+	}
+	return updated, nil
 }
 
 // Delete removes an orchestrator config and tears down its runtime.
 func (s *Service) Delete(id uuid.UUID) error {
 	botIDs := s.spawner.Teardown(id)
-	if s.bots != nil && len(botIDs) > 0 {
-		s.bots.StopBots(botIDs)
+	if s.bots != nil {
+		if len(botIDs) > 0 {
+			s.bots.StopBots(botIDs)
+		}
+		s.bots.PurgeBots(botIDs)
 	}
 	return s.repo.Delete(id)
 }

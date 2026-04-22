@@ -16,6 +16,8 @@ type RuntimeSpawner interface {
 	Resume(id uuid.UUID) (toRestart []string, err error)
 	// ResetHalt clears the risk-manager halt flag on the named runtime.
 	ResetHalt(id uuid.UUID) error
+	// UpdateRiskConfig refreshes the live risk parameters for the named runtime.
+	UpdateRiskConfig(id uuid.UUID, portfolio domain.PortfolioConfig, risk domain.RiskConfig) error
 	// SyncOne triggers an async portfolio sync for the given orchestrator (fire-and-forget).
 	SyncOne(id uuid.UUID)
 }
@@ -26,6 +28,8 @@ type BotLifecycle interface {
 	StopBots(ids []string)
 	StartBots(ids []string)
 	KillBots(ids []string)
+	// PurgeBots removes bots from the in-memory map after their orchestrator is deleted.
+	PurgeBots(ids []string)
 }
 
 // Service handles CRUD for orchestrator configs (orchestrators table).

@@ -2,6 +2,7 @@ package risk
 
 import (
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -39,6 +40,7 @@ func DefaultConfig() Config {
 
 // Manager validates signals and sizes positions based on risk rules.
 type Manager struct {
+	mu        sync.RWMutex
 	cfg       Config
 	portfolio *portfolio.Portfolio
 	halted    bool      // true if max drawdown breached
@@ -60,6 +62,9 @@ func (m *Manager) Validate(signal *engine.SignalMsg) (bool, string) {
 	if signal.Dir == "close" {
 		return true, ""
 	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
 
 	// Check global halt (max drawdown breached).
 	if m.halted {
@@ -123,8 +128,12 @@ func (m *Manager) Size(signal *engine.SignalMsg, price decimal.Decimal) decimal.
 		return decimal.Zero
 	}
 
+	m.mu.RLock()
+	maxPositionPct := m.cfg.MaxPositionPct
+	m.mu.RUnlock()
+
 	equity := m.portfolio.Equity()
-	alloc := equity.Mul(decimal.NewFromFloat(m.cfg.MaxPositionPct))
+	alloc := equity.Mul(decimal.NewFromFloat(maxPositionPct))
 
 	// Scale by signal strength [0, 1].
 	alloc = alloc.Mul(decimal.NewFromFloat(signal.Strength))
@@ -147,12 +156,30 @@ func (m *Manager) Size(signal *engine.SignalMsg, price decimal.Decimal) decimal.
 
 // IsHalted returns true if trading has been halted due to risk limits.
 func (m *Manager) IsHalted() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	return m.halted
 }
 
 // ResetHalt clears the global halt flag (e.g. manual override).
 func (m *Manager) ResetHalt() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.halted = false
 	m.haltedDay = time.Time{}
 	slog.Info("risk halt reset")
+}
+
+// UpdateConfig replaces the risk parameters at runtime (e.g. after an admin update).
+// Preserves existing halt state; does not re-evaluate past P&L against new thresholds.
+func (m *Manager) UpdateConfig(cfg Config) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.cfg = cfg
+	slog.Info("risk config updated",
+		"max_positions", cfg.MaxPositions,
+		"max_position_pct", cfg.MaxPositionPct,
+		"daily_loss_limit_pct", cfg.DailyLossLimitPct,
+		"max_drawdown_pct", cfg.MaxDrawdownPct,
+	)
 }

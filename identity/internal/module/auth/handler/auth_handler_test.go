@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/mock"
 
 	"mallow/identity/internal/config"
+	authDomain "mallow/identity/internal/module/auth/domain"
 	"mallow/identity/internal/module/auth/dto"
 	userdomain "mallow/identity/internal/module/user/domain"
 	"mallow/identity/internal/shared"
@@ -64,6 +65,35 @@ func (m *MockAuthService) AuthenticateGoogle(ctx context.Context, req dto.Google
 	return args.Get(0).(*dto.AuthResult), args.Error(1)
 }
 
+// ==================== Mock Session Service ====================
+
+type MockSessionService struct {
+	mock.Mock
+}
+
+func (m *MockSessionService) CreateSession(ctx context.Context, sid, userID, ip, userAgent string) error {
+	args := m.Called(ctx, sid, userID, ip, userAgent)
+	return args.Error(0)
+}
+
+func (m *MockSessionService) ListSessions(ctx context.Context, userID string) ([]authDomain.Session, error) {
+	args := m.Called(ctx, userID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).([]authDomain.Session), args.Error(1)
+}
+
+func (m *MockSessionService) RevokeSession(ctx context.Context, sid, userID string) error {
+	args := m.Called(ctx, sid, userID)
+	return args.Error(0)
+}
+
+func (m *MockSessionService) RevokeAllSessions(ctx context.Context, userID string) error {
+	args := m.Called(ctx, userID)
+	return args.Error(0)
+}
+
 // ==================== Test Setup ====================
 
 func setupTest() (*gin.Engine, *MockAuthService) {
@@ -71,13 +101,15 @@ func setupTest() (*gin.Engine, *MockAuthService) {
 	router := gin.New()
 
 	mockAuthService := new(MockAuthService)
+	mockSessionService := new(MockSessionService)
+	mockSessionService.On("CreateSession", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(nil)
 	cfg := &config.Config{
 		Server: config.ServerConfig{
 			Port: "8080",
 		},
 	}
 
-	handler := NewAuthHandler(mockAuthService, cfg)
+	handler := NewAuthHandler(mockAuthService, mockSessionService, cfg)
 
 	// Register routes (without actual middleware for testing)
 	auth := router.Group("/api/v1/auth")

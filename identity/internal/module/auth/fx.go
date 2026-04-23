@@ -66,6 +66,7 @@ var Module = fx.Module("auth",
 		// Repositories
 		repository.NewTokenRepository,
 		repository.NewTokenBlacklistRepository,
+		repository.NewSessionRepository,
 
 		// Verification Service - provide as interface
 		fx.Annotate(
@@ -77,6 +78,12 @@ var Module = fx.Module("auth",
 		fx.Annotate(
 			service.NewService,
 			fx.As(new(service.IAuthService)),
+		),
+
+		// Session Service - provide as interface
+		fx.Annotate(
+			service.NewSessionService,
+			fx.As(new(service.ISessionService)),
 		),
 
 		// Handlers

@@ -10,5 +10,6 @@ type AuthResult struct {
 	User         *domain.User
 	AccessToken  string
 	RefreshToken string
-	ExpiresAt    int64 // unix timestamp when access token expires
+	ExpiresAt    int64  // unix timestamp when access token expires
+	SessionID    string // SID shared between the access and refresh token pair
 }

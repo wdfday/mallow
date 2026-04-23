@@ -32,10 +32,11 @@ type IPasswordService interface {
 
 // IJWTService defines JWT token operations
 type IJWTService interface {
-	GenerateAccessToken(userID, email string, role userDomain.UserRole) (string, int64, error)
-	GenerateRefreshToken(userID string) (string, int64, error)
+	GenerateAccessToken(userID, email, sessionID string, role userDomain.UserRole) (string, int64, error)
+	GenerateRefreshToken(userID, sessionID string) (string, int64, error)
 	ValidateToken(tokenString string) (*Claims, error)
-	ValidateRefreshToken(tokenString string) (string, error)
+	ValidateRefreshToken(tokenString string) (*RefreshClaims, error)
+	ExtractSessionID(tokenString string) string
 }
 
 // ITokenService defines random token generation operations

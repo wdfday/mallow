@@ -160,7 +160,8 @@ func (m *Middleware) AuthMiddleware(options ...func(*AuthOptions)) gin.HandlerFu
 		c.Set(UserKey, authUser)
 		c.Set("user_id", userID)
 		c.Set("user_email", claims.Email)
-		c.Set("user_role", string(claims.Role)) // Convert to string for context
+		c.Set("user_role", string(claims.Role))
+		c.Set("session_id", claims.SessionID)
 
 		// Apply authorization checks if needed
 		if opts.AdminOnly || opts.IsNotSuspended || opts.EmailVerified {

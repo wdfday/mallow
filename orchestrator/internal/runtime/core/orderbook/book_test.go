@@ -72,10 +72,10 @@ func TestOrderBookValidateStillUsesSupportedSymbolState(t *testing.T) {
 
 	result := ob.Validate(ProposedOrder{
 		OrchestratorID: "acct-1",
-		Symbol:    "NVDA",
-		Side:      SideBuy,
-		Qty:       decimal.NewFromFloat(2.7),
-		Price:     decimal.NewFromInt(60),
+		Symbol:         "NVDA",
+		Side:           SideBuy,
+		Qty:            decimal.NewFromFloat(2.7),
+		Price:          decimal.NewFromInt(60),
 	})
 	if !result.Valid {
 		t.Fatalf("expected order to validate, got invalid: %+v", result)
@@ -86,10 +86,10 @@ func TestOrderBookValidateStillUsesSupportedSymbolState(t *testing.T) {
 
 	unsupported := ob.Validate(ProposedOrder{
 		OrchestratorID: "acct-1",
-		Symbol:    "AMD",
-		Side:      SideBuy,
-		Qty:       decimal.NewFromInt(1),
-		Price:     decimal.NewFromInt(100),
+		Symbol:         "AMD",
+		Side:           SideBuy,
+		Qty:            decimal.NewFromInt(1),
+		Price:          decimal.NewFromInt(100),
 	})
 	if unsupported.Valid {
 		t.Fatalf("expected unsupported symbol to fail: %+v", unsupported)

@@ -14,15 +14,17 @@ import (
 
 // AuthHandler serves pure authentication (login/register/token) endpoints.
 type AuthHandler struct {
-	authService service.IAuthService
-	config      *config.Config
+	authService    service.IAuthService
+	sessionService service.ISessionService
+	config         *config.Config
 }
 
 // NewAuthHandler constructs an AuthHandler with required dependencies.
-func NewAuthHandler(authService service.IAuthService, cfg *config.Config) *AuthHandler {
+func NewAuthHandler(authService service.IAuthService, sessionService service.ISessionService, cfg *config.Config) *AuthHandler {
 	return &AuthHandler{
-		authService: authService,
-		config:      cfg,
+		authService:    authService,
+		sessionService: sessionService,
+		config:         cfg,
 	}
 }
 
@@ -69,6 +71,8 @@ func (h *AuthHandler) register(c *gin.Context) {
 		return
 	}
 
+	_ = h.sessionService.CreateSession(c.Request.Context(), result.SessionID, result.User.ID.String(), c.ClientIP(), c.Request.UserAgent())
+
 	// Set refresh token in HTTP-only cookie
 	h.setRefreshTokenCookie(c, result.RefreshToken)
 
@@ -104,6 +108,8 @@ func (h *AuthHandler) login(c *gin.Context) {
 		return
 	}
 
+	_ = h.sessionService.CreateSession(c.Request.Context(), result.SessionID, result.User.ID.String(), c.ClientIP(), c.Request.UserAgent())
+
 	// Set refresh token in HTTP-only cookie
 	h.setRefreshTokenCookie(c, result.RefreshToken)
 
@@ -135,6 +141,8 @@ func (h *AuthHandler) authenticateGoogle(c *gin.Context) {
 		shared.HandleError(c, err)
 		return
 	}
+
+	_ = h.sessionService.CreateSession(c.Request.Context(), result.SessionID, result.User.ID.String(), c.ClientIP(), c.Request.UserAgent())
 
 	// Set refresh token in HTTP-only cookie
 	h.setRefreshTokenCookie(c, result.RefreshToken)

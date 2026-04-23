@@ -6,7 +6,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Orchestrator is the persisted configuration of one orchestrator instance.
+// OrchestratorConfig Orchestrator is the persisted configuration of one orchestrator instance.
 // 1:1 with an investment account (via AccountID).
 // Auto-created on account.linked event; never manually created/deleted via API.
 // Runtime state (portfolio, orderbook, running bots) lives in runtime.OrchestratorRuntime.

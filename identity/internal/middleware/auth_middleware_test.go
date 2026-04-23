@@ -26,12 +26,12 @@ import (
 
 type mockJWTService struct{ mock.Mock }
 
-func (m *mockJWTService) GenerateAccessToken(userID, email string, role userDomain.UserRole) (string, int64, error) {
-	args := m.Called(userID, email, role)
+func (m *mockJWTService) GenerateAccessToken(userID, email, sessionID string, role userDomain.UserRole) (string, int64, error) {
+	args := m.Called(userID, email, sessionID, role)
 	return args.String(0), args.Get(1).(int64), args.Error(2)
 }
-func (m *mockJWTService) GenerateRefreshToken(userID string) (string, int64, error) {
-	args := m.Called(userID)
+func (m *mockJWTService) GenerateRefreshToken(userID, sessionID string) (string, int64, error) {
+	args := m.Called(userID, sessionID)
 	return args.String(0), args.Get(1).(int64), args.Error(2)
 }
 func (m *mockJWTService) ValidateToken(tokenString string) (*authService.Claims, error) {
@@ -41,9 +41,16 @@ func (m *mockJWTService) ValidateToken(tokenString string) (*authService.Claims,
 	}
 	return args.Get(0).(*authService.Claims), args.Error(1)
 }
-func (m *mockJWTService) ValidateRefreshToken(tokenString string) (string, error) {
+func (m *mockJWTService) ValidateRefreshToken(tokenString string) (*authService.RefreshClaims, error) {
 	args := m.Called(tokenString)
-	return args.String(0), args.Error(1)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*authService.RefreshClaims), args.Error(1)
+}
+func (m *mockJWTService) ExtractSessionID(tokenString string) string {
+	args := m.Called(tokenString)
+	return args.String(0)
 }
 
 type mockUserService struct{ mock.Mock }

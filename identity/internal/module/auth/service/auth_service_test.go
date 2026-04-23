@@ -8,6 +8,7 @@ import (
 
 	"log/slog"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
@@ -118,13 +119,13 @@ type MockJWTService struct {
 	mock.Mock
 }
 
-func (m *MockJWTService) GenerateAccessToken(userID, email string, role userdomain.UserRole) (string, int64, error) {
-	args := m.Called(userID, email, role)
+func (m *MockJWTService) GenerateAccessToken(userID, email, sessionID string, role userdomain.UserRole) (string, int64, error) {
+	args := m.Called(userID, email, sessionID, role)
 	return args.String(0), args.Get(1).(int64), args.Error(2)
 }
 
-func (m *MockJWTService) GenerateRefreshToken(userID string) (string, int64, error) {
-	args := m.Called(userID)
+func (m *MockJWTService) GenerateRefreshToken(userID, sessionID string) (string, int64, error) {
+	args := m.Called(userID, sessionID)
 	return args.String(0), args.Get(1).(int64), args.Error(2)
 }
 
@@ -136,9 +137,17 @@ func (m *MockJWTService) ValidateToken(tokenString string) (*Claims, error) {
 	return args.Get(0).(*Claims), args.Error(1)
 }
 
-func (m *MockJWTService) ValidateRefreshToken(tokenString string) (string, error) {
+func (m *MockJWTService) ValidateRefreshToken(tokenString string) (*RefreshClaims, error) {
 	args := m.Called(tokenString)
-	return args.String(0), args.Error(1)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*RefreshClaims), args.Error(1)
+}
+
+func (m *MockJWTService) ExtractSessionID(tokenString string) string {
+	args := m.Called(tokenString)
+	return args.String(0)
 }
 
 type MockPasswordService struct {
@@ -197,8 +206,24 @@ func (m *MockTokenBlacklistRepo) BlacklistAllUserTokens(ctx context.Context, use
 	return nil
 }
 
+func (m *MockTokenBlacklistRepo) RevokeSession(ctx context.Context, sid string, expiresAt time.Time) error {
+	return nil
+}
+
 type MockGoogleOAuthService struct {
 	mock.Mock
+}
+
+// ==================== Helpers ====================
+
+func makeRFClaims(userID uuid.UUID, sid string) *RefreshClaims {
+	return &RefreshClaims{
+		SessionID: sid,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   userID.String(),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour)),
+		},
+	}
 }
 
 // ==================== Tests ====================
@@ -247,9 +272,9 @@ func TestRegister(t *testing.T) {
 		mockUserService.On("ExistsByEmail", ctx, req.Email).Return(false, nil)
 		mockPasswordService.On("HashPassword", req.Password).Return("hashed_password", nil)
 		mockUserService.On("Create", ctx, mock.AnythingOfType("*domain.User")).Return(createdUser, nil)
-		mockJWTService.On("GenerateAccessToken", createdUser.ID.String(), createdUser.Email, createdUser.Role).
+		mockJWTService.On("GenerateAccessToken", createdUser.ID.String(), createdUser.Email, mock.AnythingOfType("string"), createdUser.Role).
 			Return("access_token", int64(3600), nil)
-		mockJWTService.On("GenerateRefreshToken", createdUser.ID.String()).
+		mockJWTService.On("GenerateRefreshToken", createdUser.ID.String(), mock.AnythingOfType("string")).
 			Return("refresh_token", int64(604800), nil)
 
 		// Execute
@@ -366,9 +391,9 @@ func TestLogin(t *testing.T) {
 		mockPasswordService.On("VerifyPassword", user.Password, req.Password).Return(nil)
 		mockUserService.On("ResetLoginAttempts", ctx, user.ID.String()).Return(nil)
 		mockUserService.On("UpdateLastLogin", ctx, user.ID.String(), mock.AnythingOfType("time.Time"), &req.IP).Return(nil)
-		mockJWTService.On("GenerateAccessToken", user.ID.String(), user.Email, user.Role).
+		mockJWTService.On("GenerateAccessToken", user.ID.String(), user.Email, mock.AnythingOfType("string"), user.Role).
 			Return("access_token", int64(3600), nil)
-		mockJWTService.On("GenerateRefreshToken", user.ID.String()).
+		mockJWTService.On("GenerateRefreshToken", user.ID.String(), mock.AnythingOfType("string")).
 			Return("refresh_token", int64(604800), nil)
 
 		result, err := service.Login(ctx, req)
@@ -537,7 +562,11 @@ func TestLogout(t *testing.T) {
 		refreshToken := "valid_refresh_token"
 		ipAddress := "192.168.1.1"
 
-		mockJWTService.On("ValidateRefreshToken", refreshToken).Return(userID.String(), nil)
+		rfClaims := &RefreshClaims{RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   userID.String(),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour)),
+		}}
+		mockJWTService.On("ValidateRefreshToken", refreshToken).Return(rfClaims, nil)
 		mockTokenBlacklistRepo.On("Add", ctx, refreshToken, userID, "logout", mock.AnythingOfType("time.Time")).Return(nil)
 
 		err := service.Logout(ctx, userID.String(), refreshToken, ipAddress)
@@ -558,7 +587,7 @@ func TestLogout(t *testing.T) {
 		}
 
 		refreshToken := "invalid_token"
-		mockJWTService.On("ValidateRefreshToken", refreshToken).Return("", errors.New("invalid token"))
+		mockJWTService.On("ValidateRefreshToken", refreshToken).Return(nil, errors.New("invalid token"))
 
 		err := service.Logout(ctx, "user-id", refreshToken, "192.168.1.1")
 
@@ -581,7 +610,10 @@ func TestLogout(t *testing.T) {
 		differentUserID := uuid.New()
 		refreshToken := "token_for_different_user"
 
-		mockJWTService.On("ValidateRefreshToken", refreshToken).Return(differentUserID.String(), nil)
+		mockJWTService.On("ValidateRefreshToken", refreshToken).Return(&RefreshClaims{RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   differentUserID.String(),
+			ExpiresAt: jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour)),
+		}}, nil)
 
 		err := service.Logout(ctx, userID.String(), refreshToken, "192.168.1.1")
 
@@ -593,8 +625,19 @@ func TestLogout(t *testing.T) {
 }
 
 // TestRefreshToken tests token refresh
+// Flow: ValidateRefreshToken → IsBlacklisted → GetByID → GenerateAccessToken
 func TestRefreshToken(t *testing.T) {
 	ctx := context.Background()
+
+	makeRFClaims := func(userID uuid.UUID, sid string) *RefreshClaims {
+		return &RefreshClaims{
+			SessionID: sid,
+			RegisteredClaims: jwt.RegisteredClaims{
+				Subject:   userID.String(),
+				ExpiresAt: jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour)),
+			},
+		}
+	}
 
 	t.Run("Success - Refresh with valid token", func(t *testing.T) {
 		mockJWTService := new(MockJWTService)
@@ -610,6 +653,7 @@ func TestRefreshToken(t *testing.T) {
 		}
 
 		userID := uuid.New()
+		sid := uuid.New().String()
 		refreshToken := "valid_refresh_token"
 		user := &userdomain.User{
 			ID:    userID,
@@ -617,10 +661,10 @@ func TestRefreshToken(t *testing.T) {
 			Role:  userdomain.UserRoleUser,
 		}
 
+		mockJWTService.On("ValidateRefreshToken", refreshToken).Return(makeRFClaims(userID, sid), nil)
 		mockTokenBlacklistRepo.On("IsBlacklisted", ctx, refreshToken).Return(false, nil)
-		mockJWTService.On("ValidateRefreshToken", refreshToken).Return(userID.String(), nil)
 		mockUserService.On("GetByID", ctx, userID.String()).Return(user, nil)
-		mockJWTService.On("GenerateAccessToken", user.ID.String(), user.Email, user.Role).
+		mockJWTService.On("GenerateAccessToken", user.ID.String(), user.Email, sid, user.Role).
 			Return("new_access_token", int64(3600), nil)
 
 		result, err := service.RefreshToken(ctx, refreshToken)
@@ -635,28 +679,27 @@ func TestRefreshToken(t *testing.T) {
 		mockUserService.AssertExpectations(t)
 	})
 
-	t.Run("Error - Token is blacklisted", func(t *testing.T) {
-		mockTokenBlacklistRepo := new(MockTokenBlacklistRepo)
+	t.Run("Error - Invalid refresh token", func(t *testing.T) {
+		mockJWTService := new(MockJWTService)
 
 		service := &Service{
-			tokenBlacklistRepo: mockTokenBlacklistRepo,
-			config:             &config.Config{},
-			logger:             slog.Default(),
+			jwtService: mockJWTService,
+			config:     &config.Config{},
+			logger:     slog.Default(),
 		}
 
-		refreshToken := "blacklisted_token"
-		mockTokenBlacklistRepo.On("IsBlacklisted", ctx, refreshToken).Return(true, nil)
+		refreshToken := "invalid_token"
+		mockJWTService.On("ValidateRefreshToken", refreshToken).Return(nil, errors.New("invalid token"))
 
 		result, err := service.RefreshToken(ctx, refreshToken)
 
 		assert.Error(t, err)
 		assert.Nil(t, result)
-		assert.Contains(t, err.Error(), "Unauthorized")
 
-		mockTokenBlacklistRepo.AssertExpectations(t)
+		mockJWTService.AssertExpectations(t)
 	})
 
-	t.Run("Error - Invalid refresh token", func(t *testing.T) {
+	t.Run("Error - Token is blacklisted", func(t *testing.T) {
 		mockJWTService := new(MockJWTService)
 		mockTokenBlacklistRepo := new(MockTokenBlacklistRepo)
 
@@ -667,9 +710,36 @@ func TestRefreshToken(t *testing.T) {
 			logger:             slog.Default(),
 		}
 
-		refreshToken := "invalid_token"
-		mockTokenBlacklistRepo.On("IsBlacklisted", ctx, refreshToken).Return(false, nil)
-		mockJWTService.On("ValidateRefreshToken", refreshToken).Return("", errors.New("invalid token"))
+		userID := uuid.New()
+		refreshToken := "blacklisted_token"
+		mockJWTService.On("ValidateRefreshToken", refreshToken).Return(makeRFClaims(userID, uuid.New().String()), nil)
+		mockTokenBlacklistRepo.On("IsBlacklisted", ctx, refreshToken).Return(true, nil)
+
+		result, err := service.RefreshToken(ctx, refreshToken)
+
+		assert.Error(t, err)
+		assert.Nil(t, result)
+		assert.Contains(t, err.Error(), "Unauthorized")
+
+		mockJWTService.AssertExpectations(t)
+		mockTokenBlacklistRepo.AssertExpectations(t)
+	})
+
+	t.Run("Error - Blacklist check fails", func(t *testing.T) {
+		mockJWTService := new(MockJWTService)
+		mockTokenBlacklistRepo := new(MockTokenBlacklistRepo)
+
+		service := &Service{
+			jwtService:         mockJWTService,
+			tokenBlacklistRepo: mockTokenBlacklistRepo,
+			config:             &config.Config{},
+			logger:             slog.Default(),
+		}
+
+		userID := uuid.New()
+		refreshToken := "some_token"
+		mockJWTService.On("ValidateRefreshToken", refreshToken).Return(makeRFClaims(userID, uuid.New().String()), nil)
+		mockTokenBlacklistRepo.On("IsBlacklisted", ctx, refreshToken).Return(false, errors.New("db error"))
 
 		result, err := service.RefreshToken(ctx, refreshToken)
 
@@ -695,9 +765,8 @@ func TestRefreshToken(t *testing.T) {
 
 		userID := uuid.New()
 		refreshToken := "valid_refresh_token"
-
+		mockJWTService.On("ValidateRefreshToken", refreshToken).Return(makeRFClaims(userID, uuid.New().String()), nil)
 		mockTokenBlacklistRepo.On("IsBlacklisted", ctx, refreshToken).Return(false, nil)
-		mockJWTService.On("ValidateRefreshToken", refreshToken).Return(userID.String(), nil)
 		mockUserService.On("GetByID", ctx, userID.String()).Return(nil, shared.ErrUserNotFound)
 
 		result, err := service.RefreshToken(ctx, refreshToken)
@@ -709,26 +778,6 @@ func TestRefreshToken(t *testing.T) {
 		mockJWTService.AssertExpectations(t)
 		mockTokenBlacklistRepo.AssertExpectations(t)
 		mockUserService.AssertExpectations(t)
-	})
-
-	t.Run("Error - Blacklist check fails", func(t *testing.T) {
-		mockTokenBlacklistRepo := new(MockTokenBlacklistRepo)
-
-		service := &Service{
-			tokenBlacklistRepo: mockTokenBlacklistRepo,
-			config:             &config.Config{},
-			logger:             slog.Default(),
-		}
-
-		refreshToken := "some_token"
-		mockTokenBlacklistRepo.On("IsBlacklisted", ctx, refreshToken).Return(false, errors.New("db error"))
-
-		result, err := service.RefreshToken(ctx, refreshToken)
-
-		assert.Error(t, err)
-		assert.Nil(t, result)
-
-		mockTokenBlacklistRepo.AssertExpectations(t)
 	})
 
 	t.Run("Error - Token generation fails", func(t *testing.T) {
@@ -745,6 +794,7 @@ func TestRefreshToken(t *testing.T) {
 		}
 
 		userID := uuid.New()
+		sid := uuid.New().String()
 		refreshToken := "valid_refresh_token"
 		user := &userdomain.User{
 			ID:    userID,
@@ -752,10 +802,10 @@ func TestRefreshToken(t *testing.T) {
 			Role:  userdomain.UserRoleUser,
 		}
 
+		mockJWTService.On("ValidateRefreshToken", refreshToken).Return(makeRFClaims(userID, sid), nil)
 		mockTokenBlacklistRepo.On("IsBlacklisted", ctx, refreshToken).Return(false, nil)
-		mockJWTService.On("ValidateRefreshToken", refreshToken).Return(userID.String(), nil)
 		mockUserService.On("GetByID", ctx, userID.String()).Return(user, nil)
-		mockJWTService.On("GenerateAccessToken", user.ID.String(), user.Email, user.Role).
+		mockJWTService.On("GenerateAccessToken", user.ID.String(), user.Email, sid, user.Role).
 			Return("", int64(0), errors.New("token generation failed"))
 
 		result, err := service.RefreshToken(ctx, refreshToken)
@@ -833,7 +883,7 @@ func TestLogoutEdgeCases(t *testing.T) {
 		refreshToken := "valid_refresh_token"
 		ipAddress := "192.168.1.1"
 
-		mockJWTService.On("ValidateRefreshToken", refreshToken).Return(userID.String(), nil)
+		mockJWTService.On("ValidateRefreshToken", refreshToken).Return(makeRFClaims(userID, uuid.New().String()), nil)
 		mockTokenBlacklistRepo.On("Add", ctx, refreshToken, userID, "logout", mock.AnythingOfType("time.Time")).Return(nil)
 		mockUserService.On("GetByID", ctx, userID.String()).Return(nil, shared.ErrUserNotFound)
 
@@ -857,7 +907,13 @@ func TestLogoutEdgeCases(t *testing.T) {
 		invalidUserID := "not-a-uuid"
 		refreshToken := "valid_refresh_token"
 
-		mockJWTService.On("ValidateRefreshToken", refreshToken).Return(invalidUserID, nil)
+		// ValidateRefreshToken succeeds but Subject is not a valid UUID
+		mockJWTService.On("ValidateRefreshToken", refreshToken).Return(&RefreshClaims{
+			RegisteredClaims: jwt.RegisteredClaims{
+				Subject:   invalidUserID,
+				ExpiresAt: jwt.NewNumericDate(time.Now().Add(7 * 24 * time.Hour)),
+			},
+		}, nil)
 
 		err := service.Logout(ctx, invalidUserID, refreshToken, "192.168.1.1")
 
@@ -881,7 +937,7 @@ func TestLogoutEdgeCases(t *testing.T) {
 		userID := uuid.New()
 		refreshToken := "valid_refresh_token"
 
-		mockJWTService.On("ValidateRefreshToken", refreshToken).Return(userID.String(), nil)
+		mockJWTService.On("ValidateRefreshToken", refreshToken).Return(makeRFClaims(userID, uuid.New().String()), nil)
 		mockTokenBlacklistRepo.On("Add", ctx, refreshToken, userID, "logout", mock.AnythingOfType("time.Time")).Return(errors.New("db error"))
 
 		err := service.Logout(ctx, userID.String(), refreshToken, "192.168.1.1")
@@ -952,7 +1008,7 @@ func TestRegisterEdgeCases(t *testing.T) {
 		mockUserService.On("ExistsByEmail", ctx, req.Email).Return(false, nil)
 		mockPasswordService.On("HashPassword", req.Password).Return("hashed_password", nil)
 		mockUserService.On("Create", ctx, mock.AnythingOfType("*domain.User")).Return(createdUser, nil)
-		mockJWTService.On("GenerateAccessToken", createdUser.ID.String(), createdUser.Email, createdUser.Role).
+		mockJWTService.On("GenerateAccessToken", createdUser.ID.String(), createdUser.Email, mock.AnythingOfType("string"), createdUser.Role).
 			Return("", int64(0), errors.New("token generation failed"))
 
 		result, err := service.Register(ctx, req)
@@ -994,9 +1050,9 @@ func TestRegisterEdgeCases(t *testing.T) {
 		mockUserService.On("ExistsByEmail", ctx, req.Email).Return(false, nil)
 		mockPasswordService.On("HashPassword", req.Password).Return("hashed_password", nil)
 		mockUserService.On("Create", ctx, mock.AnythingOfType("*domain.User")).Return(createdUser, nil)
-		mockJWTService.On("GenerateAccessToken", createdUser.ID.String(), createdUser.Email, createdUser.Role).
+		mockJWTService.On("GenerateAccessToken", createdUser.ID.String(), createdUser.Email, mock.AnythingOfType("string"), createdUser.Role).
 			Return("access_token", int64(3600), nil)
-		mockJWTService.On("GenerateRefreshToken", createdUser.ID.String()).
+		mockJWTService.On("GenerateRefreshToken", createdUser.ID.String(), mock.AnythingOfType("string")).
 			Return("", int64(0), errors.New("refresh token generation failed"))
 
 		result, err := service.Register(ctx, req)

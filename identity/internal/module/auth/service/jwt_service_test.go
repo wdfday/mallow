@@ -21,7 +21,7 @@ func TestNewJWTService_EdDSASignAndValidate(t *testing.T) {
 	svc, err := NewJWTService("", privatePEM, publicPEM, "k1", "http://identity.local", time.Hour, 24*time.Hour)
 	require.NoError(t, err)
 
-	token, _, err := svc.GenerateAccessToken("u-1", "u@test.dev", userDomain.UserRoleUser)
+	token, _, err := svc.GenerateAccessToken("u-1", "u@test.dev", "test-session-id", userDomain.UserRoleUser)
 	require.NoError(t, err)
 
 	claims, err := svc.ValidateToken(token)

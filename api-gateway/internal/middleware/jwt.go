@@ -3,7 +3,6 @@ package middleware
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -143,12 +142,13 @@ func JWTAuth(cfg JWTAuthConfig, rdb *redis.Client) gin.HandlerFunc {
 		}
 
 		if rdb != nil {
-			if blacklisted, err := isBlacklisted(c.Request.Context(), rdb, tokenStr); err == nil && blacklisted {
+			sub, _ := claims["sub"].(string)
+			if blacklisted, err := isBlacklisted(c.Request.Context(), rdb, "", sub); err == nil && blacklisted {
 				slog.Warn("gateway auth rejected request",
 					"path", c.Request.URL.Path,
 					"reason", "token_revoked",
 					"kid", tokenMeta.Kid,
-					"sub", claims["sub"],
+					"sub", sub,
 				)
 				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token revoked"})
 				return
@@ -334,10 +334,18 @@ func parseEd25519PublicKey(keyPEM string) (ed25519.PublicKey, error) {
 	return key, nil
 }
 
-func isBlacklisted(ctx context.Context, rdb *redis.Client, token string) (bool, error) {
-	h := sha256.Sum256([]byte(token))
-	key := fmt.Sprintf("blacklist:token:%x", h)
-	n, err := rdb.Exists(ctx, key).Result()
+func isBlacklisted(ctx context.Context, rdb *redis.Client, jti, sub string) (bool, error) {
+	var keys []string
+	if jti != "" {
+		keys = append(keys, fmt.Sprintf("blacklist:jti:%s", jti))
+	}
+	if sub != "" {
+		keys = append(keys, fmt.Sprintf("blacklist:user:%s", sub))
+	}
+	if len(keys) == 0 {
+		return false, nil
+	}
+	n, err := rdb.Exists(ctx, keys...).Result()
 	if err != nil {
 		return false, err
 	}

@@ -2,7 +2,6 @@ package repository
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -21,13 +20,15 @@ type ITokenBlacklistRepository interface {
 	IsBlacklisted(ctx context.Context, token string) (bool, error)
 	CleanupExpired(ctx context.Context) error
 	BlacklistAllUserTokens(ctx context.Context, userID uuid.UUID, reason string) error
+	RevokeSession(ctx context.Context, sid string, expiresAt time.Time) error
 }
 
 // TokenBlacklistEntry is the GORM model persisted to PostgreSQL.
 // It is exported so gorm.go can include it in AutoMigrate.
+// NOTE: the legacy token_hash column remains in the DB after this migration — drop it manually when ready.
 type TokenBlacklistEntry struct {
 	ID        uint      `gorm:"primaryKey;autoIncrement"`
-	TokenHash string    `gorm:"uniqueIndex;size:64;not null"`
+	JTI       string    `gorm:"column:jti;uniqueIndex;size:36;not null"`
 	UserID    uuid.UUID `gorm:"type:uuid;not null;index"`
 	Reason    string    `gorm:"not null;default:'logout'"`
 	ExpiresAt time.Time `gorm:"not null;index"`
@@ -47,30 +48,34 @@ func NewTokenBlacklistRepository(db *gorm.DB, rdb *redis.Client) ITokenBlacklist
 	return &tokenBlacklistRepository{db: db, redis: rdb}
 }
 
-func redisTokenKey(token string) string {
-	h := sha256.Sum256([]byte(token))
-	return fmt.Sprintf("blacklist:token:%x", h)
+func redisJTIKey(jti string) string {
+	return fmt.Sprintf("blacklist:jti:%s", jti)
 }
 
 func redisUserKey(userID uuid.UUID) string {
 	return fmt.Sprintf("blacklist:user:%s", userID.String())
 }
 
-func hashToken(token string) string {
-	h := sha256.Sum256([]byte(token))
-	return fmt.Sprintf("%x", h)
+func redisSIDKey(sid string) string {
+	return fmt.Sprintf("blacklist:sid:%s", sid)
 }
 
 // Add persists the revoked token to PostgreSQL (if available) and caches it in Redis.
+// The JTI claim is extracted from the token for storage; the full token text is never persisted.
 func (r *tokenBlacklistRepository) Add(ctx context.Context, token string, userID uuid.UUID, reason string, expiresAt time.Time) error {
 	ttl := time.Until(expiresAt)
 	if ttl <= 0 {
 		return nil // already expired, skip
 	}
 
+	jti, _, _ := extractJWTFields(token)
+	if jti == "" {
+		return fmt.Errorf("blacklist add: token missing jti claim")
+	}
+
 	if r.db != nil {
 		entry := TokenBlacklistEntry{
-			TokenHash: hashToken(token),
+			JTI:       jti,
 			UserID:    userID,
 			Reason:    reason,
 			ExpiresAt: expiresAt,
@@ -80,35 +85,42 @@ func (r *tokenBlacklistRepository) Add(ctx context.Context, token string, userID
 		}
 	}
 
-	_ = r.redis.Set(ctx, redisTokenKey(token), reason, ttl).Err()
+	_ = r.redis.Set(ctx, redisJTIKey(jti), reason, ttl).Err()
 	return nil
 }
 
 // IsBlacklisted checks Redis first (O(1)), then falls back to PostgreSQL and re-populates the cache.
 func (r *tokenBlacklistRepository) IsBlacklisted(ctx context.Context, token string) (bool, error) {
-	// Fast path: Redis cache hit for this specific token.
-	n, err := r.redis.Exists(ctx, redisTokenKey(token)).Result()
-	if err == nil && n > 0 {
-		return true, nil
-	}
+	// Decode JTI, sub, and sid without verifying the signature — lookup keys only, not auth decisions.
+	jti, sub, sid := extractJWTFields(token)
 
-	// Best-effort: check user-wide revocation marker in Redis.
-	// We decode the JWT sub claim without verification — only used as a lookup key.
-	if sub := extractJWTSub(token); sub != "" {
-		if uid, parseErr := uuid.Parse(sub); parseErr == nil {
-			if n2, _ := r.redis.Exists(ctx, redisUserKey(uid)).Result(); n2 > 0 {
-				return true, nil
-			}
+	// Fast path: single Redis round-trip checking all applicable keys.
+	var keys []string
+	if jti != "" {
+		keys = append(keys, redisJTIKey(jti))
+	}
+	if sub != "" {
+		if uid, err := uuid.Parse(sub); err == nil {
+			keys = append(keys, redisUserKey(uid))
+		}
+	}
+	if sid != "" {
+		keys = append(keys, redisSIDKey(sid))
+	}
+	if len(keys) > 0 {
+		n, err := r.redis.Exists(ctx, keys...).Result()
+		if err == nil && n > 0 {
+			return true, nil
 		}
 	}
 
 	// DB fallback for individual token (handles Redis eviction / restart).
-	if r.db == nil {
+	if r.db == nil || jti == "" {
 		return false, nil
 	}
 	var entry TokenBlacklistEntry
 	result := r.db.WithContext(ctx).
-		Where("token_hash = ? AND expires_at > ?", hashToken(token), time.Now()).
+		Where("jti = ? AND expires_at > ?", jti, time.Now()).
 		First(&entry)
 	if result.Error != nil {
 		if result.Error == gorm.ErrRecordNotFound {
@@ -119,9 +131,19 @@ func (r *tokenBlacklistRepository) IsBlacklisted(ctx context.Context, token stri
 
 	// Re-populate Redis cache.
 	if ttl := time.Until(entry.ExpiresAt); ttl > 0 {
-		_ = r.redis.Set(ctx, redisTokenKey(token), entry.Reason, ttl).Err()
+		_ = r.redis.Set(ctx, redisJTIKey(jti), entry.Reason, ttl).Err()
 	}
 	return true, nil
+}
+
+// RevokeSession marks an entire session as revoked by its SID.
+// All tokens (access + refresh) sharing this SID will be rejected until the marker expires.
+func (r *tokenBlacklistRepository) RevokeSession(ctx context.Context, sid string, expiresAt time.Time) error {
+	ttl := time.Until(expiresAt)
+	if ttl <= 0 {
+		return nil
+	}
+	return r.redis.Set(ctx, redisSIDKey(sid), "revoked", ttl).Err()
 }
 
 // CleanupExpired removes expired rows from PostgreSQL.
@@ -143,23 +165,24 @@ func (r *tokenBlacklistRepository) BlacklistAllUserTokens(ctx context.Context, u
 	return r.redis.Set(ctx, redisUserKey(userID), reason, refreshTokenLifetime).Err()
 }
 
-// extractJWTSub decodes the JWT payload (without signature verification) to read the 'sub' claim.
-// This is intentionally unverified — it is only used as a cache lookup key for revocation checks,
-// never for authentication or authorization decisions.
-func extractJWTSub(token string) string {
+// extractJWTFields decodes the JWT payload without signature verification to read 'jti', 'sub', and 'sid'.
+// Intentionally unverified — used only as lookup keys for revocation checks, never for auth decisions.
+func extractJWTFields(token string) (jti, sub, sid string) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return ""
+		return "", "", ""
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return ""
+		return "", "", ""
 	}
 	var claims struct {
+		JTI string `json:"jti"`
 		Sub string `json:"sub"`
+		SID string `json:"sid"`
 	}
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return ""
+		return "", "", ""
 	}
-	return claims.Sub
+	return claims.JTI, claims.Sub, claims.SID
 }

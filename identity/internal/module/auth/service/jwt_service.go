@@ -3,14 +3,16 @@ package service
 import (
 	"crypto/ed25519"
 	"crypto/x509"
+	"encoding/base64"
+	"encoding/json"
+	"encoding/pem"
 	"fmt"
-	userDomain "mallow/identity/internal/module/user/domain"
 	"strings"
 	"time"
 
-	"encoding/pem"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
+	userDomain "mallow/identity/internal/module/user/domain"
 )
 
 // JWTService handles JWT token generation and validation
@@ -24,11 +26,18 @@ type JWTService struct {
 	refreshTokenTTL time.Duration
 }
 
-// Claims represents JWT claims
+// Claims represents JWT claims for access tokens
 type Claims struct {
-	UserID string              `json:"user_id"`
-	Email  string              `json:"email"`
-	Role   userDomain.UserRole `json:"role"`
+	UserID    string              `json:"user_id"`
+	Email     string              `json:"email"`
+	Role      userDomain.UserRole `json:"role"`
+	SessionID string              `json:"sid"`
+	jwt.RegisteredClaims
+}
+
+// RefreshClaims represents JWT claims for refresh tokens
+type RefreshClaims struct {
+	SessionID string `json:"sid"`
 	jwt.RegisteredClaims
 }
 
@@ -89,14 +98,15 @@ func NewJWTService(
 }
 
 // GenerateAccessToken generates an access JWT token
-func (s *JWTService) GenerateAccessToken(userID, email string, role userDomain.UserRole) (string, int64, error) {
+func (s *JWTService) GenerateAccessToken(userID, email, sessionID string, role userDomain.UserRole) (string, int64, error) {
 	now := time.Now()
 	expiresAt := now.Add(s.accessTokenTTL)
 
 	claims := Claims{
-		UserID: userID,
-		Email:  email,
-		Role:   role,
+		UserID:    userID,
+		Email:     email,
+		Role:      role,
+		SessionID: sessionID,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   userID,
 			Issuer:    s.issuer,
@@ -120,17 +130,20 @@ func (s *JWTService) GenerateAccessToken(userID, email string, role userDomain.U
 }
 
 // GenerateRefreshToken generates a refresh token
-func (s *JWTService) GenerateRefreshToken(userID string) (string, int64, error) {
+func (s *JWTService) GenerateRefreshToken(userID, sessionID string) (string, int64, error) {
 	now := time.Now()
 	expiresAt := now.Add(s.refreshTokenTTL)
 
-	claims := jwt.RegisteredClaims{
-		Subject:   userID,
-		Issuer:    s.issuer,
-		ExpiresAt: jwt.NewNumericDate(expiresAt),
-		IssuedAt:  jwt.NewNumericDate(now),
-		NotBefore: jwt.NewNumericDate(now),
-		ID:        uuid.New().String(),
+	claims := RefreshClaims{
+		SessionID: sessionID,
+		RegisteredClaims: jwt.RegisteredClaims{
+			Subject:   userID,
+			Issuer:    s.issuer,
+			ExpiresAt: jwt.NewNumericDate(expiresAt),
+			IssuedAt:  jwt.NewNumericDate(now),
+			NotBefore: jwt.NewNumericDate(now),
+			ID:        uuid.New().String(),
+		},
 	}
 
 	token, signingKey, err := s.newSignedToken(claims)
@@ -160,19 +173,36 @@ func (s *JWTService) ValidateToken(tokenString string) (*Claims, error) {
 	return nil, fmt.Errorf("invalid token")
 }
 
-// ValidateRefreshToken validates a refresh token
-func (s *JWTService) ValidateRefreshToken(tokenString string) (string, error) {
-	token, err := jwt.ParseWithClaims(tokenString, &jwt.RegisteredClaims{}, s.keyFunc)
-
+// ValidateRefreshToken validates a refresh token and returns its claims.
+func (s *JWTService) ValidateRefreshToken(tokenString string) (*RefreshClaims, error) {
+	token, err := jwt.ParseWithClaims(tokenString, &RefreshClaims{}, s.keyFunc)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-
-	if claims, ok := token.Claims.(*jwt.RegisteredClaims); ok && token.Valid {
-		return claims.Subject, nil
+	if claims, ok := token.Claims.(*RefreshClaims); ok && token.Valid {
+		return claims, nil
 	}
+	return nil, fmt.Errorf("invalid refresh token")
+}
 
-	return "", fmt.Errorf("invalid refresh token")
+// ExtractSessionID decodes the JWT payload without verification to read the 'sid' claim.
+// Intentionally unverified — used only as a session lookup key, never for auth decisions.
+func (s *JWTService) ExtractSessionID(tokenString string) string {
+	parts := strings.Split(tokenString, ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return ""
+	}
+	var c struct {
+		SID string `json:"sid"`
+	}
+	if err := json.Unmarshal(payload, &c); err != nil {
+		return ""
+	}
+	return c.SID
 }
 
 func (s *JWTService) newSignedToken(claims jwt.Claims) (*jwt.Token, any, error) {

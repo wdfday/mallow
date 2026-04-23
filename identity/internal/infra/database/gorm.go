@@ -40,6 +40,7 @@ func New(cfg *config.Config, logger *slog.Logger) (*gorm.DB, error) {
 		&userDomain.User{},
 		&profileDomain.UserProfile{},
 		&authRepository.TokenBlacklistEntry{},
+		&authRepository.SessionEntry{},
 	)
 	if err != nil {
 		return nil, err

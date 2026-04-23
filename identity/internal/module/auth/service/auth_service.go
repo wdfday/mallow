@@ -84,16 +84,18 @@ func (s *Service) Register(ctx context.Context, req dto.RegisterRequest) (*dto.A
 	}
 
 	// Generate tokens
+	sid := uuid.New().String()
 	accessToken, expiresAt, err := s.jwtService.GenerateAccessToken(
 		createdUser.ID.String(),
 		createdUser.Email,
+		sid,
 		createdUser.Role,
 	)
 	if err != nil {
 		return nil, shared.ErrInternal.WithError(err)
 	}
 
-	refreshToken, _, err := s.jwtService.GenerateRefreshToken(createdUser.ID.String())
+	refreshToken, _, err := s.jwtService.GenerateRefreshToken(createdUser.ID.String(), sid)
 	if err != nil {
 		return nil, shared.ErrInternal.WithError(err)
 	}
@@ -103,6 +105,7 @@ func (s *Service) Register(ctx context.Context, req dto.RegisterRequest) (*dto.A
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 		ExpiresAt:    expiresAt,
+		SessionID:    sid,
 	}, nil
 }
 
@@ -146,16 +149,18 @@ func (s *Service) Login(ctx context.Context, req dto.LoginRequest) (*dto.AuthRes
 	_ = s.userService.UpdateLastLogin(ctx, user.ID.String(), time.Now(), &ip)
 
 	// Generate tokens
+	sid := uuid.New().String()
 	accessToken, expiresAt, err := s.jwtService.GenerateAccessToken(
 		user.ID.String(),
 		user.Email,
+		sid,
 		user.Role,
 	)
 	if err != nil {
 		return nil, shared.ErrInternal.WithError(err)
 	}
 
-	refreshToken, _, err := s.jwtService.GenerateRefreshToken(user.ID.String())
+	refreshToken, _, err := s.jwtService.GenerateRefreshToken(user.ID.String(), sid)
 	if err != nil {
 		return nil, shared.ErrInternal.WithError(err)
 	}
@@ -165,33 +170,27 @@ func (s *Service) Login(ctx context.Context, req dto.LoginRequest) (*dto.AuthRes
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 		ExpiresAt:    expiresAt,
+		SessionID:    sid,
 	}, nil
 }
 
 // Logout logs out a user by blacklisting their refresh token
 func (s *Service) Logout(ctx context.Context, userID, refreshToken, ipAddress string) error {
-	// Validate refresh token first
-	tokenUserID, err := s.jwtService.ValidateRefreshToken(refreshToken)
+	claims, err := s.jwtService.ValidateRefreshToken(refreshToken)
 	if err != nil {
 		return shared.ErrUnauthorized.WithDetails("message", "invalid refresh token")
 	}
 
-	// Ensure the token belongs to the user
-	if tokenUserID != userID {
+	if claims.Subject != userID {
 		return shared.ErrUnauthorized.WithDetails("message", "token does not belong to user")
 	}
 
-	// Parse userID to UUID
 	userUUID, err := uuid.Parse(userID)
 	if err != nil {
 		return shared.ErrBadRequest.WithDetails("message", "invalid user ID")
 	}
 
-	// Calculate token expiration (7 days from now to match refresh token lifetime)
-	expiresAt := time.Now().Add(7 * 24 * time.Hour)
-
-	// Add token to blacklist
-	if err := s.tokenBlacklistRepo.Add(ctx, refreshToken, userUUID, "logout", expiresAt); err != nil {
+	if err := s.tokenBlacklistRepo.Add(ctx, refreshToken, userUUID, "logout", claims.ExpiresAt.Time); err != nil {
 		return err
 	}
 
@@ -200,31 +199,38 @@ func (s *Service) Logout(ctx context.Context, userID, refreshToken, ipAddress st
 
 // RefreshToken generates a new access token from a refresh token
 func (s *Service) RefreshToken(ctx context.Context, refreshToken string) (*dto.TokenResponse, error) {
-	// Check if token is blacklisted first
-	isBlacklisted, err := s.tokenBlacklistRepo.IsBlacklisted(ctx, refreshToken)
-	if err != nil {
-		return nil, shared.ErrInternal.WithError(err)
-	}
-	if isBlacklisted {
-		return nil, shared.ErrUnauthorized.WithDetails("message", "token has been revoked")
-	}
-
-	// Validate refresh token
-	userID, err := s.jwtService.ValidateRefreshToken(refreshToken)
+	claims, err := s.jwtService.ValidateRefreshToken(refreshToken)
 	if err != nil {
 		return nil, shared.ErrUnauthorized.WithDetails("message", "invalid refresh token")
 	}
 
-	// Get user
-	user, err := s.userService.GetByID(ctx, userID)
+	userUUID, err := uuid.Parse(claims.Subject)
+	if err != nil {
+		return nil, shared.ErrUnauthorized.WithDetails("message", "invalid user ID in token")
+	}
+
+	isRevoked, err := s.tokenBlacklistRepo.IsBlacklisted(ctx, refreshToken)
+	if err != nil {
+		return nil, shared.ErrInternal.WithError(err)
+	}
+	if isRevoked {
+		return nil, shared.ErrUnauthorized.WithDetails("message", "token has been revoked")
+	}
+
+	user, err := s.userService.GetByID(ctx, userUUID.String())
 	if err != nil {
 		return nil, shared.ErrUnauthorized.WithDetails("message", "user not found")
 	}
 
-	// Generate new access token
+	sid := claims.SessionID
+	if sid == "" {
+		sid = uuid.New().String()
+	}
+
 	accessToken, expiresAt, err := s.jwtService.GenerateAccessToken(
 		user.ID.String(),
 		user.Email,
+		sid,
 		user.Role,
 	)
 	if err != nil {
@@ -292,16 +298,18 @@ func (s *Service) AuthenticateGoogle(ctx context.Context, req dto.GoogleAuthRequ
 	}
 
 	// Generate tokens
+	sid := uuid.New().String()
 	accessToken, expiresAt, err := s.jwtService.GenerateAccessToken(
 		user.ID.String(),
 		user.Email,
+		sid,
 		user.Role,
 	)
 	if err != nil {
 		return nil, shared.ErrInternal.WithError(err)
 	}
 
-	refreshToken, _, err := s.jwtService.GenerateRefreshToken(user.ID.String())
+	refreshToken, _, err := s.jwtService.GenerateRefreshToken(user.ID.String(), sid)
 	if err != nil {
 		return nil, shared.ErrInternal.WithError(err)
 	}
@@ -315,5 +323,6 @@ func (s *Service) AuthenticateGoogle(ctx context.Context, req dto.GoogleAuthRequ
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 		ExpiresAt:    expiresAt,
+		SessionID:    sid,
 	}, nil
 }

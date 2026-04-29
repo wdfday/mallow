@@ -16,6 +16,7 @@ type Config struct {
 	OrchestratorURL string
 	LogbookURL      string
 	RedisURL        string
+	ServiceSecret   string
 }
 
 func Load() Config {
@@ -33,6 +34,7 @@ func Load() Config {
 		OrchestratorURL: envOr("ORCHESTRATOR_URL", "http://localhost:8084"),
 		LogbookURL:      envOr("LOGBOOK_URL", "http://localhost:8085"),
 		RedisURL:        envOr("REDIS_URL", "redis://localhost:6379"),
+		ServiceSecret:   envOr("SERVICE_SECRET", ""),
 	}
 }
 

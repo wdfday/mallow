@@ -61,7 +61,8 @@ func Run(ctx context.Context) {
 		Strategist: service.NewStrategistClient(cfg.StrategistURL),
 		LogbookURL: cfg.LogbookURL,
 	}
-	r := buildRouter(cfg, h, rdb)
+	identityClient := service.NewIdentityClient(cfg.IdentityURL, cfg.ServiceSecret)
+	r := buildRouter(cfg, h, rdb, identityClient)
 
 	// ── HTTP server ─────────────────────────────────────────────────────
 	addr := fmt.Sprintf(":%s", cfg.Port)

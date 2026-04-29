@@ -46,8 +46,14 @@ type jwk struct {
 	X   string `json:"x"`
 }
 
+// BlacklistFallback is called when Redis is unavailable to check revocation via an authoritative source.
+type BlacklistFallback interface {
+	CheckRevoked(ctx context.Context, sid, sub string) (bool, error)
+}
+
 // JWTAuth validates Bearer tokens, resolves EdDSA keys from local PEM or JWKS, and checks Redis blacklist.
-func JWTAuth(cfg JWTAuthConfig, rdb *redis.Client) gin.HandlerFunc {
+// When Redis is unavailable it falls back to fallback (e.g. identity service) to wake the cache.
+func JWTAuth(cfg JWTAuthConfig, rdb *redis.Client, fallback BlacklistFallback) gin.HandlerFunc {
 	if cfg.CacheTTL <= 0 {
 		cfg.CacheTTL = 5 * time.Minute
 	}
@@ -143,12 +149,33 @@ func JWTAuth(cfg JWTAuthConfig, rdb *redis.Client) gin.HandlerFunc {
 
 		if rdb != nil {
 			sub, _ := claims["sub"].(string)
-			if blacklisted, err := isBlacklisted(c.Request.Context(), rdb, "", sub); err == nil && blacklisted {
+			sid, _ := claims["sid"].(string)
+			blacklisted, err := isBlacklisted(c.Request.Context(), rdb, sid, sub)
+			if err != nil {
+				slog.Warn("gateway auth redis unavailable, falling back to identity",
+					"path", c.Request.URL.Path,
+					"kid", tokenMeta.Kid,
+					"sub", sub,
+					"err", err,
+				)
+				if fallback != nil {
+					blacklisted, err = fallback.CheckRevoked(c.Request.Context(), sid, sub)
+					if err != nil {
+						slog.Warn("gateway auth identity fallback failed, allowing request",
+							"path", c.Request.URL.Path,
+							"sub", sub,
+							"err", err,
+						)
+					}
+				}
+			}
+			if blacklisted {
 				slog.Warn("gateway auth rejected request",
 					"path", c.Request.URL.Path,
 					"reason", "token_revoked",
 					"kid", tokenMeta.Kid,
 					"sub", sub,
+					"sid", sid,
 				)
 				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token revoked"})
 				return
@@ -334,10 +361,10 @@ func parseEd25519PublicKey(keyPEM string) (ed25519.PublicKey, error) {
 	return key, nil
 }
 
-func isBlacklisted(ctx context.Context, rdb *redis.Client, jti, sub string) (bool, error) {
+func isBlacklisted(ctx context.Context, rdb *redis.Client, sid, sub string) (bool, error) {
 	var keys []string
-	if jti != "" {
-		keys = append(keys, fmt.Sprintf("blacklist:jti:%s", jti))
+	if sid != "" {
+		keys = append(keys, fmt.Sprintf("blacklist:sid:%s", sid))
 	}
 	if sub != "" {
 		keys = append(keys, fmt.Sprintf("blacklist:user:%s", sub))

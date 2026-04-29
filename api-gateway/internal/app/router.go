@@ -12,12 +12,13 @@ import (
 	"gateway/internal/config"
 	"gateway/internal/handler"
 	"gateway/internal/middleware"
+	"gateway/internal/service"
 	pkgtelemetry "mallow/pkg/telemetry"
 
 	"github.com/gin-gonic/gin"
 )
 
-func buildRouter(cfg config.Config, h *handler.Handler, rdb *redis.Client) *gin.Engine {
+func buildRouter(cfg config.Config, h *handler.Handler, rdb *redis.Client, identityClient *service.IdentityClient) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(pkgtelemetry.GinMiddleware("gateway"))
@@ -46,7 +47,7 @@ func buildRouter(cfg config.Config, h *handler.Handler, rdb *redis.Client) *gin.
 		JWKSURL:      jwksURL,
 		Issuer:       cfg.JWTIssuer,
 		CacheTTL:     cacheTTL,
-	}, rdb)
+	}, rdb, identityClient)
 	injectHeaders := middleware.InjectUserHeaders()
 
 	// ── Public routes ────────────────────────────────────────────────────

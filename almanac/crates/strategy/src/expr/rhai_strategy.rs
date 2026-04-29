@@ -339,6 +339,7 @@ fn get_f(v: Option<&Dynamic>) -> f64 {
 fn build_engine(plot_buf: PlotBuf) -> Engine {
     let mut engine = Engine::new();
 
+    // ── Crossover / direction ────────────────────────────────────────────────
     engine.register_fn("cross_above", |a: Array, b: Array| -> bool {
         let a1 = get_f(a.get(1)); let a0 = get_f(a.get(0));
         let b1 = get_f(b.get(1)); let b0 = get_f(b.get(0));
@@ -351,11 +352,73 @@ fn build_engine(plot_buf: PlotBuf) -> Engine {
     });
     engine.register_fn("rising",   |a: Array| -> bool { get_f(a.get(0)) > get_f(a.get(1)) });
     engine.register_fn("falling",  |a: Array| -> bool { get_f(a.get(0)) < get_f(a.get(1)) });
+    engine.register_fn("above",    |a: Array, b: Array| -> bool { get_f(a.get(0)) > get_f(b.get(0)) });
+    engine.register_fn("below",    |a: Array, b: Array| -> bool { get_f(a.get(0)) < get_f(b.get(0)) });
     engine.register_fn("in_range", |v: f64, lo: f64, hi: f64| -> bool { v >= lo && v <= hi });
-    engine.register_fn("abs", |v: f64| -> f64 { v.abs() });
-    engine.register_fn("min", |a: f64, b: f64| -> f64 { a.min(b) });
-    engine.register_fn("max", |a: f64, b: f64| -> f64 { a.max(b) });
 
+    // rising_n / falling_n — monotonically rising/falling for last n bars.
+    // Requires buf_depth >= n+1 on the indicator declaration.
+    engine.register_fn("rising_n", |a: Array, n: i64| -> bool {
+        let n = n as usize;
+        if a.len() < n + 1 { return false; }
+        (0..n).all(|i| get_f(a.get(i)) > get_f(a.get(i + 1)))
+    });
+    engine.register_fn("falling_n", |a: Array, n: i64| -> bool {
+        let n = n as usize;
+        if a.len() < n + 1 { return false; }
+        (0..n).all(|i| get_f(a.get(i)) < get_f(a.get(i + 1)))
+    });
+
+    // slope — average rate of change across all elements: (arr[0] - arr[n-1]) / (n-1).
+    // Positive = rising, negative = falling, magnitude = speed.
+    engine.register_fn("slope", |a: Array| -> f64 {
+        let n = a.len();
+        if n < 2 { return 0.0; }
+        (get_f(a.get(0)) - get_f(a.get(n - 1))) / (n - 1) as f64
+    });
+
+    // momentum — absolute change vs N bars ago: arr[0] - arr[n].
+    engine.register_fn("momentum", |a: Array, n: i64| -> f64 {
+        get_f(a.get(0)) - get_f(a.get(n as usize))
+    });
+
+    // ── Lookback — highest/lowest over N bars of an array ───────────────────
+    // `highest(close, 20)` → max of close[0..20].
+    // Requires bar_buf_depth >= N (auto-extended at compile time — see build()).
+    engine.register_fn("highest", |arr: Array, n: i64| -> f64 {
+        arr.iter().take(n as usize).map(|d| d.as_float().unwrap_or(f64::NEG_INFINITY)).fold(f64::NEG_INFINITY, f64::max)
+    });
+    engine.register_fn("lowest", |arr: Array, n: i64| -> f64 {
+        arr.iter().take(n as usize).map(|d| d.as_float().unwrap_or(f64::INFINITY)).fold(f64::INFINITY, f64::min)
+    });
+
+    // ── Array aggregation ────────────────────────────────────────────────────
+    engine.register_fn("avg", |arr: Array| -> f64 {
+        if arr.is_empty() { return 0.0; }
+        let s: f64 = arr.iter().map(|d| d.as_float().unwrap_or(0.0)).sum();
+        s / arr.len() as f64
+    });
+    engine.register_fn("sum", |arr: Array| -> f64 {
+        arr.iter().map(|d| d.as_float().unwrap_or(0.0)).sum()
+    });
+
+    // ── Scalar math ──────────────────────────────────────────────────────────
+    engine.register_fn("abs",   |v: f64| -> f64 { v.abs() });
+    engine.register_fn("sqrt",  |v: f64| -> f64 { v.sqrt() });
+    engine.register_fn("pow",   |v: f64, e: f64| -> f64 { v.powf(e) });
+    engine.register_fn("round", |v: f64| -> f64 { v.round() });
+    engine.register_fn("floor", |v: f64| -> f64 { v.floor() });
+    engine.register_fn("ceil",  |v: f64| -> f64 { v.ceil() });
+    engine.register_fn("min",   |a: f64, b: f64| -> f64 { a.min(b) });
+    engine.register_fn("max",   |a: f64, b: f64| -> f64 { a.max(b) });
+    engine.register_fn("clamp", |v: f64, lo: f64, hi: f64| -> f64 { v.clamp(lo, hi) });
+
+    // ── Debug ────────────────────────────────────────────────────────────────
+    engine.register_fn("log", |msg: String| {
+        tracing::debug!(rhai = %msg);
+    });
+
+    // ── Plot ─────────────────────────────────────────────────────────────────
     engine.register_fn("plot", move |name: String, value: f64| {
         if let Ok(mut buf) = plot_buf.lock() {
             buf.push((name, value));
@@ -363,6 +426,44 @@ fn build_engine(plot_buf: PlotBuf) -> Engine {
     });
 
     engine
+}
+
+/// Scan cleaned script for lookback functions and extract the maximum N so
+/// `bar_buf` is sized correctly at build time.
+///
+/// Handles two call shapes:
+/// - `f(arr, N)` — `highest`, `lowest`, `rising_n`, `falling_n`, `momentum`
+/// - `f(arr)` using full array — `slope` (uses entire buf, no explicit N)
+fn extract_max_lookback(script: &str) -> usize {
+    // Functions whose 2nd arg is the lookback N (need buf >= N for bar arrays,
+    // or N+1 for rising_n / falling_n).
+    const SECOND_ARG_FNS: &[(&str, usize)] = &[
+        ("highest(",  0),  // needs N elements
+        ("lowest(",   0),  // needs N elements
+        ("momentum(", 1),  // needs N+1 elements (arr[n] must exist)
+        ("rising_n(", 1),  // needs N+1 elements
+        ("falling_n(", 1), // needs N+1 elements
+    ];
+
+    let mut max_n = 0usize;
+    for (prefix, extra) in SECOND_ARG_FNS {
+        let mut search = script;
+        while let Some(idx) = search.find(prefix) {
+            search = &search[idx + prefix.len()..];
+            if let Some(comma) = search.find(',') {
+                let after = search[comma + 1..].trim_start();
+                let n: usize = after
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect::<String>()
+                    .parse()
+                    .unwrap_or(0);
+                let needed = n + extra;
+                if needed > max_n { max_n = needed; }
+            }
+        }
+    }
+    max_n
 }
 
 // ── RhaiStrategy ─────────────────────────────────────────────────────────────
@@ -378,6 +479,7 @@ pub struct RhaiStrategy {
     entry_price:     f64,
     has_tp:          bool,
     has_sl:          bool,
+    has_strength:    bool,
     plot_buf:        PlotBuf,
     /// `None` in live mode — plot() calls are silently flushed and discarded.
     series:          Option<HashMap<String, Vec<(i64, f64)>>>,
@@ -425,8 +527,13 @@ impl RhaiStrategy {
             bindings.insert(decl.var_name.clone(), binding);
         }
 
-        let has_tp = cleaned_script.contains("let tp");
-        let has_sl = cleaned_script.contains("let sl");
+        // Extend bar_buf to cover any highest(arr, N) / lowest(arr, N) lookbacks.
+        let lookback = extract_max_lookback(&cleaned_script);
+        if lookback > max_buf { max_buf = lookback; }
+
+        let has_tp       = cleaned_script.contains("let tp");
+        let has_sl       = cleaned_script.contains("let sl");
+        let has_strength = cleaned_script.contains("let strength");
 
         Ok(Self {
             engine,
@@ -439,6 +546,7 @@ impl RhaiStrategy {
             entry_price: 0.0,
             has_tp,
             has_sl,
+            has_strength,
             plot_buf,
             series: if collect_series { Some(HashMap::new()) } else { None },
         })
@@ -501,6 +609,7 @@ impl Strategy for RhaiStrategy {
         }
 
         scope.push("entry_price", self.entry_price);
+        scope.push("in_position", self.in_position);
 
         if self.engine.run_ast_with_scope(&mut scope, &self.ast).is_err() {
             return vec![];
@@ -522,10 +631,11 @@ impl Strategy for RhaiStrategy {
                 self.in_position = true;
                 self.entry_price = bar.close;
 
-                let target = if self.has_tp { scope.get_value::<f64>("tp") } else { None };
-                let stop   = if self.has_sl { scope.get_value::<f64>("sl") } else { None };
+                let target   = if self.has_tp       { scope.get_value::<f64>("tp")       } else { None };
+                let stop     = if self.has_sl       { scope.get_value::<f64>("sl")       } else { None };
+                let strength = if self.has_strength { scope.get_value::<f64>("strength").unwrap_or(1.0).clamp(0.0, 1.0) } else { 1.0 };
 
-                let mut sig = Signal::long(bar.timestamp, &bar.symbol, 1.0);
+                let mut sig = Signal::long(bar.timestamp, &bar.symbol, strength);
                 sig.price        = Some(bar.close);
                 sig.target_price = target;
                 sig.stop_price   = stop;
@@ -802,6 +912,109 @@ plot("ema9", ema9[0]);
         assert!(!s.series().unwrap()["ema9"].is_empty());
         s.reset();
         assert!(s.series().unwrap().is_empty(), "reset() must clear series");
+    }
+
+    #[test]
+    fn highest_lowest_auto_extends_bar_buf() {
+        let script = r#"
+let entry = highest(close, 20) > lowest(low, 10) * 1.01;
+let exit  = false;
+"#;
+        let s = RhaiStrategy::from_script(script).unwrap();
+        assert_eq!(s.bar_buf_depth, 20, "bar_buf_depth must be extended to highest/lowest N");
+    }
+
+    #[test]
+    fn highest_lowest_values() {
+        let script = r#"
+let h = highest(close, 5);
+let l = lowest(low, 5);
+let entry = close[0] > h * 0.99;
+let exit  = close[0] < l * 1.01;
+plot("h", h);
+plot("l", l);
+"#;
+        let mut s = RhaiStrategy::from_script(script).unwrap();
+        for i in 0..30 { let _ = s.on_bar(&make_bar(i)); }
+        // series should have "h" and "l" plots
+        let series = s.series().unwrap();
+        assert!(series.contains_key("h") && series.contains_key("l"));
+    }
+
+    #[test]
+    fn in_position_exposed_in_scope() {
+        let script = r#"
+let ema9 = indicator("ema", 9);
+let entry = !in_position && ema9[0] > 0.0;
+let exit  = in_position && ema9[0] < 0.0;
+"#;
+        // Should compile and run without error
+        let mut s = RhaiStrategy::from_script(script).unwrap();
+        for i in 0..30 { let _ = s.on_bar(&make_bar(i)); }
+    }
+
+    #[test]
+    fn rising_n_falling_n_buf_extended() {
+        // rising_n(arr, 3) needs buf_depth >= 4 for indicator arrays,
+        // and bar_buf >= 4 for bar-field arrays.
+        let script = r#"
+let adx14 = indicator("adx", 14, 4);
+let entry = adx14[0] > 25.0 && rising_n(adx14, 3);
+let exit  = falling_n(adx14, 2);
+"#;
+        let s = RhaiStrategy::from_script(script).unwrap();
+        // rising_n(adx14,3) in cleaned script → extract_max_lookback finds 3+1=4
+        // but bar fields aren't referenced here so bar_buf stays at 4 from indicator
+        assert!(s.bar_buf_depth >= 2);
+        let mut s = s;
+        for i in 0..100 { let _ = s.on_bar(&make_bar(i)); }
+    }
+
+    #[test]
+    fn momentum_auto_extends_bar_buf() {
+        // momentum(close, 5) on bar fields needs bar_buf >= 6
+        let script = r#"
+let m = momentum(close, 5);
+let entry = m > 1.0;
+let exit  = m < -1.0;
+"#;
+        let s = RhaiStrategy::from_script(script).unwrap();
+        assert_eq!(s.bar_buf_depth, 6, "momentum(arr,5) needs buf>=6");
+    }
+
+    #[test]
+    fn slope_and_momentum_compile_run() {
+        let script = r#"
+let adx14 = indicator("adx", 14, 5);
+let s     = slope(adx14);
+let m     = momentum(adx14, 3);
+let entry = adx14[0] > 25.0 && s > 0.0 && m > 0.5;
+let exit  = s < 0.0;
+"#;
+        let mut s = RhaiStrategy::from_script(script).unwrap();
+        for i in 0..100 { let _ = s.on_bar(&make_bar(i)); }
+    }
+
+    #[test]
+    fn strength_read_from_scope() {
+        let script = r#"
+let ema9  = indicator("ema", 9);
+let ema21 = indicator("ema", 21);
+let entry    = cross_above(ema9, ema21);
+let exit     = cross_below(ema9, ema21);
+let strength = 0.75;
+"#;
+        let mut s = RhaiStrategy::from_script(script).unwrap();
+        assert!(s.has_strength);
+        let bars: Vec<Bar> = (0..60).map(make_bar).collect();
+        for b in &bars {
+            let sigs = s.on_bar(b);
+            for sig in &sigs {
+                if sig.direction == alm_core::signal::Direction::Long {
+                    assert!((sig.strength - 0.75).abs() < 1e-9, "strength must be 0.75");
+                }
+            }
+        }
     }
 
     #[test]

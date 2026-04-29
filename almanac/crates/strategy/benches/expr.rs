@@ -11,7 +11,10 @@ mod bench_utils;
 /// - cargo bench -p alm-strategy -- rsi_run   (chỉ xem group run)
 
 use alm_core::{bar::Bar, strategy::Strategy};
-use alm_strategy::{factory::build_strategy, named::rsi_mean_rev::RsiMeanRev};
+use alm_strategy::{
+    factory::build_strategy,
+    named::{rsi_mean_rev::RsiMeanRev, kitchen_sink::KitchenSinkStrategy},
+};
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
 use serde_json::json;
 
@@ -194,5 +197,65 @@ fn bench_multi_run(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_rsi_construct, bench_rsi_run, bench_ema_run, bench_multi_run);
+// ── Kitchen Sink ──────────────────────────────────────────────────────────────
+//
+// Compares the three flavours on a compute-heavy 10-indicator + MTF strategy:
+//   hardcoded  — pure Rust struct, zero interpreter overhead
+//   cel        — ~60% approximation (no highest/rising_n/MTF/tp-sl in CEL)
+//   rhai       — 100% faithful to the spec script, runs full Rhai VM
+
+fn bench_kitchen_sink_run(c: &mut Criterion) {
+    let bars = make_bars(1_000);
+    let mut group = c.benchmark_group("kitchen_sink_run/1000bars");
+
+    group.bench_with_input(BenchmarkId::from_parameter("hardcoded"), &bars, |b, bars| {
+        let mut s = KitchenSinkStrategy::new();
+        b.iter(|| { s.reset(); run_all(&mut s, bars) })
+    });
+
+    group.bench_with_input(BenchmarkId::from_parameter("cel_approx60"), &bars, |b, bars| {
+        // CEL cannot express: highest(close,20), rising_n, momentum, H1 MTF, tp/sl.
+        // This approximation covers the M1 indicator logic only (~60% of conditions).
+        let mut s = build_strategy("cel", &json!({
+            "entry": "cross_above(ema(9), ema(21)) \
+                   && ema(21) > ema(50) \
+                   && rsi(14) > 50.0 && rsi(14) < 70.0 \
+                   && adx(14) > 25.0 \
+                   && (bb_upper(20) - bb_lower(20)) < atr(14) * 1.5",
+            "exit":  "cross_below(ema(9), ema(21)) || rsi(14) > 80.0"
+        })).unwrap();
+        b.iter(|| { s.reset(); run_all(s.as_mut(), bars) })
+    });
+
+    group.bench_with_input(BenchmarkId::from_parameter("rhai_full"), &bars, |b, bars| {
+        let mut s = build_strategy("rhai", &json!({ "script":
+r#"let ema9   = indicator("ema",  9,    4);
+let ema21  = indicator("ema",  21,   4);
+let ema50  = indicator("ema",  50,   4);
+let rsi14  = indicator("rsi",  14,   4);
+let adx14  = indicator("adx",  14,   5);
+let atr14  = indicator("atr",  14,   3);
+let macd   = indicator("macd", 12,   3);
+let bb_u   = indicator("bb_upper", 20, 3);
+let bb_l   = indicator("bb_lower", 20, 3);
+let h1_ema = indicator("ema",  20, "H1", 3);
+let trend  = adx14[0] > 25.0 && rising_n(adx14, 3);
+let mom    = momentum(rsi14, 3) > 0.0;
+let squeeze = (bb_u[0] - bb_l[0]) < atr14[0] * 1.5;
+let h_break = highest(close, 20) == close[0];
+let entry = cross_above(ema9, ema21) && above(ema21, ema50)
+         && rsi14[0] > 50.0 && rsi14[0] < 70.0
+         && trend && mom && squeeze && h_break
+         && above(h1_ema, ema50);
+let exit  = cross_below(ema9, ema21) || rsi14[0] > 80.0 || falling_n(adx14, 2);
+let tp    = close[0] + atr14[0] * 2.5;
+let sl    = close[0] - atr14[0] * 1.5;"#
+        })).unwrap();
+        b.iter(|| { s.reset(); run_all(s.as_mut(), bars) })
+    });
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_rsi_construct, bench_rsi_run, bench_ema_run, bench_multi_run, bench_kitchen_sink_run);
 criterion_main!(benches);

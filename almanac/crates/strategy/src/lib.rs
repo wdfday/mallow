@@ -14,10 +14,6 @@ pub use expr::{CelScript, CelStrategy, RhaiStrategy};
 // pub mod dynamic;  // deprecated — use CelStrategy instead
 // pub use dynamic::DynamicStrategy;
 
-// ── Layered (filter + signal) strategy ───────────────────────────────────────
-pub mod layered;
-pub use layered::LayeredStrategy;
-
 // ── Bar resampler (MTF helper) ────────────────────────────────────────────────
 pub mod bar_resampler;
 

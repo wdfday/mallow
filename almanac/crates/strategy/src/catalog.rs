@@ -512,7 +512,6 @@ pub const STRATEGY_KEYS: &[&str] = &[
     "pixel_3",
     "cel",
     "dynamic",
-    "layered",
 ];
 
 // ── Indicator helpers (used by indicator runner) ──────────────────────────────

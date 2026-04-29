@@ -70,6 +70,9 @@ pub mod pattern_breakout;
 pub mod price_action;
 pub mod sar_strategy;
 
+// ── Kitchen Sink ─────────────────────────────────────────────────────────────
+pub mod kitchen_sink;
+
 // ── Session / Special ────────────────────────────────────────────────────────
 pub mod orb_breakout;
 pub mod pixel_3;
@@ -112,6 +115,7 @@ pub use equilibrium_explorer::EquilibriumExplorer;
 pub use gmma_crossover::GmmaCrossover;
 pub use heiken_ashi_strategy::{HaBreakout, HaColor, HaHarmonizer};
 pub use highest_breakout::HighestBreakout;
+pub use kitchen_sink::KitchenSinkStrategy;
 pub use hma_crossover::HmaCrossover;
 pub use ichimoku_strategy::{IchimokuCloud, IchimokuCross};
 pub use kama_strategy::KamaStrategy;

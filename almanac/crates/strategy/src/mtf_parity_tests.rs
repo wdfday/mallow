@@ -14,7 +14,6 @@
 #![cfg(test)]
 
 use alm_core::{Bar, Strategy};
-use alm_core::signal::Direction;
 use serde_json::json;
 
 use crate::factory::build_strategy;
@@ -826,98 +825,6 @@ fn ha_color_reset_parity() {
 // [deprecated: dynamic] 
 // [deprecated: dynamic]     assert_parity("TP/SL reset: run1 vs run2", &r1, &r2);
 // [deprecated: dynamic] }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Layered strategy with real strategies
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Layered: CEL trend filter gates a CEL mean-reversion signal.
-/// Without the filter the signal would fire during both uptrend and downtrend.
-/// With the filter active only during the uptrend, downtrend signals are blocked.
-#[test]
-fn layered_cel_filter_gates_cel_signal() {
-    use crate::layered::LayeredStrategy;
-
-    let bars = m1_hours(40);
-
-    // Run signal-only to confirm it fires in both halves.
-    let mut signal_only = build_strategy("cel", &json!({
-        "entry": "rsi(5) < 35.0",
-        "exit":  "rsi(5) > 65.0"
-    })).unwrap();
-    let signal_sigs = run(signal_only.as_mut(), &bars);
-    assert!(!signal_sigs.is_empty(), "layered_gate: signal-only must produce signals");
-
-    // Build layered: H1 EMA filter (only passes when uptrend) + M1 RSI signal.
-    let filter = build_strategy("cel", &json!({
-        "entry": "H1.ema(3) > H1.ema(8)",
-        "exit":  "H1.ema(3) < H1.ema(8)"
-    })).unwrap();
-    let signal = build_strategy("cel", &json!({
-        "entry": "rsi(5) < 35.0",
-        "exit":  "rsi(5) > 65.0"
-    })).unwrap();
-    let mut layered = LayeredStrategy::new(filter, signal);
-    let layered_sigs = run(&mut layered, &bars);
-
-    // Layered should produce fewer or equal signals than signal-only
-    // (gated by the filter, so downtrend signals are dropped).
-    let long_signal_only  = signal_sigs.iter().filter(|(_, d)| *d == Direction::Long).count();
-    let long_layered = layered_sigs.iter().filter(|(_, d)| *d == Direction::Long).count();
-    assert!(
-        long_layered <= long_signal_only,
-        "layered gate should block some signals: layered={long_layered}, unfiltered={long_signal_only}"
-    );
-}
-
-/// Layered: `reset()` clears both filter and signal layers.
-#[test]
-fn layered_reset_parity() {
-    use crate::layered::LayeredStrategy;
-
-    let bars = m1_hours(40);
-
-    let make_layered = || {
-        let filter = build_strategy("cel", &json!({
-            "entry": "H1.rsi(5) > 50.0",
-            "exit":  "H1.rsi(5) < 50.0"
-        })).unwrap();
-        let signal = build_strategy("cel", &json!({
-            "entry": "rsi(5) < 35.0",
-            "exit":  "rsi(5) > 65.0"
-        })).unwrap();
-        LayeredStrategy::new(filter, signal)
-    };
-
-    let mut layered = make_layered();
-    let r1 = run(&mut layered, &bars);
-    layered.reset();
-    let r2 = run(&mut layered, &bars);
-
-    assert_parity("layered reset: run1 vs run2", &r1, &r2);
-}
-
-/// Layered with a named strategy as the signal layer (ma_crossover).
-/// Ensures LayeredStrategy composes correctly with factory-built named strategies.
-#[test]
-fn layered_cel_filter_named_signal() {
-    use crate::layered::LayeredStrategy;
-
-    let bars = m1_hours(40);
-
-    let filter = build_strategy("cel", &json!({
-        "entry": "H1.rsi(5) > 50.0",
-        "exit":  "H1.rsi(5) < 50.0"
-    })).unwrap();
-    let signal = build_strategy("ma_crossover", &json!({
-        "fast": 5, "slow": 20
-    })).unwrap();
-    let mut layered = LayeredStrategy::new(filter, signal);
-
-    let sigs = run(&mut layered, &bars);
-    // Just check it runs without panicking.
-    let _ = sigs;
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // MTF + TP/SL combined

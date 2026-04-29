@@ -1,6 +1,20 @@
-use crate::metrics;
-use alm_core::{portfolio::Portfolio, regime::RegimeSummary, Timeframe};
+use crate::metrics::{self, ulcer_index, serenity_ratio, kelly_pct, trades_per_year, yearly_returns, DirectionStats,
+    payoff_ratio, breakeven_win_rate, gross_profit_loss_usd, avg_bars_held_by_outcome, mfe_capture_ratio};
+use alm_core::{exit::ExitReason, portfolio::Portfolio, regime::RegimeSummary, Timeframe};
 use serde::{Deserialize, Serialize};
+
+/// Breakdown of trade closures by exit type.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ExitReasonBreakdown {
+    pub signal: usize,
+    pub stop_loss: usize,
+    pub take_profit: usize,
+    pub trailing_stop: usize,
+    pub atr_stop: usize,
+    pub atr_target: usize,
+    pub max_bars: usize,
+    pub end_of_data: usize,
+}
 
 /// Full backtest result — trading metrics for strategy evaluation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -44,6 +58,25 @@ pub struct BacktestReport {
     pub tail_ratio: f64,
     pub recovery_factor: f64,
 
+    // Return distribution shape
+    pub skewness: f64,
+    pub excess_kurtosis: f64,
+    /// P(true Sharpe > 0) — probability this strategy has genuine edge.
+    pub psr: f64,
+
+    // Extended trade metrics
+    pub max_consecutive_wins: usize,
+    pub largest_win_pct: f64,
+    pub largest_loss_pct: f64,
+    pub sqn: f64,
+
+    // Long / short breakdown
+    pub long_stats: DirectionStats,
+    pub short_stats: DirectionStats,
+
+    // Monthly returns: (year, month 1–12, return_pct)
+    pub monthly_returns: Vec<(i32, u32, f64)>,
+
     // Rolling metrics (per-bar arrays, window = 30)
     pub rolling_sharpe: Vec<f64>,
     pub rolling_drawdown: Vec<f64>,
@@ -53,6 +86,40 @@ pub struct BacktestReport {
 
     // Regime summary (populated by Engine after run)
     pub regime_summary: Option<RegimeSummary>,
+
+    // Drawdown quality
+    pub ulcer_index: f64,
+    pub serenity_ratio: f64,
+
+    // Position sizing guidance
+    pub kelly_pct: f64,
+
+    // Activity
+    pub trades_per_year: f64,
+
+    // Cost
+    pub total_commission_paid: f64,
+
+    // Yearly return breakdown: (year, annual_return_pct)
+    pub yearly_returns: Vec<(i32, f64)>,
+
+    // MAE/MFE averages across all trades (populated by engine via PositionTracker)
+    pub avg_mae_pct: f64,
+    pub avg_mfe_pct: f64,
+
+    // Extended trade quality metrics
+    pub payoff_ratio: f64,
+    pub breakeven_win_rate_pct: f64,
+    pub gross_profit_usd: f64,
+    pub gross_loss_usd: f64,
+    pub avg_bars_held_winners: f64,
+    pub avg_bars_held_losers: f64,
+    pub mfe_capture_ratio: f64,
+    pub mae_mfe_ratio: f64,
+    pub rolling_sharpe_std: f64,
+
+    /// How many trades were closed by each exit type.
+    pub exit_reasons: ExitReasonBreakdown,
 }
 
 impl BacktestReport {
@@ -126,7 +193,18 @@ impl BacktestReport {
         } else {
             0.0
         };
+        let skewness       = metrics::skewness(&daily_returns);
+        let excess_kurtosis = metrics::excess_kurtosis(&daily_returns);
+        let psr            = if no_trades { 0.0 } else { metrics::psr(&daily_returns, 0.0) };
+
         let max_consec_losses = metrics::max_consecutive_losses(trades);
+        let max_consec_wins   = metrics::max_consecutive_wins(trades);
+        let (largest_win, largest_loss) = metrics::largest_win_loss(trades);
+        let sqn = metrics::sqn(trades);
+        let (long_stats, short_stats) = metrics::direction_stats(trades);
+        let monthly_returns = metrics::monthly_returns(
+            &portfolio.equity_curve.iter().map(|p| (p.timestamp, p.equity)).collect::<Vec<_>>(),
+        );
 
         // Advanced risk metrics — also daily-basis for consistency
         let (var_95, cvar_95) = metrics::var_cvar_95(&daily_returns);
@@ -138,6 +216,42 @@ impl BacktestReport {
         // ann_factor = days_per_year keeps the scale consistent with headline Sharpe.
         let rolling_sharpe = metrics::rolling_sharpe(&equity, 30, days_per_year);
         let rolling_drawdown = metrics::rolling_drawdown(&equity);
+
+        let ui = ulcer_index(&equity);
+        let serenity = serenity_ratio(cagr, ui);
+        let kelly = kelly_pct(win_rate, avg_win * 100.0, avg_loss.abs() * 100.0);
+        let tpy = trades_per_year(total_trades, duration_years);
+        let total_commission: f64 = trades.iter().map(|t| t.commission).sum();
+        let yearly = yearly_returns(&monthly_returns);
+        let (avg_mae, avg_mfe) = if total_trades > 0 {
+            let mae_sum: f64 = trades.iter().map(|t| t.mae_pct).sum();
+            let mfe_sum: f64 = trades.iter().map(|t| t.mfe_pct).sum();
+            (mae_sum / total_trades as f64 * 100.0, mfe_sum / total_trades as f64 * 100.0)
+        } else {
+            (0.0, 0.0)
+        };
+
+        let pr = payoff_ratio(avg_win, avg_loss);
+        let bew = breakeven_win_rate(pr);
+        let (gross_profit, gross_loss) = gross_profit_loss_usd(trades);
+        let (avg_bars_winners, avg_bars_losers) = avg_bars_held_by_outcome(trades);
+        let mfe_capture = mfe_capture_ratio(trades);
+        let mae_mfe = if avg_mfe.abs() > f64::EPSILON { avg_mae / avg_mfe } else { 0.0 };
+        let rolling_sharpe_std = metrics::std_dev(&metrics::rolling_sharpe(&equity, 30, days_per_year));
+
+        let mut exit_reasons = ExitReasonBreakdown::default();
+        for t in trades.iter() {
+            match t.exit_reason {
+                ExitReason::Signal       => exit_reasons.signal += 1,
+                ExitReason::StopLoss     => exit_reasons.stop_loss += 1,
+                ExitReason::TakeProfit   => exit_reasons.take_profit += 1,
+                ExitReason::TrailingStop => exit_reasons.trailing_stop += 1,
+                ExitReason::AtrStop      => exit_reasons.atr_stop += 1,
+                ExitReason::AtrTarget    => exit_reasons.atr_target += 1,
+                ExitReason::MaxBarsHeld  => exit_reasons.max_bars += 1,
+                ExitReason::EndOfData    => exit_reasons.end_of_data += 1,
+            }
+        }
 
         Self {
             strategy: strategy_name.to_string(),
@@ -160,7 +274,17 @@ impl BacktestReport {
             avg_win_pct: avg_win * 100.0,
             avg_loss_pct: avg_loss * 100.0,
             avg_trade_duration_hours: avg_duration,
+            skewness,
+            excess_kurtosis,
+            psr,
             max_consecutive_losses: max_consec_losses,
+            max_consecutive_wins: max_consec_wins,
+            largest_win_pct: largest_win * 100.0,
+            largest_loss_pct: largest_loss * 100.0,
+            sqn,
+            long_stats,
+            short_stats,
+            monthly_returns,
             var_95,
             cvar_95,
             omega_ratio: omega,
@@ -170,6 +294,24 @@ impl BacktestReport {
             rolling_drawdown,
             timeframe,
             regime_summary: None, // populated by Engine after run()
+            ulcer_index: ui,
+            serenity_ratio: serenity,
+            kelly_pct: kelly,
+            trades_per_year: tpy,
+            total_commission_paid: total_commission,
+            yearly_returns: yearly,
+            avg_mae_pct: avg_mae,
+            avg_mfe_pct: avg_mfe,
+            payoff_ratio: pr,
+            breakeven_win_rate_pct: bew,
+            gross_profit_usd: gross_profit,
+            gross_loss_usd: gross_loss,
+            avg_bars_held_winners: avg_bars_winners,
+            avg_bars_held_losers: avg_bars_losers,
+            mfe_capture_ratio: mfe_capture,
+            mae_mfe_ratio: mae_mfe,
+            rolling_sharpe_std,
+            exit_reasons,
         }
     }
 }
@@ -238,6 +380,11 @@ mod tests {
             exit_timestamp: exit_ts,
             pnl,
             pnl_pct,
+            commission: 0.0,
+            mae_pct: 0.0,
+            mfe_pct: 0.0,
+            bars_held: 0,
+            exit_reason: alm_core::exit::ExitReason::Signal,
         }
     }
 

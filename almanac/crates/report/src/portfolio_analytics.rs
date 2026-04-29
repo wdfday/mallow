@@ -1,5 +1,5 @@
 use crate::metrics;
-use crate::report::BacktestReport;
+use crate::report::{BacktestReport, ExitReasonBreakdown};
 use alm_core::portfolio::EquityPoint;
 
 /// Per-symbol and cross-symbol analytics for multi-asset portfolio evaluation.
@@ -205,7 +205,17 @@ mod tests {
             avg_win_pct: 0.0,
             avg_loss_pct: 0.0,
             avg_trade_duration_hours: 0.0,
+            skewness: 0.0,
+            excess_kurtosis: 0.0,
+            psr: 0.0,
             max_consecutive_losses: 0,
+            max_consecutive_wins: 0,
+            largest_win_pct: 0.0,
+            largest_loss_pct: 0.0,
+            sqn: 0.0,
+            long_stats: Default::default(),
+            short_stats: Default::default(),
+            monthly_returns: vec![],
             var_95: 0.0,
             cvar_95: 0.0,
             omega_ratio: 0.0,
@@ -215,6 +225,24 @@ mod tests {
             rolling_drawdown: vec![],
             timeframe: alm_core::Timeframe::D1,
             regime_summary: None,
+            ulcer_index: 0.0,
+            serenity_ratio: 0.0,
+            kelly_pct: 0.0,
+            trades_per_year: 0.0,
+            total_commission_paid: 0.0,
+            yearly_returns: vec![],
+            avg_mae_pct: 0.0,
+            avg_mfe_pct: 0.0,
+            payoff_ratio: 0.0,
+            breakeven_win_rate_pct: 0.0,
+            gross_profit_usd: 0.0,
+            gross_loss_usd: 0.0,
+            avg_bars_held_winners: 0.0,
+            avg_bars_held_losers: 0.0,
+            mfe_capture_ratio: 0.0,
+            mae_mfe_ratio: 0.0,
+            rolling_sharpe_std: 0.0,
+            exit_reasons: ExitReasonBreakdown::default(),
         }
     }
 

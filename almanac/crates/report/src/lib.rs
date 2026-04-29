@@ -5,6 +5,7 @@ pub mod portfolio_analytics;
 pub mod report;
 
 pub use benchmark::BuyHoldBenchmark;
+pub use metrics::{DirectionStats, dsr, psr, normal_cdf, probit, skewness, excess_kurtosis};
 pub use monte_carlo::{run as monte_carlo, MonteCarloConfig, MonteCarloResult};
 pub use portfolio_analytics::{analyze as portfolio_analyze, PortfolioAnalytics};
 pub use report::BacktestReport;

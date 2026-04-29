@@ -128,6 +128,7 @@ mod tests {
     use crate::factory::build_strategy;
     use serde_json::json;
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn ichimoku_cloud_parity() {
         let bars = trending_bars(400);
@@ -149,7 +150,9 @@ mod tests {
         assert!(!hc_sigs.is_empty(), "ichimoku_cloud: no signals");
         assert_parity("ichimoku_cloud hc vs dynamic", &hc_sigs, &dyn_sigs);
     }
+    */
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn ichimoku_cross_parity() {
         let bars = trending_bars(600);
@@ -174,4 +177,5 @@ mod tests {
         assert!(!hc_sigs.is_empty(), "ichimoku_cross: no signals");
         assert_parity("ichimoku_cross hc vs dynamic", &hc_sigs, &dyn_sigs);
     }
+    */
 }

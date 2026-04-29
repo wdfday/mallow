@@ -98,6 +98,7 @@ mod tests {
         for i in 0..25 { assert!(s.on_bar(&bar(i, 100.0 + i as f64, 99.0)).is_empty()); }
     }
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn parity_dynamic() {
         let bars = trending_bars(300);
@@ -123,6 +124,7 @@ mod tests {
         assert!(!hc_sigs.is_empty(), "no signals produced");
         assert_eq!(hc_sigs, dyn_sigs, "hardcoded vs dynamic mismatch");
     }
+    */
 
     #[test]
     fn parity_cel() {
@@ -148,6 +150,7 @@ mod tests {
         assert_eq!(r1, r2, "reset parity failed");
     }
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn aroon_trend_parity() {
         let bars = trending_bars(300);
@@ -187,4 +190,5 @@ mod tests {
         assert_parity("aroon hardcoded vs dynamic", &hc_sigs, &dyn_sigs);
         assert_parity("aroon hardcoded vs cel",     &hc_sigs, &cel_sigs);
     }
+    */
 }

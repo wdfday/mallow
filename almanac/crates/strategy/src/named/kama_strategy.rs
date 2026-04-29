@@ -139,6 +139,7 @@ mod tests {
         assert_parity("kama hc vs cel", &hc_sigs, &cel_sigs);
     }
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn kama_dynamic_cel_parity() {
         let bars = trending_bars(300);
@@ -162,4 +163,5 @@ mod tests {
 
         assert_parity("kama dynamic vs cel (level)", &dyn_sigs, &cel_sigs);
     }
+    */
 }

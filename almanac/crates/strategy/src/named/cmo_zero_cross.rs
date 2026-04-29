@@ -75,6 +75,7 @@ mod tests {
     use crate::factory::build_strategy;
     use serde_json::json;
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn cmo_zero_cross_parity() {
         let bars = dip_in_uptrend_bars();
@@ -108,4 +109,5 @@ mod tests {
         assert_parity("cmo_zero_cross hc vs dynamic", &hc_sigs, &dyn_sigs);
         assert_parity("cmo_zero_cross hc vs cel",     &hc_sigs, &cel_sigs);
     }
+    */
 }

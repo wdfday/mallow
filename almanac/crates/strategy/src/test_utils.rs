@@ -99,16 +99,21 @@ pub fn wide_bar(ts: i64, close: f64) -> Bar {
     Bar::new(ts, "TEST", close, close * 1.01, close * 0.88, close, 1000.0)
 }
 
-/// Rising uptrend with wide bar spread — for ElderRay parity.
+/// Rising uptrend +2/bar with wide spread — for ElderRay parity.
+/// Step=2 ensures 0.88*Δclose > ΔEMA (bears weakening condition fires).
 pub fn elder_ray_bars() -> Vec<Bar> {
     let mut ts = 0i64;
     let mut bars = vec![];
-    for i in 0..200u32 {
-        bars.push(wide_bar(ts, 100.0 + i as f64));
+    // Warmup: 30 flat bars at 100
+    for _ in 0..30u32 { bars.push(wide_bar(ts, 100.0)); ts += 60_000; }
+    // Uptrend +2/bar: entry condition fires (bear_power < 0 but rising)
+    for i in 0..100u32 {
+        bars.push(wide_bar(ts, 100.0 + i as f64 * 2.0));
         ts += 60_000;
     }
-    for i in 0..80u32 {
-        bars.push(wide_bar(ts, (300.0 - i as f64 * 3.5).max(5.0)));
+    // Sharp drop: high drops below EMA → bull_power turns negative → exit
+    for i in 0..60u32 {
+        bars.push(wide_bar(ts, (300.0 - i as f64 * 5.0).max(5.0)));
         ts += 60_000;
     }
     bars
@@ -205,7 +210,7 @@ pub fn bb_rsi_bars() -> Vec<Bar> {
 /// Each "session" is separated by a large timestamp gap (4 hours).
 pub fn vwap_bars() -> Vec<Bar> {
     let mut ts = 0i64;
-    let session_gap_ms = 4 * 60 * 60 * 1_000i64; // 4 hours
+    let session_gap_ms = 7 * 60 * 60 * 1_000i64; // 7 hours (> 390-min CEL vwap default)
     let mut bars = vec![];
     // Session 1: 60 bars falling (VWAP builds)
     for i in 0..60u32 {

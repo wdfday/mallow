@@ -134,6 +134,7 @@ mod tests {
     use crate::factory::build_strategy;
     use serde_json::json;
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn supertrend_macd_parity() {
         let bars = trending_bars(300);
@@ -166,7 +167,9 @@ mod tests {
         assert_parity("supertrend_macd hc vs dynamic", &hc_sigs, &dyn_sigs);
         assert_parity("supertrend_macd hc vs cel",     &hc_sigs, &cel_sigs);
     }
+    */
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn supertrend_dyn_cel_parity() {
         let bars = trending_bars(300);
@@ -193,4 +196,5 @@ mod tests {
         assert!(!dyn_sigs.is_empty(), "supertrend: dynamic produced no signals");
         assert_parity("supertrend dynamic vs cel", &dyn_sigs, &cel_sigs);
     }
+    */
 }

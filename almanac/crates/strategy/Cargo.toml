@@ -12,6 +12,7 @@ serde_json      = { workspace = true }
 anyhow          = { workspace = true }
 evalexpr        = { workspace = true }
 cel-interpreter = { workspace = true }
+rhai            = { version = "1", features = ["sync"] }
 # Derives for the strategy / indicator catalogue so HTTP layers can expose
 # the list via Swagger without cloning the schema.
 utoipa          = { version = "4", features = ["axum_extras"] }

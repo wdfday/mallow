@@ -8,3 +8,6 @@
 
 pub mod cel;
 pub use cel::{CelScript, CelStrategy, parse_cel_indicator};
+
+pub mod rhai_strategy;
+pub use rhai_strategy::RhaiStrategy;

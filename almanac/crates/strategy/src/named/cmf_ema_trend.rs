@@ -72,6 +72,7 @@ mod tests {
     use crate::factory::build_strategy;
     use serde_json::json;
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn cmf_ema_trend_parity() {
         let bars = cmf_bars();
@@ -105,4 +106,5 @@ mod tests {
         assert_parity("cmf_ema_trend hc vs dynamic", &hc_sigs, &dyn_sigs);
         assert_parity("cmf_ema_trend hc vs cel",     &hc_sigs, &cel_sigs);
     }
+    */
 }

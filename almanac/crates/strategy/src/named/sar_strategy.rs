@@ -65,6 +65,7 @@ mod tests {
     use crate::factory::build_strategy;
     use serde_json::json;
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn sar_parity() {
         let bars = sar_bars();
@@ -95,4 +96,5 @@ mod tests {
         let dyn_tail: Vec<_> = dyn_sigs.iter().skip(dyn_sigs.len() - hc_sigs.len()).cloned().collect();
         assert_parity("sar hc matches tail of dynamic", &hc_sigs, &dyn_tail);
     }
+    */
 }

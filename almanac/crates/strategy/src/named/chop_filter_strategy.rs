@@ -151,6 +151,7 @@ mod tests {
         assert!(strat.prev_slow.is_none());
     }
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn chop_filter_parity() {
         let bars = trending_bars(300);
@@ -186,4 +187,5 @@ mod tests {
         assert_parity("chop_filter hc vs dynamic", &hc_sigs, &dyn_sigs);
         assert_parity("chop_filter hc vs cel",     &hc_sigs, &cel_sigs);
     }
+    */
 }

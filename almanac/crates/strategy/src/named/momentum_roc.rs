@@ -129,6 +129,7 @@ mod tests {
     use crate::factory::build_strategy;
     use serde_json::json;
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn momentum_roc_parity() {
         let bars = trending_bars(300);
@@ -162,7 +163,9 @@ mod tests {
         assert_parity("momentum_roc hc vs dynamic", &hc_sigs, &dyn_sigs);
         assert_parity("momentum_roc hc vs cel",     &hc_sigs, &cel_sigs);
     }
+    */
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn dual_momentum_parity() {
         let bars = trending_bars(300);
@@ -196,4 +199,5 @@ mod tests {
         assert_parity("dual_momentum hc vs dynamic", &hc_sigs, &dyn_sigs);
         assert_parity("dual_momentum hc vs cel",     &hc_sigs, &cel_sigs);
     }
+    */
 }

@@ -187,6 +187,154 @@ use crate::bar_resampler::{TimeBarResampler, parse_timeframe_ms};
 use crate::candle_type::{CandleTransform, CandleType};
 use alm_indicator::IndicatorBox;
 
+// ── Defines / macro expansion ─────────────────────────────────────────────────
+
+/// Check whether a whole-word reference to `name` exists in `expr`.
+fn references_ident(expr: &str, name: &str) -> bool {
+    let b = expr.as_bytes();
+    let nb = name.as_bytes();
+    let nlen = nb.len();
+    if nlen == 0 { return false; }
+    let mut i = 0;
+    while i + nlen <= b.len() {
+        if &b[i..i + nlen] == nb {
+            let left_ok  = i == 0 || !(b[i-1].is_ascii_alphanumeric() || b[i-1] == b'_');
+            let right_ok = i + nlen >= b.len()
+                || !(b[i + nlen].is_ascii_alphanumeric() || b[i + nlen] == b'_');
+            if left_ok && right_ok { return true; }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Substitute all whole-word occurrences of `name` with `(value)` in `expr`.
+fn substitute_ident(expr: &str, name: &str, value: &str) -> String {
+    let b = expr.as_bytes();
+    let nb = name.as_bytes();
+    let nlen = nb.len();
+    let mut out = String::with_capacity(expr.len() + value.len() + 2);
+    let mut i = 0;
+    while i < b.len() {
+        if i + nlen <= b.len() && &b[i..i + nlen] == nb {
+            let left_ok  = i == 0 || !(b[i-1].is_ascii_alphanumeric() || b[i-1] == b'_');
+            let right_ok = i + nlen >= b.len()
+                || !(b[i + nlen].is_ascii_alphanumeric() || b[i + nlen] == b'_');
+            if left_ok && right_ok {
+                out.push('(');
+                out.push_str(value);
+                out.push(')');
+                i += nlen;
+                continue;
+            }
+        }
+        out.push(b[i] as char);
+        i += 1;
+    }
+    out
+}
+
+fn topo_sort_defines(defines: &HashMap<String, String>) -> anyhow::Result<Vec<String>> {
+    // DFS-based topological sort; detects cycles.
+    // State: 0 = unvisited, 1 = in-progress, 2 = done
+    let mut state: HashMap<&str, u8> = HashMap::new();
+    let mut order: Vec<String> = Vec::new();
+
+    fn dfs<'a>(
+        name: &'a str,
+        defines: &'a HashMap<String, String>,
+        state: &mut HashMap<&'a str, u8>,
+        order: &mut Vec<String>,
+    ) -> anyhow::Result<()> {
+        match state.get(name).copied().unwrap_or(0) {
+            2 => return Ok(()),
+            1 => anyhow::bail!("CEL defines: circular reference detected involving '{name}'"),
+            _ => {}
+        }
+        state.insert(name, 1);
+        let expr = &defines[name];
+        for dep in defines.keys() {
+            if dep != name && references_ident(expr, dep) {
+                dfs(dep, defines, state, order)?;
+            }
+        }
+        state.insert(name, 2);
+        order.push(name.to_string());
+        Ok(())
+    }
+
+    for name in defines.keys() {
+        dfs(name, defines, &mut state, &mut order)?;
+    }
+    Ok(order)
+}
+
+/// Validate and expand defines into `entry` and `exit` expressions.
+///
+/// - Define names must not shadow built-in bar fields, indicator functions, or
+///   CEL keywords.
+/// - Defines may reference other defines (resolved in dependency order).
+/// - Circular references are rejected with an error.
+/// - Each substitution wraps the replacement in parentheses to preserve precedence.
+pub fn apply_defines(
+    entry: &str,
+    exit:  &str,
+    defines: &HashMap<String, String>,
+) -> anyhow::Result<(String, String)> {
+    if defines.is_empty() {
+        return Ok((entry.to_string(), exit.to_string()));
+    }
+
+    // Validate names
+    for name in defines.keys() {
+        if BAR_FIELDS.contains(&name.as_str()) {
+            anyhow::bail!("CEL defines: '{name}' shadows a built-in bar field");
+        }
+        if ONE_ARG_FUNCS.contains(&name.as_str()) || ZERO_ARG_FUNCS.contains(&name.as_str()) {
+            anyhow::bail!("CEL defines: '{name}' shadows a built-in indicator function");
+        }
+        if matches!(name.as_str(), "true" | "false" | "null" | "entry_price") {
+            anyhow::bail!("CEL defines: '{name}' is a reserved identifier");
+        }
+        if REGIME_NAMESPACES.contains(&name.as_str()) {
+            anyhow::bail!("CEL defines: '{name}' shadows a built-in regime namespace");
+        }
+        if name.starts_with("prev_") || name.starts_with("live_") {
+            anyhow::bail!("CEL defines: names may not start with 'prev_' or 'live_'");
+        }
+        if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') || name.chars().next().map_or(true, |c| c.is_ascii_digit()) {
+            anyhow::bail!("CEL defines: '{name}' is not a valid identifier (alphanumeric + underscore, must not start with a digit)");
+        }
+    }
+
+    let order = topo_sort_defines(defines)?;
+
+    // Expand defines in dependency order: later defines may reference earlier ones.
+    // Build a map of fully-resolved values.
+    let mut resolved: HashMap<String, String> = HashMap::new();
+    for name in &order {
+        let mut val = defines[name].clone();
+        for dep in &order {
+            if dep == name { break; }
+            if let Some(dep_val) = resolved.get(dep) {
+                val = substitute_ident(&val, dep, dep_val);
+            }
+        }
+        resolved.insert(name.clone(), val);
+    }
+
+    // Apply to entry and exit (in full resolution order)
+    let mut out_entry = entry.to_string();
+    let mut out_exit  = exit.to_string();
+    for name in &order {
+        let val = &resolved[name];
+        out_entry = substitute_ident(&out_entry, name, val);
+        out_exit  = substitute_ident(&out_exit,  name, val);
+    }
+
+    Ok((out_entry, out_exit))
+}
+
 // ── VarBinding ────────────────────────────────────────────────────────────────
 
 struct VarBinding {
@@ -293,6 +441,118 @@ fn normalize_cel_expr(expr: &str) -> String {
 }
 
 const BAR_FIELDS: &[&str] = &["open", "high", "low", "close", "volume"];
+
+/// CEL Map namespaces exposed by the regime detector. Auto-active when an
+/// expression references any of them — no opt-in flag needed.
+///
+/// - `trend.{trending, ranging, neutral}` — bool
+/// - `vola.{high, low, normal}`           — bool
+const REGIME_NAMESPACES: &[&str] = &["trend", "vola"];
+
+fn references_any_regime_var(expr: &str) -> bool {
+    REGIME_NAMESPACES.iter().any(|v| references_ident(expr, v))
+}
+
+/// All-false placeholder so `trend.trending` evaluates to `false`
+/// during detector warmup or when the detector is disabled.
+fn trend_map_default() -> HashMap<String, Value> {
+    let mut m = HashMap::with_capacity(3);
+    m.insert("trending".into(), Value::Bool(false));
+    m.insert("ranging".into(),  Value::Bool(false));
+    m.insert("neutral".into(),  Value::Bool(false));
+    m
+}
+
+fn vola_map_default() -> HashMap<String, Value> {
+    let mut m = HashMap::with_capacity(3);
+    m.insert("high".into(),   Value::Bool(false));
+    m.insert("low".into(),    Value::Bool(false));
+    m.insert("normal".into(), Value::Bool(false));
+    m
+}
+
+fn trend_map(state: &alm_core::RegimeState) -> HashMap<String, Value> {
+    use alm_core::TrendRegime;
+    let mut m = HashMap::with_capacity(3);
+    m.insert("trending".into(), Value::Bool(state.trend == TrendRegime::Trending));
+    m.insert("ranging".into(),  Value::Bool(state.trend == TrendRegime::Ranging));
+    m.insert("neutral".into(),  Value::Bool(state.trend == TrendRegime::Neutral));
+    m
+}
+
+fn vola_map(state: &alm_core::RegimeState) -> HashMap<String, Value> {
+    use alm_core::VolRegime;
+    let mut m = HashMap::with_capacity(3);
+    m.insert("high".into(),   Value::Bool(state.volatility == VolRegime::High));
+    m.insert("low".into(),    Value::Bool(state.volatility == VolRegime::Low));
+    m.insert("normal".into(), Value::Bool(state.volatility == VolRegime::Normal));
+    m
+}
+
+/// Optional overrides for the regime detector — periods + thresholds.
+/// Any `None` keeps the default. Used when an expression mentions `trend.*`
+/// or `vola.*`; ignored otherwise.
+#[derive(Debug, Clone, Default)]
+pub struct RegimeConfig {
+    pub adx_period:  Option<usize>,
+    pub chop_period: Option<usize>,
+    pub atr_short:   Option<usize>,
+    pub atr_long:    Option<usize>,
+    pub adx_th:      Option<f64>,
+    pub chop_th:     Option<f64>,
+    pub vol_high:    Option<f64>,
+    pub vol_low:     Option<f64>,
+}
+
+impl RegimeConfig {
+    pub fn is_empty(&self) -> bool {
+        self.adx_period.is_none() && self.chop_period.is_none()
+            && self.atr_short.is_none() && self.atr_long.is_none()
+            && self.adx_th.is_none() && self.chop_th.is_none()
+            && self.vol_high.is_none() && self.vol_low.is_none()
+    }
+
+    /// Build a `RegimeDetector` applying any non-None overrides on top of
+    /// the detector's defaults (14/14/14/50, 25.0/61.8/1.3/0.7).
+    fn build_detector(&self) -> alm_indicator::RegimeDetector {
+        let det = alm_indicator::RegimeDetector::new();
+        let det = det.with_periods(
+            self.adx_period.unwrap_or(14),
+            self.chop_period.unwrap_or(14),
+            self.atr_short.unwrap_or(14),
+            self.atr_long.unwrap_or(50),
+        );
+        det.with_thresholds(
+            self.adx_th.unwrap_or(25.0),
+            self.chop_th.unwrap_or(61.8),
+            self.vol_high.unwrap_or(1.3),
+            self.vol_low.unwrap_or(0.7),
+        )
+    }
+
+    /// Parse a `regime: adx=14 chop=14 atr_short=14 atr_long=50 adx_th=25 chop_th=61.8 vol_high=1.3 vol_low=0.7`
+    /// kv-pair line. Unknown keys are an error so users notice typos.
+    fn parse_kv(rest: &str) -> anyhow::Result<Self> {
+        let mut cfg = RegimeConfig::default();
+        for tok in rest.split_whitespace() {
+            let (k, v) = tok.split_once('=').ok_or_else(|| {
+                anyhow::anyhow!("CEL script regime: token must be 'key=value', got {tok:?}")
+            })?;
+            match k {
+                "adx"        | "adx_period"   => cfg.adx_period  = Some(v.parse()?),
+                "chop"       | "chop_period"  => cfg.chop_period = Some(v.parse()?),
+                "atr_short"                   => cfg.atr_short   = Some(v.parse()?),
+                "atr_long"                    => cfg.atr_long    = Some(v.parse()?),
+                "adx_th"                      => cfg.adx_th      = Some(v.parse()?),
+                "chop_th"                     => cfg.chop_th     = Some(v.parse()?),
+                "vol_high"                    => cfg.vol_high    = Some(v.parse()?),
+                "vol_low"                     => cfg.vol_low     = Some(v.parse()?),
+                _ => anyhow::bail!("CEL script regime: unknown key {k:?}"),
+            }
+        }
+        Ok(cfg)
+    }
+}
 
 /// Second-pass expander: rewrites `varname[N]` → `varname_hN`.
 ///
@@ -776,21 +1036,38 @@ pub fn cel_indicator_config(base: &str, args: &[f64]) -> Option<serde_json::Valu
 /// Extract the `entry` and `exit` expression strings from a CEL params object.
 ///
 /// Mirrors `CelStrategy::from_params`: accepts either the `"script"` textarea
-/// form or the legacy `"entry"` / `"exit"` split form. Returns empty strings if
-/// parsing fails — callers treat that as "no deps" rather than propagating.
+/// form or the legacy `"entry"` / `"exit"` split form. Applies defines if present.
+/// Returns empty strings if parsing fails — callers treat that as "no deps".
 fn extract_cel_entry_exit(p: &serde_json::Value) -> (String, String) {
-    if let Some(script) = p.get("script").and_then(|v| v.as_str()) {
+    let (raw_entry, raw_exit, defines) = if let Some(script) = p.get("script").and_then(|v| v.as_str()) {
         if let Ok(s) = CelScript::parse(script) {
             let entry = p.get("entry").and_then(|v| v.as_str()).map(str::to_string)
                 .unwrap_or(s.entry);
             let exit = p.get("exit").and_then(|v| v.as_str()).map(str::to_string)
                 .unwrap_or(s.exit);
-            return (entry, exit);
+            let mut defs = s.defines;
+            if let Some(obj) = p.get("defines").and_then(|v| v.as_object()) {
+                for (k, v) in obj {
+                    if let Some(expr) = v.as_str() { defs.insert(k.clone(), expr.to_string()); }
+                }
+            }
+            (entry, exit, defs)
+        } else {
+            return (String::new(), String::new());
         }
+    } else {
+        let entry = p.get("entry").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let exit  = p.get("exit").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        let defs: HashMap<String, String> = p.get("defines")
+            .and_then(|v| v.as_object())
+            .map(|obj| obj.iter().filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string()))).collect())
+            .unwrap_or_default();
+        (entry, exit, defs)
+    };
+    match apply_defines(&raw_entry, &raw_exit, &defines) {
+        Ok((e, x)) => (e, x),
+        Err(_) => (raw_entry, raw_exit),
     }
-    let entry = p.get("entry").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    let exit  = p.get("exit").and_then(|v| v.as_str()).unwrap_or("").to_string();
-    (entry, exit)
 }
 
 /// Extract the indicator dependencies declared by a CEL strategy's params.
@@ -911,7 +1188,9 @@ const ZERO_ARG_FUNCS: &[&str] = &[
 /// separate JSON fields:
 ///
 /// ```text
-/// entry: rsi(14) < 30.0 && close > ema(50)
+/// define: trend = adx(14) > 25.0
+/// define: oversold = rsi(14) < 30.0
+/// entry: trend && oversold && close > ema(50)
 /// exit:  rsi(14) > 70.0 || close < ema(50)
 /// tp:    0.05
 /// sl:    0.02
@@ -919,13 +1198,17 @@ const ZERO_ARG_FUNCS: &[&str] = &[
 /// candle_type: heiken_ashi
 /// ```
 ///
+/// `define:` lines introduce named expression aliases expanded into `entry`
+/// and `exit` before CEL compilation. Defines may reference other defines
+/// (resolved in dependency order); circular references are rejected.
+///
 /// History indexing `[N]` works in both entry and exit expressions:
 /// ```text
 /// entry: close[1] > close[0] && rsi(14)[1] < 30.0
 /// exit:  ema(9)[0] < ema(9)[1]
 /// ```
 ///
-/// Supported keys: `entry`, `exit`, `tp`, `sl`, `tp_atr`, `sl_atr`,
+/// Supported keys: `define`, `entry`, `exit`, `tp`, `sl`, `tp_atr`, `sl_atr`,
 /// `atr_period`, `candle_type`, `ha_smooth`.
 ///
 /// Rules:
@@ -934,46 +1217,75 @@ const ZERO_ARG_FUNCS: &[&str] = &[
 ///   space onto the previous `entry` or `exit` section — useful for
 ///   multi-line expressions with leading `&&` / `||`.
 /// - JSON params in `from_params` override the same keys from the script.
+#[derive(Debug)]
 pub struct CelScript {
     pub entry:       String,
     pub exit:        String,
+    pub defines:     HashMap<String, String>,
+    /// Scalar TP percentage (backward compat: `tp: 0.05`).
     pub tp:          Option<f64>,
+    /// Scalar SL percentage (backward compat: `sl: 0.02`).
     pub sl:          Option<f64>,
+    /// CEL expression for TP (when `tp: <non-numeric>`).
+    pub tp_expr:     Option<String>,
+    /// CEL expression for SL (when `sl: <non-numeric>`).
+    pub sl_expr:     Option<String>,
     pub tp_atr:      Option<f64>,
     pub sl_atr:      Option<f64>,
     pub atr_period:  Option<usize>,
     pub candle_type: String,
     pub ha_smooth:   usize,
+    pub regime:      RegimeConfig,
 }
 
 impl CelScript {
     pub fn parse(script: &str) -> anyhow::Result<Self> {
         let mut entry       = String::new();
         let mut exit        = String::new();
+        let mut defines:    HashMap<String, String> = HashMap::new();
         let mut tp:         Option<f64>   = None;
         let mut sl:         Option<f64>   = None;
+        let mut tp_expr:    Option<String> = None;
+        let mut sl_expr:    Option<String> = None;
         let mut tp_atr:     Option<f64>   = None;
         let mut sl_atr:     Option<f64>   = None;
         let mut atr_period: Option<usize> = None;
         let mut candle_type = String::from("raw");
         let mut ha_smooth: usize = 2;
+        let mut regime = RegimeConfig::default();
         // 0 = entry section, 1 = exit section, None = numeric/string key
         let mut last_section: Option<u8> = None;
 
-        for raw in script.lines() {
+        for (idx, raw) in script.lines().enumerate() {
+            let lineno = idx + 1;
             let line = raw.trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
 
             macro_rules! pf {
-                ($rest:expr, $dst:ident) => {
-                    $dst = $rest.trim().parse::<f64>().ok();
+                ($rest:expr, $dst:ident) => {{
+                    $dst = Some($rest.trim().parse::<f64>().map_err(|e| {
+                        anyhow::anyhow!("CEL script line {lineno}: '{}:' expects a float — {e}",
+                            stringify!($dst))
+                    })?);
                     last_section = None;
-                };
+                }};
             }
 
-            if let Some(rest) = line.strip_prefix("entry:") {
+            if let Some(rest) = line.strip_prefix("define:") {
+                // `define: name = expr`
+                let rest = rest.trim();
+                let eq = rest.find('=').ok_or_else(|| {
+                    anyhow::anyhow!("CEL script line {lineno}: 'define:' must be 'name = expr', got {rest:?}")
+                })?;
+                let name = rest[..eq].trim().to_string();
+                let val  = rest[eq + 1..].trim().to_string();
+                anyhow::ensure!(!name.is_empty(),
+                    "CEL script line {lineno}: define name must not be empty");
+                defines.insert(name, val);
+                last_section = None;
+            } else if let Some(rest) = line.strip_prefix("entry:") {
                 if !entry.is_empty() { entry.push(' '); }
                 entry.push_str(rest.trim());
                 last_section = Some(0);
@@ -981,12 +1293,32 @@ impl CelScript {
                 if !exit.is_empty() { exit.push(' '); }
                 exit.push_str(rest.trim());
                 last_section = Some(1);
-            } else if let Some(rest) = line.strip_prefix("tp:")         { pf!(rest, tp); }
-            else if let Some(rest) = line.strip_prefix("sl:")           { pf!(rest, sl); }
-            else if let Some(rest) = line.strip_prefix("tp_atr:")       { pf!(rest, tp_atr); }
-            else if let Some(rest) = line.strip_prefix("sl_atr:")       { pf!(rest, sl_atr); }
+            } else if let Some(rest) = line.strip_prefix("regime:") {
+                regime = RegimeConfig::parse_kv(rest.trim())
+                    .map_err(|e| anyhow::anyhow!("CEL script line {lineno}: {e}"))?;
+                last_section = None;
+            } else if let Some(rest) = line.strip_prefix("tp:") {
+                let trimmed = rest.trim();
+                if let Ok(v) = trimmed.parse::<f64>() {
+                    tp = Some(v);
+                } else {
+                    tp_expr = Some(trimmed.to_string());
+                }
+                last_section = None;
+            } else if let Some(rest) = line.strip_prefix("sl:") {
+                let trimmed = rest.trim();
+                if let Ok(v) = trimmed.parse::<f64>() {
+                    sl = Some(v);
+                } else {
+                    sl_expr = Some(trimmed.to_string());
+                }
+                last_section = None;
+            } else if let Some(rest) = line.strip_prefix("tp_atr:")   { pf!(rest, tp_atr); }
+            else if let Some(rest) = line.strip_prefix("sl_atr:")   { pf!(rest, sl_atr); }
             else if let Some(rest) = line.strip_prefix("atr_period:") {
-                atr_period = rest.trim().parse::<usize>().ok();
+                atr_period = Some(rest.trim().parse::<usize>().map_err(|e| {
+                    anyhow::anyhow!("CEL script line {lineno}: 'atr_period:' expects an integer — {e}")
+                })?);
                 last_section = None;
             } else if let Some(rest) = line.strip_prefix("candle_type:") {
                 candle_type = rest.trim().to_string();
@@ -1000,7 +1332,7 @@ impl CelScript {
                     Some(0) => { entry.push(' '); entry.push_str(line); }
                     Some(1) => { exit.push(' ');  exit.push_str(line); }
                     _ => anyhow::bail!(
-                        "CEL script: unexpected line with no active section: {line:?}"
+                        "CEL script line {lineno}: unexpected line with no active section: {line:?}"
                     ),
                 }
             }
@@ -1008,8 +1340,8 @@ impl CelScript {
 
         anyhow::ensure!(!entry.is_empty(), "CEL script must contain an 'entry:' line");
 
-        Ok(Self { entry, exit, tp, sl, tp_atr, sl_atr,
-                  atr_period, candle_type, ha_smooth })
+        Ok(Self { entry, exit, defines, tp, sl, tp_expr, sl_expr, tp_atr, sl_atr,
+                  atr_period, candle_type, ha_smooth, regime })
     }
 }
 
@@ -1018,6 +1350,12 @@ impl CelScript {
 pub struct CelStrategy {
     entry_prog:  Program,
     exit_prog:   Program,
+    /// Compiled CEL program that evaluates to an absolute TP price at entry time.
+    /// `None` = no TP. Expression may reference `entry_price`, `atr(N)`, bar fields, etc.
+    tp_prog:     Option<Program>,
+    /// Compiled CEL program that evaluates to an absolute SL price at entry time.
+    /// `None` = no SL.
+    sl_prog:     Option<Program>,
     /// Indicator state, keyed by canonical name (e.g. `"rsi_14"`).
     /// Kept as HashMap so external tests can assert on `contains_key`.
     bindings:    HashMap<String, VarBinding>,
@@ -1034,17 +1372,8 @@ pub struct CelStrategy {
     indicator_series: HashMap<String, Vec<(i64, f64)>>,
     in_position: bool,
     entry_price: f64,
-    /// Fixed % TP/SL from entry price.
-    tp_pct:      Option<f64>,
-    sl_pct:      Option<f64>,
-    /// ATR-based fixed levels (computed at entry, stored as absolute price).
-    tp_atr_mult: Option<f64>,
-    sl_atr_mult: Option<f64>,
-    tp_atr_level: f64,
-    sl_atr_level: f64,
-    /// Internal ATR — only allocated when any ATR mode is active.
-    atr:      Option<alm_indicator::Atr>,
-    last_atr: f64,
+    /// Regime detector — only allocated when expressions reference regime_* vars.
+    regime_detector: Option<alm_indicator::RegimeDetector>,
     /// CEL context; indicator values written as variables each bar — no closures,
     /// no mutex, no `format!` in the hot path.
     ctx:         Context<'static>,
@@ -1054,7 +1383,7 @@ pub struct CelStrategy {
 
 impl CelStrategy {
     pub fn new(entry: &str, exit: &str) -> Result<Self> {
-        Self::build(entry, exit, None, None, None, None, None, CandleType::Raw)
+        Self::build(entry, exit, None, None, CandleType::Raw, RegimeConfig::default())
     }
 
     pub fn with_risk(
@@ -1063,10 +1392,20 @@ impl CelStrategy {
         tp_pct: Option<f64>,
         sl_pct: Option<f64>,
     ) -> Result<Self> {
-        Self::build(entry, exit, tp_pct, sl_pct, None, None, None, CandleType::Raw)
+        let tp_raw = tp_pct.map(|v| format!("{v}"));
+        let sl_raw = sl_pct.map(|v| format!("{v}"));
+        Self::build(entry, exit, tp_raw.as_deref(), sl_raw.as_deref(), CandleType::Raw, RegimeConfig::default())
     }
 
     pub fn from_params(p: &serde_json::Value) -> Result<Self> {
+        // Helper: read a tp/sl param that may be a float or a string expression.
+        fn read_tp_sl_param(p: &serde_json::Value, key: &str) -> Option<String> {
+            p.get(key).and_then(|v| {
+                v.as_str().map(String::from)
+                    .or_else(|| v.as_f64().map(|f| format!("{f}")))
+            })
+        }
+
         // ── Script format (single textarea) ──────────────────────────────────
         // If "script" is present, parse it first; JSON fields act as overrides.
         if let Some(script) = p.get("script").and_then(|v| v.as_str()) {
@@ -1077,36 +1416,101 @@ impl CelStrategy {
                 p.get("candle_type").and_then(|v| v.as_str()).unwrap_or(&s.candle_type),
                 ha_smooth,
             );
-            return Self::build(
+            // Merge defines from script + JSON params (JSON wins on collision)
+            let mut defines = s.defines;
+            if let Some(obj) = p.get("defines").and_then(|v| v.as_object()) {
+                for (k, v) in obj {
+                    if let Some(expr) = v.as_str() {
+                        defines.insert(k.clone(), expr.to_string());
+                    }
+                }
+            }
+            let (entry, exit) = apply_defines(
                 &s.entry,
                 if s.exit.is_empty() { "false" } else { &s.exit },
-                p.get("tp").and_then(serde_json::Value::as_f64).or(s.tp),
-                p.get("sl").and_then(serde_json::Value::as_f64).or(s.sl),
-                p.get("tp_atr").and_then(serde_json::Value::as_f64).or(s.tp_atr),
-                p.get("sl_atr").and_then(serde_json::Value::as_f64).or(s.sl_atr),
-                p.get("atr_period").and_then(serde_json::Value::as_f64)
-                    .map(|v| v as usize).or(s.atr_period),
+                &defines,
+            )?;
+
+            // Resolve TP: JSON param (str or float) → script tp_expr → script tp scalar
+            let tp_raw: Option<String> = read_tp_sl_param(p, "tp")
+                .or(s.tp_expr.clone())
+                .or(s.tp.map(|v| format!("{v}")));
+            let sl_raw: Option<String> = read_tp_sl_param(p, "sl")
+                .or(s.sl_expr.clone())
+                .or(s.sl.map(|v| format!("{v}")));
+
+            // Backward compat: tp_atr/sl_atr → CEL expression
+            let tp_raw = if tp_raw.is_none() {
+                if let Some(mult) = p.get("tp_atr").and_then(|v| v.as_f64()).or(s.tp_atr) {
+                    let period = p.get("atr_period").and_then(|v| v.as_f64()).map(|v| v as usize)
+                        .or(s.atr_period).unwrap_or(14);
+                    Some(format!("entry_price + atr({period}) * {mult:.8}"))
+                } else { None }
+            } else { tp_raw };
+
+            let sl_raw = if sl_raw.is_none() {
+                if let Some(mult) = p.get("sl_atr").and_then(|v| v.as_f64()).or(s.sl_atr) {
+                    let period = p.get("atr_period").and_then(|v| v.as_f64()).map(|v| v as usize)
+                        .or(s.atr_period).unwrap_or(14);
+                    Some(format!("entry_price - atr({period}) * {mult:.8}"))
+                } else { None }
+            } else { sl_raw };
+
+            return Self::build(
+                &entry,
+                &exit,
+                tp_raw.as_deref(),
+                sl_raw.as_deref(),
                 candle_type,
+                s.regime,
             );
         }
 
         // ── Legacy: separate entry / exit fields ──────────────────────────────
-        let entry = p.get("entry").and_then(|v| v.as_str()).unwrap_or("false");
-        let exit  = p.get("exit").and_then(|v| v.as_str()).unwrap_or("false");
+        let raw_entry = p.get("entry").and_then(|v| v.as_str()).unwrap_or("false");
+        let raw_exit  = p.get("exit").and_then(|v| v.as_str()).unwrap_or("false");
         let atr_period = p.get("atr_period").and_then(serde_json::Value::as_f64).map(|v| v as usize);
         let ha_smooth = p.get("ha_smooth").and_then(serde_json::Value::as_f64).map(|v| v as usize).unwrap_or(2);
         let candle_type = CandleType::from_str(
             p.get("candle_type").and_then(|v| v.as_str()).unwrap_or("raw"),
             ha_smooth,
         );
+
+        // Extract optional defines map from params
+        let defines: HashMap<String, String> = p.get("defines")
+            .and_then(|v| v.as_object())
+            .map(|obj| {
+                obj.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let (entry, exit) = apply_defines(raw_entry, raw_exit, &defines)?;
+
+        let tp_raw: Option<String> = read_tp_sl_param(p, "tp");
+        let sl_raw: Option<String> = read_tp_sl_param(p, "sl");
+
+        // Backward compat: tp_atr/sl_atr → CEL expression
+        let tp_raw = if tp_raw.is_none() {
+            if let Some(mult) = p.get("tp_atr").and_then(|v| v.as_f64()) {
+                let period = atr_period.unwrap_or(14);
+                Some(format!("entry_price + atr({period}) * {mult:.8}"))
+            } else { None }
+        } else { tp_raw };
+
+        let sl_raw = if sl_raw.is_none() {
+            if let Some(mult) = p.get("sl_atr").and_then(|v| v.as_f64()) {
+                let period = atr_period.unwrap_or(14);
+                Some(format!("entry_price - atr({period}) * {mult:.8}"))
+            } else { None }
+        } else { sl_raw };
+
         Self::build(
-            entry, exit,
-            p.get("tp").and_then(serde_json::Value::as_f64),
-            p.get("sl").and_then(serde_json::Value::as_f64),
-            p.get("tp_atr").and_then(serde_json::Value::as_f64),
-            p.get("sl_atr").and_then(serde_json::Value::as_f64),
-            atr_period,
+            &entry, &exit,
+            tp_raw.as_deref(),
+            sl_raw.as_deref(),
             candle_type,
+            RegimeConfig::default(),
         )
     }
 
@@ -1119,12 +1523,10 @@ impl CelStrategy {
     fn build(
         entry:          &str,
         exit:           &str,
-        tp_pct:         Option<f64>,
-        sl_pct:         Option<f64>,
-        tp_atr_mult:    Option<f64>,
-        sl_atr_mult:    Option<f64>,
-        atr_period:     Option<usize>,
+        tp_expr_raw:    Option<&str>,   // None = no TP; scalar pct or CEL expression
+        sl_expr_raw:    Option<&str>,   // None = no SL; scalar pct or CEL expression
         candle_type:    CandleType,
+        regime_config:  RegimeConfig,
     ) -> Result<Self> {
         // Pipeline:
         //   H1.ema(200) > close[1] && rsi(14) < 30
@@ -1141,9 +1543,42 @@ impl CelStrategy {
         let entry_n = normalize_cel_expr(&entry_hist);
         let exit_n  = normalize_cel_expr(&exit_hist);
 
-        let bindings = build_bindings_from_calls(
+        // Resolve TP/SL raw strings into absolute-price CEL expression strings.
+        // Scalar pct "0.05" → TP: "entry_price * 1.05000000", SL: "entry_price * 0.95000000"
+        let tp_str: Option<String> = tp_expr_raw.map(|raw| {
+            if let Ok(pct) = raw.parse::<f64>() {
+                format!("entry_price * {:.8}", 1.0 + pct)
+            } else {
+                raw.to_string()
+            }
+        });
+        let sl_str: Option<String> = sl_expr_raw.map(|raw| {
+            if let Ok(pct) = raw.parse::<f64>() {
+                format!("entry_price * {:.8}", 1.0 - pct)
+            } else {
+                raw.to_string()
+            }
+        });
+
+        // Expand indicator calls in TP/SL expressions so they register bindings.
+        let (tp_ind, tp_calls) = tp_str.as_deref()
+            .map(expand_indicators)
+            .unwrap_or_default();
+        let (sl_ind, sl_calls) = sl_str.as_deref()
+            .map(expand_indicators)
+            .unwrap_or_default();
+
+        let mut bindings = build_bindings_from_calls(
             entry_calls.into_iter().chain(exit_calls), lookback,
         )?;
+
+        // Merge TP/SL bindings (indicator calls within TP/SL expressions).
+        let tp_sl_bindings = build_bindings_from_calls(
+            tp_calls.into_iter().chain(sl_calls), lookback,
+        )?;
+        for (k, v) in tp_sl_bindings {
+            bindings.entry(k).or_insert(v);
+        }
 
         // Pre-allocate the (current, prev, live) variable name strings once.
         let var_keys: Vec<(String, String, String)> = bindings.keys()
@@ -1181,18 +1616,38 @@ impl CelStrategy {
             }
         }
 
-        let needs_atr = tp_atr_mult.is_some() || sl_atr_mult.is_some();
-        let atr = if needs_atr {
-            Some(alm_indicator::Atr::new(atr_period.unwrap_or(14)))
+        // Detect regime usage in entry/exit (post-expansion). Auto-active when
+        // an expression references the `trend.` or `vola.` namespaces. Custom
+        // periods/thresholds may also be supplied via the `regime:` script line
+        // (or `RegimeConfig` from the API) — those force the detector on even
+        // if neither namespace is referenced, so misconfiguration is visible
+        // rather than silently ignored.
+        let needs_regime = references_any_regime_var(&entry_n)
+            || references_any_regime_var(&exit_n)
+            || !regime_config.is_empty();
+        let regime_detector = if needs_regime {
+            Some(regime_config.build_detector())
         } else {
             None
         };
+        // Always register placeholders so expressions like `trend.trending` parse
+        // even before the first warm bar.
+        ctx.add_variable_from_value("trend", trend_map_default());
+        ctx.add_variable_from_value("vola",  vola_map_default());
+
+        // Compile TP/SL programs after indicator expansion.
+        let tp_n = tp_ind.is_empty().then_some(String::new()).unwrap_or_else(|| normalize_cel_expr(&tp_ind));
+        let sl_n = sl_ind.is_empty().then_some(String::new()).unwrap_or_else(|| normalize_cel_expr(&sl_ind));
+        let tp_prog = if tp_n.is_empty() { None } else { Some(Program::compile(&tp_n)?) };
+        let sl_prog = if sl_n.is_empty() { None } else { Some(Program::compile(&sl_n)?) };
 
         let bar_cap = lookback + 1;
         let indicator_series: HashMap<String, Vec<(i64, f64)>> = HashMap::new();
         Ok(Self {
             entry_prog:  Program::compile(&entry_n)?,
             exit_prog:   Program::compile(&exit_n)?,
+            tp_prog,
+            sl_prog,
             bindings,
             var_keys,
             bar_buf:     VecDeque::with_capacity(bar_cap),
@@ -1200,14 +1655,7 @@ impl CelStrategy {
             indicator_series,
             in_position: false,
             entry_price: 0.0,
-            tp_pct,
-            sl_pct,
-            tp_atr_mult,
-            sl_atr_mult,
-            tp_atr_level: 0.0,
-            sl_atr_level: 0.0,
-            atr,
-            last_atr: 0.0,
+            regime_detector,
             ctx,
             transform: CandleTransform::new(candle_type),
         })
@@ -1227,6 +1675,21 @@ impl Strategy for CelStrategy {
         for b in self.bindings.values_mut() {
             if b.update(&effective).is_none() {
                 all_ready = false;
+            }
+        }
+
+        // ── 1b. Update regime detector (if active) ────────────────────────────
+        if let Some(det) = &mut self.regime_detector {
+            match det.update(&effective) {
+                Some(state) => {
+                    self.ctx.add_variable_from_value("trend", trend_map(&state));
+                    self.ctx.add_variable_from_value("vola",  vola_map(&state));
+                }
+                None => {
+                    // Still warming up — gate signal generation to avoid evaluating
+                    // expressions against stale/false regime flags.
+                    all_ready = false;
+                }
             }
         }
 
@@ -1314,47 +1777,34 @@ impl Strategy for CelStrategy {
             }
         }
 
-        // ── 5. Update internal ATR ────────────────────────────────────────────
-        if let Some(atr) = &mut self.atr {
-            if let Some(v) = atr.update(bar.high, bar.low, bar.close) {
-                self.last_atr = v.atr;
-            }
-        }
-
-        // ── 6. Evaluate the appropriate program ───────────────────────────────
+        // ── 5. Evaluate the appropriate program ───────────────────────────────
         if !self.in_position {
             let fire = matches!(self.entry_prog.execute(&self.ctx), Ok(Value::Bool(true)));
             if fire {
                 self.in_position = true;
                 self.entry_price = bar.close;
-                self.tp_atr_level = self.tp_atr_mult
-                    .filter(|_| self.last_atr > 0.0)
-                    .map(|m| bar.close + m * self.last_atr)
-                    .unwrap_or(0.0);
-                self.sl_atr_level = self.sl_atr_mult
-                    .filter(|_| self.last_atr > 0.0)
-                    .map(|m| bar.close - m * self.last_atr)
-                    .unwrap_or(0.0);
-                return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
+                // Update entry_price in ctx BEFORE evaluating tp/sl programs.
+                self.ctx.add_variable_from_value("entry_price", Value::Float(bar.close));
+
+                let target_price = self.tp_prog.as_ref()
+                    .and_then(|prog| prog.execute(&self.ctx).ok())
+                    .and_then(|v| if let Value::Float(f) = v { Some(f) } else { None });
+                let stop_price = self.sl_prog.as_ref()
+                    .and_then(|prog| prog.execute(&self.ctx).ok())
+                    .and_then(|v| if let Value::Float(f) = v { Some(f) } else { None });
+
+                let mut sig = Signal::long(bar.timestamp, &bar.symbol, 1.0);
+                sig.price = Some(bar.close);
+                sig.target_price = target_price;
+                sig.stop_price = stop_price;
+                return vec![sig];
             }
         } else {
-            let tp_hit = self.tp_pct
-                .map(|pct| bar.close >= self.entry_price * (1.0 + pct))
-                .unwrap_or(false)
-                || (self.tp_atr_level > 0.0 && bar.close >= self.tp_atr_level);
-
-            let sl_hit = self.sl_pct
-                .map(|pct| bar.close <= self.entry_price * (1.0 - pct))
-                .unwrap_or(false)
-                || (self.sl_atr_level > 0.0 && bar.close <= self.sl_atr_level);
-
             let exit_hit = matches!(self.exit_prog.execute(&self.ctx), Ok(Value::Bool(true)));
 
-            if tp_hit || sl_hit || exit_hit {
+            if exit_hit {
                 self.in_position = false;
                 self.entry_price = 0.0;
-                self.tp_atr_level = 0.0;
-                self.sl_atr_level = 0.0;
                 return vec![Signal::close(bar.timestamp, &bar.symbol)];
             }
         }
@@ -1366,14 +1816,14 @@ impl Strategy for CelStrategy {
 
     fn reset(&mut self) {
         for b in self.bindings.values_mut() { b.reset(); }
-        if let Some(atr) = &mut self.atr { atr.reset(); }
+        if let Some(det) = &mut self.regime_detector { det.reset(); }
+        self.ctx.add_variable_from_value("trend", trend_map_default());
+        self.ctx.add_variable_from_value("vola",  vola_map_default());
+        self.ctx.add_variable_from_value("entry_price", Value::Float(0.0));
         self.transform.reset();
         self.bar_buf.clear();
         self.in_position = false;
         self.entry_price = 0.0;
-        self.tp_atr_level = 0.0;
-        self.sl_atr_level = 0.0;
-        self.last_atr = 0.0;
     }
 
     fn take_indicator_series(&mut self) -> std::collections::HashMap<String, Vec<(i64, f64)>> {
@@ -1852,5 +2302,241 @@ mod tests {
         sigs.extend(s.on_bar(&bar(2, 110.0))); // close[1]=100 < close[0]=110 → no signal
         use alm_core::signal::Direction;
         assert!(!sigs.iter().any(|s| s.direction == Direction::Long), "should not fire on rise");
+    }
+
+    // ── defines / macro expansion ────────────────────────────────────────────
+
+    #[test]
+    fn apply_defines_basic_substitution() {
+        let mut defs = HashMap::new();
+        defs.insert("oversold".into(), "rsi(14) < 30.0".into());
+        let (entry, _exit) = apply_defines("oversold && close > ema(50)", "false", &defs).unwrap();
+        assert_eq!(entry, "(rsi(14) < 30.0) && close > ema(50)");
+    }
+
+    #[test]
+    fn apply_defines_word_boundary() {
+        // "trending" should NOT match inside "uptrending"
+        let mut defs = HashMap::new();
+        defs.insert("trending".into(), "adx(14) > 25.0".into());
+        let (entry, _) = apply_defines("trending && !uptrending", "false", &defs).unwrap();
+        assert_eq!(entry, "(adx(14) > 25.0) && !uptrending");
+    }
+
+    #[test]
+    fn apply_defines_chained() {
+        // trending references strong; strong must be resolved first
+        let mut defs = HashMap::new();
+        defs.insert("strong".into(), "adx(14) > 25.0".into());
+        defs.insert("trending".into(), "strong && ema(9) > ema(21)".into());
+        let (entry, _) = apply_defines("trending", "false", &defs).unwrap();
+        // After resolution: trending = (adx(14) > 25.0) && ema(9) > ema(21)
+        assert!(entry.contains("adx(14) > 25.0"), "chained define should be expanded");
+        assert!(entry.contains("ema(9) > ema(21)"), "indicator part should be preserved");
+    }
+
+    #[test]
+    fn apply_defines_circular_reference_rejected() {
+        let mut defs = HashMap::new();
+        defs.insert("a".into(), "b && close > 0.0".into());
+        defs.insert("b".into(), "a && close > 0.0".into());
+        assert!(apply_defines("a", "false", &defs).is_err());
+    }
+
+    #[test]
+    fn apply_defines_reserved_name_rejected() {
+        let mut defs = HashMap::new();
+        defs.insert("close".into(), "1.0".into());
+        assert!(apply_defines("close > 0.0", "false", &defs).is_err());
+
+        let mut defs2 = HashMap::new();
+        defs2.insert("rsi".into(), "50.0".into());
+        assert!(apply_defines("rsi > 0.0", "false", &defs2).is_err());
+    }
+
+    #[test]
+    fn apply_defines_empty_is_noop() {
+        let defs: HashMap<String, String> = HashMap::new();
+        let (e, x) = apply_defines("close > ema(50)", "close < ema(50)", &defs).unwrap();
+        assert_eq!(e, "close > ema(50)");
+        assert_eq!(x, "close < ema(50)");
+    }
+
+    #[test]
+    fn from_params_with_defines_builds() {
+        let p = serde_json::json!({
+            "entry": "oversold && trending",
+            "exit":  "overbought",
+            "defines": {
+                "oversold":  "rsi(14) < 30.0",
+                "overbought": "rsi(14) > 70.0",
+                "trending":  "adx(14) > 25.0"
+            }
+        });
+        assert!(CelStrategy::from_params(&p).is_ok());
+    }
+
+    #[test]
+    fn script_defines_parsed_and_applied() {
+        let script = "\
+define: oversold = rsi(14) < 30.0
+define: trending = adx(14) > 25.0
+entry: oversold && trending
+exit:  rsi(14) > 70.0
+";
+        let s = CelScript::parse(script).unwrap();
+        assert_eq!(s.defines.len(), 2);
+        assert!(s.defines.contains_key("oversold"));
+        assert!(s.defines.contains_key("trending"));
+        // Building from script should succeed (defines get applied)
+        let p = serde_json::json!({ "script": script });
+        assert!(CelStrategy::from_params(&p).is_ok());
+    }
+
+    // ── Regime namespaces (trend.* / vola.*) ─────────────────────────────────
+
+    #[test]
+    fn regime_namespace_in_entry_builds() {
+        let s = CelStrategy::new("trend.trending && rsi(14) < 30.0", "rsi(14) > 70.0").unwrap();
+        assert!(s.regime_detector.is_some(), "detector should be allocated when trend.* is referenced");
+        assert!(s.bindings.contains_key("rsi_14"));
+    }
+
+    #[test]
+    fn regime_namespace_in_exit_builds() {
+        let s = CelStrategy::new("rsi(14) < 30.0", "vola.high || rsi(14) > 70.0").unwrap();
+        assert!(s.regime_detector.is_some());
+    }
+
+    #[test]
+    fn regime_detector_skipped_when_unreferenced() {
+        let s = CelStrategy::new("rsi(14) < 30.0", "rsi(14) > 70.0").unwrap();
+        assert!(s.regime_detector.is_none(), "detector should not be allocated when no regime namespace is used");
+    }
+
+    #[test]
+    fn regime_namespace_via_define() {
+        let p = serde_json::json!({
+            "entry": "trending && rsi(14) < 30.0",
+            "exit":  "rsi(14) > 70.0",
+            "defines": { "trending": "trend.trending && adx(14) > 25.0" }
+        });
+        let s = CelStrategy::from_params(&p).unwrap();
+        assert!(s.regime_detector.is_some());
+    }
+
+    #[test]
+    fn regime_namespace_define_shadow_rejected() {
+        let mut defs = HashMap::new();
+        defs.insert("trend".into(), "true".into());
+        assert!(apply_defines("close > 0.0", "false", &defs).is_err());
+
+        let mut defs2 = HashMap::new();
+        defs2.insert("vola".into(), "true".into());
+        assert!(apply_defines("close > 0.0", "false", &defs2).is_err());
+    }
+
+    #[test]
+    fn regime_no_signal_during_warmup() {
+        // Flat market should never be Trending — and signal must not fire during
+        // detector warmup either.
+        let mut s = CelStrategy::new("trend.trending", "false").unwrap();
+        for i in 0..30 {
+            assert!(s.on_bar(&bar(i, 100.0)).is_empty(), "bar {i}: should be silent");
+        }
+    }
+
+    #[test]
+    fn regime_trending_fires_in_strong_uptrend() {
+        let mut s = CelStrategy::new("trend.trending", "false").unwrap();
+        let mut sigs = vec![];
+        for i in 0..80 {
+            let base = 100.0 + i as f64;
+            let b = Bar::new(i, "T", base, base + 2.0, base - 0.5, base + 1.5, 1_000.0);
+            sigs.extend(s.on_bar(&b));
+        }
+        use alm_core::signal::Direction;
+        assert!(
+            sigs.iter().any(|s| s.direction == Direction::Long),
+            "expected a Long signal once detector classifies a strong uptrend as Trending"
+        );
+    }
+
+    #[test]
+    fn regime_reset_clears_detector() {
+        let mut s = CelStrategy::new("trend.trending", "false").unwrap();
+        for i in 0..40 {
+            let base = 100.0 + i as f64;
+            s.on_bar(&Bar::new(i, "T", base, base + 2.0, base - 0.5, base + 1.5, 1_000.0));
+        }
+        s.reset();
+        assert!(s.on_bar(&bar(0, 100.0)).is_empty());
+    }
+
+    // ── Regime config (custom periods/thresholds) ─────────────────────────────
+
+    #[test]
+    fn regime_script_section_parsed() {
+        let script = "\
+regime: adx=10 chop=14 atr_short=14 atr_long=50 adx_th=20 vol_high=1.5
+entry: trend.trending
+exit:  false
+";
+        let s = CelScript::parse(script).unwrap();
+        assert_eq!(s.regime.adx_period, Some(10));
+        assert_eq!(s.regime.chop_period, Some(14));
+        assert_eq!(s.regime.adx_th, Some(20.0));
+        assert_eq!(s.regime.vol_high, Some(1.5));
+        assert_eq!(s.regime.vol_low, None);
+        // Build should succeed and allocate the detector with overrides.
+        let p = serde_json::json!({ "script": script });
+        let strat = CelStrategy::from_params(&p).unwrap();
+        assert!(strat.regime_detector.is_some());
+    }
+
+    #[test]
+    fn regime_script_section_unknown_key_errors() {
+        let script = "\
+regime: foo=1
+entry: trend.trending
+";
+        let err = CelScript::parse(script).unwrap_err().to_string();
+        assert!(err.contains("line 1") && err.contains("foo"), "got: {err}");
+    }
+
+    #[test]
+    fn regime_config_alone_activates_detector() {
+        // Even without `trend.*` references, supplying a regime config means
+        // the user expects detection to run — must not silently no-op.
+        let cfg = RegimeConfig { adx_th: Some(20.0), ..Default::default() };
+        let s = CelStrategy::build(
+            "rsi(14) < 30.0", "false",
+            None, None, CandleType::Raw, cfg,
+        ).unwrap();
+        assert!(s.regime_detector.is_some());
+    }
+
+    // ── Script line-number error reporting ───────────────────────────────────
+
+    #[test]
+    fn script_error_includes_line_number() {
+        let script = "\
+# header comment
+entry: rsi(14) < 30.0
+exit:  rsi(14) > 70.0
+define: bad line no equals
+";
+        let err = CelScript::parse(script).unwrap_err().to_string();
+        assert!(err.contains("line 4"), "expected line 4 in error, got: {err}");
+    }
+
+    #[test]
+    fn script_error_orphan_continuation_line_number() {
+        let script = "\
+# only a continuation, no entry/exit started
+&& rsi(14) < 30.0
+";
+        let err = CelScript::parse(script).unwrap_err().to_string();
+        assert!(err.contains("line 2"), "expected line 2 in error, got: {err}");
     }
 }

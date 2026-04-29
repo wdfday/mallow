@@ -9,7 +9,7 @@
 //! ```
 //! Unknown keys are silently ignored; missing keys fall back to sensible defaults.
 //!
-//! `DynamicStrategy` uses a richer nested format — see [`crate::dynamic`] docs.
+//! `CelStrategy` uses a simple expression format — see [`crate::expr`] docs.
 
 use anyhow::{bail, Result};
 use alm_core::strategy::Strategy;
@@ -17,7 +17,8 @@ use serde_json::Value;
 
 use crate::{
     expr::cel::CelStrategy,
-    dynamic::DynamicStrategy,
+    expr::rhai_strategy::RhaiStrategy,
+    // dynamic::DynamicStrategy,  // deprecated
     layered::LayeredStrategy,
     AdxEmaCross, AlmaCross, AlligatorStrategy, AroonTrend, AtrTrailingStop, BbKeltnerSqueeze,
     BbRsiReversal, BbSqueeze, BollingerMacd, CciReversal, ChandelierExit, ChopFilterStrategy,
@@ -551,8 +552,12 @@ pub fn build_strategy(name: &str, params: &Value) -> Result<Box<dyn Strategy>> {
         // params: { "entry": "<cel expr>", "exit": "<cel expr>" }
         "cel" | "cel2" | "evalexpr" => Box::new(CelStrategy::from_params(p)?),
 
-        // ── Dynamic (declarative JSON conditions) ─────────────────────────────
-        "dynamic" => Box::new(DynamicStrategy::from_params(p)?),
+        // ── Rhai scripting strategy ───────────────────────────────────────────
+        // params: { "script": "<rhai script>" }
+        "rhai" => Box::new(RhaiStrategy::from_params(p)?),
+
+        // ── Dynamic (declarative JSON conditions) — DEPRECATED ────────────────
+        // "dynamic" => Box::new(DynamicStrategy::from_params(p)?),
 
         // ── Layered (filter + signal two-tier) ────────────────────────────────
         // params: { "filter": {"name": "...", "params": {...}},
@@ -612,7 +617,7 @@ pub fn build_strategy(name: &str, params: &Value) -> Result<Box<dyn Strategy>> {
 /// # Phase A scope
 ///
 /// Only base-timeframe indicators are declared. Multi-timeframe (MTF) indicators
-/// declared in CEL (`H1.ema(200)`) or DynamicStrategy (`"tf": "H1"`) remain
+/// declared in CEL (`H1.ema(200)`) remain
 /// internal to the strategy — the ledger does not currently resample bars.
 #[derive(Debug, Clone)]
 pub struct IndicatorDep {
@@ -635,7 +640,8 @@ pub struct IndicatorDep {
 pub fn indicator_deps(name: &str, params: &Value) -> Vec<IndicatorDep> {
     match name {
         "cel" | "cel2" | "evalexpr" => crate::expr::cel::cel_indicator_deps(params),
-        "dynamic" => crate::dynamic::dynamic_indicator_deps(params),
+        "rhai" => crate::expr::rhai_strategy::rhai_indicator_deps(params),
+        // "dynamic" => crate::dynamic::dynamic_indicator_deps(params),  // deprecated
         "layered" => {
             let mut deps = Vec::new();
             if let Some(filter_cfg) = params.get("filter") {
@@ -869,27 +875,8 @@ mod tests {
         assert!(deps.is_empty(), "named strategy must declare zero deps: {deps:?}");
     }
 
-    #[test]
-    fn dynamic_declares_base_tf_deps_only() {
-        let params = json!({
-            "indicators": {
-                "rsi14":  { "type": "rsi",  "period": 14 },
-                "ema200": { "type": "ema",  "period": 200 },
-                "mtf_h1": { "type": "ema",  "period": 50, "tf": "H1" }
-            },
-            "entry": { "logic": "and", "rules": [
-                { "source": "rsi14", "field": "value", "op": "lt", "value": 30 }
-            ]}
-        });
-        let (_, deps) = build_strategy_with_deps("dynamic", &params).unwrap();
-
-        assert_eq!(dep_types(&deps), vec!["ema", "rsi"],
-            "MTF indicator with tf='H1' must be skipped (Phase A: base-TF only)");
-        assert!(deps.iter().all(|d| d.source_tf.is_none()),
-            "all deps must have source_tf=None in Phase A");
-        assert!(deps.iter().all(|d| d.config.get("tf").is_none()),
-            "the 'tf' key must be stripped from dep configs");
-    }
+    // #[test]  // deprecated — DynamicStrategy removed
+    // fn dynamic_declares_base_tf_deps_only() { ... }
 
     #[test]
     fn cel_extracts_deps_from_entry_and_exit() {

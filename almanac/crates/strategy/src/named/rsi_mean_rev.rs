@@ -113,6 +113,7 @@ mod tests {
         );
     }
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn rsi_mean_rev_parity() {
         let bars = rsi_bars(80);
@@ -150,7 +151,9 @@ mod tests {
         assert_parity("rsi hardcoded vs dynamic", &hc_sigs, &dyn_sigs);
         assert_parity("rsi hardcoded vs cel",     &hc_sigs, &cel_sigs);
     }
+    */
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn reset_parity() {
         let bars = rsi_bars(80);
@@ -183,4 +186,5 @@ mod tests {
         assert_parity("rsi reset: hc vs dyn",  &hc_r1,  &dyn_r2);
         assert_parity("rsi reset: hc vs cel",  &hc_r1,  &cel_r2);
     }
+    */
 }

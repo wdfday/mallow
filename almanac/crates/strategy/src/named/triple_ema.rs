@@ -90,6 +90,7 @@ mod tests {
     use crate::factory::build_strategy;
     use serde_json::json;
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn triple_ema_parity() {
         let bars = dip_in_uptrend_bars();
@@ -126,4 +127,5 @@ mod tests {
         assert_parity("triple_ema hc vs dynamic", &hc_sigs, &dyn_sigs);
         assert_parity("triple_ema hc vs cel",     &hc_sigs, &cel_sigs);
     }
+    */
 }

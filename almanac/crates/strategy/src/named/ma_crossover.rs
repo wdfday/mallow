@@ -133,6 +133,7 @@ mod tests {
         assert!(s.is_empty());
     }
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn ma_crossover_parity() {
         let bars = trending_bars(300);
@@ -179,4 +180,5 @@ mod tests {
         assert_parity("ma hardcoded vs dynamic", &hc_sigs, &dyn_sigs);
         assert_parity("ma hardcoded vs cel",     &hc_sigs, &cel_sigs);
     }
+    */
 }

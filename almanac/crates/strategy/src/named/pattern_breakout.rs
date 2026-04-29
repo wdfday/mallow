@@ -130,6 +130,7 @@ impl Strategy for PatternBreakoutStrategy {
         vec![]
     }
 
+    fn uses_window(&self) -> bool { true }
     fn name(&self) -> &str { "pattern_breakout" }
 
     fn reset(&mut self) {

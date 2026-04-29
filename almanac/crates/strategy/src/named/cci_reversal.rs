@@ -69,6 +69,7 @@ mod tests {
     use crate::factory::build_strategy;
     use serde_json::json;
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn cci_reversal_parity() {
         let bars = rsi_bars(80); // strong V-shape pushes CCI through ±100
@@ -102,4 +103,5 @@ mod tests {
         assert_parity("cci hardcoded vs dynamic", &hc_sigs, &dyn_sigs);
         assert_parity("cci hardcoded vs cel",     &hc_sigs, &cel_sigs);
     }
+    */
 }

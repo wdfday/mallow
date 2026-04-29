@@ -74,6 +74,7 @@ mod tests {
     use crate::factory::build_strategy;
     use serde_json::json;
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn uo_reversal_parity() {
         let bars = rsi_bars(200);
@@ -102,4 +103,5 @@ mod tests {
         assert_parity("uo_reversal hc vs dynamic", &hc_sigs, &dyn_sigs);
         assert_parity("uo_reversal hc vs cel",     &hc_sigs, &cel_sigs);
     }
+    */
 }

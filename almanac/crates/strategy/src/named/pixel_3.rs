@@ -107,6 +107,9 @@ impl Strategy for Pixel3 {
         vec![]
     }
 
+    fn uses_window(&self) -> bool { false }
+    fn uses_portfolio_snapshot(&self) -> bool { true }
+
     fn name(&self) -> &str {
         "pixel_3"
     }

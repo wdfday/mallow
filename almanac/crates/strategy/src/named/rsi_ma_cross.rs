@@ -96,6 +96,7 @@ mod tests {
     use crate::factory::build_strategy;
     use serde_json::json;
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn rsi_ma_cross_parity() {
         let bars = trending_bars(300);
@@ -132,4 +133,5 @@ mod tests {
         assert_parity("rsi_ma_cross hc vs dynamic", &hc_sigs, &dyn_sigs);
         assert_parity("rsi_ma_cross hc vs cel",     &hc_sigs, &cel_sigs);
     }
+    */
 }

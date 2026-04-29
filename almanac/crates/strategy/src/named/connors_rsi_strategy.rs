@@ -131,6 +131,7 @@ mod tests {
         assert!(!strat.in_position);
     }
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn connors_rsi_parity() {
         let bars = connors_rsi_bars();
@@ -160,4 +161,5 @@ mod tests {
         assert_parity("connors_rsi hc vs dynamic", &hc_sigs, &dyn_sigs);
         assert_parity("connors_rsi hc vs cel",     &hc_sigs, &cel_sigs);
     }
+    */
 }

@@ -104,6 +104,7 @@ mod tests {
         assert!(sigs.iter().any(|s| s.direction == Direction::Long));
     }
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn donchian_breakout_parity() {
         let bars = trending_bars(300);
@@ -138,4 +139,5 @@ mod tests {
         });
         assert!(!hc_sigs.is_empty(), "donchian: no signals");
     }
+    */
 }

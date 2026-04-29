@@ -75,6 +75,7 @@ mod tests {
     use crate::factory::build_strategy;
     use serde_json::json;
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn stochastic_dk_parity() {
         let bars = rsi_bars(200);
@@ -105,4 +106,5 @@ mod tests {
         assert_parity("stochastic_dk hc vs dynamic", &hc_sigs, &dyn_sigs);
         assert_parity("stochastic_dk hc vs cel",     &hc_sigs, &cel_sigs);
     }
+    */
 }

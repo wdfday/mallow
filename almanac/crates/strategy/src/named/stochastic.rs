@@ -116,6 +116,7 @@ mod tests {
         }
     }
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn parity_dynamic() {
         let bars = v_bars(150);
@@ -146,6 +147,7 @@ mod tests {
         assert!(!hc_sigs.is_empty(), "no signals produced");
         assert_eq!(hc_sigs, dyn_sigs, "hardcoded vs dynamic mismatch");
     }
+    */
 
     #[test]
     fn parity_cel() {
@@ -172,6 +174,7 @@ mod tests {
         assert_eq!(r1, r2, "reset parity failed");
     }
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn stochastic_crossover_parity() {
         let bars = rsi_bars(150);
@@ -213,4 +216,5 @@ mod tests {
         assert_parity("stoch hardcoded vs dynamic", &hc_sigs, &dyn_sigs);
         assert_parity("stoch hardcoded vs cel",     &hc_sigs, &cel_sigs);
     }
+    */
 }

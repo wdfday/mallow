@@ -8,11 +8,11 @@ pub use candle_type::{CandleTransform, CandleType};
 
 // ── Expression / template strategies ─────────────────────────────────────────
 pub mod expr;
-pub use expr::{CelScript, CelStrategy};
+pub use expr::{CelScript, CelStrategy, RhaiStrategy};
 
-// ── Declarative JSON strategy ─────────────────────────────────────────────────
-pub mod dynamic;
-pub use dynamic::DynamicStrategy;
+// // ── Declarative JSON strategy ─────────────────────────────────────────────────
+// pub mod dynamic;  // deprecated — use CelStrategy instead
+// pub use dynamic::DynamicStrategy;
 
 // ── Layered (filter + signal) strategy ───────────────────────────────────────
 pub mod layered;
@@ -38,3 +38,7 @@ pub mod test_utils;
 // ── Tests ─────────────────────────────────────────────────────────────────────
 #[cfg(test)]
 mod edge_case_tests;
+#[cfg(test)]
+mod mtf_parity_tests;
+#[cfg(test)]
+mod rhai_parity_tests;

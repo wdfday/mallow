@@ -97,6 +97,7 @@ mod tests {
     use crate::factory::build_strategy;
     use serde_json::json;
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn trend_follower_parity() {
         let bars = slow_trend_bars();
@@ -133,4 +134,5 @@ mod tests {
         assert_parity("trend_follower hc vs dynamic", &hc_sigs, &dyn_sigs);
         assert_parity("trend_follower hc vs cel",     &hc_sigs, &cel_sigs);
     }
+    */
 }

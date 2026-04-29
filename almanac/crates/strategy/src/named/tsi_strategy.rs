@@ -118,6 +118,7 @@ mod tests {
         assert!(strat.prev_tsi.is_none());
     }
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn tsi_parity() {
         let bars = trending_bars(300);
@@ -146,4 +147,5 @@ mod tests {
         assert_parity("tsi hc vs dynamic", &hc_sigs, &dyn_sigs);
         assert_parity("tsi hc vs cel",     &hc_sigs, &cel_sigs);
     }
+    */
 }

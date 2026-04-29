@@ -94,6 +94,7 @@ mod tests {
         assert_parity("kdj hc vs cel", &hc_sigs, &cel_sigs);
     }
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn kdj_dynamic_cel_parity() {
         let bars = rsi_bars(200);
@@ -121,4 +122,5 @@ mod tests {
 
         assert_parity("kdj dynamic vs cel", &dyn_sigs, &cel_sigs);
     }
+    */
 }

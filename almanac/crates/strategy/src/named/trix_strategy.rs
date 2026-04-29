@@ -97,6 +97,7 @@ mod tests {
         }
     }
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn parity_dynamic() {
         let bars = trending_bars(300);
@@ -119,6 +120,7 @@ mod tests {
         assert!(!hc_sigs.is_empty(), "no signals produced");
         assert_eq!(hc_sigs, dyn_sigs, "hardcoded vs dynamic mismatch");
     }
+    */
 
     #[test]
     fn parity_reset() {
@@ -130,6 +132,7 @@ mod tests {
         assert_eq!(r1, r2, "reset parity failed");
     }
 
+    /* // deprecated — DynamicStrategy removed
     #[test]
     fn trix_parity() {
         let bars = trending_bars(300);
@@ -155,4 +158,5 @@ mod tests {
         assert!(!hc_sigs.is_empty(), "trix: hardcoded produced no signals");
         assert_parity("trix hardcoded vs dynamic", &hc_sigs, &dyn_sigs);
     }
+    */
 }

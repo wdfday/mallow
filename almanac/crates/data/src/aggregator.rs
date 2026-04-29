@@ -187,17 +187,17 @@ impl PartialBar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::InMemoryFeed;
+    use crate::memory::BarVecFeed;
 
     fn make_bar(ts: i64, o: f64, h: f64, l: f64, c: f64, v: f64) -> Bar {
         Bar::new(ts, "SYM", o, h, l, c, v)
     }
 
-    fn m1_feed(minutes: usize) -> InMemoryFeed {
+    fn m1_feed(minutes: usize) -> BarVecFeed {
         let bars: Vec<Bar> = (0..minutes as i64)
             .map(|i| make_bar(i * 60_000, 100.0, 101.0, 99.0, 100.5, 10.0))
             .collect();
-        InMemoryFeed::new(bars, "SYM".into())
+        BarVecFeed::new(bars, "SYM".into())
     }
 
     #[test]
@@ -258,7 +258,7 @@ mod tests {
             make_bar(60_000,    101.0, 107.0, 99.0,  103.0, 20.0),
             make_bar(120_000,   103.0, 110.0, 97.0,  102.0, 30.0),
         ];
-        let feed = InMemoryFeed::new(bars, "SYM".into());
+        let feed = BarVecFeed::new(bars, "SYM".into());
         let mut agg = BarAggregator::new(feed, Timeframe::M3);
         let bar = agg.next().unwrap();
         assert_eq!(bar.open,   100.0);

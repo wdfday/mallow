@@ -15,6 +15,7 @@ type Handler struct {
 	verify   *VerifyHandler
 	telegram *TelegramHandler
 	session  *SessionHandler
+	internal *InternalHandler
 }
 
 // NewHandler builds the facade handler with its specialized sub-handlers.
@@ -24,6 +25,7 @@ func NewHandler(
 	passwordService service.IPasswordService,
 	verificationService service.IVerificationService,
 	telegramHandler *TelegramHandler,
+	internalHandler *InternalHandler,
 	cfg *config.Config,
 ) *Handler {
 	return &Handler{
@@ -32,6 +34,7 @@ func NewHandler(
 		verify:   NewVerifyHandler(verificationService),
 		telegram: telegramHandler,
 		session:  NewSessionHandler(sessionService),
+		internal: internalHandler,
 	}
 }
 
@@ -47,4 +50,5 @@ func (h *Handler) RegisterRoutes(
 	h.verify.RegisterRoutes(r, authMiddleware)
 	h.telegram.RegisterRoutes(r, authMiddleware, serviceSecret)
 	h.session.RegisterRoutes(r, authMiddleware)
+	h.internal.RegisterRoutes(r, serviceSecret)
 }

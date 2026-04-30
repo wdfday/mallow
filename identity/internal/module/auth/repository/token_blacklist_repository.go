@@ -18,6 +18,7 @@ import (
 type ITokenBlacklistRepository interface {
 	Add(ctx context.Context, token string, userID uuid.UUID, reason string, expiresAt time.Time) error
 	IsBlacklisted(ctx context.Context, token string) (bool, error)
+	IsRevokedByFields(ctx context.Context, sid, userID string) (bool, error)
 	CleanupExpired(ctx context.Context) error
 	BlacklistAllUserTokens(ctx context.Context, userID uuid.UUID, reason string) error
 	RevokeSession(ctx context.Context, sid string, expiresAt time.Time) error
@@ -134,6 +135,54 @@ func (r *tokenBlacklistRepository) IsBlacklisted(ctx context.Context, token stri
 		_ = r.redis.Set(ctx, redisJTIKey(jti), entry.Reason, ttl).Err()
 	}
 	return true, nil
+}
+
+// IsRevokedByFields checks revocation by sid and userID without a full token string.
+// Used by the gateway as a Redis-fallback path: checks Redis first, then falls back to the
+// sessions table and re-populates Redis (wakes cache) on hit.
+func (r *tokenBlacklistRepository) IsRevokedByFields(ctx context.Context, sid, userID string) (bool, error) {
+	var keys []string
+	if sid != "" {
+		keys = append(keys, redisSIDKey(sid))
+	}
+	if userID != "" {
+		if uid, err := uuid.Parse(userID); err == nil {
+			keys = append(keys, redisUserKey(uid))
+		}
+	}
+	if len(keys) > 0 {
+		n, err := r.redis.Exists(ctx, keys...).Result()
+		if err == nil {
+			return n > 0, nil
+		}
+		// Redis unavailable — fall through to DB
+	}
+
+	// DB fallback: check session revocation by SID (user-level revocations are Redis-only).
+	if r.db != nil && sid != "" {
+		var row struct {
+			RevokedAt *time.Time
+			ExpiresAt time.Time
+		}
+		err := r.db.WithContext(ctx).
+			Table("sessions").
+			Select("revoked_at, expires_at").
+			Where("sid = ? AND expires_at > ?", sid, time.Now()).
+			First(&row).Error
+		if err != nil {
+			if err == gorm.ErrRecordNotFound {
+				return false, nil
+			}
+			return false, fmt.Errorf("blacklist db fallback: %w", err)
+		}
+		if row.RevokedAt != nil {
+			if ttl := time.Until(row.ExpiresAt); ttl > 0 {
+				_ = r.redis.Set(ctx, redisSIDKey(sid), "revoked", ttl).Err()
+			}
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // RevokeSession marks an entire session as revoked by its SID.

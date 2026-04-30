@@ -89,5 +89,6 @@ var Module = fx.Module("auth",
 		// Handlers
 		handler.NewHandler,
 		ProvideTelegramHandler,
+		handler.NewInternalHandler,
 	),
 )

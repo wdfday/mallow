@@ -7,21 +7,7 @@ edition = "2021"
 name = "alm-engine"
 path = "src/main.rs"
 
-[[bin]]
-name = "benchmark"
-path = "src/benchmark.rs"
-
-[[bin]]
-name = "compare"
-path = "src/compare.rs"
-
-[[bin]]
-name = "try-strategy"
-path = "src/try_strategy.rs"
-
-[[bin]]
-name = "tournament"
-path = "src/tournament.rs"
+# src/bin/*.rs are auto-discovered by Cargo
 
 [dependencies]
 alm-core      = { workspace = true }

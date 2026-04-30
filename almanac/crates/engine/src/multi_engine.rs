@@ -15,8 +15,8 @@
 //!
 //! ```rust,ignore
 //! let engine = MultiEngine::new(10_000.0, strategy, risk, 0.001, 0.0);
-//! engine.add_feed(InMemoryFeed::new(btc_bars, "BTCUSDT"));
-//! engine.add_feed(InMemoryFeed::new(eth_bars, "ETHUSDT"));
+//! engine.add_feed(BarVecFeed::new(btc_bars, "BTCUSDT"));
+//! engine.add_feed(BarVecFeed::new(eth_bars, "ETHUSDT"));
 //! let report = engine.run(0.0);
 //! ```
 
@@ -115,6 +115,8 @@ pub struct MultiEngine<S: MultiStrategy, R: RiskManager> {
 
     exit_rules: ExitRules,
     position_trackers: HashMap<String, PositionTracker>,
+    /// Pending TP/SL absolute price levels from entry Signal — consumed at Fill time.
+    pending_signal_levels: HashMap<String, (Option<f64>, Option<f64>)>,
 }
 
 impl<S: MultiStrategy, R: RiskManager> MultiEngine<S, R> {
@@ -138,6 +140,7 @@ impl<S: MultiStrategy, R: RiskManager> MultiEngine<S, R> {
             window_size: DEFAULT_WINDOW_SIZE,
             exit_rules: ExitRules::default(),
             position_trackers: HashMap::new(),
+            pending_signal_levels: HashMap::new(),
         }
     }
 
@@ -236,24 +239,29 @@ impl<S: MultiStrategy, R: RiskManager> MultiEngine<S, R> {
                     cash: self.portfolio.cash,
                 }));
 
-                // Exit rules.
+                // Exit rules — force_close at the computed fill price.
                 if self.exit_rules.is_active() {
-                    let to_close: Vec<String> = self
+                    let to_close: Vec<(String, f64, alm_core::ExitReason)> = self
                         .position_trackers
                         .iter_mut()
                         .filter_map(|(sym, tracker)| {
-                            if tracker.update_and_check(bar.close, &self.exit_rules) {
-                                Some(sym.clone())
-                            } else {
-                                None
-                            }
+                            tracker
+                                .update_and_check(bar.open, bar.high, bar.low, bar.close, &self.exit_rules)
+                                .map(|(fp, reason)| (sym.clone(), fp, reason))
                         })
                         .collect();
 
-                    for sym in to_close {
+                    for (sym, fill_price, reason) in to_close {
                         self.position_trackers.remove(&sym);
-                        let sig = Signal::close(bar.timestamp, &sym);
-                        self.bus.send(Event::Signal(alm_core::event::SignalEvent { signal: sig }));
+                        if let Some(pos) = self.portfolio.positions.get(&sym) {
+                            let qty  = pos.qty.abs();
+                            let side = if pos.qty > 0.0 { Side::Sell } else { Side::Buy };
+                            let fill = self.broker.force_close(&sym, qty, side, bar.timestamp, fill_price);
+                            self.portfolio.apply_fill(&fill);
+                            if let Some(trade) = self.portfolio.trades.last_mut() {
+                                trade.exit_reason = reason;
+                            }
+                        }
                     }
                 }
 
@@ -283,23 +291,43 @@ impl<S: MultiStrategy, R: RiskManager> MultiEngine<S, R> {
 
             Event::Signal(ref sig_event) => {
                 let signal = &sig_event.signal;
-                if self.risk.validate(signal, &self.portfolio) {
-                    let price = self.last_prices.get(&signal.symbol).copied().unwrap_or(0.0);
-                    let qty = self.risk.size(signal, &self.portfolio, price);
-                    if qty > f64::EPSILON {
-                        let side = match signal.direction {
-                            Direction::Long => Side::Buy,
-                            Direction::Short => Side::Sell,
-                            Direction::Close => {
-                                if let Some(pos) = self.portfolio.positions.get(&signal.symbol) {
-                                    if pos.qty > 0.0 { Side::Sell } else { Side::Buy }
-                                } else {
-                                    return;
-                                }
+                match signal.direction {
+                    Direction::Close => {
+                        if let Some(pos) = self.portfolio.positions.get(&signal.symbol) {
+                            let qty = pos.qty.abs();
+                            if qty > f64::EPSILON {
+                                let side = if pos.qty > 0.0 { Side::Sell } else { Side::Buy };
+                                let order = OrderRequest::market(
+                                    signal.timestamp, &signal.symbol, side, qty,
+                                );
+                                self.bus.send(Event::Order(alm_core::event::OrderEvent { order }));
                             }
-                        };
-                        let order = OrderRequest::market(signal.timestamp, &signal.symbol, side, qty);
-                        self.bus.send(Event::Order(alm_core::event::OrderEvent { order }));
+                        }
+                    }
+                    Direction::Long | Direction::Short => {
+                        if self.risk.validate(signal, &self.portfolio) {
+                            let price =
+                                self.last_prices.get(&signal.symbol).copied().unwrap_or(0.0);
+                            let qty = self.risk.size(signal, &self.portfolio, price);
+                            if qty > f64::EPSILON {
+                                // Store signal-level TP/SL for PositionTracker creation at fill.
+                                if signal.target_price.is_some() || signal.stop_price.is_some() {
+                                    self.pending_signal_levels.insert(
+                                        signal.symbol.clone(),
+                                        (signal.target_price, signal.stop_price),
+                                    );
+                                }
+                                let side = match signal.direction {
+                                    Direction::Long => Side::Buy,
+                                    Direction::Short => Side::Sell,
+                                    Direction::Close => unreachable!(),
+                                };
+                                let order = OrderRequest::market(
+                                    signal.timestamp, &signal.symbol, side, qty,
+                                );
+                                self.bus.send(Event::Order(alm_core::event::OrderEvent { order }));
+                            }
+                        }
                     }
                 }
             }
@@ -318,14 +346,23 @@ impl<S: MultiStrategy, R: RiskManager> MultiEngine<S, R> {
                     .get(&fill.symbol)
                     .map_or(false, |p| p.qty.abs() > f64::EPSILON);
 
-                if self.exit_rules.is_active() {
-                    if still_open {
-                        self.position_trackers
-                            .entry(fill.symbol.clone())
-                            .or_insert_with(|| PositionTracker::new(fill.price));
-                    } else {
-                        self.position_trackers.remove(&fill.symbol);
-                    }
+                if still_open {
+                    let sig_levels = self.pending_signal_levels.remove(&fill.symbol);
+                    self.position_trackers
+                        .entry(fill.symbol.clone())
+                        .or_insert_with(|| {
+                            let is_long = self.portfolio.positions.get(&fill.symbol)
+                                .map_or(true, |p| p.qty > 0.0);
+                            let (sig_tp, sig_sl) = sig_levels.unwrap_or((None, None));
+                            if sig_tp.is_some() || sig_sl.is_some() || self.exit_rules.is_active() {
+                                PositionTracker::with_levels(fill.price, sig_sl, sig_tp, is_long)
+                            } else {
+                                PositionTracker::new(fill.price, is_long)
+                            }
+                        });
+                } else {
+                    self.pending_signal_levels.remove(&fill.symbol);
+                    self.position_trackers.remove(&fill.symbol);
                 }
             }
 

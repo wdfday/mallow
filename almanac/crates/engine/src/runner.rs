@@ -1,7 +1,7 @@
 use crate::engine::Engine;
 use alm_core::exit::ExitRules;
 use alm_core::strategy::{RiskManager, Strategy};
-use alm_data::InMemoryFeed;
+use alm_data::BarVecFeed;
 use alm_report::BacktestReport;
 use rayon::prelude::*;
 
@@ -81,7 +81,7 @@ where
     let results: Vec<(String, BacktestReport)> = symbol_bars
         .into_par_iter()
         .map(|sb| {
-            let mut feed = InMemoryFeed::new(sb.bars, sb.symbol.clone());
+            let mut feed = BarVecFeed::new(sb.bars, sb.symbol.clone());
             let mut engine = Engine::sync(
                 capital_per_symbol,
                 strategy_factory(),
@@ -113,7 +113,7 @@ where
 {
     jobs.into_par_iter()
         .map(|job| {
-            let mut feed = InMemoryFeed::new(bars.clone(), symbol.to_string());
+            let mut feed = BarVecFeed::new(bars.clone(), symbol.to_string());
             let mut engine = Engine::sync(
                 job.initial_capital,
                 job.strategy,

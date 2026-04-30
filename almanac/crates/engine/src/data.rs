@@ -8,23 +8,45 @@
 use std::path::{Path, PathBuf};
 
 use alm_core::Bar;
-use alm_data::{BarFeed, InMemoryFeed, ParquetFeed};
+use alm_data::{BarFeed, BarVecFeed, ParquetFeed};
 use anyhow::{Context, Result};
 use chrono::{NaiveDate, TimeZone, Timelike};
 use chrono_tz::America::New_York;
 use chrono_tz::Asia::Ho_Chi_Minh;
 use walkdir::WalkDir;
 
+/// Derive the market-hours region from a data source name.
+///
+/// - `"polygon"` → `"us"` (NYSE/NASDAQ hours)
+/// - `"vci"` → `"vn"` (HOSE hours)
+/// - `"bnb"` / `"okx"` / anything else → `""` (24/7, no filter)
+pub fn market_region_from_data_source(data_source: &str) -> &'static str {
+    match data_source {
+        "polygon" => "us",
+        "vci" => "vn",
+        _ => "",
+    }
+}
+
 /// Walk `data_dir` and collect all `.parquet` files located inside any
 /// directory whose name matches `symbol` (case-insensitive).
 ///
 /// When `timeframe` is `Some("H1")` (or any candle-type directory name),
-/// only files whose grandparent directory matches that string are included —
-/// this prevents mixing bars from different timeframes when the on-disk
-/// layout is `{exchange}/{timeframe}/{symbol}/*.parquet`.
-pub fn find_parquet_files(data_dir: &Path, symbol: &str, timeframe: Option<&str>) -> Vec<PathBuf> {
+/// only files whose grandparent directory matches that string are included.
+///
+/// When `data_source` is `Some("polygon")` (or any provider name), only
+/// files inside a directory component matching that name are included —
+/// this prevents mixing bars from different providers when the on-disk
+/// layout is `{data_source}/{timeframe}/{symbol}/*.parquet`.
+pub fn find_parquet_files(
+    data_dir: &Path,
+    symbol: &str,
+    timeframe: Option<&str>,
+    data_source: Option<&str>,
+) -> Vec<PathBuf> {
     let symbol_lower = symbol.to_lowercase();
     let timeframe_lower = timeframe.map(|t| t.to_lowercase());
+    let data_source_lower = data_source.map(|s| s.to_lowercase());
 
     let mut files: Vec<PathBuf> = WalkDir::new(data_dir)
         .follow_links(false)
@@ -56,6 +78,17 @@ pub fn find_parquet_files(data_dir: &Path, symbol: &str, timeframe: Option<&str>
                 .unwrap_or(false);
             if !parent_matches {
                 return false;
+            }
+            if let Some(ref src) = data_source_lower {
+                let has_src = path.components().any(|c| {
+                    c.as_os_str()
+                        .to_str()
+                        .map(|s| s.to_lowercase() == *src)
+                        .unwrap_or(false)
+                });
+                if !has_src {
+                    return false;
+                }
             }
             if let Some(ref tf) = timeframe_lower {
                 let grandparent_matches = parent
@@ -119,7 +152,7 @@ pub fn parse_date_ms(date_str: &str) -> Option<i64> {
 }
 
 /// Load bars from the given Parquet files, optionally filtered to
-/// `[from_ms, to_ms]`. Returns an [`InMemoryFeed`] ready for the engine.
+/// `[from_ms, to_ms]`. Returns an [`BarVecFeed`] ready for the engine.
 pub fn load_bars(
     files: &[PathBuf],
     symbol: &str,
@@ -127,7 +160,7 @@ pub fn load_bars(
     to_ms: Option<i64>,
     market_hours_only: bool,
     exchange: &str,
-) -> Result<InMemoryFeed> {
+) -> Result<BarVecFeed> {
     if files.is_empty() {
         anyhow::bail!("no parquet files found for symbol '{}'", symbol);
     }
@@ -153,5 +186,5 @@ pub fn load_bars(
         );
     }
 
-    Ok(InMemoryFeed::new(all_bars, symbol.to_string()))
+    Ok(BarVecFeed::new(all_bars, symbol.to_string()))
 }

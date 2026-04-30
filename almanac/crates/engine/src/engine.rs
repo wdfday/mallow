@@ -5,7 +5,7 @@ use alm_core::{
     bar::Bar,
     bus::EventBus,
     event::{EquityEvent, Event, FillEvent, MarketEvent},
-    exit::{ExitRules, PositionTracker},
+    exit::{ExitReason, ExitRules, PositionTracker},
     order::{Fill, OrderRequest, Side},
     portfolio::Portfolio,
     regime::{RegimeState, RegimeSummary, TrendRegime, VolRegime},
@@ -13,12 +13,11 @@ use alm_core::{
     strategy::{RiskManager, Strategy},
 };
 use alm_data::BarFeed;
-use alm_indicator::RegimeDetector;
+use alm_indicator::{Atr, RegimeDetector};
 use alm_report::BacktestReport;
 use tracing::debug;
 
 use crate::bus_sync::SyncBus;
-use crate::bus_tokio::TokioBus;
 
 /// Default sliding-window size for `on_window()` calls.
 const DEFAULT_WINDOW_SIZE: usize = 200;
@@ -28,8 +27,7 @@ const DEFAULT_WINDOW_SIZE: usize = 200;
 /// Components communicate exclusively through events:
 ///   MarketEvent → Strategy → SignalEvent → RiskManager → OrderEvent → Broker → FillEvent
 ///
-/// Use `Engine::sync()` for max throughput backtesting (VecDeque).
-/// Use `Engine::tokio()` for live-extensible mode (tokio::mpsc).
+/// Use `Engine::sync()` for backtesting (SyncBus, VecDeque, zero atomic overhead).
 pub struct Engine<S: Strategy, R: RiskManager, B: EventBus> {
     pub portfolio: Portfolio,
     pub broker: SimBroker,
@@ -57,7 +55,7 @@ pub struct Engine<S: Strategy, R: RiskManager, B: EventBus> {
     /// on top of RiskManager.validate() — useful for multi-symbol strategies whose
     /// individual strategies don't track in-position state.
     single_entry: bool,
-    // ── Regime detection ──────────────────────────────────────────────────────
+    // ── Regime detection (opt-in) ─────────────────────────────────────────────
     regime_detector: RegimeDetector,
     /// Regime transitions recorded on-change: (timestamp_ms, RegimeState).
     regime_changes: Vec<(i64, RegimeState)>,
@@ -66,6 +64,17 @@ pub struct Engine<S: Strategy, R: RiskManager, B: EventBus> {
     regime_bar_counts: HashMap<(TrendRegime, VolRegime), usize>,
     /// Total bars processed (including warm-up bars without a regime).
     total_bars: usize,
+    /// When false (default): skip regime detection per bar (ADX+Chop+ATR×2).
+    /// Enable with `.with_regime_detection()` when strategy uses `on_regime`.
+    detect_regime: bool,
+    // ── Per-trade ATR SL/TP (opt-in) ─────────────────────────────────────────
+    /// ATR tracker for computing per-trade SL/TP levels at fill time.
+    /// Initialised when `exit_rules.needs_atr()` is true.
+    exit_atr: Option<Atr>,
+    /// Pending TP/SL absolute price levels from the entry Signal — consumed at Fill time.
+    /// Key = symbol; value = (target_price, stop_price). Signal-level levels take
+    /// priority over ATR-rule-derived levels when creating a PositionTracker.
+    pending_signal_levels: HashMap<String, (Option<f64>, Option<f64>)>,
 }
 
 // ── Constructors ─────────────────────────────────────────────────────────────
@@ -98,44 +107,10 @@ impl<S: Strategy, R: RiskManager> Engine<S, R, SyncBus> {
             last_regime: None,
             regime_bar_counts: HashMap::new(),
             total_bars: 0,
+            detect_regime: false,
+            exit_atr: None,
+            pending_signal_levels: HashMap::new(),
         }
-    }
-}
-
-impl<S: Strategy, R: RiskManager> Engine<S, R, TokioBus> {
-    /// Create an engine with tokio::mpsc event bus (live-extensible).
-    pub fn tokio(
-        initial_capital: f64,
-        strategy: S,
-        risk: R,
-        commission_pct: f64,
-        slippage_pct: f64,
-    ) -> Self {
-        Engine {
-            portfolio: Portfolio::new(initial_capital),
-            broker: SimBroker::new(commission_pct, slippage_pct),
-            strategy,
-            risk,
-            bus: TokioBus::new(),
-            last_prices: HashMap::new(),
-            bar_window: VecDeque::new(),
-            window_size: DEFAULT_WINDOW_SIZE,
-            exit_rules: ExitRules::default(),
-            position_trackers: HashMap::new(),
-            next_bar: false,
-            pending_signals: Vec::new(),
-            single_entry: false,
-            regime_detector: RegimeDetector::new(),
-            regime_changes: Vec::new(),
-            last_regime: None,
-            regime_bar_counts: HashMap::new(),
-            total_bars: 0,
-        }
-    }
-
-    /// Get a sender handle for the tokio bus (for external event producers).
-    pub fn sender(&self) -> ::tokio::sync::mpsc::UnboundedSender<alm_core::Event> {
-        self.bus.sender()
     }
 }
 
@@ -145,6 +120,13 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
     /// Override the sliding window size (default: 200 bars).
     pub fn with_window(mut self, size: usize) -> Self {
         self.window_size = size.max(1);
+        self
+    }
+
+    /// Enable regime detection per bar (ADX + Chop + ATR×2).
+    /// Disabled by default — only enable when the strategy uses `on_regime`.
+    pub fn with_regime_detection(mut self) -> Self {
+        self.detect_regime = true;
         self
     }
 
@@ -203,7 +185,31 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
     ///     });
     /// ```
     pub fn with_exit_rules(mut self, rules: ExitRules) -> Self {
+        if rules.needs_atr() {
+            self.exit_atr = Some(Atr::new(rules.atr_period.max(1)));
+        }
         self.exit_rules = rules;
+        self
+    }
+
+    /// Shorthand: attach ATR-based per-trade SL/TP levels.
+    ///
+    /// `sl_mult` — SL = entry − sl_mult × ATR(at entry). `None` skips SL.
+    /// `tp_mult` — TP = entry + tp_mult × ATR(at entry). `None` skips TP.
+    /// `period`  — ATR period (default 14 when 0 is passed).
+    pub fn with_atr_exit(
+        mut self,
+        sl_mult: Option<f64>,
+        tp_mult: Option<f64>,
+        period: usize,
+    ) -> Self {
+        let period = if period == 0 { 14 } else { period };
+        self.exit_rules.atr_stop_multiplier = sl_mult;
+        self.exit_rules.atr_target_multiplier = tp_mult;
+        self.exit_rules.atr_period = period;
+        if self.exit_rules.needs_atr() {
+            self.exit_atr = Some(Atr::new(period));
+        }
         self
     }
 
@@ -247,9 +253,18 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
             for (sym, qty) in open_positions {
                 // Long position → sell to close; short position → buy to cover.
                 let side = if qty > 0.0 { Side::Sell } else { Side::Buy };
+                let tracker = self.position_trackers.remove(&sym);
                 let fill =
                     self.broker.force_close(&sym, qty.abs(), side, bar.timestamp, bar.close);
                 self.portfolio.apply_fill(&fill);
+                if let Some(tr) = tracker {
+                    if let Some(trade) = self.portfolio.trades.last_mut() {
+                        trade.mae_pct = tr.mae;
+                        trade.mfe_pct = tr.mfe;
+                        trade.bars_held = tr.bars_held;
+                        trade.exit_reason = ExitReason::EndOfData;
+                    }
+                }
             }
         }
 
@@ -274,7 +289,13 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                         let fill =
                             self.broker.force_close(&signal.symbol, qty, side, bar.timestamp, bar.open);
                         self.portfolio.apply_fill(&fill);
-                        self.position_trackers.remove(&signal.symbol);
+                        if let Some(tr) = self.position_trackers.remove(&signal.symbol) {
+                            if let Some(trade) = self.portfolio.trades.last_mut() {
+                                trade.mae_pct = tr.mae;
+                                trade.mfe_pct = tr.mfe;
+                                trade.bars_held = tr.bars_held;
+                            }
+                        }
                         debug!(symbol = %signal.symbol, qty, ?side, "next-bar close fill at open");
                     }
                 }
@@ -297,9 +318,14 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                             commission,
                         };
                         self.portfolio.apply_fill(&fill);
-                        self.position_trackers
-                            .entry(signal.symbol.clone())
-                            .or_insert_with(|| PositionTracker::new(fill_price));
+                        self.position_trackers.entry(signal.symbol.clone()).or_insert_with(|| {
+                            let atr_val = self.exit_atr.as_ref().and_then(|a| a.value());
+                            let stop = atr_val.zip(self.exit_rules.atr_stop_multiplier)
+                                .map(|(a, m)| fill_price - m * a);
+                            let target = atr_val.zip(self.exit_rules.atr_target_multiplier)
+                                .map(|(a, m)| fill_price + m * a);
+                            PositionTracker::with_levels(fill_price, stop, target, true)
+                        });
                         debug!(symbol = %signal.symbol, qty, "next-bar long fill at open");
                     }
                 }
@@ -322,9 +348,14 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                             commission,
                         };
                         self.portfolio.apply_fill(&fill);
-                        self.position_trackers
-                            .entry(signal.symbol.clone())
-                            .or_insert_with(|| PositionTracker::new(fill_price));
+                        self.position_trackers.entry(signal.symbol.clone()).or_insert_with(|| {
+                            let atr_val = self.exit_atr.as_ref().and_then(|a| a.value());
+                            let stop = atr_val.zip(self.exit_rules.atr_stop_multiplier)
+                                .map(|(a, m)| fill_price + m * a);
+                            let target = atr_val.zip(self.exit_rules.atr_target_multiplier)
+                                .map(|(a, m)| fill_price - m * a);
+                            PositionTracker::with_levels(fill_price, stop, target, false)
+                        });
                         debug!(symbol = %signal.symbol, qty, "next-bar short fill at open");
                     }
                 }
@@ -342,21 +373,28 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                 // Notify risk manager with current bar (e.g. for ATR-based sizing).
                 self.risk.on_bar(bar);
 
-                // ── Regime detection ──────────────────────────────────────────
+                // ── Exit ATR (opt-in) ─────────────────────────────────────────
+                if let Some(ref mut atr) = self.exit_atr {
+                    atr.update(bar.high, bar.low, bar.close);
+                }
+
+                // ── Regime detection (opt-in) ─────────────────────────────────
                 self.total_bars += 1;
-                if let Some(regime) = self.regime_detector.update(bar) {
-                    *self
-                        .regime_bar_counts
-                        .entry((regime.trend.clone(), regime.volatility.clone()))
-                        .or_insert(0) += 1;
-                    let changed =
-                        self.last_regime.as_ref().map_or(true, |last| *last != regime);
-                    if changed {
-                        self.regime_changes.push((bar.timestamp, regime.clone()));
-                        self.last_regime = Some(regime.clone());
-                        debug!(regime = %regime.label(), "regime change");
+                if self.detect_regime {
+                    if let Some(regime) = self.regime_detector.update(bar) {
+                        *self
+                            .regime_bar_counts
+                            .entry((regime.trend.clone(), regime.volatility.clone()))
+                            .or_insert(0) += 1;
+                        let changed =
+                            self.last_regime.as_ref().map_or(true, |last| *last != regime);
+                        if changed {
+                            self.regime_changes.push((bar.timestamp, regime.clone()));
+                            self.last_regime = Some(regime.clone());
+                            debug!(regime = %regime.label(), "regime change");
+                        }
+                        self.strategy.on_regime(&regime);
                     }
-                    self.strategy.on_regime(&regime);
                 }
 
                 // Process pending orders at this bar's open (avoids look-ahead bias).
@@ -365,12 +403,9 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                     self.bus.send(Event::Fill(FillEvent { fill }));
                 }
 
-                // Snapshot equity at bar close.
-                let prices: HashMap<String, f64> =
-                    [(bar.symbol.clone(), bar.close)].into_iter().collect();
-                self.portfolio.record_equity(bar.timestamp, &prices);
-
-                let eq = self.portfolio.equity(&prices);
+                // Snapshot equity at bar close — reuse last_prices (already updated above).
+                self.portfolio.record_equity(bar.timestamp, &self.last_prices);
+                let eq = self.portfolio.equity(&self.last_prices);
                 self.bus.send(Event::Equity(EquityEvent {
                     timestamp: bar.timestamp,
                     equity: eq,
@@ -379,36 +414,48 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
 
                 // ── Exit rules ────────────────────────────────────────────────
                 // Check before strategy signals so SL/TP fires as soon as possible.
-                if self.exit_rules.is_active() {
-                    // Collect which symbols should be closed this bar.
-                    let to_close: Vec<String> = self
+                // Uses force_close at the computed fill price (stop level or close),
+                // bypassing the broker queue so the fill is in the same bar.
+                //
+                // Always call update_and_check: even with no exit rules it tracks
+                // bars_held, MAE, and MFE for every open position.
+                {
+                    let to_close: Vec<(String, f64, ExitReason)> = self
                         .position_trackers
                         .iter_mut()
                         .filter_map(|(sym, tracker)| {
-                            if tracker.update_and_check(bar.close, &self.exit_rules) {
-                                Some(sym.clone())
-                            } else {
-                                None
-                            }
+                            tracker
+                                .update_and_check(bar.open, bar.high, bar.low, bar.close, &self.exit_rules)
+                                .map(|(fill_price, reason)| (sym.clone(), fill_price, reason))
                         })
                         .collect();
 
-                    for sym in to_close {
-                        // Remove tracker immediately to prevent re-firing next bar
-                        // before the fill arrives.
-                        self.position_trackers.remove(&sym);
-                        let sig = Signal::close(bar.timestamp, &sym);
-                        self.bus
-                            .send(Event::Signal(alm_core::event::SignalEvent { signal: sig }));
-                        debug!(symbol = %sym, "exit rule triggered → close");
+                    for (sym, fill_price, reason) in to_close {
+                        let tracker = self.position_trackers.remove(&sym);
+                        if let Some(pos) = self.portfolio.positions.get(&sym) {
+                            let qty  = pos.qty.abs();
+                            let side = if pos.is_long() { Side::Sell } else { Side::Buy };
+                            let fill = self.broker.force_close(&sym, qty, side, bar.timestamp, fill_price);
+                            self.portfolio.apply_fill(&fill);
+                            self.last_prices.insert(sym.clone(), fill_price);
+                            if let Some(tr) = tracker {
+                                if let Some(trade) = self.portfolio.trades.last_mut() {
+                                    trade.mae_pct = tr.mae;
+                                    trade.mfe_pct = tr.mfe;
+                                    trade.bars_held = tr.bars_held;
+                                    trade.exit_reason = reason.clone();
+                                }
+                            }
+                        }
+                        debug!(symbol = %sym, fill_price, ?reason, "exit rule triggered → force_close");
                     }
                 }
 
-                // ── Portfolio snapshot → strategy ─────────────────────────────
-                // Give the strategy a read-only view of current positions before
-                // it decides what signals to emit. Non-breaking: default is no-op.
-                let snapshot = self.portfolio.snapshot(&prices);
-                self.strategy.set_portfolio_snapshot(&snapshot);
+                // ── Portfolio snapshot → strategy (opt-in) ───────────────────
+                if self.strategy.uses_portfolio_snapshot() {
+                    let snapshot = self.portfolio.snapshot(&self.last_prices);
+                    self.strategy.set_portfolio_snapshot(&snapshot);
+                }
 
                 // ── Indicator-based signals (bar-by-bar) ──────────────────────
                 let signals = self.strategy.on_bar(bar);
@@ -417,17 +464,19 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                         .send(Event::Signal(alm_core::event::SignalEvent { signal }));
                 }
 
-                // ── Pattern-based signals (sliding window) ────────────────────
-                let (a, b) = self.bar_window.as_slices();
-                let window_signals = if b.is_empty() {
-                    self.strategy.on_window(a)
-                } else {
-                    let contiguous: Vec<Bar> = a.iter().chain(b.iter()).cloned().collect();
-                    self.strategy.on_window(&contiguous)
-                };
-                for signal in window_signals {
-                    self.bus
-                        .send(Event::Signal(alm_core::event::SignalEvent { signal }));
+                // ── Pattern-based signals (sliding window, opt-in) ────────────
+                if self.strategy.uses_window() {
+                    let (a, b) = self.bar_window.as_slices();
+                    let window_signals = if b.is_empty() {
+                        self.strategy.on_window(a)
+                    } else {
+                        let contiguous: Vec<Bar> = a.iter().chain(b.iter()).cloned().collect();
+                        self.strategy.on_window(&contiguous)
+                    };
+                    for signal in window_signals {
+                        self.bus
+                            .send(Event::Signal(alm_core::event::SignalEvent { signal }));
+                    }
                 }
             }
 
@@ -467,6 +516,13 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                                 self.last_prices.get(&signal.symbol).copied().unwrap_or(0.0);
                             let qty = self.risk.size(signal, &self.portfolio, price);
                             if qty > f64::EPSILON {
+                                // Store signal-level TP/SL for PositionTracker creation at fill.
+                                if signal.target_price.is_some() || signal.stop_price.is_some() {
+                                    self.pending_signal_levels.insert(
+                                        signal.symbol.clone(),
+                                        (signal.target_price, signal.stop_price),
+                                    );
+                                }
                                 let order = OrderRequest::market(
                                     signal.timestamp,
                                     &signal.symbol,
@@ -489,6 +545,13 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                                 self.last_prices.get(&signal.symbol).copied().unwrap_or(0.0);
                             let qty = self.risk.size(signal, &self.portfolio, price);
                             if qty > f64::EPSILON {
+                                // Store signal-level TP/SL for PositionTracker creation at fill.
+                                if signal.target_price.is_some() || signal.stop_price.is_some() {
+                                    self.pending_signal_levels.insert(
+                                        signal.symbol.clone(),
+                                        (signal.target_price, signal.stop_price),
+                                    );
+                                }
                                 let order = OrderRequest::market(
                                     signal.timestamp,
                                     &signal.symbol,
@@ -523,12 +586,34 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
 
                 if still_open {
                     // Only insert a new tracker when opening a position (not on add-to).
-                    self.position_trackers
-                        .entry(fill.symbol.clone())
-                        .or_insert_with(|| PositionTracker::new(fill.price));
+                    // Signal-level absolute TP/SL take priority over ATR-rule-derived levels.
+                    // Use position qty sign (already updated by apply_fill) to determine direction.
+                    let sig_levels = self.pending_signal_levels.remove(&fill.symbol);
+                    self.position_trackers.entry(fill.symbol.clone()).or_insert_with(|| {
+                        let atr_val = self.exit_atr.as_ref().and_then(|a| a.value());
+                        let is_long = self.portfolio.positions.get(&fill.symbol)
+                            .map_or(true, |p| p.qty > 0.0);
+                        let (sig_tp, sig_sl) = sig_levels.unwrap_or((None, None));
+                        let stop_price = sig_sl.or_else(|| {
+                            atr_val.zip(self.exit_rules.atr_stop_multiplier)
+                                .map(|(atr, mult)| if is_long { fill.price - mult * atr } else { fill.price + mult * atr })
+                        });
+                        let target_price = sig_tp.or_else(|| {
+                            atr_val.zip(self.exit_rules.atr_target_multiplier)
+                                .map(|(atr, mult)| if is_long { fill.price + mult * atr } else { fill.price - mult * atr })
+                        });
+                        PositionTracker::with_levels(fill.price, stop_price, target_price, is_long)
+                    });
                 } else {
-                    // Position closed — remove tracker.
-                    self.position_trackers.remove(&fill.symbol);
+                    // Position closed — propagate MAE/MFE/bars_held, then remove tracker.
+                    self.pending_signal_levels.remove(&fill.symbol);
+                    if let Some(tr) = self.position_trackers.remove(&fill.symbol) {
+                        if let Some(trade) = self.portfolio.trades.last_mut() {
+                            trade.mae_pct = tr.mae;
+                            trade.mfe_pct = tr.mfe;
+                            trade.bars_held = tr.bars_held;
+                        }
+                    }
                 }
             }
 
@@ -544,11 +629,15 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
         self.bar_window.clear();
         self.position_trackers.clear();
         self.pending_signals.clear();
+        self.pending_signal_levels.clear();
         self.regime_detector.reset();
         self.regime_changes.clear();
         self.last_regime = None;
         self.regime_bar_counts.clear();
         self.total_bars = 0;
+        if let Some(ref mut atr) = self.exit_atr {
+            *atr = Atr::new(self.exit_rules.atr_period.max(1));
+        }
         self.strategy.reset();
     }
 

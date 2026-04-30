@@ -15,7 +15,8 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
+    routing::get,
+    Json, Router,
 };
 use serde_json::Value;
 use tracing::{debug, warn};
@@ -25,6 +26,12 @@ use super::types::{
     IndicatorPoint, LatestQuery, UnifiedDataRequest, UnifiedDataResponse,
 };
 use super::HttpState;
+
+pub fn routes() -> Router<HttpState> {
+    Router::new()
+        .route("/api/data/{symbol}", get(get_data).post(unified_data))
+        .route("/api/data/{symbol}/latest", get(get_latest))
+}
 
 // ── Limits ────────────────────────────────────────────────────────────────────
 

@@ -1,14 +1,15 @@
 [package]
-name = "herald"
+name = "alm-herald"
 version = "0.1.0"
 edition = "2021"
 
 [[bin]]
-name = "herald"
+name = "alm-herald"
 path = "src/main.rs"
 
 [dependencies]
 alm-core       = { workspace = true }
+alm-data       = { path = "../data" }
 alm-indicator  = { path = "../indicator" }
 alm-ledger     = { workspace = true }
 alm-strategy   = { path = "../strategy" }
@@ -20,6 +21,8 @@ serde_json    = { workspace = true }
 prost         = { workspace = true }
 async-nats    = { workspace = true }
 futures       = "0.3"
+tokio-tungstenite = { workspace = true }
+serde_yaml        = "0.9"
 chrono        = { workspace = true }
 tokio         = { workspace = true }
 parking_lot   = "0.12"
@@ -29,6 +32,8 @@ tracing-subscriber = { workspace = true }
 # HTTP API
 axum              = { version = "0.7", features = ["macros"] }
 tower-http        = { version = "0.5", features = ["cors", "trace"] }
+uuid              = { version = "1", features = ["v7"] }
+sqlx              = { workspace = true }
 
 [dev-dependencies]
 tower             = "0.4"

@@ -1,15 +1,20 @@
+mod feed;
 mod handler;
 mod http;
 mod registry;
+mod ring;
+mod symbols;
 
 use std::sync::Arc;
 
 use anyhow::Result;
 use alm_core::Timeframe;
+use alm_data::feed::BarFeed;
+use alm_engine::data::{find_parquet_files, load_bars};
 use alm_ledger::{default_warm_set, Ledger, LedgerConfig, LedgerObserver};
-use async_nats::jetstream::consumer::{pull, AckPolicy};
 use handler::Handler;
 use registry::Registry;
+use ring::BarRing;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
@@ -23,16 +28,10 @@ async fn main() -> Result<()> {
         .init();
 
     let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".into());
-    // `async_nats::connect` ignores userinfo embedded in the URL — we must
-    // pull creds off ourselves and feed them through `ConnectOptions`.
-    // Accept either `nats://user:pass@host` or the separate NATS_USER /
-    // NATS_PASS env vars (legacy style used by the old backtest-api).
     let (host_url, url_user, url_pass) = split_nats_userinfo(&nats_url);
     let nats_user = std::env::var("NATS_USER").ok().or(url_user);
     let nats_pass = std::env::var("NATS_PASS").ok().or(url_pass);
 
-    // Herald operates at one timeframe — default M1 (matches stream-data
-    // publisher default). Override with HERALD_TF=M5 / H1 / etc.
     let tf = std::env::var("HERALD_TF")
         .ok()
         .and_then(|s| parse_tf(&s))
@@ -49,92 +48,144 @@ async fn main() -> Result<()> {
     };
     info!("connected to NATS");
 
-    // ── Ledger + Registry wiring ──────────────────────────────────────────
+    // ── Ledger + Registry ─────────────────────────────────────────────────────
     let ledger = Arc::new(Ledger::new(LedgerConfig::default()));
 
-    // Pre-register the default warm-set for every startup symbol BEFORE
-    // any observer subscribes and BEFORE bootstrap runs. This keeps
-    // historical indicator computation consistent across indicators and
-    // makes scalar overlays instantly available on first HTTP request.
-    //
-    // HERALD_SYMBOLS="BTCUSDT,ETHUSDT,AAPL" — empty = no pre-warm, every
-    // symbol gets lazily-registered state on its first live bar.
     let startup_symbols: Vec<String> = std::env::var("HERALD_SYMBOLS")
         .ok()
-        .map(|s| {
-            s.split(',')
-                .map(|t| t.trim().to_string())
-                .filter(|t| !t.is_empty())
-                .collect()
-        })
+        .map(|s| s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect())
         .unwrap_or_default();
 
     if !startup_symbols.is_empty() {
         let warm = default_warm_set();
-        info!(
-            symbols = startup_symbols.len(),
-            indicators = warm.len(),
-            ?tf,
-            "applying default warm-set"
-        );
+        info!(symbols = startup_symbols.len(), indicators = warm.len(), ?tf, "applying warm-set");
         for sym in &startup_symbols {
             let (ok, skipped) = ledger.apply_warm_set(sym, tf, warm.iter().cloned());
             if skipped > 0 {
                 warn!(symbol = %sym, registered = ok, skipped, "warm-set partially applied");
             }
         }
-    } else {
-        info!("HERALD_SYMBOLS unset — skipping warm-set pre-registration");
     }
 
-    // TODO(bootstrap_parquet): feed historical bars from parquet here,
-    // BEFORE the observer is attached below, so replayed warm-up bars do
-    // not trigger the bot registry.
+    // ── Data directory ────────────────────────────────────────────────────────
+    let data_dir = Arc::new(std::path::PathBuf::from(
+        std::env::var("HERALD_DATA_DIR")
+            .or_else(|_| std::env::var("DATA_DIR"))
+            .unwrap_or_else(|_| "./data".into()),
+    ));
+
+    // ── Bootstrap from parquet ────────────────────────────────────────────────
+    if !startup_symbols.is_empty() {
+        let warm_days: i64 = std::env::var("HERALD_WARM_DAYS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(5);
+
+        if warm_days > 0 && data_dir.exists() {
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let from_ms = now_ms - warm_days * 86_400_000;
+            info!(symbols = startup_symbols.len(), warm_days, "bootstrapping from parquet");
+
+            for sym in &startup_symbols {
+                let files = find_parquet_files(&data_dir, sym, Some("M1"), None);
+                if files.is_empty() {
+                    warn!(symbol = %sym, "no M1 parquet files — skipping bootstrap");
+                    continue;
+                }
+                match load_bars(&files, sym, Some(from_ms), None, false, "") {
+                    Ok(mut feed) => {
+                        let mut count = 0usize;
+                        while let Some(bar) = feed.next() {
+                            let _ = ledger.advance(Timeframe::M1, bar);
+                            count += 1;
+                        }
+                        info!(symbol = %sym, bars = count, "parquet bootstrap done");
+                    }
+                    Err(e) => warn!(symbol = %sym, err = %e, "parquet bootstrap failed"),
+                }
+            }
+        } else if warm_days == 0 {
+            info!("HERALD_WARM_DAYS=0 — skipping bootstrap");
+        } else {
+            warn!(data_dir = %data_dir.display(), "data_dir not found — skipping bootstrap");
+        }
+    }
 
     let (sig_tx, sig_rx) = mpsc::unbounded_channel();
     let registry = Arc::new(Registry::with_default_fallback(ledger.clone(), tf, sig_tx));
     ledger.subscribe(registry.clone() as Arc<dyn LedgerObserver>);
     info!("ledger + registry wired");
 
-    // ── JetStream BARS consumer ───────────────────────────────────────────
-    let js = async_nats::jetstream::new(client.clone());
-    let stream = js.get_stream("BARS").await?;
-    let consumer = stream
-        .get_or_create_consumer(
-            "herald",
-            pull::Config {
-                durable_name: Some("herald".into()),
-                filter_subject: "bars.>".into(),
-                ack_policy: AckPolicy::Explicit,
-                ..Default::default()
-            },
-        )
-        .await?;
-    info!("JetStream pull consumer 'herald' ready on BARS stream");
+    // ── 24h ring buffer ───────────────────────────────────────────────────────
+    let ring = BarRing::new();
 
-    // ── HTTP server ───────────────────────────────────────────────────────
+    // ── Symbol config ─────────────────────────────────────────────────────────
     //
-    // Single HTTP surface for both live data (ledger-backed) and batch
-    // backtests (dispatched to `alm_engine::backtest`). Kept in-process so
-    // live handlers read from the same state the NATS consumer writes to —
-    // no serialization hop and no second copy of the state machine.
-    let http_addr = std::env::var("HERALD_HTTP_ADDR")
-        .unwrap_or_else(|_| "0.0.0.0:8090".into());
-    let data_dir = Arc::new(std::path::PathBuf::from(
-        std::env::var("HERALD_DATA_DIR")
-            .or_else(|_| std::env::var("DATA_DIR"))
-            .unwrap_or_else(|_| "./data".into()),
-    ));
+    // Priority:
+    //   1. HERALD_SYMBOLS_FILE=/path/to/symbols.yaml  (preferred — shared with hist-data)
+    //   2. HERALD_BINANCE_SYMBOLS / HERALD_OKX_SYMBOLS env vars (fallback)
+    let sym_cfg = match symbols::SymbolConfig::from_env_file() {
+        Ok(Some(cfg)) => {
+            info!(
+                binance = cfg.binance.len(),
+                okx = cfg.okx.len(),
+                "loaded symbols from HERALD_SYMBOLS_FILE"
+            );
+            cfg
+        }
+        Ok(None) => {
+            let mut cfg = symbols::SymbolConfig::default();
+            cfg.binance = parse_symbol_list("HERALD_BINANCE_SYMBOLS");
+            cfg.okx     = parse_symbol_list("HERALD_OKX_SYMBOLS");
+            cfg
+        }
+        Err(e) => {
+            anyhow::bail!("failed to load symbols file: {e}");
+        }
+    };
+
+    // ── WebSocket ingesters ───────────────────────────────────────────────────
+    let (bar_tx, bar_rx) = mpsc::unbounded_channel();
+
+    if !sym_cfg.binance.is_empty() {
+        info!(symbols = ?sym_cfg.binance, "starting Binance WebSocket ingester");
+        feed::binance::spawn(sym_cfg.binance.clone(), bar_tx.clone());
+    }
+    if !sym_cfg.okx.is_empty() {
+        info!(symbols = ?sym_cfg.okx, "starting OKX WebSocket ingester");
+        feed::okx::spawn(sym_cfg.okx.clone(), bar_tx.clone());
+    }
+    if sym_cfg.binance.is_empty() && sym_cfg.okx.is_empty() {
+        warn!("no symbols configured — herald will receive no live bars");
+    }
+    drop(bar_tx);
+
+    // ── Store backend ─────────────────────────────────────────────────────────
+    let store = match std::env::var("HERALD_DATABASE_URL") {
+        Ok(db_url) => {
+            info!("HERALD_DATABASE_URL set — connecting to PostgreSQL");
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(10)
+                .connect(&db_url)
+                .await?;
+            http::store::migrate::run(&pool).await?;
+            http::StoreBackend::postgres(pool)
+        }
+        Err(_) => {
+            info!("HERALD_DATABASE_URL unset — using in-memory store");
+            http::StoreBackend::in_memory()
+        }
+    };
+
+    // ── HTTP server ───────────────────────────────────────────────────────────
+    let http_addr = std::env::var("HERALD_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:8090".into());
     let max_concurrent_bt: usize = std::env::var("HERALD_MAX_BACKTESTS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(4);
-    info!(
-        data_dir = %data_dir.display(),
-        max_concurrent_bt,
-        "configuring HTTP backtest dispatcher",
-    );
-    let http_state = http::HttpState::new(ledger.clone(), tf, data_dir, max_concurrent_bt);
+        .ok().and_then(|s| s.parse().ok()).unwrap_or(4);
+    info!(data_dir = %data_dir.display(), max_concurrent_bt, "configuring HTTP");
+
+    let http_state = http::HttpState::new(ledger.clone(), tf, data_dir, max_concurrent_bt, store);
+    http::watch::restore_from_store(&http_state).await;
+
     let router = http::router(http_state);
     let listener = tokio::net::TcpListener::bind(&http_addr).await?;
     info!(addr = %http_addr, "herald HTTP listening");
@@ -144,8 +195,8 @@ async fn main() -> Result<()> {
         }
     });
 
-    // ── JetStream consumer loop ───────────────────────────────────────────
-    let handler = Handler::new(client, consumer, ledger, registry, tf, sig_rx);
+    // ── Main loop ─────────────────────────────────────────────────────────────
+    let handler = Handler::new(client, ledger, registry, ring, tf, bar_rx, sig_rx);
     let result = handler.run().await;
     http_task.abort();
     result?;
@@ -153,29 +204,28 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-/// Split `nats://user:pass@host:port` into `(host_url, user, pass)`.
-/// Returns the original URL untouched when no userinfo is present.
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+fn parse_symbol_list(env_key: &str) -> Vec<String> {
+    std::env::var(env_key)
+        .ok()
+        .map(|s| s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect())
+        .unwrap_or_default()
+}
+
 fn split_nats_userinfo(url: &str) -> (String, Option<String>, Option<String>) {
-    // scheme://userinfo@host — find the first '@' before any '/' path separator
-    // after the scheme delimiter.
     let scheme_end = url.find("://").map(|i| i + 3).unwrap_or(0);
     let rest = &url[scheme_end..];
-    let path_start = rest
-        .find('/')
-        .map(|i| scheme_end + i)
-        .unwrap_or(url.len());
+    let path_start = rest.find('/').map(|i| scheme_end + i).unwrap_or(url.len());
     let authority = &url[scheme_end..path_start];
     let Some(at_pos) = authority.find('@') else {
         return (url.to_string(), None, None);
     };
     let (userinfo, host) = authority.split_at(at_pos);
-    let host = &host[1..]; // drop '@'
+    let host = &host[1..];
     let (user, pass) = match userinfo.find(':') {
-        Some(i) => (
-            Some(userinfo[..i].to_string()),
-            Some(userinfo[i + 1..].to_string()),
-        ),
-        None => (Some(userinfo.to_string()), None),
+        Some(i) => (Some(userinfo[..i].to_string()), Some(userinfo[i + 1..].to_string())),
+        None    => (Some(userinfo.to_string()), None),
     };
     let host_url = format!("{}{}{}", &url[..scheme_end], host, &url[path_start..]);
     (host_url, user, pass)

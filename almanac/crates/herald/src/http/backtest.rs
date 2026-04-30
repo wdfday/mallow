@@ -20,16 +20,26 @@ use axum::{
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
-    Json,
+    Json, Router,
 };
 use alm_engine::{
     backtest,
-    types::{BacktestRequest, BacktestResponse, CelBacktestRequest, DynamicBacktestRequest, ErrorResponse},
+    types::{BacktestRequest, BacktestResponse, CelBacktestRequest, ErrorResponse, RhaiBacktestRequest},
 };
 use alm_strategy::catalog::STRATEGY_KEYS;
 use tracing::{error, info, warn};
 
+use axum::routing::{get, post};
+
 use super::HttpState;
+
+pub fn routes() -> Router<HttpState> {
+    Router::new()
+        .route("/api/strategies", get(list_strategies))
+        .route("/api/backtest", post(run_backtest))
+        .route("/api/backtest/cel", post(run_backtest_cel))
+        .route("/api/backtest/rhai", post(run_backtest_rhai))
+}
 
 // ── GET /api/strategies ──────────────────────────────────────────────────────
 
@@ -64,19 +74,22 @@ pub async fn run_backtest_cel(
     dispatch(Arc::clone(&state.data_dir), base).await
 }
 
-// ── POST /api/backtest/dynamic ───────────────────────────────────────────────
+// ── POST /api/backtest/rhai ──────────────────────────────────────────────────
 
-pub async fn run_backtest_dynamic(
+pub async fn run_backtest_rhai(
     State(state): State<HttpState>,
-    Json(req): Json<DynamicBacktestRequest>,
+    Json(req): Json<RhaiBacktestRequest>,
 ) -> Response {
     let Some(_permit) = try_acquire(&state) else {
         return too_many_requests();
     };
-    info!(symbol = %req.symbol, "dynamic backtest request");
+    info!(symbol = %req.symbol, "Rhai backtest request");
     let base: BacktestRequest = req.into();
     dispatch(Arc::clone(&state.data_dir), base).await
 }
+
+// ── POST /api/backtest/dynamic — DEPRECATED ──────────────────────────────────
+// pub async fn run_backtest_dynamic(...) { ... }  // use /api/backtest/cel instead
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -84,7 +97,7 @@ fn try_acquire(state: &HttpState) -> Option<tokio::sync::OwnedSemaphorePermit> {
     Arc::clone(&state.backtest_semaphore).try_acquire_owned().ok()
 }
 
-async fn dispatch(data_dir: Arc<std::path::PathBuf>, req: BacktestRequest) -> Response {
+pub(super) async fn dispatch(data_dir: Arc<std::path::PathBuf>, req: BacktestRequest) -> Response {
     let result = tokio::task::spawn_blocking(move || backtest::run(req, &data_dir)).await;
     match result {
         Ok(Ok(resp)) => (StatusCode::OK, Json(resp)).into_response(),

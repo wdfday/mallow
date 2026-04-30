@@ -10,12 +10,18 @@
 //!   currently materialised in the ledger, with refcount, pinned flag, and
 //!   `ready_since_t`. Used by ops / debugging dashboards.
 
-use axum::{extract::State, Json};
+use axum::{extract::State, routing::get, Json, Router};
 use alm_strategy::catalog::{self, IndicatorMeta};
 use serde::Serialize;
 use serde_json::Value;
 
 use super::HttpState;
+
+pub fn routes() -> Router<HttpState> {
+    Router::new()
+        .route("/api/indicators", get(list_indicators_catalog))
+        .route("/api/indicators/live", get(list_indicators_live))
+}
 
 /// `GET /api/indicators` — static catalogue (stable across requests).
 pub async fn list_indicators_catalog() -> Json<Vec<IndicatorMeta>> {

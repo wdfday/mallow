@@ -23,6 +23,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use alm_core::{signal::Signal, strategy::Strategy, Bar, Timeframe};
 use alm_ledger::{AdvanceOutcome, IndicatorHandle, IndicatorSpec, Ledger, LedgerObserver};
+use alm_strategy::bar_resampler::TimeBarResampler;
 use alm_strategy::factory::{build_strategy_with_deps, IndicatorDep};
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
@@ -47,6 +48,9 @@ pub struct SignalBatch {
 
 // ── BotHandle ─────────────────────────────────────────────────────────────────
 
+/// Maximum number of completed higher-TF bars kept in a bot's local window.
+const HTF_WINDOW_SIZE: usize = 200;
+
 pub struct BotHandle {
     pub bot_id: String,
     pub orch_id: String,
@@ -61,6 +65,11 @@ pub struct BotHandle {
     /// Empty for named strategies (they own their indicators internally) and
     /// for CEL / Dynamic strategies that declare zero base-TF indicators.
     _indicator_handles: Vec<IndicatorHandle>,
+    /// Per-bot higher-TF resampler. `None` when the bot operates at the
+    /// registry's base TF (default M1) — no aggregation needed.
+    resampler: Option<TimeBarResampler>,
+    /// Rolling window of completed higher-TF bars (used when `resampler` is Some).
+    htf_window: Vec<Bar>,
 }
 
 impl BotHandle {
@@ -71,12 +80,24 @@ impl BotHandle {
         strategy_name: String,
         params_json: String,
         ledger: &Arc<Ledger>,
-        tf: Timeframe,
+        base_tf: Timeframe,
+        target_tf: Timeframe,
     ) -> Result<Self> {
-        let value = parse_params_json(&params_json)?;
+        let mut value = parse_params_json(&params_json)?;
+        // Signal live mode to RhaiStrategy so plot() series are never accumulated.
+        if strategy_name == "rhai" {
+            if let Some(obj) = value.as_object_mut() {
+                obj.insert("_live".into(), serde_json::json!(true));
+            }
+        }
         let (strategy, deps) = build_strategy_with_deps(&strategy_name, &value)
             .map_err(|e| anyhow!("{e}"))?;
-        let handles = acquire_dep_handles(ledger, &symbol, tf, &deps, &bot_id, &strategy_name);
+        let handles = acquire_dep_handles(ledger, &symbol, base_tf, &deps, &bot_id, &strategy_name);
+        let resampler = if target_tf != base_tf {
+            Some(TimeBarResampler::new(target_tf.duration_ms()))
+        } else {
+            None
+        };
         Ok(Self {
             bot_id,
             orch_id,
@@ -85,15 +106,36 @@ impl BotHandle {
             params_json,
             strategy,
             _indicator_handles: handles,
+            resampler,
+            htf_window: Vec::new(),
         })
     }
 
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
-        self.strategy.on_bar(bar)
+        match &mut self.resampler {
+            None => self.strategy.on_bar(bar),
+            Some(rs) => match rs.push(bar) {
+                None => vec![],
+                Some(htf_bar) => {
+                    self.htf_window.push(htf_bar.clone());
+                    if self.htf_window.len() > HTF_WINDOW_SIZE {
+                        self.htf_window.drain(..1);
+                    }
+                    let mut sigs = self.strategy.on_bar(&htf_bar);
+                    sigs.extend(self.strategy.on_window(&self.htf_window));
+                    sigs
+                }
+            },
+        }
     }
 
     fn on_window(&mut self, bars: &[Bar]) -> Vec<Signal> {
-        self.strategy.on_window(bars)
+        if self.resampler.is_some() {
+            // Already handled inside on_bar using the htf_window.
+            vec![]
+        } else {
+            self.strategy.on_window(bars)
+        }
     }
 }
 
@@ -189,15 +231,19 @@ impl Registry {
         }
     }
 
-    /// Convenience constructor that installs the legacy default fallback
-    /// strategy (`ma_crossover` fast=20 slow=50) used by pre-registry clients.
+    /// Convenience constructor that installs a CEL fallback strategy for
+    /// symbols that have no explicit bot registered (legacy `engine.configure` compat).
     pub fn with_default_fallback(
         ledger: Arc<Ledger>,
         tf: Timeframe,
         signal_tx: mpsc::UnboundedSender<SignalBatch>,
     ) -> Self {
         let r = Self::new(ledger, tf, signal_tx);
-        r.set_global_config("ma_crossover".into(), r#"{"fast": 20, "slow": 50}"#.into());
+        // Default: EMA 20/50 crossover expressed as CEL (replaces old named ma_crossover).
+        r.set_global_config(
+            "cel".into(),
+            r#"{"entry":"prev_ema(20) <= prev_ema(50) && ema(20) > ema(50)","exit":"prev_ema(20) >= prev_ema(50) && ema(20) < ema(50)"}"#.into(),
+        );
         r
     }
 
@@ -215,7 +261,19 @@ impl Registry {
         symbol: String,
         strategy_name: String,
         params_json: String,
+        target_tf: Timeframe,
     ) -> Result<()> {
+        // Only CEL strategies are supported in live mode — named strategies
+        // are backtest-only (they own indicators internally and don't integrate
+        // with the ledger's shared indicator state).
+        if !matches!(strategy_name.as_str(), "cel" | "cel2" | "evalexpr" | "rhai") {
+            anyhow::bail!(
+                "live bot registration only supports CEL/Rhai strategies ('cel', 'rhai'); \
+                 got '{}'. Use CEL expressions or Rhai scripts to replicate named strategy logic.",
+                strategy_name
+            );
+        }
+
         self.ledger.ensure_symbol(&symbol, self.tf, None);
         let bot = BotHandle::new(
             bot_id,
@@ -225,6 +283,7 @@ impl Registry {
             params_json,
             &self.ledger,
             self.tf,
+            target_tf,
         )?;
         let mut w = self.inner.lock();
         w.groups
@@ -370,6 +429,7 @@ impl Registry {
             params_json,
             &self.ledger,
             self.tf,
+            self.tf, // fallback always uses base TF
         );
         match bot {
             Ok(b) => {
@@ -472,7 +532,8 @@ mod tests {
         let (_led, reg, _rx) = make_registry();
         reg.register(
             "bot1".into(), "orch1".into(), "BTCUSDT".into(),
-            "ma_crossover".into(), r#"{"fast":5,"slow":20}"#.into(),
+            "cel".into(), r#"{"entry":"rsi(14) < 30","exit":"rsi(14) > 70"}"#.into(),
+            Timeframe::M1,
         ).unwrap();
         let bots = reg.list_bots();
         assert_eq!(bots.len(), 1);
@@ -485,7 +546,8 @@ mod tests {
         let (led, reg, mut rx) = make_registry();
         reg.register(
             "bot1".into(), "orch1".into(), "BTCUSDT".into(),
-            "ma_crossover".into(), r#"{"fast":2,"slow":3}"#.into(),
+            "cel".into(), r#"{"entry":"ema(2) > ema(3)","exit":"ema(2) < ema(3)"}"#.into(),
+            Timeframe::M1,
         ).unwrap();
         // Feed a few warmup bars with ancient timestamps (year 2000-ish).
         for i in 1..10 {
@@ -503,7 +565,8 @@ mod tests {
         let (led, reg, mut rx) = make_registry();
         reg.register(
             "bot1".into(), "orch1".into(), "TEST".into(),
-            "ma_crossover".into(), r#"{"fast":2,"slow":3}"#.into(),
+            "cel".into(), r#"{"entry":"prev_ema(2) <= prev_ema(3) && ema(2) > ema(3)","exit":"prev_ema(2) >= prev_ema(3) && ema(2) < ema(3)"}"#.into(),
+            Timeframe::M1,
         ).unwrap();
         let now = chrono::Utc::now().timestamp_millis();
         // 10 bars ending at now, 1 second apart.
@@ -537,6 +600,7 @@ mod tests {
         reg.register(
             "cel1".into(), "orch1".into(), "BTCUSDT".into(),
             "cel".into(), params.into(),
+            Timeframe::M1,
         ).unwrap();
 
         // Exactly one live handle on the rsi cell.
@@ -546,26 +610,21 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_register_acquires_indicator_handles() {
+    fn cel_multi_indicator_acquires_all_handles() {
         let (led, reg, _rx) = make_registry();
-        let params = r#"{
-            "indicators": {
-                "rsi14": {"type":"rsi","period":14},
-                "ema50": {"type":"ema","period":50}
-            },
-            "entry": {"logic":"and","rules":[
-                {"source":"rsi14","field":"value","op":"lt","value":30}
-            ]}
-        }"#;
+        let params = r#"{"entry":"rsi(14) < 30 && ema(50) > ema(200)","exit":"rsi(14) > 70"}"#;
         reg.register(
-            "dyn1".into(), "orch1".into(), "BTCUSDT".into(),
-            "dynamic".into(), params.into(),
+            "cel1".into(), "orch1".into(), "BTCUSDT".into(),
+            "cel".into(), params.into(),
+            Timeframe::M1,
         ).unwrap();
 
         assert_eq!(peek_refcount(&led, "BTCUSDT",
             serde_json::json!({"type":"rsi","period":14})), Some(1));
         assert_eq!(peek_refcount(&led, "BTCUSDT",
             serde_json::json!({"type":"ema","period":50})), Some(1));
+        assert_eq!(peek_refcount(&led, "BTCUSDT",
+            serde_json::json!({"type":"ema","period":200})), Some(1));
     }
 
     #[test]
@@ -575,6 +634,7 @@ mod tests {
         reg.register(
             "cel1".into(), "orch1".into(), "BTCUSDT".into(),
             "cel".into(), params.into(),
+            Timeframe::M1,
         ).unwrap();
         assert_eq!(peek_refcount(&led, "BTCUSDT",
             serde_json::json!({"type":"rsi","period":14})), Some(1));
@@ -590,9 +650,9 @@ mod tests {
         let (led, reg, _rx) = make_registry();
         let params = r#"{"entry":"rsi(14) < 30","exit":"rsi(14) > 70"}"#;
         reg.register("bot1".into(), "o".into(), "BTCUSDT".into(),
-                     "cel".into(), params.into()).unwrap();
+                     "cel".into(), params.into(), Timeframe::M1).unwrap();
         reg.register("bot2".into(), "o".into(), "BTCUSDT".into(),
-                     "cel".into(), params.into()).unwrap();
+                     "cel".into(), params.into(), Timeframe::M1).unwrap();
         // Dedup → one cell, two refs.
         assert_eq!(peek_refcount(&led, "BTCUSDT",
             serde_json::json!({"type":"rsi","period":14})), Some(2));
@@ -607,9 +667,9 @@ mod tests {
         let (led, reg, _rx) = make_registry();
         let params = r#"{"entry":"rsi(14) < 30","exit":"rsi(14) > 70"}"#;
         reg.register("bot1".into(), "o".into(), "BTCUSDT".into(),
-                     "cel".into(), params.into()).unwrap();
+                     "cel".into(), params.into(), Timeframe::M1).unwrap();
         reg.register("bot1".into(), "o".into(), "BTCUSDT".into(),
-                     "cel".into(), params.into()).unwrap();
+                     "cel".into(), params.into(), Timeframe::M1).unwrap();
         // Re-register = remove old + add new → refcount stays at 1.
         // (The old BotHandle is dropped by `SymbolGroup::add`, releasing its
         //  handle; the new one acquires afresh.)
@@ -617,35 +677,22 @@ mod tests {
             serde_json::json!({"type":"rsi","period":14})), Some(1));
     }
 
-    #[test]
-    fn named_strategy_does_not_touch_ledger_indicators() {
-        let (led, reg, _rx) = make_registry();
-        reg.register(
-            "ma1".into(), "o".into(), "BTCUSDT".into(),
-            "ma_crossover".into(), r#"{"fast":5,"slow":20}"#.into(),
-        ).unwrap();
-        // ma_crossover owns its indicators internally → the ledger has the
-        // (symbol, tf) state but no indicator cells.
-        let spec = IndicatorSpec::from_config(
-            serde_json::json!({"type":"ema","period":5}), None,
-        ).unwrap();
-        let has_ema = led.with_state("BTCUSDT", Timeframe::M1, |s| {
-            s.indicators.contains_key(&spec)
-        }).unwrap_or(false);
-        assert!(!has_ema,
-            "named strategy must not declare indicator deps to the ledger");
-    }
+    // Named strategies are no longer allowed in live registration (CEL/Rhai only).
+    // The equivalent test for CEL indicator wiring is `cel_register_acquires_indicator_handles`.
 
     #[tokio::test]
     async fn deregister_all_clears() {
         let (_led, reg, _rx) = make_registry();
+        let params = r#"{"entry":"ema(5) > ema(20)","exit":"ema(5) < ema(20)"}"#;
         reg.register(
             "bot1".into(), "orch1".into(), "BTCUSDT".into(),
-            "ma_crossover".into(), r#"{"fast":5,"slow":20}"#.into(),
+            "cel".into(), params.into(),
+            Timeframe::M1,
         ).unwrap();
         reg.register(
             "bot2".into(), "orch2".into(), "ETHUSDT".into(),
-            "ma_crossover".into(), r#"{"fast":5,"slow":20}"#.into(),
+            "cel".into(), params.into(),
+            Timeframe::M1,
         ).unwrap();
         reg.deregister("");
         assert_eq!(reg.list_bots().len(), 0);

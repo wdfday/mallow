@@ -29,15 +29,15 @@ test-name name:
 
 # Run the live signal engine
 run:
-    cargo run -p herald
+    cargo run -p alm-herald
 
 # Run with debug logging
 run-debug:
-    RUST_LOG=herald=debug cargo run -p herald
+    RUST_LOG=alm_herald=debug cargo run -p alm-herald
 
 # Hot-reload herald on file changes (requires cargo-watch)
 dev:
-    cargo watch -x 'run -p herald'
+    cargo watch -x 'run -p alm-herald'
 
 # ── Code quality ──────────────────────────────────────────────────────────────
 

@@ -3,8 +3,7 @@
 //!
 //! # Design
 //!
-//! Herald owns the only HTTP server in `almanac`. Routes split into two
-//! families:
+//! Herald owns the only HTTP server in `almanac`. Routes split into families:
 //!
 //! ## Live — backed by the in-process `alm_ledger::Ledger`
 //!
@@ -25,10 +24,37 @@
 //! | `GET  /api/strategies`                 | Registered named-strategy keys                  |
 //! | `POST /api/backtest`                   | Run a named strategy                            |
 //! | `POST /api/backtest/cel`               | Run a CEL-expression strategy                   |
-//! | `POST /api/backtest/dynamic`           | Run a JSON-declared dynamic strategy            |
+//! | `POST /api/backtest/rhai`              | Run a Rhai-script strategy                      |
 //!
-//! Backtests run on a blocking thread pool and are capped by a semaphore
-//! (`HERALD_MAX_BACKTESTS`, default 4). Over-capacity requests get `429`.
+//! ## Store — CRUD for saved strategies and backtest cases
+//!
+//! | Route                                  | Purpose                                         |
+//! |----------------------------------------|-------------------------------------------------|
+//! | `GET  /api/store/strategies`           | List all saved strategies                       |
+//! | `POST /api/store/strategies`           | Create a saved strategy                         |
+//! | `GET  /api/store/strategies/:id`       | Get one by id                                   |
+//! | `PUT  /api/store/strategies/:id`       | Update label / notes                            |
+//! | `DELETE /api/store/strategies/:id`     | Delete                                          |
+//! | `GET  /api/store/strategies/:name/versions` | All versions for a name                   |
+//! | `GET  /api/store/cases`                | List all backtest cases                         |
+//! | `POST /api/store/cases`                | Create a backtest case (strategy_id required)   |
+//! | `GET  /api/store/cases/:id`            | Get one by id                                   |
+//! | `PUT  /api/store/cases/:id`            | Update fields                                   |
+//! | `DELETE /api/store/cases/:id`          | Delete                                          |
+//! | `POST /api/store/cases/:id/run`        | Resolve strategy + run backtest                 |
+//! | `POST /api/store/cases/:id/signals`    | Replay signals (no SimBroker)                   |
+//! | `GET  /api/store/cases/:id/results`    | List results for case                           |
+//! | `GET  /api/store/results/:id`          | Get one result                                  |
+//! | `DELETE /api/store/results/:id`        | Delete result                                   |
+//!
+//! ## Watch — signal dispatch without trade execution (noop storage)
+//!
+//! | Route                                  | Purpose                                         |
+//! |----------------------------------------|-------------------------------------------------|
+//! | `GET  /api/watch`                      | List all watch entries                          |
+//! | `POST /api/watch`                      | Create a watch entry                            |
+//! | `GET  /api/watch/:id`                  | Get one                                         |
+//! | `DELETE /api/watch/:id`                | Remove                                          |
 //!
 //! # Cursor pagination
 //!
@@ -37,19 +63,12 @@
 //! - `?before=<ts_ms>&limit=N` — bars with `t < before`, newest-first, up to `N`.
 //! - `?after=<ts_ms>&limit=N`  — bars with `t > after`, oldest-first, up to `N`.
 //! - Neither → the last `N` bars (equivalent to `latest`).
-//!
-//! Both cursors filter against the ledger's `bar_window` only; when the range
-//! falls outside the window the handler sets `truncated_below=true` so the
-//! client can route subsequent scrolls to cold storage (walk-back LRU — future work).
 
 use std::path::PathBuf;
 use std::sync::Arc;
 
 use alm_ledger::Ledger;
-use axum::{
-    routing::{get, post},
-    Json, Router,
-};
+use axum::{routing::get, Json, Router};
 use serde_json::json;
 use tokio::sync::Semaphore;
 use tower_http::cors::CorsLayer;
@@ -60,18 +79,26 @@ mod data;
 mod indicators;
 mod symbols;
 mod types;
+pub mod store;
+pub mod watch;
+
+pub use store::StoreBackend;
+pub use watch::WatchStore;
 
 /// Shared state handed to every HTTP handler.
 #[derive(Clone)]
 pub struct HttpState {
     pub ledger: Arc<Ledger>,
-    /// Default timeframe when the request does not override it. Matches the
-    /// single timeframe Herald currently processes live bars on.
+    /// Default timeframe when the request does not override it.
     pub tf: alm_core::Timeframe,
     /// Parquet root — backtest handlers load historical bars from here.
     pub data_dir: Arc<PathBuf>,
     /// Caps concurrent backtest runs across NATS + HTTP to protect RAM/CPU.
     pub backtest_semaphore: Arc<Semaphore>,
+    /// CRUD store for saved strategies + backtest cases.
+    pub store: StoreBackend,
+    /// In-memory watchlist store (noop — not yet wired to live bar pipeline).
+    pub watches: WatchStore,
 }
 
 impl HttpState {
@@ -80,30 +107,28 @@ impl HttpState {
         tf: alm_core::Timeframe,
         data_dir: Arc<PathBuf>,
         max_concurrent_backtests: usize,
+        store: StoreBackend,
     ) -> Self {
         Self {
             ledger,
             tf,
             data_dir,
             backtest_semaphore: Arc::new(Semaphore::new(max_concurrent_backtests.max(1))),
+            store,
+            watches: watch::new_store(),
         }
     }
 }
 
 pub fn router(state: HttpState) -> Router {
     Router::new()
-        // ── Live ────────────────────────────────────────────────────────
         .route("/health", get(health))
-        .route("/api/symbols", get(symbols::list_symbols))
-        .route("/api/indicators", get(indicators::list_indicators_catalog))
-        .route("/api/indicators/live", get(indicators::list_indicators_live))
-        .route("/api/data/{symbol}", get(data::get_data).post(data::unified_data))
-        .route("/api/data/{symbol}/latest", get(data::get_latest))
-        // ── Batch ───────────────────────────────────────────────────────
-        .route("/api/strategies", get(backtest::list_strategies))
-        .route("/api/backtest", post(backtest::run_backtest))
-        .route("/api/backtest/cel", post(backtest::run_backtest_cel))
-        .route("/api/backtest/dynamic", post(backtest::run_backtest_dynamic))
+        .merge(symbols::routes())
+        .merge(indicators::routes())
+        .merge(data::routes())
+        .merge(backtest::routes())
+        .merge(store::routes())
+        .merge(watch::routes())
         .with_state(state)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())

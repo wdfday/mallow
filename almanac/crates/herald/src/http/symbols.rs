@@ -2,9 +2,13 @@
 
 use std::collections::BTreeSet;
 
-use axum::{extract::State, Json};
+use axum::{extract::State, routing::get, Json, Router};
 
 use super::HttpState;
+
+pub fn routes() -> Router<HttpState> {
+    Router::new().route("/api/symbols", get(list_symbols))
+}
 
 /// Return a sorted, deduplicated list of symbols that have at least one
 /// (symbol, tf) pair in the ledger. Timeframe is irrelevant to the response —

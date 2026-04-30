@@ -24,7 +24,8 @@ alm-report    = { path = "./crates/report" }
 alm-pattern   = { path = "./crates/pattern" }
 
 # Async
-tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread", "signal"] }
+tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread", "signal", "sync"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
 
 # Error
 thiserror = "2"
@@ -52,6 +53,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 # Expression evaluation
 evalexpr        = "11"
 cel-interpreter = "0.8"
+
+# Database
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-native-tls", "postgres", "json"] }
 
 # Benchmarking
 criterion = { version = "0.5", features = ["html_reports"] }

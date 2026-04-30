@@ -46,6 +46,8 @@ message SignalMsg {
   string dir      = 3;  // "long" | "short" | "close"
   double strength = 4;  // [0.0, 1.0]
 
+  optional double price        = 9;  // bar.close at signal time (entry reference price)
+
   // Optional pattern metadata (populated by pattern_breakout strategy)
   optional double target_price = 5;  // projected price target
   optional double stop_price   = 6;  // invalidation stop level
@@ -90,6 +92,11 @@ message RegisterMsg {
   optional string pattern_kind  = 9;  // originating pattern e.g. "bull_flag"
 
   string orch_id = 10;  // owning orchestrator — used to build signal subject signals.{orch_id}.{bot_id}
+
+  // Timeframe the bot operates at (e.g. "M1", "H1", "D1").
+  // Herald aggregates incoming M1 bars to this TF before running the strategy.
+  // Empty = use herald's base TF (default M1).
+  optional string timeframe = 11;
 }
 
 message DeregisterMsg {

@@ -15,7 +15,7 @@
 //!
 //! result  = alm.run_backtest("BTCUSDT", "rsi_mean_rev", {"period": 14}, bars)
 //! kf      = alm.kalman([100.1, 100.5, ...], q_pos=0.001, q_vel=0.001, r=1.0)
-//! mc      = alm.monte_carlo(result["pnl_pct"], capital=10_000, n_iter=5000)
+//! mc      = alm.monte_carlo(result["equity_pnl_pct"], capital=10_000, n_iter=5000)
 //! names   = alm.list_strategies()
 //! ```
 
@@ -25,12 +25,12 @@ use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
-use alm_core::{Bar, exit::ExitRules, order::Side, portfolio::EquityPoint};
-use alm_data::InMemoryFeed;
+use alm_core::{Bar, exit::{ExitRules, IntraBarMode}, order::Side, portfolio::EquityPoint};
+use alm_data::BarVecFeed;
 use alm_engine::Engine;
 use alm_indicator::{IndicatorBox, KalmanFilter};
 use alm_report::{BuyHoldBenchmark, monte_carlo as mc_run, portfolio_analyze, MonteCarloConfig};
-use alm_strategy::{build_strategy, AtrSizing, FixedFractional, KellySizing};
+use alm_strategy::{build_strategy, catalog::STRATEGY_KEYS, AtrSizing, FixedFractional, KellySizing};
 use serde_json::{json, Map, Value};
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -162,6 +162,36 @@ fn report_to_pydict<'py>(
     out.set_item("omega_ratio",     report.omega_ratio)?;
     out.set_item("tail_ratio",      report.tail_ratio)?;
     out.set_item("recovery_factor", report.recovery_factor)?;
+    // New metrics
+    out.set_item("sqn",                  report.sqn)?;
+    out.set_item("psr",                  report.psr)?;
+    out.set_item("skewness",             report.skewness)?;
+    out.set_item("excess_kurtosis",      report.excess_kurtosis)?;
+    out.set_item("max_consecutive_wins", report.max_consecutive_wins)?;
+    out.set_item("largest_win_pct",      report.largest_win_pct)?;
+    out.set_item("largest_loss_pct",     report.largest_loss_pct)?;
+    // Long/short split
+    let long_d = PyDict::new_bound(py);
+    long_d.set_item("trades",        report.long_stats.count)?;
+    long_d.set_item("win_rate_pct",  report.long_stats.win_rate)?;
+    long_d.set_item("profit_factor", report.long_stats.profit_factor)?;
+    long_d.set_item("avg_win_pct",   report.long_stats.avg_win_pct)?;
+    long_d.set_item("avg_loss_pct",  report.long_stats.avg_loss_pct)?;
+    long_d.set_item("expectancy",    report.long_stats.expectancy)?;
+    out.set_item("long_stats", long_d)?;
+    let short_d = PyDict::new_bound(py);
+    short_d.set_item("trades",        report.short_stats.count)?;
+    short_d.set_item("win_rate_pct",  report.short_stats.win_rate)?;
+    short_d.set_item("profit_factor", report.short_stats.profit_factor)?;
+    short_d.set_item("avg_win_pct",   report.short_stats.avg_win_pct)?;
+    short_d.set_item("avg_loss_pct",  report.short_stats.avg_loss_pct)?;
+    short_d.set_item("expectancy",    report.short_stats.expectancy)?;
+    out.set_item("short_stats", short_d)?;
+    // Monthly returns: [[year, month, pct], ...]
+    let monthly: Vec<[f64; 3]> = report.monthly_returns.iter()
+        .map(|&(y, m, r)| [y as f64, m as f64, r])
+        .collect();
+    out.set_item("monthly_returns", monthly)?;
     // Rolling arrays
     out.set_item("rolling_sharpe",   report.rolling_sharpe.clone())?;
     out.set_item("rolling_drawdown", report.rolling_drawdown.clone())?;
@@ -200,6 +230,7 @@ fn report_to_pydict<'py>(
     // Trades
     let trades_list = PyList::empty_bound(py);
     let mut pnl_pct_list: Vec<f64> = Vec::new();
+    let mut equity_pnl_pct_list: Vec<f64> = Vec::new();
     for t in trades {
         let d = PyDict::new_bound(py);
         d.set_item("symbol",      &t.symbol)?;
@@ -211,22 +242,63 @@ fn report_to_pydict<'py>(
         d.set_item("exit_ts",     t.exit_timestamp)?;
         d.set_item("pnl",         t.pnl)?;
         d.set_item("pnl_pct",     t.pnl_pct)?;
+        d.set_item("mae_pct",     t.mae_pct)?;
+        d.set_item("mfe_pct",     t.mfe_pct)?;
+        d.set_item("bars_held",   t.bars_held)?;
+        d.set_item("exit_reason", t.exit_reason.to_string())?;
         trades_list.append(d)?;
         pnl_pct_list.push(t.pnl_pct);
+
+        // Equity-relative return: pnl / equity_at_entry — correct input for Monte Carlo
+        let idx = equity_curve.partition_point(|p| p.timestamp <= t.entry_timestamp);
+        let eq_at_entry = if idx > 0 { equity_curve[idx - 1].equity } else { report.initial_capital };
+        if eq_at_entry > f64::EPSILON {
+            equity_pnl_pct_list.push(t.pnl / eq_at_entry);
+        }
     }
-    out.set_item("trades",  trades_list)?;
-    out.set_item("pnl_pct", pnl_pct_list)?;
+    out.set_item("trades",          trades_list)?;
+    out.set_item("pnl_pct",         pnl_pct_list)?;
+    out.set_item("equity_pnl_pct",  equity_pnl_pct_list)?;
 
     Ok(out)
 }
 
-/// Parse optional `exit` dict → `ExitRules` (fixed-pct sl/tp + max_bars only).
+/// Parse optional `exit` dict → `ExitRules`.
+///
+/// Supported keys:
+/// - `sl`: fixed stop-loss fraction (e.g. 0.03)
+/// - `tp`: fixed take-profit fraction (e.g. 0.06)
+/// - `trailing_stop`: trailing stop fraction from peak (e.g. 0.05)
+/// - `max_bars`: time-based exit after N bars
+/// - `atr_sl`: ATR stop multiplier (e.g. 1.5)
+/// - `atr_tp`: ATR target multiplier (e.g. 3.0)
+/// - `atr_period`: ATR period for dynamic levels (default 14)
+/// - `intra_bar_mode`: `"close_only"` (default) | `"pessimistic"` | `"ohlc_heuristic"`
 fn extract_exit_rules(exit: Option<&Bound<PyDict>>) -> PyResult<ExitRules> {
     let Some(d) = exit else { return Ok(ExitRules::default()); };
-    let sl       = d.get_item("sl")?.and_then(|v| v.extract::<f64>().ok());
-    let tp       = d.get_item("tp")?.and_then(|v| v.extract::<f64>().ok());
-    let max_bars = d.get_item("max_bars")?.and_then(|v| v.extract::<usize>().ok());
-    Ok(ExitRules { stop_loss_pct: sl, take_profit_pct: tp, max_bars_held: max_bars })
+    let sl            = d.get_item("sl")?.and_then(|v| v.extract::<f64>().ok());
+    let tp            = d.get_item("tp")?.and_then(|v| v.extract::<f64>().ok());
+    let trailing_stop = d.get_item("trailing_stop")?.and_then(|v| v.extract::<f64>().ok());
+    let max_bars      = d.get_item("max_bars")?.and_then(|v| v.extract::<usize>().ok());
+    let atr_sl        = d.get_item("atr_sl")?.and_then(|v| v.extract::<f64>().ok());
+    let atr_tp        = d.get_item("atr_tp")?.and_then(|v| v.extract::<f64>().ok());
+    let atr_period    = d.get_item("atr_period")?.and_then(|v| v.extract::<usize>().ok()).unwrap_or(14);
+    let intra_bar_mode = match d.get_item("intra_bar_mode")?.and_then(|v| v.extract::<String>().ok()).as_deref() {
+        Some("pessimistic")    => IntraBarMode::Pessimistic,
+        Some("ohlc_heuristic") => IntraBarMode::OhlcHeuristic,
+        _                      => IntraBarMode::CloseOnly,
+    };
+    Ok(ExitRules {
+        stop_loss_pct: sl,
+        take_profit_pct: tp,
+        trailing_stop_pct: trailing_stop,
+        max_bars_held: max_bars,
+        atr_stop_multiplier: atr_sl,
+        atr_target_multiplier: atr_tp,
+        atr_period,
+        intra_bar_mode,
+        ..Default::default()
+    })
 }
 
 /// Compute exposure % = sum(trade durations) / total equity-curve span.
@@ -368,7 +440,7 @@ fn run_backtest<'py>(
 
     macro_rules! run_engine {
         ($risk:expr) => {{
-            let mut feed = InMemoryFeed::new(bar_vec, symbol.to_string());
+            let mut feed = BarVecFeed::new(bar_vec, symbol.to_string());
             let mut engine =
                 Engine::sync(capital, strat, $risk, commission, slippage)
                     .with_exit_rules(exit_rules)
@@ -503,7 +575,130 @@ fn run_cel_backtest<'py>(
 
     macro_rules! run_engine {
         ($risk:expr) => {{
-            let mut feed = InMemoryFeed::new(bar_vec, symbol.to_string());
+            let mut feed = BarVecFeed::new(bar_vec, symbol.to_string());
+            let mut engine =
+                Engine::sync(capital, strat, $risk, commission, slippage)
+                    .with_exit_rules(exit_rules)
+                    .with_next_bar(next_bar);
+            let report = engine.run(&mut feed, risk_free);
+
+            let ind_series   = engine.strategy.take_indicator_series();
+            let equity_curve = engine.portfolio.equity_curve.clone();
+            let trades       = engine.portfolio.trades.clone();
+            let exposure_pct = compute_exposure_pct(&equity_curve, &trades);
+            let bh = if bh_closes.len() >= 2 {
+                Some(BuyHoldBenchmark::compute(&bh_closes, &bh_timestamps, risk_free))
+            } else { None };
+
+            let d = report_to_pydict(py, &report, &equity_curve, &trades)?;
+            add_extra_fields(py, &d, ind_series, exposure_pct, bh)?;
+            Ok(d)
+        }};
+    }
+
+    match sizing {
+        "atr" => run_engine!(AtrSizing::new(
+            get_f("risk_per_trade", 0.01),
+            get_f("atr_multiplier", 2.0),
+            get_u("max_positions", 1),
+        )),
+        "kelly" => run_engine!(KellySizing::new(
+            get_f("win_rate", 0.5),
+            get_f("avg_win", 0.05),
+            get_f("avg_loss", 0.02),
+            get_f("fraction", 0.5),
+            get_u("max_positions", 1),
+        )),
+        _ => run_engine!(FixedFractional::new(0.95, 1).with_lot_size(resolved_lot)),
+    }
+}
+
+// ── run_rhai_backtest ────────────────────────────────────────────────────────
+
+/// Run a backtest using a **Rhai script** strategy.
+///
+/// The script declares indicators with ``indicator(type, period)`` and assigns
+/// boolean variables ``entry`` / ``exit`` (and optionally ``tp`` / ``sl`` for
+/// target/stop prices). Any ``plot("name", value)`` calls accumulate into the
+/// ``indicator_series`` key of the returned dict.
+///
+/// Parameters
+/// ----------
+/// symbol : str
+///     Asset symbol, e.g. ``"BTCUSDT"``.
+/// script : str
+///     Rhai script. Example:
+///
+/// ```text
+/// let ema9  = indicator("ema", 9);
+/// let ema21 = indicator("ema", 21);
+///
+/// let entry = cross_above(ema9, ema21);
+/// let exit  = cross_below(ema9, ema21);
+///
+/// plot("ema9",  ema9[0]);
+/// plot("ema21", ema21[0]);
+/// ```
+///
+/// bars : dict
+///     Bar data — same format as :func:`run_backtest`.
+/// capital, commission, slippage, lot_size, sizing, sizing_params, next_bar, risk_free
+///     Same meaning as :func:`run_backtest`.
+/// exit : dict, optional
+///     Engine-level exits: ``{"sl": 0.03, "tp": 0.06, "max_bars": 100}``.
+///
+/// Returns
+/// -------
+/// dict
+///     Same as :func:`run_backtest`. ``indicator_series`` contains one entry
+///     per ``plot()`` call: ``{"name": [{"t": ts_ms, "v": float}, ...]}``.
+#[pyfunction]
+#[pyo3(signature = (symbol, script, bars, capital=10_000.0, commission=0.001, slippage=0.0005, lot_size=-1.0, sizing="fixed", sizing_params=None, next_bar=false, exit=None, risk_free=0.04))]
+#[allow(clippy::too_many_arguments)]
+fn run_rhai_backtest<'py>(
+    py: Python<'py>,
+    symbol: &str,
+    script: &str,
+    bars: &Bound<'py, PyDict>,
+    capital: f64,
+    commission: f64,
+    slippage: f64,
+    lot_size: f64,
+    sizing: &str,
+    sizing_params: Option<&Bound<'py, PyDict>>,
+    next_bar: bool,
+    exit: Option<&Bound<'py, PyDict>>,
+    risk_free: f64,
+) -> PyResult<Bound<'py, PyDict>> {
+    let params_json = json!({ "script": script });
+    let bar_vec = extract_bars(symbol, bars)?;
+    let strat = build_strategy("rhai", &params_json)
+        .map_err(|e| PyRuntimeError::new_err(format!("Rhai strategy build error: {e}")))?;
+
+    let resolved_lot = if lot_size < 0.0 {
+        if is_crypto(symbol) { 0.0 } else { 1.0 }
+    } else {
+        lot_size
+    };
+
+    let exit_rules = extract_exit_rules(exit)?;
+    let bh_closes: Vec<f64>     = bar_vec.iter().map(|b| b.close).collect();
+    let bh_timestamps: Vec<i64> = bar_vec.iter().map(|b| b.timestamp).collect();
+
+    let sp: Value = match sizing_params {
+        Some(d) => pydict_to_json(d)?,
+        None => Value::Object(Map::new()),
+    };
+    let get_f = |key: &str, default: f64| -> f64 {
+        sp.get(key).and_then(|v| v.as_f64()).unwrap_or(default)
+    };
+    let get_u = |key: &str, default: usize| -> usize {
+        sp.get(key).and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(default)
+    };
+
+    macro_rules! run_engine {
+        ($risk:expr) => {{
+            let mut feed = BarVecFeed::new(bar_vec, symbol.to_string());
             let mut engine =
                 Engine::sync(capital, strat, $risk, commission, slippage)
                     .with_exit_rules(exit_rules)
@@ -593,8 +788,10 @@ fn kalman<'py>(
 /// Parameters
 /// ----------
 /// pnl_pct : list[float]
-///     Trade returns as percentage fractions (e.g. 0.05 = +5%).
-///     Typically ``result["pnl_pct"]`` from :func:`run_backtest`.
+///     Trade returns as equity-relative fractions (e.g. 0.05 = +5% of equity at entry).
+///     Use ``result["equity_pnl_pct"]`` from :func:`run_backtest` for correct compounding.
+///     ``result["pnl_pct"]`` is position-level and will slightly over-estimate results
+///     when ``position_size_pct < 1.0``.
 /// capital : float, optional
 ///     Starting capital for each simulation path (default 10 000).
 /// n_iter : int, optional
@@ -754,7 +951,7 @@ fn run_portfolio_backtest<'py>(
         let resolved_lot = if is_crypto(symbol) { 0.0 } else { 1.0 };
         let risk = FixedFractional::new(0.95, 1).with_lot_size(resolved_lot);
 
-        let mut feed = InMemoryFeed::new(bar_vec, symbol.clone());
+        let mut feed = BarVecFeed::new(bar_vec, symbol.clone());
         let mut engine = Engine::sync(capital, strat, risk, commission, slippage);
         let report = engine.run(&mut feed, 0.04);
 
@@ -807,16 +1004,16 @@ fn run_portfolio_backtest<'py>(
 ///     Mapping of ``name → config_dict`` using the same config format as
 ///     ``DynamicStrategy``.  Examples:
 ///
-///     .. code-block:: python
-///
-///         {
-///           "ema_20":  {"type": "ema",    "period": 20},
-///           "rsi_14":  {"type": "rsi",    "period": 14},
-///           "atr_14":  {"type": "atr",    "period": 14},
-///           "macd":    {"type": "macd",   "fast": 12, "slow": 26, "signal": 9},
-///           "bb_20":   {"type": "bbands", "period": 20, "std_dev": 2.0},
-///           "st_10":   {"type": "supertrend", "period": 10, "multiplier": 3.0},
-///         }
+/// ```text
+/// {
+///   "ema_20":  {"type": "ema",    "period": 20},
+///   "rsi_14":  {"type": "rsi",    "period": 14},
+///   "atr_14":  {"type": "atr",    "period": 14},
+///   "macd":    {"type": "macd",   "fast": 12, "slow": 26, "signal": 9},
+///   "bb_20":   {"type": "bbands", "period": 20, "std_dev": 2.0},
+///   "st_10":   {"type": "supertrend", "period": 10, "multiplier": 3.0},
+/// }
+/// ```
 ///
 /// Returns
 /// -------
@@ -884,46 +1081,127 @@ fn run_indicators<'py>(
     Ok(out)
 }
 
+/// Walk-forward validation — **disabled, FUTURE[wf-v2]**.
+///
+/// Walk-forward requires a parameter optimisation layer to be meaningful.
+/// That layer does not exist yet. Calling this function returns immediately
+/// with ``{"note": "disabled — FUTURE[wf-v2]"}``.
+///
+/// The implementation is preserved in source and will be re-enabled together
+/// with the optimisation layer (grid search / Optuna) in wf-v2.
+#[pyfunction]
+#[pyo3(signature = (symbol, strategy, params, bars, is_bars, oos_bars, step_bars=0, capital=10_000.0, commission=0.001, slippage=0.0005, risk_free=0.04, mode="rolling", embargo_bars=0, min_oos_trades=None))]
+#[allow(clippy::too_many_arguments, unused_variables)]
+fn run_walk_forward<'py>(
+    py: Python<'py>,
+    symbol: &str,
+    strategy: &str,
+    params: &Bound<'py, PyDict>,
+    bars: &Bound<'py, PyDict>,
+    is_bars: usize,
+    oos_bars: usize,
+    step_bars: usize,
+    capital: f64,
+    commission: f64,
+    slippage: f64,
+    risk_free: f64,
+    mode: &str,
+    embargo_bars: usize,
+    min_oos_trades: Option<usize>,
+) -> PyResult<Bound<'py, PyDict>> {
+    let out = PyDict::new_bound(py);
+    out.set_item("note", "disabled — FUTURE[wf-v2]")?;
+    Ok(out)
+
+    /* --- FUTURE[wf-v2]: re-enable together with optimisation layer ---
+    use alm_engine::{walk_forward_sync, WalkForwardConfig, WalkForwardMode};
+
+    let params_json = pydict_to_json(params)?;
+    let bar_vec = extract_bars(symbol, bars)?;
+    let strat = build_strategy(strategy, &params_json)
+        .map_err(|e| PyRuntimeError::new_err(format!("strategy build error: {e}")))?;
+
+    let resolved_lot = if is_crypto(symbol) { 0.0 } else { 1.0 };
+    let risk = FixedFractional::new(0.95, 1).with_lot_size(resolved_lot);
+
+    let step = if step_bars == 0 { oos_bars } else { step_bars };
+    let mut cfg = WalkForwardConfig::new(is_bars, oos_bars, capital);
+    cfg.step_bars = step;
+    cfg.risk_free_annual = risk_free;
+    cfg.mode = if mode == "anchored" { WalkForwardMode::Anchored } else { WalkForwardMode::Rolling };
+    cfg.embargo_bars = embargo_bars;
+    cfg.min_oos_trades = min_oos_trades;
+
+    let result = walk_forward_sync(capital, strat, risk, commission, slippage, &bar_vec, symbol, cfg);
+
+    let windows_list = PyList::empty_bound(py);
+    for w in &result.windows {
+        let d = PyDict::new_bound(py);
+        d.set_item("window",    w.window)?;
+        d.set_item("is_range",  vec![w.is_range.0,  w.is_range.1])?;
+        d.set_item("oos_range", vec![w.oos_range.0, w.oos_range.1])?;
+        d.set_item("is_sharpe",            w.in_sample.sharpe_ratio)?;
+        d.set_item("is_return_pct",        w.in_sample.total_return_pct)?;
+        d.set_item("is_trades",            w.in_sample.total_trades)?;
+        d.set_item("is_win_rate_pct",      w.in_sample.win_rate_pct)?;
+        d.set_item("is_max_drawdown_pct",  w.in_sample.max_drawdown_pct)?;
+        d.set_item("is_profit_factor",     w.in_sample.profit_factor)?;
+        d.set_item("is_sqn",               w.in_sample.sqn)?;
+        d.set_item("oos_sharpe",           w.out_of_sample.sharpe_ratio)?;
+        d.set_item("oos_return_pct",       w.out_of_sample.total_return_pct)?;
+        d.set_item("oos_trades",           w.out_of_sample.total_trades)?;
+        d.set_item("oos_win_rate_pct",     w.out_of_sample.win_rate_pct)?;
+        d.set_item("oos_max_drawdown_pct", w.out_of_sample.max_drawdown_pct)?;
+        d.set_item("oos_profit_factor",    w.out_of_sample.profit_factor)?;
+        d.set_item("oos_sortino",          w.out_of_sample.sortino_ratio)?;
+        d.set_item("oos_calmar",           w.out_of_sample.calmar_ratio)?;
+        d.set_item("oos_sqn",              w.out_of_sample.sqn)?;
+        d.set_item("oos_psr",              w.out_of_sample.psr)?;
+        d.set_item("oos_expectancy",       w.out_of_sample.expectancy)?;
+        let curve = PyList::empty_bound(py);
+        for pt in &w.oos_equity_curve {
+            let p = PyDict::new_bound(py);
+            p.set_item("t",      pt.timestamp)?;
+            p.set_item("equity", pt.equity)?;
+            curve.append(p)?;
+        }
+        d.set_item("oos_equity_curve", curve)?;
+        windows_list.append(d)?;
+    }
+
+    let combined_curve = PyList::empty_bound(py);
+    for pt in &result.oos_equity_curve {
+        let p = PyDict::new_bound(py);
+        p.set_item("t",      pt.timestamp)?;
+        p.set_item("equity", pt.equity)?;
+        combined_curve.append(p)?;
+    }
+
+    let efficiency_label = match result.efficiency_ratio {
+        r if r >= 0.7 => "robust",
+        r if r >= 0.5 => "marginal",
+        r if r >  0.0 => "overfit",   // TODO[wf-v2]: misleading without optimisation context
+        _             => "no_data",
+    };
+
+    let out = PyDict::new_bound(py);
+    out.set_item("windows",                windows_list)?;
+    out.set_item("avg_oos_sharpe",         result.avg_oos_sharpe)?;
+    out.set_item("avg_oos_win_rate",       result.avg_oos_win_rate)?;
+    out.set_item("avg_oos_return_pct",     result.avg_oos_return_pct)?;
+    out.set_item("total_oos_trades",       result.total_oos_trades)?;
+    out.set_item("pct_profitable_windows", result.pct_profitable_windows)?;
+    out.set_item("efficiency_ratio",       result.efficiency_ratio)?;
+    out.set_item("efficiency_label",       efficiency_label)?;
+    out.set_item("oos_equity_curve",       combined_curve)?;
+    Ok(out)
+    --- end FUTURE[wf-v2] --- */
+}
+
 /// Return the names of all built-in strategies available in the factory.
 #[pyfunction]
 fn list_strategies() -> Vec<&'static str> {
-    vec![
-        // MA family
-        "ma_crossover", "triple_ema", "hma_crossover", "dema_crossover",
-        "gmma_crossover",
-        // RSI
-        "rsi_mean_rev",
-        // MACD
-        "macd_crossover", "macd_ma", "bollinger_macd",
-        // Bollinger / Volatility
-        "bb_squeeze", "bb_keltner_squeeze", "volatility_ratio_breakout",
-        "volatility_squeezer", "volatility_vanguard",
-        // Trend
-        "supertrend", "supertrend_macd", "aroon_trend", "alligator",
-        "trend_follower", "trend_transition", "chop_filter",
-        // Momentum
-        "momentum_roc", "roc_crossover", "dual_momentum", "coppock_curve",
-        // Oscillators
-        "cci_reversal", "connors_rsi", "stochastic_crossover", "stochastic_dk",
-        "stoch_rsi", "tsi_strategy", "mfi_trend", "mfi_revert",
-        // Breakout
-        "donchian_breakout", "keltner_breakout", "highest_breakout",
-        "orb_breakout", "ha_breakout",
-        // Pattern
-        "ha_color", "ha_harmonizer", "ichimoku_cloud", "ichimoku_cross",
-        "price_action_swing", "pattern_breakout",
-        // Volatility / ATR
-        "atr_trailing_stop", "chandelier_exit", "kama_strategy",
-        "sar_strategy",
-        // Other
-        "mean_reversion", "vwap_bounce", "vwap_trend", "swing_trader",
-        "range_rover", "scalpingema", "elder_ray", "waddah_attar",
-        "wolfstein", "equilibrium_explorer", "pixel3", "oscillator_overlord",
-        "reversal_catcher", "rwi_strategy", "dmi_adx", "vortex",
-        "ma_pullback", "layered",
-        // Dynamic / declarative
-        "dynamic", "cel",
-    ]
+    STRATEGY_KEYS.to_vec()
 }
 
 // ── Module registration ───────────────────────────────────────────────────────
@@ -933,7 +1211,9 @@ fn list_strategies() -> Vec<&'static str> {
 fn alm_py(m: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_backtest, m)?)?;
     m.add_function(wrap_pyfunction!(run_cel_backtest, m)?)?;
+    m.add_function(wrap_pyfunction!(run_rhai_backtest, m)?)?;
     m.add_function(wrap_pyfunction!(run_portfolio_backtest, m)?)?;
+    m.add_function(wrap_pyfunction!(run_walk_forward, m)?)?;
     m.add_function(wrap_pyfunction!(run_indicators, m)?)?;
     m.add_function(wrap_pyfunction!(buy_hold_benchmark, m)?)?;
     m.add_function(wrap_pyfunction!(kalman, m)?)?;

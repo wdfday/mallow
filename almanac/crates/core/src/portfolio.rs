@@ -1,4 +1,5 @@
 use crate::{
+    exit::ExitReason,
     order::{Fill, Side},
     trade::Trade,
 };
@@ -178,6 +179,11 @@ impl Portfolio {
                             } else {
                                 0.0
                             },
+                            commission: entry_commission + exit_commission,
+                            mae_pct: 0.0,
+                            mfe_pct: 0.0,
+                            bars_held: 0,
+                            exit_reason: ExitReason::Signal,
                         });
                     }
 
@@ -232,6 +238,11 @@ impl Portfolio {
                             exit_timestamp: fill.timestamp,
                             pnl,
                             pnl_pct: pnl / (pos.avg_price * closed_qty),
+                            commission: entry_commission + exit_commission,
+                            mae_pct: 0.0,
+                            mfe_pct: 0.0,
+                            bars_held: 0,
+                            exit_reason: ExitReason::Signal,
                         });
                     }
 

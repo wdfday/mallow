@@ -27,19 +27,25 @@ pub struct Signal {
     pub strength: f64,
     /// Optional pattern metadata — populated by pattern_breakout strategy
     pub pattern: Option<PatternMeta>,
+    /// bar.close at the time this signal fired — entry reference price for the receiver.
+    pub price: Option<f64>,
+    /// Absolute take-profit price computed at entry time.
+    pub target_price: Option<f64>,
+    /// Absolute stop-loss price computed at entry time.
+    pub stop_price: Option<f64>,
 }
 
 impl Signal {
     pub fn long(timestamp: i64, symbol: impl Into<String>, strength: f64) -> Self {
-        Self { timestamp, symbol: symbol.into(), direction: Direction::Long, strength, pattern: None }
+        Self { timestamp, symbol: symbol.into(), direction: Direction::Long, strength, pattern: None, price: None, target_price: None, stop_price: None }
     }
 
     pub fn short(timestamp: i64, symbol: impl Into<String>, strength: f64) -> Self {
-        Self { timestamp, symbol: symbol.into(), direction: Direction::Short, strength, pattern: None }
+        Self { timestamp, symbol: symbol.into(), direction: Direction::Short, strength, pattern: None, price: None, target_price: None, stop_price: None }
     }
 
     pub fn close(timestamp: i64, symbol: impl Into<String>) -> Self {
-        Self { timestamp, symbol: symbol.into(), direction: Direction::Close, strength: 1.0, pattern: None }
+        Self { timestamp, symbol: symbol.into(), direction: Direction::Close, strength: 1.0, pattern: None, price: None, target_price: None, stop_price: None }
     }
 
     pub fn with_pattern(mut self, meta: PatternMeta) -> Self {

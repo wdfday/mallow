@@ -51,6 +51,19 @@ pub trait Strategy: Send {
     /// ```
     fn on_regime(&mut self, _regime: &RegimeState) {}
 
+    /// Return true if this strategy uses `on_window` — engine pre-allocates the sliding bar buffer.
+    /// Default false — override when you implement `on_window`.
+    fn uses_window(&self) -> bool {
+        false
+    }
+
+    /// Return true if this strategy uses `set_portfolio_snapshot` — engine skips the snapshot
+    /// call for strategies that don't need it (avoids cloning the portfolio every bar).
+    /// Default false — override when you implement `set_portfolio_snapshot`.
+    fn uses_portfolio_snapshot(&self) -> bool {
+        false
+    }
+
     /// Drain and return all collected indicator series since the last call (or since construction).
     ///
     /// Keys: `"ema_9"`, `"rsi_14"` for CEL; `"rsi14.value"`, `"macd.histogram"` for Dynamic.
@@ -81,6 +94,12 @@ impl Strategy for Box<dyn Strategy> {
     }
     fn on_regime(&mut self, regime: &RegimeState) {
         (**self).on_regime(regime)
+    }
+    fn uses_window(&self) -> bool {
+        (**self).uses_window()
+    }
+    fn uses_portfolio_snapshot(&self) -> bool {
+        (**self).uses_portfolio_snapshot()
     }
     fn take_indicator_series(&mut self) -> HashMap<String, Vec<(i64, f64)>> {
         (**self).take_indicator_series()

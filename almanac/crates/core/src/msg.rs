@@ -44,15 +44,22 @@ impl From<&crate::signal::Signal> for SignalMsg {
         };
         let (target_price, stop_price, pattern_kind, confidence) =
             if let Some(ref p) = sig.pattern {
-                (p.target_price, p.stop_price, Some(p.pattern_kind.clone()), Some(p.confidence))
+                // Pattern fields take priority; fall back to signal top-level fields.
+                (
+                    p.target_price.or(sig.target_price),
+                    p.stop_price.or(sig.stop_price),
+                    Some(p.pattern_kind.clone()),
+                    Some(p.confidence),
+                )
             } else {
-                (None, None, None, None)
+                (sig.target_price, sig.stop_price, None, None)
             };
         Self {
             t: sig.timestamp,
             s: sig.symbol.clone(),
             dir: dir.into(),
             strength: sig.strength,
+            price: sig.price,
             target_price,
             stop_price,
             pattern_kind,

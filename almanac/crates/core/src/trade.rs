@@ -1,4 +1,4 @@
-use crate::order::Side;
+use crate::{exit::ExitReason, order::Side};
 use serde::{Deserialize, Serialize};
 
 /// A completed round-trip trade (entry + exit).
@@ -15,6 +15,16 @@ pub struct Trade {
     /// Realized PnL after commissions
     pub pnl: f64,
     pub pnl_pct: f64,
+    /// Total commission paid (entry + exit) for this trade.
+    pub commission: f64,
+    /// Maximum Adverse Excursion — worst unrealized loss from entry, as a fraction.
+    pub mae_pct: f64,
+    /// Maximum Favorable Excursion — best unrealized gain from entry, as a fraction.
+    pub mfe_pct: f64,
+    /// Number of bars this position was held.
+    pub bars_held: usize,
+    /// Why this trade was closed.
+    pub exit_reason: ExitReason,
 }
 
 impl Trade {

@@ -16,7 +16,7 @@ pub use bar::{Bar, Tick};
 pub use bus::EventBus;
 pub use component::Component;
 pub use event::{EquityEvent, Event, FillEvent, MarketEvent, OrderEvent, SignalEvent};
-pub use exit::{ExitRules, PositionTracker};
+pub use exit::{ExitReason, ExitRules, PositionTracker};
 pub use msg::{BarMsg, ConfigMsg, ResetMsg, SignalMsg, SignalResponse};
 pub use order::{Fill, OrderKind, OrderRequest, Side};
 pub use portfolio::{EquityPoint, Portfolio, Position};

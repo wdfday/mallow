@@ -1,0 +1,27 @@
+# Single source of truth for live-ingestion symbol lists.
+# Both herald (WebSocket) and hist-data (daily crawl) read from this file.
+# Add/remove symbols here — both services pick up on next restart.
+
+binance:
+  - BTCUSDT
+  - ETHUSDT
+  - BNBUSDT
+  - SOLUSDT
+  - XRPUSDT
+  - ADAUSDT
+  - AVAXUSDT
+  - DOTUSDT
+  - LINKUSDT
+  - POLUSDT
+
+okx:
+  - BTC-USDT
+  - ETH-USDT
+  - BNB-USDT
+  - SOL-USDT
+  - XRP-USDT
+  - ADA-USDT
+  - AVAX-USDT
+  - DOT-USDT
+  - LINK-USDT
+  - POL-USDT

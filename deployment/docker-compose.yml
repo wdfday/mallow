@@ -32,14 +32,12 @@ services:
       - nats-data:/data/jetstream
     command: ["-c", "/etc/nats/nats-server.conf"]
     environment:
-      NATS_PASS_STREAM_DATA:   ${NATS_PASS_STREAM_DATA:-stream-data-dev}
       NATS_PASS_SIGNAL_ENGINE: ${NATS_PASS_SIGNAL_ENGINE:-signal-engine-dev}
       NATS_PASS_ORCHESTRATOR:  ${NATS_PASS_ORCHESTRATOR:-orchestrator-dev}
       NATS_PASS_INVESTMENT:    ${NATS_PASS_INVESTMENT:-investment-dev}
       NATS_PASS_STRATEGIST:    ${NATS_PASS_STRATEGIST:-strategist-dev}
       NATS_PASS_GATEWAY:       ${NATS_PASS_GATEWAY:-gateway-dev}
       NATS_PASS_IDENTITY:      ${NATS_PASS_IDENTITY:-identity-dev}
-      NATS_PASS_BACKTEST_API:  ${NATS_PASS_BACKTEST_API:-backtest-api-dev}
       NATS_PASS_SURVEYOR:      ${NATS_PASS_SURVEYOR:-surveyor-dev}
     restart: unless-stopped
     healthcheck:
@@ -60,6 +58,7 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./postgres:/schemas:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mallow -d identity"]
       interval: 5s
@@ -133,29 +132,10 @@ services:
   # Trading engine
   # ═══════════════════════════════════════════════════════════════════
 
-  stream-data:
-    build:
-      context: ../stream-data
-      dockerfile: Dockerfile
-    image: stream-data:latest
-    container_name: stream-data
-    depends_on:
-      nats:
-        condition: service_healthy
-    environment:
-      NATS_URL: nats://stream_data:${NATS_PASS_STREAM_DATA:-stream-data-dev}@nats:4222
-      ALPACA_API_KEY: ${ALPACA_API_KEY:-}
-      ALPACA_API_SECRET: ${ALPACA_API_SECRET:-}
-      TWELVEDATA_API_KEY: ${TWELVEDATA_API_KEY:-}
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
-    volumes:
-      - ../stream-data/config.yaml:/app/config.yaml:ro
-      - stream-data-vol:/app/data
-    restart: unless-stopped
-
-  # Herald = signal-engine + logbook HTTP API in one process.
-  # Subscribes to `bars.*` → ledger → `signals.*`, AND serves live/backtest
-  # HTTP on :8090 (see almanac/crates/herald/src/http/mod.rs).
+  # Herald = WebSocket ingester + signal engine + logbook HTTP API in one process.
+  # Ingests live bars directly from Binance/OKX WebSocket (no stream-data hop).
+  # Publishes bars.{symbol} + signals.{symbol} to NATS.
+  # Serves live/backtest HTTP on :8090 (see almanac/crates/herald/src/http/mod.rs).
   herald:
     build:
       context: ../almanac
@@ -175,12 +155,13 @@ services:
     environment:
       NATS_URL: nats://signal_engine:${NATS_PASS_SIGNAL_ENGINE:-signal-engine-dev}@nats:4222
       HERALD_HTTP_ADDR: "0.0.0.0:8090"
-      HERALD_DATA_DIR: /data
+      HERALD_DATA_DIR: /data/hist
       HERALD_MAX_BACKTESTS: ${HERALD_MAX_BACKTESTS:-4}
+      HERALD_SYMBOLS_FILE: /config/symbols.yaml
       RUST_LOG: ${HERALD_RUST_LOG:-herald=info,alm_ledger=info}
     volumes:
-      - stream-data-vol:/data/stream:ro
       - ../hist-data/data:/data/hist:ro
+      - ./symbols.yaml:/config/symbols.yaml:ro
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8090/health"]
@@ -195,6 +176,8 @@ services:
       dockerfile: orchestrator/Dockerfile
     image: orchestrator:latest
     container_name: orchestrator
+    ports:
+      - "8084:8084"
     depends_on:
       nats:
         condition: service_healthy
@@ -267,6 +250,7 @@ services:
   # ═══════════════════════════════════════════════════════════════════
 
   strategist:
+    profiles: ["strategist"]
     build:
       context: ../thstrategist
       dockerfile: Dockerfile
@@ -316,8 +300,6 @@ services:
         condition: service_healthy
       investment:
         condition: service_healthy
-      strategist:
-        condition: service_healthy
       herald:
         condition: service_healthy
       redis:
@@ -346,8 +328,12 @@ services:
   nats-ui:
     image: ghcr.io/gastbob40/nats-ui:latest
     container_name: nats-ui
+    profiles: ["monitoring"]
+    depends_on:
+      nats:
+        condition: service_healthy
     ports:
-      - "3001:3000"
+      - "3000:3000"
     restart: unless-stopped
 
   nats-box:
@@ -499,7 +485,6 @@ volumes:
   nats-data:
   postgres-data:
   redis-data:
-  stream-data-vol:
   prometheus-data:
   loki-data:
   tempo-data:

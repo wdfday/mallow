@@ -1,5 +1,5 @@
 use crate::metrics;
-use crate::report::{BacktestReport, ExitReasonBreakdown};
+use crate::report::{BacktestReport};
 use alm_core::portfolio::EquityPoint;
 
 /// Per-symbol and cross-symbol analytics for multi-asset portfolio evaluation.

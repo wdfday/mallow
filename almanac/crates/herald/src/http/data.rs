@@ -1,10 +1,12 @@
 //! OHLCV + unified data handlers.
 //!
-//! All three endpoints read directly from the ledger's `bar_window` — no
-//! Parquet / disk IO on the request path. When a requested range falls
-//! outside the current window the handler returns what it has plus a
-//! `truncated_below` flag; walk-back LRU (future) will transparently extend
-//! coverage without changing the wire contract.
+//! Primary source: ledger `bar_window` (in-memory ring buffer, ~24 h).
+//!
+//! Parquet fallback: when a `before` cursor falls outside the ring (page empty)
+//! or the symbol has no ledger state, `GET /api/data/:symbol?before=<ts>` and
+//! the `POST` unified endpoint transparently fall back to a DuckDB query against
+//! the flat Parquet files in `data_dir`. The response shape is identical —
+//! callers do not need to handle the switch.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -21,6 +23,8 @@ use axum::{
 use serde_json::Value;
 use tracing::{debug, warn};
 
+use super::duckdb as duck;
+
 use super::types::{
     BarRecord, CandlesResult, DataQuery, DataResponse, ErrorResponse, IndicatorConfig,
     IndicatorPoint, LatestQuery, UnifiedDataRequest, UnifiedDataResponse,
@@ -29,8 +33,8 @@ use super::HttpState;
 
 pub fn routes() -> Router<HttpState> {
     Router::new()
-        .route("/api/data/{symbol}", get(get_data).post(unified_data))
-        .route("/api/data/{symbol}/latest", get(get_latest))
+        .route("/api/data/:symbol", get(get_data).post(unified_data))
+        .route("/api/data/:symbol/latest", get(get_latest))
 }
 
 // ── Limits ────────────────────────────────────────────────────────────────────
@@ -174,16 +178,61 @@ pub async fn get_data(
     let tf = resolve_tf(&q.tf, state.tf);
     let limit = clamp_limit(q.limit, DEFAULT_LIMIT);
 
-    let page = match state.ledger.with_state(&symbol, tf, |s| {
+    // Try ring buffer first.
+    let ring_page = state.ledger.with_state(&symbol, tf, |s| {
         let bars_asc: Vec<alm_core::Bar> = s.bar_window.iter().cloned().collect();
         let first = bars_asc.first().map(|b| b.timestamp);
         paginate(&bars_asc, q.before, q.after, limit, first)
-    }) {
-        Some(p) => p,
-        None => {
-            debug!(symbol = %symbol, ?tf, "get_data: no ledger state yet");
-            return err(StatusCode::NOT_FOUND, format!("no ledger state for {symbol}"));
+    });
+
+    // DuckDB fallback: triggered when scrolling back beyond ring coverage.
+    //   - before cursor with empty ring result (cursor predates ring window)
+    //   - OR no ledger state at all (symbol not tracked live) + before cursor given
+    let needs_parquet_fallback = q.before.is_some()
+        && ring_page.as_ref().map_or(true, |p| p.bars.is_empty());
+
+    let page = if needs_parquet_fallback {
+        let data_dir = Arc::clone(&state.data_dir);
+        // OKX symbols use dashes ("BTC-USDT"); parquet dirs use no dashes ("BTCUSDT").
+        let parquet_sym = symbol.replace('-', "");
+        let tf_str = tf.to_string();
+        let before_ms = q.before.unwrap();
+
+        match tokio::task::spawn_blocking(move || {
+            duck::query_bars_before(&data_dir, &parquet_sym, &tf_str, before_ms, limit)
+        })
+        .await
+        {
+            Ok(Ok(bars)) if !bars.is_empty() => {
+                let next_before = bars.first().map(|b| b.t);
+                let next_after  = bars.last().map(|b| b.t);
+                Page { bars, next_before, next_after, truncated_below: false }
+            }
+            Ok(Ok(_)) => {
+                // Parquet also empty → return whatever ring had (may be empty).
+                ring_page.unwrap_or(Page {
+                    bars: vec![], next_before: None, next_after: None, truncated_below: false,
+                })
+            }
+            Ok(Err(e)) => {
+                debug!(symbol = %symbol, error = %e, "duckdb parquet fallback failed");
+                ring_page.unwrap_or(Page {
+                    bars: vec![], next_before: None, next_after: None, truncated_below: false,
+                })
+            }
+            Err(e) => {
+                warn!(symbol = %symbol, error = %e, "duckdb fallback task panicked");
+                ring_page.unwrap_or(Page {
+                    bars: vec![], next_before: None, next_after: None, truncated_below: false,
+                })
+            }
         }
+    } else if let Some(p) = ring_page {
+        p
+    } else {
+        // No ledger state and no before cursor.
+        debug!(symbol = %symbol, ?tf, "get_data: no ledger state");
+        return err(StatusCode::NOT_FOUND, format!("no ledger state for {symbol}"));
     };
 
     (
@@ -324,20 +373,63 @@ pub async fn unified_data(
     // alive through the lock above; clippy might complain, hence the no-op.
     let _keep_alive = handles;
 
-    match result {
-        Some((candles, indicators)) => (
-            StatusCode::OK,
-            Json(UnifiedDataResponse {
-                symbol,
-                tf: tf.to_string(),
-                candles: if want_candles { candles } else { None },
-                indicators,
-                missing,
-            }),
-        )
-            .into_response(),
-        None => err(StatusCode::NOT_FOUND, format!("no ledger state for {symbol}")),
+    let (mut candles_out, indicators_out) = match result {
+        Some(pair) => pair,
+        None => {
+            // No ledger state — if candles were requested with a before cursor,
+            // try DuckDB directly so historical data is still accessible even
+            // when a symbol is not being tracked live.
+            if !want_candles {
+                return err(StatusCode::NOT_FOUND, format!("no ledger state for {symbol}"));
+            }
+            (None, None)
+        }
+    };
+
+    // DuckDB candle fallback: candle page is empty and a before cursor was given.
+    if want_candles {
+        let needs_fallback = req.candles.as_ref().and_then(|cq| cq.before).is_some()
+            && candles_out.as_ref().map_or(true, |c| c.bars.is_empty());
+
+        if needs_fallback {
+            let before_ms = req.candles.as_ref().and_then(|cq| cq.before).unwrap();
+            let climit = req.candles.as_ref().map(|cq| clamp_limit(cq.limit, DEFAULT_LIMIT))
+                .unwrap_or(DEFAULT_LIMIT);
+            let data_dir = Arc::clone(&state.data_dir);
+            let parquet_sym = symbol.replace('-', "");
+            let tf_str = tf.to_string();
+
+            if let Ok(Ok(bars)) = tokio::task::spawn_blocking(move || {
+                duck::query_bars_before(&data_dir, &parquet_sym, &tf_str, before_ms, climit)
+            })
+            .await
+            {
+                if !bars.is_empty() {
+                    let next_before = bars.first().map(|b| b.t);
+                    let next_after  = bars.last().map(|b| b.t);
+                    candles_out = Some(CandlesResult {
+                        count: bars.len(),
+                        bars,
+                        next_before,
+                        next_after,
+                        truncated_below: false,
+                    });
+                }
+            }
+        }
     }
+
+    (
+        StatusCode::OK,
+        Json(UnifiedDataResponse {
+            symbol,
+            tf: tf.to_string(),
+            candles: if want_candles { candles_out } else { None },
+            indicators: indicators_out,
+            missing,
+        }),
+    )
+        .into_response()
 }
 
 /// Read the ledger cell's columnar series and zip each row against the

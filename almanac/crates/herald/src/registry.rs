@@ -36,7 +36,7 @@ pub const FRESHNESS_GATE_MS: i64 = 2 * 60 * 1000;
 
 /// Output of evaluating one bot on one advance. Pushed through an mpsc
 /// channel to the Handler which serialises and publishes to NATS.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize)]
 #[allow(dead_code)]
 pub struct SignalBatch {
     pub bot_id: String,
@@ -266,7 +266,7 @@ impl Registry {
         // Only CEL strategies are supported in live mode — named strategies
         // are backtest-only (they own indicators internally and don't integrate
         // with the ledger's shared indicator state).
-        if !matches!(strategy_name.as_str(), "cel" | "cel2" | "evalexpr" | "rhai") {
+        if !matches!(strategy_name.as_str(), "cel" | "cel2" | "rhai") {
             anyhow::bail!(
                 "live bot registration only supports CEL/Rhai strategies ('cel', 'rhai'); \
                  got '{}'. Use CEL expressions or Rhai scripts to replicate named strategy logic.",
@@ -285,6 +285,13 @@ impl Registry {
             self.tf,
             target_tf,
         )?;
+        debug!(
+            bot_id = %bot.bot_id,
+            symbol = %bot.symbol,
+            strategy = %bot.strategy_name,
+            handles = bot._indicator_handles.len(),
+            "bot activated in registry"
+        );
         let mut w = self.inner.lock();
         w.groups
             .entry(symbol.clone())

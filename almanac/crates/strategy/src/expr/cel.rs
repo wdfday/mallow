@@ -1638,14 +1638,14 @@ impl CelStrategy {
         // Compile TP/SL programs after indicator expansion.
         let tp_n = tp_ind.is_empty().then_some(String::new()).unwrap_or_else(|| normalize_cel_expr(&tp_ind));
         let sl_n = sl_ind.is_empty().then_some(String::new()).unwrap_or_else(|| normalize_cel_expr(&sl_ind));
-        let tp_prog = if tp_n.is_empty() { None } else { Some(Program::compile(&tp_n)?) };
-        let sl_prog = if sl_n.is_empty() { None } else { Some(Program::compile(&sl_n)?) };
+        let tp_prog = if tp_n.is_empty() { None } else { Some(Program::compile(&tp_n).map_err(|e| anyhow::anyhow!("{e}"))?) };
+        let sl_prog = if sl_n.is_empty() { None } else { Some(Program::compile(&sl_n).map_err(|e| anyhow::anyhow!("{e}"))?) };
 
         let bar_cap = lookback + 1;
         let indicator_series: HashMap<String, Vec<(i64, f64)>> = HashMap::new();
         Ok(Self {
-            entry_prog:  Program::compile(&entry_n)?,
-            exit_prog:   Program::compile(&exit_n)?,
+            entry_prog:  Program::compile(&entry_n).map_err(|e| anyhow::anyhow!("{e}"))?,
+            exit_prog:   Program::compile(&exit_n).map_err(|e| anyhow::anyhow!("{e}"))?,
             tp_prog,
             sl_prog,
             bindings,

@@ -55,20 +55,20 @@ pub fn routes() -> Router<HttpState> {
         // ── strategies ──────────────────────────────────────────────────────
         .route("/api/store/strategies",
             get(list_strategies).post(create_strategy))
-        .route("/api/store/strategies/{id}",
+        .route("/api/store/strategies/:id",
             get(get_strategy).put(update_strategy).delete(delete_strategy))
-        .route("/api/store/strategies/{name}/versions",
+        .route("/api/store/strategies/:name/versions",
             get(list_strategy_versions))
         // ── cases ───────────────────────────────────────────────────────────
         .route("/api/store/cases",
             get(list_cases).post(create_case))
-        .route("/api/store/cases/{id}",
+        .route("/api/store/cases/:id",
             get(get_case).put(update_case).delete(delete_case))
-        .route("/api/store/cases/{id}/run",     post(run_case))
-        .route("/api/store/cases/{id}/signals", post(run_case_signals))
-        .route("/api/store/cases/{id}/results", get(list_results))
+        .route("/api/store/cases/:id/run",     post(run_case))
+        .route("/api/store/cases/:id/signals", post(run_case_signals))
+        .route("/api/store/cases/:id/results", get(list_results))
         // ── results ─────────────────────────────────────────────────────────
-        .route("/api/store/results/{id}",
+        .route("/api/store/results/:id",
             get(get_result).delete(delete_result))
 }
 
@@ -105,7 +105,10 @@ pub async fn create_strategy(
     Json(req): Json<CreateStrategyReq>,
 ) -> Response {
     match state.store.create_strategy(req.name, req.version, req.label, req.spec, req.notes).await {
-        Ok(s)  => (StatusCode::CREATED, Json(s)).into_response(),
+        Ok(s)  => {
+            tracing::info!(id = %s.id, name = %s.name, version = s.version, kind = %s.spec.kind_str(), "strategy saved");
+            (StatusCode::CREATED, Json(s)).into_response()
+        }
         Err(e) if e.to_string().contains("already exists") => conflict(&e.to_string()),
         Err(e) => server_err(e),
     }
@@ -174,7 +177,10 @@ pub async fn create_case(
         req.strategy_id, req.label, req.symbol, req.timeframe,
         req.from_ms, req.to_ms, req.data_source, capital, execution, req.exit,
     ).await {
-        Ok(c)  => (StatusCode::CREATED, Json(c)).into_response(),
+        Ok(c)  => {
+            tracing::info!(id = %c.id, symbol = %c.symbol, strategy_id = %c.strategy_id, "case created");
+            (StatusCode::CREATED, Json(c)).into_response()
+        }
         Err(e) => server_err(e),
     }
 }
@@ -256,6 +262,7 @@ pub async fn run_case(State(state): State<HttpState>, Path(id): Path<String>) ->
         walk_forward:           None,
     };
 
+    tracing::info!(id = %id, symbol = %case.symbol, strategy_id = %case.strategy_id, "running backtest case");
     let ran_at  = chrono::Utc::now().timestamp_millis();
     let data_dir = Arc::clone(&state.data_dir);
 
@@ -289,7 +296,13 @@ pub async fn run_case(State(state): State<HttpState>, Path(id): Path<String>) ->
     if let Err(e) = save {
         tracing::warn!(error = %e, "failed to persist backtest result row");
     }
-
+    tracing::info!(
+        id = %id,
+        total_return_pct = report.returns.total_pct,
+        sharpe = report.risk_adjusted.sharpe,
+        trades = report.trade_stats.total,
+        "backtest done"
+    );
     Json(report).into_response()
 }
 
@@ -335,6 +348,7 @@ pub async fn run_case_signals(
         Err(e) => return server_err(anyhow::anyhow!("replay task panicked: {e}")),
     };
 
+    tracing::info!(id = %id, signals = signals.len(), "signal replay done");
     Json(signals).into_response()
 }
 

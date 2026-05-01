@@ -32,7 +32,7 @@ use alm_ledger::Ledger;
 use async_nats::Client;
 use futures::StreamExt;
 use prost::Message as _;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, error, info, warn};
 
 use crate::feed::BarRx;
@@ -59,6 +59,8 @@ pub struct Handler {
     tf: Timeframe,
     bar_rx: BarRx,
     signal_rx: Option<mpsc::UnboundedReceiver<SignalBatch>>,
+    bar_bcast: broadcast::Sender<Bar>,
+    sig_bcast: broadcast::Sender<Arc<SignalBatch>>,
 }
 
 impl Handler {
@@ -70,6 +72,8 @@ impl Handler {
         tf: Timeframe,
         bar_rx: BarRx,
         signal_rx: mpsc::UnboundedReceiver<SignalBatch>,
+        bar_bcast: broadcast::Sender<Bar>,
+        sig_bcast: broadcast::Sender<Arc<SignalBatch>>,
     ) -> Self {
         Self {
             client,
@@ -79,12 +83,14 @@ impl Handler {
             tf,
             bar_rx,
             signal_rx: Some(signal_rx),
+            bar_bcast,
+            sig_bcast,
         }
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {
         let rx = self.signal_rx.take().expect("signal_rx present at run()");
-        tokio::spawn(signal_publisher(self.client.clone(), rx));
+        tokio::spawn(signal_publisher(self.client.clone(), rx, self.sig_bcast.clone()));
 
         let mut config_sub     = self.client.subscribe(SUBJ_CONFIG).await?;
         let mut reset_sub      = self.client.subscribe(SUBJ_RESET).await?;
@@ -127,7 +133,10 @@ impl Handler {
             Err(e)      => error!(%symbol, bar_ts = ts, err = %e, "ledger.advance failed"),
         }
 
-        // 3. Publish to NATS bars.{symbol} for downstream consumers.
+        // 3. Broadcast to SSE subscribers (lagged receivers are silently dropped).
+        let _ = self.bar_bcast.send(bar.clone());
+
+        // 4. Publish to NATS bars.{symbol} for downstream consumers.
         let bar_msg = BarMsg::from(&bar);
         let payload = bar_msg.encode_to_vec();
         let subject = format!("{}.{}", SUBJ_BARS, symbol);
@@ -227,8 +236,17 @@ impl Handler {
 
 // ── Signal publisher task ─────────────────────────────────────────────────────
 
-async fn signal_publisher(client: Client, mut rx: mpsc::UnboundedReceiver<SignalBatch>) {
+async fn signal_publisher(
+    client: Client,
+    mut rx: mpsc::UnboundedReceiver<SignalBatch>,
+    bcast: broadcast::Sender<Arc<SignalBatch>>,
+) {
     while let Some(batch) = rx.recv().await {
+        let batch = Arc::new(batch);
+
+        // Broadcast to SSE subscribers before consuming the batch.
+        let _ = bcast.send(Arc::clone(&batch));
+
         let response = SignalResponse {
             signals: batch.signals.iter().map(SignalMsg::from).collect(),
             orch_id: batch.orch_id.clone(),

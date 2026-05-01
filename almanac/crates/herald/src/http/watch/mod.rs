@@ -37,7 +37,7 @@ use axum::{
     Json, Router,
 };
 use tokio::sync::RwLock;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 pub use types::{CreateWatchReq, WatchEntry};
 
@@ -67,7 +67,7 @@ pub fn new_store() -> WatchStore {
 pub fn routes() -> Router<HttpState> {
     Router::new()
         .route("/api/watch", get(list_watches).post(create_watch))
-        .route("/api/watch/{id}", get(get_watch).delete(delete_watch))
+        .route("/api/watch/:id", get(get_watch).delete(delete_watch))
 }
 
 // ── Error helpers ─────────────────────────────────────────────────────────────
@@ -152,6 +152,13 @@ async fn create_watch(
 
     let slot = WatchSlot { entry: entry.clone(), _handles: handles };
     state.watches.write().await.insert(id, slot);
+    info!(
+        id = %entry.id,
+        symbols = entry.symbols.len(),
+        strategy = %entry.spec.kind_str(),
+        indicators = entry.pinned_indicators,
+        "watch created"
+    );
     (StatusCode::CREATED, Json(entry)).into_response()
 }
 
@@ -169,6 +176,7 @@ async fn delete_watch(State(state): State<HttpState>, Path(id): Path<String>) ->
             if let Err(e) = state.store.delete_watch_entry(&id).await {
                 warn!(%id, err=%e, "watch: failed to delete persisted entry");
             }
+            info!(%id, "watch deleted");
             StatusCode::NO_CONTENT.into_response()
         }
         None => not_found(),

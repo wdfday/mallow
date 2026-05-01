@@ -4,6 +4,31 @@
 //! [`find_parquet_files`], [`parse_date_ms`] and [`load_bars`] — all pure
 //! IO with no engine or strategy dependency so callers can also use them
 //! for ad-hoc data inspection.
+//!
+//! # On-disk layout (`mallow/data/`)
+//!
+//! ```text
+//! data/
+//! ├── BinanceFlat/          crypto — downloaded from data.binance.vision (no API key)
+//! │   ├── M1/{SYMBOL}/      monthly parquet files, e.g. BTCUSDT_M1_2024-01.parquet
+//! │   ├── M5 … H4/{SYMBOL}/
+//! │   └── D1/{SYMBOL}/      single all-history file per symbol
+//! │   Symbols: BTCUSDT ETHUSDT BNBUSDT SOLUSDT XRPUSDT ADAUSDT
+//! │            AVAXUSDT DOTUSDT LINKUSDT POLUSDT
+//! │   (MATICUSDT files still on disk — renamed to POLUSDT Sep 2024)
+//! │
+//! ├── Polygon/              US stocks — Polygon.io
+//! │   ├── M1 … H4/{SYMBOL}/
+//! │   Symbols: AAPL AMZN MSFT GOOGL NVDA TSLA AMD … (Nasdaq-100 subset)
+//! │
+//! └── VCI/                  Vietnam stocks — VCI
+//!     ├── M1 … D1/{SYMBOL}/
+//!     Symbols: VCB VHM HPG FPT MBB TCB … (VN30 subset)
+//! ```
+//!
+//! `find_parquet_files(data_dir, symbol, timeframe, data_source)` walks this
+//! tree and filters by directory name match — provider is the top-level dir,
+//! timeframe is the second level, symbol is the third.
 
 use std::path::{Path, PathBuf};
 
@@ -141,6 +166,48 @@ pub fn is_market_hours(ts_ms: i64, exchange: &str) -> bool {
             }
         }
     }
+}
+
+/// Scan `files` for the latest monthly parquet (`SYMBOL_TF_YYYY-MM.parquet`)
+/// and return the start of that month as Unix milliseconds (UTC).
+///
+/// Falls back to `None` when no monthly file is found (e.g. fresh install with
+/// only daily or range files). The caller should then fall back to a fixed
+/// lookback window (`HERALD_WARM_DAYS`).
+pub fn find_bootstrap_from_ms(files: &[PathBuf]) -> Option<i64> {
+    let mut latest: Option<(i32, u32)> = None; // (year, month)
+
+    for f in files {
+        let stem = f
+            .file_name()
+            .and_then(|n| n.to_str())
+            .and_then(|n| n.strip_suffix(".parquet"))?;
+
+        // Monthly file: last '_'-segment is exactly "YYYY-MM" (7 chars).
+        // Daily file:   last segment is "YYYY-MM-DD" (10 chars).
+        // Range file:   last segment is "YYYY-MM-DD" after "_to_".
+        let date_part = stem.rsplit('_').next()?;
+        if date_part.len() != 7 {
+            continue;
+        }
+        let (y, m) = date_part.split_once('-')?;
+        let year: i32 = y.parse().ok()?;
+        let month: u32 = m.parse().ok()?;
+        if month == 0 || month > 12 {
+            continue;
+        }
+        match latest {
+            None => latest = Some((year, month)),
+            Some((ey, em)) if (year, month) > (ey, em) => latest = Some((year, month)),
+            _ => {}
+        }
+    }
+
+    latest.and_then(|(year, month)| {
+        NaiveDate::from_ymd_opt(year, month, 1)
+            .and_then(|d| d.and_hms_opt(0, 0, 0))
+            .map(|dt| dt.and_utc().timestamp_millis())
+    })
 }
 
 /// Parse `"YYYY-MM-DD"` → Unix milliseconds (start of day UTC).

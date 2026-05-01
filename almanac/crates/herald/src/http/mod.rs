@@ -7,15 +7,16 @@
 //!
 //! ## Live — backed by the in-process `alm_ledger::Ledger`
 //!
-//! | Route                                  | Purpose                                         |
-//! |----------------------------------------|-------------------------------------------------|
-//! | `GET  /health`                         | Health check                                    |
-//! | `GET  /api/symbols`                    | Symbols currently tracked by the ledger         |
-//! | `GET  /api/indicators`                 | Indicator catalogue (static)                    |
-//! | `GET  /api/indicators/live`            | Indicator cells currently in the ledger         |
-//! | `GET  /api/data/:symbol`               | OHLCV window with cursor pagination             |
-//! | `GET  /api/data/:symbol/latest`        | Shortcut for "last N bars"                      |
-//! | `POST /api/data/:symbol`               | Unified OHLCV + indicator snapshot              |
+//! | Route                                       | Purpose                                    |
+//! |---------------------------------------------|--------------------------------------------|
+//! | `GET  /health`                              | Health check                               |
+//! | `GET  /api/symbols`                         | Symbols tracked by the ledger              |
+//! | `GET  /api/symbols?indicators=true`         | Same + live indicator cells per symbol     |
+//! | `GET  /api/indicators`                      | Indicator catalogue (static)               |
+//! | `GET  /api/data/:symbol`                    | OHLCV window with cursor pagination        |
+//! | `GET  /api/data/:symbol/latest`             | Shortcut for "last N bars"                 |
+//! | `POST /api/data/:symbol`                    | Unified OHLCV + indicator snapshot         |
+//! | `POST /api/data/duckdb`                     | Ad-hoc SQL over flat Parquet files         |
 //!
 //! ## Batch — dispatched to `alm_engine::backtest`
 //!
@@ -56,6 +57,13 @@
 //! | `GET  /api/watch/:id`                  | Get one                                         |
 //! | `DELETE /api/watch/:id`                | Remove                                          |
 //!
+//! ## Stream — SSE real-time push
+//!
+//! | Route                                  | Purpose                                         |
+//! |----------------------------------------|-------------------------------------------------|
+//! | `GET  /api/stream/:symbol`             | Live bar events for one symbol (event: "bar")   |
+//! | `GET  /api/stream/signals`             | All signal batches (event: "signal")            |
+//!
 //! # Cursor pagination
 //!
 //! `GET /api/data/:symbol` uses two cursors:
@@ -67,16 +75,21 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use alm_core::Bar;
 use alm_ledger::Ledger;
 use axum::{routing::get, Json, Router};
 use serde_json::json;
-use tokio::sync::Semaphore;
+use tokio::sync::{broadcast, Semaphore};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
+use crate::registry::SignalBatch;
+
 mod backtest;
 mod data;
+mod duckdb;
 mod indicators;
+mod sse;
 mod symbols;
 mod types;
 pub mod store;
@@ -84,6 +97,9 @@ pub mod watch;
 
 pub use store::StoreBackend;
 pub use watch::WatchStore;
+
+#[cfg(test)]
+mod tests;
 
 /// Shared state handed to every HTTP handler.
 #[derive(Clone)]
@@ -99,6 +115,10 @@ pub struct HttpState {
     pub store: StoreBackend,
     /// In-memory watchlist store (noop — not yet wired to live bar pipeline).
     pub watches: WatchStore,
+    /// Live bar broadcast — SSE `/api/stream/:symbol` subscribers receive from here.
+    pub bar_bcast: broadcast::Sender<Bar>,
+    /// Live signal broadcast — SSE `/api/stream/signals` subscribers receive from here.
+    pub sig_bcast: broadcast::Sender<Arc<SignalBatch>>,
 }
 
 impl HttpState {
@@ -108,6 +128,8 @@ impl HttpState {
         data_dir: Arc<PathBuf>,
         max_concurrent_backtests: usize,
         store: StoreBackend,
+        bar_bcast: broadcast::Sender<Bar>,
+        sig_bcast: broadcast::Sender<Arc<SignalBatch>>,
     ) -> Self {
         Self {
             ledger,
@@ -116,6 +138,8 @@ impl HttpState {
             backtest_semaphore: Arc::new(Semaphore::new(max_concurrent_backtests.max(1))),
             store,
             watches: watch::new_store(),
+            bar_bcast,
+            sig_bcast,
         }
     }
 }
@@ -127,8 +151,10 @@ pub fn router(state: HttpState) -> Router {
         .merge(indicators::routes())
         .merge(data::routes())
         .merge(backtest::routes())
+        .merge(duckdb::routes())
         .merge(store::routes())
         .merge(watch::routes())
+        .merge(sse::routes())
         .with_state(state)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())

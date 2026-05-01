@@ -48,7 +48,7 @@ async fn run_once(symbols: &[String], tx: &BarTx) -> anyhow::Result<()> {
             .map(|s| SubArg { channel: "candle1m", inst_id: s.as_str() })
             .collect(),
     };
-    write.send(Message::Text(serde_json::to_string(&sub)?)).await?;
+    write.send(Message::Text(serde_json::to_string(&sub)?.into())).await?;
 
     // Ping ticker
     let mut ping_interval = tokio::time::interval(PING_INTERVAL);

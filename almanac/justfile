@@ -1,3 +1,6 @@
+dc := "docker compose -f ../deployment/docker-compose.yml"
+
+# List all recipes
 default:
     @just --list
 
@@ -17,23 +20,23 @@ build-release:
 test:
     cargo test
 
-# Run tests for a specific crate  (e.g. just test-crate bt-indicator)
+# Run tests for a specific crate (e.g. just test-crate alm-strategy)
 test-crate crate:
     cargo test -p {{crate}}
 
-# Run a specific test by name across the workspace
+# Run tests matching a name filter
 test-name name:
     cargo test {{name}}
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 
-# Run the live signal engine
+# Run herald (live signal engine + HTTP API)
 run:
     cargo run -p alm-herald
 
-# Run with debug logging
+# Run herald with debug logging
 run-debug:
-    RUST_LOG=alm_herald=debug cargo run -p alm-herald
+    RUST_LOG=alm_herald=debug,alm_ledger=debug cargo run -p alm-herald
 
 # Hot-reload herald on file changes (requires cargo-watch)
 dev:
@@ -41,7 +44,7 @@ dev:
 
 # ── Code quality ──────────────────────────────────────────────────────────────
 
-# Lint with clippy
+# Lint with clippy (treat warnings as errors)
 lint:
     cargo clippy -- -D warnings
 
@@ -55,25 +58,25 @@ fmt-check:
 
 # ── Docker ────────────────────────────────────────────────────────────────────
 
-# Build + start signal-engine container
+# Build + start herald container
 up:
-    docker compose up -d --build signal-engine
+    {{dc}} up -d --build herald
 
-# Start without rebuild
+# Start herald without rebuild
 start:
-    docker compose up -d signal-engine
+    {{dc}} up -d herald
 
-# Stop
+# Stop all containers
 down:
-    docker compose down
+    {{dc}} down
 
-# Live logs for signal-engine
+# Tail herald logs
 logs:
-    docker compose logs -f signal-engine
+    {{dc}} logs -f herald
 
-# Restart signal-engine
+# Restart herald
 restart:
-    docker compose restart signal-engine
+    {{dc}} restart herald
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 

@@ -549,7 +549,7 @@ pub fn build_strategy(name: &str, params: &Value) -> Result<Box<dyn Strategy>> {
 
         // ── CEL (cel-interpreter, ema(9) function-call syntax) ───────────────
         // params: { "entry": "<cel expr>", "exit": "<cel expr>" }
-        "cel" | "cel2" | "evalexpr" => Box::new(CelStrategy::from_params(p)?),
+        "cel" | "cel2" => Box::new(CelStrategy::from_params(p)?),
 
         // ── Rhai scripting strategy ───────────────────────────────────────────
         // params: { "script": "<rhai script>" }
@@ -614,7 +614,7 @@ pub struct IndicatorDep {
 /// indicators internally).
 pub fn indicator_deps(name: &str, params: &Value) -> Vec<IndicatorDep> {
     match name {
-        "cel" | "cel2" | "evalexpr" => crate::expr::cel::cel_indicator_deps(params),
+        "cel" | "cel2" => crate::expr::cel::cel_indicator_deps(params),
         "rhai" => crate::expr::rhai_strategy::rhai_indicator_deps(params),
         // "dynamic" => crate::dynamic::dynamic_indicator_deps(params),  // deprecated
         _ => Vec::new(),

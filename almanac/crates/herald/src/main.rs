@@ -10,12 +10,12 @@ use std::sync::Arc;
 use anyhow::Result;
 use alm_core::Timeframe;
 use alm_data::feed::BarFeed;
-use alm_engine::data::{find_parquet_files, load_bars};
+use alm_engine::data::{find_bootstrap_from_ms, find_parquet_files, load_bars};
 use alm_ledger::{default_warm_set, Ledger, LedgerConfig, LedgerObserver};
 use handler::Handler;
 use registry::Registry;
 use ring::BarRing;
-use tokio::sync::mpsc;
+use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn};
 
 #[tokio::main]
@@ -82,20 +82,31 @@ async fn main() -> Result<()> {
             .unwrap_or(5);
 
         if warm_days > 0 && data_dir.exists() {
-            let now_ms = chrono::Utc::now().timestamp_millis();
-            let from_ms = now_ms - warm_days * 86_400_000;
-            info!(symbols = startup_symbols.len(), warm_days, "bootstrapping from parquet");
+            info!(symbols = startup_symbols.len(), "bootstrapping from parquet");
 
             for sym in &startup_symbols {
-                let files = find_parquet_files(&data_dir, sym, Some("M1"), None);
+                // OKX symbols use dashes (e.g. "BTC-USDT"); parquet files are stored
+                // under the Binance-style name ("BTCUSDT"). Map for the file lookup,
+                // then rewrite bar.symbol back so the Ledger entry matches the live feed.
+                let parquet_sym = sym.replace('-', "");
+                let files = find_parquet_files(&data_dir, &parquet_sym, Some("M1"), None);
                 if files.is_empty() {
                     warn!(symbol = %sym, "no M1 parquet files — skipping bootstrap");
                     continue;
                 }
-                match load_bars(&files, sym, Some(from_ms), None, false, "") {
+
+                // Prefer starting from the latest monthly file so we always pick up
+                // at least one full closed month + any daily files after it.
+                // Fall back to the fixed warm_days window when no monthly file exists.
+                let now_ms = chrono::Utc::now().timestamp_millis();
+                let fallback_ms = now_ms - warm_days * 86_400_000;
+                let from_ms = find_bootstrap_from_ms(&files).unwrap_or(fallback_ms);
+
+                match load_bars(&files, &parquet_sym, Some(from_ms), None, false, "") {
                     Ok(mut feed) => {
                         let mut count = 0usize;
-                        while let Some(bar) = feed.next() {
+                        while let Some(mut bar) = feed.next() {
+                            bar.symbol = sym.clone();
                             let _ = ledger.advance(Timeframe::M1, bar);
                             count += 1;
                         }
@@ -177,13 +188,20 @@ async fn main() -> Result<()> {
         }
     };
 
+    // ── SSE broadcast channels ────────────────────────────────────────────────
+    let (bar_bcast_tx, _) = broadcast::channel::<alm_core::Bar>(256);
+    let (sig_bcast_tx, _) = broadcast::channel::<std::sync::Arc<registry::SignalBatch>>(64);
+
     // ── HTTP server ───────────────────────────────────────────────────────────
     let http_addr = std::env::var("HERALD_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:8090".into());
     let max_concurrent_bt: usize = std::env::var("HERALD_MAX_BACKTESTS")
         .ok().and_then(|s| s.parse().ok()).unwrap_or(4);
     info!(data_dir = %data_dir.display(), max_concurrent_bt, "configuring HTTP");
 
-    let http_state = http::HttpState::new(ledger.clone(), tf, data_dir, max_concurrent_bt, store);
+    let http_state = http::HttpState::new(
+        ledger.clone(), tf, data_dir, max_concurrent_bt, store,
+        bar_bcast_tx.clone(), sig_bcast_tx.clone(),
+    );
     http::watch::restore_from_store(&http_state).await;
 
     let router = http::router(http_state);
@@ -196,7 +214,8 @@ async fn main() -> Result<()> {
     });
 
     // ── Main loop ─────────────────────────────────────────────────────────────
-    let handler = Handler::new(client, ledger, registry, ring, tf, bar_rx, sig_rx);
+    let handler = Handler::new(client, ledger, registry, ring, tf, bar_rx, sig_rx,
+        bar_bcast_tx, sig_bcast_tx);
     let result = handler.run().await;
     http_task.abort();
     result?;

@@ -35,6 +35,12 @@ tower-http        = { version = "0.5", features = ["cors", "trace"] }
 uuid              = { version = "1", features = ["v7"] }
 sqlx              = { workspace = true }
 
+# DuckDB — in-process SQL engine for querying flat Parquet files
+duckdb            = { version = "1", features = ["bundled"] }
+
+# SSE streaming
+tokio-stream      = { version = "0.1", features = ["sync"] }
+
 [dev-dependencies]
-tower             = "0.4"
+tower             = { version = "0.4", features = ["util"] }
 http-body-util    = "0.1"

@@ -25,7 +25,7 @@ alm-pattern   = { path = "./crates/pattern" }
 
 # Async
 tokio = { version = "1", default-features = false, features = ["macros", "rt-multi-thread", "signal", "sync"] }
-tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+tokio-tungstenite = { version = "0.29", features = ["native-tls"] }
 
 # Error
 thiserror = "2"
@@ -36,11 +36,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
 # Protobuf — schema-first binary serialization for NATS messages
-prost = "0.13"
-prost-types = "0.13"
+prost = "0.14"
+prost-types = "0.14"
 
 # NATS messaging
-async-nats = "0.38"
+async-nats = "0.47"
 
 # Time
 chrono    = { version = "0.4", features = ["serde"] }
@@ -51,8 +51,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Expression evaluation
-evalexpr        = "11"
-cel-interpreter = "0.8"
+cel-interpreter = "0.10"
 
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-native-tls", "postgres", "json"] }

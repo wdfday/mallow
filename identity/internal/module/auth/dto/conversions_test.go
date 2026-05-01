@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 
+	profiledomain "mallow/identity/internal/module/profile/domain"
 	"mallow/identity/internal/module/user/domain"
 )
 
@@ -21,9 +22,6 @@ func TestNewAuthResponse(t *testing.T) {
 		user := &domain.User{
 			ID:            userID,
 			Email:         "test@example.com",
-			FullName:      "Test User",
-			DisplayName:   &displayName,
-			AvatarURL:     &avatarURL,
 			Role:          domain.UserRoleUser,
 			Status:        domain.UserStatusActive,
 			EmailVerified: true,
@@ -32,10 +30,17 @@ func TestNewAuthResponse(t *testing.T) {
 			LastLoginAt:   &loginAt,
 		}
 
+		profile := &profiledomain.UserProfile{
+			UserID:      userID,
+			FullName:    "Test User",
+			DisplayName: &displayName,
+			AvatarURL:   &avatarURL,
+		}
+
 		accessToken := "test_access_token"
 		expiresAt := time.Now().Add(1 * time.Hour).Unix()
 
-		response := NewAuthResponse(user, accessToken, expiresAt)
+		response := NewAuthResponse(user, profile, accessToken, expiresAt)
 
 		assert.Equal(t, userID.String(), response.User.ID)
 		assert.Equal(t, "test@example.com", response.User.Email)
@@ -59,24 +64,22 @@ func TestNewAuthResponse(t *testing.T) {
 		}
 		expiresAt := time.Now().Add(-1 * time.Hour).Unix() // Expired
 
-		response := NewAuthResponse(user, "token", expiresAt)
+		response := NewAuthResponse(user, nil, "token", expiresAt)
 
 		assert.Equal(t, int64(0), response.Token.ExpiresIn)
 	})
 
-	t.Run("handles nil optional fields", func(t *testing.T) {
+	t.Run("handles nil profile — personal info defaults to zero values", func(t *testing.T) {
 		user := &domain.User{
 			ID:          uuid.New(),
 			Email:       "test@example.com",
-			FullName:    "Test",
-			DisplayName: nil,
-			AvatarURL:   nil,
 			LastLoginAt: nil,
 			Role:        domain.UserRoleUser,
 		}
 
-		response := NewAuthResponse(user, "token", time.Now().Add(1*time.Hour).Unix())
+		response := NewAuthResponse(user, nil, "token", time.Now().Add(1*time.Hour).Unix())
 
+		assert.Equal(t, "", response.User.FullName)
 		assert.Nil(t, response.User.DisplayName)
 		assert.Nil(t, response.User.AvatarURL)
 		assert.Nil(t, response.User.LastLoginAt)

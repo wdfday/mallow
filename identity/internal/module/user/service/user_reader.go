@@ -32,6 +32,18 @@ func (s *UserService) GetByEmail(ctx context.Context, email string) (*domain.Use
 	return user, nil
 }
 
+func (s *UserService) GetByGoogleID(ctx context.Context, googleID string) (*domain.User, error) {
+	googleID = strings.TrimSpace(googleID)
+	user, err := s.repo.GetByGoogleID(ctx, googleID)
+	if err != nil {
+		if shared.IsAppError(err) {
+			return nil, err
+		}
+		return nil, shared.ErrInternal.WithError(err)
+	}
+	return user, nil
+}
+
 // List retrieves user with pagination
 func (s *UserService) List(ctx context.Context, filter domain.ListUsersFilter, pagination shared.Pagination) (shared.Page[domain.User], error) {
 	page, err := s.repo.List(ctx, filter, pagination)

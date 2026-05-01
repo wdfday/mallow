@@ -36,7 +36,7 @@ func (s *sessionService) CreateSession(ctx context.Context, sid, userIDStr, ip, 
 	if err != nil {
 		return shared.ErrBadRequest.WithDetails("message", "invalid user ID")
 	}
-	return s.repo.Create(ctx, &repository.SessionEntry{
+	return s.repo.Create(ctx, &authDomain.Session{
 		SID:       sid,
 		UserID:    userID,
 		IP:        ip,

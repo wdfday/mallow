@@ -99,6 +99,8 @@ func extractFieldFromPGError(pgErr *pgconn.PgError) string {
 		return "email"
 	case strings.Contains(name, "phone"):
 		return "phone_number"
+	case strings.Contains(name, "google"):
+		return "google_id"
 	case strings.Contains(name, "user_id"):
 		return "user_id"
 	default:

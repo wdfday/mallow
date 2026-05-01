@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"mallow/identity/internal/middleware"
+	profiledto "mallow/identity/internal/module/profile/dto"
+	profileservice "mallow/identity/internal/module/profile/service"
 	"mallow/identity/internal/module/user/dto"
 	"mallow/identity/internal/module/user/service"
 	"mallow/identity/internal/shared"
@@ -14,12 +16,13 @@ import (
 
 // UserHandler handles user-related HTTP requests
 type UserHandler struct {
-	service service.IUserService
+	service        service.IUserService
+	profileService profileservice.Service
 }
 
 // NewUserHandler creates a new UserHandler
-func NewUserHandler(service service.IUserService) *UserHandler {
-	return &UserHandler{service: service}
+func NewUserHandler(service service.IUserService, profileService profileservice.Service) *UserHandler {
+	return &UserHandler{service: service, profileService: profileService}
 }
 
 func (h *UserHandler) RegisterRoutes(r *gin.Engine, authMiddleware *middleware.Middleware) {
@@ -55,7 +58,10 @@ func (h *UserHandler) getMe(c *gin.Context) {
 		return
 	}
 
-	shared.RespondWithSuccess(c, http.StatusOK, "User profile retrieved successfully", dto.UserToProfileResponse(*user))
+	// Fetch profile (nil-safe: legacy users may not have one)
+	profile, _ := h.profileService.GetProfile(c.Request.Context(), user.ID.String())
+
+	shared.RespondWithSuccess(c, http.StatusOK, "User profile retrieved successfully", dto.UserToProfileResponse(*user, profile))
 }
 
 // UpdateMe godoc
@@ -84,43 +90,52 @@ func (h *UserHandler) updateMe(c *gin.Context) {
 		return
 	}
 
-	updates := make(map[string]any)
-
-	if req.FullName != nil {
-		fullName := strings.TrimSpace(*req.FullName)
-		if fullName == "" {
-			shared.RespondWithError(c, http.StatusBadRequest, "full_name cannot be empty")
-			return
-		}
-		updates["full_name"] = fullName
-	}
-
-	if req.DisplayName != nil {
-		displayName := strings.TrimSpace(*req.DisplayName)
-		if displayName == "" {
-			updates["display_name"] = nil
-		} else {
-			updates["display_name"] = displayName
-		}
-	}
-
-	if req.PhoneNumber != nil {
-		phone := strings.TrimSpace(*req.PhoneNumber)
-		if phone == "" {
-			updates["phone_number"] = nil
-		} else {
-			updates["phone_number"] = phone
-		}
-	}
-
-	if len(updates) == 0 {
+	hasAnyField := req.FullName != nil || req.DisplayName != nil || req.PhoneNumber != nil
+	if !hasAnyField {
 		shared.RespondWithError(c, http.StatusBadRequest, "no fields to update")
 		return
 	}
 
-	if err := h.service.UpdateColumns(c.Request.Context(), currentUser.ID.String(), updates); err != nil {
-		shared.HandleError(c, err)
-		return
+	// Update personal info (FullName, DisplayName) via profile service
+	if req.FullName != nil || req.DisplayName != nil {
+		var fullName *string
+		var displayName *string
+
+		if req.FullName != nil {
+			trimmed := strings.TrimSpace(*req.FullName)
+			if trimmed == "" {
+				shared.RespondWithError(c, http.StatusBadRequest, "full_name cannot be empty")
+				return
+			}
+			fullName = &trimmed
+		}
+		if req.DisplayName != nil {
+			displayName = req.DisplayName
+		}
+
+		profileReq := profiledto.UpdateProfileRequest{
+			FullName:    fullName,
+			DisplayName: displayName,
+		}
+		if _, err := h.profileService.UpdateProfile(c.Request.Context(), currentUser.ID.String(), profileReq); err != nil {
+			shared.HandleError(c, err)
+			return
+		}
+	}
+
+	// Update auth/security fields (PhoneNumber) on users table
+	if req.PhoneNumber != nil {
+		userUpdates := make(map[string]any)
+		phone := strings.TrimSpace(*req.PhoneNumber)
+		if phone == "" {
+			userUpdates["phone_number"] = nil
+		} else {
+			userUpdates["phone_number"] = phone
+		}
+		if err := h.service.UpdateColumns(c.Request.Context(), currentUser.ID.String(), userUpdates); err != nil {
+			shared.HandleError(c, err)
+			return
+		}
 	}
 
 	updatedUser, err := h.service.GetByID(c.Request.Context(), currentUser.ID.String())
@@ -129,5 +144,7 @@ func (h *UserHandler) updateMe(c *gin.Context) {
 		return
 	}
 
-	shared.RespondWithSuccess(c, http.StatusOK, "User profile updated successfully", dto.UserToProfileResponse(*updatedUser))
+	profile, _ := h.profileService.GetProfile(c.Request.Context(), updatedUser.ID.String())
+
+	shared.RespondWithSuccess(c, http.StatusOK, "User profile updated successfully", dto.UserToProfileResponse(*updatedUser, profile))
 }

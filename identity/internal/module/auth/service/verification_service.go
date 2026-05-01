@@ -9,33 +9,37 @@ import (
 	"mallow/identity/internal/module/auth/helper"
 	"mallow/identity/internal/module/auth/repository"
 	notificationservice "mallow/identity/internal/module/notification/service"
+	profileservice "mallow/identity/internal/module/profile/service"
 	"mallow/identity/internal/module/user/service"
 	"mallow/identity/internal/shared"
 )
 
 // VerificationService handles the full email verification lifecycle
 type VerificationService struct {
-	tokenRepo    repository.TokenRepository
-	userService  service.IUserService
-	tokenGen     ITokenService
-	emailService notificationservice.EmailService
-	logger       *slog.Logger
+	tokenRepo      repository.TokenRepository
+	userService    service.IUserService
+	profileService profileservice.Service
+	tokenGen       ITokenService
+	emailService   notificationservice.EmailService
+	logger         *slog.Logger
 }
 
 // NewVerificationService creates a new verification service
 func NewVerificationService(
 	tokenRepo repository.TokenRepository,
 	userService service.IUserService,
+	profileService profileservice.Service,
 	tokenGen ITokenService,
 	emailService notificationservice.EmailService,
 	logger *slog.Logger,
 ) *VerificationService {
 	return &VerificationService{
-		tokenRepo:    tokenRepo,
-		userService:  userService,
-		tokenGen:     tokenGen,
-		emailService: emailService,
-		logger:       logger,
+		tokenRepo:      tokenRepo,
+		userService:    userService,
+		profileService: profileService,
+		tokenGen:       tokenGen,
+		emailService:   emailService,
+		logger:         logger,
 	}
 }
 
@@ -50,7 +54,14 @@ func (s *VerificationService) SendVerificationEmail(ctx context.Context, userID,
 		return shared.ErrBadRequest.WithDetails("message", "email already verified")
 	}
 
-	return s.dispatchVerificationEmail(ctx, user.ID.String(), user.Email, user.FullName, ipAddress, userAgent)
+	fullName := ""
+	if s.profileService != nil {
+		if p, _ := s.profileService.GetProfile(ctx, user.ID.String()); p != nil {
+			fullName = p.FullName
+		}
+	}
+
+	return s.dispatchVerificationEmail(ctx, user.ID.String(), user.Email, fullName, ipAddress, userAgent)
 }
 
 // VerifyEmail verifies a user's email using the token.
@@ -98,7 +109,14 @@ func (s *VerificationService) ResendVerificationEmail(ctx context.Context, email
 		return shared.ErrBadRequest.WithDetails("message", "email already verified")
 	}
 
-	return s.dispatchVerificationEmail(ctx, user.ID.String(), user.Email, user.FullName, ipAddress, userAgent)
+	fullName := ""
+	if s.profileService != nil {
+		if p, _ := s.profileService.GetProfile(ctx, user.ID.String()); p != nil {
+			fullName = p.FullName
+		}
+	}
+
+	return s.dispatchVerificationEmail(ctx, user.ID.String(), user.Email, fullName, ipAddress, userAgent)
 }
 
 // CleanupExpiredTokens is a no-op: Redis TTL handles expiry automatically.

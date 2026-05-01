@@ -13,6 +13,7 @@ import (
 
 	"mallow/identity/internal/middleware"
 	authdto "mallow/identity/internal/module/auth/dto"
+	profileservice "mallow/identity/internal/module/profile/service"
 	"mallow/identity/internal/module/user/domain"
 	userdto "mallow/identity/internal/module/user/dto"
 	"mallow/identity/internal/module/user/service"
@@ -45,18 +46,20 @@ type telegramLinkPayload struct {
 
 // TelegramHandler handles Telegram account linking endpoints.
 type TelegramHandler struct {
-	userService service.IUserService
-	rdb         *redis.Client
-	js          nats.JetStreamContext // may be nil if NATS is unavailable
-	botUsername string
+	userService    service.IUserService
+	profileService profileservice.Service
+	rdb            *redis.Client
+	js             nats.JetStreamContext // may be nil if NATS is unavailable
+	botUsername    string
 }
 
-func NewTelegramHandler(userService service.IUserService, rdb *redis.Client, js nats.JetStreamContext, botUsername string) *TelegramHandler {
+func NewTelegramHandler(userService service.IUserService, profileService profileservice.Service, rdb *redis.Client, js nats.JetStreamContext, botUsername string) *TelegramHandler {
 	return &TelegramHandler{
-		userService: userService,
-		rdb:         rdb,
-		js:          js,
-		botUsername: botUsername,
+		userService:    userService,
+		profileService: profileService,
+		rdb:            rdb,
+		js:             js,
+		botUsername:    botUsername,
 	}
 }
 
@@ -257,10 +260,17 @@ func (h *TelegramHandler) getUserByTelegram(c *gin.Context) {
 		}
 	}
 
+	fullName := ""
+	if h.profileService != nil {
+		if p, _ := h.profileService.GetProfile(c.Request.Context(), user.ID.String()); p != nil {
+			fullName = p.FullName
+		}
+	}
+
 	shared.RespondWithSuccess(c, http.StatusOK, "user resolved by telegram successfully", authdto.TelegramUserLookupResponse{
 		ID:       user.ID.String(),
 		Email:    user.Email,
-		FullName: user.FullName,
+		FullName: fullName,
 		Telegram: telegramResp,
 	})
 }

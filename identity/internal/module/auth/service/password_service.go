@@ -9,6 +9,7 @@ import (
 	"mallow/identity/internal/module/auth/helper"
 	"mallow/identity/internal/module/auth/repository"
 	notificationservice "mallow/identity/internal/module/notification/service"
+	profileservice "mallow/identity/internal/module/profile/service"
 	userservice "mallow/identity/internal/module/user/service"
 	"mallow/identity/internal/shared"
 
@@ -19,6 +20,7 @@ import (
 type PasswordService struct {
 	cost           int // bcrypt cost factor
 	userService    userservice.IUserService
+	profileService profileservice.Service
 	tokenRepo      repository.TokenRepository
 	tokenGenerator ITokenService
 	emailService   notificationservice.EmailService
@@ -28,6 +30,7 @@ type PasswordService struct {
 // NewPasswordService creates a new password service
 func NewPasswordService(
 	userService userservice.IUserService,
+	profileService profileservice.Service,
 	tokenRepo repository.TokenRepository,
 	tokenGenerator ITokenService,
 	emailService notificationservice.EmailService,
@@ -36,6 +39,7 @@ func NewPasswordService(
 	return &PasswordService{
 		cost:           bcrypt.DefaultCost,
 		userService:    userService,
+		profileService: profileService,
 		tokenRepo:      tokenRepo,
 		tokenGenerator: tokenGenerator,
 		emailService:   emailService,
@@ -117,7 +121,13 @@ func (s *PasswordService) ForgotPassword(ctx context.Context, email, ipAddress, 
 	}
 
 	if s.emailService != nil {
-		if err := s.emailService.SendPasswordResetEmail(user.Email, user.FullName, tokenStr); err != nil {
+		fullName := ""
+		if s.profileService != nil {
+			if p, _ := s.profileService.GetProfile(ctx, user.ID.String()); p != nil {
+				fullName = p.FullName
+			}
+		}
+		if err := s.emailService.SendPasswordResetEmail(user.Email, fullName, tokenStr); err != nil {
 			s.logger.Error("failed to send password reset email", "email", user.Email, "err", err)
 		}
 	}

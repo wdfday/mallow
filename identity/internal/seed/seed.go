@@ -11,6 +11,8 @@ import (
 
 	"mallow/identity/internal/config"
 	"mallow/identity/internal/module/auth/service"
+	profiledto "mallow/identity/internal/module/profile/dto"
+	profileService "mallow/identity/internal/module/profile/service"
 	userDomain "mallow/identity/internal/module/user/domain"
 	userService "mallow/identity/internal/module/user/service"
 )
@@ -20,6 +22,7 @@ type Params struct {
 	fx.In
 	Config          *config.Config
 	UserService     userService.IUserService
+	ProfileService  profileService.Service
 	PasswordService service.IPasswordService
 	Logger          *slog.Logger
 }
@@ -57,7 +60,6 @@ func SeedAdmin(p Params) {
 		ID:                uuid.New(),
 		Email:             email,
 		Password:          hashed,
-		FullName:          "Admin",
 		Role:              userDomain.UserRoleAdmin,
 		Status:            userDomain.UserStatusActive,
 		EmailVerified:     true,
@@ -70,6 +72,14 @@ func SeedAdmin(p Params) {
 	if _, err := p.UserService.Create(ctx, user); err != nil {
 		p.Logger.Error("admin seed: create admin failed", "email", email, "err", err)
 		return
+	}
+
+	// Create admin profile with display name
+	fullName := "Mallow"
+	if _, err := p.ProfileService.CreateProfile(ctx, user.ID.String(), profiledto.CreateProfileRequest{
+		FullName: &fullName,
+	}); err != nil {
+		p.Logger.Warn("admin seed: create admin profile failed", "err", err)
 	}
 
 	p.Logger.Info("admin seed: initial admin user created", "email", email, "user_id", user.ID.String())

@@ -4,6 +4,10 @@ import "time"
 
 // CreateProfileRequest captures data for creating a user profile.
 type CreateProfileRequest struct {
+	FullName                  *string    `json:"full_name,omitempty" binding:"omitempty,min=1,max=255"`
+	DisplayName               *string    `json:"display_name,omitempty" binding:"omitempty,max=255"`
+	DateOfBirth               *time.Time `json:"date_of_birth,omitempty"`
+	AvatarURL                 *string    `json:"avatar_url,omitempty" binding:"omitempty,max=512"`
 	Occupation                *string    `json:"occupation" binding:"omitempty,max=100"`
 	Industry                  *string    `json:"industry" binding:"omitempty,max=100"`
 	Employer                  *string    `json:"employer" binding:"omitempty,max=255"`
@@ -31,6 +35,10 @@ type CreateProfileRequest struct {
 
 // UpdateProfileRequest captures mutable fields for updating a profile.
 type UpdateProfileRequest struct {
+	FullName                  *string    `json:"full_name,omitempty" binding:"omitempty,min=1,max=255"`
+	DisplayName               *string    `json:"display_name,omitempty" binding:"omitempty,max=255"`
+	DateOfBirth               *time.Time `json:"date_of_birth,omitempty"`
+	AvatarURL                 *string    `json:"avatar_url,omitempty" binding:"omitempty,max=512"`
 	Occupation                *string    `json:"occupation" binding:"omitempty,max=100"`
 	Industry                  *string    `json:"industry" binding:"omitempty,max=100"`
 	Employer                  *string    `json:"employer" binding:"omitempty,max=255"`

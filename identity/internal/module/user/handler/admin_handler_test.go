@@ -31,7 +31,7 @@ func setAdminUser(c *gin.Context, userID uuid.UUID) {
 
 func TestAdminHandler_List(t *testing.T) {
 	t.Run("successfully list users", func(t *testing.T) {
-		router, mockService := setupTestRouter()
+		router, mockService, _ := setupTestRouter()
 		handler := NewAdminHandler(mockService)
 		adminID := uuid.New()
 
@@ -69,7 +69,7 @@ func TestAdminHandler_List(t *testing.T) {
 	})
 
 	t.Run("list users with role filter", func(t *testing.T) {
-		router, mockService := setupTestRouter()
+		router, mockService, _ := setupTestRouter()
 		handler := NewAdminHandler(mockService)
 		adminID := uuid.New()
 
@@ -99,7 +99,7 @@ func TestAdminHandler_List(t *testing.T) {
 	})
 
 	t.Run("list users with status filter", func(t *testing.T) {
-		router, mockService := setupTestRouter()
+		router, mockService, _ := setupTestRouter()
 		handler := NewAdminHandler(mockService)
 		adminID := uuid.New()
 
@@ -129,7 +129,7 @@ func TestAdminHandler_List(t *testing.T) {
 	})
 
 	t.Run("return error for invalid role filter", func(t *testing.T) {
-		router, _ := setupTestRouter()
+		router, _, _ := setupTestRouter()
 		handler := NewAdminHandler(nil)
 		adminID := uuid.New()
 
@@ -146,7 +146,7 @@ func TestAdminHandler_List(t *testing.T) {
 	})
 
 	t.Run("return error for invalid status filter", func(t *testing.T) {
-		router, _ := setupTestRouter()
+		router, _, _ := setupTestRouter()
 		handler := NewAdminHandler(nil)
 		adminID := uuid.New()
 
@@ -163,7 +163,7 @@ func TestAdminHandler_List(t *testing.T) {
 	})
 
 	t.Run("handle service error", func(t *testing.T) {
-		router, mockService := setupTestRouter()
+		router, mockService, _ := setupTestRouter()
 		handler := NewAdminHandler(mockService)
 		adminID := uuid.New()
 
@@ -186,7 +186,7 @@ func TestAdminHandler_List(t *testing.T) {
 
 func TestAdminHandler_Suspend(t *testing.T) {
 	t.Run("successfully suspend user", func(t *testing.T) {
-		router, mockService := setupTestRouter()
+		router, mockService, _ := setupTestRouter()
 		handler := NewAdminHandler(mockService)
 		adminID := uuid.New()
 		userID := uuid.New()
@@ -209,7 +209,7 @@ func TestAdminHandler_Suspend(t *testing.T) {
 	})
 
 	t.Run("return error for invalid user ID", func(t *testing.T) {
-		router, _ := setupTestRouter()
+		router, _, _ := setupTestRouter()
 		handler := NewAdminHandler(nil)
 		adminID := uuid.New()
 
@@ -226,7 +226,7 @@ func TestAdminHandler_Suspend(t *testing.T) {
 	})
 
 	t.Run("handle service error", func(t *testing.T) {
-		router, mockService := setupTestRouter()
+		router, mockService, _ := setupTestRouter()
 		handler := NewAdminHandler(mockService)
 		adminID := uuid.New()
 		userID := uuid.New()
@@ -250,7 +250,7 @@ func TestAdminHandler_Suspend(t *testing.T) {
 
 func TestAdminHandler_Reinstate(t *testing.T) {
 	t.Run("successfully reinstate user", func(t *testing.T) {
-		router, mockService := setupTestRouter()
+		router, mockService, _ := setupTestRouter()
 		handler := NewAdminHandler(mockService)
 		adminID := uuid.New()
 		userID := uuid.New()
@@ -273,7 +273,7 @@ func TestAdminHandler_Reinstate(t *testing.T) {
 	})
 
 	t.Run("return error for invalid user ID", func(t *testing.T) {
-		router, _ := setupTestRouter()
+		router, _, _ := setupTestRouter()
 		handler := NewAdminHandler(nil)
 		adminID := uuid.New()
 
@@ -292,7 +292,7 @@ func TestAdminHandler_Reinstate(t *testing.T) {
 
 func TestAdminHandler_ChangeRole(t *testing.T) {
 	t.Run("successfully change user role to admin", func(t *testing.T) {
-		router, mockService := setupTestRouter()
+		router, mockService, _ := setupTestRouter()
 		handler := NewAdminHandler(mockService)
 		adminID := uuid.New()
 		userID := uuid.New()
@@ -319,7 +319,7 @@ func TestAdminHandler_ChangeRole(t *testing.T) {
 	})
 
 	t.Run("successfully change user role to user", func(t *testing.T) {
-		router, mockService := setupTestRouter()
+		router, mockService, _ := setupTestRouter()
 		handler := NewAdminHandler(mockService)
 		adminID := uuid.New()
 		userID := uuid.New()
@@ -346,7 +346,7 @@ func TestAdminHandler_ChangeRole(t *testing.T) {
 	})
 
 	t.Run("return error for invalid role", func(t *testing.T) {
-		router, _ := setupTestRouter()
+		router, _, _ := setupTestRouter()
 		handler := NewAdminHandler(nil)
 		adminID := uuid.New()
 		userID := uuid.New()
@@ -368,7 +368,7 @@ func TestAdminHandler_ChangeRole(t *testing.T) {
 	})
 
 	t.Run("return error for invalid JSON", func(t *testing.T) {
-		router, _ := setupTestRouter()
+		router, _, _ := setupTestRouter()
 		handler := NewAdminHandler(nil)
 		adminID := uuid.New()
 		userID := uuid.New()
@@ -387,7 +387,7 @@ func TestAdminHandler_ChangeRole(t *testing.T) {
 	})
 
 	t.Run("return error for invalid user ID", func(t *testing.T) {
-		router, _ := setupTestRouter()
+		router, _, _ := setupTestRouter()
 		handler := NewAdminHandler(nil)
 		adminID := uuid.New()
 

@@ -1,21 +1,63 @@
+# Local docker-compose.yml (repo-root context) for isolated dev.
+# For full-stack deploys use the root justfile.
+
+# List all recipes
 default:
     @just --list
 
-fmt:
-    gofmt -w $(rg --files cmd internal | rg '\.go$$')
+# ── Local dev ─────────────────────────────────────────────────────────────────
 
-test:
-    go test ./...
+# Build binary
+build:
+    go build -o bin/identity ./cmd/identity/
 
+# Run locally
 run:
     go run ./cmd/identity/
 
+# Hot-reload with air
 dev:
     ~/.go/bin/air
 
-swagger:
-    go run github.com/swaggo/swag/cmd/swag@v1.8.12 init -g cmd/identity/swagger.go -o docs --parseInternal --parseDependency --parseDepth 3
+# Run tests
+test:
+    go test ./...
 
+# Format source files
+fmt:
+    gofmt -w $(rg --files cmd internal | rg '\.go$')
+
+# ── Swagger ───────────────────────────────────────────────────────────────────
+
+# Regenerate swagger docs
+swagger:
+    go run github.com/swaggo/swag/cmd/swag@v1.8.12 init \
+        -g cmd/identity/swagger.go -o docs \
+        --parseInternal --parseDependency --parseDepth 3
+
+# Verify committed swagger docs are up to date
 swagger-check:
     just swagger
     git diff --exit-code docs/docs.go docs/swagger.json docs/swagger.yaml
+
+# ── Docker (local compose — isolated, no infra deps) ─────────────────────────
+
+# Build + start identity container (uses identity/docker-compose.yml)
+up:
+    docker compose up -d --build identity
+
+# Start identity without rebuild
+start:
+    docker compose up -d identity
+
+# Stop all containers
+down:
+    docker compose down
+
+# Tail identity logs
+logs:
+    docker compose logs -f identity
+
+# Restart identity
+restart:
+    docker compose restart identity

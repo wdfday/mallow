@@ -28,10 +28,7 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		email TEXT NOT NULL,
 		password TEXT,
 		phone_number TEXT,
-		full_name TEXT,
-		display_name TEXT,
-		date_of_birth DATETIME,
-		avatar_url TEXT,
+		google_id TEXT,
 		role TEXT DEFAULT 'user',
 		status TEXT DEFAULT 'pending_verification',
 		email_verified BOOLEAN DEFAULT 0,
@@ -56,8 +53,17 @@ func setupTestDB(t *testing.T) *gorm.DB {
 	);
 	CREATE UNIQUE INDEX idx_users_email ON users(email) WHERE deleted_at IS NULL;
 	CREATE UNIQUE INDEX idx_users_phone ON users(phone_number) WHERE deleted_at IS NULL;
+	CREATE UNIQUE INDEX idx_users_google_id ON users(google_id) WHERE deleted_at IS NULL AND google_id IS NOT NULL;
 	CREATE INDEX idx_users_deleted_at ON users(deleted_at);
 	CREATE INDEX idx_users_last_active_at ON users(last_active_at);
+
+	CREATE TABLE user_profiles (
+		id TEXT PRIMARY KEY,
+		user_id TEXT,
+		full_name TEXT,
+		display_name TEXT,
+		deleted_at DATETIME
+	);
 	`
 	err = db.Exec(sqlStmt).Error
 	require.NoError(t, err)
@@ -71,7 +77,6 @@ func createTestUser(email string) *domain.User {
 		ID:               uuid.New(),
 		Email:            email,
 		Password:         "hashedpassword",
-		FullName:         "Test User",
 		Role:             domain.UserRoleUser,
 		Status:           domain.UserStatusPendingVerification,
 		EmailVerified:    false,
@@ -122,7 +127,6 @@ func TestGormRepo_GetByID(t *testing.T) {
 		found, err := repo.GetByID(ctx, user.ID.String())
 		require.NoError(t, err)
 		assert.Equal(t, user.Email, found.Email)
-		assert.Equal(t, user.FullName, found.FullName)
 	})
 
 	t.Run("return error for non-existent user", func(t *testing.T) {
@@ -268,13 +272,14 @@ func TestGormRepo_Update(t *testing.T) {
 		err := repo.Create(ctx, user)
 		require.NoError(t, err)
 
-		user.FullName = "Updated Name"
+		// Update the user's last_active_at as a simple field update
+		user.LoginAttempts = 5
 		err = repo.Update(ctx, user)
 		require.NoError(t, err)
 
 		found, err := repo.GetByID(ctx, user.ID.String())
 		require.NoError(t, err)
-		assert.Equal(t, "Updated Name", found.FullName)
+		assert.Equal(t, 5, found.LoginAttempts)
 	})
 }
 
@@ -289,18 +294,18 @@ func TestGormRepo_UpdateColumns(t *testing.T) {
 		require.NoError(t, err)
 
 		updates := map[string]any{
-			"full_name": "Partial Update",
+			"login_attempts": 3,
 		}
 		err = repo.UpdateColumns(ctx, user.ID.String(), updates)
 		require.NoError(t, err)
 
 		found, err := repo.GetByID(ctx, user.ID.String())
 		require.NoError(t, err)
-		assert.Equal(t, "Partial Update", found.FullName)
+		assert.Equal(t, 3, found.LoginAttempts)
 	})
 
 	t.Run("return error for non-existent user", func(t *testing.T) {
-		updates := map[string]any{"full_name": "Test"}
+		updates := map[string]any{"login_attempts": 1}
 		err := repo.UpdateColumns(ctx, uuid.New().String(), updates)
 		assert.ErrorIs(t, err, shared.ErrUserNotFound)
 	})

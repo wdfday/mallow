@@ -4,8 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	authdomain "mallow/identity/internal/module/auth/domain"
 	"mallow/identity/internal/module/auth/dto"
 	"mallow/identity/internal/module/auth/repository"
+	profiledomain "mallow/identity/internal/module/profile/domain"
+	profiledto "mallow/identity/internal/module/profile/dto"
+	profileservice "mallow/identity/internal/module/profile/service"
 	"mallow/identity/internal/module/user/domain"
 	"mallow/identity/internal/module/user/service"
 	"time"
@@ -19,6 +23,7 @@ import (
 // Service handles authentication operations
 type Service struct {
 	userService        service.IUserService
+	profileService     profileservice.Service
 	jwtService         IJWTService
 	passwordService    IPasswordService
 	googleOAuthService *GoogleOAuthService
@@ -27,9 +32,14 @@ type Service struct {
 	logger             *slog.Logger
 }
 
+type googleIDReader interface {
+	GetByGoogleID(ctx context.Context, googleID string) (*domain.User, error)
+}
+
 // NewService creates a new auth service
 func NewService(
 	userService service.IUserService,
+	profileService profileservice.Service,
 	jwtService IJWTService,
 	passwordService IPasswordService,
 	googleOAuthService *GoogleOAuthService,
@@ -39,6 +49,7 @@ func NewService(
 ) *Service {
 	return &Service{
 		userService:        userService,
+		profileService:     profileService,
 		jwtService:         jwtService,
 		passwordService:    passwordService,
 		googleOAuthService: googleOAuthService,
@@ -69,7 +80,6 @@ func (s *Service) Register(ctx context.Context, req dto.RegisterRequest) (*dto.A
 	user := &domain.User{
 		Email:    req.Email,
 		Password: hashedPassword,
-		FullName: req.FullName,
 		Role:     domain.UserRoleUser,
 		Status:   domain.UserStatusPendingVerification,
 	}
@@ -81,6 +91,14 @@ func (s *Service) Register(ctx context.Context, req dto.RegisterRequest) (*dto.A
 	createdUser, err := s.userService.Create(ctx, user)
 	if err != nil {
 		return nil, err
+	}
+
+	// Create profile with FullName (nil-safe: profileService may be absent in tests)
+	var profile *profiledomain.UserProfile
+	if s.profileService != nil {
+		profile, _ = s.profileService.CreateProfile(ctx, createdUser.ID.String(), profiledto.CreateProfileRequest{
+			FullName: &req.FullName,
+		})
 	}
 
 	// Generate tokens
@@ -102,6 +120,7 @@ func (s *Service) Register(ctx context.Context, req dto.RegisterRequest) (*dto.A
 
 	return &dto.AuthResult{
 		User:         createdUser,
+		Profile:      profile,
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 		ExpiresAt:    expiresAt,
@@ -165,8 +184,15 @@ func (s *Service) Login(ctx context.Context, req dto.LoginRequest) (*dto.AuthRes
 		return nil, shared.ErrInternal.WithError(err)
 	}
 
+	// Fetch profile (nil-safe: legacy users may not have one; profileService may be absent in tests)
+	var profile *profiledomain.UserProfile
+	if s.profileService != nil {
+		profile, _ = s.profileService.GetProfile(ctx, user.ID.String())
+	}
+
 	return &dto.AuthResult{
 		User:         user,
+		Profile:      profile,
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 		ExpiresAt:    expiresAt,
@@ -248,53 +274,61 @@ func (s *Service) AuthenticateGoogle(ctx context.Context, req dto.GoogleAuthRequ
 		return nil, err
 	}
 
-	// Try to find existing user by email
-	user, err := s.userService.GetByEmail(ctx, googleUser.Email)
+	if s.config == nil || s.config.Google.ClientID == "" {
+		return nil, shared.ErrInternal.WithDetails("message", "Google auth is not configured")
+	}
+	if googleUser.Audience != s.config.Google.ClientID {
+		return nil, shared.ErrUnauthorized.WithDetails("message", "Google token audience mismatch")
+	}
+	if !googleUser.VerifiedEmail {
+		return nil, shared.ErrUnauthorized.WithDetails(
+			"message",
+			"Google email is not verified; please log in with another method and verify your email before using Google login",
+		)
+	}
+
+	googleReader, ok := s.userService.(googleIDReader)
+	if !ok {
+		return nil, shared.ErrInternal.WithDetails("message", "Google ID lookup is not configured")
+	}
+
+	user, err := googleReader.GetByGoogleID(ctx, googleUser.ID)
 	if err != nil {
-		// User doesn't exist, create new one
 		if err == shared.ErrUserNotFound {
-			newUser := &domain.User{
-				Email:         googleUser.Email,
-				FullName:      googleUser.Name,
-				Role:          domain.UserRoleUser,
-				Status:        domain.UserStatusActive,
-				EmailVerified: googleUser.VerifiedEmail,
-			}
-
-			if googleUser.Picture != "" {
-				newUser.AvatarURL = &googleUser.Picture
-			}
-
-			// Set a random password (won't be used for Google OAuth users)
-			randomPassword, err := s.passwordService.HashPassword(fmt.Sprintf("google_oauth_%s", googleUser.ID))
-			if err != nil {
-				return nil, shared.ErrInternal.WithError(err)
-			}
-			newUser.Password = randomPassword
-
-			// Create user
-			user, err = s.userService.Create(ctx, newUser)
+			user, err = s.findOrCreateGoogleUser(ctx, googleUser)
 			if err != nil {
 				return nil, err
 			}
-
 		} else {
 			return nil, err
 		}
 	}
 
-	// If user exists but email not verified, mark as verified (Google confirmed it)
-	if !user.EmailVerified && googleUser.VerifiedEmail {
-		if err := s.userService.MarkEmailVerified(ctx, user.ID.String(), time.Now()); err != nil {
-			// Log error but don't fail authentication
-			s.logger.Warn(
-				"Failed to mark email as verified",
-				"user_id", user.ID.String(),
-				"email", user.Email,
-				"error", err,
-			)
+	if user.Status == domain.UserStatusSuspended {
+		return nil, shared.ErrUnauthorized.WithDetails("message", "account is suspended")
+	}
+	if user.LockedUntil != nil && time.Now().Before(*user.LockedUntil) {
+		return nil, shared.ErrUnauthorized.WithDetails("message", "account is locked")
+	}
+
+	// Upsert profile with name + avatar from Google (nil-safe: profileService may be absent in tests)
+	var avatarURL *string
+	if googleUser.Picture != "" {
+		avatarURL = &googleUser.Picture
+	}
+	var profile *profiledomain.UserProfile
+	if s.profileService != nil {
+		profile, _ = s.profileService.GetProfile(ctx, user.ID.String())
+		if profile == nil {
+			profile, _ = s.profileService.CreateProfile(ctx, user.ID.String(), profiledto.CreateProfileRequest{
+				FullName:  &googleUser.Name,
+				AvatarURL: avatarURL,
+			})
+		} else if avatarURL != nil {
+			profile, _ = s.profileService.UpdateProfile(ctx, user.ID.String(), profiledto.UpdateProfileRequest{
+				AvatarURL: avatarURL,
+			})
 		}
-		user.EmailVerified = true
 	}
 
 	// Generate tokens
@@ -320,9 +354,56 @@ func (s *Service) AuthenticateGoogle(ctx context.Context, req dto.GoogleAuthRequ
 
 	return &dto.AuthResult{
 		User:         user,
+		Profile:      profile,
 		AccessToken:  accessToken,
 		RefreshToken: refreshToken,
 		ExpiresAt:    expiresAt,
 		SessionID:    sid,
 	}, nil
+}
+
+func (s *Service) findOrCreateGoogleUser(ctx context.Context, googleUser *authdomain.GoogleUserInfo) (*domain.User, error) {
+	user, err := s.userService.GetByEmail(ctx, googleUser.Email)
+	if err == nil {
+		if user.GoogleID != nil && *user.GoogleID != googleUser.ID {
+			return nil, shared.ErrConflict.WithDetails("field", "google_id")
+		}
+		if user.GoogleID == nil || *user.GoogleID == "" {
+			if err := s.userService.UpdateColumns(ctx, user.ID.String(), map[string]any{"google_id": googleUser.ID}); err != nil {
+				return nil, err
+			}
+			user.GoogleID = &googleUser.ID
+		}
+		if !user.EmailVerified {
+			if err := s.userService.MarkEmailVerified(ctx, user.ID.String(), time.Now()); err != nil {
+				s.logger.Warn(
+					"Failed to mark email as verified",
+					"user_id", user.ID.String(),
+					"email", user.Email,
+					"error", err,
+				)
+			}
+			user.EmailVerified = true
+		}
+		return user, nil
+	}
+	if err != shared.ErrUserNotFound {
+		return nil, err
+	}
+
+	newUser := &domain.User{
+		Email:         googleUser.Email,
+		GoogleID:      &googleUser.ID,
+		Role:          domain.UserRoleUser,
+		Status:        domain.UserStatusActive,
+		EmailVerified: true,
+	}
+
+	randomPassword, err := s.passwordService.HashPassword(fmt.Sprintf("google_oauth_%s", googleUser.ID))
+	if err != nil {
+		return nil, shared.ErrInternal.WithError(err)
+	}
+	newUser.Password = randomPassword
+
+	return s.userService.Create(ctx, newUser)
 }

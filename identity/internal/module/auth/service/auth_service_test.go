@@ -15,6 +15,9 @@ import (
 
 	"mallow/identity/internal/config"
 	"mallow/identity/internal/module/auth/dto"
+	profiledomain "mallow/identity/internal/module/profile/domain"
+	profiledto "mallow/identity/internal/module/profile/dto"
+	profileservice "mallow/identity/internal/module/profile/service"
 	userdomain "mallow/identity/internal/module/user/domain"
 	"mallow/identity/internal/shared"
 )
@@ -115,6 +118,32 @@ func (m *MockUserService) UnlinkAccount(ctx context.Context, userID, provider, p
 	return nil
 }
 
+// MockProfileService implements profileservice.Service for testing.
+type MockProfileService struct{ mock.Mock }
+
+func (m *MockProfileService) CreateProfile(ctx context.Context, userID string, req profiledto.CreateProfileRequest) (*profiledomain.UserProfile, error) {
+	args := m.Called(ctx, userID, req)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*profiledomain.UserProfile), args.Error(1)
+}
+func (m *MockProfileService) CreateDefaultProfile(ctx context.Context, userID string) (*profiledomain.UserProfile, error) {
+	return nil, nil
+}
+func (m *MockProfileService) GetProfile(ctx context.Context, userID string) (*profiledomain.UserProfile, error) {
+	args := m.Called(ctx, userID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*profiledomain.UserProfile), args.Error(1)
+}
+func (m *MockProfileService) UpdateProfile(ctx context.Context, userID string, req profiledto.UpdateProfileRequest) (*profiledomain.UserProfile, error) {
+	return nil, nil
+}
+
+var _ profileservice.Service = (*MockProfileService)(nil)
+
 type MockJWTService struct {
 	mock.Mock
 }
@@ -210,6 +239,10 @@ func (m *MockTokenBlacklistRepo) RevokeSession(ctx context.Context, sid string, 
 	return nil
 }
 
+func (m *MockTokenBlacklistRepo) IsRevokedByFields(ctx context.Context, sid, userID string) (bool, error) {
+	return false, nil
+}
+
 type MockGoogleOAuthService struct {
 	mock.Mock
 }
@@ -238,9 +271,11 @@ func TestRegister(t *testing.T) {
 		mockJWTService := new(MockJWTService)
 		mockPasswordService := new(MockPasswordService)
 		mockTokenBlacklistRepo := new(MockTokenBlacklistRepo)
+		mockProfileService := new(MockProfileService)
 
 		service := &Service{
 			userService:        mockUserService,
+			profileService:     mockProfileService,
 			jwtService:         mockJWTService,
 			passwordService:    mockPasswordService,
 			tokenBlacklistRepo: mockTokenBlacklistRepo,
@@ -260,7 +295,6 @@ func TestRegister(t *testing.T) {
 		createdUser := &userdomain.User{
 			ID:            userID,
 			Email:         req.Email,
-			FullName:      req.FullName,
 			Role:          userdomain.UserRoleUser,
 			Status:        userdomain.UserStatusPendingVerification,
 			Password:      "hashed_password",
@@ -272,6 +306,8 @@ func TestRegister(t *testing.T) {
 		mockUserService.On("ExistsByEmail", ctx, req.Email).Return(false, nil)
 		mockPasswordService.On("HashPassword", req.Password).Return("hashed_password", nil)
 		mockUserService.On("Create", ctx, mock.AnythingOfType("*domain.User")).Return(createdUser, nil)
+		mockProfileService.On("CreateProfile", ctx, createdUser.ID.String(), mock.Anything).
+			Return(&profiledomain.UserProfile{UserID: createdUser.ID, FullName: req.FullName}, nil)
 		mockJWTService.On("GenerateAccessToken", createdUser.ID.String(), createdUser.Email, mock.AnythingOfType("string"), createdUser.Role).
 			Return("access_token", int64(3600), nil)
 		mockJWTService.On("GenerateRefreshToken", createdUser.ID.String(), mock.AnythingOfType("string")).
@@ -291,6 +327,7 @@ func TestRegister(t *testing.T) {
 		mockUserService.AssertExpectations(t)
 		mockJWTService.AssertExpectations(t)
 		mockPasswordService.AssertExpectations(t)
+		mockProfileService.AssertExpectations(t)
 	})
 
 	t.Run("Error - Email already exists", func(t *testing.T) {
@@ -359,9 +396,11 @@ func TestLogin(t *testing.T) {
 		mockUserService := new(MockUserService)
 		mockJWTService := new(MockJWTService)
 		mockPasswordService := new(MockPasswordService)
+		mockProfileService := new(MockProfileService)
 
 		service := &Service{
 			userService:     mockUserService,
+			profileService:  mockProfileService,
 			jwtService:      mockJWTService,
 			passwordService: mockPasswordService,
 			config:          &config.Config{},
@@ -379,7 +418,6 @@ func TestLogin(t *testing.T) {
 			ID:            userID,
 			Email:         req.Email,
 			Password:      "hashed_password",
-			FullName:      "Test User",
 			Role:          userdomain.UserRoleUser,
 			Status:        userdomain.UserStatusActive,
 			LoginAttempts: 0,
@@ -395,6 +433,8 @@ func TestLogin(t *testing.T) {
 			Return("access_token", int64(3600), nil)
 		mockJWTService.On("GenerateRefreshToken", user.ID.String(), mock.AnythingOfType("string")).
 			Return("refresh_token", int64(604800), nil)
+		mockProfileService.On("GetProfile", ctx, user.ID.String()).
+			Return(&profiledomain.UserProfile{UserID: userID, FullName: "Test User"}, nil)
 
 		result, err := service.Login(ctx, req)
 
@@ -407,6 +447,7 @@ func TestLogin(t *testing.T) {
 		mockUserService.AssertExpectations(t)
 		mockPasswordService.AssertExpectations(t)
 		mockJWTService.AssertExpectations(t)
+		mockProfileService.AssertExpectations(t)
 	})
 
 	t.Run("Error - User not found", func(t *testing.T) {
@@ -982,9 +1023,11 @@ func TestRegisterEdgeCases(t *testing.T) {
 		mockUserService := new(MockUserService)
 		mockJWTService := new(MockJWTService)
 		mockPasswordService := new(MockPasswordService)
+		mockProfileService := new(MockProfileService)
 
 		service := &Service{
 			userService:     mockUserService,
+			profileService:  mockProfileService,
 			jwtService:      mockJWTService,
 			passwordService: mockPasswordService,
 			config:          &config.Config{},
@@ -999,15 +1042,16 @@ func TestRegisterEdgeCases(t *testing.T) {
 
 		userID := uuid.New()
 		createdUser := &userdomain.User{
-			ID:       userID,
-			Email:    req.Email,
-			FullName: req.FullName,
-			Role:     userdomain.UserRoleUser,
+			ID:    userID,
+			Email: req.Email,
+			Role:  userdomain.UserRoleUser,
 		}
 
 		mockUserService.On("ExistsByEmail", ctx, req.Email).Return(false, nil)
 		mockPasswordService.On("HashPassword", req.Password).Return("hashed_password", nil)
 		mockUserService.On("Create", ctx, mock.AnythingOfType("*domain.User")).Return(createdUser, nil)
+		mockProfileService.On("CreateProfile", ctx, createdUser.ID.String(), mock.Anything).
+			Return(&profiledomain.UserProfile{}, nil)
 		mockJWTService.On("GenerateAccessToken", createdUser.ID.String(), createdUser.Email, mock.AnythingOfType("string"), createdUser.Role).
 			Return("", int64(0), errors.New("token generation failed"))
 
@@ -1018,15 +1062,18 @@ func TestRegisterEdgeCases(t *testing.T) {
 
 		mockUserService.AssertExpectations(t)
 		mockJWTService.AssertExpectations(t)
+		mockProfileService.AssertExpectations(t)
 	})
 
 	t.Run("Error - Refresh token generation fails", func(t *testing.T) {
 		mockUserService := new(MockUserService)
 		mockJWTService := new(MockJWTService)
 		mockPasswordService := new(MockPasswordService)
+		mockProfileService := new(MockProfileService)
 
 		service := &Service{
 			userService:     mockUserService,
+			profileService:  mockProfileService,
 			jwtService:      mockJWTService,
 			passwordService: mockPasswordService,
 			config:          &config.Config{},
@@ -1041,15 +1088,16 @@ func TestRegisterEdgeCases(t *testing.T) {
 
 		userID := uuid.New()
 		createdUser := &userdomain.User{
-			ID:       userID,
-			Email:    req.Email,
-			FullName: req.FullName,
-			Role:     userdomain.UserRoleUser,
+			ID:    userID,
+			Email: req.Email,
+			Role:  userdomain.UserRoleUser,
 		}
 
 		mockUserService.On("ExistsByEmail", ctx, req.Email).Return(false, nil)
 		mockPasswordService.On("HashPassword", req.Password).Return("hashed_password", nil)
 		mockUserService.On("Create", ctx, mock.AnythingOfType("*domain.User")).Return(createdUser, nil)
+		mockProfileService.On("CreateProfile", ctx, createdUser.ID.String(), mock.Anything).
+			Return(&profiledomain.UserProfile{}, nil)
 		mockJWTService.On("GenerateAccessToken", createdUser.ID.String(), createdUser.Email, mock.AnythingOfType("string"), createdUser.Role).
 			Return("access_token", int64(3600), nil)
 		mockJWTService.On("GenerateRefreshToken", createdUser.ID.String(), mock.AnythingOfType("string")).
@@ -1062,5 +1110,6 @@ func TestRegisterEdgeCases(t *testing.T) {
 
 		mockUserService.AssertExpectations(t)
 		mockJWTService.AssertExpectations(t)
+		mockProfileService.AssertExpectations(t)
 	})
 }

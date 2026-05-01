@@ -22,6 +22,10 @@ func ToProfileResponse(profile *domain.UserProfile) *ProfileResponse {
 
 	return &ProfileResponse{
 		UserID:                    profile.UserID.String(),
+		FullName:                  profile.FullName,
+		DisplayName:               profile.DisplayName,
+		DateOfBirth:               profile.DateOfBirth,
+		AvatarURL:                 profile.AvatarURL,
 		Occupation:                profile.Occupation,
 		Industry:                  profile.Industry,
 		Employer:                  profile.Employer,
@@ -65,6 +69,23 @@ func FromCreateProfileRequest(req CreateProfileRequest, userID uuid.UUID) (*doma
 
 	// Generate UUID V7
 	profile.ID = uuid.New()
+
+	// Personal Information
+	if req.FullName != nil {
+		trimmed := strings.TrimSpace(*req.FullName)
+		if trimmed != "" {
+			profile.FullName = trimmed
+		}
+	}
+	if req.DisplayName != nil {
+		profile.DisplayName = trimPointer(req.DisplayName)
+	}
+	if req.DateOfBirth != nil {
+		profile.DateOfBirth = req.DateOfBirth
+	}
+	if req.AvatarURL != nil {
+		profile.AvatarURL = trimPointer(req.AvatarURL)
+	}
 
 	// Apply request fields
 	if req.Occupation != nil {
@@ -163,6 +184,24 @@ func FromCreateProfileRequest(req CreateProfileRequest, userID uuid.UUID) (*doma
 // ApplyUpdateProfileRequest converts UpdateProfileRequest to update map for GORM
 func ApplyUpdateProfileRequest(req UpdateProfileRequest) (map[string]any, error) {
 	updates := make(map[string]any)
+
+	// Personal Information
+	if req.FullName != nil {
+		trimmed := strings.TrimSpace(*req.FullName)
+		if trimmed == "" {
+			return nil, domain.ErrInvalidFullName
+		}
+		updates["full_name"] = trimmed
+	}
+	if req.DisplayName != nil {
+		updates["display_name"] = normalizeNullableString(req.DisplayName)
+	}
+	if req.DateOfBirth != nil {
+		updates["date_of_birth"] = *req.DateOfBirth
+	}
+	if req.AvatarURL != nil {
+		updates["avatar_url"] = normalizeNullableString(req.AvatarURL)
+	}
 
 	// Employment Information
 	if req.Occupation != nil {

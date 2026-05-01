@@ -14,6 +14,12 @@ type UserProfile struct {
 	// User Relationship
 	UserID uuid.UUID `gorm:"type:uuid;uniqueIndex;not null;column:user_id" json:"user_id"`
 
+	// Personal Information — owned here, not on users table
+	FullName    string     `gorm:"column:full_name;not null;default:''" json:"full_name"`
+	DisplayName *string    `gorm:"column:display_name" json:"display_name,omitempty"`
+	DateOfBirth *time.Time `gorm:"column:date_of_birth" json:"date_of_birth,omitempty"`
+	AvatarURL   *string    `gorm:"column:avatar_url" json:"avatar_url,omitempty"`
+
 	// Employment Information
 	Occupation      *string `gorm:"type:varchar(100);column:occupation" json:"occupation,omitempty"`
 	Industry        *string `gorm:"type:varchar(100);column:industry" json:"industry,omitempty"`

@@ -6,7 +6,11 @@ import (
 
 // ProfileResponse represents the profile details for the authenticated user.
 type ProfileResponse struct {
-	UserID string `json:"user_id"`
+	UserID      string     `json:"user_id"`
+	FullName    string     `json:"full_name"`
+	DisplayName *string    `json:"display_name,omitempty"`
+	DateOfBirth *time.Time `json:"date_of_birth,omitempty"`
+	AvatarURL   *string    `json:"avatar_url,omitempty"`
 
 	Occupation                *string    `json:"occupation,omitempty"`
 	Industry                  *string    `json:"industry,omitempty"`

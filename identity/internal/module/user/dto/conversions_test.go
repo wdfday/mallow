@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 
+	profiledomain "mallow/identity/internal/module/profile/domain"
 	"mallow/identity/internal/module/user/domain"
 	"mallow/identity/internal/shared"
 )
@@ -21,17 +22,12 @@ func TestUserToResponse(t *testing.T) {
 		now := time.Now()
 		verifiedAt := now.Add(-24 * time.Hour)
 		loginAt := now.Add(-1 * time.Hour)
-		displayName := "Display Name"
 		phone := "+1234567890"
-		avatar := "https://example.com/avatar.jpg"
 
 		user := domain.User{
 			ID:              userID,
 			Email:           "test@example.com",
-			FullName:        "Test User",
-			DisplayName:     &displayName,
 			PhoneNumber:     &phone,
-			AvatarURL:       &avatar,
 			Role:            domain.UserRoleAdmin,
 			Status:          domain.UserStatusActive,
 			EmailVerified:   true,
@@ -46,10 +42,7 @@ func TestUserToResponse(t *testing.T) {
 
 		assert.Equal(t, userID.String(), response.ID)
 		assert.Equal(t, "test@example.com", response.Email)
-		assert.Equal(t, "Test User", response.FullName)
-		assert.Equal(t, "Display Name", *response.DisplayName)
 		assert.Equal(t, "+1234567890", *response.PhoneNumber)
-		assert.Equal(t, "https://example.com/avatar.jpg", *response.AvatarURL)
 		assert.Equal(t, "admin", response.Role)
 		assert.Equal(t, "active", response.Status)
 		assert.True(t, response.EmailVerified)
@@ -59,43 +52,64 @@ func TestUserToResponse(t *testing.T) {
 		user := domain.User{
 			ID:          uuid.New(),
 			Email:       "test@example.com",
-			FullName:    "Test",
-			DisplayName: nil,
 			PhoneNumber: nil,
-			AvatarURL:   nil,
 			Role:        domain.UserRoleUser,
 		}
 
 		response := UserToResponse(user)
 
-		assert.Nil(t, response.DisplayName)
 		assert.Nil(t, response.PhoneNumber)
-		assert.Nil(t, response.AvatarURL)
 	})
 }
 
 func TestUserToProfileResponse(t *testing.T) {
-	t.Run("converts user to profile response", func(t *testing.T) {
+	t.Run("converts user and profile to profile response", func(t *testing.T) {
 		userID := uuid.New()
 		now := time.Now()
 		dob := time.Date(1990, 1, 15, 0, 0, 0, 0, time.UTC)
+		displayName := "Display Name"
+		avatarURL := "https://example.com/avatar.jpg"
 
 		user := domain.User{
-			ID:          userID,
-			Email:       "test@example.com",
-			FullName:    "Test User",
-			DateOfBirth: &dob,
-			Role:        domain.UserRoleUser,
-			Status:      domain.UserStatusActive,
-			CreatedAt:   now,
+			ID:        userID,
+			Email:     "test@example.com",
+			Role:      domain.UserRoleUser,
+			Status:    domain.UserStatusActive,
+			CreatedAt: now,
 		}
 
-		response := UserToProfileResponse(user)
+		profile := &profiledomain.UserProfile{
+			UserID:      userID,
+			FullName:    "Test User",
+			DisplayName: &displayName,
+			DateOfBirth: &dob,
+			AvatarURL:   &avatarURL,
+		}
+
+		response := UserToProfileResponse(user, profile)
 
 		assert.Equal(t, userID.String(), response.ID)
 		assert.Equal(t, "test@example.com", response.Email)
+		assert.Equal(t, "Test User", response.FullName)
+		assert.Equal(t, "Display Name", *response.DisplayName)
 		assert.NotNil(t, response.DateOfBirth)
 		assert.Equal(t, dob, *response.DateOfBirth)
+		assert.Equal(t, avatarURL, *response.AvatarURL)
+	})
+
+	t.Run("handles nil profile — personal info defaults to zero values", func(t *testing.T) {
+		user := domain.User{
+			ID:    uuid.New(),
+			Email: "test@example.com",
+			Role:  domain.UserRoleUser,
+		}
+
+		response := UserToProfileResponse(user, nil)
+
+		assert.Equal(t, "", response.FullName)
+		assert.Nil(t, response.DisplayName)
+		assert.Nil(t, response.DateOfBirth)
+		assert.Nil(t, response.AvatarURL)
 	})
 }
 
@@ -156,7 +170,6 @@ func TestFromCreateUserRequest(t *testing.T) {
 		assert.NoError(t, err)
 		assert.NotNil(t, user)
 		assert.Equal(t, "test@example.com", user.Email) // Lowercased and trimmed
-		assert.Equal(t, "Test User", user.FullName)     // Trimmed
 		assert.Equal(t, "+1234567890", *user.PhoneNumber)
 		assert.Equal(t, domain.UserRoleUser, user.Role)
 		assert.Equal(t, domain.UserStatusPendingVerification, user.Status)
@@ -208,54 +221,6 @@ func TestFromCreateUserRequest(t *testing.T) {
 }
 
 func TestApplyUpdateUserProfileRequest(t *testing.T) {
-	t.Run("applies full name update", func(t *testing.T) {
-		fullName := "New Full Name"
-		req := UpdateUserProfileRequest{
-			FullName: &fullName,
-		}
-
-		updates, err := ApplyUpdateUserProfileRequest(req)
-
-		assert.NoError(t, err)
-		assert.Equal(t, "New Full Name", updates["full_name"])
-	})
-
-	t.Run("returns error for empty full name", func(t *testing.T) {
-		emptyName := "   "
-		req := UpdateUserProfileRequest{
-			FullName: &emptyName,
-		}
-
-		updates, err := ApplyUpdateUserProfileRequest(req)
-
-		assert.Error(t, err)
-		assert.Nil(t, updates)
-	})
-
-	t.Run("applies display name update", func(t *testing.T) {
-		displayName := "New Display"
-		req := UpdateUserProfileRequest{
-			DisplayName: &displayName,
-		}
-
-		updates, err := ApplyUpdateUserProfileRequest(req)
-
-		assert.NoError(t, err)
-		assert.Equal(t, "New Display", updates["display_name"])
-	})
-
-	t.Run("clears display name with empty string", func(t *testing.T) {
-		emptyDisplay := "   "
-		req := UpdateUserProfileRequest{
-			DisplayName: &emptyDisplay,
-		}
-
-		updates, err := ApplyUpdateUserProfileRequest(req)
-
-		assert.NoError(t, err)
-		assert.Nil(t, updates["display_name"])
-	})
-
 	t.Run("applies phone number update", func(t *testing.T) {
 		phone := "+9876543210"
 		req := UpdateUserProfileRequest{
@@ -287,5 +252,21 @@ func TestApplyUpdateUserProfileRequest(t *testing.T) {
 
 		assert.NoError(t, err)
 		assert.Len(t, updates, 0)
+	})
+
+	// FullName and DisplayName are now routed to profile service — no user table update
+	t.Run("FullName and DisplayName are ignored (they go to profile service)", func(t *testing.T) {
+		fullName := "Test Name"
+		displayName := "Display"
+		req := UpdateUserProfileRequest{
+			FullName:    &fullName,
+			DisplayName: &displayName,
+		}
+
+		updates, err := ApplyUpdateUserProfileRequest(req)
+
+		assert.NoError(t, err)
+		assert.NotContains(t, updates, "full_name")
+		assert.NotContains(t, updates, "display_name")
 	})
 }

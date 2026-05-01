@@ -11,6 +11,7 @@ type Repository interface {
 	Create(ctx context.Context, u *domain.User) error
 	GetByID(ctx context.Context, id string) (*domain.User, error)
 	GetByEmail(ctx context.Context, email string) (*domain.User, error)
+	GetByGoogleID(ctx context.Context, googleID string) (*domain.User, error)
 
 	List(ctx context.Context, f domain.ListUsersFilter, p shared.Pagination) (shared.Page[domain.User], error)
 	Count(ctx context.Context, f domain.ListUsersFilter) (int64, error)

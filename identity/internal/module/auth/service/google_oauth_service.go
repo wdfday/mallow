@@ -66,6 +66,7 @@ func (s *GoogleOAuthService) VerifyGoogleToken(ctx context.Context, token string
 		Sub           string `json:"sub"` // Google user ID
 		Email         string `json:"email"`
 		EmailVerified string `json:"email_verified"` // "true" or "false" as string
+		Audience      string `json:"aud"`
 		Name          string `json:"name"`
 		Picture       string `json:"picture"`
 		GivenName     string `json:"given_name"`
@@ -89,6 +90,7 @@ func (s *GoogleOAuthService) VerifyGoogleToken(ctx context.Context, token string
 		Name:          tokenInfo.Name,
 		Picture:       tokenInfo.Picture,
 		VerifiedEmail: tokenInfo.EmailVerified == "true",
+		Audience:      tokenInfo.Audience,
 	}
 
 	return userInfo, nil

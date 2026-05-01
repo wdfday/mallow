@@ -32,4 +32,7 @@ var (
 
 	// ErrInvalidMaritalStatus is returned when marital status is invalid
 	ErrInvalidMaritalStatus = errors.New("invalid marital status")
+
+	// ErrInvalidFullName is returned when full_name is empty after trimming
+	ErrInvalidFullName = errors.New("full_name cannot be empty")
 )

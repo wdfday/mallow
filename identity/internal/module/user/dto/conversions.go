@@ -1,6 +1,9 @@
 package dto
 
 import (
+	"time"
+
+	profiledomain "mallow/identity/internal/module/profile/domain"
 	"mallow/identity/internal/module/user/domain"
 	"mallow/identity/internal/shared"
 	"strings"
@@ -15,10 +18,7 @@ func UserToResponse(user domain.User) UserResponse {
 	return UserResponse{
 		ID:              user.ID.String(),
 		Email:           user.Email,
-		FullName:        user.FullName,
-		DisplayName:     user.DisplayName,
 		PhoneNumber:     user.PhoneNumber,
-		AvatarURL:       user.AvatarURL,
 		Role:            string(user.Role),
 		Status:          string(user.Status),
 		EmailVerified:   user.EmailVerified,
@@ -30,8 +30,9 @@ func UserToResponse(user domain.User) UserResponse {
 	}
 }
 
-// UserToProfileResponse converts domain User to UserProfileResponse DTO
-func UserToProfileResponse(user domain.User) UserProfileResponse {
+// UserToProfileResponse converts domain User and UserProfile to UserProfileResponse DTO.
+// profile may be nil for legacy users without a profile row.
+func UserToProfileResponse(user domain.User, profile *profiledomain.UserProfile) UserProfileResponse {
 	linked := make([]LinkedAccountResponse, len(user.LinkedAccounts))
 	for i, a := range user.LinkedAccounts {
 		linked[i] = LinkedAccountResponse{
@@ -41,14 +42,26 @@ func UserToProfileResponse(user domain.User) UserProfileResponse {
 			LinkedAt:   a.LinkedAt,
 		}
 	}
+
+	var fullName string
+	var displayName *string
+	var dateOfBirth *time.Time
+	var avatarURL *string
+	if profile != nil {
+		fullName = profile.FullName
+		displayName = profile.DisplayName
+		dateOfBirth = profile.DateOfBirth
+		avatarURL = profile.AvatarURL
+	}
+
 	return UserProfileResponse{
 		ID:              user.ID.String(),
 		Email:           user.Email,
-		FullName:        user.FullName,
-		DisplayName:     user.DisplayName,
+		FullName:        fullName,
+		DisplayName:     displayName,
 		PhoneNumber:     user.PhoneNumber,
-		DateOfBirth:     user.DateOfBirth,
-		AvatarURL:       user.AvatarURL,
+		DateOfBirth:     dateOfBirth,
+		AvatarURL:       avatarURL,
 		Role:            string(user.Role),
 		Status:          string(user.Status),
 		EmailVerified:   user.EmailVerified,
@@ -100,7 +113,6 @@ func FromCreateUserRequest(req CreateUserRequest) (*domain.User, error) {
 	user := &domain.User{
 		Email:            email,
 		Password:         req.Password, // Will be hashed by service layer
-		FullName:         strings.TrimSpace(req.FullName),
 		PhoneNumber:      phoneNumber,
 		Role:             domain.UserRoleUser,
 		Status:           domain.UserStatusPendingVerification,
@@ -112,26 +124,11 @@ func FromCreateUserRequest(req CreateUserRequest) (*domain.User, error) {
 	return user, nil
 }
 
-// ApplyUpdateUserProfileRequest converts UpdateUserProfileRequest to update map for GORM
+// ApplyUpdateUserProfileRequest converts UpdateUserProfileRequest to update map for GORM.
+// Only auth/security fields (PhoneNumber) are updated on the users table.
+// Personal info (FullName, DisplayName) must be updated via profile service.
 func ApplyUpdateUserProfileRequest(req UpdateUserProfileRequest) (map[string]any, error) {
 	updates := make(map[string]any)
-
-	if req.FullName != nil {
-		trimmed := strings.TrimSpace(*req.FullName)
-		if trimmed == "" {
-			return nil, domain.ErrInvalidEmail
-		}
-		updates["full_name"] = trimmed
-	}
-
-	if req.DisplayName != nil {
-		trimmed := strings.TrimSpace(*req.DisplayName)
-		if trimmed == "" {
-			updates["display_name"] = nil
-		} else {
-			updates["display_name"] = trimmed
-		}
-	}
 
 	if req.PhoneNumber != nil {
 		trimmed := strings.TrimSpace(*req.PhoneNumber)

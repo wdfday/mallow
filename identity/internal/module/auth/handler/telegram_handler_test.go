@@ -19,6 +19,8 @@ import (
 
 	"mallow/identity/internal/middleware"
 	authDomain "mallow/identity/internal/module/auth/domain"
+	profileDomain "mallow/identity/internal/module/profile/domain"
+	profileService "mallow/identity/internal/module/profile/service"
 	userDomain "mallow/identity/internal/module/user/domain"
 	userService "mallow/identity/internal/module/user/service"
 	"mallow/identity/internal/shared"
@@ -88,6 +90,18 @@ func (m *telegramMockUserService) SetLockedUntil(ctx context.Context, id string,
 
 var _ userService.IUserService = (*telegramMockUserService)(nil)
 
+type telegramMockProfileService struct{ mock.Mock }
+
+func (m *telegramMockProfileService) GetProfile(ctx context.Context, userID string) (*profileDomain.UserProfile, error) {
+	args := m.Called(ctx, userID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*profileDomain.UserProfile), args.Error(1)
+}
+
+var _ profileService.Service = (*telegramMockProfileService)(nil)
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -120,7 +134,7 @@ func newMiniRedis(t *testing.T) (*miniredis.Miniredis, *redis.Client) {
 func TestConfirmLink_InvalidJSON_Returns400(t *testing.T) {
 	_, rdb := newMiniRedis(t)
 	usrSvc := &telegramMockUserService{}
-	h := NewTelegramHandler(usrSvc, rdb, nil, "")
+	h := NewTelegramHandler(usrSvc, nil, rdb, nil, "")
 
 	router := gin.New()
 	router.POST("/confirm-link", setCurrentUser(uuid.New()), h.confirmLink)
@@ -137,7 +151,7 @@ func TestConfirmLink_InvalidJSON_Returns400(t *testing.T) {
 func TestConfirmLink_NoUserInContext_Returns401(t *testing.T) {
 	_, rdb := newMiniRedis(t)
 	usrSvc := &telegramMockUserService{}
-	h := NewTelegramHandler(usrSvc, rdb, nil, "")
+	h := NewTelegramHandler(usrSvc, nil, rdb, nil, "")
 
 	router := gin.New()
 	// No setCurrentUser middleware
@@ -155,7 +169,7 @@ func TestConfirmLink_NoUserInContext_Returns401(t *testing.T) {
 func TestConfirmLink_InvalidOTP_Returns400(t *testing.T) {
 	_, rdb := newMiniRedis(t)
 	usrSvc := &telegramMockUserService{}
-	h := NewTelegramHandler(usrSvc, rdb, nil, "")
+	h := NewTelegramHandler(usrSvc, nil, rdb, nil, "")
 
 	router := gin.New()
 	router.POST("/confirm-link", setCurrentUser(uuid.New()), h.confirmLink)
@@ -172,7 +186,7 @@ func TestConfirmLink_InvalidOTP_Returns400(t *testing.T) {
 func TestConfirmLink_InvalidOTPPayload_Returns400(t *testing.T) {
 	mr, rdb := newMiniRedis(t)
 	usrSvc := &telegramMockUserService{}
-	h := NewTelegramHandler(usrSvc, rdb, nil, "")
+	h := NewTelegramHandler(usrSvc, nil, rdb, nil, "")
 
 	// Store invalid JSON in Redis
 	mr.Set("telegram:link:my-otp", "not-json")
@@ -192,7 +206,7 @@ func TestConfirmLink_InvalidOTPPayload_Returns400(t *testing.T) {
 func TestConfirmLink_TelegramAlreadyLinkedToOtherUser_Returns409(t *testing.T) {
 	mr, rdb := newMiniRedis(t)
 	usrSvc := &telegramMockUserService{}
-	h := NewTelegramHandler(usrSvc, rdb, nil, "")
+	h := NewTelegramHandler(usrSvc, nil, rdb, nil, "")
 
 	currentUserID := uuid.New()
 	otherUserID := uuid.New()
@@ -219,7 +233,7 @@ func TestConfirmLink_TelegramAlreadyLinkedToOtherUser_Returns409(t *testing.T) {
 func TestConfirmLink_Success_LinksAccount(t *testing.T) {
 	mr, rdb := newMiniRedis(t)
 	usrSvc := &telegramMockUserService{}
-	h := NewTelegramHandler(usrSvc, rdb, nil, "")
+	h := NewTelegramHandler(usrSvc, nil, rdb, nil, "")
 
 	currentUserID := uuid.New()
 
@@ -252,7 +266,7 @@ func TestConfirmLink_Success_LinksAccount(t *testing.T) {
 func TestConfirmLink_SameUserRelink_Success(t *testing.T) {
 	mr, rdb := newMiniRedis(t)
 	usrSvc := &telegramMockUserService{}
-	h := NewTelegramHandler(usrSvc, rdb, nil, "")
+	h := NewTelegramHandler(usrSvc, nil, rdb, nil, "")
 
 	currentUserID := uuid.New()
 
@@ -284,7 +298,7 @@ func TestConfirmLink_SameUserRelink_Success(t *testing.T) {
 func TestUnlink_InvalidJSON_Returns400(t *testing.T) {
 	_, rdb := newMiniRedis(t)
 	usrSvc := &telegramMockUserService{}
-	h := NewTelegramHandler(usrSvc, rdb, nil, "")
+	h := NewTelegramHandler(usrSvc, nil, rdb, nil, "")
 
 	router := gin.New()
 	router.DELETE("/link", setCurrentUser(uuid.New()), h.unlink)
@@ -301,7 +315,7 @@ func TestUnlink_InvalidJSON_Returns400(t *testing.T) {
 func TestUnlink_NoUserInContext_Returns401(t *testing.T) {
 	_, rdb := newMiniRedis(t)
 	usrSvc := &telegramMockUserService{}
-	h := NewTelegramHandler(usrSvc, rdb, nil, "")
+	h := NewTelegramHandler(usrSvc, nil, rdb, nil, "")
 
 	router := gin.New()
 	router.DELETE("/link", h.unlink)
@@ -318,7 +332,7 @@ func TestUnlink_NoUserInContext_Returns401(t *testing.T) {
 func TestUnlink_Success(t *testing.T) {
 	_, rdb := newMiniRedis(t)
 	usrSvc := &telegramMockUserService{}
-	h := NewTelegramHandler(usrSvc, rdb, nil, "")
+	h := NewTelegramHandler(usrSvc, nil, rdb, nil, "")
 
 	currentUserID := uuid.New()
 	usrSvc.On("UnlinkAccount", mock.Anything, currentUserID.String(), "telegram", "12345").Return(nil)
@@ -339,7 +353,7 @@ func TestUnlink_Success(t *testing.T) {
 func TestUnlink_ServiceError_Returns500(t *testing.T) {
 	_, rdb := newMiniRedis(t)
 	usrSvc := &telegramMockUserService{}
-	h := NewTelegramHandler(usrSvc, rdb, nil, "")
+	h := NewTelegramHandler(usrSvc, nil, rdb, nil, "")
 
 	currentUserID := uuid.New()
 	usrSvc.On("UnlinkAccount", mock.Anything, currentUserID.String(), "telegram", "99").
@@ -365,7 +379,7 @@ func TestUnlink_ServiceError_Returns500(t *testing.T) {
 func TestGetUserByTelegram_UserNotFound_Returns404(t *testing.T) {
 	_, rdb := newMiniRedis(t)
 	usrSvc := &telegramMockUserService{}
-	h := NewTelegramHandler(usrSvc, rdb, nil, "")
+	h := NewTelegramHandler(usrSvc, nil, rdb, nil, "")
 
 	usrSvc.On("GetByLinkedAccount", mock.Anything, "telegram", "999").
 		Return(nil, shared.ErrUserNotFound)
@@ -384,7 +398,7 @@ func TestGetUserByTelegram_UserNotFound_Returns404(t *testing.T) {
 func TestGetUserByTelegram_InternalError_Returns500(t *testing.T) {
 	_, rdb := newMiniRedis(t)
 	usrSvc := &telegramMockUserService{}
-	h := NewTelegramHandler(usrSvc, rdb, nil, "")
+	h := NewTelegramHandler(usrSvc, nil, rdb, nil, "")
 
 	usrSvc.On("GetByLinkedAccount", mock.Anything, "telegram", "999").
 		Return(nil, shared.ErrInternal)
@@ -403,14 +417,14 @@ func TestGetUserByTelegram_InternalError_Returns500(t *testing.T) {
 func TestGetUserByTelegram_Success_ReturnsUserWithTelegramInfo(t *testing.T) {
 	_, rdb := newMiniRedis(t)
 	usrSvc := &telegramMockUserService{}
-	h := NewTelegramHandler(usrSvc, rdb, nil, "")
+	profSvc := &telegramMockProfileService{}
+	h := NewTelegramHandler(usrSvc, profSvc, rdb, nil, "")
 
 	userID := uuid.New()
 	linkedAt := time.Now()
 	user := &userDomain.User{
-		ID:       userID,
-		Email:    "user@example.com",
-		FullName: "Test User",
+		ID:    userID,
+		Email: "user@example.com",
 		LinkedAccounts: []userDomain.LinkedAccount{
 			{
 				Provider:   "telegram",
@@ -422,6 +436,8 @@ func TestGetUserByTelegram_Success_ReturnsUserWithTelegramInfo(t *testing.T) {
 	}
 	usrSvc.On("GetByLinkedAccount", mock.Anything, "telegram", "12345").
 		Return(user, nil)
+	profSvc.On("GetProfile", mock.Anything, userID.String()).
+		Return(&profileDomain.UserProfile{FullName: "Test User"}, nil)
 
 	router := gin.New()
 	router.GET("/user/:telegram_id", h.getUserByTelegram)
@@ -448,22 +464,25 @@ func TestGetUserByTelegram_Success_ReturnsUserWithTelegramInfo(t *testing.T) {
 	assert.Equal(t, "12345", tg["provider_id"])
 
 	usrSvc.AssertExpectations(t)
+	profSvc.AssertExpectations(t)
 }
 
 func TestGetUserByTelegram_NoLinkedTelegramAccount_ReturnsNilTelegram(t *testing.T) {
 	_, rdb := newMiniRedis(t)
 	usrSvc := &telegramMockUserService{}
-	h := NewTelegramHandler(usrSvc, rdb, nil, "")
+	profSvc := &telegramMockProfileService{}
+	h := NewTelegramHandler(usrSvc, profSvc, rdb, nil, "")
 
 	userID := uuid.New()
 	user := &userDomain.User{
 		ID:             userID,
 		Email:          "user@example.com",
-		FullName:       "Test User",
 		LinkedAccounts: nil, // no linked accounts
 	}
 	usrSvc.On("GetByLinkedAccount", mock.Anything, "telegram", "12345").
 		Return(user, nil)
+	profSvc.On("GetProfile", mock.Anything, userID.String()).
+		Return(nil, shared.ErrNotFound)
 
 	router := gin.New()
 	router.GET("/user/:telegram_id", h.getUserByTelegram)
@@ -482,6 +501,7 @@ func TestGetUserByTelegram_NoLinkedTelegramAccount_ReturnsNilTelegram(t *testing
 	assert.Nil(t, data["telegram"])
 
 	usrSvc.AssertExpectations(t)
+	profSvc.AssertExpectations(t)
 }
 
 // ---------------------------------------------------------------------------
@@ -490,7 +510,7 @@ func TestGetUserByTelegram_NoLinkedTelegramAccount_ReturnsNilTelegram(t *testing
 
 func TestPublishTelegramEvent_NilJetStream_NoOp(t *testing.T) {
 	_, rdb := newMiniRedis(t)
-	h := NewTelegramHandler(nil, rdb, nil, "")
+	h := NewTelegramHandler(nil, nil, rdb, nil, "")
 
 	// Should not panic when js is nil
 	assert.NotPanics(t, func() {

@@ -23,10 +23,13 @@ func New(db *gorm.DB) Repository {
 
 // helper: always filter out soft-deleted by default
 func base(db *gorm.DB) *gorm.DB {
-	return db.Where("deleted_at IS NULL")
+	return db.Where("users.deleted_at IS NULL")
 }
 
 func (r *gormRepo) Create(ctx context.Context, u *domain.User) error {
+	if u.LinkedAccounts == nil {
+		u.LinkedAccounts = []domain.LinkedAccount{}
+	}
 	return shared.MapDatabaseError(r.db.WithContext(ctx).Create(u).Error)
 }
 
@@ -45,6 +48,19 @@ func (r *gormRepo) GetByEmail(ctx context.Context, email string) (*domain.User, 
 	var u domain.User
 	if err := base(r.db).WithContext(ctx).
 		First(&u, "email = ?", strings.ToLower(email)).
+		Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil, shared.ErrUserNotFound
+		}
+		return nil, shared.MapDatabaseError(err)
+	}
+	return &u, nil
+}
+
+func (r *gormRepo) GetByGoogleID(ctx context.Context, googleID string) (*domain.User, error) {
+	var u domain.User
+	if err := base(r.db).WithContext(ctx).
+		First(&u, "google_id = ?", googleID).
 		Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, shared.ErrUserNotFound
@@ -106,11 +122,8 @@ func (r *gormRepo) applyFilter(db *gorm.DB, f domain.ListUsersFilter) *gorm.DB {
 	q := db
 	if f.Query != "" {
 		like := "%" + strings.ToLower(f.Query) + "%"
-		q = q.Where(`
-			lower(email) LIKE ? OR
-			lower(full_name) LIKE ? OR
-			lower(display_name) LIKE ?
-		`, like, like, like)
+		q = q.Joins("LEFT JOIN user_profiles up ON up.user_id = users.id AND up.deleted_at IS NULL").
+			Where(`lower(users.email) LIKE ? OR lower(up.full_name) LIKE ? OR lower(up.display_name) LIKE ?`, like, like, like)
 	}
 	if f.Role != nil {
 		q = q.Where("role = ?", *f.Role)

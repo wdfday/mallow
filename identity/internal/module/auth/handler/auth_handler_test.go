@@ -133,10 +133,9 @@ func TestRegisterHandler(t *testing.T) {
 
 		userID := uuid.New()
 		user := &userdomain.User{
-			ID:       userID,
-			Email:    "test@example.com",
-			FullName: "Test User",
-			Role:     userdomain.UserRoleUser,
+			ID:    userID,
+			Email: "test@example.com",
+			Role:  userdomain.UserRoleUser,
 		}
 
 		authResult := &dto.AuthResult{
@@ -230,10 +229,9 @@ func TestLoginHandler(t *testing.T) {
 
 		userID := uuid.New()
 		user := &userdomain.User{
-			ID:       userID,
-			Email:    "test@example.com",
-			FullName: "Test User",
-			Role:     userdomain.UserRoleUser,
+			ID:    userID,
+			Email: "test@example.com",
+			Role:  userdomain.UserRoleUser,
 		}
 
 		authResult := &dto.AuthResult{
@@ -440,7 +438,6 @@ func TestGoogleAuthHandler(t *testing.T) {
 		user := &userdomain.User{
 			ID:            userID,
 			Email:         "test@gmail.com",
-			FullName:      "Test User",
 			Role:          userdomain.UserRoleUser,
 			EmailVerified: true,
 		}

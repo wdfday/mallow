@@ -1,6 +1,7 @@
 package dto
 
 import (
+	profiledomain "mallow/identity/internal/module/profile/domain"
 	"mallow/identity/internal/module/user/domain"
 )
 
@@ -8,6 +9,7 @@ import (
 // This is an internal type used between service and handler layers
 type AuthResult struct {
 	User         *domain.User
+	Profile      *profiledomain.UserProfile
 	AccessToken  string
 	RefreshToken string
 	ExpiresAt    int64  // unix timestamp when access token expires

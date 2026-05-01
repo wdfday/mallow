@@ -27,6 +27,7 @@ type Config struct {
 	SMTP          SMTPConfig
 	Mail          MailWorkerConfig
 	Telegram      TelegramConfig
+	Google        GoogleConfig
 	AdminSeed     AdminSeedConfig
 }
 
@@ -104,6 +105,10 @@ type TelegramConfig struct {
 	AllowedChats string
 }
 
+type GoogleConfig struct {
+	ClientID string
+}
+
 // Load reads configuration using Viper.
 // Priority (highest → lowest):
 //  1. Actual environment variables set in the shell
@@ -147,6 +152,7 @@ func Load() *Config {
 	v.SetDefault("TELEGRAM_GENERAL_BOT_TOKEN", "")
 	v.SetDefault("TELEGRAM_BOT_USERNAME", "")
 	v.SetDefault("TELEGRAM_ALLOWED_CHATS", "")
+	v.SetDefault("GOOGLE_CLIENT_ID", "")
 	v.SetDefault("ADMIN_SEED_EMAIL", "")
 	v.SetDefault("ADMIN_SEED_PASSWORD", "")
 
@@ -218,6 +224,9 @@ func Load() *Config {
 			Token:        v.GetString("TELEGRAM_GENERAL_BOT_TOKEN"),
 			BotUsername:  v.GetString("TELEGRAM_BOT_USERNAME"),
 			AllowedChats: v.GetString("TELEGRAM_ALLOWED_CHATS"),
+		},
+		Google: GoogleConfig{
+			ClientID: strings.TrimSpace(v.GetString("GOOGLE_CLIENT_ID")),
 		},
 		AdminSeed: AdminSeedConfig{
 			Email:    v.GetString("ADMIN_SEED_EMAIL"),

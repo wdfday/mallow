@@ -42,6 +42,14 @@ func (m *MockRepository) GetByEmail(ctx context.Context, email string) (*domain.
 	return args.Get(0).(*domain.User), args.Error(1)
 }
 
+func (m *MockRepository) GetByGoogleID(ctx context.Context, googleID string) (*domain.User, error) {
+	args := m.Called(ctx, googleID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*domain.User), args.Error(1)
+}
+
 func (m *MockRepository) List(ctx context.Context, f domain.ListUsersFilter, p shared.Pagination) (shared.Page[domain.User], error) {
 	args := m.Called(ctx, f, p)
 	return args.Get(0).(shared.Page[domain.User]), args.Error(1)
@@ -126,7 +134,6 @@ func createTestUser() *domain.User {
 		ID:               uuid.New(),
 		Email:            "test@example.com",
 		Password:         "hashedpassword",
-		FullName:         "Test User",
 		Role:             domain.UserRoleUser,
 		Status:           domain.UserStatusPendingVerification,
 		EmailVerified:    false,

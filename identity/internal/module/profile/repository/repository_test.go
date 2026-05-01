@@ -27,6 +27,10 @@ func setupTestDB(t *testing.T) *gorm.DB {
 		CREATE TABLE IF NOT EXISTS user_profiles (
 			id TEXT PRIMARY KEY,
 			user_id TEXT NOT NULL UNIQUE,
+			full_name TEXT NOT NULL DEFAULT '',
+			display_name TEXT,
+			date_of_birth DATETIME,
+			avatar_url TEXT,
 			occupation TEXT,
 			industry TEXT,
 			employer TEXT,

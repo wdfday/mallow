@@ -211,7 +211,7 @@ func TestE2E_ForgotPassword_ResetPassword(t *testing.T) {
 	userSvc := newE2EUserService()
 
 	// Seed a user with known password
-	passwordSvc := NewPasswordService(userSvc, tokenRepo, tokenGen, emailSvc, logger)
+	passwordSvc := NewPasswordService(userSvc, nil, tokenRepo, tokenGen, emailSvc, logger)
 	originalHash, err := passwordSvc.HashPassword("OldP@ssw0rd!")
 	require.NoError(t, err)
 
@@ -219,7 +219,6 @@ func TestE2E_ForgotPassword_ResetPassword(t *testing.T) {
 	userSvc.addUser(&userdomain.User{
 		ID:            userID,
 		Email:         "user@example.com",
-		FullName:      "Test User",
 		Password:      originalHash,
 		Role:          userdomain.UserRoleUser,
 		Status:        userdomain.UserStatusActive,
@@ -263,7 +262,7 @@ func TestE2E_ForgotPassword_NonexistentEmail_NoLeak(t *testing.T) {
 	tokenGen := NewTokenService()
 	emailSvc := &capturingEmailService{}
 	userSvc := newE2EUserService()
-	passwordSvc := NewPasswordService(userSvc, tokenRepo, tokenGen, emailSvc, slog.Default())
+	passwordSvc := NewPasswordService(userSvc, nil, tokenRepo, tokenGen, emailSvc, slog.Default())
 
 	// ForgotPassword for non-existent email should succeed silently (no leak)
 	err := passwordSvc.ForgotPassword(ctx, "nobody@example.com", "127.0.0.1", "agent")
@@ -279,12 +278,12 @@ func TestE2E_ForgotPassword_TokenReuse_Fails(t *testing.T) {
 	tokenGen := NewTokenService()
 	emailSvc := &capturingEmailService{}
 	userSvc := newE2EUserService()
-	passwordSvc := NewPasswordService(userSvc, tokenRepo, tokenGen, emailSvc, slog.Default())
+	passwordSvc := NewPasswordService(userSvc, nil, tokenRepo, tokenGen, emailSvc, slog.Default())
 
 	userID := uuid.New()
 	hash, _ := passwordSvc.HashPassword("MyP@ssw0rd!")
 	userSvc.addUser(&userdomain.User{
-		ID: userID, Email: "reuse@example.com", FullName: "Reuse User",
+		ID: userID, Email: "reuse@example.com",
 		Password: hash, Role: userdomain.UserRoleUser, Status: userdomain.UserStatusActive,
 		EmailVerified: true,
 	})
@@ -311,12 +310,12 @@ func TestE2E_ForgotPassword_NewTokenInvalidatesOld(t *testing.T) {
 	tokenGen := NewTokenService()
 	emailSvc := &capturingEmailService{}
 	userSvc := newE2EUserService()
-	passwordSvc := NewPasswordService(userSvc, tokenRepo, tokenGen, emailSvc, slog.Default())
+	passwordSvc := NewPasswordService(userSvc, nil, tokenRepo, tokenGen, emailSvc, slog.Default())
 
 	userID := uuid.New()
 	hash, _ := passwordSvc.HashPassword("MyP@ssw0rd!")
 	userSvc.addUser(&userdomain.User{
-		ID: userID, Email: "reissue@example.com", FullName: "Reissue User",
+		ID: userID, Email: "reissue@example.com",
 		Password: hash, Role: userdomain.UserRoleUser, Status: userdomain.UserStatusActive,
 		EmailVerified: true,
 	})
@@ -354,12 +353,12 @@ func TestE2E_EmailVerification_SendAndVerify(t *testing.T) {
 	emailSvc := &capturingEmailService{}
 	userSvc := newE2EUserService()
 
-	verifSvc := NewVerificationService(tokenRepo, userSvc, tokenGen, emailSvc, slog.Default())
+	verifSvc := NewVerificationService(tokenRepo, userSvc, nil, tokenGen, emailSvc, slog.Default())
 
 	// Seed unverified user
 	userID := uuid.New()
 	userSvc.addUser(&userdomain.User{
-		ID: userID, Email: "newuser@example.com", FullName: "New User",
+		ID: userID, Email: "newuser@example.com",
 		Role: userdomain.UserRoleUser, Status: userdomain.UserStatusPendingVerification,
 		EmailVerified: false,
 	})
@@ -400,12 +399,12 @@ func TestE2E_EmailVerification_AlreadyVerified_Rejected(t *testing.T) {
 	emailSvc := &capturingEmailService{}
 	userSvc := newE2EUserService()
 
-	verifSvc := NewVerificationService(tokenRepo, userSvc, tokenGen, emailSvc, slog.Default())
+	verifSvc := NewVerificationService(tokenRepo, userSvc, nil, tokenGen, emailSvc, slog.Default())
 
 	now := time.Now()
 	userID := uuid.New()
 	userSvc.addUser(&userdomain.User{
-		ID: userID, Email: "verified@example.com", FullName: "Verified User",
+		ID: userID, Email: "verified@example.com",
 		Role: userdomain.UserRoleUser, Status: userdomain.UserStatusActive,
 		EmailVerified: true, EmailVerifiedAt: &now,
 	})
@@ -424,11 +423,11 @@ func TestE2E_EmailVerification_ResendInvalidatesOldToken(t *testing.T) {
 	emailSvc := &capturingEmailService{}
 	userSvc := newE2EUserService()
 
-	verifSvc := NewVerificationService(tokenRepo, userSvc, tokenGen, emailSvc, slog.Default())
+	verifSvc := NewVerificationService(tokenRepo, userSvc, nil, tokenGen, emailSvc, slog.Default())
 
 	userID := uuid.New()
 	userSvc.addUser(&userdomain.User{
-		ID: userID, Email: "resend@example.com", FullName: "Resend User",
+		ID: userID, Email: "resend@example.com",
 		Role: userdomain.UserRoleUser, Status: userdomain.UserStatusPendingVerification,
 		EmailVerified: false,
 	})
@@ -465,7 +464,7 @@ func TestE2E_EmailVerification_ResendNonexistentEmail_NoLeak(t *testing.T) {
 	emailSvc := &capturingEmailService{}
 	userSvc := newE2EUserService()
 
-	verifSvc := NewVerificationService(tokenRepo, userSvc, tokenGen, emailSvc, slog.Default())
+	verifSvc := NewVerificationService(tokenRepo, userSvc, nil, tokenGen, emailSvc, slog.Default())
 
 	err := verifSvc.ResendVerificationEmail(ctx, "ghost@example.com", "127.0.0.1", "agent")
 	require.NoError(t, err) // no leakage
@@ -487,9 +486,9 @@ func TestE2E_AuthLifecycle_Register_Login_Refresh_Logout(t *testing.T) {
 	// Use real password service (with noop email)
 	tokenRepo := repository.NewTokenRepository(rdb)
 	tokenGen := NewTokenService()
-	passwordSvc := NewPasswordService(userSvc, tokenRepo, tokenGen, nil, slog.Default())
+	passwordSvc := NewPasswordService(userSvc, nil, tokenRepo, tokenGen, nil, slog.Default())
 
-	authSvc := NewService(userSvc, jwtSvc, passwordSvc, nil, blacklistRepo, &config.Config{}, slog.Default())
+	authSvc := NewService(userSvc, nil, jwtSvc, passwordSvc, nil, blacklistRepo, &config.Config{}, slog.Default())
 
 	// --- Step 1: Register ---
 	regResult, err := authSvc.Register(ctx, dto.RegisterRequest{
@@ -543,12 +542,12 @@ func TestE2E_Register_DuplicateEmail_Rejected(t *testing.T) {
 	userSvc := newE2EUserService()
 	tokenRepo := repository.NewTokenRepository(rdb)
 	tokenGen := NewTokenService()
-	passwordSvc := NewPasswordService(userSvc, tokenRepo, tokenGen, nil, slog.Default())
+	passwordSvc := NewPasswordService(userSvc, nil, tokenRepo, tokenGen, nil, slog.Default())
 
-	authSvc := NewService(userSvc, jwtSvc, passwordSvc, nil, blacklistRepo, &config.Config{}, slog.Default())
+	authSvc := NewService(userSvc, nil, jwtSvc, passwordSvc, nil, blacklistRepo, &config.Config{}, slog.Default())
 
 	req := dto.RegisterRequest{
-		Email: "dup@example.com", Password: "MyS3cure!Pass", FullName: "First",
+		Email: "dup@example.com", Password: "MyS3cure!Pass",
 	}
 	_, err := authSvc.Register(ctx, req)
 	require.NoError(t, err)
@@ -571,13 +570,13 @@ func TestE2E_AccountLockout_AfterFailedLogins(t *testing.T) {
 	userSvc := newE2EUserService()
 	tokenRepo := repository.NewTokenRepository(rdb)
 	tokenGen := NewTokenService()
-	passwordSvc := NewPasswordService(userSvc, tokenRepo, tokenGen, nil, slog.Default())
+	passwordSvc := NewPasswordService(userSvc, nil, tokenRepo, tokenGen, nil, slog.Default())
 
-	authSvc := NewService(userSvc, jwtSvc, passwordSvc, nil, blacklistRepo, &config.Config{}, slog.Default())
+	authSvc := NewService(userSvc, nil, jwtSvc, passwordSvc, nil, blacklistRepo, &config.Config{}, slog.Default())
 
 	// Register user first
 	_, err := authSvc.Register(ctx, dto.RegisterRequest{
-		Email: "lockout@example.com", Password: "MyS3cure!Pass", FullName: "Lockout User",
+		Email: "lockout@example.com", Password: "MyS3cure!Pass",
 	})
 	require.NoError(t, err)
 
@@ -615,13 +614,13 @@ func TestE2E_PasswordReset_UnlocksAccount(t *testing.T) {
 	tokenRepo := repository.NewTokenRepository(rdb)
 	tokenGen := NewTokenService()
 	emailSvc := &capturingEmailService{}
-	passwordSvc := NewPasswordService(userSvc, tokenRepo, tokenGen, emailSvc, slog.Default())
+	passwordSvc := NewPasswordService(userSvc, nil, tokenRepo, tokenGen, emailSvc, slog.Default())
 
-	authSvc := NewService(userSvc, jwtSvc, passwordSvc, nil, blacklistRepo, &config.Config{}, slog.Default())
+	authSvc := NewService(userSvc, nil, jwtSvc, passwordSvc, nil, blacklistRepo, &config.Config{}, slog.Default())
 
 	// Register then lock via failed logins
 	_, err := authSvc.Register(ctx, dto.RegisterRequest{
-		Email: "unlock@example.com", Password: "MyS3cure!Pass", FullName: "Unlock User",
+		Email: "unlock@example.com", Password: "MyS3cure!Pass",
 	})
 	require.NoError(t, err)
 
@@ -668,14 +667,14 @@ func TestE2E_FullOnboarding_Register_VerifyEmail_Login(t *testing.T) {
 	tokenRepo := repository.NewTokenRepository(rdb)
 	tokenGen := NewTokenService()
 	emailSvc := &capturingEmailService{}
-	passwordSvc := NewPasswordService(userSvc, tokenRepo, tokenGen, emailSvc, slog.Default())
+	passwordSvc := NewPasswordService(userSvc, nil, tokenRepo, tokenGen, emailSvc, slog.Default())
 
-	authSvc := NewService(userSvc, jwtSvc, passwordSvc, nil, blacklistRepo, &config.Config{}, slog.Default())
-	verifSvc := NewVerificationService(tokenRepo, userSvc, tokenGen, emailSvc, slog.Default())
+	authSvc := NewService(userSvc, nil, jwtSvc, passwordSvc, nil, blacklistRepo, &config.Config{}, slog.Default())
+	verifSvc := NewVerificationService(tokenRepo, userSvc, nil, tokenGen, emailSvc, slog.Default())
 
 	// --- Step 1: Register ---
 	regResult, err := authSvc.Register(ctx, dto.RegisterRequest{
-		Email: "onboard@example.com", Password: "Onb0ard!Pass", FullName: "Onboard User",
+		Email: "onboard@example.com", Password: "Onb0ard!Pass",
 	})
 	require.NoError(t, err)
 	userID := regResult.User.ID.String()
@@ -718,13 +717,13 @@ func TestE2E_ChangePassword(t *testing.T) {
 	tokenRepo := repository.NewTokenRepository(rdb)
 	tokenGen := NewTokenService()
 	userSvc := newE2EUserService()
-	passwordSvc := NewPasswordService(userSvc, tokenRepo, tokenGen, nil, slog.Default())
+	passwordSvc := NewPasswordService(userSvc, nil, tokenRepo, tokenGen, nil, slog.Default())
 
 	// Seed user
 	userID := uuid.New()
 	hash, _ := passwordSvc.HashPassword("Original!P@ss1")
 	userSvc.addUser(&userdomain.User{
-		ID: userID, Email: "changepw@example.com", FullName: "Chang PW",
+		ID: userID, Email: "changepw@example.com",
 		Password: hash, Role: userdomain.UserRoleUser, Status: userdomain.UserStatusActive,
 		EmailVerified: true,
 	})
@@ -751,12 +750,12 @@ func TestE2E_ChangePassword_WrongCurrent_Fails(t *testing.T) {
 	tokenRepo := repository.NewTokenRepository(rdb)
 	tokenGen := NewTokenService()
 	userSvc := newE2EUserService()
-	passwordSvc := NewPasswordService(userSvc, tokenRepo, tokenGen, nil, slog.Default())
+	passwordSvc := NewPasswordService(userSvc, nil, tokenRepo, tokenGen, nil, slog.Default())
 
 	userID := uuid.New()
 	hash, _ := passwordSvc.HashPassword("Correct!P@ss1")
 	userSvc.addUser(&userdomain.User{
-		ID: userID, Email: "wrongcur@example.com", FullName: "Wrong Cur",
+		ID: userID, Email: "wrongcur@example.com",
 		Password: hash, Role: userdomain.UserRoleUser, Status: userdomain.UserStatusActive,
 		EmailVerified: true,
 	})
@@ -785,13 +784,13 @@ func TestE2E_Logout_BlacklistsRefreshToken(t *testing.T) {
 	userSvc := newE2EUserService()
 	tokenRepo := repository.NewTokenRepository(rdb)
 	tokenGen := NewTokenService()
-	passwordSvc := NewPasswordService(userSvc, tokenRepo, tokenGen, nil, slog.Default())
+	passwordSvc := NewPasswordService(userSvc, nil, tokenRepo, tokenGen, nil, slog.Default())
 
-	authSvc := NewService(userSvc, jwtSvc, passwordSvc, nil, blacklistRepo, &config.Config{}, slog.Default())
+	authSvc := NewService(userSvc, nil, jwtSvc, passwordSvc, nil, blacklistRepo, &config.Config{}, slog.Default())
 
 	// Register
 	regResult, err := authSvc.Register(ctx, dto.RegisterRequest{
-		Email: "logout@example.com", Password: "MyS3cure!Pass", FullName: "Logout User",
+		Email: "logout@example.com", Password: "MyS3cure!Pass",
 	})
 	require.NoError(t, err)
 
@@ -826,7 +825,7 @@ func TestE2E_TelegramLink_Confirm_Unlink(t *testing.T) {
 
 	userID := uuid.New()
 	userSvc.addUser(&userdomain.User{
-		ID: userID, Email: "tg@example.com", FullName: "TG User",
+		ID: userID, Email: "tg@example.com",
 		Role: userdomain.UserRoleUser, Status: userdomain.UserStatusActive,
 		EmailVerified: true,
 	})
@@ -890,7 +889,7 @@ func TestE2E_TelegramRelink_SameUser(t *testing.T) {
 
 	userID := uuid.New()
 	userSvc.addUser(&userdomain.User{
-		ID: userID, Email: "relink@example.com", FullName: "Relink User",
+		ID: userID, Email: "relink@example.com",
 		Role: userdomain.UserRoleUser, Status: userdomain.UserStatusActive,
 		EmailVerified: true,
 	})

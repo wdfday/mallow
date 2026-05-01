@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	authDomain "mallow/identity/internal/module/auth/domain"
+	profiledomain "mallow/identity/internal/module/profile/domain"
+	profiledto "mallow/identity/internal/module/profile/dto"
 	"mallow/identity/internal/module/user/domain"
 	"mallow/identity/internal/shared"
 	"net/http"
@@ -132,6 +134,43 @@ func (m *MockUserService) UnlinkAccount(ctx context.Context, userID, provider, p
 	return args.Error(0)
 }
 
+// MockProfileService is a mock implementation of the profile Service interface
+type MockProfileService struct {
+	mock.Mock
+}
+
+func (m *MockProfileService) CreateProfile(ctx context.Context, userID string, req profiledto.CreateProfileRequest) (*profiledomain.UserProfile, error) {
+	args := m.Called(ctx, userID, req)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*profiledomain.UserProfile), args.Error(1)
+}
+
+func (m *MockProfileService) CreateDefaultProfile(ctx context.Context, userID string) (*profiledomain.UserProfile, error) {
+	args := m.Called(ctx, userID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*profiledomain.UserProfile), args.Error(1)
+}
+
+func (m *MockProfileService) GetProfile(ctx context.Context, userID string) (*profiledomain.UserProfile, error) {
+	args := m.Called(ctx, userID)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*profiledomain.UserProfile), args.Error(1)
+}
+
+func (m *MockProfileService) UpdateProfile(ctx context.Context, userID string, req profiledto.UpdateProfileRequest) (*profiledomain.UserProfile, error) {
+	args := m.Called(ctx, userID, req)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*profiledomain.UserProfile), args.Error(1)
+}
+
 func createTestUser() *domain.User {
 	now := time.Now()
 	userID := uuid.New()
@@ -139,7 +178,6 @@ func createTestUser() *domain.User {
 		ID:               userID,
 		Email:            "test@example.com",
 		Password:         "hashedpassword",
-		FullName:         "Test User",
 		Role:             domain.UserRoleUser,
 		Status:           domain.UserStatusActive,
 		EmailVerified:    true,
@@ -153,11 +191,21 @@ func createTestUser() *domain.User {
 	}
 }
 
-func setupTestRouter() (*gin.Engine, *MockUserService) {
+func createTestProfile(userID uuid.UUID) *profiledomain.UserProfile {
+	fullName := "Test User"
+	return &profiledomain.UserProfile{
+		ID:       uuid.New(),
+		UserID:   userID,
+		FullName: fullName,
+	}
+}
+
+func setupTestRouter() (*gin.Engine, *MockUserService, *MockProfileService) {
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	mockService := new(MockUserService)
-	return router, mockService
+	mockProfileService := new(MockProfileService)
+	return router, mockService, mockProfileService
 }
 
 // Helper to set current user in context (mocking authentication)
@@ -173,11 +221,13 @@ func setCurrentUser(c *gin.Context, user *domain.User) {
 
 func TestUserHandler_GetMe(t *testing.T) {
 	t.Run("successfully get current user profile", func(t *testing.T) {
-		router, mockService := setupTestRouter()
-		handler := NewUserHandler(mockService)
+		router, mockService, mockProfileService := setupTestRouter()
+		handler := NewUserHandler(mockService, mockProfileService)
 		user := createTestUser()
+		profile := createTestProfile(user.ID)
 
 		mockService.On("GetByID", mock.Anything, user.ID.String()).Return(user, nil)
+		mockProfileService.On("GetProfile", mock.Anything, user.ID.String()).Return(profile, nil)
 
 		router.GET("/api/v1/user/me", func(c *gin.Context) {
 			setCurrentUser(c, user)
@@ -198,11 +248,12 @@ func TestUserHandler_GetMe(t *testing.T) {
 		assert.NotNil(t, response["data"])
 
 		mockService.AssertExpectations(t)
+		mockProfileService.AssertExpectations(t)
 	})
 
 	t.Run("return unauthorized when user not in context", func(t *testing.T) {
-		router, mockService := setupTestRouter()
-		handler := NewUserHandler(mockService)
+		router, mockService, mockProfileService := setupTestRouter()
+		handler := NewUserHandler(mockService, mockProfileService)
 
 		router.GET("/api/v1/user/me", handler.getMe)
 
@@ -215,8 +266,8 @@ func TestUserHandler_GetMe(t *testing.T) {
 	})
 
 	t.Run("handle service error", func(t *testing.T) {
-		router, mockService := setupTestRouter()
-		handler := NewUserHandler(mockService)
+		router, mockService, mockProfileService := setupTestRouter()
+		handler := NewUserHandler(mockService, mockProfileService)
 		user := createTestUser()
 
 		mockService.On("GetByID", mock.Anything, user.ID.String()).
@@ -236,8 +287,8 @@ func TestUserHandler_GetMe(t *testing.T) {
 	})
 
 	t.Run("handle user not found", func(t *testing.T) {
-		router, mockService := setupTestRouter()
-		handler := NewUserHandler(mockService)
+		router, mockService, mockProfileService := setupTestRouter()
+		handler := NewUserHandler(mockService, mockProfileService)
 		user := createTestUser()
 
 		mockService.On("GetByID", mock.Anything, user.ID.String()).
@@ -258,9 +309,9 @@ func TestUserHandler_GetMe(t *testing.T) {
 }
 
 func TestUserHandler_UpdateMe(t *testing.T) {
-	t.Run("successfully update user profile", func(t *testing.T) {
-		router, mockService := setupTestRouter()
-		handler := NewUserHandler(mockService)
+	t.Run("successfully update full_name via profile service", func(t *testing.T) {
+		router, mockService, mockProfileService := setupTestRouter()
+		handler := NewUserHandler(mockService, mockProfileService)
 		user := createTestUser()
 
 		newName := "Updated Name"
@@ -269,13 +320,14 @@ func TestUserHandler_UpdateMe(t *testing.T) {
 		}
 		body, _ := json.Marshal(requestBody)
 
-		mockService.On("UpdateColumns", mock.Anything, user.ID.String(), mock.MatchedBy(func(cols map[string]any) bool {
-			return cols["full_name"] == newName
-		})).Return(nil)
+		updatedProfile := createTestProfile(user.ID)
+		updatedProfile.FullName = newName
+		mockProfileService.On("UpdateProfile", mock.Anything, user.ID.String(), mock.MatchedBy(func(req profiledto.UpdateProfileRequest) bool {
+			return req.FullName != nil && *req.FullName == newName
+		})).Return(updatedProfile, nil)
 
-		updatedUser := *user
-		updatedUser.FullName = newName
-		mockService.On("GetByID", mock.Anything, user.ID.String()).Return(&updatedUser, nil)
+		mockService.On("GetByID", mock.Anything, user.ID.String()).Return(user, nil)
+		mockProfileService.On("GetProfile", mock.Anything, user.ID.String()).Return(updatedProfile, nil)
 
 		router.PUT("/api/v1/user/me", func(c *gin.Context) {
 			setCurrentUser(c, user)
@@ -295,11 +347,12 @@ func TestUserHandler_UpdateMe(t *testing.T) {
 
 		assert.Equal(t, float64(http.StatusOK), response["status"])
 		mockService.AssertExpectations(t)
+		mockProfileService.AssertExpectations(t)
 	})
 
-	t.Run("successfully update display name", func(t *testing.T) {
-		router, mockService := setupTestRouter()
-		handler := NewUserHandler(mockService)
+	t.Run("successfully update display name via profile service", func(t *testing.T) {
+		router, mockService, mockProfileService := setupTestRouter()
+		handler := NewUserHandler(mockService, mockProfileService)
 		user := createTestUser()
 
 		displayName := "Display Name"
@@ -308,11 +361,14 @@ func TestUserHandler_UpdateMe(t *testing.T) {
 		}
 		body, _ := json.Marshal(requestBody)
 
-		mockService.On("UpdateColumns", mock.Anything, user.ID.String(), mock.MatchedBy(func(cols map[string]any) bool {
-			return cols["display_name"] == displayName
-		})).Return(nil)
+		updatedProfile := createTestProfile(user.ID)
+		updatedProfile.DisplayName = &displayName
+		mockProfileService.On("UpdateProfile", mock.Anything, user.ID.String(), mock.MatchedBy(func(req profiledto.UpdateProfileRequest) bool {
+			return req.DisplayName != nil && *req.DisplayName == displayName
+		})).Return(updatedProfile, nil)
 
 		mockService.On("GetByID", mock.Anything, user.ID.String()).Return(user, nil)
+		mockProfileService.On("GetProfile", mock.Anything, user.ID.String()).Return(updatedProfile, nil)
 
 		router.PUT("/api/v1/user/me", func(c *gin.Context) {
 			setCurrentUser(c, user)
@@ -326,11 +382,12 @@ func TestUserHandler_UpdateMe(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, w.Code)
 		mockService.AssertExpectations(t)
+		mockProfileService.AssertExpectations(t)
 	})
 
 	t.Run("successfully update phone number", func(t *testing.T) {
-		router, mockService := setupTestRouter()
-		handler := NewUserHandler(mockService)
+		router, mockService, mockProfileService := setupTestRouter()
+		handler := NewUserHandler(mockService, mockProfileService)
 		user := createTestUser()
 
 		phoneNumber := "+1234567890"
@@ -344,6 +401,7 @@ func TestUserHandler_UpdateMe(t *testing.T) {
 		})).Return(nil)
 
 		mockService.On("GetByID", mock.Anything, user.ID.String()).Return(user, nil)
+		mockProfileService.On("GetProfile", mock.Anything, user.ID.String()).Return((*profiledomain.UserProfile)(nil), nil)
 
 		router.PUT("/api/v1/user/me", func(c *gin.Context) {
 			setCurrentUser(c, user)
@@ -357,11 +415,12 @@ func TestUserHandler_UpdateMe(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, w.Code)
 		mockService.AssertExpectations(t)
+		mockProfileService.AssertExpectations(t)
 	})
 
-	t.Run("clear display name with empty string", func(t *testing.T) {
-		router, mockService := setupTestRouter()
-		handler := NewUserHandler(mockService)
+	t.Run("clear display name with empty string via profile service", func(t *testing.T) {
+		router, mockService, mockProfileService := setupTestRouter()
+		handler := NewUserHandler(mockService, mockProfileService)
 		user := createTestUser()
 
 		requestBody := map[string]interface{}{
@@ -369,11 +428,11 @@ func TestUserHandler_UpdateMe(t *testing.T) {
 		}
 		body, _ := json.Marshal(requestBody)
 
-		mockService.On("UpdateColumns", mock.Anything, user.ID.String(), mock.MatchedBy(func(cols map[string]any) bool {
-			return cols["display_name"] == nil
-		})).Return(nil)
+		updatedProfile := createTestProfile(user.ID)
+		mockProfileService.On("UpdateProfile", mock.Anything, user.ID.String(), mock.Anything).Return(updatedProfile, nil)
 
 		mockService.On("GetByID", mock.Anything, user.ID.String()).Return(user, nil)
+		mockProfileService.On("GetProfile", mock.Anything, user.ID.String()).Return(updatedProfile, nil)
 
 		router.PUT("/api/v1/user/me", func(c *gin.Context) {
 			setCurrentUser(c, user)
@@ -387,11 +446,12 @@ func TestUserHandler_UpdateMe(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, w.Code)
 		mockService.AssertExpectations(t)
+		mockProfileService.AssertExpectations(t)
 	})
 
 	t.Run("return unauthorized when user not in context", func(t *testing.T) {
-		router, mockService := setupTestRouter()
-		handler := NewUserHandler(mockService)
+		router, mockService, mockProfileService := setupTestRouter()
+		handler := NewUserHandler(mockService, mockProfileService)
 
 		requestBody := map[string]interface{}{
 			"full_name": "New Name",
@@ -410,8 +470,8 @@ func TestUserHandler_UpdateMe(t *testing.T) {
 	})
 
 	t.Run("return bad request for invalid JSON", func(t *testing.T) {
-		router, mockService := setupTestRouter()
-		handler := NewUserHandler(mockService)
+		router, mockService, mockProfileService := setupTestRouter()
+		handler := NewUserHandler(mockService, mockProfileService)
 		user := createTestUser()
 
 		router.PUT("/api/v1/user/me", func(c *gin.Context) {
@@ -429,8 +489,8 @@ func TestUserHandler_UpdateMe(t *testing.T) {
 	})
 
 	t.Run("return bad request when full_name is empty string", func(t *testing.T) {
-		router, mockService := setupTestRouter()
-		handler := NewUserHandler(mockService)
+		router, mockService, mockProfileService := setupTestRouter()
+		handler := NewUserHandler(mockService, mockProfileService)
 		user := createTestUser()
 
 		requestBody := map[string]interface{}{
@@ -453,8 +513,8 @@ func TestUserHandler_UpdateMe(t *testing.T) {
 	})
 
 	t.Run("return bad request when no fields to update", func(t *testing.T) {
-		router, mockService := setupTestRouter()
-		handler := NewUserHandler(mockService)
+		router, mockService, mockProfileService := setupTestRouter()
+		handler := NewUserHandler(mockService, mockProfileService)
 		user := createTestUser()
 
 		requestBody := map[string]interface{}{}
@@ -474,9 +534,9 @@ func TestUserHandler_UpdateMe(t *testing.T) {
 		mockService.AssertExpectations(t)
 	})
 
-	t.Run("handle service error during update", func(t *testing.T) {
-		router, mockService := setupTestRouter()
-		handler := NewUserHandler(mockService)
+	t.Run("handle profile service error during update", func(t *testing.T) {
+		router, mockService, mockProfileService := setupTestRouter()
+		handler := NewUserHandler(mockService, mockProfileService)
 		user := createTestUser()
 
 		requestBody := map[string]interface{}{
@@ -484,8 +544,8 @@ func TestUserHandler_UpdateMe(t *testing.T) {
 		}
 		body, _ := json.Marshal(requestBody)
 
-		mockService.On("UpdateColumns", mock.Anything, user.ID.String(), mock.Anything).
-			Return(errors.New("database error"))
+		mockProfileService.On("UpdateProfile", mock.Anything, user.ID.String(), mock.Anything).
+			Return((*profiledomain.UserProfile)(nil), errors.New("database error"))
 
 		router.PUT("/api/v1/user/me", func(c *gin.Context) {
 			setCurrentUser(c, user)
@@ -499,11 +559,12 @@ func TestUserHandler_UpdateMe(t *testing.T) {
 
 		assert.Equal(t, http.StatusInternalServerError, w.Code)
 		mockService.AssertExpectations(t)
+		mockProfileService.AssertExpectations(t)
 	})
 
 	t.Run("handle service error during get after update", func(t *testing.T) {
-		router, mockService := setupTestRouter()
-		handler := NewUserHandler(mockService)
+		router, mockService, mockProfileService := setupTestRouter()
+		handler := NewUserHandler(mockService, mockProfileService)
 		user := createTestUser()
 
 		requestBody := map[string]interface{}{
@@ -511,7 +572,8 @@ func TestUserHandler_UpdateMe(t *testing.T) {
 		}
 		body, _ := json.Marshal(requestBody)
 
-		mockService.On("UpdateColumns", mock.Anything, user.ID.String(), mock.Anything).Return(nil)
+		updatedProfile := createTestProfile(user.ID)
+		mockProfileService.On("UpdateProfile", mock.Anything, user.ID.String(), mock.Anything).Return(updatedProfile, nil)
 		mockService.On("GetByID", mock.Anything, user.ID.String()).
 			Return(nil, errors.New("database error"))
 
@@ -527,5 +589,6 @@ func TestUserHandler_UpdateMe(t *testing.T) {
 
 		assert.Equal(t, http.StatusInternalServerError, w.Code)
 		mockService.AssertExpectations(t)
+		mockProfileService.AssertExpectations(t)
 	})
 }

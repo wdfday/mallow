@@ -2,6 +2,7 @@ package handler
 
 import (
 	"mallow/identity/internal/middleware"
+	profileservice "mallow/identity/internal/module/profile/service"
 	"mallow/identity/internal/module/user/service"
 
 	"github.com/gin-gonic/gin"
@@ -14,9 +15,9 @@ type Handler struct {
 }
 
 // NewHandler constructs the aggregate handler with shared dependencies.
-func NewHandler(service service.IUserService) *Handler {
+func NewHandler(service service.IUserService, profileSvc profileservice.Service) *Handler {
 	return &Handler{
-		user:  NewUserHandler(service),
+		user:  NewUserHandler(service, profileSvc),
 		admin: NewAdminHandler(service),
 	}
 }

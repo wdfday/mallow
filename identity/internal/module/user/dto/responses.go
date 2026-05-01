@@ -16,10 +16,7 @@ type LinkedAccountResponse struct {
 type UserResponse struct {
 	ID              string     `json:"id"`
 	Email           string     `json:"email"`
-	FullName        string     `json:"full_name"`
-	DisplayName     *string    `json:"display_name,omitempty"`
 	PhoneNumber     *string    `json:"phone_number,omitempty"`
-	AvatarURL       *string    `json:"avatar_url,omitempty"`
 	Role            string     `json:"role"`
 	Status          string     `json:"status"`
 	EmailVerified   bool       `json:"email_verified"`

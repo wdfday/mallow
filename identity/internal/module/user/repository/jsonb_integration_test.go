@@ -52,7 +52,6 @@ func freshUser(t *testing.T, db *gorm.DB) *domain.User {
 		ID:               uuid.New(), // generate in Go so u.ID is populated after Create
 		Email:            "integ+" + t.Name() + "@example.com",
 		Password:         "hashed",
-		FullName:         "Integration Tester",
 		Role:             domain.UserRoleUser,
 		Status:           domain.UserStatusPendingVerification,
 		TermsAccepted:    true,

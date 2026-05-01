@@ -14,12 +14,7 @@ type User struct {
 	Email       string  `gorm:"type:citext;uniqueIndex:uniq_email_active,where:deleted_at IS NULL;column:email" json:"email"`
 	Password    string  `gorm:"type:text;column:password" json:"-"`
 	PhoneNumber *string `gorm:"uniqueIndex:uniq_phone_active,where:deleted_at IS NULL;column:phone_number" json:"phone_number,omitempty"`
-
-	// Personal Information
-	FullName    string     `gorm:"column:full_name" json:"full_name"`
-	DisplayName *string    `gorm:"column:display_name" json:"display_name,omitempty"`
-	DateOfBirth *time.Time `gorm:"column:date_of_birth" json:"date_of_birth,omitempty"`
-	AvatarURL   *string    `gorm:"column:avatar_url" json:"avatar_url,omitempty"`
+	GoogleID    *string `gorm:"type:varchar(255);uniqueIndex:uniq_google_id_active,where:google_id IS NOT NULL AND deleted_at IS NULL;column:google_id" json:"-"`
 
 	// Account Status
 	Role            UserRole   `gorm:"type:varchar(20);default:'user';column:role" json:"role"`
@@ -44,7 +39,7 @@ type User struct {
 	MarketingConsent   bool       `gorm:"column:marketing_consent" json:"marketing_consent"`
 
 	// External accounts (stored as JSONB; use GIN index for fast lookup)
-	LinkedAccounts []LinkedAccount `gorm:"type:jsonb;serializer:json;column:linked_accounts" json:"linked_accounts,omitempty"`
+	LinkedAccounts []LinkedAccount `gorm:"type:jsonb;serializer:json;default:'[]';column:linked_accounts" json:"linked_accounts,omitempty"`
 
 	// Activity Tracking
 	LastActiveAt time.Time `gorm:"index;column:last_active_at" json:"last_active_at"`

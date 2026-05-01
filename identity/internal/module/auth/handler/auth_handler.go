@@ -71,13 +71,16 @@ func (h *AuthHandler) register(c *gin.Context) {
 		return
 	}
 
-	_ = h.sessionService.CreateSession(c.Request.Context(), result.SessionID, result.User.ID.String(), c.ClientIP(), c.Request.UserAgent())
+	if err := h.sessionService.CreateSession(c.Request.Context(), result.SessionID, result.User.ID.String(), c.ClientIP(), c.Request.UserAgent()); err != nil {
+		shared.HandleError(c, err)
+		return
+	}
 
 	// Set refresh token in HTTP-only cookie
 	h.setRefreshTokenCookie(c, result.RefreshToken)
 
 	// Return auth response without refresh token (it's in cookie)
-	response := dto.NewAuthResponse(result.User, result.AccessToken, result.ExpiresAt)
+	response := dto.NewAuthResponse(result.User, result.Profile, result.AccessToken, result.ExpiresAt)
 	shared.RespondWithSuccess(c, http.StatusCreated, "User registered successfully", response)
 }
 
@@ -108,13 +111,16 @@ func (h *AuthHandler) login(c *gin.Context) {
 		return
 	}
 
-	_ = h.sessionService.CreateSession(c.Request.Context(), result.SessionID, result.User.ID.String(), c.ClientIP(), c.Request.UserAgent())
+	if err := h.sessionService.CreateSession(c.Request.Context(), result.SessionID, result.User.ID.String(), c.ClientIP(), c.Request.UserAgent()); err != nil {
+		shared.HandleError(c, err)
+		return
+	}
 
 	// Set refresh token in HTTP-only cookie
 	h.setRefreshTokenCookie(c, result.RefreshToken)
 
 	// Return auth response without refresh token (it's in cookie)
-	response := dto.NewAuthResponse(result.User, result.AccessToken, result.ExpiresAt)
+	response := dto.NewAuthResponse(result.User, result.Profile, result.AccessToken, result.ExpiresAt)
 	shared.RespondWithSuccess(c, http.StatusOK, "Login successful", response)
 }
 
@@ -142,13 +148,16 @@ func (h *AuthHandler) authenticateGoogle(c *gin.Context) {
 		return
 	}
 
-	_ = h.sessionService.CreateSession(c.Request.Context(), result.SessionID, result.User.ID.String(), c.ClientIP(), c.Request.UserAgent())
+	if err := h.sessionService.CreateSession(c.Request.Context(), result.SessionID, result.User.ID.String(), c.ClientIP(), c.Request.UserAgent()); err != nil {
+		shared.HandleError(c, err)
+		return
+	}
 
 	// Set refresh token in HTTP-only cookie
 	h.setRefreshTokenCookie(c, result.RefreshToken)
 
 	// Return auth response without refresh token (it's in cookie)
-	response := dto.NewAuthResponse(result.User, result.AccessToken, result.ExpiresAt)
+	response := dto.NewAuthResponse(result.User, result.Profile, result.AccessToken, result.ExpiresAt)
 	shared.RespondWithSuccess(c, http.StatusOK, "Google authentication successful", response)
 }
 

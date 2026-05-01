@@ -12,6 +12,7 @@ import (
 	"mallow/identity/internal/module/auth/repository"
 	"mallow/identity/internal/module/auth/service"
 	notificationservice "mallow/identity/internal/module/notification/service"
+	profileservice "mallow/identity/internal/module/profile/service"
 	userservice "mallow/identity/internal/module/user/service"
 )
 
@@ -19,10 +20,11 @@ import (
 func ProvideTelegramHandler(
 	cfg *config.Config,
 	userSvc userservice.IUserService,
+	profileSvc profileservice.Service,
 	rdb *redisgo.Client,
 	js natsgo.JetStreamContext,
 ) *handler.TelegramHandler {
-	return handler.NewTelegramHandler(userSvc, rdb, js, cfg.Telegram.BotUsername)
+	return handler.NewTelegramHandler(userSvc, profileSvc, rdb, js, cfg.Telegram.BotUsername)
 }
 
 // ProvideJWTService creates a JWT service with configuration
@@ -41,12 +43,13 @@ func ProvideJWTService(cfg *config.Config) (service.IJWTService, error) {
 // ProvidePasswordService creates a password service
 func ProvidePasswordService(
 	userService userservice.IUserService,
+	profileSvc profileservice.Service,
 	tokenRepo repository.TokenRepository,
 	tokenService service.ITokenService,
 	emailService notificationservice.EmailService,
 	logger *slog.Logger,
 ) service.IPasswordService {
-	return service.NewPasswordService(userService, tokenRepo, tokenService, emailService, logger)
+	return service.NewPasswordService(userService, profileSvc, tokenRepo, tokenService, emailService, logger)
 }
 
 // ProvideTokenService creates a token service

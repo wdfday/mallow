@@ -13,7 +13,6 @@ func createTestUser() *User {
 		ID:            uuid.New(),
 		Email:         "test@example.com",
 		Password:      "hashed_password",
-		FullName:      "Test User",
 		Role:          UserRoleUser,
 		Status:        UserStatusActive,
 		EmailVerified: true,

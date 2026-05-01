@@ -12,6 +12,7 @@ type GoogleUserInfo struct {
 	Name          string `json:"name"`
 	Picture       string `json:"picture"`
 	VerifiedEmail bool   `json:"verified_email"`
+	Audience      string `json:"audience"`
 	//Sub		  	  string `json:"sub"`
 }
 

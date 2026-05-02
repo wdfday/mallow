@@ -43,12 +43,30 @@ pub fn routes() -> Router<HttpState> {
 
 // ── GET /api/strategies ──────────────────────────────────────────────────────
 
+#[utoipa::path(
+    get,
+    path = "/api/strategies",
+    responses(
+        (status = 200, description = "List of registered named strategy keys")
+    ),
+    tag = "backtest"
+)]
 pub async fn list_strategies() -> Json<&'static [&'static str]> {
     Json(STRATEGY_KEYS)
 }
 
 // ── POST /api/backtest ───────────────────────────────────────────────────────
 
+#[utoipa::path(
+    post,
+    path = "/api/backtest",
+    responses(
+        (status = 200, description = "Backtest report"),
+        (status = 400, description = "Bad request"),
+        (status = 429, description = "Too many concurrent backtests")
+    ),
+    tag = "backtest"
+)]
 pub async fn run_backtest(
     State(state): State<HttpState>,
     Json(req): Json<BacktestRequest>,
@@ -62,6 +80,16 @@ pub async fn run_backtest(
 
 // ── POST /api/backtest/cel ───────────────────────────────────────────────────
 
+#[utoipa::path(
+    post,
+    path = "/api/backtest/cel",
+    responses(
+        (status = 200, description = "CEL backtest report"),
+        (status = 400, description = "Bad request"),
+        (status = 429, description = "Too many concurrent backtests")
+    ),
+    tag = "backtest"
+)]
 pub async fn run_backtest_cel(
     State(state): State<HttpState>,
     Json(req): Json<CelBacktestRequest>,
@@ -76,6 +104,16 @@ pub async fn run_backtest_cel(
 
 // ── POST /api/backtest/rhai ──────────────────────────────────────────────────
 
+#[utoipa::path(
+    post,
+    path = "/api/backtest/rhai",
+    responses(
+        (status = 200, description = "Rhai backtest report"),
+        (status = 400, description = "Bad request"),
+        (status = 429, description = "Too many concurrent backtests")
+    ),
+    tag = "backtest"
+)]
 pub async fn run_backtest_rhai(
     State(state): State<HttpState>,
     Json(req): Json<RhaiBacktestRequest>,

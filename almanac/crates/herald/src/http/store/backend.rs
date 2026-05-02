@@ -13,7 +13,7 @@ use super::types::{
     BacktestCase, BacktestResult, CapitalConfig, ExecutionConfig, Strategy, StrategySpec,
     UpdateCaseReq, UpdateStrategyReq,
 };
-use crate::http::watch::types::WatchEntry;
+use crate::http::watch::WatchEntry;
 use alm_engine::types::ExitConfig;
 
 // ── In-memory store ───────────────────────────────────────────────────────────

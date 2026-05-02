@@ -1,18 +1,23 @@
 //! `GET /api/symbols` — symbols tracked by the ledger, with optional live indicator state.
+//! `GET /api/indicators` — static indicator catalogue.
 //!
 //! ```text
 //! GET /api/symbols                  → [{symbol, tf, bars}, ...]
 //! GET /api/symbols?indicators=true  → [{symbol, tf, bars, indicators:[...]}, ...]
+//! GET /api/indicators               → [{name, params, ...}, ...]
 //! ```
 
 use axum::{extract::{Query, State}, routing::get, Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use alm_strategy::catalog::{self, IndicatorMeta};
 
 use super::HttpState;
 
 pub fn routes() -> Router<HttpState> {
-    Router::new().route("/api/symbols", get(list_symbols))
+    Router::new()
+        .route("/api/symbols", get(list_symbols))
+        .route("/api/indicators", get(list_indicators_catalog))
 }
 
 #[derive(Debug, Deserialize)]
@@ -44,6 +49,17 @@ pub struct LiveIndicator {
     pub ready_since_t: Option<i64>,
 }
 
+#[utoipa::path(
+    get,
+    path = "/api/symbols",
+    params(
+        ("indicators" = Option<bool>, Query, description = "Include live indicator cells in the response")
+    ),
+    responses(
+        (status = 200, description = "List of tracked symbols")
+    ),
+    tag = "live"
+)]
 pub async fn list_symbols(
     State(state): State<HttpState>,
     Query(q): Query<SymbolsQuery>,
@@ -80,4 +96,18 @@ pub async fn list_symbols(
 
     out.sort_by(|a, b| a.symbol.cmp(&b.symbol).then_with(|| a.tf.cmp(&b.tf)));
     Json(out)
+}
+
+// ── GET /api/indicators ───────────────────────────────────────────────────────
+
+#[utoipa::path(
+    get,
+    path = "/api/indicators",
+    responses(
+        (status = 200, description = "Indicator catalogue (static)")
+    ),
+    tag = "live"
+)]
+pub async fn list_indicators_catalog() -> Json<Vec<IndicatorMeta>> {
+    Json(catalog::all())
 }

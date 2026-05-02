@@ -78,6 +78,13 @@ logs:
 restart:
     {{dc}} restart herald
 
+# ── OpenAPI ───────────────────────────────────────────────────────────────────
+
+# Export OpenAPI spec as YAML (default) or JSON: just gen-openapi [json]
+gen-openapi format="yaml":
+    cargo run --bin gen-openapi -- {{format}} > openapi.{{format}}
+    @echo "wrote openapi.{{format}}"
+
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
 # Remove build artifacts

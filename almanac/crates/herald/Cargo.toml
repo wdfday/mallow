@@ -3,9 +3,17 @@ name = "alm-herald"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "alm_herald"
+path = "src/lib.rs"
+
 [[bin]]
 name = "alm-herald"
 path = "src/main.rs"
+
+[[bin]]
+name = "gen-openapi"
+path = "src/bin/gen_openapi.rs"
 
 [dependencies]
 alm-core       = { workspace = true }
@@ -40,6 +48,10 @@ duckdb            = { version = "1", features = ["bundled"] }
 
 # SSE streaming
 tokio-stream      = { version = "0.1", features = ["sync"] }
+
+# OpenAPI / Swagger
+utoipa            = { version = "4", features = ["axum_extras"] }
+utoipa-swagger-ui = { version = "7", features = ["axum"] }
 
 [dev-dependencies]
 tower             = { version = "0.4", features = ["util"] }

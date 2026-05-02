@@ -86,15 +86,16 @@ use tower_http::trace::TraceLayer;
 use crate::registry::SignalBatch;
 
 mod backtest;
-mod data;
-mod duckdb;
-mod indicators;
+pub mod data;
+mod duckdb_helpers;
+mod openapi;
 mod sse;
 mod symbols;
 mod types;
 pub mod store;
 pub mod watch;
 
+pub use openapi::ApiDoc;
 pub use store::StoreBackend;
 pub use watch::WatchStore;
 
@@ -148,13 +149,12 @@ pub fn router(state: HttpState) -> Router {
     Router::new()
         .route("/health", get(health))
         .merge(symbols::routes())
-        .merge(indicators::routes())
         .merge(data::routes())
         .merge(backtest::routes())
-        .merge(duckdb::routes())
         .merge(store::routes())
         .merge(watch::routes())
         .merge(sse::routes())
+        .merge(openapi::routes())
         .with_state(state)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())

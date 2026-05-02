@@ -1,9 +1,8 @@
 mod feed;
 mod handler;
-mod http;
-mod registry;
 mod ring;
 mod symbols;
+use alm_herald::{http, registry};
 
 use std::sync::Arc;
 

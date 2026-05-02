@@ -8,10 +8,11 @@ use std::collections::HashMap;
 use alm_core::Bar;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use utoipa::ToSchema;
 
 // ── Error envelope ────────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct ErrorResponse {
     pub error: String,
 }
@@ -26,7 +27,7 @@ impl ErrorResponse {
 
 /// Single OHLCV bar on the wire. Short field names to cut payload size; the
 /// client is a chart with millisecond-scale rendering budgets.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct BarRecord {
     /// Unix milliseconds (UTC).
     pub t: i64,
@@ -60,7 +61,7 @@ impl From<&Bar> for BarRecord {
 ///
 /// `next_before` / `next_after` carry the cursor the client should pass on the
 /// next scroll request — absent when there is nothing left in that direction.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct DataResponse {
     pub symbol: String,
     pub tf: String,
@@ -82,7 +83,7 @@ pub struct DataResponse {
 // ── Data query parameters ─────────────────────────────────────────────────────
 
 /// Query string for `GET /api/data/:symbol`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema, utoipa::IntoParams)]
 pub struct DataQuery {
     /// Bars with `t < before`, newest-first. Unix milliseconds.
     pub before: Option<i64>,
@@ -95,7 +96,7 @@ pub struct DataQuery {
 }
 
 /// Query string for `GET /api/data/:symbol/latest`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema, utoipa::IntoParams)]
 pub struct LatestQuery {
     /// Number of bars to return. Default 500, max 5000.
     pub n: Option<usize>,
@@ -105,7 +106,7 @@ pub struct LatestQuery {
 // ── Unified data (POST /api/data/:symbol) ────────────────────────────────────
 
 /// Candle section controls of a unified request.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CandlesQuery {
     /// Max bars to return. Default 500, max 5000.
     pub limit: Option<usize>,
@@ -115,7 +116,7 @@ pub struct CandlesQuery {
     pub after: Option<i64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct CandlesResult {
     pub count: usize,
     pub bars: Vec<BarRecord>,
@@ -132,16 +133,17 @@ pub struct CandlesResult {
 /// `label` to override the response key.
 ///
 /// Example: `{"type":"ema","period":20}` or `{"type":"rsi","period":14,"label":"rsi14"}`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct IndicatorConfig {
     /// Override the key under which the series appears in the response.
     pub label: Option<String>,
     /// Passed verbatim to `IndicatorBox::from_config`. `"type"` is required.
     #[serde(flatten)]
+    #[schema(value_type = Object)]
     pub config: serde_json::Map<String, Value>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UnifiedDataRequest {
     pub tf: Option<String>,
     pub candles: Option<CandlesQuery>,
@@ -150,14 +152,15 @@ pub struct UnifiedDataRequest {
 
 /// Individual indicator point in a series — `t` plus the indicator's fields.
 /// Kept flat so clients can address `row.value` / `row.macd` etc.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct IndicatorPoint {
     pub t: i64,
     #[serde(flatten)]
+    #[schema(value_type = Object)]
     pub fields: HashMap<String, f64>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, ToSchema)]
 pub struct UnifiedDataResponse {
     pub symbol: String,
     pub tf: String,

@@ -22,8 +22,6 @@
 //! DELETE /api/watch/:id        remove + release indicator handles
 //! ```
 
-pub mod types;
-
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -36,10 +34,47 @@ use axum::{
     routing::get,
     Json, Router,
 };
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
-pub use types::{CreateWatchReq, WatchEntry};
+use super::store::types::StrategySpec;
+
+// ── Domain types ──────────────────────────────────────────────────────────────
+
+/// A registered watch — runs a strategy on live bars and dispatches
+/// signals to a webhook or NATS subject instead of executing trades.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatchEntry {
+    pub id: String,
+    pub symbols: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeframe: Option<String>,
+    pub spec: StrategySpec,
+    /// HTTP endpoint to POST signal JSON to when strategy fires.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub webhook_url: Option<String>,
+    /// NATS subject to publish SignalMsg to (e.g. strategist subscribes).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nats_subject: Option<String>,
+    /// Number of indicator handles pinned in the ledger by this entry.
+    /// Informational — decrements to 0 when the entry is deleted.
+    pub pinned_indicators: usize,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct CreateWatchReq {
+    pub symbols: Vec<String>,
+    #[serde(default)]
+    pub timeframe: Option<String>,
+    pub spec: StrategySpec,
+    #[serde(default)]
+    pub webhook_url: Option<String>,
+    #[serde(default)]
+    pub nats_subject: Option<String>,
+}
 
 use super::HttpState;
 
@@ -82,14 +117,29 @@ fn bad_req(msg: &str) -> Response {
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
 
-async fn list_watches(State(state): State<HttpState>) -> Response {
+#[utoipa::path(
+    get,
+    path = "/api/watch",
+    responses((status = 200, description = "List of watch entries")),
+    tag = "watch"
+)]
+pub async fn list_watches(State(state): State<HttpState>) -> Response {
     let store = state.watches.read().await;
     let mut items: Vec<&WatchEntry> = store.values().map(|s| &s.entry).collect();
     items.sort_by_key(|e| e.created_at);
     Json(items).into_response()
 }
 
-async fn create_watch(
+#[utoipa::path(
+    post,
+    path = "/api/watch",
+    responses(
+        (status = 201, description = "Watch entry created"),
+        (status = 400, description = "Validation error")
+    ),
+    tag = "watch"
+)]
+pub async fn create_watch(
     State(state): State<HttpState>,
     Json(req): Json<CreateWatchReq>,
 ) -> Response {
@@ -162,14 +212,34 @@ async fn create_watch(
     (StatusCode::CREATED, Json(entry)).into_response()
 }
 
-async fn get_watch(State(state): State<HttpState>, Path(id): Path<String>) -> Response {
+#[utoipa::path(
+    get,
+    path = "/api/watch/{id}",
+    params(("id" = String, Path, description = "Watch entry UUID")),
+    responses(
+        (status = 200, description = "Watch entry"),
+        (status = 404, description = "Not found")
+    ),
+    tag = "watch"
+)]
+pub async fn get_watch(State(state): State<HttpState>, Path(id): Path<String>) -> Response {
     match state.watches.read().await.get(&id) {
         Some(s) => Json(s.entry.clone()).into_response(),
         None    => not_found(),
     }
 }
 
-async fn delete_watch(State(state): State<HttpState>, Path(id): Path<String>) -> Response {
+#[utoipa::path(
+    delete,
+    path = "/api/watch/{id}",
+    params(("id" = String, Path, description = "Watch entry UUID")),
+    responses(
+        (status = 204, description = "Deleted"),
+        (status = 404, description = "Not found")
+    ),
+    tag = "watch"
+)]
+pub async fn delete_watch(State(state): State<HttpState>, Path(id): Path<String>) -> Response {
     // WatchSlot drop releases all IndicatorHandles → refcount-- in ledger.
     match state.watches.write().await.remove(&id) {
         Some(_) => {

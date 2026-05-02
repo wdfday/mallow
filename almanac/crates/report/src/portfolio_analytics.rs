@@ -174,6 +174,7 @@ fn pearson_correlation_matrix(all_returns: &[Vec<f64>]) -> Vec<Vec<f64>> {
 mod tests {
     use super::*;
     use alm_core::portfolio::EquityPoint;
+    use crate::report::ExitReasonBreakdown;
 
     fn make_equity(values: &[f64]) -> Vec<EquityPoint> {
         values

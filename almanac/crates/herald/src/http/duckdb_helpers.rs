@@ -11,6 +11,7 @@ use duckdb::types::ValueRef;
 use serde::Deserialize;
 use tracing::{debug, info};
 
+use alm_core::Bar;
 use alm_engine::data::{find_parquet_files, parse_date_ms};
 
 use super::types::BarRecord;
@@ -161,6 +162,58 @@ pub fn query_bars_before(
     let mut bars = run_bar_query(&sql)?;
     bars.reverse(); // DESC → oldest-first
     debug!(symbol, timeframe, count = bars.len(), "duckdb fallback: before query done");
+    Ok(bars)
+}
+
+/// Query bars in `[from_ms, to_ms)` from Parquet files, oldest-first.
+///
+/// Used by the historical indicator compute path — returns `alm_core::Bar`
+/// so callers can feed bars directly through `IndicatorBox::update`.
+/// `live_symbol` is the symbol as used in the ledger (may contain dashes,
+/// e.g. `"BTC-USDT"`); `parquet_symbol` is the on-disk name (`"BTCUSDT"`).
+pub fn query_bars_for_compute(
+    data_dir: &Path,
+    parquet_symbol: &str,
+    live_symbol: &str,
+    timeframe: &str,
+    from_ms: i64,
+    to_ms: i64,
+    limit: usize,
+) -> anyhow::Result<Vec<Bar>> {
+    let files = find_parquet_files(data_dir, parquet_symbol, Some(timeframe), None);
+    if files.is_empty() {
+        return Ok(vec![]);
+    }
+    let parquet_expr = build_parquet_expr(&files);
+    let sql = format!(
+        "SELECT timestamp, open, high, low, close, volume \
+         FROM {parquet_expr} \
+         WHERE timestamp >= {from_ms} AND timestamp < {to_ms} \
+         ORDER BY timestamp ASC \
+         LIMIT {limit}"
+    );
+    let conn = duckdb::Connection::open_in_memory()
+        .map_err(|e| anyhow::anyhow!("duckdb open: {e}"))?;
+    let mut stmt = conn.prepare(&sql)
+        .map_err(|e| anyhow::anyhow!("duckdb prepare: {e}"))?;
+    let sym = live_symbol.to_string();
+    let bars = stmt
+        .query_map([], |row| {
+            Ok(Bar {
+                timestamp:    row.get(0)?,
+                symbol:       sym.clone(),
+                open:         row.get(1)?,
+                high:         row.get(2)?,
+                low:          row.get(3)?,
+                close:        row.get(4)?,
+                volume:       row.get(5)?,
+                vwap:         None,
+                transactions: None,
+            })
+        })
+        .map_err(|e| anyhow::anyhow!("duckdb query: {e}"))?
+        .map(|r| r.map_err(|e| anyhow::anyhow!("{e}")))
+        .collect::<anyhow::Result<_>>()?;
     Ok(bars)
 }
 

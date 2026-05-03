@@ -2,7 +2,7 @@ mod feed;
 mod handler;
 mod ring;
 mod symbols;
-use alm_herald::{http, registry};
+use alm_herald::{http, registry, watch_evaluator};
 
 use std::sync::Arc;
 
@@ -124,7 +124,19 @@ async fn main() -> Result<()> {
     let (sig_tx, sig_rx) = mpsc::unbounded_channel();
     let registry = Arc::new(Registry::with_default_fallback(ledger.clone(), tf, sig_tx));
     ledger.subscribe(registry.clone() as Arc<dyn LedgerObserver>);
-    info!("ledger + registry wired");
+
+    // ── Watch evaluator ───────────────────────────────────────────────────────
+    let (watch_dispatch_tx, watch_dispatch_rx) = mpsc::unbounded_channel();
+    // WatchStore is created inside HttpState; we need it before creating HttpState.
+    // Use a temporary store here — HttpState will share the same Arc via watch_store below.
+    let watch_store = http::watch::new_store();
+    let watch_eval = Arc::new(watch_evaluator::WatchEvaluator::new(
+        watch_store.clone(), ledger.clone(), tf, watch_dispatch_tx,
+    ));
+    ledger.subscribe(watch_eval.clone() as Arc<dyn LedgerObserver>);
+    tokio::spawn(watch_evaluator::watch_dispatcher(client.clone(), watch_dispatch_rx));
+
+    info!("ledger + registry + watch_evaluator wired");
 
     // ── 24h ring buffer ───────────────────────────────────────────────────────
     let ring = BarRing::new();
@@ -200,6 +212,7 @@ async fn main() -> Result<()> {
     let http_state = http::HttpState::new(
         ledger.clone(), tf, data_dir, max_concurrent_bt, store,
         bar_bcast_tx.clone(), sig_bcast_tx.clone(),
+        watch_eval, watch_store,
     );
     http::watch::restore_from_store(&http_state).await;
 

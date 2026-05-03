@@ -49,6 +49,9 @@ duckdb            = { version = "1", features = ["bundled"] }
 # SSE streaming
 tokio-stream      = { version = "0.1", features = ["sync"] }
 
+# Watch signal dispatch — webhook POST
+reqwest           = { version = "0.12", features = ["json"] }
+
 # OpenAPI / Swagger
 utoipa            = { version = "4", features = ["axum_extras"] }
 utoipa-swagger-ui = { version = "7", features = ["axum"] }

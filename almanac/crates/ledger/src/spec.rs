@@ -84,6 +84,31 @@ impl IndicatorSpec {
         max
     }
 
+    /// Estimated bars needed for the indicator to converge to a stable value.
+    ///
+    /// EMA-based indicators decay geometrically — the initial seed contributes
+    /// `(1-α)^n` of the current value where `α = 2/(period+1)`. We wait until
+    /// that weight drops below 1% (`n = ceil(ln(0.01) / ln(1-α))`).
+    /// SMA-based indicators are exact after `period` bars.
+    pub fn warm_estimate(&self) -> usize {
+        let period = self.longest_period().max(1);
+        const EMA_NAMES: &[&str] = &[
+            "ema", "dema", "tema", "smma", "kama", "mcginley", "lsma", "alma",
+            "rsi", "macd", "adx", "atr", "trix", "tsi", "pmo", "kst", "cci",
+            "mfi", "roc", "cmo", "ppo", "rvi", "smi", "cmf", "williams",
+            "supertrend", "chandelier", "chande_kroll", "vortex", "dmi",
+            "stochastic", "stoch_rsi", "connors_rsi",
+        ];
+        if EMA_NAMES.contains(&self.name.as_str()) {
+            let alpha = 2.0 / (period as f64 + 1.0);
+            // ceil(ln(0.01) / ln(1-alpha))
+            ((-4.605_f64) / (1.0 - alpha).ln()).ceil() as usize
+        } else {
+            // SMA, WMA, BBands, Donchian, etc. — converge in exactly `period` bars.
+            period
+        }
+    }
+
     /// True for indicators whose internal state resets on a session boundary
     /// (daily open). Currently only VWAP — scoped to avoid surprising users
     /// when the ledger skips a session.

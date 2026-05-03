@@ -4,6 +4,11 @@ use axum::{routing::get, Router};
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
+use alm_engine::types::{
+    BacktestRequest, CelBacktestRequest, ExitConfig, ExitLevel, MonteCarloConfig,
+    RhaiBacktestRequest, WalkForwardConfig,
+};
+
 use super::{backtest, data, sse, store, symbols, types, watch, HttpState};
 
 #[derive(OpenApi)]
@@ -12,14 +17,11 @@ use super::{backtest, data, sse, store, symbols, types, watch, HttpState};
     paths(
         symbols::list_symbols,
         symbols::list_indicators_catalog,
-        data::ohlcv::get_data,
-        data::ohlcv::get_latest,
         data::unified::unified_data,
         backtest::list_strategies,
         backtest::run_backtest,
         backtest::run_backtest_cel,
         backtest::run_backtest_rhai,
-        data::duckdb::query,
         sse::stream_bars,
         sse::stream_signals,
         store::list_strategies,
@@ -44,17 +46,43 @@ use super::{backtest, data, sse, store, symbols, types, watch, HttpState};
         watch::delete_watch,
     ),
     components(schemas(
+        // Live
         types::ErrorResponse,
         types::BarRecord,
-        types::DataResponse,
-        types::DataQuery,
-        types::LatestQuery,
         types::CandlesQuery,
         types::CandlesResult,
         types::IndicatorConfig,
         types::IndicatorPoint,
         types::UnifiedDataRequest,
         types::UnifiedDataResponse,
+        // Stream
+        types::StreamRequest,
+        types::StreamStatus,
+        types::IndicatorStatus,
+        types::BarStreamEvent,
+        // Backtest
+        BacktestRequest,
+        CelBacktestRequest,
+        RhaiBacktestRequest,
+        ExitConfig,
+        ExitLevel,
+        MonteCarloConfig,
+        WalkForwardConfig,
+        // Store
+        store::types::StrategySpec,
+        store::types::CapitalConfig,
+        store::types::ExecutionConfig,
+        store::types::Strategy,
+        store::types::BacktestCase,
+        store::types::BacktestResult,
+        store::types::SignalPoint,
+        store::types::CreateStrategyReq,
+        store::types::UpdateStrategyReq,
+        store::types::CreateCaseReq,
+        store::types::UpdateCaseReq,
+        // Watch
+        watch::WatchEntry,
+        watch::CreateWatchReq,
     )),
     tags(
         (name = "live",     description = "Live ledger data"),

@@ -1,11 +1,14 @@
 //! Unified OHLCV + indicator snapshot — `POST /api/data/:symbol`.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 
+use alm_core::Timeframe;
+use alm_indicator::IndicatorBox;
 use alm_ledger::{IndicatorHandle, IndicatorSpec};
 use axum::{
-    extract::{Path, State},
+    extract::{Path as AxumPath, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     Json,
@@ -15,7 +18,7 @@ use tracing::warn;
 
 use super::super::duckdb_helpers as duck;
 use super::super::types::{
-    CandlesResult, ErrorResponse, IndicatorConfig, IndicatorPoint, UnifiedDataRequest,
+    BarRecord, CandlesResult, ErrorResponse, IndicatorConfig, IndicatorPoint, UnifiedDataRequest,
     UnifiedDataResponse,
 };
 use super::super::HttpState;
@@ -29,16 +32,16 @@ use super::shared::{clamp_limit, err, paginate, resolve_tf, DEFAULT_LIMIT, MAX_I
     params(
         ("symbol" = String, Path, description = "Symbol name e.g. BTCUSDT")
     ),
-    request_body = super::super::types::UnifiedDataRequest,
+    request_body = UnifiedDataRequest,
     responses(
-        (status = 200, description = "Unified OHLCV + indicator snapshot", body = super::super::types::UnifiedDataResponse),
-        (status = 404, description = "Symbol not found", body = super::super::types::ErrorResponse)
+        (status = 200, description = "Unified OHLCV + indicator snapshot", body = UnifiedDataResponse),
+        (status = 404, description = "Symbol not found", body = ErrorResponse)
     ),
     tag = "live"
 )]
 pub async fn unified_data(
     State(state): State<HttpState>,
-    Path(symbol): Path<String>,
+    AxumPath(symbol): AxumPath<String>,
     Json(req): Json<UnifiedDataRequest>,
 ) -> Response {
     let tf = resolve_tf(&req.tf, state.tf);
@@ -121,12 +124,59 @@ pub async fn unified_data(
     // alive through the lock above; clippy might complain, hence the no-op.
     let _keep_alive = handles;
 
+    // Detect whether `before` falls outside the ledger window.
+    let window_start_ms = state.ledger
+        .with_state(&symbol, tf, |s| s.bar_window.front().map(|b| b.timestamp))
+        .flatten();
+    let before_ms = req.candles.as_ref().and_then(|cq| cq.before);
+    let outside_window = before_ms
+        .map(|t| window_start_ms.map_or(true, |ws| t <= ws))
+        .unwrap_or(false);
+
+    // Historical compute path: before cursor predates the ledger window and
+    // indicators were requested. Load warm-up + display bars from DuckDB and
+    // run fresh indicator instances — no ledger state involved.
+    if outside_window && !label_for_spec.is_empty() && want_candles {
+        let before_ms     = before_ms.unwrap();
+        let climit        = req.candles.as_ref()
+            .map(|cq| clamp_limit(cq.limit, DEFAULT_LIMIT))
+            .unwrap_or(DEFAULT_LIMIT);
+        let data_dir      = Arc::clone(&state.data_dir);
+        let parquet_sym   = symbol.replace('-', "");
+        let specs_owned   = label_for_spec.clone();
+
+        let hist = tokio::task::spawn_blocking(move || {
+            compute_historical(&data_dir, &parquet_sym, tf, &specs_owned, before_ms, climit)
+        })
+        .await
+        .unwrap_or_else(|_| (vec![], HashMap::new()));
+
+        let (hist_bars, hist_inds) = hist;
+        let next_before = hist_bars.first().map(|b| b.t);
+        let next_after  = hist_bars.last().map(|b| b.t);
+        let candles_out = Some(CandlesResult {
+            count: hist_bars.len(),
+            bars: hist_bars,
+            next_before,
+            next_after,
+            truncated_below: false,
+        });
+        return (
+            StatusCode::OK,
+            Json(UnifiedDataResponse {
+                symbol,
+                tf: tf.to_string(),
+                candles: candles_out,
+                indicators: Some(hist_inds),
+                missing,
+            }),
+        )
+            .into_response();
+    }
+
     let (mut candles_out, indicators_out) = match result {
         Some(pair) => pair,
         None => {
-            // No ledger state — if candles were requested with a before cursor,
-            // try DuckDB directly so historical data is still accessible even
-            // when a symbol is not being tracked live.
             if !want_candles {
                 return err(StatusCode::NOT_FOUND, format!("no ledger state for {symbol}"));
             }
@@ -134,21 +184,22 @@ pub async fn unified_data(
         }
     };
 
-    // DuckDB candle fallback: candle page is empty and a before cursor was given.
-    if want_candles {
-        let needs_fallback = req.candles.as_ref().and_then(|cq| cq.before).is_some()
+    // DuckDB candle-only fallback (no indicators requested).
+    if want_candles && label_for_spec.is_empty() {
+        let needs_fallback = before_ms.is_some()
             && candles_out.as_ref().map_or(true, |c| c.bars.is_empty());
 
         if needs_fallback {
-            let before_ms = req.candles.as_ref().and_then(|cq| cq.before).unwrap();
-            let climit = req.candles.as_ref().map(|cq| clamp_limit(cq.limit, DEFAULT_LIMIT))
+            let bms       = before_ms.unwrap();
+            let climit    = req.candles.as_ref()
+                .map(|cq| clamp_limit(cq.limit, DEFAULT_LIMIT))
                 .unwrap_or(DEFAULT_LIMIT);
-            let data_dir = Arc::clone(&state.data_dir);
+            let data_dir  = Arc::clone(&state.data_dir);
             let parquet_sym = symbol.replace('-', "");
-            let tf_str = tf.to_string();
+            let tf_str    = tf.to_string();
 
             if let Ok(Ok(bars)) = tokio::task::spawn_blocking(move || {
-                duck::query_bars_before(&data_dir, &parquet_sym, &tf_str, before_ms, climit)
+                duck::query_bars_before(&data_dir, &parquet_sym, &tf_str, bms, climit)
             })
             .await
             {
@@ -226,4 +277,93 @@ fn build_spec(cfg: &IndicatorConfig) -> Result<(IndicatorSpec, String), String> 
         .map_err(|e| format!("invalid indicator config: {e}"))?;
     let label = cfg.label.clone().unwrap_or_else(|| spec.canonical_key());
     Ok((spec, label))
+}
+
+/// Compute indicator values on historical bars outside the live ledger window.
+///
+/// Loads `warm_count + limit` bars ending before `before_ms` from parquet,
+/// feeds them through fresh `IndicatorBox` instances (no ledger involved),
+/// then returns only the last `limit` bars with their indicator values.
+///
+/// `parquet_symbol` is the on-disk name (no dashes); `label_for_spec` is the
+/// same list built by `unified_data` — `(label, IndicatorSpec)` pairs.
+fn compute_historical(
+    data_dir: &Path,
+    parquet_symbol: &str,
+    tf: Timeframe,
+    label_for_spec: &[(String, IndicatorSpec)],
+    before_ms: i64,
+    limit: usize,
+) -> (Vec<BarRecord>, HashMap<String, Vec<IndicatorPoint>>) {
+    let max_warm: usize = label_for_spec
+        .iter()
+        .map(|(_, s)| s.warm_estimate())
+        .max()
+        .unwrap_or(0);
+
+    let total    = max_warm + limit;
+    let tf_ms    = tf.duration_ms();
+    let from_ms  = before_ms.saturating_sub(total as i64 * tf_ms);
+    let live_sym = parquet_symbol; // Parquet files store Binance-style names too
+
+    let bars = match duck::query_bars_for_compute(
+        data_dir, parquet_symbol, live_sym, &tf.to_string(), from_ms, before_ms, total,
+    ) {
+        Ok(b) => b,
+        Err(_) => return (vec![], HashMap::new()),
+    };
+
+    if bars.is_empty() {
+        return (vec![], HashMap::new());
+    }
+
+    // Build one fresh IndicatorBox per spec.
+    let mut boxes: Vec<(String, IndicatorBox)> = label_for_spec
+        .iter()
+        .filter_map(|(label, spec)| {
+            IndicatorBox::from_config(&spec.config)
+                .ok()
+                .map(|b| (label.clone(), b))
+        })
+        .collect();
+
+    // Feed all bars through; accumulate per-bar field maps for each indicator.
+    let n = bars.len();
+    let mut series: HashMap<String, Vec<(i64, HashMap<String, f64>)>> =
+        boxes.iter().map(|(l, _)| (l.clone(), Vec::with_capacity(n))).collect();
+
+    for bar in &bars {
+        for (label, ind) in &mut boxes {
+            if let Some(fields) = ind.update(bar) {
+                series.entry(label.clone()).or_default().push((bar.timestamp, fields));
+            }
+        }
+    }
+
+    // Determine the display window: last `limit` bars.
+    let display_start = bars.len().saturating_sub(limit);
+    let display_bars: Vec<BarRecord> = bars[display_start..]
+        .iter()
+        .map(BarRecord::from)
+        .collect();
+
+    if display_bars.is_empty() {
+        return (vec![], HashMap::new());
+    }
+    let win_start = display_bars.first().map(|b| b.t).unwrap_or(0);
+
+    // Filter indicator series to the display window.
+    let indicators: HashMap<String, Vec<IndicatorPoint>> = series
+        .into_iter()
+        .map(|(label, pts)| {
+            let clipped = pts
+                .into_iter()
+                .filter(|(t, _)| *t >= win_start)
+                .map(|(t, fields)| IndicatorPoint { t, fields })
+                .collect();
+            (label, clipped)
+        })
+        .collect();
+
+    (display_bars, indicators)
 }

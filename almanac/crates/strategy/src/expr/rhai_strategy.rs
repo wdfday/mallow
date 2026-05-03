@@ -57,10 +57,10 @@ use alm_core::{bar::Bar, signal::Signal, strategy::Strategy, Timeframe};
 use alm_indicator::IndicatorBox;
 use serde_json::json;
 
-type PlotBuf = Arc<Mutex<Vec<(String, f64)>>>;
+pub(super) type PlotBuf = Arc<Mutex<Vec<(String, f64)>>>;
 
-const DEFAULT_BUF_DEPTH: usize = 2;
-const BAR_FIELDS: &[&str] = &["open", "high", "low", "close", "volume"];
+pub(super) const DEFAULT_BUF_DEPTH: usize = 2;
+pub(super) const BAR_FIELDS: &[&str] = &["open", "high", "low", "close", "volume"];
 
 // ── HtfAggregator ─────────────────────────────────────────────────────────────
 
@@ -186,13 +186,13 @@ impl VarBinding {
 
 // ── Indicator declaration parsing ─────────────────────────────────────────────
 
-struct IndicatorDecl {
-    var_name:  String,
-    ind_type:  String,
-    period:    usize,
-    buf_depth: usize,
-    field:     String,
-    timeframe: Option<Timeframe>,
+pub(super) struct IndicatorDecl {
+    pub(super) var_name:  String,
+    pub(super) ind_type:  String,
+    pub(super) period:    usize,
+    pub(super) buf_depth: usize,
+    pub(super) field:     String,
+    pub(super) timeframe: Option<Timeframe>,
 }
 
 /// Parse a timeframe string like "H1", "M5", "D1".
@@ -219,7 +219,7 @@ fn parse_timeframe(s: &str) -> Option<Timeframe> {
 /// Parse an indicator declaration line. Accepts two forms:
 ///   new: `let NAME = ind.TYPE(period [, tf_or_buf [, buf]]);`
 ///   old: `let NAME = indicator("TYPE", period [, tf_or_buf [, buf]]);`
-fn try_parse_indicator_line(line: &str) -> Option<IndicatorDecl> {
+pub(super) fn try_parse_indicator_line(line: &str) -> Option<IndicatorDecl> {
     let line = line.trim().split("//").next()?.trim();
     if line.is_empty() { return None; }
 
@@ -274,7 +274,7 @@ fn try_parse_indicator_line(line: &str) -> Option<IndicatorDecl> {
 
 /// Map a user-friendly indicator type string to the internal config type and
 /// the output field name.
-fn map_indicator_type(type_str: &str) -> (String, String) {
+pub(super) fn map_indicator_type(type_str: &str) -> (String, String) {
     match type_str {
         "ema" | "sma" | "wma" | "hma" | "dema" | "tema" | "smma" | "kama" | "alma" |
         "mcginley" | "lsma" | "vwma" | "rsi" | "cci" | "roc" | "mfi" | "mom" | "cmo" |
@@ -346,7 +346,7 @@ fn get_f(v: Option<&Dynamic>) -> f64 {
     v.and_then(|d| d.as_float().ok()).unwrap_or(0.0)
 }
 
-fn build_engine(plot_buf: PlotBuf) -> Engine {
+pub(super) fn build_engine(plot_buf: PlotBuf) -> Engine {
     let mut engine = Engine::new();
 
     // ── Crossover / direction ────────────────────────────────────────────────
@@ -444,7 +444,7 @@ fn build_engine(plot_buf: PlotBuf) -> Engine {
 /// Handles two call shapes:
 /// - `f(arr, N)` — `highest`, `lowest`, `rising_n`, `falling_n`, `momentum`
 /// - `f(arr)` using full array — `slope` (uses entire buf, no explicit N)
-fn extract_max_lookback(script: &str) -> usize {
+pub(super) fn extract_max_lookback(script: &str) -> usize {
     // Functions whose 2nd arg is the lookback N (need buf >= N for bar arrays,
     // or N+1 for rising_n / falling_n).
     const SECOND_ARG_FNS: &[(&str, usize)] = &[

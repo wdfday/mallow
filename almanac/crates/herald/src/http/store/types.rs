@@ -4,12 +4,13 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use utoipa::ToSchema;
 
 use alm_engine::types::ExitConfig;
 
 // ── StrategySpec ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum StrategySpec {
     Cel {
@@ -53,7 +54,7 @@ impl StrategySpec {
 
 // ── Capital / execution sub-configs ──────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct CapitalConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub initial: Option<f64>,
@@ -76,7 +77,7 @@ impl Default for CapitalConfig {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct ExecutionConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commission_pct: Option<f64>,
@@ -100,7 +101,7 @@ impl Default for ExecutionConfig {
 
 /// A versioned strategy definition. Each (name, version) pair is immutable
 /// once created — create a new version to iterate on a spec.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Strategy {
     /// UUID v7 — identifies this exact version.
     pub id: String,
@@ -118,7 +119,7 @@ pub struct Strategy {
 }
 
 /// A parameterised backtest run configuration linked to a specific strategy version.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct BacktestCase {
     pub id: String,
     /// Points to a specific Strategy version UUID.
@@ -144,7 +145,7 @@ pub struct BacktestCase {
 }
 
 /// Summary row written after each successful run. Full report pushed to S3.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct BacktestResult {
     pub id: String,
     pub case_id: String,
@@ -162,7 +163,7 @@ pub struct BacktestResult {
 }
 
 /// One signal emitted during a signal-replay run.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct SignalPoint {
     /// Unix milliseconds of the bar that triggered this signal.
     pub ts: i64,
@@ -183,7 +184,7 @@ pub struct SignalPoint {
 
 // ── Request DTOs ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateStrategyReq {
     pub name: String,
     /// If omitted, auto-incremented from the highest existing version for `name`.
@@ -194,13 +195,13 @@ pub struct CreateStrategyReq {
 }
 
 /// Only label and notes are mutable on an existing version.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateStrategyReq {
     pub label: Option<String>,
     pub notes: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateCaseReq {
     pub label: String,
     pub strategy_id: String,
@@ -221,7 +222,7 @@ pub struct CreateCaseReq {
     pub exit: Option<ExitConfig>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct UpdateCaseReq {
     pub label: Option<String>,
     pub strategy_id: Option<String>,

@@ -25,8 +25,7 @@ impl ErrorResponse {
 
 // ── Bar / candle payloads ─────────────────────────────────────────────────────
 
-/// Single OHLCV bar on the wire. Short field names to cut payload size; the
-/// client is a chart with millisecond-scale rendering budgets.
+/// Single OHLCV bar on the wire. Short field names to cut payload size.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct BarRecord {
     /// Unix milliseconds (UTC).
@@ -55,52 +54,6 @@ impl From<&Bar> for BarRecord {
             n: b.transactions,
         }
     }
-}
-
-/// Response envelope for `GET /api/data/:symbol` and `GET /api/data/:symbol/latest`.
-///
-/// `next_before` / `next_after` carry the cursor the client should pass on the
-/// next scroll request — absent when there is nothing left in that direction.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct DataResponse {
-    pub symbol: String,
-    pub tf: String,
-    pub count: usize,
-    pub bars: Vec<BarRecord>,
-    /// `t` of the oldest returned bar. Pass as `?before=` to fetch the prior page.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub next_before: Option<i64>,
-    /// `t` of the newest returned bar. Pass as `?after=` to fetch the next page.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub next_after: Option<i64>,
-    /// True when `next_before` points at bars that are older than anything
-    /// currently in the ledger window — the client should route the next
-    /// request to cold / walk-back storage (future work).
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub truncated_below: bool,
-}
-
-// ── Data query parameters ─────────────────────────────────────────────────────
-
-/// Query string for `GET /api/data/:symbol`.
-#[derive(Debug, Deserialize, ToSchema, utoipa::IntoParams)]
-pub struct DataQuery {
-    /// Bars with `t < before`, newest-first. Unix milliseconds.
-    pub before: Option<i64>,
-    /// Bars with `t > after`, oldest-first. Unix milliseconds.
-    pub after: Option<i64>,
-    /// Max bars to return. Default 500, max 5000.
-    pub limit: Option<usize>,
-    /// Override timeframe — e.g. `tf=M1` when the herald instance also runs M5.
-    pub tf: Option<String>,
-}
-
-/// Query string for `GET /api/data/:symbol/latest`.
-#[derive(Debug, Deserialize, ToSchema, utoipa::IntoParams)]
-pub struct LatestQuery {
-    /// Number of bars to return. Default 500, max 5000.
-    pub n: Option<usize>,
-    pub tf: Option<String>,
 }
 
 // ── Unified data (POST /api/data/:symbol) ────────────────────────────────────
@@ -178,10 +131,40 @@ pub struct UnifiedDataResponse {
 // ── Stream (POST /api/stream/:symbol) ────────────────────────────────────────
 
 /// Request body for `POST /api/stream/:symbol`.
+///
+/// Exactly one of `indicators` or `script` should be provided:
+/// - `indicators`: structured list of indicator configs (no computation)
+/// - `script`: Rhai script using `ind.TYPE(period)` + `plot("name", value)`
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct StreamRequest {
     pub tf: Option<String>,
+    /// Structured indicator mode — returns raw cell values per bar.
     pub indicators: Option<Vec<IndicatorConfig>>,
+    /// Rhai script mode — script runs per bar, returns whatever was `plot()`-ed.
+    pub script: Option<String>,
+}
+
+/// Per-indicator warm-up status reported in the `status` SSE event.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct IndicatorStatus {
+    /// True when `ready_since_t` is set AND `bars_available >= warm_estimate`.
+    pub ready:          bool,
+    /// Estimated bars needed for stable convergence (EMA decay formula or exact period).
+    pub warm_estimate:  usize,
+    /// Bars currently available in the ledger window.
+    pub bars_available: usize,
+    /// How many more bars are needed. 0 when ready.
+    pub bars_needed:    usize,
+}
+
+/// First SSE event sent on every new stream connection.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct StreamStatus {
+    pub bars_available: usize,
+    /// True when every requested indicator passes its warm_estimate check.
+    pub all_ready:      bool,
+    /// Keyed by var_name (script mode) or label (structured mode).
+    pub indicators:     HashMap<String, IndicatorStatus>,
 }
 
 /// SSE bar event — OHLCV bar plus the current value of every requested indicator.

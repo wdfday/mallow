@@ -27,6 +27,7 @@ use std::sync::Arc;
 
 use alm_ledger::{IndicatorHandle, IndicatorSpec};
 use alm_strategy::factory::indicator_deps;
+use utoipa::ToSchema;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
@@ -45,7 +46,7 @@ use super::store::types::StrategySpec;
 
 /// A registered watch — runs a strategy on live bars and dispatches
 /// signals to a webhook or NATS subject instead of executing trades.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct WatchEntry {
     pub id: String,
     pub symbols: Vec<String>,
@@ -64,7 +65,7 @@ pub struct WatchEntry {
     pub created_at: i64,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateWatchReq {
     pub symbols: Vec<String>,
     #[serde(default)]
@@ -84,9 +85,9 @@ use super::HttpState;
 /// keeps the indicator refcounts alive for the lifetime of the slot.
 /// Dropping a `WatchSlot` releases all handles (refcount--) which triggers
 /// grace eviction in the ledger if no other consumer holds the same spec.
-pub(crate) struct WatchSlot {
-    entry: WatchEntry,
-    _handles: Vec<IndicatorHandle>,
+pub struct WatchSlot {
+    pub entry: WatchEntry,
+    pub _handles: Vec<IndicatorHandle>,
 }
 
 // ── Store ─────────────────────────────────────────────────────────────────────
@@ -243,6 +244,8 @@ pub async fn delete_watch(State(state): State<HttpState>, Path(id): Path<String>
     // WatchSlot drop releases all IndicatorHandles → refcount-- in ledger.
     match state.watches.write().await.remove(&id) {
         Some(_) => {
+            // Drop cached strategy handles in the evaluator immediately.
+            state.watch_evaluator.remove_watch(&id);
             if let Err(e) = state.store.delete_watch_entry(&id).await {
                 warn!(%id, err=%e, "watch: failed to delete persisted entry");
             }

@@ -7,16 +7,12 @@
 //!
 //! ## Live — backed by the in-process `alm_ledger::Ledger`
 //!
-//! | Route                                       | Purpose                                    |
-//! |---------------------------------------------|--------------------------------------------|
-//! | `GET  /health`                              | Health check                               |
-//! | `GET  /api/symbols`                         | Symbols tracked by the ledger              |
-//! | `GET  /api/symbols?indicators=true`         | Same + live indicator cells per symbol     |
-//! | `GET  /api/indicators`                      | Indicator catalogue (static)               |
-//! | `GET  /api/data/:symbol`                    | OHLCV window with cursor pagination        |
-//! | `GET  /api/data/:symbol/latest`             | Shortcut for "last N bars"                 |
-//! | `POST /api/data/:symbol`                    | Unified OHLCV + indicator snapshot         |
-//! | `POST /api/data/duckdb`                     | Ad-hoc SQL over flat Parquet files         |
+//! | Route                        | Purpose                                                                      |
+//! |------------------------------|------------------------------------------------------------------------------|
+//! | `GET  /health`               | Health check                                                                 |
+//! | `GET  /api/symbols`          | Symbols tracked by the ledger; `?indicators=true` adds live cells per symbol |
+//! | `GET  /api/indicators`       | Indicator catalogue (static metadata)                                        |
+//! | `POST /api/data/:symbol`     | OHLCV + indicator snapshot; transparent Parquet fallback for historical pages |
 //!
 //! ## Batch — dispatched to `alm_engine::backtest`
 //!
@@ -59,18 +55,38 @@
 //!
 //! ## Stream — SSE real-time push
 //!
-//! | Route                                  | Purpose                                         |
-//! |----------------------------------------|-------------------------------------------------|
-//! | `POST /api/stream/:symbol`             | Bar + indicator events for one symbol (event: "bar") |
-//! | `GET  /api/stream/signals`             | All signal batches (event: "signal")            |
+//! | Route                      | Purpose                                                     |
+//! |----------------------------|-------------------------------------------------------------|
+//! | `POST /api/stream/:symbol` | Bar + indicator events for one symbol (event: `"bar"`)      |
+//! | `GET  /api/stream/signals` | All signal batches (event: `"signal"`)                      |
 //!
-//! # Cursor pagination
+//! `POST /api/stream/:symbol` body (`StreamRequest`):
+//! - `tf`: timeframe string, e.g. `"M1"` (default = herald's global TF).
+//! - `indicators`: structured list of indicator configs — raw cell values returned per bar.
+//! - `script`: Rhai script using `ind.TYPE(period)` declarations + `plot("name", value)` calls.
+//!   Exactly one of `indicators` or `script` should be set.
 //!
-//! `GET /api/data/:symbol` uses two cursors:
+//! **MTF note:** `tf` is a single timeframe that applies to both the bar feed and all
+//! indicators. Per-indicator source-timeframe override (`source_tf`) is not yet
+//! supported on the stream endpoint — use `POST /api/data/:symbol` for multi-TF snapshots.
 //!
-//! - `?before=<ts_ms>&limit=N` — bars with `t < before`, newest-first, up to `N`.
-//! - `?after=<ts_ms>&limit=N`  — bars with `t > after`, oldest-first, up to `N`.
-//! - Neither → the last `N` bars (equivalent to `latest`).
+//! The first event on every connection is always `"status"` (`StreamStatus`), reporting
+//! warm-up state per indicator before any `"bar"` event flows.
+//!
+//! # Cursor pagination (`POST /api/data/:symbol`)
+//!
+//! Three mutually exclusive cursor modes in the `candles` section:
+//!
+//! - `before: <ts_ms>` — bars with `t < before`, newest `limit` of those, oldest-first.
+//! - `after: <ts_ms>`  — bars with `t > after`, oldest `limit` of those, oldest-first.
+//! - Neither           — the last `limit` bars (equivalent to "latest").
+//!
+//! When `before` predates the live ledger window **and** indicators are requested,
+//! the handler runs a historical compute pass: it loads `warm_estimate + limit` bars
+//! from Parquet, feeds them through fresh indicator instances, and returns only the
+//! last `limit` bars with aligned indicator values. The Parquet scan uses DuckDB
+//! row-group zone-map filtering (min/max statistics per row group) — no explicit
+//! file index is needed.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -84,6 +100,7 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::registry::SignalBatch;
+use crate::watch_evaluator::WatchEvaluator;
 
 mod backtest;
 pub mod data;
@@ -97,7 +114,7 @@ pub mod watch;
 
 pub use openapi::ApiDoc;
 pub use store::StoreBackend;
-pub use watch::WatchStore;
+pub use watch::{new_store as new_watch_store, WatchStore};
 
 #[cfg(test)]
 mod tests;
@@ -120,6 +137,8 @@ pub struct HttpState {
     pub bar_bcast: broadcast::Sender<Bar>,
     /// Live signal broadcast — SSE `/api/stream/signals` subscribers receive from here.
     pub sig_bcast: broadcast::Sender<Arc<SignalBatch>>,
+    /// Watch evaluator — `delete_watch` calls `remove_watch` to eagerly free handles.
+    pub watch_evaluator: Arc<WatchEvaluator>,
 }
 
 impl HttpState {
@@ -131,6 +150,8 @@ impl HttpState {
         store: StoreBackend,
         bar_bcast: broadcast::Sender<Bar>,
         sig_bcast: broadcast::Sender<Arc<SignalBatch>>,
+        watch_evaluator: Arc<WatchEvaluator>,
+        watches: WatchStore,
     ) -> Self {
         Self {
             ledger,
@@ -138,9 +159,10 @@ impl HttpState {
             data_dir,
             backtest_semaphore: Arc::new(Semaphore::new(max_concurrent_backtests.max(1))),
             store,
-            watches: watch::new_store(),
+            watches,
             bar_bcast,
             sig_bcast,
+            watch_evaluator,
         }
     }
 }

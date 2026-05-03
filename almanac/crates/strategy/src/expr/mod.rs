@@ -11,3 +11,6 @@ pub use cel::{CelScript, CelStrategy, parse_cel_indicator};
 
 pub mod rhai_strategy;
 pub use rhai_strategy::RhaiStrategy;
+
+pub mod rhai_stream;
+pub use rhai_stream::{RhaiStreamEval, StreamDecl, PlotResult};

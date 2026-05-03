@@ -3,6 +3,7 @@ mod handler;
 mod ring;
 mod symbols;
 use alm_herald::{http, registry, watch_evaluator};
+use feed::rest::{gap_fill_symbol, Exchange};
 
 use std::sync::Arc;
 
@@ -22,7 +23,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "herald=info,alm_ledger=info".into()),
+                .unwrap_or_else(|_| "alm_herald=info,alm_ledger=info".into()),
         )
         .init();
 
@@ -47,13 +48,41 @@ async fn main() -> Result<()> {
     };
     info!("connected to NATS");
 
+    // ── Symbol config (load early — needed for bootstrap + warm-set) ─────────
+    //
+    // Priority:
+    //   1. HERALD_SYMBOLS_FILE=/path/to/symbols.yaml  (preferred — shared with hist-data)
+    //   2. HERALD_BINANCE_SYMBOLS / HERALD_OKX_SYMBOLS env vars (fallback)
+    let sym_cfg = match symbols::SymbolConfig::from_env_file() {
+        Ok(Some(cfg)) => {
+            info!(
+                binance = cfg.binance.len(),
+                okx = cfg.okx.len(),
+                "loaded symbols from HERALD_SYMBOLS_FILE"
+            );
+            cfg
+        }
+        Ok(None) => {
+            let mut cfg = symbols::SymbolConfig::default();
+            cfg.binance = parse_symbol_list("HERALD_BINANCE_SYMBOLS");
+            cfg.okx     = parse_symbol_list("HERALD_OKX_SYMBOLS");
+            cfg
+        }
+        Err(e) => {
+            anyhow::bail!("failed to load symbols file: {e}");
+        }
+    };
+
     // ── Ledger + Registry ─────────────────────────────────────────────────────
     let ledger = Arc::new(Ledger::new(LedgerConfig::default()));
 
-    let startup_symbols: Vec<String> = std::env::var("HERALD_SYMBOLS")
-        .ok()
-        .map(|s| s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect())
-        .unwrap_or_default();
+    // `HERALD_SYMBOLS` can pin a custom subset for warm-set + bootstrap.
+    // When unset, fall back to every symbol that will be ingested live so
+    // indicators are always warmed before the first WebSocket bar arrives.
+    let startup_symbols: Vec<String> = match std::env::var("HERALD_SYMBOLS") {
+        Ok(v) => v.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect(),
+        Err(_) => sym_cfg.all_symbols(),
+    };
 
     if !startup_symbols.is_empty() {
         let warm = default_warm_set();
@@ -121,6 +150,35 @@ async fn main() -> Result<()> {
         }
     }
 
+    // ── REST gap-fill ─────────────────────────────────────────────────────────
+    // Fill the gap between the last parquet bar and now (intraday), so
+    // indicators are current before the live WebSocket feed takes over.
+    // Observers are NOT yet subscribed — no signals fire during gap-fill.
+    if !startup_symbols.is_empty() {
+        info!("starting REST gap-fill for {} symbol(s)", startup_symbols.len());
+        for sym in &startup_symbols {
+            // Determine last_ts from what was loaded during parquet bootstrap.
+            let last_ts = ledger.with_state(sym, tf, |s| s.last_ts).flatten();
+            let Some(from_ms) = last_ts else {
+                // No parquet data at all — skip gap-fill for this symbol.
+                continue;
+            };
+            // from_ms is the open-time of the last loaded bar; the next bar
+            // starts one minute later.
+            let gap_start = from_ms + 60_000;
+
+            // Determine which exchange handles this symbol.
+            // OKX symbols contain a dash (e.g. "BTC-USDT"); Binance do not.
+            if sym.contains('-') {
+                // OKX — live symbol already has dashes; REST uses same format.
+                gap_fill_symbol(&ledger, sym, sym, Exchange::Okx, gap_start).await;
+            } else {
+                // Binance — symbol is already in "BTCUSDT" form.
+                gap_fill_symbol(&ledger, sym, sym, Exchange::Binance, gap_start).await;
+            }
+        }
+    }
+
     let (sig_tx, sig_rx) = mpsc::unbounded_channel();
     let registry = Arc::new(Registry::with_default_fallback(ledger.clone(), tf, sig_tx));
     ledger.subscribe(registry.clone() as Arc<dyn LedgerObserver>);
@@ -140,31 +198,6 @@ async fn main() -> Result<()> {
 
     // ── 24h ring buffer ───────────────────────────────────────────────────────
     let ring = BarRing::new();
-
-    // ── Symbol config ─────────────────────────────────────────────────────────
-    //
-    // Priority:
-    //   1. HERALD_SYMBOLS_FILE=/path/to/symbols.yaml  (preferred — shared with hist-data)
-    //   2. HERALD_BINANCE_SYMBOLS / HERALD_OKX_SYMBOLS env vars (fallback)
-    let sym_cfg = match symbols::SymbolConfig::from_env_file() {
-        Ok(Some(cfg)) => {
-            info!(
-                binance = cfg.binance.len(),
-                okx = cfg.okx.len(),
-                "loaded symbols from HERALD_SYMBOLS_FILE"
-            );
-            cfg
-        }
-        Ok(None) => {
-            let mut cfg = symbols::SymbolConfig::default();
-            cfg.binance = parse_symbol_list("HERALD_BINANCE_SYMBOLS");
-            cfg.okx     = parse_symbol_list("HERALD_OKX_SYMBOLS");
-            cfg
-        }
-        Err(e) => {
-            anyhow::bail!("failed to load symbols file: {e}");
-        }
-    };
 
     // ── WebSocket ingesters ───────────────────────────────────────────────────
     let (bar_tx, bar_rx) = mpsc::unbounded_channel();

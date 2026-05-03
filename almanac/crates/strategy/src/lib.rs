@@ -8,7 +8,10 @@ pub use candle_type::{CandleTransform, CandleType};
 
 // ── Expression / template strategies ─────────────────────────────────────────
 pub mod expr;
-pub use expr::{CelScript, CelStrategy, RhaiStrategy, RhaiStreamEval, StreamDecl, PlotResult};
+pub use expr::{
+    CelScript, CelStrategy, RhaiStrategy, RhaiStreamEval, StreamDecl, PlotResult,
+    rhai_lint, LintDiagnostic, RhaiLintScope, DeclaredIndicator, KNOWN_INDICATOR_TYPES,
+};
 
 // // ── Declarative JSON strategy ─────────────────────────────────────────────────
 // pub mod dynamic;  // deprecated — use CelStrategy instead

@@ -1,5 +1,6 @@
 pub mod binance;
 pub mod okx;
+pub mod rest;
 
 use tokio::sync::mpsc;
 use alm_core::Bar;

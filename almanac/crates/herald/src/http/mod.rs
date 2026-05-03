@@ -106,6 +106,7 @@ mod backtest;
 pub mod data;
 mod duckdb_helpers;
 mod openapi;
+mod rhai_validate;
 mod sse;
 mod symbols;
 mod types;
@@ -173,6 +174,7 @@ pub fn router(state: HttpState) -> Router {
         .merge(symbols::routes())
         .merge(data::routes())
         .merge(backtest::routes())
+        .merge(rhai_validate::routes())
         .merge(store::routes())
         .merge(watch::routes())
         .merge(sse::routes())

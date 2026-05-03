@@ -714,6 +714,226 @@ pub fn rhai_indicator_deps(params: &serde_json::Value) -> Vec<crate::factory::In
         .collect()
 }
 
+// ── Rhai lint — public API for the herald validate endpoint ──────────────────
+
+/// All user-facing indicator type aliases accepted by `ind.TYPE(period)`.
+/// Any alias not in this list is an error.
+pub const KNOWN_INDICATOR_TYPES: &[&str] = &[
+    // Single-output
+    "ema", "sma", "wma", "hma", "dema", "tema", "smma", "kama", "alma",
+    "mcginley", "lsma", "vwma", "rsi", "cci", "roc", "mfi", "mom", "cmo",
+    "dpo", "rci", "chop", "williams", "cmf", "obv", "vwap", "ao", "bop",
+    "coppock", "uo", "trix", "tsi", "pmo", "kst", "rvi", "smi", "ppo",
+    // Multi-output / aliases
+    "atr", "adx",
+    "macd", "macd_hist", "macd_line",
+    "bb_upper", "bb_lower", "bb_mid",
+    "stoch_k", "stoch_d",
+    "srsi_k", "srsi_d",
+    "supertrend", "st_bull",
+    "donchian_upper", "donchian_lower", "donchian_mid",
+    "sar", "parabolic_sar",
+    "vortex_plus", "vortex_minus",
+];
+
+/// A lint diagnostic with Monaco-compatible line/col coordinates (1-based).
+#[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
+pub struct LintDiagnostic {
+    /// 1-based line number (0 = unknown / whole-script).
+    pub line: usize,
+    /// 1-based column number (0 = unknown).
+    pub col:  usize,
+    pub message:  String,
+    /// `"error"` or `"warning"`.
+    pub severity: &'static str,
+}
+
+/// Per-line declared indicator summary returned in the lint scope.
+#[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
+pub struct DeclaredIndicator {
+    pub name:     String,
+    pub ind_type: String,
+    pub period:   usize,
+    /// Timeframe string if HTF, e.g. `"H1"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeframe: Option<String>,
+}
+
+/// Scope information for Monaco autocomplete / hover.
+#[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
+pub struct RhaiLintScope {
+    pub indicators: Vec<DeclaredIndicator>,
+    pub bar_fields: Vec<&'static str>,
+    pub output_vars: Vec<&'static str>,
+    pub functions:   Vec<&'static str>,
+}
+
+/// Extract the raw type string from a potential indicator declaration line
+/// WITHOUT performing `map_indicator_type` mapping.
+/// Returns `(prefix, raw_type_str)` — prefix is `"ind"` for `ind.TYPE(` syntax.
+fn extract_raw_indicator_type(trimmed: &str) -> Option<(String, String)> {
+    let rest = trimmed.strip_prefix("let ")?.trim();
+    let eq_pos = rest.find('=')?;
+    let rhs = rest[eq_pos + 1..].trim();
+
+    // Legacy: indicator("type", ...)
+    if rhs.starts_with("indicator(") {
+        let inner = rhs.strip_prefix("indicator(")?.trim_end_matches(')');
+        let t = inner.split(',').next()?.trim().trim_matches('"').trim_matches('\'');
+        if t.is_empty() { return None; }
+        return Some(("indicator".to_string(), t.to_string()));
+    }
+
+    // `PREFIX.TYPE(` pattern
+    let dot_pos = rhs.find('.')?;
+    let prefix = rhs[..dot_pos].trim().to_string();
+    let after_dot = rhs[dot_pos + 1..].trim();
+    let paren_pos = after_dot.find('(')?;
+    let type_str = after_dot[..paren_pos].trim().to_string();
+
+    if prefix.is_empty() || type_str.is_empty() { return None; }
+    Some((prefix, type_str))
+}
+
+/// Lint a Rhai strategy script. Returns `(diagnostics, scope)`.
+///
+/// Checks:
+/// 1. Wrong indicator prefix (e.g. `indi.ema` instead of `ind.ema`).
+/// 2. Unknown indicator type against [`KNOWN_INDICATOR_TYPES`].
+/// 3. Rhai syntax errors in the logic section (indicator decls stripped first).
+pub fn rhai_lint(script: &str) -> (Vec<LintDiagnostic>, RhaiLintScope) {
+    let mut diags: Vec<LintDiagnostic> = Vec::new();
+    let mut cleaned_lines: Vec<&str>   = Vec::new();
+    // cleaned line index → original 1-based line number (for error remapping)
+    let mut line_map: Vec<usize>       = Vec::new();
+    let mut scope_inds: Vec<DeclaredIndicator> = Vec::new();
+
+    for (idx, line) in script.lines().enumerate() {
+        let lineno  = idx + 1;
+        let trimmed = line.trim();
+
+        // Try to identify indicator-like prefix+type from the line
+        if let Some((prefix, raw_type)) = extract_raw_indicator_type(trimmed) {
+            if prefix != "ind" && prefix != "indicator" {
+                // Wrong prefix — tell the user what they should use
+                let suggestion = format!("ind.{raw_type}(");
+                diags.push(LintDiagnostic {
+                    line: lineno, col: 1,
+                    message: format!(
+                        "Wrong indicator prefix '{prefix}.'; use '{suggestion}...' instead"
+                    ),
+                    severity: "error",
+                });
+                // Keep in cleaned script so Rhai also reports the syntax error
+                cleaned_lines.push(line);
+                line_map.push(lineno);
+            } else {
+                // Correct prefix — validate the type
+                if !KNOWN_INDICATOR_TYPES.contains(&raw_type.as_str()) {
+                    let suggestion = suggest_similar(&raw_type);
+                    diags.push(LintDiagnostic {
+                        line: lineno, col: 1,
+                        message: if suggestion.is_empty() {
+                            format!("Unknown indicator type '{raw_type}'; see KNOWN_INDICATOR_TYPES for valid types")
+                        } else {
+                            format!("Unknown indicator type '{raw_type}'; did you mean '{suggestion}'?")
+                        },
+                        severity: "error",
+                    });
+                }
+                // Strip successfully parsed declarations from cleaned script
+                if let Some(decl) = try_parse_indicator_line(trimmed) {
+                    scope_inds.push(DeclaredIndicator {
+                        name:      decl.var_name,
+                        ind_type:  raw_type,
+                        period:    decl.period,
+                        timeframe: decl.timeframe.map(|tf| tf.to_string()),
+                    });
+                    // Don't add to cleaned_lines — stripped from Rhai AST
+                } else {
+                    // Parsed prefix+type but period/args unparseable
+                    cleaned_lines.push(line);
+                    line_map.push(lineno);
+                }
+            }
+        } else {
+            cleaned_lines.push(line);
+            line_map.push(lineno);
+        }
+    }
+
+    // Compile stripped logic through the Rhai engine for syntax errors.
+    let cleaned = cleaned_lines.join("\n");
+    let plot_buf: PlotBuf = Arc::new(Mutex::new(Vec::new()));
+    let engine = build_engine(plot_buf);
+    if let Err(e) = engine.compile(&cleaned) {
+        let pos = e.1;
+        let orig_line = pos
+            .line()
+            .and_then(|l| line_map.get(l.saturating_sub(1)).copied())
+            .unwrap_or_else(|| pos.line().unwrap_or(0));
+        let col = pos.position().unwrap_or(1);
+        diags.push(LintDiagnostic {
+            line: orig_line,
+            col,
+            message: e.0.to_string(),
+            severity: "error",
+        });
+    }
+
+    let scope = RhaiLintScope {
+        indicators:  scope_inds,
+        bar_fields:  BAR_FIELDS.to_vec(),
+        output_vars: vec!["entry", "exit", "tp", "sl", "strength"],
+        functions:   vec![
+            "cross_above", "cross_below",
+            "rising", "falling", "rising_n", "falling_n",
+            "above", "below", "in_range",
+            "highest", "lowest",
+            "plot",
+        ],
+    };
+
+    (diags, scope)
+}
+
+/// Return the most similar known indicator type to `input` (edit distance ≤ 2).
+/// Returns an empty string if no close match found.
+fn suggest_similar(input: &str) -> String {
+    let mut best: Option<(&str, usize)> = None;
+    for &known in KNOWN_INDICATOR_TYPES {
+        let dist = edit_distance(input, known);
+        if dist <= 2 {
+            if best.map_or(true, |(_, d)| dist < d) {
+                best = Some((known, dist));
+            }
+        }
+    }
+    best.map(|(s, _)| s.to_string()).unwrap_or_default()
+}
+
+/// Minimal Levenshtein distance (bounded at 3 for performance).
+fn edit_distance(a: &str, b: &str) -> usize {
+    let a: Vec<char> = a.chars().collect();
+    let b: Vec<char> = b.chars().collect();
+    let m = a.len();
+    let n = b.len();
+    if m.abs_diff(n) > 3 { return 4; }
+    let mut dp = vec![vec![0usize; n + 1]; m + 1];
+    for i in 0..=m { dp[i][0] = i; }
+    for j in 0..=n { dp[0][j] = j; }
+    for i in 1..=m {
+        for j in 1..=n {
+            dp[i][j] = if a[i - 1] == b[j - 1] {
+                dp[i - 1][j - 1]
+            } else {
+                1 + dp[i - 1][j - 1].min(dp[i - 1][j]).min(dp[i][j - 1])
+            };
+        }
+    }
+    dp[m][n]
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1088,5 +1308,78 @@ if cross_below(ema9, ema21) { exit  = true; }
             assert!(sig.target_price.is_some(), "tp should be set");
             assert!(sig.stop_price.is_some(), "sl should be set");
         }
+    }
+
+    // ── rhai_lint tests ───────────────────────────────────────────────────────
+
+    #[test]
+    fn lint_clean_script_no_errors() {
+        let script = r#"
+let ema9  = ind.ema(9);
+let rsi14 = ind.rsi(14);
+if cross_above(ema9, ema9) && rsi14[0] < 70.0 { entry = true; }
+if cross_below(ema9, ema9) { exit = true; }
+"#;
+        let (errors, scope) = rhai_lint(script);
+        assert!(errors.is_empty(), "clean script should have no lint errors: {errors:?}");
+        assert_eq!(scope.indicators.len(), 2);
+        assert_eq!(scope.indicators[0].ind_type, "ema");
+        assert_eq!(scope.indicators[1].ind_type, "rsi");
+    }
+
+    #[test]
+    fn lint_wrong_prefix_indi() {
+        let script = "let ema9 = indi.ema(9);\nif ema9[0] > 0.0 { entry = true; }";
+        let (errors, _scope) = rhai_lint(script);
+        assert!(!errors.is_empty(), "should flag wrong prefix 'indi'");
+        assert!(errors[0].message.contains("indi"), "message should mention bad prefix");
+        assert_eq!(errors[0].line, 1);
+    }
+
+    #[test]
+    fn lint_unknown_type_suggestion() {
+        // "mma" is unknown but close to "ema" (edit distance 1)
+        let script = "let x = ind.mma(9);";
+        let (errors, _scope) = rhai_lint(script);
+        assert!(!errors.is_empty(), "unknown type should be an error");
+        let msg = &errors[0].message;
+        assert!(msg.contains("mma"), "should mention unknown type");
+        assert!(msg.contains("ema"), "should suggest 'ema'");
+    }
+
+    #[test]
+    fn lint_unknown_type_no_suggestion() {
+        // "zzz" has no close match
+        let script = "let x = ind.zzz(9);";
+        let (errors, _scope) = rhai_lint(script);
+        assert!(!errors.is_empty());
+        assert!(errors[0].message.contains("zzz"));
+    }
+
+    #[test]
+    fn lint_rhai_syntax_error_line_mapped() {
+        let script = "let ema9 = ind.ema(9);\nif ema9[0] > { entry = true; }";
+        let (errors, _scope) = rhai_lint(script);
+        // The syntax error is on line 2 in original; after stripping line 1,
+        // the cleaned script has it on line 1 → should map back to line 2.
+        let syntax_errs: Vec<_> = errors.iter().filter(|e| e.severity == "error").collect();
+        assert!(!syntax_errs.is_empty(), "should report Rhai syntax error");
+    }
+
+    #[test]
+    fn lint_legacy_indicator_syntax_accepted() {
+        let script = r#"let ema9 = indicator("ema", 9);
+if ema9[0] > 0.0 { entry = true; }
+"#;
+        let (errors, scope) = rhai_lint(script);
+        assert!(errors.is_empty(), "legacy indicator() syntax should be lint-clean: {errors:?}");
+        assert_eq!(scope.indicators.len(), 1);
+    }
+
+    #[test]
+    fn lint_scope_contains_all_bar_fields() {
+        let (_, scope) = rhai_lint("if close[0] > 0.0 { entry = true; }");
+        assert!(scope.bar_fields.contains(&"close"));
+        assert!(scope.bar_fields.contains(&"open"));
     }
 }

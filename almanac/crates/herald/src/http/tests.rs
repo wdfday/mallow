@@ -17,6 +17,7 @@ use tokio::sync::broadcast;
 
 use crate::http::{router, HttpState, StoreBackend};
 use crate::registry::SignalBatch;
+use crate::watch_evaluator::WatchEvaluator;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -25,6 +26,14 @@ fn test_state() -> HttpState {
     let data_dir = Arc::new(PathBuf::from("/nonexistent-test-dir"));
     let (bar_tx, _) = broadcast::channel::<Bar>(256);
     let (sig_tx, _) = broadcast::channel::<Arc<SignalBatch>>(64);
+    let watch_store = crate::http::new_watch_store();
+    let (dispatch_tx, _dispatch_rx) = tokio::sync::mpsc::unbounded_channel();
+    let watch_eval = Arc::new(WatchEvaluator::new(
+        watch_store.clone(),
+        ledger.clone(),
+        Timeframe::M1,
+        dispatch_tx,
+    ));
     HttpState::new(
         ledger,
         Timeframe::M1,
@@ -33,6 +42,8 @@ fn test_state() -> HttpState {
         StoreBackend::in_memory(),
         bar_tx,
         sig_tx,
+        watch_eval,
+        watch_store,
     )
 }
 

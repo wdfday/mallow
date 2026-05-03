@@ -54,7 +54,7 @@ reqwest           = { version = "0.12", features = ["json"] }
 
 # OpenAPI / Swagger
 utoipa            = { version = "4", features = ["axum_extras"] }
-utoipa-swagger-ui = { version = "7", features = ["axum"] }
+utoipa-swagger-ui = { version = "7", features = ["axum", "vendored"] }
 
 [dev-dependencies]
 tower             = { version = "0.4", features = ["util"] }

@@ -1,7 +1,8 @@
 //! OpenAPI spec generation and Swagger UI routes.
 
 use axum::{routing::get, Router};
-use utoipa::OpenApi;
+use utoipa::openapi::security::{HttpAuthScheme, HttpBuilder, SecurityScheme};
+use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
 use alm_engine::types::{
@@ -9,11 +10,50 @@ use alm_engine::types::{
     RhaiBacktestRequest, WalkForwardConfig,
 };
 
-use super::{backtest, data, sse, store, symbols, types, watch, HttpState};
+use alm_strategy::{LintDiagnostic, RhaiLintScope, DeclaredIndicator};
+
+use super::{backtest, data, rhai_validate, sse, store, symbols, types, watch, HttpState};
+
+// ── Security modifier ─────────────────────────────────────────────────────────
+
+/// Injects the `bearerAuth` security scheme and applies it globally to every
+/// route in the spec. Herald sits behind api-gateway which validates the JWT;
+/// the scheme here is purely documentary so Swagger UI shows the padlock and
+/// the "Authorize" button lets testers paste a token.
+struct BearerAuthAddon;
+
+impl Modify for BearerAuthAddon {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        let components = openapi.components.get_or_insert_with(Default::default);
+        components.add_security_scheme(
+            "bearerAuth",
+            SecurityScheme::Http(
+                HttpBuilder::new()
+                    .scheme(HttpAuthScheme::Bearer)
+                    .bearer_format("JWT")
+                    .description(Some(
+                        "JWT issued by the identity service. \
+                         Pass as `Authorization: Bearer <token>`.",
+                    ))
+                    .build(),
+            ),
+        );
+        // Apply to every operation by default.
+        openapi.security = Some(vec![
+            utoipa::openapi::security::SecurityRequirement::new::<&str, [&str; 0], &str>(
+                "bearerAuth",
+                [],
+            ),
+        ]);
+    }
+}
+
+// ── OpenAPI document ──────────────────────────────────────────────────────────
 
 #[derive(OpenApi)]
 #[openapi(
     info(title = "Herald API", version = "0.1.0", description = "Signal engine HTTP API"),
+    modifiers(&BearerAuthAddon),
     paths(
         symbols::list_symbols,
         symbols::list_indicators_catalog,
@@ -22,6 +62,7 @@ use super::{backtest, data, sse, store, symbols, types, watch, HttpState};
         backtest::run_backtest,
         backtest::run_backtest_cel,
         backtest::run_backtest_rhai,
+        rhai_validate::validate_rhai,
         sse::stream_bars,
         sse::stream_signals,
         store::list_strategies,
@@ -83,6 +124,12 @@ use super::{backtest, data, sse, store, symbols, types, watch, HttpState};
         // Watch
         watch::WatchEntry,
         watch::CreateWatchReq,
+        // Rhai validate
+        rhai_validate::RhaiValidateReq,
+        rhai_validate::RhaiValidateResp,
+        LintDiagnostic,
+        RhaiLintScope,
+        DeclaredIndicator,
     )),
     tags(
         (name = "live",     description = "Live ledger data"),

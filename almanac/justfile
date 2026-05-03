@@ -30,17 +30,47 @@ test-name name:
 
 # ── Run ───────────────────────────────────────────────────────────────────────
 
-# Run herald (live signal engine + HTTP API)
+# Run herald locally — reads deployment/symbols.yaml + ../data/
 run:
-    cargo run -p alm-herald
+    NATS_URL="nats://signal_engine:signal-engine-dev@localhost:4222" \
+    HERALD_HTTP_ADDR="0.0.0.0:8090" \
+    HERALD_DATA_DIR="../data" \
+    HERALD_SYMBOLS_FILE="../deployment/symbols.yaml" \
+    HERALD_WARM_DAYS=5 \
+    HERALD_MAX_BACKTESTS=4 \
+    RUST_LOG="alm_herald=info,alm_ledger=info" \
+    cargo run --bin alm-herald
 
 # Run herald with debug logging
 run-debug:
-    RUST_LOG=alm_herald=debug,alm_ledger=debug cargo run -p alm-herald
+    NATS_URL="nats://signal_engine:signal-engine-dev@localhost:4222" \
+    HERALD_HTTP_ADDR="0.0.0.0:8090" \
+    HERALD_DATA_DIR="../data" \
+    HERALD_SYMBOLS_FILE="../deployment/symbols.yaml" \
+    HERALD_WARM_DAYS=5 \
+    RUST_LOG="alm_herald=debug,alm_ledger=debug" \
+    cargo run --bin alm-herald
+
+# Run herald with release optimisations (faster backtest, same symbols)
+run-release:
+    NATS_URL="nats://signal_engine:signal-engine-dev@localhost:4222" \
+    HERALD_HTTP_ADDR="0.0.0.0:8090" \
+    HERALD_DATA_DIR="../data" \
+    HERALD_SYMBOLS_FILE="../deployment/symbols.yaml" \
+    HERALD_WARM_DAYS=5 \
+    HERALD_MAX_BACKTESTS=4 \
+    RUST_LOG="alm_herald=info,alm_ledger=info" \
+    cargo run --bin alm-herald --release
 
 # Hot-reload herald on file changes (requires cargo-watch)
 dev:
-    cargo watch -x 'run -p alm-herald'
+    NATS_URL="nats://signal_engine:signal-engine-dev@localhost:4222" \
+    HERALD_HTTP_ADDR="0.0.0.0:8090" \
+    HERALD_DATA_DIR="../data" \
+    HERALD_SYMBOLS_FILE="../deployment/symbols.yaml" \
+    HERALD_WARM_DAYS=2 \
+    RUST_LOG="alm_herald=debug,alm_ledger=info" \
+    cargo watch -x 'run --bin alm-herald'
 
 # ── Code quality ──────────────────────────────────────────────────────────────
 

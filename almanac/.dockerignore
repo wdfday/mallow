@@ -1,6 +1,22 @@
 .git
 .github
 .idea
+.vscode
 
+# Build artifacts
 target/
+
+# Python binding crate — excluded from Docker build (PyO3 needs Python headers)
+crates/alm-py/
+
+# Test fixtures / benches / examples
+crates/*/benches/
+crates/*/tests/
+crates/*/examples/
+
+# Docs
+**/*.md
+DATA_FLOW.md
+
 *.log
+*.lock.bak

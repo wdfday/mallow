@@ -53,9 +53,9 @@ fn bench_rsi_construct(c: &mut Criterion) {
     group.bench_function("rhai", |b| b.iter(|| {
         build_strategy("rhai", &json!({
             "script": "\
-                let rsi14 = indicator(\"rsi\", 14);\
-                let entry = rsi14[0] < 35.0;\
-                let exit  = rsi14[0] > 65.0;\
+                let rsi14 = ind.rsi(14);\
+                if rsi14[0] < 35.0 { entry = true; }\
+                if rsi14[0] > 65.0 { exit  = true; }\
             "
         })).unwrap()
     }));
@@ -92,9 +92,9 @@ fn bench_rsi_run(c: &mut Criterion) {
     group.bench_with_input(BenchmarkId::from_parameter("rhai"), &bars, |b, bars| {
         let mut s = build_strategy("rhai", &json!({
             "script": "\
-                let rsi14 = indicator(\"rsi\", 14);\
-                let entry = rsi14[0] < 35.0;\
-                let exit  = rsi14[0] > 65.0;\
+                let rsi14 = ind.rsi(14);\
+                if rsi14[0] < 35.0 { entry = true; }\
+                if rsi14[0] > 65.0 { exit  = true; }\
             "
         })).unwrap();
         b.iter(|| { s.reset(); run_all(s.as_mut(), bars) })
@@ -132,10 +132,10 @@ fn bench_ema_run(c: &mut Criterion) {
     group.bench_with_input(BenchmarkId::from_parameter("rhai"), &bars, |b, bars| {
         let mut s = build_strategy("rhai", &json!({
             "script": "\
-                let ema20 = indicator(\"ema\", 20);\
-                let ema50 = indicator(\"ema\", 50);\
-                let entry = cross_above(ema20, ema50);\
-                let exit  = cross_below(ema20, ema50);\
+                let ema20 = ind.ema(20);\
+                let ema50 = ind.ema(50);\
+                if cross_above(ema20, ema50) { entry = true; }\
+                if cross_below(ema20, ema50) { exit  = true; }\
             "
         })).unwrap();
         b.iter(|| { s.reset(); run_all(s.as_mut(), bars) })
@@ -183,12 +183,12 @@ fn bench_multi_run(c: &mut Criterion) {
     group.bench_with_input(BenchmarkId::from_parameter("rhai"), &bars, |b, bars| {
         let mut s = build_strategy("rhai", &json!({
             "script": "\
-                let rsi14 = indicator(\"rsi\", 14);\
-                let ema20 = indicator(\"ema\", 20);\
-                let ema50 = indicator(\"ema\", 50);\
-                let macd  = indicator(\"macd\", 12, 26, 9);\
-                let entry = rsi14[0] < 40.0 && ema20[0] > ema50[0] && macd[\"histogram\"][0] > 0.0;\
-                let exit  = rsi14[0] > 60.0 || ema20[0] < ema50[0];\
+                let rsi14 = ind.rsi(14);\
+                let ema20 = ind.ema(20);\
+                let ema50 = ind.ema(50);\
+                let macd  = ind.macd(12);\
+                if rsi14[0] < 40.0 && ema20[0] > ema50[0] && macd[0] > 0.0 { entry = true; }\
+                if rsi14[0] > 60.0 || ema20[0] < ema50[0] { exit = true; }\
             "
         })).unwrap();
         b.iter(|| { s.reset(); run_all(s.as_mut(), bars) })
@@ -229,27 +229,33 @@ fn bench_kitchen_sink_run(c: &mut Criterion) {
 
     group.bench_with_input(BenchmarkId::from_parameter("rhai_full"), &bars, |b, bars| {
         let mut s = build_strategy("rhai", &json!({ "script":
-r#"let ema9   = indicator("ema",  9,    4);
-let ema21  = indicator("ema",  21,   4);
-let ema50  = indicator("ema",  50,   4);
-let rsi14  = indicator("rsi",  14,   4);
-let adx14  = indicator("adx",  14,   5);
-let atr14  = indicator("atr",  14,   3);
-let macd   = indicator("macd", 12,   3);
-let bb_u   = indicator("bb_upper", 20, 3);
-let bb_l   = indicator("bb_lower", 20, 3);
-let h1_ema = indicator("ema",  20, "H1", 3);
-let trend  = adx14[0] > 25.0 && rising_n(adx14, 3);
-let mom    = momentum(rsi14, 3) > 0.0;
+r#"let ema9   = ind.ema(9,    4);
+let ema21  = ind.ema(21,   4);
+let ema50  = ind.ema(50,   4);
+let rsi14  = ind.rsi(14,   4);
+let adx14  = ind.adx(14,   5);
+let atr14  = ind.atr(14,   3);
+let macd   = ind.macd(12,  3);
+let bb_u   = ind.bb_upper(20, 3);
+let bb_l   = ind.bb_lower(20, 3);
+let h1_ema = ind.ema(20, "H1", 3);
+
+let trend   = adx14[0] > 25.0 && rising_n(adx14, 3);
+let mom     = momentum(rsi14, 3) > 0.0;
 let squeeze = (bb_u[0] - bb_l[0]) < atr14[0] * 1.5;
 let h_break = highest(close, 20) == close[0];
-let entry = cross_above(ema9, ema21) && above(ema21, ema50)
-         && rsi14[0] > 50.0 && rsi14[0] < 70.0
-         && trend && mom && squeeze && h_break
-         && above(h1_ema, ema50);
-let exit  = cross_below(ema9, ema21) || rsi14[0] > 80.0 || falling_n(adx14, 2);
-let tp    = close[0] + atr14[0] * 2.5;
-let sl    = close[0] - atr14[0] * 1.5;"#
+
+if cross_above(ema9, ema21) && above(ema21, ema50)
+   && rsi14[0] > 50.0 && rsi14[0] < 70.0
+   && trend && mom && squeeze && h_break
+   && above(h1_ema, ema50) {
+    entry = true;
+    tp    = close[0] + atr14[0] * 2.5;
+    sl    = close[0] - atr14[0] * 1.5;
+}
+if cross_below(ema9, ema21) || rsi14[0] > 80.0 || falling_n(adx14, 2) {
+    exit = true;
+}"#
         })).unwrap();
         b.iter(|| { s.reset(); run_all(s.as_mut(), bars) })
     });
@@ -257,5 +263,60 @@ let sl    = close[0] - atr14[0] * 1.5;"#
     group.finish();
 }
 
-criterion_group!(benches, bench_rsi_construct, bench_rsi_run, bench_ema_run, bench_multi_run, bench_kitchen_sink_run);
+// ── BTC M1 real data ────────────────────────────────���────────────────────────
+//
+// Same kitchen-sink strategy on ~2M real BTC M1 bars (2022-04 → 2026-04).
+// Measures wall-clock throughput on realistic market data.
+
+fn bench_btc_m1_real(c: &mut Criterion) {
+    let bars = bench_utils::load_btc_m1_bars();
+    if bars.is_empty() {
+        eprintln!("btc_m1_real: parquet not found, skipping");
+        return;
+    }
+    eprintln!("btc_m1_real: loaded {} bars", bars.len());
+
+    let mut group = c.benchmark_group("btc_m1_real");
+    group.sample_size(10);
+
+    group.bench_with_input(BenchmarkId::from_parameter("hardcoded"), &bars, |b, bars| {
+        let mut s = KitchenSinkStrategy::new();
+        b.iter(|| { s.reset(); run_all(&mut s, bars) })
+    });
+
+    group.bench_with_input(BenchmarkId::from_parameter("rhai_full"), &bars, |b, bars| {
+        let mut s = build_strategy("rhai", &json!({ "script":
+r#"let ema9   = ind.ema(9,    4);
+let ema21  = ind.ema(21,   4);
+let ema50  = ind.ema(50,   4);
+let rsi14  = ind.rsi(14,   4);
+let adx14  = ind.adx(14,   5);
+let atr14  = ind.atr(14,   3);
+let bb_u   = ind.bb_upper(20, 3);
+let bb_l   = ind.bb_lower(20, 3);
+let h1_ema = ind.ema(20, "H1", 3);
+
+let trend   = adx14[0] > 25.0 && rising_n(adx14, 3);
+let squeeze = (bb_u[0] - bb_l[0]) < atr14[0] * 1.5;
+let h_break = highest(close, 20) == close[0];
+
+if cross_above(ema9, ema21) && above(ema21, ema50)
+   && rsi14[0] > 50.0 && rsi14[0] < 70.0
+   && trend && squeeze && h_break
+   && above(h1_ema, ema50) {
+    entry = true;
+    tp    = close[0] + atr14[0] * 2.5;
+    sl    = close[0] - atr14[0] * 1.5;
+}
+if cross_below(ema9, ema21) || rsi14[0] > 80.0 || falling_n(adx14, 2) {
+    exit = true;
+}"#
+        })).unwrap();
+        b.iter(|| { s.reset(); run_all(s.as_mut(), bars) })
+    });
+
+    group.finish();
+}
+
+criterion_group!(benches, bench_rsi_construct, bench_rsi_run, bench_ema_run, bench_multi_run, bench_kitchen_sink_run, bench_btc_m1_real);
 criterion_main!(benches);

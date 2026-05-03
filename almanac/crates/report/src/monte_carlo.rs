@@ -16,6 +16,11 @@ use serde::{Deserialize, Serialize};
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 
+/// Configuration for a [`run`] Monte Carlo simulation.
+///
+/// Use [`Default::default()`] for 1 000 iterations with a 50% ruin threshold and
+/// a time-based random seed (non-reproducible).  Set `seed` to a fixed value for
+/// deterministic results in tests or benchmarks.
 #[derive(Debug, Clone)]
 pub struct MonteCarloConfig {
     /// Number of bootstrap iterations (default 1000).
@@ -34,6 +39,11 @@ impl Default for MonteCarloConfig {
 
 // ── Result ─────────────────────────────────────────────────────────────────────
 
+/// Output of a completed Monte Carlo simulation produced by [`run`].
+///
+/// Contains scalar percentile final equities (`final_p5` … `final_p95`) for quick
+/// summary display, and full fan-chart curves (`curve_p5` … `curve_p95`) of length
+/// `n_trades + 1` for plotting.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MonteCarloResult {
     pub n_iter:           usize,
@@ -66,9 +76,22 @@ pub struct MonteCarloResult {
 
 // ── Main entry ─────────────────────────────────────────────────────────────────
 
-/// Run Monte Carlo simulation from a list of per-trade PnL **percentages** (e.g. 0.02 = +2%).
+/// Run a bootstrap Monte Carlo simulation from historical per-trade returns.
 ///
-/// `pnl_pct` must not be empty. Returns `None` if fewer than 2 trades are available.
+/// Resamples `pnl_pct` with replacement `cfg.n_iter` times, each time simulating a
+/// compound equity curve of `n_trades` steps from `initial_capital`.
+///
+/// - `pnl_pct` — per-trade PnL as a fraction (e.g. `0.02` = +2%, `-0.01` = -1%).
+///   Use `trade.pnl_pct` from the backtest result. Must have at least 2 elements.
+/// - `initial_capital` — starting equity for each simulated path.
+/// - `cfg` — controls iteration count, ruin threshold, and optional RNG seed.
+///
+/// Returns `None` when fewer than 2 trades are provided.
+///
+/// The `ruin_probability` in the result counts the fraction of paths where equity ever
+/// dropped to or below `ruin_threshold * initial_capital` at any step.
+/// The percentile curves (`curve_p5` … `curve_p95`) are each `n_trades + 1` long
+/// (step 0 = `initial_capital`), giving fan-chart bands for display.
 pub fn run(
     pnl_pct: &[f64],
     initial_capital: f64,

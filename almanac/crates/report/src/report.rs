@@ -4,6 +4,9 @@ use alm_core::{exit::ExitReason, portfolio::Portfolio, regime::RegimeSummary, Ti
 use serde::{Deserialize, Serialize};
 
 /// Breakdown of trade closures by exit type.
+///
+/// Each field counts the number of trades that were exited via that particular
+/// [`alm_core::exit::ExitReason`] variant. Populated by [`BacktestReport::generate`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ExitReasonBreakdown {
     pub signal: usize,
@@ -16,7 +19,17 @@ pub struct ExitReasonBreakdown {
     pub end_of_data: usize,
 }
 
-/// Full backtest result — trading metrics for strategy evaluation.
+/// Complete performance report produced after a backtest run.
+///
+/// Aggregates every relevant metric for evaluating a trading strategy:
+/// return, risk-adjusted ratios, drawdown, per-trade statistics, distribution
+/// shape, rolling series, and regime context.
+///
+/// Produced by [`BacktestReport::generate`] from a completed [`alm_core::portfolio::Portfolio`].
+/// The `regime_summary` field is filled in separately by the engine after `run()` completes.
+///
+/// All `_pct` scalar fields are in **percentage points** (e.g. `20.0` = 20%), except
+/// `win_rate_pct` which is also in percentage points. `psr` is a probability `[0, 1]`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BacktestReport {
     pub strategy: String,
@@ -123,6 +136,21 @@ pub struct BacktestReport {
 }
 
 impl BacktestReport {
+    /// Build a complete [`BacktestReport`] from a finished backtest portfolio.
+    ///
+    /// - `strategy_name` — label stored in `report.strategy` for display/serialisation.
+    /// - `symbol` — label stored in `report.symbol`.
+    /// - `portfolio` — completed portfolio with `equity_curve` and `trades` populated by the engine.
+    /// - `risk_free_annual` — annualised risk-free rate as a fraction (e.g. `0.05` = 5%).
+    ///   Used to compute excess returns for Sharpe and Sortino.
+    ///
+    /// Sharpe and Sortino are computed on **daily** returns (equity aggregated to one value per
+    /// calendar day) regardless of bar frequency, so M1 and D1 backtests remain comparable.
+    /// The `annualization_factor` is derived empirically from the equity curve timestamps:
+    /// US stocks → ~252, crypto → ~365.
+    ///
+    /// When `portfolio.trades` is empty, Sharpe, Sortino, and PSR are forced to `0.0` to
+    /// avoid noise from a flat equity curve against a non-zero risk-free rate.
     pub fn generate(
         strategy_name: &str,
         symbol: &str,

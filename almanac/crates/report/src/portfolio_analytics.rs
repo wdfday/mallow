@@ -2,7 +2,12 @@ use crate::metrics;
 use crate::report::{BacktestReport};
 use alm_core::portfolio::EquityPoint;
 
-/// Per-symbol and cross-symbol analytics for multi-asset portfolio evaluation.
+/// Cross-symbol portfolio analytics produced by [`analyze`].
+///
+/// All per-symbol vectors (`beta`, `alpha_annualized`, `turnover_pct`) are indexed in
+/// the same order as `symbols`, which matches the input `symbol_reports` slice.
+/// `correlation_matrix[i][j]` is the Pearson correlation between symbols `i` and `j`;
+/// the diagonal is always `1.0`.
 #[derive(Debug, Clone)]
 pub struct PortfolioAnalytics {
     /// Symbol names (same order as all per-symbol slices).
@@ -19,13 +24,19 @@ pub struct PortfolioAnalytics {
     pub diversification_ratio: f64,
 }
 
-/// Compute cross-symbol portfolio analytics.
+/// Compute cross-symbol portfolio analytics from per-symbol backtest results.
 ///
-/// `symbol_reports` — one entry per symbol: (symbol_name, BacktestReport, equity_curve).
-/// `benchmark_equity` — reference equity curve for beta/alpha (e.g. buy-and-hold).
+/// - `symbol_reports` — slice of `(name, BacktestReport, equity_curve)` tuples, one per symbol.
+/// - `benchmark_equity` — raw equity series used as the market benchmark for beta/alpha
+///   (e.g. a buy-and-hold equity curve from [`crate::benchmark::BuyHoldBenchmark`]).
 ///
-/// All equity curves are aligned by index (same length expected after resampling).
-/// Shorter curves are zero-padded to the longest length.
+/// Equity curves of different lengths are aligned by zero-padding the shorter ones.
+/// Alpha is expressed as an annualised daily excess return (`alpha_daily * 252`).
+/// Turnover is approximated as `total_trades / n_bars * 100` (position changes per bar %).
+///
+/// Returns a [`PortfolioAnalytics`] with a `diversification_ratio > 1` indicating that
+/// combining the symbols reduces portfolio volatility below the average individual volatility.
+/// Returns a default struct with `diversification_ratio = 1.0` for an empty input.
 pub fn analyze(
     symbol_reports: &[(String, BacktestReport, Vec<EquityPoint>)],
     benchmark_equity: &[f64],

@@ -4,28 +4,31 @@
 //!
 //! ```text
 //! // Declarations — parsed by us, stripped before Rhai evaluates
-//! let ema9   = indicator("ema", 9);
-//! let h1_ema = indicator("ema", 20, "H1");     // H1 timeframe
-//! let rsi14  = indicator("rsi", 14);
-//! let atr14  = indicator("atr", 14, "H1", 3); // H1, keep 3 bars
+//! let ema9   = ind.ema(9);
+//! let h1_ema = ind.ema(20, "H1");     // H1 timeframe
+//! let rsi14  = ind.rsi(14);
+//! let atr14  = ind.atr(14, "H1", 3); // H1, keep 3 bars
 //!
-//! // Logic — pure Rhai, evaluated on every bar
-//! let entry = cross_above(ema9, h1_ema) && rsi14[0] < 60.0;
-//! let exit  = cross_below(ema9, h1_ema);
-//! let tp    = close[0] + atr14[0] * 2.0;
-//! let sl    = close[0] - atr14[0] * 1.5;
+//! // Logic — imperative Rhai; entry/exit/tp/sl are pre-pushed into scope
+//! if cross_above(ema9, h1_ema) && rsi14[0] < 60.0 {
+//!     entry = true;
+//!     tp    = close[0] + atr14[0] * 2.0;
+//!     sl    = close[0] - atr14[0] * 1.5;
+//! }
+//! if cross_below(ema9, h1_ema) { exit = true; }
 //! ```
 //!
 //! # Indicator declaration syntax
 //!
-//! `indicator(type, period [, tf_or_buf [, buf]])`
+//! `ind.TYPE(period [, tf_or_buf [, buf]])` — preferred form.
+//! Legacy `indicator("TYPE", period, ...)` is still accepted.
 //!
 //! | Form | Meaning |
 //! |---|---|
-//! | `indicator("ema", 9)` | Base-TF, default buf=2 |
-//! | `indicator("ema", 9, 5)` | Base-TF, buf=5 |
-//! | `indicator("ema", 20, "H1")` | H1 timeframe, buf=2 |
-//! | `indicator("ema", 20, "H1", 3)` | H1 timeframe, buf=3 |
+//! | `ind.ema(9)` | Base-TF, default buf=2 |
+//! | `ind.ema(9, 5)` | Base-TF, buf=5 |
+//! | `ind.ema(20, "H1")` | H1 timeframe, buf=2 |
+//! | `ind.ema(20, "H1", 3)` | H1 timeframe, buf=3 |
 //!
 //! 3rd arg is a **timeframe** if it is a quoted string (e.g. `"H1"`, `"M5"`),
 //! or a **buffer depth** if it is a number.
@@ -39,7 +42,9 @@
 //! - HTF bindings embed an inline aggregator: M1 bars accumulate until the
 //!   target TF bucket closes, then the indicator is updated. No external
 //!   resampler needed.
-//! - Script defines `entry` (bool), `exit` (bool), optional `tp` (f64), `sl` (f64).
+//! - Output variables (`entry`, `exit`, `tp`, `sl`, `strength`) are pre-pushed
+//!   into scope before each bar. Use plain assignment — `entry = true`, `tp = ...`
+//!   — rather than `let`, so values survive outside block scope.
 //! - Pre-registered helpers: `cross_above`, `cross_below`, `rising`, `falling`,
 //!   `in_range`, `abs`, `min`, `max`.
 
@@ -211,13 +216,11 @@ fn parse_timeframe(s: &str) -> Option<Timeframe> {
     }
 }
 
-/// Parse `let NAME = indicator("type", period [, tf_or_buf [, buf]]);`
-///
-/// 3rd arg: quoted string → TF, bare number → buf_depth.
-/// 4th arg (only valid when 3rd is TF): buf_depth.
+/// Parse an indicator declaration line. Accepts two forms:
+///   new: `let NAME = ind.TYPE(period [, tf_or_buf [, buf]]);`
+///   old: `let NAME = indicator("TYPE", period [, tf_or_buf [, buf]]);`
 fn try_parse_indicator_line(line: &str) -> Option<IndicatorDecl> {
-    let line = line.trim();
-    let line = line.split("//").next()?.trim();
+    let line = line.trim().split("//").next()?.trim();
     if line.is_empty() { return None; }
 
     let rest     = line.strip_prefix("let ")?.trim();
@@ -225,32 +228,39 @@ fn try_parse_indicator_line(line: &str) -> Option<IndicatorDecl> {
     let var_name = rest[..eq_pos].trim().to_string();
     if var_name.is_empty() { return None; }
 
-    let after_eq = rest[eq_pos + 1..].trim().trim_end_matches(';').trim();
-    let inner    = after_eq.strip_prefix("indicator(")?.trim_end_matches(')');
+    let rhs = rest[eq_pos + 1..].trim().trim_end_matches(';').trim();
 
-    let mut args = inner.splitn(4, ',');
+    // Extract (type_str, args_inner) from either syntax.
+    let (type_str, args_inner): (String, &str) = if let Some(after_dot) = rhs.strip_prefix("ind.") {
+        // new: ind.ema(9, "H1", 3)
+        let paren = after_dot.find('(')?;
+        let t = after_dot[..paren].trim().to_string();
+        if t.is_empty() { return None; }
+        let inner = after_dot[paren + 1..].trim_end_matches(')');
+        (t, inner)
+    } else if let Some(inner) = rhs.strip_prefix("indicator(") {
+        // old: indicator("ema", 9, "H1", 3)
+        let inner = inner.trim_end_matches(')');
+        let mut parts = inner.splitn(2, ',');
+        let t = parts.next()?.trim().trim_matches('"').trim_matches('\'').to_string();
+        if t.is_empty() { return None; }
+        (t, parts.next().unwrap_or(""))
+    } else {
+        return None;
+    };
 
-    let type_str: String = args.next()?
-        .trim()
-        .trim_matches('"')
-        .trim_matches('\'')
-        .to_string();
-    if type_str.is_empty() { return None; }
-
+    // Parse remaining args: period [, tf_or_buf [, buf]]
+    let mut args = args_inner.splitn(3, ',');
     let period: usize = args.next()?.trim().parse().ok()?;
 
-    // 3rd arg: TF string or buf_depth number
     let mut timeframe = None;
     let mut buf_depth = DEFAULT_BUF_DEPTH;
 
     if let Some(third) = args.next() {
-        let third     = third.trim();
-        let third_str = third.trim_matches('"').trim_matches('\'');
+        let third_str = third.trim().trim_matches('"').trim_matches('\'');
         if let Ok(n) = third_str.parse::<usize>() {
-            // Numeric → buf_depth (base-TF)
             buf_depth = n;
         } else {
-            // String → timeframe; 4th arg (if present) is buf_depth
             timeframe = parse_timeframe(third_str);
             if let Some(fourth) = args.next() {
                 buf_depth = fourth.trim().parse().unwrap_or(DEFAULT_BUF_DEPTH);
@@ -477,9 +487,6 @@ pub struct RhaiStrategy {
     bar_buf_depth:   usize,
     in_position:     bool,
     entry_price:     f64,
-    has_tp:          bool,
-    has_sl:          bool,
-    has_strength:    bool,
     plot_buf:        PlotBuf,
     /// `None` in live mode — plot() calls are silently flushed and discarded.
     series:          Option<HashMap<String, Vec<(i64, f64)>>>,
@@ -531,10 +538,6 @@ impl RhaiStrategy {
         let lookback = extract_max_lookback(&cleaned_script);
         if lookback > max_buf { max_buf = lookback; }
 
-        let has_tp       = cleaned_script.contains("let tp");
-        let has_sl       = cleaned_script.contains("let sl");
-        let has_strength = cleaned_script.contains("let strength");
-
         Ok(Self {
             engine,
             ast,
@@ -544,9 +547,6 @@ impl RhaiStrategy {
             bar_buf_depth: max_buf,
             in_position: false,
             entry_price: 0.0,
-            has_tp,
-            has_sl,
-            has_strength,
             plot_buf,
             series: if collect_series { Some(HashMap::new()) } else { None },
         })
@@ -610,6 +610,14 @@ impl Strategy for RhaiStrategy {
 
         scope.push("entry_price", self.entry_price);
         scope.push("in_position", self.in_position);
+        // Pre-push output vars so scripts can use plain assignment (entry = true)
+        // without `let`. Old-style `let entry = expr` at top level still works —
+        // the new binding shadows this one and is picked up by get_value.
+        scope.push("entry",    false);
+        scope.push("exit",     false);
+        scope.push("tp",       0.0_f64);
+        scope.push("sl",       0.0_f64);
+        scope.push("strength", 1.0_f64);
 
         if self.engine.run_ast_with_scope(&mut scope, &self.ast).is_err() {
             return vec![];
@@ -631,9 +639,9 @@ impl Strategy for RhaiStrategy {
                 self.in_position = true;
                 self.entry_price = bar.close;
 
-                let target   = if self.has_tp       { scope.get_value::<f64>("tp")       } else { None };
-                let stop     = if self.has_sl       { scope.get_value::<f64>("sl")       } else { None };
-                let strength = if self.has_strength { scope.get_value::<f64>("strength").unwrap_or(1.0).clamp(0.0, 1.0) } else { 1.0 };
+                let target   = scope.get_value::<f64>("tp").filter(|&v| v != 0.0);
+                let stop     = scope.get_value::<f64>("sl").filter(|&v| v != 0.0);
+                let strength = scope.get_value::<f64>("strength").unwrap_or(1.0).clamp(0.0, 1.0);
 
                 let mut sig = Signal::long(bar.timestamp, &bar.symbol, strength);
                 sig.price        = Some(bar.close);
@@ -719,31 +727,71 @@ mod tests {
     }
 
     const EMA_CROSS_SCRIPT: &str = r#"
-let ema9  = indicator("ema", 9);
-let ema21 = indicator("ema", 21);
-let rsi14 = indicator("rsi", 14);
+let ema9  = ind.ema(9);
+let ema21 = ind.ema(21);
+let rsi14 = ind.rsi(14);
 
-let entry = cross_above(ema9, ema21) && rsi14[0] < 70.0;
-let exit  = cross_below(ema9, ema21);
+if cross_above(ema9, ema21) && rsi14[0] < 70.0 { entry = true; }
+if cross_below(ema9, ema21) { exit = true; }
 "#;
 
     const ATR_TP_SL_SCRIPT: &str = r#"
-let ema20 = indicator("ema", 20);
-let atr14 = indicator("atr", 14);
+let ema20 = ind.ema(20);
+let atr14 = ind.atr(14);
 
-let entry = close[0] > ema20[0];
-let exit  = close[0] < ema20[0];
-let tp    = close[0] + atr14[0] * 2.0;
-let sl    = close[0] - atr14[0] * 1.5;
+if close[0] > ema20[0] {
+    entry = true;
+    tp    = close[0] + atr14[0] * 2.0;
+    sl    = close[0] - atr14[0] * 1.5;
+}
+if close[0] < ema20[0] { exit = true; }
 "#;
 
     const MTF_SCRIPT: &str = r#"
-let h1_ema20 = indicator("ema", 20, "H1");
-let m1_rsi5  = indicator("rsi", 5);
+let h1_ema20 = ind.ema(20, "H1");
+let m1_rsi5  = ind.rsi(5);
 
-let entry = rising(h1_ema20) && m1_rsi5[0] < 35.0;
-let exit  = falling(h1_ema20) || m1_rsi5[0] > 65.0;
+if rising(h1_ema20) && m1_rsi5[0] < 35.0 { entry = true; }
+if falling(h1_ema20) || m1_rsi5[0] > 65.0 { exit = true; }
 "#;
+
+    // ── ind.TYPE() new syntax ─────────────────────────────────────────────────
+
+    #[test]
+    fn parse_ind_dot_base_tf() {
+        let d = try_parse_indicator_line(r#"let ema9 = ind.ema(9);"#).unwrap();
+        assert_eq!(d.var_name, "ema9");
+        assert_eq!(d.ind_type, "ema");
+        assert_eq!(d.period, 9);
+        assert_eq!(d.buf_depth, DEFAULT_BUF_DEPTH);
+        assert_eq!(d.timeframe, None);
+    }
+
+    #[test]
+    fn parse_ind_dot_custom_buf() {
+        let d = try_parse_indicator_line(r#"let atr = ind.atr(14, 5);"#).unwrap();
+        assert_eq!(d.period, 14);
+        assert_eq!(d.buf_depth, 5);
+        assert_eq!(d.timeframe, None);
+    }
+
+    #[test]
+    fn parse_ind_dot_htf() {
+        let d = try_parse_indicator_line(r#"let h1_ema = ind.ema(20, "H1");"#).unwrap();
+        assert_eq!(d.var_name, "h1_ema");
+        assert_eq!(d.period, 20);
+        assert_eq!(d.timeframe, Some(Timeframe::H1));
+        assert_eq!(d.buf_depth, DEFAULT_BUF_DEPTH);
+    }
+
+    #[test]
+    fn parse_ind_dot_htf_custom_buf() {
+        let d = try_parse_indicator_line(r#"let x = ind.rsi(5, "M5", 3);"#).unwrap();
+        assert_eq!(d.timeframe, Some(Timeframe::M5));
+        assert_eq!(d.buf_depth, 3);
+    }
+
+    // ── legacy indicator() syntax — backward compat ───────────────────────────
 
     #[test]
     fn parse_base_tf() {
@@ -786,14 +834,25 @@ let exit  = falling(h1_ema20) || m1_rsi5[0] > 65.0;
     }
 
     #[test]
+    fn legacy_script_still_compiles() {
+        let script = r#"
+let ema9  = indicator("ema", 9);
+let ema21 = indicator("ema", 21);
+
+let entry = cross_above(ema9, ema21);
+let exit  = cross_below(ema9, ema21);
+"#;
+        RhaiStrategy::from_script(script).expect("legacy indicator() syntax must still compile");
+    }
+
+    #[test]
     fn compile_ema_cross() {
         RhaiStrategy::from_script(EMA_CROSS_SCRIPT).expect("should compile");
     }
 
     #[test]
     fn compile_atr_tp_sl() {
-        let s = RhaiStrategy::from_script(ATR_TP_SL_SCRIPT).unwrap();
-        assert!(s.has_tp && s.has_sl);
+        RhaiStrategy::from_script(ATR_TP_SL_SCRIPT).expect("should compile");
     }
 
     #[test]
@@ -870,10 +929,8 @@ let exit  = falling(h1_ema20) || m1_rsi5[0] > 65.0;
     #[test]
     fn plot_collects_series() {
         let script = r#"
-let ema9 = indicator("ema", 9);
+let ema9 = ind.ema(9);
 
-let entry = false;
-let exit  = false;
 plot("ema9", ema9[0]);
 "#;
         let mut s = RhaiStrategy::from_script(script).unwrap();
@@ -889,9 +946,8 @@ plot("ema9", ema9[0]);
     #[test]
     fn plot_live_mode_no_series() {
         let script = r#"
-let ema9 = indicator("ema", 9);
-let entry = false;
-let exit  = false;
+let ema9 = ind.ema(9);
+
 plot("ema9", ema9[0]);
 "#;
         let mut s = RhaiStrategy::from_script_live(script).unwrap();
@@ -902,9 +958,8 @@ plot("ema9", ema9[0]);
     #[test]
     fn plot_reset_clears_series() {
         let script = r#"
-let ema9 = indicator("ema", 9);
-let entry = false;
-let exit  = false;
+let ema9 = ind.ema(9);
+
 plot("ema9", ema9[0]);
 "#;
         let mut s = RhaiStrategy::from_script(script).unwrap();
@@ -944,9 +999,10 @@ plot("l", l);
     #[test]
     fn in_position_exposed_in_scope() {
         let script = r#"
-let ema9 = indicator("ema", 9);
-let entry = !in_position && ema9[0] > 0.0;
-let exit  = in_position && ema9[0] < 0.0;
+let ema9 = ind.ema(9);
+
+if !in_position && ema9[0] > 0.0 { entry = true; }
+if  in_position && ema9[0] < 0.0 { exit  = true; }
 "#;
         // Should compile and run without error
         let mut s = RhaiStrategy::from_script(script).unwrap();
@@ -998,14 +1054,13 @@ let exit  = s < 0.0;
     #[test]
     fn strength_read_from_scope() {
         let script = r#"
-let ema9  = indicator("ema", 9);
-let ema21 = indicator("ema", 21);
-let entry    = cross_above(ema9, ema21);
-let exit     = cross_below(ema9, ema21);
-let strength = 0.75;
+let ema9  = ind.ema(9);
+let ema21 = ind.ema(21);
+
+if cross_above(ema9, ema21) { entry = true; strength = 0.75; }
+if cross_below(ema9, ema21) { exit  = true; }
 "#;
         let mut s = RhaiStrategy::from_script(script).unwrap();
-        assert!(s.has_strength);
         let bars: Vec<Bar> = (0..60).map(make_bar).collect();
         for b in &bars {
             let sigs = s.on_bar(b);

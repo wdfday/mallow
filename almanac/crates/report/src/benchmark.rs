@@ -15,7 +15,17 @@ pub struct BuyHoldBenchmark {
 }
 
 impl BuyHoldBenchmark {
-    /// Compute B&H stats from a slice of close prices + timestamps (Unix ms).
+    /// Compute buy-and-hold statistics from a close-price series.
+    ///
+    /// - `closes` — bar close prices in chronological order (at least 2 required).
+    /// - `timestamps` — corresponding Unix millisecond timestamps; must be the same length as `closes`.
+    /// - `risk_free_annual` — annualised risk-free rate as a fraction (e.g. `0.05` = 5%),
+    ///   used for Sharpe and Sortino calculations.
+    ///
+    /// The annualization factor is derived empirically from timestamps so that the result
+    /// is correct for both daily-bar (US stocks) and minute-bar (crypto) inputs.
+    ///
+    /// Returns a zeroed struct when fewer than 2 prices are provided.
     pub fn compute(closes: &[f64], timestamps: &[i64], risk_free_annual: f64) -> Self {
         assert_eq!(closes.len(), timestamps.len());
         let n = closes.len();

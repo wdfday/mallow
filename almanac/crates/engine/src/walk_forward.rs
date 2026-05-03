@@ -109,7 +109,7 @@ pub struct WalkForwardResult {
     pub oos_equity_curve: Vec<EquityPoint>,
 }
 
-/// Run walk-forward validation on a pre-loaded bar slice.
+/// Run walk-forward validation on a preloaded bar slice.
 ///
 /// The engine is fully reset between windows (capital, strategy state, positions).
 /// No parameter optimization is performed — this tests strategy *consistency*.

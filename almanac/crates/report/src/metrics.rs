@@ -16,6 +16,9 @@ pub fn daily_returns(equity: &[f64]) -> Vec<f64> {
     bar_returns(equity)
 }
 
+/// Arithmetic mean of a slice.
+///
+/// Returns `0.0` when the slice is empty.
 pub fn mean(v: &[f64]) -> f64 {
     if v.is_empty() {
         return 0.0;
@@ -23,6 +26,10 @@ pub fn mean(v: &[f64]) -> f64 {
     v.iter().sum::<f64>() / v.len() as f64
 }
 
+/// Bessel-corrected (sample) standard deviation.
+///
+/// Formula: `sqrt(sum((x - mean)^2) / (n - 1))`.
+/// Returns `0.0` when fewer than 2 elements are present.
 pub fn std_dev(v: &[f64]) -> f64 {
     if v.len() < 2 {
         return 0.0;
@@ -117,6 +124,13 @@ pub fn sharpe_sortino(bar_returns: &[f64], risk_free_per_bar: f64, ann_factor: f
     (sharpe, sortino)
 }
 
+/// Maximum drawdown, its duration in bars, and the average drawdown over the equity curve.
+///
+/// Iterates once over `equity`, tracking the running peak.
+/// Returns `(max_drawdown_frac, max_dd_bars, avg_drawdown_frac)` where all drawdown
+/// values are fractional (e.g. `0.20` = 20% loss from peak).
+/// `max_dd_bars` is the number of bars from peak to the deepest trough.
+/// Returns `(0.0, 0, 0.0)` for an empty slice.
 pub fn drawdown_stats(equity: &[f64]) -> (f64, usize, f64) {
     if equity.is_empty() {
         return (0.0, 0, 0.0);
@@ -153,6 +167,15 @@ pub fn drawdown_stats(equity: &[f64]) -> (f64, usize, f64) {
     (max_dd, max_dd_bars, avg_dd)
 }
 
+/// Core trade statistics computed in a single pass over closed trades.
+///
+/// Returns `(win_rate, profit_factor, expectancy, avg_win_pct, avg_loss_pct)`:
+/// - `win_rate` — fraction of winning trades `[0, 1]`
+/// - `profit_factor` — `gross_profit / gross_loss` (currency); `INFINITY` when there are no losses, `0.0` when no trades
+/// - `expectancy` — `win_rate * avg_win_pct - loss_rate * avg_loss_pct` (both as fractions)
+/// - `avg_win_pct` / `avg_loss_pct` — mean `pnl_pct` of winners / losers (loss returned as positive)
+///
+/// Edge cases: empty slice → `(0.0, 0.0, 0.0, 0.0, 0.0)`. All wins → `profit_factor = INFINITY`.
 pub fn trade_stats(trades: &[Trade]) -> (f64, f64, f64, f64, f64) {
     if trades.is_empty() {
         return (0.0, 0.0, 0.0, 0.0, 0.0);
@@ -190,6 +213,10 @@ pub fn trade_stats(trades: &[Trade]) -> (f64, f64, f64, f64, f64) {
     (win_rate, profit_factor, expectancy, avg_win, avg_loss)
 }
 
+/// Longest unbroken streak of losing trades in sequence.
+///
+/// Scans trades in order; a win resets the counter.
+/// Returns `0` when there are no trades or no losing trades.
 pub fn max_consecutive_losses(trades: &[Trade]) -> usize {
     let mut max = 0usize;
     let mut current = 0usize;
@@ -204,6 +231,10 @@ pub fn max_consecutive_losses(trades: &[Trade]) -> usize {
     max
 }
 
+/// Longest unbroken streak of winning trades in sequence.
+///
+/// Scans trades in order; a loss resets the counter.
+/// Returns `0` when there are no trades or no winning trades.
 pub fn max_consecutive_wins(trades: &[Trade]) -> usize {
     let mut max = 0usize;
     let mut current = 0usize;
@@ -232,13 +263,22 @@ pub fn largest_win_loss(trades: &[Trade]) -> (f64, f64) {
 // ── Long / Short split ────────────────────────────────────────────────────────
 
 /// Per-direction trade statistics.
+///
+/// Produced by [`direction_stats`]. All `_pct` fields are raw fractions, not percentage points
+/// (e.g. `0.05` = 5%). `avg_loss_pct` is stored as a positive value.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DirectionStats {
+    /// Total number of trades in this direction.
     pub count: usize,
+    /// Fraction of trades that were winners `[0, 1]`.
     pub win_rate: f64,
+    /// Gross profit / gross loss; `INFINITY` when no losses; `0.0` when no trades.
     pub profit_factor: f64,
+    /// Mean `pnl_pct` of winning trades (positive fraction).
     pub avg_win_pct: f64,
+    /// Mean absolute `pnl_pct` of losing trades (positive fraction).
     pub avg_loss_pct: f64,
+    /// `win_rate * avg_win_pct - loss_rate * avg_loss_pct`.
     pub expectancy: f64,
 }
 
@@ -362,7 +402,11 @@ fn ts_to_year_month(ts_ms: i64) -> (i32, u32) {
 
 // ── PSR / DSR ─────────────────────────────────────────────────────────────────
 
-/// Sample skewness (moment-based, per-observation normalisation).
+/// Sample skewness of a return series (moment-based, per-observation normalisation).
+///
+/// Formula: `(1/n) * sum(((x - mean) / std)^3)`.
+/// Positive = right tail; negative = left tail (fat loss tail, common in leveraged strategies).
+/// Returns `0.0` when fewer than 3 elements or zero variance.
 pub fn skewness(v: &[f64]) -> f64 {
     if v.len() < 3 { return 0.0; }
     let m = mean(v);
@@ -372,7 +416,11 @@ pub fn skewness(v: &[f64]) -> f64 {
     v.iter().map(|x| ((x - m) / s).powi(3)).sum::<f64>() / n
 }
 
-/// Sample excess kurtosis (total kurtosis minus 3).
+/// Sample excess kurtosis (total kurtosis minus 3) of a return series.
+///
+/// Formula: `(1/n) * sum(((x - mean) / std)^4) - 3`.
+/// Normal distribution → `0`. Positive = heavier tails than normal (leptokurtic).
+/// Returns `0.0` when fewer than 4 elements or zero variance.
 pub fn excess_kurtosis(v: &[f64]) -> f64 {
     if v.len() < 4 { return 0.0; }
     let m = mean(v);
@@ -533,8 +581,12 @@ pub fn rolling_drawdown(equity: &[f64]) -> Vec<f64> {
 
 // ── Advanced scalar risk metrics ──────────────────────────────────────────────
 
-/// Value at Risk (95%) and Conditional VaR (CVaR/ES) from daily returns.
-/// Returns `(var_95, cvar_95)` as positive fractions.
+/// Value at Risk (95%) and Conditional VaR / Expected Shortfall (CVaR/ES) from bar returns.
+///
+/// Sorts the return series and reads the empirical 5th percentile for VaR.
+/// CVaR is the mean of the worst 5% tail.
+/// Returns `(var_95, cvar_95)` as positive fractions (e.g. `0.03` = 3% loss).
+/// Both values are clamped to `>= 0`; returns `(0.0, 0.0)` for an empty input.
 pub fn var_cvar_95(daily_returns: &[f64]) -> (f64, f64) {
     if daily_returns.is_empty() {
         return (0.0, 0.0);
@@ -559,8 +611,11 @@ pub fn var_cvar_95(daily_returns: &[f64]) -> (f64, f64) {
     (var_95.max(0.0), cvar_95.max(0.0))
 }
 
-/// Omega ratio: sum of gains / sum of losses above/below `threshold`.
-/// `threshold = 0.0` by default (absolute returns).
+/// Omega ratio: probability-weighted gains divided by probability-weighted losses relative to `threshold`.
+///
+/// Formula: `sum(max(r - threshold, 0)) / sum(max(threshold - r, 0))` over all bar returns.
+/// `threshold = 0.0` evaluates absolute profitability; values above `1.0` indicate a net-positive distribution.
+/// Returns `INFINITY` when there are no below-threshold returns; `0.0` for an empty input.
 pub fn omega_ratio(daily_returns: &[f64], threshold: f64) -> f64 {
     if daily_returns.is_empty() {
         return 0.0;
@@ -574,8 +629,11 @@ pub fn omega_ratio(daily_returns: &[f64], threshold: f64) -> f64 {
     }
 }
 
-/// Tail ratio: abs(95th percentile return) / abs(5th percentile return).
-/// Measures the ratio of right-tail gains to left-tail losses.
+/// Tail ratio: magnitude of right-tail gains relative to left-tail losses.
+///
+/// Formula: `|p95 return| / |p5 return|` over the sorted return series.
+/// Values above `1.0` mean the best days are larger than the worst days.
+/// Requires at least 20 data points; returns `0.0` otherwise or when `p5 ≈ 0`.
 pub fn tail_ratio(daily_returns: &[f64]) -> f64 {
     if daily_returns.len() < 20 {
         return 0.0;
@@ -590,7 +648,10 @@ pub fn tail_ratio(daily_returns: &[f64]) -> f64 {
     if p5 < f64::EPSILON { 0.0 } else { p95 / p5 }
 }
 
-/// Recovery factor: total_return / max_drawdown (both as raw fractions, not pct).
+/// Recovery factor: total return earned per unit of maximum drawdown risk taken.
+///
+/// Formula: `total_return / max_drawdown` where both are raw fractions (not percentage points).
+/// Higher is better. Returns `0.0` when `max_drawdown ≈ 0` (no drawdown ever occurred).
 pub fn recovery_factor(total_return: f64, max_drawdown: f64) -> f64 {
     if max_drawdown.abs() < f64::EPSILON {
         0.0
@@ -617,15 +678,22 @@ pub fn ulcer_index(equity: &[f64]) -> f64 {
     (sum_sq / n as f64).sqrt()
 }
 
-/// Serenity Ratio = CAGR% / Ulcer Index. Returns 0 when UI is zero.
+/// Serenity Ratio: CAGR relative to drawdown pain (Ulcer Index).
+///
+/// Formula: `cagr_pct / ulcer_index`. Higher is better; analogous to Sharpe but
+/// uses UI instead of standard deviation, making it more sensitive to prolonged drawdowns.
+/// Returns `0.0` when `ulcer_index ≈ 0` (equity never draws down).
 pub fn serenity_ratio(cagr_pct: f64, ui: f64) -> f64 {
     if ui < f64::EPSILON { 0.0 } else { cagr_pct / ui }
 }
 
-/// Kelly Criterion: fraction of capital to risk per trade.
+/// Kelly Criterion: optimal fraction of capital to risk per trade.
 ///
-/// k = W - (1-W)/R  where W = win_rate [0,1], R = avg_win_pct / avg_loss_pct (both positive).
-/// Clamped to [-1, 1]; negative means edge is against you.
+/// Formula: `k = W - (1 - W) / R`
+/// where `W` = win_rate `[0, 1]` and `R` = `avg_win_pct / avg_loss_pct` (both positive).
+/// Result is clamped to `[-1, 1]`. Negative `k` means the edge is against you.
+/// In practice, use half-Kelly (`k / 2`) to reduce variance.
+/// Returns `0.0` when either `avg_win_pct` or `avg_loss_pct` is zero.
 pub fn kelly_pct(win_rate: f64, avg_win_pct: f64, avg_loss_pct: f64) -> f64 {
     if avg_loss_pct.abs() < f64::EPSILON || avg_win_pct.abs() < f64::EPSILON {
         return 0.0;
@@ -634,32 +702,48 @@ pub fn kelly_pct(win_rate: f64, avg_win_pct: f64, avg_loss_pct: f64) -> f64 {
     (win_rate - (1.0 - win_rate) / r).clamp(-1.0, 1.0)
 }
 
-/// Trades per year given total trade count and backtest duration in years.
+/// Average trade frequency expressed as trades per calendar year.
+///
+/// Formula: `total_trades / duration_years`.
+/// Returns `0.0` when `duration_years ≈ 0`.
 pub fn trades_per_year(total_trades: usize, duration_years: f64) -> f64 {
     if duration_years < f64::EPSILON { 0.0 } else { total_trades as f64 / duration_years }
 }
 
-/// Payoff ratio: avg_win_pct / avg_loss_pct (both positive inputs).
-/// Returns 0 when avg_loss is zero (no losses).
+/// Payoff ratio: average winning return divided by average losing return.
+///
+/// Formula: `|avg_win_pct| / |avg_loss_pct|`. Both inputs should be positive.
+/// A ratio above `1.0` means winners are larger on average than losers.
+/// Returns `0.0` when `avg_loss_pct ≈ 0` (no losing trades).
 pub fn payoff_ratio(avg_win_pct: f64, avg_loss_pct: f64) -> f64 {
     if avg_loss_pct.abs() < f64::EPSILON { 0.0 } else { avg_win_pct.abs() / avg_loss_pct.abs() }
 }
 
-/// Breakeven win rate: the minimum win rate needed to be profitable given a payoff ratio.
-/// `breakeven = 1 / (1 + payoff_ratio)`.
+/// Minimum win rate needed to break even given a payoff ratio.
+///
+/// Formula: `1 / (1 + payoff_ratio) * 100` (result in percent, e.g. `33.3` means 33.3%).
+/// Use this alongside the actual win rate to judge how much margin of safety exists.
+/// Returns `0.0` when `payoff_ratio ≈ 0`.
 pub fn breakeven_win_rate(payoff_ratio: f64) -> f64 {
     if payoff_ratio < f64::EPSILON { 0.0 } else { 1.0 / (1.0 + payoff_ratio) * 100.0 }
 }
 
-/// Gross profit (sum of winning PnL in currency) and gross loss (sum of losing PnL in currency, positive).
+/// Total currency profit from all winning trades and total currency loss from all losing trades.
+///
+/// Returns `(gross_profit, gross_loss)` where `gross_loss` is expressed as a positive number.
+/// Both values are based on `trade.pnl` (not `pnl_pct`), so they are in the same currency unit
+/// as the backtest's initial capital.
 pub fn gross_profit_loss_usd(trades: &[Trade]) -> (f64, f64) {
     let gross_profit: f64 = trades.iter().filter(|t| t.is_winner()).map(|t| t.pnl).sum();
     let gross_loss: f64 = trades.iter().filter(|t| !t.is_winner()).map(|t| t.pnl.abs()).sum();
     (gross_profit, gross_loss)
 }
 
-/// Average bars held for winning vs losing trades.
+/// Average number of bars held for winning trades vs losing trades.
+///
 /// Returns `(avg_winners, avg_losers)`.
+/// Useful for detecting whether the strategy cuts losses quickly and lets winners run.
+/// Returns `0.0` for a group when no trades of that outcome exist.
 pub fn avg_bars_held_by_outcome(trades: &[Trade]) -> (f64, f64) {
     let winners: Vec<_> = trades.iter().filter(|t| t.is_winner()).collect();
     let losers: Vec<_> = trades.iter().filter(|t| !t.is_winner()).collect();
@@ -681,8 +765,10 @@ pub fn mfe_capture_ratio(trades: &[Trade]) -> f64 {
 
 /// Compound monthly returns into annual returns.
 ///
-/// Input: `(year, month 1-12, return_pct)`.
+/// Input: `monthly` — slice of `(year, month 1-12, return_pct)` as produced by [`monthly_returns`].
 /// Output: `(year, annual_return_pct)` sorted ascending by year.
+/// Compounding: each month's return is applied multiplicatively: `product((1 + r/100)) - 1`.
+/// Partial years (first/last calendar year) are included as-is.
 pub fn yearly_returns(monthly: &[(i32, u32, f64)]) -> Vec<(i32, f64)> {
     use std::collections::BTreeMap;
     let mut by_year: BTreeMap<i32, f64> = BTreeMap::new();

@@ -174,3 +174,29 @@ pub struct UnifiedDataResponse {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub missing: Vec<String>,
 }
+
+// ── Stream (POST /api/stream/:symbol) ────────────────────────────────────────
+
+/// Request body for `POST /api/stream/:symbol`.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct StreamRequest {
+    pub tf: Option<String>,
+    pub indicators: Option<Vec<IndicatorConfig>>,
+}
+
+/// SSE bar event — OHLCV bar plus the current value of every requested indicator.
+///
+/// `indicators` is keyed by label (or canonical key). Each value is a flat map of
+/// the indicator's output fields, e.g. `{"value": 94150.0}` for EMA or
+/// `{"upper": 94800.0, "mid": 94200.0, "lower": 93600.0}` for Bollinger Bands.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct BarStreamEvent {
+    pub t: i64,
+    pub o: f64,
+    pub h: f64,
+    pub l: f64,
+    pub c: f64,
+    pub v: f64,
+    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    pub indicators: HashMap<String, HashMap<String, f64>>,
+}

@@ -515,7 +515,62 @@ pub struct CelBacktestRequest {
     pub min_strength: Option<f64>,
     pub monte_carlo: Option<MonteCarloConfig>,
     pub walk_forward: Option<WalkForwardConfig>,
+    /// When set, auto-save the strategy + case + result under this name after a successful run.
+    pub save_as: Option<String>,
 }
+
+// CEL → canonical BacktestRequest. Lives here (not in `backtest.rs`)
+// so the conversion is a pure type transformation with no engine imports —
+// both the HTTP handler and library users can apply it without pulling the
+// whole runner into scope.
+
+impl From<CelBacktestRequest> for BacktestRequest {
+    fn from(req: CelBacktestRequest) -> Self {
+        let mut params = serde_json::Map::new();
+        params.insert("entry".into(), serde_json::json!(req.entry_expr));
+        params.insert("exit".into(), serde_json::json!(req.exit_expr));
+        if let Some(defs) = req.defines {
+            let obj: serde_json::Map<_, _> = defs
+                .into_iter()
+                .map(|(k, v)| (k, serde_json::json!(v)))
+                .collect();
+            params.insert("defines".into(), serde_json::Value::Object(obj));
+        }
+        if let Some(v) = req.candle_type {
+            params.insert("candle_type".into(), serde_json::json!(v));
+        }
+        if let Some(v) = req.ha_smooth {
+            params.insert("ha_smooth".into(), serde_json::json!(v));
+        }
+        if let Some(ref cfg) = req.exit {
+            crate::backtest::inject_atr_exit_into_cel_params(cfg, &mut params);
+        }
+        BacktestRequest {
+            strategy: "cel".into(),
+            symbol: req.symbol,
+            params: Some(Value::Object(params)),
+            exit: req.exit,
+            from: req.from,
+            to: req.to,
+            initial_capital: req.initial_capital,
+            commission_pct: req.commission_pct,
+            slippage_pct: req.slippage_pct,
+            risk_free_annual: req.risk_free_annual,
+            position_size_pct: req.position_size_pct,
+            position_size_usd: req.position_size_usd,
+            position_size_quantity: req.position_size_quantity,
+            max_positions: req.max_positions,
+            market_hours_only: req.market_hours_only,
+            data_source: req.data_source,
+            asset_type: req.asset_type,
+            timeframe: req.timeframe,
+            min_strength: req.min_strength,
+            monte_carlo: req.monte_carlo,
+            walk_forward: req.walk_forward,
+        }
+    }
+}
+
 
 // ── RhaiBacktestRequest ──────────────────────────────────────────────────────
 
@@ -547,6 +602,8 @@ pub struct RhaiBacktestRequest {
     pub timeframe: Option<String>,
     pub monte_carlo: Option<MonteCarloConfig>,
     pub walk_forward: Option<WalkForwardConfig>,
+    /// When set, auto-save the strategy + case + result under this name after a successful run.
+    pub save_as: Option<String>,
 }
 
 impl From<RhaiBacktestRequest> for BacktestRequest {
@@ -606,59 +663,6 @@ pub struct DynamicBacktestRequest {
 }
 */
 
-// ── Request conversions ──────────────────────────────────────────────────────
-//
-// CEL → canonical BacktestRequest. Lives here (not in `backtest.rs`)
-// so the conversion is a pure type transformation with no engine imports —
-// both the HTTP handler and library users can apply it without pulling the
-// whole runner into scope.
-
-impl From<CelBacktestRequest> for BacktestRequest {
-    fn from(req: CelBacktestRequest) -> Self {
-        let mut params = serde_json::Map::new();
-        params.insert("entry".into(), serde_json::json!(req.entry_expr));
-        params.insert("exit".into(), serde_json::json!(req.exit_expr));
-        if let Some(defs) = req.defines {
-            let obj: serde_json::Map<_, _> = defs
-                .into_iter()
-                .map(|(k, v)| (k, serde_json::json!(v)))
-                .collect();
-            params.insert("defines".into(), serde_json::Value::Object(obj));
-        }
-        if let Some(v) = req.candle_type {
-            params.insert("candle_type".into(), serde_json::json!(v));
-        }
-        if let Some(v) = req.ha_smooth {
-            params.insert("ha_smooth".into(), serde_json::json!(v));
-        }
-        if let Some(ref cfg) = req.exit {
-            crate::backtest::inject_atr_exit_into_cel_params(cfg, &mut params);
-        }
-        BacktestRequest {
-            strategy: "cel".into(),
-            symbol: req.symbol,
-            params: Some(Value::Object(params)),
-            exit: req.exit,
-            from: req.from,
-            to: req.to,
-            initial_capital: req.initial_capital,
-            commission_pct: req.commission_pct,
-            slippage_pct: req.slippage_pct,
-            risk_free_annual: req.risk_free_annual,
-            position_size_pct: req.position_size_pct,
-            position_size_usd: req.position_size_usd,
-            position_size_quantity: req.position_size_quantity,
-            max_positions: req.max_positions,
-            market_hours_only: req.market_hours_only,
-            data_source: req.data_source,
-            asset_type: req.asset_type,
-            timeframe: req.timeframe,
-            min_strength: req.min_strength,
-            monte_carlo: req.monte_carlo,
-            walk_forward: req.walk_forward,
-        }
-    }
-}
 
 // impl From<DynamicBacktestRequest> for BacktestRequest — DEPRECATED
 /*

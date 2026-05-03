@@ -40,11 +40,11 @@ fn rhai_ma_cross_vs_named() {
     let named_sigs = run_sigs(&mut named, &bars);
 
     let script = r#"
-let ema5  = indicator("ema", 5);
-let ema20 = indicator("ema", 20);
+let ema5  = ind.ema(5);
+let ema20 = ind.ema(20);
 
-let entry = cross_above(ema5, ema20);
-let exit  = cross_below(ema5, ema20);
+if cross_above(ema5, ema20) { entry = true; }
+if cross_below(ema5, ema20) { exit  = true; }
 "#;
     let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
     let rhai_sigs = run_sigs(rhai.as_mut(), &bars);
@@ -62,11 +62,11 @@ fn rhai_ma_cross_wide_periods_vs_named() {
     let named_sigs = run_sigs(&mut named, &bars);
 
     let script = r#"
-let ema10 = indicator("ema", 10);
-let ema50 = indicator("ema", 50);
+let ema10 = ind.ema(10);
+let ema50 = ind.ema(50);
 
-let entry = cross_above(ema10, ema50);
-let exit  = cross_below(ema10, ema50);
+if cross_above(ema10, ema50) { entry = true; }
+if cross_below(ema10, ema50) { exit  = true; }
 "#;
     let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
     let rhai_sigs = run_sigs(rhai.as_mut(), &bars);
@@ -87,10 +87,10 @@ fn rhai_rsi_vs_cel() {
 
     // buf_depth=1: only need current value (no prev) → same warmup as CEL rsi(14)
     let script = r#"
-let rsi14 = indicator("rsi", 14, 1);
+let rsi14 = ind.rsi(14, 1);
 
-let entry = rsi14[0] < 30.0;
-let exit  = rsi14[0] > 70.0;
+if rsi14[0] < 30.0 { entry = true; }
+if rsi14[0] > 70.0 { exit  = true; }
 "#;
     let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
     let rhai_sigs = run_sigs(rhai.as_mut(), &bars);
@@ -120,13 +120,15 @@ fn rhai_tp_sl_vs_cel() {
     let bars = dip_in_uptrend_bars();
 
     let rhai_script = r#"
-let ema20 = indicator("ema", 20);
-let atr14 = indicator("atr", 14);
+let ema20 = ind.ema(20);
+let atr14 = ind.atr(14);
 
-let entry = close[0] > ema20[0] && close[1] <= ema20[1];
-let exit  = close[0] < ema20[0];
-let tp    = close[0] + atr14[0] * 2.0;
-let sl    = close[0] - atr14[0] * 1.5;
+if close[0] > ema20[0] && close[1] <= ema20[1] {
+    entry = true;
+    tp    = close[0] + atr14[0] * 2.0;
+    sl    = close[0] - atr14[0] * 1.5;
+}
+if close[0] < ema20[0] { exit = true; }
 "#;
     let mut rhai = build_strategy("rhai", &json!({ "script": rhai_script })).unwrap();
     let rhai_full = run_full(rhai.as_mut(), &bars);
@@ -169,12 +171,14 @@ fn rhai_fixed_pct_tp_field_is_set() {
     let bars = rsi_bars(200);
 
     let script = r#"
-let rsi14 = indicator("rsi", 14);
+let rsi14 = ind.rsi(14);
 
-let entry = rsi14[0] < 30.0;
-let exit  = rsi14[0] > 70.0;
-let tp    = close[0] * 1.05;
-let sl    = close[0] * 0.97;
+if rsi14[0] < 30.0 {
+    entry = true;
+    tp    = close[0] * 1.05;
+    sl    = close[0] * 0.97;
+}
+if rsi14[0] > 70.0 { exit = true; }
 "#;
     let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
     let sigs = run_full(rhai.as_mut(), &bars);
@@ -198,11 +202,11 @@ let sl    = close[0] * 0.97;
 fn rhai_reset_parity() {
     let bars = trending_bars(300);
     let script = r#"
-let ema5  = indicator("ema", 5);
-let ema20 = indicator("ema", 20);
+let ema5  = ind.ema(5);
+let ema20 = ind.ema(20);
 
-let entry = cross_above(ema5, ema20);
-let exit  = cross_below(ema5, ema20);
+if cross_above(ema5, ema20) { entry = true; }
+if cross_below(ema5, ema20) { exit  = true; }
 "#;
     let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
 
@@ -219,13 +223,15 @@ let exit  = cross_below(ema5, ema20);
 fn rhai_reset_tp_sl_parity() {
     let bars = dip_in_uptrend_bars();
     let script = r#"
-let ema20 = indicator("ema", 20);
-let atr14 = indicator("atr", 14);
+let ema20 = ind.ema(20);
+let atr14 = ind.atr(14);
 
-let entry = close[0] > ema20[0] && close[1] <= ema20[1];
-let exit  = close[0] < ema20[0];
-let tp    = close[0] + atr14[0] * 2.0;
-let sl    = close[0] - atr14[0] * 1.5;
+if close[0] > ema20[0] && close[1] <= ema20[1] {
+    entry = true;
+    tp    = close[0] + atr14[0] * 2.0;
+    sl    = close[0] - atr14[0] * 1.5;
+}
+if close[0] < ema20[0] { exit = true; }
 "#;
     let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
 

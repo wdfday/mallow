@@ -61,7 +61,7 @@
 //!
 //! | Route                                  | Purpose                                         |
 //! |----------------------------------------|-------------------------------------------------|
-//! | `GET  /api/stream/:symbol`             | Live bar events for one symbol (event: "bar")   |
+//! | `POST /api/stream/:symbol`             | Bar + indicator events for one symbol (event: "bar") |
 //! | `GET  /api/stream/signals`             | All signal batches (event: "signal")            |
 //!
 //! # Cursor pagination

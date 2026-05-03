@@ -1,21 +1,62 @@
+dc := "docker compose -f ../deployment/docker-compose.yml"
+
+# List all recipes
 default:
     @just --list
 
-swagger:
-    swag init -g cmd/gateway/swagger.go --output docs
+# ── Local dev ─────────────────────────────────────────────────────────────────
 
-swagger-check:
-    swag init -g cmd/gateway/swagger.go --output /tmp/swag-check && diff docs/swagger.json /tmp/swag-check/swagger.json
+# Build binary
+build:
+    go build -o bin/gateway ./cmd/gateway/
 
-fmt:
-    gofmt -w $(rg --files cmd internal | rg '\.go$$')
+# Run locally (all upstreams default to localhost)
+run:
+    NATS_URL=nats://gateway:${NATS_PASS_GATEWAY:-gateway-dev}@localhost:4222 \
+    go run ./cmd/gateway/
 
+# Hot-reload with air
+dev:
+    NATS_URL=nats://gateway:${NATS_PASS_GATEWAY:-gateway-dev}@localhost:4222 \
+    ~/.go/bin/air
+
+# Run tests
 test:
     go test ./...
 
-run:
-    NATS_URL=nats://gateway:${NATS_PASS_GATEWAY:-gateway-dev}@localhost:4222 go run ./cmd/gateway/
+# Format source files
+fmt:
+    gofmt -w $(rg --files cmd internal | rg '\.go$')
 
-dev:
-    NATS_URL=nats://gateway:${NATS_PASS_GATEWAY:-gateway-dev}@localhost:4222 \
-        ~/.go/bin/air
+# ── Swagger ───────────────────────────────────────────────────────────────────
+
+# Regenerate swagger docs
+swagger:
+    swag init -g cmd/gateway/swagger.go --output docs
+
+# Verify committed swagger docs are up to date
+swagger-check:
+    swag init -g cmd/gateway/swagger.go --output /tmp/swag-check
+    diff docs/swagger.json /tmp/swag-check/swagger.json
+
+# ── Docker (deployment compose) ───────────────────────────────────────────────
+
+# Build + start gateway container
+up:
+    {{dc}} up -d --build gateway
+
+# Start gateway without rebuild
+start:
+    {{dc}} up -d gateway
+
+# Stop all containers
+down:
+    {{dc}} down
+
+# Tail gateway logs
+logs:
+    {{dc}} logs -f gateway
+
+# Restart gateway
+restart:
+    {{dc}} restart gateway

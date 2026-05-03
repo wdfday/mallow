@@ -14,8 +14,7 @@ import (
 type Handler struct {
 	NC         *nats.Conn
 	Strategist *service.StrategistClient
-	// LogbookURL is the base URL of the Rust logbook HTTP API (e.g. http://logbook:3000).
-	LogbookURL string
+	HeraldURL  string
 }
 
 func (h *Handler) SwaggerIndex(c *gin.Context) {
@@ -160,11 +159,11 @@ func (h *Handler) SwaggerIndex(c *gin.Context) {
         </div>
       </article>
       <article class="card">
-        <p class="eyebrow">Logbook (Rust Backtesting)</p>
-        <h2>Strategy backtesting &amp; data</h2>
-        <p>69+ strategies, 39 indicators. <code>POST /api/backtest</code> — run backtest. <code>POST /api/indicator</code> — compute indicator series. <code>GET /api/symbols</code> — available data. <code>GET /api/data/{symbol}</code> — OHLCV bars.</p>
+        <p class="eyebrow">Herald (Rust Signal Engine)</p>
+        <h2>Backtesting, signals &amp; data</h2>
+        <p>80+ strategies, 66 indicators. <code>POST /api/backtest</code> — run backtest. <code>GET /api/symbols</code> — available data. <code>GET /api/data/{symbol}</code> — OHLCV bars. <code>GET /api/stream/{symbol}</code> — SSE bar stream.</p>
         <div class="actions">
-          <a class="button" href="/swagger/logbook">Open Swagger UI</a>
+          <a class="button" href="/swagger/herald">Open Swagger UI</a>
           <a class="link" href="/api/strategies">List strategies</a>
           <a class="link" href="/api/symbols">List symbols</a>
         </div>
@@ -190,122 +189,6 @@ func (h *Handler) SwaggerIndex(c *gin.Context) {
 </body>
 </html>`))
 }
-
-// ── Strategies ──────────────────────────────────────────────────────
-
-// StrategyInfo describes one available backtest strategy.
-type StrategyInfo struct {
-	Name     string            `json:"name"`
-	Category string            `json:"category"`
-	Params   map[string]string `json:"params,omitempty"` // param_name → type hint
-}
-
-var allStrategies = []StrategyInfo{
-	// MA / Trend
-	{"ma_crossover", "trend", map[string]string{"fast": "int", "slow": "int"}},
-	{"dema_crossover", "trend", map[string]string{"fast": "int", "slow": "int"}},
-	{"hma_crossover", "trend", map[string]string{"fast": "int", "slow": "int"}},
-	{"tema_crossover", "trend", map[string]string{"fast": "int", "slow": "int"}},
-	{"gmma_crossover", "trend", nil},
-	{"triple_ema", "trend", map[string]string{"fast": "int", "mid": "int", "slow": "int"}},
-	{"trend_follower", "trend", map[string]string{"period": "int", "adx_threshold": "float"}},
-	{"trend_transition", "trend", nil},
-	{"ma_pullback", "trend", map[string]string{"period": "int"}},
-	// Momentum / Oscillator
-	{"rsi_mean_rev", "momentum", map[string]string{"period": "int", "oversold": "float", "overbought": "float"}},
-	{"stochastic_crossover", "momentum", map[string]string{"k_period": "int", "d_period": "int", "oversold": "float", "overbought": "float"}},
-	{"stochastic_dk", "momentum", map[string]string{"k_period": "int", "d_period": "int"}},
-	{"cci_reversal", "momentum", map[string]string{"period": "int", "threshold": "float"}},
-	{"roc", "momentum", map[string]string{"period": "int"}},
-	{"trix", "momentum", map[string]string{"period": "int", "signal": "int"}},
-	{"tsi", "momentum", map[string]string{"first": "int", "second": "int"}},
-	{"kama", "momentum", map[string]string{"er_period": "int"}},
-	{"stoch_rsi", "momentum", map[string]string{"rsi_period": "int"}},
-	{"connors_rsi", "momentum", map[string]string{"rsi_period": "int", "streak_period": "int", "rank_period": "int"}},
-	{"kdj", "momentum", map[string]string{"period": "int", "oversold": "float", "overbought": "float"}},
-	{"ao", "momentum", map[string]string{"fast": "int", "slow": "int"}},
-	{"momentum_roc", "momentum", map[string]string{"period": "int"}},
-	{"dual_momentum", "momentum", map[string]string{"fast": "int", "slow": "int"}},
-	// Volatility / Breakout
-	{"bb_squeeze", "volatility", nil},
-	{"bb_keltner_squeeze", "volatility", nil},
-	{"keltner_breakout", "volatility", map[string]string{"period": "int", "multiplier": "float"}},
-	{"volatility_ratio_breakout", "volatility", map[string]string{"lookback": "int"}},
-	{"volatility_squeezer", "volatility", nil},
-	{"volatility_vanguard", "volatility", nil},
-	{"donchian_breakout", "volatility", map[string]string{"period": "int"}},
-	{"highest_breakout", "volatility", map[string]string{"period": "int"}},
-	{"chandelier_exit", "volatility", map[string]string{"period": "int", "multiplier": "float"}},
-	// Reversal / Mean Reversion
-	{"mean_reversion", "reversal", map[string]string{"period": "int", "multiplier": "float"}},
-	{"reversal_catcher", "reversal", nil},
-	{"mfi_revert", "reversal", map[string]string{"period": "int", "oversold": "float"}},
-	{"range_rover", "reversal", nil},
-	{"heiken_ashi_color", "reversal", nil},
-	{"heiken_ashi_harmonizer", "reversal", nil},
-	// Composite
-	{"macd_crossover", "composite", map[string]string{"fast": "int", "slow": "int", "signal": "int"}},
-	{"macd_ma", "composite", map[string]string{"fast": "int", "slow": "int", "signal": "int", "ma_period": "int"}},
-	{"bollinger_macd", "composite", nil},
-	{"dmi_adx", "composite", map[string]string{"period": "int", "adx_threshold": "float"}},
-	{"oscillator_overlord", "composite", nil},
-	{"swing_trader", "composite", nil},
-	{"equilibrium_explorer", "composite", nil},
-	{"waddah_attar", "composite", nil},
-	{"wolfstein", "composite", nil},
-	{"supertrend", "composite", map[string]string{"period": "int", "multiplier": "float"}},
-	{"supertrend_macd", "composite", map[string]string{"period": "int", "multiplier": "float"}},
-	{"chop_filter", "composite", map[string]string{"chop_period": "int", "chop_threshold": "float"}},
-	// Special / Session
-	{"orb_breakout", "session", map[string]string{"session_gap_ms": "int"}},
-	{"vwap_bounce", "session", nil},
-	{"vwap_trend", "session", nil},
-	{"scalping_ema", "session", map[string]string{"fast": "int", "slow": "int"}},
-	{"atr_trailing", "session", map[string]string{"ema_period": "int", "atr_period": "int", "atr_multiplier": "float"}},
-	{"elder_ray", "session", map[string]string{"period": "int"}},
-	{"aroon_trend", "session", map[string]string{"period": "int"}},
-	{"rwi", "session", map[string]string{"period": "int"}},
-	{"alligator", "session", nil},
-	{"mfi_trend", "session", map[string]string{"period": "int", "threshold": "float"}},
-	{"parabolic_sar", "session", map[string]string{"step": "float", "max": "float"}},
-	{"heiken_ashi_breakout", "session", nil},
-	{"ichimoku_cloud", "session", nil},
-	{"ichimoku_cross", "session", nil},
-	{"price_action_swing", "session", nil},
-	{"pixel_3", "session", map[string]string{"short": "int", "medium": "int", "long": "int"}},
-	// Expression-based
-	{"cel", "expression", map[string]string{"entry": "string", "exit": "string"}},
-	{"dynamic", "expression", nil},
-}
-
-// ListStrategies godoc
-//
-// @Summary      List available strategies
-// @Description  Returns all 57+ backtest strategies. Use ?category= to filter.
-// @Tags         Backtest
-// @Security     BearerAuth
-// @Produce      json
-// @Param        category  query     string  false  "trend | momentum | volatility | reversal | composite | session | expression"
-// @Success      200       {object}  map[string]interface{}  "strategies array + total count"
-// @Router       /api/strategies [get]
-func (h *Handler) ListStrategies(c *gin.Context) {
-	category := c.Query("category")
-	if category == "" {
-		c.JSON(http.StatusOK, gin.H{"strategies": allStrategies, "total": len(allStrategies)})
-		return
-	}
-	filtered := make([]StrategyInfo, 0)
-	for _, s := range allStrategies {
-		if s.Category == category {
-			filtered = append(filtered, s)
-		}
-	}
-	c.JSON(http.StatusOK, gin.H{"strategies": filtered, "total": len(filtered)})
-}
-
-// ── Backtest ────────────────────────────────────────────────────────
-// POST /api/backtest and POST /api/indicator are fully proxied to logbook.
-// Schema: see logbook Swagger UI at /swagger/logbook
 
 // ── Chat (Strategist AI) ────────────────────────────────────────────
 
@@ -421,20 +304,19 @@ func (h *Handler) ChatStream(c *gin.Context) {
 func (h *Handler) Health(c *gin.Context) {
 	natsOK := h.NC != nil && h.NC.IsConnected()
 
-	// Probe logbook /health endpoint.
-	logbookOK := false
-	if resp, err := http.Get(h.LogbookURL + "/health"); err == nil {
-		logbookOK = resp.StatusCode == http.StatusOK
+	heraldOK := false
+	if resp, err := http.Get(h.HeraldURL + "/health"); err == nil {
+		heraldOK = resp.StatusCode == http.StatusOK
 		resp.Body.Close()
 	}
 
 	status := "ok"
-	if !natsOK || !logbookOK {
+	if !natsOK || !heraldOK {
 		status = "degraded"
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"status":  status,
-		"nats":    natsOK,
-		"logbook": logbookOK,
+		"status": status,
+		"nats":   natsOK,
+		"herald": heraldOK,
 	})
 }

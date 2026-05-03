@@ -1,6 +1,9 @@
 package config
 
-import "os"
+import (
+	"os"
+	"strings"
+)
 
 type Config struct {
 	Port            string
@@ -14,9 +17,10 @@ type Config struct {
 	IdentityURL     string
 	InvestmentURL   string
 	OrchestratorURL string
-	LogbookURL      string
+	HeraldURL       string
 	RedisURL        string
 	ServiceSecret   string
+	CORSOrigins     []string
 }
 
 func Load() Config {
@@ -32,9 +36,10 @@ func Load() Config {
 		IdentityURL:     envOr("IDENTITY_URL", "http://localhost:8082"),
 		InvestmentURL:   envOr("INVESTMENT_URL", "http://localhost:8083"),
 		OrchestratorURL: envOr("ORCHESTRATOR_URL", "http://localhost:8084"),
-		LogbookURL:      envOr("LOGBOOK_URL", "http://localhost:8085"),
+		HeraldURL:       envOr("HERALD_URL", "http://localhost:8090"),
 		RedisURL:        envOr("REDIS_URL", "redis://localhost:6379"),
 		ServiceSecret:   envOr("SERVICE_SECRET", ""),
+		CORSOrigins:     splitCSV(envOr("CORS_ORIGINS", "https://forge.m4llow.com,http://localhost:5173,http://localhost:8080")),
 	}
 }
 
@@ -43,4 +48,15 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func splitCSV(s string) []string {
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

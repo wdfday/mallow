@@ -149,11 +149,11 @@ func proxyWS(c *gin.Context, target *url.URL, path string) {
 	<-errc
 }
 
-// LogbookProxy proxies requests to the Rust logbook service.
-// No path rewriting — logbook mounts SwaggerUI at /swagger/logbook so all
+// HeraldProxy proxies requests to the Rust herald service.
+// No path rewriting — herald mounts SwaggerUI at /swagger/logbook so all
 // gateway paths match the upstream paths directly.
-func LogbookProxy(logbookURL string) gin.HandlerFunc {
-	return newProxy(logbookURL)
+func HeraldProxy(heraldURL string) gin.HandlerFunc {
+	return newProxy(heraldURL)
 }
 
 func newProxy(rawURL string, rewritePath ...func(string) string) gin.HandlerFunc {
@@ -162,6 +162,7 @@ func newProxy(rawURL string, rewritePath ...func(string) string) gin.HandlerFunc
 		panic("invalid proxy URL: " + rawURL + ": " + err.Error())
 	}
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.ModifyResponse = stripUpstreamCORS
 	var rewrite func(string) string
 	if len(rewritePath) > 0 {
 		rewrite = rewritePath[0]
@@ -173,4 +174,13 @@ func newProxy(rawURL string, rewritePath ...func(string) string) gin.HandlerFunc
 		}
 		proxy.ServeHTTP(c.Writer, c.Request)
 	}
+}
+
+func stripUpstreamCORS(resp *http.Response) error {
+	resp.Header.Del("Access-Control-Allow-Origin")
+	resp.Header.Del("Access-Control-Allow-Credentials")
+	resp.Header.Del("Access-Control-Allow-Methods")
+	resp.Header.Del("Access-Control-Allow-Headers")
+	resp.Header.Del("Access-Control-Max-Age")
+	return nil
 }

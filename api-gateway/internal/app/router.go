@@ -22,7 +22,7 @@ func buildRouter(cfg config.Config, h *handler.Handler, rdb *redis.Client, ident
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(pkgtelemetry.GinMiddleware("gateway"))
-	r.Use(middleware.CORS())
+	r.Use(middleware.CORS(cfg.CORSOrigins))
 	r.Use(middleware.RateLimiter(200)) // 200 req/min per IP
 
 	// ── Proxies ─────────────────────────────────────────────────────────
@@ -30,7 +30,7 @@ func buildRouter(cfg config.Config, h *handler.Handler, rdb *redis.Client, ident
 	investmentProxy := handler.InvestmentProxy(cfg.InvestmentURL)
 	orchestratorProxy := handler.OrchestratorProxy(cfg.OrchestratorURL)
 	strategistProxy := handler.StrategistProxy(cfg.StrategistURL)
-	logbookProxy := handler.LogbookProxy(cfg.LogbookURL)
+	heraldProxy := handler.HeraldProxy(cfg.HeraldURL)
 
 	// ── JWT middleware ───────────────────────────────────────────────────
 	cacheTTL, err := time.ParseDuration(cfg.JWKSCacheTTL)
@@ -56,10 +56,11 @@ func buildRouter(cfg config.Config, h *handler.Handler, rdb *redis.Client, ident
 	r.GET("/docs", h.SwaggerIndex)
 	r.GET("/swagger/gateway/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 
-	// Logbook swagger UI — public (utoipa HTML + assets at /swagger/logbook/*, spec at /api-doc/openapi.json)
-	r.GET("/swagger/logbook", logbookProxy)
-	r.GET("/swagger/logbook/*any", logbookProxy)
-	r.GET("/api-doc/openapi.json", logbookProxy)
+	// Herald swagger UI — public (utoipa HTML + assets at /swagger/herald/*, spec at /api-doc/openapi.json)
+	r.GET("/swagger/herald", heraldProxy)
+	r.GET("/swagger/herald/*any", heraldProxy)
+	r.GET("/api-doc/openapi.json", heraldProxy)
+	r.GET("/api-doc/openapi.yaml", heraldProxy)
 
 	// Identity: public auth + swagger routes (no JWT required)
 	r.Any("/api/v1/auth/*path", identityProxy)
@@ -74,26 +75,34 @@ func buildRouter(cfg config.Config, h *handler.Handler, rdb *redis.Client, ident
 	r.Any("/api/v1/orchestrator/*path", jwtAuth, injectHeaders, orchestratorProxy)
 	r.Any("/api/v1/strategist/*path", jwtAuth, injectHeaders, strategistProxy)
 
-	// Orchestrator swagger emits /api/* paths — keep protected aliases for docs-driven testing
-	r.Any("/api/orchestrators", jwtAuth, injectHeaders, orchestratorProxy)
-	r.Any("/api/orchestrators/*path", jwtAuth, injectHeaders, orchestratorProxy)
-	r.Any("/api/bots", jwtAuth, injectHeaders, orchestratorProxy)
-	r.Any("/api/bots/*path", jwtAuth, injectHeaders, orchestratorProxy)
-	r.Any("/api/signal-engine/*path", jwtAuth, injectHeaders, orchestratorProxy)
-
-	// Gateway-native protected endpoints
+	// Protected endpoints
 	api := r.Group("/api", jwtAuth, injectHeaders)
 	{
-		api.GET("/strategies", h.ListStrategies)
-		// Backtest + indicator: fully proxied to logbook (no gateway logic)
-		api.POST("/backtest", logbookProxy)
-		api.POST("/indicator", logbookProxy)
+		// Chat (gateway-native: injects user_id into strategist session)
 		api.POST("/chat", h.Chat)
 		api.POST("/chat/stream", h.ChatStream)
 
-		// Logbook data endpoints
-		api.GET("/symbols", logbookProxy)
-		api.GET("/data/:symbol", logbookProxy)
+		// Herald — data
+		api.GET("/symbols", heraldProxy)
+		api.GET("/indicators", heraldProxy)
+		api.GET("/data/:symbol", heraldProxy)
+		api.GET("/data/:symbol/latest", heraldProxy)
+		api.POST("/data/:symbol", heraldProxy)
+		api.POST("/data/duckdb", heraldProxy)
+
+		// Herald — backtest
+		api.GET("/strategies", heraldProxy)
+		api.POST("/backtest", heraldProxy)
+		api.POST("/backtest/cel", heraldProxy)
+		api.POST("/backtest/rhai", heraldProxy)
+
+		// Herald — SSE streams
+		api.GET("/stream/signals", heraldProxy)
+		api.GET("/stream/:symbol", heraldProxy)
+
+		// Herald — store + watch (admin)
+		api.Any("/store/*path", heraldProxy)
+		api.Any("/watch", heraldProxy)
 	}
 
 	// Identity catch-all: /api/v1/* not matched above — Gin cannot mix catch-all

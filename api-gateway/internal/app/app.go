@@ -59,7 +59,7 @@ func Run(ctx context.Context) {
 	h := &handler.Handler{
 		NC:         nc,
 		Strategist: service.NewStrategistClient(cfg.StrategistURL),
-		LogbookURL: cfg.LogbookURL,
+		HeraldURL:  cfg.HeraldURL,
 	}
 	identityClient := service.NewIdentityClient(cfg.IdentityURL, cfg.ServiceSecret)
 	r := buildRouter(cfg, h, rdb, identityClient)

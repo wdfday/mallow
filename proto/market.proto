@@ -2,11 +2,14 @@
 // Single source of truth for inter-service communication via NATS.
 //
 // NATS subjects:
-//   ticks.{class}.{symbol}  ← stream-data → orchestrator (raw ticks)
-//   bars.{symbol}           ← orchestrator → signal-engine (aggregated bars)
-//   signals.{symbol}        ← signal-engine → orchestrator
-//   engine.configure        ← orchestrator → signal-engine
-//   engine.reset            ← orchestrator → signal-engine
+//   ticks.{symbol}      ← exchange WebSocket → helm (raw ticks)
+//   bars.{symbol}       ← herald → helm (aggregated OHLCV bars)
+//   signals             ← herald → helm (SignalResponse, hand_id+helm_id in payload)
+//   engine.configure    ← helm → herald (legacy global config)
+//   engine.reset        ← helm → herald
+//   engine.register     ← helm → herald (req/rep)
+//   engine.deregister   ← helm → herald (req/rep)
+//   engine.list         ← helm → herald (req/rep → HandListResponse)
 
 syntax = "proto3";
 package market;
@@ -49,22 +52,28 @@ message SignalMsg {
   optional double price        = 9;  // bar.close at signal time (entry reference price)
 
   // Optional pattern metadata (populated by pattern_breakout strategy)
-  optional double target_price = 5;  // projected price target
-  optional double stop_price   = 6;  // invalidation stop level
+  optional double target_price = 5;  // projected price target (or offset from price if is_offset=true)
+  optional double stop_price   = 6;  // invalidation stop level (or offset from price if is_offset=true)
   optional string pattern_kind = 7;  // e.g. "bull_flag", "ascending_triangle"
   optional double confidence   = 8;  // pattern confidence [0.0, 1.0]
+
+  // If true, target_price and stop_price are deltas from the price field
+  // (e.g. target_price=+3.0, stop_price=-1.0).
+  // Helm computes actual levels as: fill_price + target_price / fill_price + stop_price.
+  // If false (default), target_price and stop_price are absolute price levels.
+  optional bool   is_offset    = 15;
 }
 
 message SignalResponse {
   repeated SignalMsg signals = 1;
-  string orch_id = 2;  // owning orchestrator — used for routing on the consumer side
-  string bot_id  = 3;  // target bot
+  string helm_id = 2;  // owning helm — used for routing on the consumer side
+  string hand_id = 3;  // target hand
 }
 
 // ── Engine Control ──────────────────────────────────────────────────
 
 message ConfigMsg {
-  string strategy          = 1;  // "ma_crossover" | "rsi_mean_rev" | ...
+  string strategy            = 1;  // "ma_crossover" | "rsi_mean_rev" | ...
   map<string, double> params = 2;  // strategy parameters
 }
 
@@ -72,44 +81,44 @@ message ResetMsg {
   string symbol = 1;  // empty = reset all
 }
 
-// ── Bot Registry ─────────────────────────────────────────────────────
-// NATS subjects:
-//   engine.register    ← gateway/orchestrator → signal-engine
-//   engine.deregister  ← gateway/orchestrator → signal-engine
-//   engine.list        ← request/reply — returns BotListResponse
+// ── Hand Registry ────────────────────────────────────────────────────
+// NATS subjects (req/rep):
+//   engine.register    ← helm → herald
+//   engine.deregister  ← helm → herald
+//   engine.list        ← helm → herald → HandListResponse
 
 message RegisterMsg {
-  string bot_id      = 1;  // unique bot identifier (e.g. "bot_ema_btc_001")
+  string hand_id     = 1;  // unique hand identifier (e.g. "hand_ema_btc_001")
   string symbol      = 2;  // e.g. "BTCUSDT"
   string strategy    = 3;  // "ma_crossover" | "rsi_mean_rev" | ...
   string params_json = 4;  // flat JSON params: {"fast": 20, "slow": 50}
 
-  // Temporary bot fields (optional — omit for permanent bots)
+  // Temporary hand fields (optional — omit for permanent hands)
   optional int64  expires_at_ms = 5;  // Unix ms TTL; auto-deregister after
   optional double target_price  = 6;  // auto-close when price hits target
   optional double stop_price    = 7;  // auto-close when price hits stop
   optional int32  max_bars      = 8;  // auto-expire after N bars
   optional string pattern_kind  = 9;  // originating pattern e.g. "bull_flag"
 
-  string orch_id = 10;  // owning orchestrator — used to build signal subject signals.{orch_id}.{bot_id}
+  string helm_id = 10;  // owning helm — used for routing in SignalResponse
 
-  // Timeframe the bot operates at (e.g. "M1", "H1", "D1").
+  // Timeframe the hand operates at (e.g. "M1", "H1", "D1").
   // Herald aggregates incoming M1 bars to this TF before running the strategy.
   // Empty = use herald's base TF (default M1).
   optional string timeframe = 11;
 }
 
 message DeregisterMsg {
-  string bot_id = 1;  // bot to remove; empty = remove all
+  string hand_id = 1;  // hand to remove; empty = remove all
 }
 
-message BotInfo {
-  string bot_id      = 1;
+message HandInfo {
+  string hand_id     = 1;
   string symbol      = 2;
   string strategy    = 3;
   string params_json = 4;
 }
 
-message BotListResponse {
-  repeated BotInfo bots = 1;
+message HandListResponse {
+  repeated HandInfo hands = 1;
 }

@@ -33,12 +33,12 @@ services:
     command: ["-c", "/etc/nats/nats-server.conf"]
     environment:
       NATS_PASS_SIGNAL_ENGINE: ${NATS_PASS_SIGNAL_ENGINE:-signal-engine-dev}
-      NATS_PASS_ORCHESTRATOR:  ${NATS_PASS_ORCHESTRATOR:-orchestrator-dev}
-      NATS_PASS_INVESTMENT:    ${NATS_PASS_INVESTMENT:-investment-dev}
-      NATS_PASS_STRATEGIST:    ${NATS_PASS_STRATEGIST:-strategist-dev}
-      NATS_PASS_GATEWAY:       ${NATS_PASS_GATEWAY:-gateway-dev}
-      NATS_PASS_IDENTITY:      ${NATS_PASS_IDENTITY:-identity-dev}
-      NATS_PASS_SURVEYOR:      ${NATS_PASS_SURVEYOR:-surveyor-dev}
+      NATS_PASS_HELM: ${NATS_PASS_HELM:-helm-dev}
+      NATS_PASS_INVESTMENT: ${NATS_PASS_INVESTMENT:-investment-dev}
+      NATS_PASS_STRATEGIST: ${NATS_PASS_STRATEGIST:-strategist-dev}
+      NATS_PASS_GATEWAY: ${NATS_PASS_GATEWAY:-gateway-dev}
+      NATS_PASS_IDENTITY: ${NATS_PASS_IDENTITY:-identity-dev}
+      NATS_PASS_SURVEYOR: ${NATS_PASS_SURVEYOR:-surveyor-dev}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8222/healthz"]
@@ -84,6 +84,14 @@ services:
       timeout: 3s
       retries: 3
     restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    command: tunnel run mallow-api
+    restart: unless-stopped
+    volumes:
+      - /Users/Giap/.cloudflared:/etc/cloudflared
 
   # ═══════════════════════════════════════════════════════════════════
   # Identity service
@@ -139,11 +147,11 @@ services:
   herald:
     build:
       context: ../almanac
-      dockerfile: Dockerfile.herald
+      dockerfile: Dockerfile
       additional_contexts:
         # proto/ lives outside the almanac crate; surface it as a named
         # build context so alm-core's build.rs can find market.proto at
-        # /proto inside the builder. See Dockerfile.herald + build.rs.
+        # /proto inside the builder. See Dockerfile + build.rs.
         proto: ../proto
     image: herald:latest
     container_name: herald
@@ -155,12 +163,15 @@ services:
     environment:
       NATS_URL: nats://signal_engine:${NATS_PASS_SIGNAL_ENGINE:-signal-engine-dev}@nats:4222
       HERALD_HTTP_ADDR: "0.0.0.0:8090"
-      HERALD_DATA_DIR: /data/hist
+      HERALD_DATA_DIR: /data
       HERALD_MAX_BACKTESTS: ${HERALD_MAX_BACKTESTS:-4}
+      HERALD_WARM_DAYS: ${HERALD_WARM_DAYS:-5}
       HERALD_SYMBOLS_FILE: /config/symbols.yaml
-      RUST_LOG: ${HERALD_RUST_LOG:-herald=info,alm_ledger=info}
+      RUST_LOG: ${HERALD_RUST_LOG:-alm_herald=info,alm_ledger=info}
     volumes:
-      - ../hist-data/data:/data/hist:ro
+      # Parquet files live at mallow/data/ on the host;
+      # mount at /data so HERALD_DATA_DIR=/data resolves correctly.
+      - ../data:/data:ro
       - ./symbols.yaml:/config/symbols.yaml:ro
     restart: unless-stopped
     healthcheck:
@@ -170,12 +181,12 @@ services:
       retries: 3
       start_period: 20s
 
-  orchestrator:
+  helm:
     build:
       context: ..
       dockerfile: orchestrator/Dockerfile
-    image: orchestrator:latest
-    container_name: orchestrator
+    image: helm:latest
+    container_name: helm
     ports:
       - "8084:8084"
     depends_on:
@@ -184,8 +195,8 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      NATS_URL: nats://orchestrator:${NATS_PASS_ORCHESTRATOR:-orchestrator-dev}@nats:4222
-      POSTGRES_URL: "postgres://mallow:${POSTGRES_PASSWORD:-mallow-dev}@postgres:5432/orchestrator?sslmode=disable"
+      NATS_URL: nats://helm:${NATS_PASS_HELM:-helm-dev}@nats:4222
+      POSTGRES_URL: "postgres://mallow:${POSTGRES_PASSWORD:-mallow-dev}@postgres:5432/helm?sslmode=disable"
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       API_ADDR: "0.0.0.0:8084"
       PYROSCOPE_URL: http://pyroscope:4040
@@ -195,20 +206,7 @@ services:
       ALPACA_API_KEY: ${ALPACA_API_KEY:-}
       ALPACA_API_SECRET: ${ALPACA_API_SECRET:-}
       ALPACA_BASE_URL: ${ALPACA_BASE_URL:-https://paper-api.alpaca.markets}
-      # Binance
-      BINANCE_API_KEY: ${BINANCE_API_KEY:-}
-      BINANCE_API_SECRET: ${BINANCE_API_SECRET:-}
-      # OKX
-      OKX_API_KEY: ${OKX_API_KEY:-}
-      OKX_API_SECRET: ${OKX_API_SECRET:-}
-      OKX_PASSPHRASE: ${OKX_PASSPHRASE:-}
       OKX_DEMO: ${OKX_DEMO:-true}
-      # Bybit
-      BYBIT_API_KEY: ${BYBIT_API_KEY:-}
-      BYBIT_API_SECRET: ${BYBIT_API_SECRET:-}
-      # IBKR (requires separate ibgw container per account — see docs/ibkr.md)
-      IBKR_BASE_URL: ${IBKR_BASE_URL:-}
-      IBKR_ACCOUNT_ID: ${IBKR_ACCOUNT_ID:-}
       # OANDA
       OANDA_TOKEN: ${OANDA_TOKEN:-}
       OANDA_ACCOUNT_ID: ${OANDA_ACCOUNT_ID:-}
@@ -267,7 +265,7 @@ services:
       PORT: "8081"
       NATS_URL: nats://strategist:${NATS_PASS_STRATEGIST:-strategist-dev}@nats:4222
       POSTGRES_URL: "postgres://mallow:${POSTGRES_PASSWORD:-mallow-dev}@postgres:5432/strategist?sslmode=disable"
-      ORCHESTRATOR_URL: http://orchestrator:8084
+      HELM_URL: http://helm:8084
       IDENTITY_URL: http://identity:8082
       IDENTITY_SERVICE_SECRET: ${SERVICE_SECRET:-}
       LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
@@ -287,8 +285,8 @@ services:
 
   gateway:
     build:
-      context: ../api-gateway
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: api-gateway/Dockerfile
     image: gateway:latest
     container_name: gateway
     ports:
@@ -296,12 +294,12 @@ services:
     depends_on:
       nats:
         condition: service_healthy
-      identity:
-        condition: service_healthy
-      investment:
-        condition: service_healthy
-      herald:
-        condition: service_healthy
+#      identity:
+#        condition: service_healthy
+#      investment:
+#        condition: service_healthy
+#      herald:
+#        condition: service_healthy
       redis:
         condition: service_healthy
     environment:
@@ -310,7 +308,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:-mallow-dev-secret-change-in-prod}
       IDENTITY_URL: http://identity:8082
       INVESTMENT_URL: http://investment:8083
-      ORCHESTRATOR_URL: http://orchestrator:8084
+      HELM_URL: http://helm:8084
       STRATEGIST_URL: http://strategist:8081
       # LOGBOOK_URL retained as the env key the Go gateway currently reads —
       # points at herald. Rename to HERALD_URL in a follow-up once the Go
@@ -399,11 +397,11 @@ services:
     ports:
       - "3100:3100"
     environment:
-      LOKI_S3_BUCKET:        ${LOKI_S3_BUCKET}
+      LOKI_S3_BUCKET: ${LOKI_S3_BUCKET}
       LOKI_S3_BUCKET_REGION: ${LOKI_S3_BUCKET_REGION}
-      LOKI_S3_ACCESS_KEY:    ${LOKI_S3_ACCESS_KEY}
-      LOKI_S3_SECRET_KEY:    ${LOKI_S3_SECRET_KEY}
-      LOKI_S3_ENDPOINT:      ${LOKI_S3_ENDPOINT}
+      LOKI_S3_ACCESS_KEY: ${LOKI_S3_ACCESS_KEY}
+      LOKI_S3_SECRET_KEY: ${LOKI_S3_SECRET_KEY}
+      LOKI_S3_ENDPOINT: ${LOKI_S3_ENDPOINT}
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3100/ready | grep -q ready"]
       interval: 10s

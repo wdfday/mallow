@@ -48,15 +48,15 @@ use super::HttpState;
 
 pub fn routes() -> Router<HttpState> {
     Router::new()
-        .route("/api/stream/signals", get(stream_signals))
-        .route("/api/stream/:symbol", post(stream_bars))
+        .route("/api/v1/stream/signals", get(stream_signals))
+        .route("/api/v1/stream/:symbol", post(stream_bars))
 }
 
 // ── POST /api/stream/:symbol ──────────────────────────────────────────────────
 
 #[utoipa::path(
     post,
-    path = "/api/stream/{symbol}",
+    path = "/api/v1/stream/{symbol}",
     params(("symbol" = String, Path, description = "Symbol e.g. BTCUSDT")),
     request_body = StreamRequest,
     responses(
@@ -181,7 +181,7 @@ pub async fn stream_bars(
 
 #[utoipa::path(
     get,
-    path = "/api/stream/signals",
+    path = "/api/v1/stream/signals",
     responses(
         (status = 200, description = "SSE signal stream (text/event-stream, event: signal)")
     ),

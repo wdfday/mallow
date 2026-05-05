@@ -36,7 +36,6 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
@@ -102,8 +101,8 @@ pub fn new_store() -> WatchStore {
 
 pub fn routes() -> Router<HttpState> {
     Router::new()
-        .route("/api/watch", get(list_watches).post(create_watch))
-        .route("/api/watch/:id", get(get_watch).delete(delete_watch))
+        .route("/api/v1/watch", get(list_watches).post(create_watch))
+        .route("/api/v1/watch/:id", get(get_watch).delete(delete_watch))
 }
 
 // ── Error helpers ─────────────────────────────────────────────────────────────
@@ -120,7 +119,7 @@ fn bad_req(msg: &str) -> Response {
 
 #[utoipa::path(
     get,
-    path = "/api/watch",
+    path = "/api/v1/watch",
     responses((status = 200, description = "List of watch entries")),
     tag = "watch"
 )]
@@ -133,7 +132,7 @@ pub async fn list_watches(State(state): State<HttpState>) -> Response {
 
 #[utoipa::path(
     post,
-    path = "/api/watch",
+    path = "/api/v1/watch",
     responses(
         (status = 201, description = "Watch entry created"),
         (status = 400, description = "Validation error")
@@ -215,7 +214,7 @@ pub async fn create_watch(
 
 #[utoipa::path(
     get,
-    path = "/api/watch/{id}",
+    path = "/api/v1/watch/{id}",
     params(("id" = String, Path, description = "Watch entry UUID")),
     responses(
         (status = 200, description = "Watch entry"),
@@ -232,7 +231,7 @@ pub async fn get_watch(State(state): State<HttpState>, Path(id): Path<String>) -
 
 #[utoipa::path(
     delete,
-    path = "/api/watch/{id}",
+    path = "/api/v1/watch/{id}",
     params(("id" = String, Path, description = "Watch entry UUID")),
     responses(
         (status = 204, description = "Deleted"),

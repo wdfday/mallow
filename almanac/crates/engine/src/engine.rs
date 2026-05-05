@@ -15,7 +15,7 @@ use alm_core::{
 use alm_data::BarFeed;
 use alm_indicator::{Atr, RegimeDetector};
 use alm_report::BacktestReport;
-use tracing::debug;
+use tracing::{debug, info, trace};
 
 use crate::bus_sync::SyncBus;
 
@@ -216,8 +216,13 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
     /// Run a full backtest over the provided feed. Returns a `BacktestReport`.
     pub fn run(&mut self, feed: &mut impl BarFeed, risk_free_annual: f64) -> BacktestReport {
         let symbol = feed.symbol().to_string();
+        let strategy_name = self.strategy.name().to_string();
+        let initial_capital = self.portfolio.cash;
+        info!(symbol = %symbol, strategy = %strategy_name, capital = initial_capital, "backtest start");
 
+        let mut bar_count: usize = 0;
         while let Some(bar) = feed.next() {
+            bar_count += 1;
             // Flush next-bar pending signals: execute at this bar's open.
             if self.next_bar && !self.pending_signals.is_empty() {
                 let pending = std::mem::take(&mut self.pending_signals);
@@ -275,6 +280,17 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
             risk_free_annual,
         );
         report.regime_summary = Some(self.compute_regime_summary());
+        info!(
+            symbol = %symbol,
+            strategy = %strategy_name,
+            bars = bar_count,
+            trades = report.total_trades,
+            final_equity = format!("{:.2}", report.final_equity),
+            total_return_pct = format!("{:.2}", report.total_return_pct),
+            sharpe = format!("{:.3}", report.sharpe_ratio),
+            max_dd_pct = format!("{:.2}", report.max_drawdown_pct),
+            "backtest complete"
+        );
         report
     }
 
@@ -368,6 +384,11 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
         match event {
             Event::Market(ref market) => {
                 let bar = &market.bar;
+                trace!(
+                    symbol = %bar.symbol, ts = bar.timestamp,
+                    open = bar.open, high = bar.high, low = bar.low, close = bar.close, vol = bar.volume,
+                    "bar"
+                );
                 self.last_prices.insert(bar.symbol.clone(), bar.close);
 
                 // Notify risk manager with current bar (e.g. for ATR-based sizing).
@@ -502,7 +523,7 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                                 );
                                 self.bus
                                     .send(Event::Order(alm_core::event::OrderEvent { order }));
-                                debug!(symbol = %signal.symbol, qty, ?side, "close signal → order");
+                                debug!(symbol = %signal.symbol, qty, ?side, strength = signal.strength, "close signal → order");
                             }
                         }
                     }
@@ -531,7 +552,7 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                                 );
                                 self.bus
                                     .send(Event::Order(alm_core::event::OrderEvent { order }));
-                                debug!(symbol = %signal.symbol, qty, "long signal → buy order");
+                                debug!(symbol = %signal.symbol, qty, strength = signal.strength, "long signal → buy order");
                             }
                         }
                     }
@@ -560,7 +581,7 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                                 );
                                 self.bus
                                     .send(Event::Order(alm_core::event::OrderEvent { order }));
-                                debug!(symbol = %signal.symbol, qty, "short signal → sell order");
+                                debug!(symbol = %signal.symbol, qty, strength = signal.strength, "short signal → sell order");
                             }
                         }
                     }
@@ -573,7 +594,13 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
 
             Event::Fill(ref fill_event) => {
                 let fill = &fill_event.fill;
+                debug!(
+                    symbol = %fill.symbol, side = ?fill.side,
+                    qty = fill.qty, price = fill.price, commission = fill.commission,
+                    "fill"
+                );
                 self.portfolio.apply_fill(fill);
+                debug!(cash = format!("{:.2}", self.portfolio.cash), "portfolio after fill");
 
                 // Maintain per-position tracker for exit rules.
                 // After the fill, check whether the position is still open.

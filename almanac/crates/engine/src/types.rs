@@ -92,6 +92,11 @@ pub struct BacktestRequest {
 
     /// When present, run rolling walk-forward validation and include the result.
     pub walk_forward: Option<WalkForwardConfig>,
+
+    /// Max number of points to return in equity/drawdown/rolling curves.
+    /// Curves are uniformly downsampled when they exceed this limit.
+    /// Default: 2000. Set to 0 to disable downsampling (warning: can be very large).
+    pub curve_points: Option<usize>,
 }
 
 // ── Exit config ──────────────────────────────────────────────────────────────
@@ -267,7 +272,7 @@ pub struct MonteCarloResponse {
 
 // ── Response ─────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct CurvePoint {
     pub t: i64,
     pub v: f64,
@@ -445,6 +450,7 @@ pub struct BacktestResponse {
     pub symbol: String,
     pub params: Value,
     pub timeframe: String,
+    pub bar_count: usize,
 
     pub capital: CapitalStats,
     pub returns: ReturnStats,
@@ -517,6 +523,7 @@ pub struct CelBacktestRequest {
     pub walk_forward: Option<WalkForwardConfig>,
     /// When set, auto-save the strategy + case + result under this name after a successful run.
     pub save_as: Option<String>,
+    pub curve_points: Option<usize>,
 }
 
 // CEL → canonical BacktestRequest. Lives here (not in `backtest.rs`)
@@ -567,6 +574,7 @@ impl From<CelBacktestRequest> for BacktestRequest {
             min_strength: req.min_strength,
             monte_carlo: req.monte_carlo,
             walk_forward: req.walk_forward,
+            curve_points: req.curve_points,
         }
     }
 }
@@ -604,6 +612,7 @@ pub struct RhaiBacktestRequest {
     pub walk_forward: Option<WalkForwardConfig>,
     /// When set, auto-save the strategy + case + result under this name after a successful run.
     pub save_as: Option<String>,
+    pub curve_points: Option<usize>,
 }
 
 impl From<RhaiBacktestRequest> for BacktestRequest {
@@ -630,6 +639,7 @@ impl From<RhaiBacktestRequest> for BacktestRequest {
             min_strength: None,
             monte_carlo: req.monte_carlo,
             walk_forward: req.walk_forward,
+            curve_points: req.curve_points,
         }
     }
 }

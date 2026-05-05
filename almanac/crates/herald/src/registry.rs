@@ -39,8 +39,8 @@ pub const FRESHNESS_GATE_MS: i64 = 2 * 60 * 1000;
 #[derive(Debug, Clone, serde::Serialize)]
 #[allow(dead_code)]
 pub struct SignalBatch {
-    pub bot_id: String,
-    pub orch_id: String,
+    pub hand_id: String,
+    pub helm_id: String,
     pub symbol: String,
     pub bar_ts: i64,
     pub signals: Vec<Signal>,
@@ -52,8 +52,8 @@ pub struct SignalBatch {
 const HTF_WINDOW_SIZE: usize = 200;
 
 pub struct BotHandle {
-    pub bot_id: String,
-    pub orch_id: String,
+    pub hand_id: String,
+    pub helm_id: String,
     pub symbol: String,
     pub strategy_name: String,
     pub params_json: String,
@@ -74,8 +74,8 @@ pub struct BotHandle {
 
 impl BotHandle {
     fn new(
-        bot_id: String,
-        orch_id: String,
+        hand_id: String,
+        helm_id: String,
         symbol: String,
         strategy_name: String,
         params_json: String,
@@ -92,15 +92,15 @@ impl BotHandle {
         }
         let (strategy, deps) = build_strategy_with_deps(&strategy_name, &value)
             .map_err(|e| anyhow!("{e}"))?;
-        let handles = acquire_dep_handles(ledger, &symbol, base_tf, &deps, &bot_id, &strategy_name);
+        let handles = acquire_dep_handles(ledger, &symbol, base_tf, &deps, &hand_id, &strategy_name);
         let resampler = if target_tf != base_tf {
             Some(TimeBarResampler::new(target_tf.duration_ms()))
         } else {
             None
         };
         Ok(Self {
-            bot_id,
-            orch_id,
+            hand_id,
+            helm_id,
             symbol,
             strategy_name,
             params_json,
@@ -112,7 +112,7 @@ impl BotHandle {
     }
 
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
-        match &mut self.resampler {
+        let sigs = match &mut self.resampler {
             None => self.strategy.on_bar(bar),
             Some(rs) => match rs.push(bar) {
                 None => vec![],
@@ -126,7 +126,15 @@ impl BotHandle {
                     sigs
                 }
             },
+        };
+        if !sigs.is_empty() {
+            trace!(
+                hand_id = %self.hand_id, symbol = %self.symbol,
+                strategy = %self.strategy_name, n_signals = sigs.len(),
+                "bot emitted signals"
+            );
         }
+        sigs
     }
 
     fn on_window(&mut self, bars: &[Bar]) -> Vec<Signal> {
@@ -156,12 +164,12 @@ impl SymbolGroup {
 
     fn add(&mut self, bot: BotHandle) {
         // Replace existing bot with same id (re-register = reconfigure).
-        self.bots.retain(|b| b.bot_id != bot.bot_id);
+        self.bots.retain(|b| b.hand_id != bot.hand_id);
         self.bots.push(bot);
     }
 
-    fn remove(&mut self, bot_id: &str) {
-        self.bots.retain(|b| b.bot_id != bot_id);
+    fn remove(&mut self, hand_id: &str) {
+        self.bots.retain(|b| b.hand_id != hand_id);
     }
 
     fn is_empty(&self) -> bool {
@@ -179,7 +187,7 @@ impl SymbolGroup {
                 if sigs.is_empty() {
                     None
                 } else {
-                    Some((b.bot_id.clone(), b.orch_id.clone(), sigs))
+                    Some((b.hand_id.clone(), b.helm_id.clone(), sigs))
                 }
             })
             .collect()
@@ -256,8 +264,8 @@ impl Registry {
     /// ledger evicts unused indicator cells after the configured grace.
     pub fn register(
         &self,
-        bot_id: String,
-        orch_id: String,
+        hand_id: String,
+        helm_id: String,
         symbol: String,
         strategy_name: String,
         params_json: String,
@@ -276,8 +284,8 @@ impl Registry {
 
         self.ledger.ensure_symbol(&symbol, self.tf, None);
         let bot = BotHandle::new(
-            bot_id,
-            orch_id,
+            hand_id,
+            helm_id,
             symbol.clone(),
             strategy_name,
             params_json,
@@ -286,7 +294,7 @@ impl Registry {
             target_tf,
         )?;
         debug!(
-            bot_id = %bot.bot_id,
+            hand_id = %bot.hand_id,
             symbol = %bot.symbol,
             strategy = %bot.strategy_name,
             handles = bot._indicator_handles.len(),
@@ -300,15 +308,15 @@ impl Registry {
         Ok(())
     }
 
-    /// Remove a bot by id. Cleans up empty groups. Empty `bot_id` = clear all.
-    pub fn deregister(&self, bot_id: &str) {
+    /// Remove a hand by id. Cleans up empty groups. Empty 'hand_id' = clear all.
+    pub fn deregister(&self, hand_id: &str) {
         let mut w = self.inner.lock();
-        if bot_id.is_empty() {
+        if hand_id.is_empty() {
             w.groups.clear();
             return;
         }
         for group in w.groups.values_mut() {
-            group.remove(bot_id);
+            group.remove(hand_id);
         }
         w.groups.retain(|_, g| !g.is_empty());
     }
@@ -339,8 +347,8 @@ impl Registry {
             .values()
             .flat_map(|g| g.bot_infos())
             .map(|b| (
-                b.bot_id.clone(),
-                b.orch_id.clone(),
+                b.hand_id.clone(),
+                b.helm_id.clone(),
                 b.symbol.clone(),
                 b.strategy_name.clone(),
                 b.params_json.clone(),
@@ -358,6 +366,8 @@ impl Registry {
         let age_ms = now_ms - outcome.ts;
         let is_stale = age_ms > FRESHNESS_GATE_MS;
 
+        trace!(%symbol, bar_ts = outcome.ts, age_ms, is_stale, "evaluate_and_publish");
+
         // Snapshot the window with a short read guard. Clone cost is
         // O(capacity) — same as the old Registry::bar_window.push path.
         let window: Vec<Bar> = self
@@ -366,12 +376,14 @@ impl Registry {
             .unwrap_or_default();
 
         if window.is_empty() {
+            trace!(%symbol, "window empty — skipping evaluation");
             return;
         }
         let bar = match window.last() {
             Some(b) => b.clone(),
             None => return,
         };
+        trace!(%symbol, window_len = window.len(), close = bar.close, "window snapshot ok");
 
         // Auto-register fallback bot if needed — mirrors the old behaviour.
         {
@@ -401,15 +413,18 @@ impl Registry {
             return;
         }
 
+        debug!(%symbol, bar_ts = outcome.ts, n_batches = batches.len(), "signals produced");
+
         if is_stale {
-            debug!(%symbol, age_ms, batches = batches.len(), "stale bar — suppressing live signals");
+            debug!(%symbol, age_ms, batches = batches.len(), freshness_gate_ms = FRESHNESS_GATE_MS, "stale bar — suppressing live signals");
             return;
         }
 
-        for (bot_id, orch_id, signals) in batches {
+        for (hand_id, helm_id, signals) in batches {
+            debug!(hand_id = %hand_id, %symbol, n_signals = signals.len(), "forwarding signal batch");
             let _ = self.signal_tx.send(SignalBatch {
-                bot_id,
-                orch_id,
+                hand_id,
+                helm_id,
                 symbol: symbol.to_string(),
                 bar_ts: outcome.ts,
                 signals,
@@ -426,10 +441,10 @@ impl Registry {
             Some(v) => v,
             None => return,
         };
-        let bot_id = format!("global.{}", symbol);
+        let hand_id = format!("global.{}", symbol);
         self.ledger.ensure_symbol(symbol, self.tf, None);
         let bot = BotHandle::new(
-            bot_id,
+            hand_id,
             String::new(),
             symbol.to_string(),
             strategy_name,
@@ -487,7 +502,7 @@ fn acquire_dep_handles(
     symbol: &str,
     tf: Timeframe,
     deps: &[IndicatorDep],
-    bot_id: &str,
+    hand_id: &str,
     strategy_name: &str,
 ) -> Vec<IndicatorHandle> {
     let mut handles = Vec::with_capacity(deps.len());
@@ -495,19 +510,19 @@ fn acquire_dep_handles(
         let spec = match IndicatorSpec::from_config(dep.config.clone(), dep.source_tf) {
             Ok(s) => s,
             Err(e) => {
-                warn!(%bot_id, %strategy_name, config = %dep.config, err = %e,
+                warn!(%hand_id, %strategy_name, config = %dep.config, err = %e,
                       "skipping indicator dep — invalid config");
                 continue;
             }
         };
         match ledger.acquire_indicator(symbol, tf, spec.clone()) {
             Ok(h) => {
-                debug!(%bot_id, %symbol, spec = %spec.canonical_key(),
+                debug!(%hand_id, %symbol, spec = %spec.canonical_key(),
                        "acquired ledger indicator handle");
                 handles.push(h);
             }
             Err(e) => {
-                warn!(%bot_id, %symbol, spec = ?spec, err = %e,
+                warn!(%hand_id, %symbol, spec = ?spec, err = %e,
                       "skipping indicator dep — acquire failed");
             }
         }

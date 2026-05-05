@@ -29,23 +29,26 @@ pub struct Signal {
     pub pattern: Option<PatternMeta>,
     /// bar.close at the time this signal fired — entry reference price for the receiver.
     pub price: Option<f64>,
-    /// Absolute take-profit price computed at entry time.
+    /// Take-profit level. Absolute price if is_offset=false, delta from price if is_offset=true.
     pub target_price: Option<f64>,
-    /// Absolute stop-loss price computed at entry time.
+    /// Stop-loss level. Absolute price if is_offset=false, delta from price if is_offset=true.
     pub stop_price: Option<f64>,
+    /// When true, target_price and stop_price are offsets from the price field (not absolute levels).
+    /// Helm computes actual levels as fill_price + target_price / fill_price + stop_price.
+    pub is_offset: bool,
 }
 
 impl Signal {
     pub fn long(timestamp: i64, symbol: impl Into<String>, strength: f64) -> Self {
-        Self { timestamp, symbol: symbol.into(), direction: Direction::Long, strength, pattern: None, price: None, target_price: None, stop_price: None }
+        Self { timestamp, symbol: symbol.into(), direction: Direction::Long, strength, pattern: None, price: None, target_price: None, stop_price: None, is_offset: false }
     }
 
     pub fn short(timestamp: i64, symbol: impl Into<String>, strength: f64) -> Self {
-        Self { timestamp, symbol: symbol.into(), direction: Direction::Short, strength, pattern: None, price: None, target_price: None, stop_price: None }
+        Self { timestamp, symbol: symbol.into(), direction: Direction::Short, strength, pattern: None, price: None, target_price: None, stop_price: None, is_offset: false }
     }
 
     pub fn close(timestamp: i64, symbol: impl Into<String>) -> Self {
-        Self { timestamp, symbol: symbol.into(), direction: Direction::Close, strength: 1.0, pattern: None, price: None, target_price: None, stop_price: None }
+        Self { timestamp, symbol: symbol.into(), direction: Direction::Close, strength: 1.0, pattern: None, price: None, target_price: None, stop_price: None, is_offset: false }
     }
 
     pub fn with_pattern(mut self, meta: PatternMeta) -> Self {

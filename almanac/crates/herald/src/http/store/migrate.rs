@@ -8,20 +8,22 @@ use sqlx::PgPool;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS strategies (
-    id         TEXT    PRIMARY KEY,
-    name       TEXT    NOT NULL,
-    version    INT     NOT NULL DEFAULT 1,
-    label      TEXT    NOT NULL,
-    kind       TEXT    NOT NULL CHECK (kind IN ('cel', 'rhai')),
-    spec       JSONB   NOT NULL,
-    notes      TEXT,
-    created_at BIGINT  NOT NULL,
+    id          TEXT    PRIMARY KEY,
+    spec_hash   TEXT    UNIQUE,
+    name        TEXT    NOT NULL,
+    version     INT     NOT NULL DEFAULT 1,
+    label       TEXT    NOT NULL,
+    kind        TEXT    NOT NULL CHECK (kind IN ('cel', 'rhai')),
+    spec        JSONB   NOT NULL,
+    exit_config JSONB,
+    notes       TEXT,
+    created_at  BIGINT  NOT NULL,
     UNIQUE (name, version)
 );
 
 CREATE TABLE IF NOT EXISTS backtest_cases (
     id          TEXT    PRIMARY KEY,
-    strategy_id TEXT    NOT NULL REFERENCES strategies(id) ON DELETE RESTRICT,
+    strategy_id TEXT    REFERENCES strategies(id) ON DELETE RESTRICT,
     label       TEXT    NOT NULL,
     symbol      TEXT    NOT NULL,
     timeframe   TEXT,
@@ -30,7 +32,6 @@ CREATE TABLE IF NOT EXISTS backtest_cases (
     data_source TEXT,
     capital     JSONB   NOT NULL DEFAULT '{}',
     execution   JSONB   NOT NULL DEFAULT '{}',
-    exit_config JSONB,
     created_at  BIGINT  NOT NULL,
     updated_at  BIGINT  NOT NULL
 );
@@ -38,13 +39,25 @@ CREATE TABLE IF NOT EXISTS backtest_cases (
 CREATE TABLE IF NOT EXISTS backtest_results (
     id               TEXT    PRIMARY KEY,
     case_id          TEXT    NOT NULL REFERENCES backtest_cases(id) ON DELETE CASCADE,
-    ran_at           BIGINT  NOT NULL,
+    status           TEXT    NOT NULL DEFAULT 'pending'
+                             CHECK (status IN ('pending', 'running', 'done', 'failed')),
+    error            TEXT,
     s3_key           TEXT,
-    total_return_pct FLOAT8  NOT NULL DEFAULT 0,
-    sharpe_ratio     FLOAT8  NOT NULL DEFAULT 0,
-    max_drawdown_pct FLOAT8  NOT NULL DEFAULT 0,
-    win_rate_pct     FLOAT8  NOT NULL DEFAULT 0,
-    total_trades     BIGINT  NOT NULL DEFAULT 0,
+    bar_count        BIGINT,
+    started_at       BIGINT,
+    finished_at      BIGINT,
+    initial_capital  FLOAT8,
+    final_equity     FLOAT8,
+    total_return_pct FLOAT8,
+    cagr_pct         FLOAT8,
+    sharpe_ratio     FLOAT8,
+    sortino_ratio    FLOAT8,
+    calmar_ratio     FLOAT8,
+    max_drawdown_pct FLOAT8,
+    profit_factor    FLOAT8,
+    win_rate_pct     FLOAT8,
+    expectancy       FLOAT8,
+    total_trades     BIGINT,
     created_at       BIGINT  NOT NULL
 );
 
@@ -53,17 +66,20 @@ CREATE TABLE IF NOT EXISTS watch_entries (
     symbols      JSONB   NOT NULL,
     timeframe    TEXT,
     spec         JSONB   NOT NULL,
+    exit_config  JSONB,
     webhook_url  TEXT,
     nats_subject TEXT,
     created_at   BIGINT  NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_strategies_name_version  ON strategies(name, version DESC);
+CREATE INDEX IF NOT EXISTS idx_strategies_spec_hash     ON strategies(spec_hash) WHERE spec_hash IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_cases_strategy_id        ON backtest_cases(strategy_id);
-CREATE INDEX IF NOT EXISTS idx_cases_created            ON backtest_cases(created_at);
+CREATE INDEX IF NOT EXISTS idx_cases_created            ON backtest_cases(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_results_case_id          ON backtest_results(case_id);
-CREATE INDEX IF NOT EXISTS idx_results_ran_at           ON backtest_results(ran_at DESC);
-CREATE INDEX IF NOT EXISTS idx_watch_created            ON watch_entries(created_at);
+CREATE INDEX IF NOT EXISTS idx_results_created          ON backtest_results(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_results_pending          ON backtest_results(status) WHERE status IN ('pending', 'running');
+CREATE INDEX IF NOT EXISTS idx_watch_created            ON watch_entries(created_at DESC);
 
 -- ── Symbol config (shared by herald + hist-data) ─────────────────────────────
 

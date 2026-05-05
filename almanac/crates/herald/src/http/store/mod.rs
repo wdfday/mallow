@@ -41,21 +41,21 @@ use super::HttpState;
 pub fn routes() -> Router<HttpState> {
     Router::new()
         // ── strategies ──────────────────────────────────────────────────────
-        .route("/api/store/strategies",
+        .route("/api/v1/store/strategies",
             get(list_strategies).post(create_strategy))
-        .route("/api/store/strategies/:id",
+        .route("/api/v1/store/strategies/:id",
             get(get_strategy).put(update_strategy).delete(delete_strategy))
-        .route("/api/store/strategies/:name/versions",
+        .route("/api/v1/store/strategies/:name/versions",
             get(list_strategy_versions))
         // ── cases ───────────────────────────────────────────────────────────
-        .route("/api/store/cases",
+        .route("/api/v1/store/cases",
             get(list_cases).post(create_case))
-        .route("/api/store/cases/:id",
+        .route("/api/v1/store/cases/:id",
             get(get_case).put(update_case).delete(delete_case))
-        .route("/api/store/cases/:id/run",     post(run_case))
-        .route("/api/store/cases/:id/signals", post(run_case_signals))
-        .route("/api/store/cases/:id/results", get(list_results))
+        .route("/api/v1/store/cases/:id/run",     post(run_case))
+        .route("/api/v1/store/cases/:id/signals", post(run_case_signals))
+        .route("/api/v1/store/cases/:id/results", get(list_results))
         // ── results ─────────────────────────────────────────────────────────
-        .route("/api/store/results/:id",
+        .route("/api/v1/store/results/:id",
             get(get_result).delete(delete_result))
 }

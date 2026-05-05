@@ -38,7 +38,7 @@ run:
     HERALD_SYMBOLS_FILE="../deployment/symbols.yaml" \
     HERALD_WARM_DAYS=5 \
     HERALD_MAX_BACKTESTS=4 \
-    RUST_LOG="alm_herald=info,alm_ledger=info" \
+    RUST_LOG="alm_herald=trace,alm_ledger=debug,alm_engine=debug" \
     cargo run --bin alm-herald
 
 # Run herald with debug logging

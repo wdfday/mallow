@@ -10,5 +10,5 @@ use super::HttpState;
 
 pub fn routes() -> Router<HttpState> {
     Router::new()
-        .route("/api/data/:symbol", post(unified_data))
+        .route("/api/v1/data/:symbol", post(unified_data))
 }

@@ -90,6 +90,32 @@ const DEFAULT_COMMISSION: f64 = 0.001; // 0.1% per trade.
 const DEFAULT_SLIPPAGE: f64 = 0.0005; // 0.05%.
 const DEFAULT_CAPITAL: f64 = 10_000.0;
 const DEFAULT_POSITION_PCT: f64 = 0.95; // 95% of cash per trade.
+const DEFAULT_CURVE_POINTS: usize = 2_000;
+
+/// Estimate bar count for a backtest request without running the engine.
+/// Returns `(bar_count, estimated_seconds)`.
+/// `estimated_seconds` is a rough heuristic: ~500k bars/sec on modern hardware.
+pub fn estimate(req: &BacktestRequest, data_dir: &Path) -> Result<(usize, f64)> {
+    let symbol = if req.symbol.is_empty() { "BTCUSD" } else { &req.symbol };
+    let from_ms = req.from.as_deref().and_then(parse_date_ms);
+    let to_ms = req.to.as_deref()
+        .and_then(|s| parse_date_ms(s).map(|ms| ms + 86_400_000 - 1));
+    let market_hours_only = req.market_hours_only.unwrap_or(false);
+    let market_region = req.data_source.as_deref()
+        .map(market_region_from_data_source)
+        .unwrap_or("us");
+    let files = find_parquet_files(data_dir, symbol, req.timeframe.as_deref(), req.data_source.as_deref());
+    let feed = load_bars(&files, symbol, from_ms, to_ms, market_hours_only, market_region)
+        .with_context(|| format!("loading data for '{}'", symbol))?;
+    let bar_count = feed.len();
+    // Heuristic: ~500k bars/sec for named strategies, ~200k/sec for CEL/Rhai.
+    let bars_per_sec = match req.strategy.as_str() {
+        "cel" | "cel2" | "rhai" => 200_000.0,
+        _ => 500_000.0,
+    };
+    let estimated_seconds = bar_count as f64 / bars_per_sec;
+    Ok((bar_count, estimated_seconds))
+}
 
 /// Run a full backtest from a request, discovering data under `data_dir`.
 pub fn run(req: BacktestRequest, data_dir: &Path) -> Result<BacktestResponse> {
@@ -123,10 +149,30 @@ pub fn run(req: BacktestRequest, data_dir: &Path) -> Result<BacktestResponse> {
     let mut feed = load_bars(&files, &symbol, from_ms, to_ms, market_hours_only, market_region)
         .with_context(|| format!("loading data for '{}'", symbol))?;
 
+    let bar_count = feed.len();
+
+    // Hard cap: reject before running the engine to avoid OOM + multi-minute hangs.
+    // Recommend a coarser timeframe when the cap is exceeded.
+    const MAX_BARS: usize = 100_000;
+    if bar_count > MAX_BARS {
+        let tf = req.timeframe.as_deref().unwrap_or("M1").to_uppercase();
+        let suggestion = match tf.as_str() {
+            "M1"  => "Use M5 or M15 for ranges > 3 months",
+            "M5"  => "Use M15 or H1 for ranges > 1 year",
+            "M15" => "Use H1 for ranges > 2 years",
+            "H1"  => "Use H4 or D1 for ranges > 5 years",
+            _     => "Narrow the date range",
+        };
+        anyhow::bail!(
+            "{} bars exceeds the {} bar limit. {}.",
+            bar_count, MAX_BARS, suggestion
+        );
+    }
+
     tracing::info!(
         symbol = %symbol,
         strategy = %req.strategy,
-        bars = feed.len(),
+        bars = bar_count,
         "starting backtest"
     );
 
@@ -284,6 +330,12 @@ pub fn run(req: BacktestRequest, data_dir: &Path) -> Result<BacktestResponse> {
         }
     };
 
+    let curve_max = match req.curve_points {
+        Some(0) => usize::MAX, // 0 = no limit
+        Some(n) => n,
+        None => DEFAULT_CURVE_POINTS,
+    };
+
     let regime_summary = report.regime_summary.map(|r| RegimeSummaryResponse {
         trending_pct: r.trending_pct,
         ranging_pct: r.ranging_pct,
@@ -425,6 +477,7 @@ pub fn run(req: BacktestRequest, data_dir: &Path) -> Result<BacktestResponse> {
         symbol,
         params,
         timeframe: report.timeframe.to_string(),
+        bar_count,
         capital: CapitalStats {
             initial: report.initial_capital,
             final_equity: report.final_equity,
@@ -507,11 +560,11 @@ pub fn run(req: BacktestRequest, data_dir: &Path) -> Result<BacktestResponse> {
             kelly_pct: if no_trades { 0.0 } else { report.kelly_pct },
         },
         curves: CurveStats {
-            equity: equity_curve,
-            drawdown: drawdown_curve,
-            rolling_sharpe: report.rolling_sharpe,
+            equity: downsample(equity_curve, curve_max),
+            drawdown: downsample(drawdown_curve, curve_max),
+            rolling_sharpe: downsample_f64(report.rolling_sharpe, curve_max),
             rolling_sharpe_std: if no_trades { 0.0 } else { report.rolling_sharpe_std },
-            rolling_drawdown: report.rolling_drawdown,
+            rolling_drawdown: downsample_f64(report.rolling_drawdown, curve_max),
         },
         calendar: CalendarStats {
             monthly_returns: report.monthly_returns.iter()
@@ -597,6 +650,68 @@ pub fn asset_lot_size(asset_type: Option<&str>) -> f64 {
         Some("vn_stock") => 100.0,
         _ => 0.0,
     }
+}
+
+/// Min-max downsample a `Vec<CurvePoint>` to at most `2 * buckets` entries.
+/// Each bucket contributes its min-value point and max-value point (in time order),
+/// so peaks and troughs are never dropped. First and last points are always kept.
+fn downsample(pts: Vec<CurvePoint>, buckets: usize) -> Vec<CurvePoint> {
+    if buckets == 0 || pts.len() <= buckets * 2 {
+        return pts;
+    }
+    let n = pts.len();
+    let mut out = Vec::with_capacity(buckets * 2 + 2);
+    let bucket_size = n as f64 / buckets as f64;
+    for b in 0..buckets {
+        let start = (b as f64 * bucket_size).round() as usize;
+        let end = ((b + 1) as f64 * bucket_size).round() as usize;
+        let end = end.min(n);
+        if start >= end { continue; }
+        let slice = &pts[start..end];
+        let (min_i, max_i) = slice.iter().enumerate().fold((0, 0), |(mi, xi), (i, p)| {
+            let mi = if p.v < slice[mi].v { i } else { mi };
+            let xi = if p.v > slice[xi].v { i } else { xi };
+            (mi, xi)
+        });
+        if min_i <= max_i {
+            out.push(pts[start + min_i].clone());
+            if min_i != max_i { out.push(pts[start + max_i].clone()); }
+        } else {
+            out.push(pts[start + max_i].clone());
+            if min_i != max_i { out.push(pts[start + min_i].clone()); }
+        }
+    }
+    out
+}
+
+/// Min-max downsample a `Vec<f64>` (no timestamps) to at most `2 * buckets` entries.
+fn downsample_f64(pts: Vec<f64>, buckets: usize) -> Vec<f64> {
+    if buckets == 0 || pts.len() <= buckets * 2 {
+        return pts;
+    }
+    let n = pts.len();
+    let mut out = Vec::with_capacity(buckets * 2);
+    let bucket_size = n as f64 / buckets as f64;
+    for b in 0..buckets {
+        let start = (b as f64 * bucket_size).round() as usize;
+        let end = ((b + 1) as f64 * bucket_size).round() as usize;
+        let end = end.min(n);
+        if start >= end { continue; }
+        let slice = &pts[start..end];
+        let (min_i, max_i) = slice.iter().enumerate().fold((0, 0), |(mi, xi), (i, &v)| {
+            let mi = if v < slice[mi] { i } else { mi };
+            let xi = if v > slice[xi] { i } else { xi };
+            (mi, xi)
+        });
+        if min_i <= max_i {
+            out.push(pts[start + min_i]);
+            if min_i != max_i { out.push(pts[start + max_i]); }
+        } else {
+            out.push(pts[start + max_i]);
+            if min_i != max_i { out.push(pts[start + min_i]); }
+        }
+    }
+    out
 }
 
 fn ms_to_iso(ms: i64) -> String {

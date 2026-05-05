@@ -18,7 +18,7 @@ use tracing::warn;
 
 use super::super::duckdb_helpers as duck;
 use super::super::types::{
-    BarRecord, CandlesResult, ErrorResponse, IndicatorConfig, IndicatorPoint, UnifiedDataRequest,
+    BarRecord, CandlesResult, IndicatorConfig, IndicatorPoint, UnifiedDataRequest,
     UnifiedDataResponse,
 };
 use super::super::HttpState;
@@ -28,7 +28,7 @@ use super::shared::{clamp_limit, err, paginate, resolve_tf, DEFAULT_LIMIT, MAX_I
 
 #[utoipa::path(
     post,
-    path = "/api/data/{symbol}",
+    path = "/api/v1/data/{symbol}",
     params(
         ("symbol" = String, Path, description = "Symbol name e.g. BTCUSDT")
     ),

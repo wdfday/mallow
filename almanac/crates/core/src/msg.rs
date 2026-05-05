@@ -64,6 +64,7 @@ impl From<&crate::signal::Signal> for SignalMsg {
             stop_price,
             pattern_kind,
             confidence,
+            is_offset: if sig.is_offset { Some(true) } else { None },
         }
     }
 }

@@ -16,8 +16,8 @@ use super::HttpState;
 
 pub fn routes() -> Router<HttpState> {
     Router::new()
-        .route("/api/symbols", get(list_symbols))
-        .route("/api/indicators", get(list_indicators_catalog))
+        .route("/api/v1/symbols", get(list_symbols))
+        .route("/api/v1/indicators", get(list_indicators_catalog))
 }
 
 #[derive(Debug, Deserialize)]
@@ -51,7 +51,7 @@ pub struct LiveIndicator {
 
 #[utoipa::path(
     get,
-    path = "/api/symbols",
+    path = "/api/v1/symbols",
     params(
         ("indicators" = Option<bool>, Query, description = "Include live indicator cells in the response")
     ),
@@ -102,7 +102,7 @@ pub async fn list_symbols(
 
 #[utoipa::path(
     get,
-    path = "/api/indicators",
+    path = "/api/v1/indicators",
     responses(
         (status = 200, description = "Indicator catalogue (static)")
     ),

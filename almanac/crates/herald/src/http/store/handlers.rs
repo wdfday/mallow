@@ -44,7 +44,7 @@ pub fn server_err(e: anyhow::Error) -> Response {
 
 #[utoipa::path(
     get,
-    path = "/api/store/strategies",
+    path = "/api/v1/store/strategies",
     responses((status = 200, description = "List of saved strategies")),
     tag = "store"
 )]
@@ -57,7 +57,7 @@ pub async fn list_strategies(State(state): State<HttpState>) -> Response {
 
 #[utoipa::path(
     post,
-    path = "/api/store/strategies",
+    path = "/api/v1/store/strategies",
     responses(
         (status = 201, description = "Strategy created"),
         (status = 409, description = "Conflict — version already exists")
@@ -80,7 +80,7 @@ pub async fn create_strategy(
 
 #[utoipa::path(
     get,
-    path = "/api/store/strategies/{id}",
+    path = "/api/v1/store/strategies/{id}",
     params(("id" = String, Path, description = "Strategy UUID")),
     responses(
         (status = 200, description = "Strategy record"),
@@ -98,7 +98,7 @@ pub async fn get_strategy(State(state): State<HttpState>, Path(id): Path<String>
 
 #[utoipa::path(
     get,
-    path = "/api/store/strategies/{name}/versions",
+    path = "/api/v1/store/strategies/{name}/versions",
     params(("name" = String, Path, description = "Strategy name")),
     responses((status = 200, description = "All versions for the named strategy")),
     tag = "store"
@@ -115,7 +115,7 @@ pub async fn list_strategy_versions(
 
 #[utoipa::path(
     put,
-    path = "/api/store/strategies/{id}",
+    path = "/api/v1/store/strategies/{id}",
     params(("id" = String, Path, description = "Strategy UUID")),
     responses(
         (status = 200, description = "Updated strategy record"),
@@ -137,7 +137,7 @@ pub async fn update_strategy(
 
 #[utoipa::path(
     delete,
-    path = "/api/store/strategies/{id}",
+    path = "/api/v1/store/strategies/{id}",
     params(("id" = String, Path, description = "Strategy UUID")),
     responses(
         (status = 204, description = "Deleted"),
@@ -159,7 +159,7 @@ pub async fn delete_strategy(State(state): State<HttpState>, Path(id): Path<Stri
 
 #[utoipa::path(
     get,
-    path = "/api/store/cases",
+    path = "/api/v1/store/cases",
     responses((status = 200, description = "List of backtest cases")),
     tag = "store"
 )]
@@ -172,7 +172,7 @@ pub async fn list_cases(State(state): State<HttpState>) -> Response {
 
 #[utoipa::path(
     post,
-    path = "/api/store/cases",
+    path = "/api/v1/store/cases",
     responses(
         (status = 201, description = "Case created"),
         (status = 400, description = "strategy_id not found")
@@ -204,7 +204,7 @@ pub async fn create_case(
 
 #[utoipa::path(
     get,
-    path = "/api/store/cases/{id}",
+    path = "/api/v1/store/cases/{id}",
     params(("id" = String, Path, description = "Case UUID")),
     responses(
         (status = 200, description = "Backtest case"),
@@ -222,7 +222,7 @@ pub async fn get_case(State(state): State<HttpState>, Path(id): Path<String>) ->
 
 #[utoipa::path(
     put,
-    path = "/api/store/cases/{id}",
+    path = "/api/v1/store/cases/{id}",
     params(("id" = String, Path, description = "Case UUID")),
     responses(
         (status = 200, description = "Updated case"),
@@ -251,7 +251,7 @@ pub async fn update_case(
 
 #[utoipa::path(
     delete,
-    path = "/api/store/cases/{id}",
+    path = "/api/v1/store/cases/{id}",
     params(("id" = String, Path, description = "Case UUID")),
     responses(
         (status = 204, description = "Deleted"),
@@ -271,7 +271,7 @@ pub async fn delete_case(State(state): State<HttpState>, Path(id): Path<String>)
 
 #[utoipa::path(
     post,
-    path = "/api/store/cases/{id}/run",
+    path = "/api/v1/store/cases/{id}/run",
     params(("id" = String, Path, description = "Case UUID")),
     responses(
         (status = 200, description = "Backtest report"),
@@ -318,6 +318,7 @@ pub async fn run_case(State(state): State<HttpState>, Path(id): Path<String>) ->
         min_strength:           None,
         monte_carlo:            None,
         walk_forward:           None,
+        curve_points:           None,
     };
 
     tracing::info!(id = %id, symbol = %case.symbol, strategy_id = %case.strategy_id, "running backtest case");
@@ -370,7 +371,7 @@ pub async fn run_case(State(state): State<HttpState>, Path(id): Path<String>) ->
 /// signal stream — no SimBroker, no position tracking, no report.
 #[utoipa::path(
     post,
-    path = "/api/store/cases/{id}/signals",
+    path = "/api/v1/store/cases/{id}/signals",
     params(("id" = String, Path, description = "Case UUID")),
     responses(
         (status = 200, description = "Signal replay list"),
@@ -474,7 +475,7 @@ fn signal_replay(
 
 #[utoipa::path(
     get,
-    path = "/api/store/cases/{id}/results",
+    path = "/api/v1/store/cases/{id}/results",
     params(("id" = String, Path, description = "Case UUID")),
     responses((status = 200, description = "Results for the case")),
     tag = "store"
@@ -488,7 +489,7 @@ pub async fn list_results(State(state): State<HttpState>, Path(case_id): Path<St
 
 #[utoipa::path(
     get,
-    path = "/api/store/results/{id}",
+    path = "/api/v1/store/results/{id}",
     params(("id" = String, Path, description = "Result UUID")),
     responses(
         (status = 200, description = "Backtest result"),
@@ -506,7 +507,7 @@ pub async fn get_result(State(state): State<HttpState>, Path(id): Path<String>) 
 
 #[utoipa::path(
     delete,
-    path = "/api/store/results/{id}",
+    path = "/api/v1/store/results/{id}",
     params(("id" = String, Path, description = "Result UUID")),
     responses(
         (status = 204, description = "Deleted"),

@@ -16,5 +16,5 @@ pprof     = { version = "0.13", features = ["flamegraph", "criterion"] }
 libc      = "0.2"
 
 [[bench]]
-name = "feed_bench"
+name = "benches/feed_bench"
 harness = false

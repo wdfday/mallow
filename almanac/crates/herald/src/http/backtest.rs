@@ -47,17 +47,28 @@ use super::HttpState;
 
 pub fn routes() -> Router<HttpState> {
     Router::new()
-        .route("/api/strategies", get(list_strategies))
-        .route("/api/backtest", post(run_backtest))
-        .route("/api/backtest/cel", post(run_backtest_cel))
-        .route("/api/backtest/rhai", post(run_backtest_rhai))
+        .route("/api/v1/strategies", get(list_strategies))
+        .route("/api/v1/backtest", post(run_backtest))
+        .route("/api/v1/backtest/estimate", post(estimate_backtest))
+        .route("/api/v1/backtest/cel", post(run_backtest_cel))
+        .route("/api/v1/backtest/rhai", post(run_backtest_rhai))
+}
+
+// ── Estimate response ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct EstimateResponse {
+    pub bar_count: usize,
+    pub estimated_seconds: f64,
+    pub within_limit: bool,
+    pub limit: usize,
 }
 
 // ── GET /api/strategies ──────────────────────────────────────────────────────
 
 #[utoipa::path(
     get,
-    path = "/api/strategies",
+    path = "/api/v1/strategies",
     responses(
         (status = 200, description = "List of registered named strategy keys")
     ),
@@ -67,11 +78,48 @@ pub async fn list_strategies() -> Json<&'static [&'static str]> {
     Json(STRATEGY_KEYS)
 }
 
+// ── POST /api/backtest/estimate ──────────────────────────────────────────────
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/backtest/estimate",
+    responses(
+        (status = 200, description = "Bar count + estimated run time without running the engine"),
+        (status = 400, description = "Bad request")
+    ),
+    tag = "backtest"
+)]
+pub async fn estimate_backtest(
+    State(state): State<HttpState>,
+    Json(req): Json<BacktestRequest>,
+) -> Response {
+    const MAX_BARS: usize = 100_000;
+    let data_dir = Arc::clone(&state.data_dir);
+    match tokio::task::spawn_blocking(move || backtest::estimate(&req, &data_dir)).await {
+        Ok(Ok((bar_count, estimated_seconds))) => {
+            (StatusCode::OK, Json(EstimateResponse {
+                bar_count,
+                estimated_seconds,
+                within_limit: bar_count <= MAX_BARS,
+                limit: MAX_BARS,
+            })).into_response()
+        }
+        Ok(Err(e)) => {
+            warn!(error = %e, "estimate failed");
+            (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e.to_string() })).into_response()
+        }
+        Err(e) => {
+            error!(error = %e, "estimate spawn_blocking panicked");
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "internal error".into() })).into_response()
+        }
+    }
+}
+
 // ── POST /api/backtest ───────────────────────────────────────────────────────
 
 #[utoipa::path(
     post,
-    path = "/api/backtest",
+    path = "/api/v1/backtest",
     responses(
         (status = 200, description = "Backtest report"),
         (status = 400, description = "Bad request"),
@@ -97,7 +145,7 @@ pub async fn run_backtest(
 
 #[utoipa::path(
     post,
-    path = "/api/backtest/cel",
+    path = "/api/v1/backtest/cel",
     responses(
         (status = 200, description = "CEL backtest report"),
         (status = 400, description = "Bad request"),
@@ -146,7 +194,7 @@ pub async fn run_backtest_cel(
 
 #[utoipa::path(
     post,
-    path = "/api/backtest/rhai",
+    path = "/api/v1/backtest/rhai",
     responses(
         (status = 200, description = "Rhai backtest report"),
         (status = 400, description = "Bad request"),

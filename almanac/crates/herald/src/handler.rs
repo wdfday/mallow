@@ -24,7 +24,7 @@
 use std::sync::Arc;
 
 use alm_core::msg::{
-    BarMsg, BotInfo, BotListResponse, ConfigMsg, DeregisterMsg, RegisterMsg, ResetMsg, SignalMsg,
+    BarMsg, HandInfo, HandListResponse, ConfigMsg, DeregisterMsg, RegisterMsg, ResetMsg, SignalMsg,
     SignalResponse,
 };
 use alm_core::{Bar, Timeframe};
@@ -128,7 +128,11 @@ impl Handler {
 
         // 2. Advance ledger (drives indicator state + signals via observer).
         match self.ledger.advance(self.tf, bar.clone()) {
-            Ok(Some(_)) => debug!(%symbol, bar_ts = ts, "bar advanced"),
+            Ok(Some(_)) => debug!(
+                %symbol, bar_ts = ts,
+                open = bar.open, high = bar.high, low = bar.low, close = bar.close, vol = bar.volume,
+                "bar advanced"
+            ),
             Ok(None)    => debug!(%symbol, bar_ts = ts, "bar skipped (dup/out-of-order)"),
             Err(e)      => error!(%symbol, bar_ts = ts, err = %e, "ledger.advance failed"),
         }
@@ -140,8 +144,10 @@ impl Handler {
         let bar_msg = BarMsg::from(&bar);
         let payload = bar_msg.encode_to_vec();
         let subject = format!("{}.{}", SUBJ_BARS, symbol);
-        if let Err(e) = self.client.publish(subject, payload.into()).await {
+        if let Err(e) = self.client.publish(subject.clone(), payload.into()).await {
             error!(%symbol, err = %e, "failed to publish bar to NATS");
+        } else {
+            debug!(%symbol, nats_subject = %subject, "bar published to NATS");
         }
     }
 
@@ -177,23 +183,23 @@ impl Handler {
             Ok(r) => r,
             Err(e) => { error!(err = %e, "failed to decode RegisterMsg"); return; }
         };
-        info!(bot_id = %req.bot_id, symbol = %req.symbol, strategy = %req.strategy, "registering bot");
+        info!(hand_id = %req.hand_id, symbol = %req.symbol, strategy = %req.strategy, "registering bot");
         let target_tf = req.timeframe.as_deref()
             .and_then(parse_timeframe_str)
             .unwrap_or(self.tf);
         let result = self.registry.register(
-            req.bot_id.clone(), req.orch_id.clone(), req.symbol.clone(),
+            req.hand_id.clone(), req.helm_id.clone(), req.symbol.clone(),
             req.strategy.clone(), req.params_json.clone(), target_tf,
         );
         match result {
             Ok(()) => {
-                info!(bot_id = %req.bot_id, symbol = %req.symbol, "bot registered");
+                info!(hand_id = %req.hand_id, symbol = %req.symbol, "bot registered");
                 if let Some(reply) = msg.reply {
                     let _ = self.client.publish(reply, b"ok".as_ref().into()).await;
                 }
             }
             Err(e) => {
-                warn!(bot_id = %req.bot_id, err = %e, "failed to register bot");
+                warn!(hand_id = %req.hand_id, err = %e, "failed to register bot");
                 if let Some(reply) = msg.reply {
                     let _ = self.client.publish(reply, format!("error: {e}").into()).await;
                 }
@@ -208,10 +214,10 @@ impl Handler {
             Ok(r) => r,
             Err(e) => { error!(err = %e, "failed to decode DeregisterMsg"); return; }
         };
-        let bot_id = req.bot_id.as_str();
-        if bot_id.is_empty() { info!("deregistering ALL bots"); }
-        else                  { info!(%bot_id, "deregistering bot"); }
-        self.registry.deregister(bot_id);
+        let hand_id = req.hand_id.as_str();
+        if hand_id.is_empty() { info!("deregistering ALL bots"); }
+        else                  { info!(%hand_id, "deregistering hand"); }
+        self.registry.deregister(hand_id);
         if let Some(reply) = msg.reply {
             let _ = self.client.publish(reply, b"ok".as_ref().into()).await;
         }
@@ -225,11 +231,11 @@ impl Handler {
             return;
         };
         let bots = self.registry.list_bots().into_iter()
-            .map(|(bot_id, _orch_id, symbol, strategy, params_json)| BotInfo {
-                bot_id, symbol, strategy, params_json,
+            .map(|(hand_id, _helm_id, symbol, strategy, params_json)| HandInfo {
+                hand_id, symbol, strategy, params_json,
             })
             .collect();
-        let payload = BotListResponse { bots }.encode_to_vec();
+        let payload = HandListResponse { hands: bots }.encode_to_vec();
         let _ = self.client.publish(reply, payload.into()).await;
     }
 }
@@ -249,21 +255,24 @@ async fn signal_publisher(
 
         let response = SignalResponse {
             signals: batch.signals.iter().map(SignalMsg::from).collect(),
-            orch_id: batch.orch_id.clone(),
-            bot_id: batch.bot_id.clone(),
+            helm_id: batch.helm_id.clone(),
+            hand_id: batch.hand_id.clone(),
         };
         let payload = response.encode_to_vec();
+        let n_signals = batch.signals.len();
+        debug!(hand_id = %batch.hand_id, symbol = %batch.symbol, n_signals, "publishing signal batch to NATS");
         if let Err(e) = client.publish(SUBJ_SIGNALS, payload.into()).await {
             error!(subject = SUBJ_SIGNALS, err = %e, "failed to publish signals");
             continue;
         }
         for sig in &batch.signals {
             info!(
-                bot_id = %batch.bot_id, symbol = %sig.symbol,
+                hand_id = %batch.hand_id, symbol = %sig.symbol,
                 direction = ?sig.direction, strength = sig.strength,
                 bar_ts = batch.bar_ts, "signal emitted"
             );
         }
+        debug!(hand_id = %batch.hand_id, n_signals, "signal batch published ok");
     }
     info!("signal publisher channel closed");
 }

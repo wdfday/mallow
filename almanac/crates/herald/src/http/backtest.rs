@@ -10,7 +10,7 @@
 //!
 //! # save_as
 //!
-//! `POST /api/backtest/cel` and `POST /api/backtest/rhai` accept an optional
+//! `POST /api/backtest/rhai` accepts an optional
 //! `"save_as"` field. When present, a successful run automatically creates a
 //! strategy version + backtest case + result row in the store and returns their
 //! IDs under `"saved"` in the response. Omit the field for throwaway runs.
@@ -32,7 +32,7 @@ use axum::{
 };
 use alm_engine::{
     backtest,
-    types::{BacktestRequest, BacktestResponse, CelBacktestRequest, ErrorResponse, RhaiBacktestRequest},
+    types::{BacktestRequest, BacktestResponse, ErrorResponse, RhaiBacktestRequest},
 };
 use alm_strategy::catalog::STRATEGY_KEYS;
 use chrono::{NaiveDate, TimeZone, Utc};
@@ -50,7 +50,6 @@ pub fn routes() -> Router<HttpState> {
         .route("/api/v1/strategies", get(list_strategies))
         .route("/api/v1/backtest", post(run_backtest))
         .route("/api/v1/backtest/estimate", post(estimate_backtest))
-        .route("/api/v1/backtest/cel", post(run_backtest_cel))
         .route("/api/v1/backtest/rhai", post(run_backtest_rhai))
 }
 
@@ -141,55 +140,6 @@ pub async fn run_backtest(
     }
 }
 
-// ── POST /api/backtest/cel ───────────────────────────────────────────────────
-
-#[utoipa::path(
-    post,
-    path = "/api/v1/backtest/cel",
-    responses(
-        (status = 200, description = "CEL backtest report"),
-        (status = 400, description = "Bad request"),
-        (status = 429, description = "Too many concurrent backtests")
-    ),
-    tag = "backtest"
-)]
-pub async fn run_backtest_cel(
-    State(state): State<HttpState>,
-    Json(req): Json<CelBacktestRequest>,
-) -> Response {
-    let Some(_permit) = try_acquire(&state) else {
-        return too_many_requests();
-    };
-    let save_as = req.save_as.clone();
-    let spec = StrategySpec::Cel {
-        entry: req.entry_expr.clone(),
-        exit: req.exit_expr.clone(),
-        defines: req.defines.clone(),
-    };
-    let symbol = req.symbol.clone();
-    let timeframe = req.timeframe.clone();
-    let from = req.from.clone();
-    let to = req.to.clone();
-    let capital = capital_from_cel(&req);
-    let execution = execution_from_cel(&req);
-    let exit = req.exit.clone();
-    let data_source = req.data_source.clone();
-
-    info!(symbol = %req.symbol, ?save_as, "CEL backtest request");
-    let base: BacktestRequest = req.into();
-    match run_blocking(Arc::clone(&state.data_dir), base).await {
-        Ok(report) => {
-            respond_with_save(
-                report, save_as, spec,
-                symbol, timeframe, from, to,
-                capital, execution, exit, data_source,
-                &state.store,
-            ).await
-        }
-        Err(r) => r,
-    }
-}
-
 // ── POST /api/backtest/rhai ──────────────────────────────────────────────────
 
 #[utoipa::path(
@@ -210,9 +160,9 @@ pub async fn run_backtest_rhai(
         return too_many_requests();
     };
     let save_as = req.save_as.clone();
-    let spec = StrategySpec::Rhai { script: req.script.clone() };
+    let spec = StrategySpec { script: req.script.clone() };
     let symbol = req.symbol.clone();
-    let timeframe = req.timeframe.clone();
+    let timeframe = Some(req.timeframe.clone().unwrap_or_else(|| state.tf.to_string()));
     let from = req.from.clone();
     let to = req.to.clone();
     let capital = capital_from_rhai(&req);
@@ -356,23 +306,6 @@ async fn auto_save(
 }
 
 // ── Request field extractors ──────────────────────────────────────────────────
-
-fn capital_from_cel(req: &CelBacktestRequest) -> CapitalConfig {
-    CapitalConfig {
-        initial:       req.initial_capital,
-        position_pct:  req.position_size_pct,
-        position_usd:  req.position_size_usd,
-        max_positions: req.max_positions,
-    }
-}
-
-fn execution_from_cel(req: &CelBacktestRequest) -> ExecutionConfig {
-    ExecutionConfig {
-        commission_pct:   req.commission_pct,
-        slippage_pct:     req.slippage_pct,
-        risk_free_annual: req.risk_free_annual,
-    }
-}
 
 fn capital_from_rhai(req: &RhaiBacktestRequest) -> CapitalConfig {
     CapitalConfig {

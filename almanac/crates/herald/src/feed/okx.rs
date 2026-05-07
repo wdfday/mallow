@@ -1,20 +1,26 @@
+//! OKX WebSocket candlestick feed — multi-timeframe.
+//!
+//! Subscribes to `candle{interval}` channels for every symbol × TF on a
+//! single connection. Each push is forwarded as a [`BarEvent`]:
+//! - `row[8] == "0"` → forming bar  (`closed = false`)
+//! - `row[8] == "1"` → confirmed bar (`closed = true`)
+
 use std::time::Duration;
 
-use alm_core::Bar;
+use alm_core::Timeframe;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, info, warn};
 
-use super::BarTx;
+use super::{BarEvent, BarTx, SUBSCRIBE_TFS};
 
 const WS_URL: &str = "wss://ws.okx.com:8443/ws/v5/business";
 const RECONNECT: Duration = Duration::from_secs(5);
 const PING_INTERVAL: Duration = Duration::from_secs(25);
 
-/// Spawn a task that streams confirmed M1 candles for `symbols` from OKX.
-/// Sends completed `Bar`s to `tx`. Reconnects automatically on disconnect.
-/// Task exits when `tx` is dropped (receiver gone).
+/// Spawn a task that streams candlesticks for `symbols` across all
+/// [`SUBSCRIBE_TFS`]. Sends [`BarEvent`]s to `tx`. Auto-reconnects.
 pub fn spawn(symbols: Vec<String>, tx: BarTx) {
     if symbols.is_empty() {
         return;
@@ -40,17 +46,20 @@ async fn run_once(symbols: &[String], tx: &BarTx) -> anyhow::Result<()> {
     info!("okx: connected");
     let (mut write, mut read) = ws.split();
 
-    // Subscribe to candle1m for each symbol.
-    let sub = SubRequest {
-        op: "subscribe",
-        args: symbols
-            .iter()
-            .map(|s| SubArg { channel: "candle1m", inst_id: s.as_str() })
-            .collect(),
-    };
+    // Subscribe to candle{interval} for every symbol × TF.
+    let args: Vec<SubArg> = symbols
+        .iter()
+        .flat_map(|sym| {
+            SUBSCRIBE_TFS.iter().filter_map(|&tf| {
+                tf_to_channel(tf).map(|ch| SubArg { channel: ch.to_string(), inst_id: sym.clone() })
+            })
+        })
+        .collect();
+    let n = args.len();
+    let sub = SubRequest { op: "subscribe", args };
     write.send(Message::Text(serde_json::to_string(&sub)?.into())).await?;
+    info!(symbols = symbols.len(), tfs = SUBSCRIBE_TFS.len(), subscriptions = n, "okx: subscribed");
 
-    // Ping ticker
     let mut ping_interval = tokio::time::interval(PING_INTERVAL);
     ping_interval.tick().await; // skip first immediate tick
 
@@ -76,7 +85,7 @@ async fn run_once(symbols: &[String], tx: &BarTx) -> anyhow::Result<()> {
 
                 match msg {
                     Message::Text(t) if t == "pong" => {}
-                    Message::Text(t) => handle_candle(&t, tx, &mut write).await?,
+                    Message::Text(t) => handle_push(&t, tx, &mut write).await?,
                     Message::Ping(d) => { let _ = write.send(Message::Pong(d)).await; }
                     Message::Close(_) => return Err(anyhow::anyhow!("server closed")),
                     _ => {}
@@ -86,7 +95,7 @@ async fn run_once(symbols: &[String], tx: &BarTx) -> anyhow::Result<()> {
     }
 }
 
-async fn handle_candle(
+async fn handle_push(
     text: &str,
     tx: &BarTx,
     write: &mut (impl futures::Sink<Message> + Unpin),
@@ -94,17 +103,21 @@ async fn handle_candle(
     let Ok(push) = serde_json::from_str::<CandlePush>(text) else {
         return Ok(());
     };
-    if push.arg.channel != "candle1m" || push.data.is_empty() {
+    let Some(tf) = channel_to_tf(&push.arg.channel) else {
+        return Ok(());
+    };
+    if push.data.is_empty() {
         return Ok(());
     }
 
     for row in &push.data {
         // row: [ts, open, high, low, close, vol, volCcy, volCcyQuote, confirm]
-        if row.len() < 9 || row[8] != "1" {
-            continue; // in-progress candle
+        if row.len() < 9 {
+            continue;
         }
+        let closed = row[8] == "1";
         let ts: i64 = row[0].parse().unwrap_or(0);
-        let bar = Bar::new(
+        let bar = alm_core::Bar::new(
             ts,
             &push.arg.inst_id,
             parse_f64(&row[1]),
@@ -113,8 +126,10 @@ async fn handle_candle(
             parse_f64(&row[4]),
             parse_f64(&row[5]),
         );
-        debug!(symbol = %bar.symbol, close = bar.close, "okx: bar closed");
-        if tx.send(bar).is_err() {
+        if closed {
+            debug!(symbol = %bar.symbol, ?tf, close = bar.close, "okx: bar closed");
+        }
+        if tx.send(BarEvent { tf, bar, closed }).is_err() {
             let _ = write.close().await;
             return Ok(());
         }
@@ -126,19 +141,61 @@ fn parse_f64(s: &str) -> f64 {
     s.parse().unwrap_or(0.0)
 }
 
-// ── JSON serialization / deserialization ─────────────────────────────────────
+// ── Channel ↔ Timeframe ───────────────────────────────────────────────────────
+
+fn tf_to_channel(tf: Timeframe) -> Option<&'static str> {
+    match tf {
+        Timeframe::M1  => Some("candle1m"),
+        Timeframe::M3  => Some("candle3m"),
+        Timeframe::M5  => Some("candle5m"),
+        Timeframe::M15 => Some("candle15m"),
+        Timeframe::M30 => Some("candle30m"),
+        Timeframe::H1  => Some("candle1H"),
+        Timeframe::H2  => Some("candle2H"),
+        Timeframe::H4  => Some("candle4H"),
+        Timeframe::H6  => Some("candle6H"),
+        Timeframe::H8  => Some("candle8H"),
+        Timeframe::H12 => Some("candle12H"),
+        Timeframe::D1  => Some("candle1D"),
+        Timeframe::W1  => Some("candle1W"),
+        Timeframe::MN  => Some("candle1M"),
+        _ => None,
+    }
+}
+
+fn channel_to_tf(ch: &str) -> Option<Timeframe> {
+    match ch {
+        "candle1m"  => Some(Timeframe::M1),
+        "candle3m"  => Some(Timeframe::M3),
+        "candle5m"  => Some(Timeframe::M5),
+        "candle15m" => Some(Timeframe::M15),
+        "candle30m" => Some(Timeframe::M30),
+        "candle1H"  => Some(Timeframe::H1),
+        "candle2H"  => Some(Timeframe::H2),
+        "candle4H"  => Some(Timeframe::H4),
+        "candle6H"  => Some(Timeframe::H6),
+        "candle8H"  => Some(Timeframe::H8),
+        "candle12H" => Some(Timeframe::H12),
+        "candle1D"  => Some(Timeframe::D1),
+        "candle1W"  => Some(Timeframe::W1),
+        "candle1M"  => Some(Timeframe::MN),
+        _ => None,
+    }
+}
+
+// ── JSON serialization / deserialization ──────────────────────────────────────
 
 #[derive(Serialize)]
-struct SubRequest<'a> {
-    op: &'a str,
-    args: Vec<SubArg<'a>>,
+struct SubRequest {
+    op: &'static str,
+    args: Vec<SubArg>,
 }
 
 #[derive(Serialize)]
-struct SubArg<'a> {
-    channel: &'a str,
+struct SubArg {
+    channel: String,
     #[serde(rename = "instId")]
-    inst_id: &'a str,
+    inst_id: String,
 }
 
 #[derive(Deserialize)]

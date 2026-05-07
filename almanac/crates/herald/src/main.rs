@@ -1,9 +1,11 @@
 mod feed;
 mod handler;
+mod resampler;
 mod ring;
 mod symbols;
 use alm_herald::{http, registry, watch_evaluator};
 use feed::rest::{gap_fill_symbol, Exchange};
+use resampler::SymbolResamplers;
 
 use std::sync::Arc;
 
@@ -76,6 +78,11 @@ async fn main() -> Result<()> {
     // ── Ledger + Registry ─────────────────────────────────────────────────────
     let ledger = Arc::new(Ledger::new(LedgerConfig::default()));
 
+    // ── HTF resamplers (created early — shared across bootstrap, gap-fill, Handler)
+    let mut resamplers = SymbolResamplers::new(tf);
+    let htf_tfs: Vec<alm_core::Timeframe> = resamplers.active_tfs().collect();
+    info!(base_tf = ?tf, htf_levels = ?htf_tfs, "multi-TF resampler initialised");
+
     // `HERALD_SYMBOLS` can pin a custom subset for warm-set + bootstrap.
     // When unset, fall back to every symbol that will be ingested live so
     // indicators are always warmed before the first WebSocket bar arrives.
@@ -86,11 +93,22 @@ async fn main() -> Result<()> {
 
     if !startup_symbols.is_empty() {
         let warm = default_warm_set();
-        info!(symbols = startup_symbols.len(), indicators = warm.len(), ?tf, "applying warm-set");
+        // Apply warm-set for base TF + every HTF so all ledger slices start warm.
+        let all_tfs: Vec<alm_core::Timeframe> = std::iter::once(tf)
+            .chain(htf_tfs.iter().copied())
+            .collect();
+        info!(
+            symbols = startup_symbols.len(),
+            indicators = warm.len(),
+            timeframes = all_tfs.len(),
+            "applying warm-set across all TFs"
+        );
         for sym in &startup_symbols {
-            let (ok, skipped) = ledger.apply_warm_set(sym, tf, warm.iter().cloned());
-            if skipped > 0 {
-                warn!(symbol = %sym, registered = ok, skipped, "warm-set partially applied");
+            for &apply_tf in &all_tfs {
+                let (ok, skipped) = ledger.apply_warm_set(sym, apply_tf, warm.iter().cloned());
+                if skipped > 0 {
+                    warn!(symbol = %sym, ?apply_tf, registered = ok, skipped, "warm-set partially applied");
+                }
             }
         }
     }
@@ -135,7 +153,10 @@ async fn main() -> Result<()> {
                         let mut count = 0usize;
                         while let Some(mut bar) = feed.next() {
                             bar.symbol = sym.clone();
-                            let _ = ledger.advance(Timeframe::M1, bar);
+                            let _ = ledger.advance(tf, bar.clone());
+                            for (htf, htf_bar) in resamplers.push(&bar) {
+                                let _ = ledger.advance(htf, htf_bar);
+                            }
                             count += 1;
                         }
                         info!(symbol = %sym, bars = count, "parquet bootstrap done");
@@ -171,10 +192,10 @@ async fn main() -> Result<()> {
             // OKX symbols contain a dash (e.g. "BTC-USDT"); Binance do not.
             if sym.contains('-') {
                 // OKX — live symbol already has dashes; REST uses same format.
-                gap_fill_symbol(&ledger, sym, sym, Exchange::Okx, gap_start).await;
+                gap_fill_symbol(&ledger, &mut resamplers, tf, sym, sym, Exchange::Okx, gap_start).await;
             } else {
                 // Binance — symbol is already in "BTCUSDT" form.
-                gap_fill_symbol(&ledger, sym, sym, Exchange::Binance, gap_start).await;
+                gap_fill_symbol(&ledger, &mut resamplers, tf, sym, sym, Exchange::Binance, gap_start).await;
             }
         }
     }

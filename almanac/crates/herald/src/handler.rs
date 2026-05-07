@@ -1,24 +1,24 @@
 //! Bar ingestion + NATS control plane.
 //!
-//! Architecture (WebSocket-native):
+//! Architecture (WebSocket-native, multi-TF):
 //!
 //! ```text
 //!   feed::binance  ─┐
-//!   feed::okx      ─┤  mpsc::UnboundedSender<Bar>
+//!   feed::okx      ─┤  mpsc::UnboundedSender<BarEvent { tf, bar, closed }>
 //!                   ▼
 //!              Handler::run
 //!                   │
-//!          ┌────────┼───────────────┐
-//!          ▼        ▼               ▼
-//!       BarRing  Ledger::advance  NATS publish bars.{symbol}
-//!                   │
-//!                   ▼ fan-out
+//!          closed? ─┼──────────────────────────────────────┐
+//!          yes      │                                       │ no (forming)
+//!                   ▼                                       ▼
+//!          Ledger::advance(tf, bar)             Ledger::advance_live(tf, bar)
+//!                   │                           (no observer notification)
+//!                   ▼ fan-out (base TF only)
 //!            LedgerObserver(s)
 //!                   │
-//!             Registry (mpsc)
+//!             Registry (mpsc)  ──→ signal_publisher → NATS "signals"
 //!                   │
-//!                   ▼
-//!          signal_publisher → NATS "signals"
+//!           (base TF closed) ──→ BarRing + SSE bcast + NATS bars.{symbol}
 //! ```
 
 use std::sync::Arc;
@@ -35,7 +35,7 @@ use prost::Message as _;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, error, info, warn};
 
-use crate::feed::BarRx;
+use crate::feed::{BarEvent, BarRx};
 use crate::registry::{Registry, SignalBatch};
 use crate::ring::BarRing;
 
@@ -56,6 +56,8 @@ pub struct Handler {
     ledger: Arc<Ledger>,
     registry: Arc<Registry>,
     ring: BarRing,
+    /// Base timeframe — only closed bars at this TF trigger NATS publish +
+    /// SSE broadcast + Registry observer fan-out.
     tf: Timeframe,
     bar_rx: BarRx,
     signal_rx: Option<mpsc::UnboundedReceiver<SignalBatch>>,
@@ -105,7 +107,7 @@ impl Handler {
 
         loop {
             tokio::select! {
-                Some(bar) = self.bar_rx.recv() => self.handle_bar(bar).await,
+                Some(event) = self.bar_rx.recv() => self.handle_bar_event(event).await,
                 Some(msg) = config_sub.next()      => self.handle_config(msg).await,
                 Some(msg) = reset_sub.next()       => self.handle_reset(msg).await,
                 Some(msg) = register_sub.next()    => self.handle_register(msg).await,
@@ -117,30 +119,43 @@ impl Handler {
         Ok(())
     }
 
-    // ── bar ───────────────────────────────────────────────────────────────────
+    // ── bar event ─────────────────────────────────────────────────────────────
 
-    async fn handle_bar(&self, bar: Bar) {
+    async fn handle_bar_event(&self, event: BarEvent) {
+        let BarEvent { tf, bar, closed } = event;
         let symbol = bar.symbol.clone();
         let ts = bar.timestamp;
+
+        // Forming bar — update live_bar in ledger only, no observer fan-out.
+        if !closed {
+            self.ledger.advance_live(tf, bar);
+            return;
+        }
+
+        // Confirmed bar — advance the ledger slice for this TF.
+        match self.ledger.advance(tf, bar.clone()) {
+            Ok(Some(_)) => debug!(
+                %symbol, ?tf, bar_ts = ts,
+                open = bar.open, high = bar.high, low = bar.low,
+                close = bar.close, vol = bar.volume,
+                "bar confirmed"
+            ),
+            Ok(None)    => debug!(%symbol, ?tf, bar_ts = ts, "bar skipped (dup/out-of-order)"),
+            Err(e)      => error!(%symbol, ?tf, bar_ts = ts, err = %e, "ledger.advance failed"),
+        }
+
+        // Base TF only: push to ring, SSE broadcast, NATS publish.
+        if tf != self.tf {
+            return;
+        }
 
         // 1. Push to 24h ring buffer.
         self.ring.push(bar.clone());
 
-        // 2. Advance ledger (drives indicator state + signals via observer).
-        match self.ledger.advance(self.tf, bar.clone()) {
-            Ok(Some(_)) => debug!(
-                %symbol, bar_ts = ts,
-                open = bar.open, high = bar.high, low = bar.low, close = bar.close, vol = bar.volume,
-                "bar advanced"
-            ),
-            Ok(None)    => debug!(%symbol, bar_ts = ts, "bar skipped (dup/out-of-order)"),
-            Err(e)      => error!(%symbol, bar_ts = ts, err = %e, "ledger.advance failed"),
-        }
-
-        // 3. Broadcast to SSE subscribers (lagged receivers are silently dropped).
+        // 2. Broadcast to SSE subscribers.
         let _ = self.bar_bcast.send(bar.clone());
 
-        // 4. Publish to NATS bars.{symbol} for downstream consumers.
+        // 3. Publish to NATS bars.{symbol} for downstream consumers.
         let bar_msg = BarMsg::from(&bar);
         let payload = bar_msg.encode_to_vec();
         let subject = format!("{}.{}", SUBJ_BARS, symbol);

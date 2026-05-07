@@ -51,6 +51,7 @@ pub struct WatchEntry {
     pub symbols: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeframe: Option<String>,
+    #[serde(rename = "strategy_spec")]
     pub spec: StrategySpec,
     /// HTTP endpoint to POST signal JSON to when strategy fires.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -69,6 +70,7 @@ pub struct CreateWatchReq {
     pub symbols: Vec<String>,
     #[serde(default)]
     pub timeframe: Option<String>,
+    #[serde(rename = "strategy_spec")]
     pub spec: StrategySpec,
     #[serde(default)]
     pub webhook_url: Option<String>,

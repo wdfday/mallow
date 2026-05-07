@@ -20,7 +20,6 @@
 //! |----------------------------------------|-------------------------------------------------|
 //! | `GET  /api/strategies`                 | Registered named-strategy keys                  |
 //! | `POST /api/backtest`                   | Run a named strategy                            |
-//! | `POST /api/backtest/cel`               | Run a CEL-expression strategy                   |
 //! | `POST /api/backtest/rhai`              | Run a Rhai-script strategy                      |
 //!
 //! ## Store — CRUD for saved strategies and backtest cases

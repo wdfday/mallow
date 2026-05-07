@@ -1,7 +1,5 @@
 //! Domain types for the strategy store + backtest case/result persistence.
 
-use std::collections::HashMap;
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
@@ -10,46 +8,23 @@ use alm_engine::types::ExitConfig;
 
 // ── StrategySpec ──────────────────────────────────────────────────────────────
 
+/// A Rhai script strategy specification.
+///
+/// JSON shape: `{ "script": "let rsi = ind.rsi(14); ..." }` — no `kind` discriminant needed.
+/// Legacy records that include `"kind": "rhai"` are deserialized correctly (unknown fields
+/// are ignored by serde).
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum StrategySpec {
-    Cel {
-        entry: String,
-        exit: String,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        defines: Option<HashMap<String, String>>,
-    },
-    Rhai {
-        script: String,
-    },
+pub struct StrategySpec {
+    pub script: String,
 }
 
 impl StrategySpec {
     pub fn to_factory_args(&self) -> (String, Value) {
-        match self {
-            StrategySpec::Cel { entry, exit, defines } => {
-                let mut m = serde_json::Map::new();
-                m.insert("entry".into(), Value::String(entry.clone()));
-                m.insert("exit".into(), Value::String(exit.clone()));
-                if let Some(defs) = defines {
-                    if let Ok(v) = serde_json::to_value(defs) {
-                        m.insert("defines".into(), v);
-                    }
-                }
-                ("cel".into(), Value::Object(m))
-            }
-            StrategySpec::Rhai { script } => {
-                ("rhai".into(), serde_json::json!({ "script": script }))
-            }
-        }
+        ("rhai".into(), serde_json::json!({ "script": self.script }))
     }
 
-    pub fn kind_str(&self) -> &'static str {
-        match self {
-            StrategySpec::Cel { .. }  => "cel",
-            StrategySpec::Rhai { .. } => "rhai",
-        }
-    }
+    /// Always `"rhai"` — kept for logging / DB writes.
+    pub fn kind_str(&self) -> &'static str { "rhai" }
 }
 
 // ── Capital / execution sub-configs ──────────────────────────────────────────
@@ -111,6 +86,7 @@ pub struct Strategy {
     pub version: i32,
     /// Human-readable display label.
     pub label: String,
+    #[serde(rename = "strategy_spec")]
     pub spec: StrategySpec,
     /// Optional change notes for this version.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -190,6 +166,7 @@ pub struct CreateStrategyReq {
     /// If omitted, auto-incremented from the highest existing version for `name`.
     pub version: Option<i32>,
     pub label: String,
+    #[serde(rename = "strategy_spec")]
     pub spec: StrategySpec,
     pub notes: Option<String>,
 }

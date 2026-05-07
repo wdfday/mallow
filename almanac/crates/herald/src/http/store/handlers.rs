@@ -190,8 +190,9 @@ pub async fn create_case(
     }
     let capital   = req.capital.unwrap_or_default();
     let execution = req.execution.unwrap_or_default();
+    let timeframe = Some(req.timeframe.unwrap_or_else(|| state.tf.to_string()));
     match state.store.create_case(
-        req.strategy_id, req.label, req.symbol, req.timeframe,
+        req.strategy_id, req.label, req.symbol, timeframe,
         req.from_ms, req.to_ms, req.data_source, capital, execution, req.exit,
     ).await {
         Ok(c)  => {

@@ -6,7 +6,7 @@ use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
 use alm_engine::types::{
-    BacktestRequest, CelBacktestRequest, ExitConfig, ExitLevel, MonteCarloConfig,
+    BacktestRequest, ExitConfig, ExitLevel, MonteCarloConfig,
     RhaiBacktestRequest, WalkForwardConfig,
 };
 
@@ -60,7 +60,6 @@ impl Modify for BearerAuthAddon {
         data::unified::unified_data,
         backtest::list_strategies,
         backtest::run_backtest,
-        backtest::run_backtest_cel,
         backtest::run_backtest_rhai,
         rhai_validate::validate_rhai,
         sse::stream_bars,
@@ -103,7 +102,6 @@ impl Modify for BearerAuthAddon {
         types::BarStreamEvent,
         // Backtest
         BacktestRequest,
-        CelBacktestRequest,
         RhaiBacktestRequest,
         ExitConfig,
         ExitLevel,

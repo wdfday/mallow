@@ -239,7 +239,7 @@ impl Registry {
         }
     }
 
-    /// Convenience constructor that installs a CEL fallback strategy for
+    /// Convenience constructor that installs a Rhai fallback strategy for
     /// symbols that have no explicit bot registered (legacy `engine.configure` compat).
     pub fn with_default_fallback(
         ledger: Arc<Ledger>,
@@ -247,10 +247,10 @@ impl Registry {
         signal_tx: mpsc::UnboundedSender<SignalBatch>,
     ) -> Self {
         let r = Self::new(ledger, tf, signal_tx);
-        // Default: EMA 20/50 crossover expressed as CEL (replaces old named ma_crossover).
+        // Default: EMA 20/50 crossover as a Rhai script.
         r.set_global_config(
-            "cel".into(),
-            r#"{"entry":"prev_ema(20) <= prev_ema(50) && ema(20) > ema(50)","exit":"prev_ema(20) >= prev_ema(50) && ema(20) < ema(50)"}"#.into(),
+            "rhai".into(),
+            r#"{"script":"let fast = ind.ema(20); let slow = ind.ema(50);\nlet entry = fast[1] <= slow[1] && fast[0] > slow[0];\nlet exit = fast[1] >= slow[1] && fast[0] < slow[0];"}"#.into(),
         );
         r
     }
@@ -271,13 +271,13 @@ impl Registry {
         params_json: String,
         target_tf: Timeframe,
     ) -> Result<()> {
-        // Only CEL strategies are supported in live mode — named strategies
+        // Only Rhai strategies are supported in live mode — named strategies
         // are backtest-only (they own indicators internally and don't integrate
         // with the ledger's shared indicator state).
-        if !matches!(strategy_name.as_str(), "cel" | "cel2" | "rhai") {
+        if !matches!(strategy_name.as_str(), "rhai") {
             anyhow::bail!(
-                "live bot registration only supports CEL/Rhai strategies ('cel', 'rhai'); \
-                 got '{}'. Use CEL expressions or Rhai scripts to replicate named strategy logic.",
+                "live bot registration only supports Rhai strategies ('rhai'); \
+                 got '{}'. Use Rhai scripts to replicate named strategy logic.",
                 strategy_name
             );
         }
@@ -554,7 +554,7 @@ mod tests {
         let (_led, reg, _rx) = make_registry();
         reg.register(
             "bot1".into(), "orch1".into(), "BTCUSDT".into(),
-            "cel".into(), r#"{"entry":"rsi(14) < 30","exit":"rsi(14) > 70"}"#.into(),
+            "rhai".into(), r#"{"script":"let r = ind.rsi(14);\nif r[0] < 30.0 { entry = true; }\nif r[0] > 70.0 { exit = true; }"}"#.into(),
             Timeframe::M1,
         ).unwrap();
         let bots = reg.list_bots();
@@ -568,7 +568,7 @@ mod tests {
         let (led, reg, mut rx) = make_registry();
         reg.register(
             "bot1".into(), "orch1".into(), "BTCUSDT".into(),
-            "cel".into(), r#"{"entry":"ema(2) > ema(3)","exit":"ema(2) < ema(3)"}"#.into(),
+            "rhai".into(), r#"{"script":"let e2 = ind.ema(2);\nlet e3 = ind.ema(3);\nif e2[0] > e3[0] { entry = true; }\nif e2[0] < e3[0] { exit = true; }"}"#.into(),
             Timeframe::M1,
         ).unwrap();
         // Feed a few warmup bars with ancient timestamps (year 2000-ish).
@@ -587,7 +587,7 @@ mod tests {
         let (led, reg, mut rx) = make_registry();
         reg.register(
             "bot1".into(), "orch1".into(), "TEST".into(),
-            "cel".into(), r#"{"entry":"prev_ema(2) <= prev_ema(3) && ema(2) > ema(3)","exit":"prev_ema(2) >= prev_ema(3) && ema(2) < ema(3)"}"#.into(),
+            "rhai".into(), r#"{"script":"let e2 = ind.ema(2, 2);\nlet e3 = ind.ema(3, 2);\nif cross_above(e2, e3) { entry = true; }\nif cross_below(e2, e3) { exit = true; }"}"#.into(),
             Timeframe::M1,
         ).unwrap();
         let now = chrono::Utc::now().timestamp_millis();
@@ -616,28 +616,28 @@ mod tests {
     }
 
     #[test]
-    fn cel_register_acquires_indicator_handles() {
+    fn rhai_register_acquires_indicator_handles() {
         let (led, reg, _rx) = make_registry();
-        let params = r#"{"entry":"rsi(14) < 30","exit":"rsi(14) > 70"}"#;
+        let params = r#"{"script":"let r = ind.rsi(14);\nif r[0] < 30.0 { entry = true; }\nif r[0] > 70.0 { exit = true; }"}"#;
         reg.register(
-            "cel1".into(), "orch1".into(), "BTCUSDT".into(),
-            "cel".into(), params.into(),
+            "bot1".into(), "orch1".into(), "BTCUSDT".into(),
+            "rhai".into(), params.into(),
             Timeframe::M1,
         ).unwrap();
 
         // Exactly one live handle on the rsi cell.
         let rc = peek_refcount(&led, "BTCUSDT",
             serde_json::json!({"type":"rsi","period":14}));
-        assert_eq!(rc, Some(1), "register(cel) must acquire an indicator handle");
+        assert_eq!(rc, Some(1), "register(rhai) must acquire an indicator handle");
     }
 
     #[test]
-    fn cel_multi_indicator_acquires_all_handles() {
+    fn rhai_multi_indicator_acquires_all_handles() {
         let (led, reg, _rx) = make_registry();
-        let params = r#"{"entry":"rsi(14) < 30 && ema(50) > ema(200)","exit":"rsi(14) > 70"}"#;
+        let params = r#"{"script":"let r = ind.rsi(14);\nlet e50 = ind.ema(50);\nlet e200 = ind.ema(200);\nif r[0] < 30.0 && e50[0] > e200[0] { entry = true; }\nif r[0] > 70.0 { exit = true; }"}"#;
         reg.register(
-            "cel1".into(), "orch1".into(), "BTCUSDT".into(),
-            "cel".into(), params.into(),
+            "bot1".into(), "orch1".into(), "BTCUSDT".into(),
+            "rhai".into(), params.into(),
             Timeframe::M1,
         ).unwrap();
 
@@ -652,29 +652,29 @@ mod tests {
     #[test]
     fn deregister_releases_handles() {
         let (led, reg, _rx) = make_registry();
-        let params = r#"{"entry":"rsi(14) < 30","exit":"rsi(14) > 70"}"#;
+        let params = r#"{"script":"let r = ind.rsi(14);\nif r[0] < 30.0 { entry = true; }\nif r[0] > 70.0 { exit = true; }"}"#;
         reg.register(
-            "cel1".into(), "orch1".into(), "BTCUSDT".into(),
-            "cel".into(), params.into(),
+            "bot1".into(), "orch1".into(), "BTCUSDT".into(),
+            "rhai".into(), params.into(),
             Timeframe::M1,
         ).unwrap();
         assert_eq!(peek_refcount(&led, "BTCUSDT",
             serde_json::json!({"type":"rsi","period":14})), Some(1));
 
-        reg.deregister("cel1");
+        reg.deregister("bot1");
         // Refcount drops to 0; cell stays until grace period expires.
         assert_eq!(peek_refcount(&led, "BTCUSDT",
             serde_json::json!({"type":"rsi","period":14})), Some(0));
     }
 
     #[test]
-    fn two_cel_bots_share_one_indicator_cell() {
+    fn two_rhai_bots_share_one_indicator_cell() {
         let (led, reg, _rx) = make_registry();
-        let params = r#"{"entry":"rsi(14) < 30","exit":"rsi(14) > 70"}"#;
+        let params = r#"{"script":"let r = ind.rsi(14);\nif r[0] < 30.0 { entry = true; }\nif r[0] > 70.0 { exit = true; }"}"#;
         reg.register("bot1".into(), "o".into(), "BTCUSDT".into(),
-                     "cel".into(), params.into(), Timeframe::M1).unwrap();
+                     "rhai".into(), params.into(), Timeframe::M1).unwrap();
         reg.register("bot2".into(), "o".into(), "BTCUSDT".into(),
-                     "cel".into(), params.into(), Timeframe::M1).unwrap();
+                     "rhai".into(), params.into(), Timeframe::M1).unwrap();
         // Dedup → one cell, two refs.
         assert_eq!(peek_refcount(&led, "BTCUSDT",
             serde_json::json!({"type":"rsi","period":14})), Some(2));
@@ -687,11 +687,11 @@ mod tests {
     #[test]
     fn reregister_same_bot_keeps_single_handle() {
         let (led, reg, _rx) = make_registry();
-        let params = r#"{"entry":"rsi(14) < 30","exit":"rsi(14) > 70"}"#;
+        let params = r#"{"script":"let r = ind.rsi(14);\nif r[0] < 30.0 { entry = true; }\nif r[0] > 70.0 { exit = true; }"}"#;
         reg.register("bot1".into(), "o".into(), "BTCUSDT".into(),
-                     "cel".into(), params.into(), Timeframe::M1).unwrap();
+                     "rhai".into(), params.into(), Timeframe::M1).unwrap();
         reg.register("bot1".into(), "o".into(), "BTCUSDT".into(),
-                     "cel".into(), params.into(), Timeframe::M1).unwrap();
+                     "rhai".into(), params.into(), Timeframe::M1).unwrap();
         // Re-register = remove old + add new → refcount stays at 1.
         // (The old BotHandle is dropped by `SymbolGroup::add`, releasing its
         //  handle; the new one acquires afresh.)
@@ -699,21 +699,21 @@ mod tests {
             serde_json::json!({"type":"rsi","period":14})), Some(1));
     }
 
-    // Named strategies are no longer allowed in live registration (CEL/Rhai only).
-    // The equivalent test for CEL indicator wiring is `cel_register_acquires_indicator_handles`.
+    // Named strategies are no longer allowed in live registration (Rhai only).
+    // Indicator wiring is tested in `rhai_register_acquires_indicator_handles`.
 
     #[tokio::test]
     async fn deregister_all_clears() {
         let (_led, reg, _rx) = make_registry();
-        let params = r#"{"entry":"ema(5) > ema(20)","exit":"ema(5) < ema(20)"}"#;
+        let params = r#"{"script":"let e5 = ind.ema(5);\nlet e20 = ind.ema(20);\nif e5[0] > e20[0] { entry = true; }\nif e5[0] < e20[0] { exit = true; }"}"#;
         reg.register(
             "bot1".into(), "orch1".into(), "BTCUSDT".into(),
-            "cel".into(), params.into(),
+            "rhai".into(), params.into(),
             Timeframe::M1,
         ).unwrap();
         reg.register(
             "bot2".into(), "orch2".into(), "ETHUSDT".into(),
-            "cel".into(), params.into(),
+            "rhai".into(), params.into(),
             Timeframe::M1,
         ).unwrap();
         reg.deregister("");

@@ -86,8 +86,8 @@ fn delete(uri: &str) -> Request<Body> {
         .unwrap()
 }
 
-fn cel_spec() -> serde_json::Value {
-    serde_json::json!({ "kind": "cel", "entry": "true", "exit": "false" })
+fn rhai_spec() -> serde_json::Value {
+    serde_json::json!({ "script": "if true { entry = true; }" })
 }
 
 /// Create a strategy in `state` and return its UUID.
@@ -95,7 +95,7 @@ async fn seed_strategy(state: &HttpState) -> String {
     let body = serde_json::json!({
         "name": "seed_strategy",
         "label": "Seed",
-        "spec": cel_spec()
+        "strategy_spec": rhai_spec()
     });
     let resp = router(state.clone())
         .oneshot(post_json("/api/store/strategies", body))
@@ -124,7 +124,7 @@ async fn seed_case(state: &HttpState, strategy_id: &str) -> String {
 async fn seed_watch(state: &HttpState) -> String {
     let body = serde_json::json!({
         "symbols": ["BTCUSDT"],
-        "spec": cel_spec(),
+        "strategy_spec": rhai_spec(),
         "webhook_url": "http://localhost:9999/hook"
     });
     let resp = router(state.clone())
@@ -228,7 +228,7 @@ async fn create_strategy_returns_201_with_id() {
     let body = serde_json::json!({
         "name": "my_strat",
         "label": "My Strategy",
-        "spec": cel_spec()
+        "strategy_spec": rhai_spec()
     });
     let resp = test_app()
         .oneshot(post_json("/api/store/strategies", body))

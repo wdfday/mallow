@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS strategies (
     name        TEXT    NOT NULL,
     version     INT     NOT NULL DEFAULT 1,
     label       TEXT    NOT NULL,
-    kind        TEXT    NOT NULL CHECK (kind IN ('cel', 'rhai')),
+    kind        TEXT    NOT NULL CHECK (kind IN ('rhai')),
     spec        JSONB   NOT NULL,
     exit_config JSONB,
     notes       TEXT,
@@ -193,8 +193,24 @@ FROM symbols s JOIN providers p ON p.id = s.provider_id WHERE p.slug = 'okx'
 ON CONFLICT (symbol_id, frame) DO NOTHING;
 "#;
 
+/// One-time migrations that alter existing tables (safe to re-run).
+const MIGRATIONS: &str = r#"
+-- CEL deprecated: migrate any legacy 'cel' rows to 'rhai' kind.
+UPDATE strategies SET kind = 'rhai' WHERE kind = 'cel';
+
+-- Drop the old kind constraint (may include 'cel'); recreated by CREATE TABLE above
+-- if the table is new. For existing tables we replace it explicitly.
+DO $$ BEGIN
+    ALTER TABLE strategies DROP CONSTRAINT IF EXISTS strategies_kind_check;
+EXCEPTION WHEN undefined_object THEN NULL;
+END $$;
+ALTER TABLE strategies
+    ADD CONSTRAINT strategies_kind_check CHECK (kind IN ('rhai'));
+"#;
+
 pub async fn run(pool: &PgPool) -> Result<()> {
     sqlx::raw_sql(SCHEMA).execute(pool).await?;
+    sqlx::raw_sql(MIGRATIONS).execute(pool).await?;
     tracing::info!("herald store: schema migration complete");
     Ok(())
 }

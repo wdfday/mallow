@@ -486,104 +486,10 @@ pub struct ErrorResponse {
     pub error: String,
 }
 
-// ── CEL backtest request ─────────────────────────────────────────────────────
-
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct CelBacktestRequest {
-    pub symbol: String,
-    pub entry_expr: String,
-    pub exit_expr: String,
-    /// Named expression aliases expanded into `entry_expr`/`exit_expr` before compilation.
-    ///
-    /// Example: `{"trend": "adx(14) > 25.0", "oversold": "rsi(14) < 30.0"}`
-    /// then `entry_expr: "trend && oversold"` expands to `"(adx(14) > 25.0) && (rsi(14) < 30.0)"`.
-    ///
-    /// Defines may reference other defines (resolved in dependency order).
-    /// Circular references and shadowing of built-in names are rejected.
-    pub defines: Option<HashMap<String, String>>,
-    pub exit: Option<ExitConfig>,
-    pub candle_type: Option<String>,
-    pub ha_smooth: Option<usize>,
-    pub from: Option<String>,
-    pub to: Option<String>,
-    pub initial_capital: Option<f64>,
-    pub commission_pct: Option<f64>,
-    pub slippage_pct: Option<f64>,
-    pub risk_free_annual: Option<f64>,
-    pub position_size_pct: Option<f64>,
-    pub position_size_usd: Option<f64>,
-    pub position_size_quantity: Option<f64>,
-    pub max_positions: Option<usize>,
-    pub market_hours_only: Option<bool>,
-    pub data_source: Option<String>,
-    pub asset_type: Option<String>,
-    pub timeframe: Option<String>,
-    pub min_strength: Option<f64>,
-    pub monte_carlo: Option<MonteCarloConfig>,
-    pub walk_forward: Option<WalkForwardConfig>,
-    /// When set, auto-save the strategy + case + result under this name after a successful run.
-    pub save_as: Option<String>,
-    pub curve_points: Option<usize>,
-}
-
-// CEL → canonical BacktestRequest. Lives here (not in `backtest.rs`)
-// so the conversion is a pure type transformation with no engine imports —
-// both the HTTP handler and library users can apply it without pulling the
-// whole runner into scope.
-
-impl From<CelBacktestRequest> for BacktestRequest {
-    fn from(req: CelBacktestRequest) -> Self {
-        let mut params = serde_json::Map::new();
-        params.insert("entry".into(), serde_json::json!(req.entry_expr));
-        params.insert("exit".into(), serde_json::json!(req.exit_expr));
-        if let Some(defs) = req.defines {
-            let obj: serde_json::Map<_, _> = defs
-                .into_iter()
-                .map(|(k, v)| (k, serde_json::json!(v)))
-                .collect();
-            params.insert("defines".into(), serde_json::Value::Object(obj));
-        }
-        if let Some(v) = req.candle_type {
-            params.insert("candle_type".into(), serde_json::json!(v));
-        }
-        if let Some(v) = req.ha_smooth {
-            params.insert("ha_smooth".into(), serde_json::json!(v));
-        }
-        if let Some(ref cfg) = req.exit {
-            crate::backtest::inject_atr_exit_into_cel_params(cfg, &mut params);
-        }
-        BacktestRequest {
-            strategy: "cel".into(),
-            symbol: req.symbol,
-            params: Some(Value::Object(params)),
-            exit: req.exit,
-            from: req.from,
-            to: req.to,
-            initial_capital: req.initial_capital,
-            commission_pct: req.commission_pct,
-            slippage_pct: req.slippage_pct,
-            risk_free_annual: req.risk_free_annual,
-            position_size_pct: req.position_size_pct,
-            position_size_usd: req.position_size_usd,
-            position_size_quantity: req.position_size_quantity,
-            max_positions: req.max_positions,
-            market_hours_only: req.market_hours_only,
-            data_source: req.data_source,
-            asset_type: req.asset_type,
-            timeframe: req.timeframe,
-            min_strength: req.min_strength,
-            monte_carlo: req.monte_carlo,
-            walk_forward: req.walk_forward,
-            curve_points: req.curve_points,
-        }
-    }
-}
-
-
 // ── RhaiBacktestRequest ──────────────────────────────────────────────────────
 
-/// Dedicated request for Rhai-script backtests — mirrors `CelBacktestRequest`
-/// but takes a single `script` field instead of `entry_expr` / `exit_expr`.
+/// Dedicated request for Rhai-script backtests.
+/// Takes a single `script` field containing the full Rhai script.
 ///
 /// The script is passed verbatim to `RhaiStrategy`; any `plot("name", value)`
 /// calls inside the script populate `indicator_series` in the response.
@@ -644,7 +550,7 @@ impl From<RhaiBacktestRequest> for BacktestRequest {
     }
 }
 
-// ── DynamicBacktestRequest — DEPRECATED (use CelBacktestRequest) ────────────
+// ── DynamicBacktestRequest — DEPRECATED ─────────────────────────────────────
 /*
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct DynamicBacktestRequest {

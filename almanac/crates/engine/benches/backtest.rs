@@ -206,29 +206,6 @@ fn bench_strategy_expr(c: &mut Criterion) {
         });
     });
 
-    // CEL: same EMA-crossover logic via expression compiler
-    group.bench_function("cel/EmaXover", |b| {
-        b.iter(|| {
-            let mut f = BarVecFeed::new(bars.clone(), sym.into());
-            let strategy = build_strategy(
-                "cel",
-                &json!({
-                    "entry": "prev_ema(20) <= prev_ema(50) && ema(20) > ema(50)",
-                    "exit":  "prev_ema(20) >= prev_ema(50) && ema(20) < ema(50)"
-                }),
-            )
-            .unwrap();
-            let mut eng = Engine::sync(
-                CAPITAL,
-                strategy,
-                FixedFractional::fractional(0.95, 1),
-                COMMISSION,
-                SLIPPAGE,
-            );
-            black_box(eng.run(&mut f, RISK_FREE))
-        });
-    });
-
     // Rhai: same logic via Rhai script interpreter
     group.bench_function("rhai/EmaXover", |b| {
         b.iter(|| {
@@ -242,29 +219,6 @@ fn bench_strategy_expr(c: &mut Criterion) {
                         let entry = cross_above(ema20, ema50);\
                         let exit  = cross_below(ema20, ema50);\
                     "
-                }),
-            )
-            .unwrap();
-            let mut eng = Engine::sync(
-                CAPITAL,
-                strategy,
-                FixedFractional::fractional(0.95, 1),
-                COMMISSION,
-                SLIPPAGE,
-            );
-            black_box(eng.run(&mut f, RISK_FREE))
-        });
-    });
-
-    // CEL: multi-indicator (heavier expression)
-    group.bench_function("cel/MultiIndicator", |b| {
-        b.iter(|| {
-            let mut f = BarVecFeed::new(bars.clone(), sym.into());
-            let strategy = build_strategy(
-                "cel",
-                &json!({
-                    "entry": "rsi(14) < 40.0 && ema(20) > ema(50) && macd_hist(12) > 0.0",
-                    "exit":  "rsi(14) > 60.0 || ema(20) < ema(50)"
                 }),
             )
             .unwrap();

@@ -108,9 +108,9 @@ pub fn estimate(req: &BacktestRequest, data_dir: &Path) -> Result<(usize, f64)> 
     let feed = load_bars(&files, symbol, from_ms, to_ms, market_hours_only, market_region)
         .with_context(|| format!("loading data for '{}'", symbol))?;
     let bar_count = feed.len();
-    // Heuristic: ~500k bars/sec for named strategies, ~200k/sec for CEL/Rhai.
+    // Heuristic: ~500k bars/sec for named strategies, ~200k/sec for Rhai.
     let bars_per_sec = match req.strategy.as_str() {
-        "cel" | "cel2" | "rhai" => 200_000.0,
+        "rhai" => 200_000.0,
         _ => 500_000.0,
     };
     let estimated_seconds = bar_count as f64 / bars_per_sec;
@@ -584,12 +584,8 @@ pub fn run(req: BacktestRequest, data_dir: &Path) -> Result<BacktestResponse> {
 
 /// Build engine [`ExitRules`] from [`ExitConfig`].
 ///
-/// Fixed-pct levels → directly into `ExitRules`. ATR-expression levels
-/// (`"N*atr(P)"`) → injected into `cel_params` so that `CelStrategy` handles
-/// them internally; engine-level `ExitRules` gets `None` for those fields
-/// (the engine does not know ATR at construction time).
-pub fn exit_rules_from_config(cfg: ExitConfig, cel_params: &Value) -> ExitRules {
-    let _ = cel_params; // reserved for future ATR injection into non-CEL strategies.
+/// Fixed-pct levels → directly into `ExitRules`.
+pub fn exit_rules_from_config(cfg: ExitConfig, _params: &Value) -> ExitRules {
     let intra_bar_mode = match cfg.intra_bar_mode.as_deref() {
         Some("pessimistic")    => IntraBarMode::Pessimistic,
         Some("ohlc_heuristic") => IntraBarMode::OhlcHeuristic,
@@ -602,43 +598,6 @@ pub fn exit_rules_from_config(cfg: ExitConfig, cel_params: &Value) -> ExitRules 
         max_bars_held: cfg.max_bars,
         intra_bar_mode,
         ..Default::default()
-    }
-}
-
-/// Inject ATR-based `tp`/`sl` from [`ExitConfig`] into a CEL params map.
-/// Called by the CEL `From` conversion so that `CelStrategy::from_params`
-/// picks them up.
-pub fn inject_atr_exit_into_cel_params(
-    cfg: &ExitConfig,
-    params: &mut serde_json::Map<String, Value>,
-) {
-    use serde_json::json;
-    if let Some(level) = &cfg.tp {
-        match level {
-            ExitLevel::Pct(v) => {
-                params.insert("tp".into(), json!(v));
-            }
-            ExitLevel::Expr(_) => {
-                if let Some((mult, period)) = level.as_atr() {
-                    params.insert("tp_atr".into(), json!(mult));
-                    params.insert("atr_period".into(), json!(period));
-                }
-            }
-        }
-    }
-    if let Some(level) = &cfg.sl {
-        match level {
-            ExitLevel::Pct(v) => {
-                params.insert("sl".into(), json!(v));
-            }
-            ExitLevel::Expr(_) => {
-                if let Some((mult, period)) = level.as_atr() {
-                    params.insert("sl_atr".into(), json!(mult));
-                    // atr_period already set above; only overwrite if not set yet.
-                    params.entry("atr_period").or_insert(json!(period));
-                }
-            }
-        }
     }
 }
 

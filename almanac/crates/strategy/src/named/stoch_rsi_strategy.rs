@@ -150,34 +150,5 @@ mod tests {
         assert!(strat.prev_k.is_none());
     }
 
-    /* // deprecated — DynamicStrategy removed
-    #[test]
-    fn stoch_rsi_parity() {
-        let bars = stoch_rsi_bars();
 
-        let mut hc = StochRsiStrategy::new(14, 3, 0.2, 0.8);
-        let hc_sigs = run(&mut hc, &bars);
-
-        let mut dyn_s = build_strategy("dynamic", &json!({
-            "indicators": { "srsi": { "type": "stoch_rsi", "rsi_period": 14, "smooth_d": 3 } },
-            "entry": { "logic": "and", "rules": [
-                { "source": "srsi", "field": "k", "op": "cross_below", "value": 0.2 }
-            ]},
-            "exit": { "logic": "and", "rules": [
-                { "source": "srsi", "field": "k", "op": "cross_above", "value": 0.8 }
-            ]}
-        })).unwrap();
-        let dyn_sigs = run(dyn_s.as_mut(), &bars);
-
-        let mut cel = build_strategy("cel", &json!({
-            "entry": "prev_srsi_k(14) >= 0.2 && srsi_k(14) < 0.2",
-            "exit":  "prev_srsi_k(14) <= 0.8 && srsi_k(14) > 0.8"
-        })).unwrap();
-        let cel_sigs = run(cel.as_mut(), &bars);
-
-        assert!(!hc_sigs.is_empty(), "stoch_rsi: no signals");
-        assert_parity("stoch_rsi hc vs dynamic", &hc_sigs, &dyn_sigs);
-        assert_parity("stoch_rsi hc vs cel",     &hc_sigs, &cel_sigs);
-    }
-    */
 }

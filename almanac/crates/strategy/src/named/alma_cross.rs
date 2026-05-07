@@ -83,44 +83,4 @@ impl Strategy for AlmaCross {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::test_utils::*;
-    use crate::factory::build_strategy;
-    use serde_json::json;
-
-    /* // deprecated — DynamicStrategy removed
-    #[test]
-    fn alma_cross_parity() {
-        let bars = trending_bars(300);
-
-        let mut hc = AlmaCross::new(9, 21, 0.85, 6.0);
-        let hc_sigs = run(&mut hc, &bars);
-
-        let mut dyn_s = build_strategy("dynamic", &json!({
-            "indicators": {
-                "fast": { "type": "alma", "period": 9, "offset": 0.85, "sigma": 6.0 },
-                "slow": { "type": "alma", "period": 21, "offset": 0.85, "sigma": 6.0 }
-            },
-            "entry": { "logic": "and", "rules": [
-                { "source": "fast", "field": "value", "op": "cross_above",
-                  "compare": "slow", "compare_field": "value" }
-            ]},
-            "exit": { "logic": "and", "rules": [
-                { "source": "fast", "field": "value", "op": "cross_below",
-                  "compare": "slow", "compare_field": "value" }
-            ]}
-        })).unwrap();
-        let dyn_sigs = run(dyn_s.as_mut(), &bars);
-
-        let mut cel = build_strategy("cel", &json!({
-            "entry": "prev_alma(9) <= prev_alma(21) && alma(9) > alma(21)",
-            "exit":  "prev_alma(9) >= prev_alma(21) && alma(9) < alma(21)"
-        })).unwrap();
-        let cel_sigs = run(cel.as_mut(), &bars);
-
-        assert!(!hc_sigs.is_empty(), "alma_cross: no signals");
-        assert_parity("alma_cross hc vs dynamic", &hc_sigs, &dyn_sigs);
-        assert_parity("alma_cross hc vs cel",     &hc_sigs, &cel_sigs);
-    }
-    */
 }

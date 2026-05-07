@@ -55,39 +55,4 @@ impl Strategy for AoStrategy {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::test_utils::*;
-    use crate::factory::build_strategy;
-    use serde_json::json;
-
-    /* // deprecated — DynamicStrategy removed
-    #[test]
-    fn ao_parity() {
-        let bars = trending_bars(200);
-
-        let mut hc = AoStrategy::new(5, 34);
-        let hc_sigs = run(&mut hc, &bars);
-
-        let mut dyn_s = build_strategy("dynamic", &json!({
-            "indicators": { "ao": { "type": "ao", "fast": 5, "slow": 34 } },
-            "entry": { "logic": "and", "rules": [
-                { "source": "ao", "field": "value", "op": "cross_above", "value": 0.0 }
-            ]},
-            "exit": { "logic": "and", "rules": [
-                { "source": "ao", "field": "value", "op": "cross_below", "value": 0.0 }
-            ]}
-        })).unwrap();
-        let dyn_sigs = run(dyn_s.as_mut(), &bars);
-
-        let mut cel = build_strategy("cel", &json!({
-            "entry": "prev_ao() <= 0.0 && ao() > 0.0",
-            "exit":  "prev_ao() >= 0.0 && ao() < 0.0"
-        })).unwrap();
-        let cel_sigs = run(cel.as_mut(), &bars);
-
-        assert!(!hc_sigs.is_empty(), "ao: no signals");
-        assert_parity("ao hc vs dynamic", &hc_sigs, &dyn_sigs);
-        assert_parity("ao hc vs cel",     &hc_sigs, &cel_sigs);
-    }
-    */
 }

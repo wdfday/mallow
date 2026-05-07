@@ -117,35 +117,4 @@ mod tests {
         assert!(!strat.in_position);
         assert!(strat.prev_tsi.is_none());
     }
-
-    /* // deprecated — DynamicStrategy removed
-    #[test]
-    fn tsi_parity() {
-        let bars = trending_bars(300);
-
-        let mut hc = TsiStrategy::new(25, 13, 0.0, 0.0);
-        let hc_sigs = run(&mut hc, &bars);
-
-        let mut dyn_s = build_strategy("dynamic", &json!({
-            "indicators": { "tsi": { "type": "tsi", "first": 25, "second": 13 } },
-            "entry": { "logic": "and", "rules": [
-                { "source": "tsi", "field": "value", "op": "cross_above", "value": 0.0 }
-            ]},
-            "exit": { "logic": "and", "rules": [
-                { "source": "tsi", "field": "value", "op": "cross_below", "value": 0.0 }
-            ]}
-        })).unwrap();
-        let dyn_sigs = run(dyn_s.as_mut(), &bars);
-
-        let mut cel = build_strategy("cel", &json!({
-            "entry": "prev_tsi(25) <= 0.0 && tsi(25) > 0.0",
-            "exit":  "prev_tsi(25) >= 0.0 && tsi(25) < 0.0"
-        })).unwrap();
-        let cel_sigs = run(cel.as_mut(), &bars);
-
-        assert!(!hc_sigs.is_empty(), "tsi: no signals");
-        assert_parity("tsi hc vs dynamic", &hc_sigs, &dyn_sigs);
-        assert_parity("tsi hc vs cel",     &hc_sigs, &cel_sigs);
-    }
-    */
 }

@@ -9,15 +9,14 @@
 //! ```
 //! Unknown keys are silently ignored; missing keys fall back to sensible defaults.
 //!
-//! `CelStrategy` uses a simple expression format — see [`crate::expr`] docs.
+//! Unknown keys are silently ignored; missing keys fall back to sensible defaults.
 
 use anyhow::{bail, Result};
 use alm_core::strategy::Strategy;
 use serde_json::Value;
 
 use crate::{
-    expr::cel::CelStrategy,
-    expr::rhai_strategy::RhaiStrategy,
+    script::rhai_strategy::RhaiStrategy,
     // dynamic::DynamicStrategy,  // deprecated
     AdxEmaCross, AlmaCross, AlligatorStrategy, AroonTrend, AtrTrailingStop, BbKeltnerSqueeze,
     BbRsiReversal, BbSqueeze, BollingerMacd, CciReversal, ChandelierExit, ChopFilterStrategy,
@@ -547,10 +546,6 @@ pub fn build_strategy(name: &str, params: &Value) -> Result<Box<dyn Strategy>> {
             pu(p, "signal", 9),
         )),
 
-        // ── CEL (cel-interpreter, ema(9) function-call syntax) ───────────────
-        // params: { "entry": "<cel expr>", "exit": "<cel expr>" }
-        "cel" | "cel2" => Box::new(CelStrategy::from_params(p)?),
-
         // ── Rhai scripting strategy ───────────────────────────────────────────
         // params: { "script": "<rhai script>" }
         "rhai" => Box::new(RhaiStrategy::from_params(p)?),
@@ -592,8 +587,7 @@ pub fn build_strategy(name: &str, params: &Value) -> Result<Box<dyn Strategy>> {
 /// # Phase A scope
 ///
 /// Only base-timeframe indicators are declared. Multi-timeframe (MTF) indicators
-/// declared in CEL (`H1.ema(200)`) remain
-/// internal to the strategy — the ledger does not currently resample bars.
+/// remain internal to the strategy — the ledger does not currently resample bars.
 #[derive(Debug, Clone)]
 pub struct IndicatorDep {
     /// JSON config accepted by `alm_indicator::IndicatorBox::from_config`.
@@ -601,9 +595,9 @@ pub struct IndicatorDep {
     pub config: Value,
     /// MTF source timeframe. Phase A: always `None`.
     ///
-    /// Reserved for when the ledger grows MTF resampling — at that point CEL's
-    /// `H1.ema(200)` would emit `source_tf = Some(Timeframe::H1)` and read from
-    /// the ledger instead of its internal resampler.
+    /// Reserved for when the ledger grows MTF resampling — at that point Rhai's
+    /// MTF indicators would emit `source_tf = Some(Timeframe::H1)` and read from
+    /// the ledger instead of the strategy's internal resampler.
     pub source_tf: Option<alm_core::Timeframe>,
 }
 
@@ -614,8 +608,7 @@ pub struct IndicatorDep {
 /// indicators internally).
 pub fn indicator_deps(name: &str, params: &Value) -> Vec<IndicatorDep> {
     match name {
-        "cel" | "cel2" => crate::expr::cel::cel_indicator_deps(params),
-        "rhai" => crate::expr::rhai_strategy::rhai_indicator_deps(params),
+        "rhai" => crate::script::rhai_strategy::rhai_indicator_deps(params),
         // "dynamic" => crate::dynamic::dynamic_indicator_deps(params),  // deprecated
         _ => Vec::new(),
     }
@@ -838,51 +831,4 @@ mod tests {
 
     // #[test]  // deprecated — DynamicStrategy removed
     // fn dynamic_declares_base_tf_deps_only() { ... }
-
-    #[test]
-    fn cel_extracts_deps_from_entry_and_exit() {
-        let params = json!({
-            "entry": "rsi(14) < 30 && close > ema(50)",
-            "exit":  "rsi(14) > 70 || macd_hist(12) < 0"
-        });
-        let (_, deps) = build_strategy_with_deps("cel", &params).unwrap();
-        // Expect: rsi, ema, macd (dedup — one rsi even though used twice).
-        assert_eq!(dep_types(&deps), vec!["ema", "macd", "rsi"]);
-    }
-
-    #[test]
-    fn cel_skips_mtf_indicators() {
-        let params = json!({
-            "entry": "H1.ema(200) > close && rsi(14) < 30",
-            "exit":  "rsi(14) > 70"
-        });
-        let (_, deps) = build_strategy_with_deps("cel", &params).unwrap();
-        // Only base-TF rsi. H1.ema(200) is MTF → skipped.
-        assert_eq!(dep_types(&deps), vec!["rsi"]);
-    }
-
-    #[test]
-    fn cel_dedups_same_indicator() {
-        let params = json!({
-            "entry": "ema(9) > ema(21) && close > ema(9)",
-            "exit":  "ema(9) < ema(21)"
-        });
-        let (_, deps) = build_strategy_with_deps("cel", &params).unwrap();
-        // ema(9) and ema(21) are two distinct specs — ema(9) used 3× collapses to one.
-        assert_eq!(deps.len(), 2);
-        let periods: Vec<i64> = deps.iter()
-            .filter_map(|d| d.config.get("period").and_then(Value::as_i64))
-            .collect();
-        let mut p = periods; p.sort();
-        assert_eq!(p, vec![9, 21]);
-    }
-
-    #[test]
-    fn cel_script_form_extracts_deps() {
-        let params = json!({
-            "script": "entry: rsi(14) < 30\nexit: rsi(14) > 70"
-        });
-        let (_, deps) = build_strategy_with_deps("cel", &params).unwrap();
-        assert_eq!(dep_types(&deps), vec!["rsi"]);
-    }
 }

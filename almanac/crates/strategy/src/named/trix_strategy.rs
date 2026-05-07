@@ -96,31 +96,7 @@ mod tests {
             assert!(s.on_bar(&bar(i, 100.0)).is_empty());
         }
     }
-
-    /* // deprecated — DynamicStrategy removed
-    #[test]
-    fn parity_dynamic() {
-        let bars = trending_bars(300);
-        let mut hc = TrixStrategy::new(18, 9);
-        let hc_sigs = run(&mut hc, &bars);
-
-        let mut dyn_s = build_strategy("dynamic", &json!({
-            "indicators": { "trix": { "type": "trix", "period": 18, "signal": 9 } },
-            "entry": {
-                "logic": "and",
-                "rules": [{ "source": "trix", "field": "histogram", "op": "cross_above", "value": 0.0 }]
-            },
-            "exit": {
-                "logic": "and",
-                "rules": [{ "source": "trix", "field": "histogram", "op": "cross_below", "value": 0.0 }]
-            }
-        })).unwrap();
-        let dyn_sigs = run(dyn_s.as_mut(), &bars);
-
-        assert!(!hc_sigs.is_empty(), "no signals produced");
-        assert_eq!(hc_sigs, dyn_sigs, "hardcoded vs dynamic mismatch");
-    }
-    */
+    
 
     #[test]
     fn parity_reset() {
@@ -132,31 +108,4 @@ mod tests {
         assert_eq!(r1, r2, "reset parity failed");
     }
 
-    /* // deprecated — DynamicStrategy removed
-    #[test]
-    fn trix_parity() {
-        let bars = trending_bars(300);
-
-        // 1. hardcoded (period=18, signal=9)
-        let mut hc = TrixStrategy::new(18, 9);
-        let hc_sigs = run(&mut hc, &bars);
-
-        // 2. dynamic JSON — histogram cross_above/below 0
-        let mut dyn_s = build_strategy("dynamic", &json!({
-            "indicators": { "trix": { "type": "trix", "period": 18, "signal": 9 } },
-            "entry": {
-                "logic": "and",
-                "rules": [{ "source": "trix", "field": "histogram", "op": "cross_above", "value": 0.0 }]
-            },
-            "exit": {
-                "logic": "and",
-                "rules": [{ "source": "trix", "field": "histogram", "op": "cross_below", "value": 0.0 }]
-            }
-        })).unwrap();
-        let dyn_sigs = run(dyn_s.as_mut(), &bars);
-
-        assert!(!hc_sigs.is_empty(), "trix: hardcoded produced no signals");
-        assert_parity("trix hardcoded vs dynamic", &hc_sigs, &dyn_sigs);
-    }
-    */
 }

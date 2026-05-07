@@ -72,8 +72,6 @@ impl Strategy for TemaCrossover {
 mod tests {
     use super::*;
     use alm_core::signal::Direction;
-    use serde_json::json;
-    use crate::factory::build_strategy;
     use crate::test_utils::*;
 
     fn bar(ts: i64, close: f64) -> Bar {
@@ -106,49 +104,14 @@ mod tests {
         }
     }
 
-    /* // deprecated — DynamicStrategy removed
+
     #[test]
-    fn parity_dynamic() {
+    fn produces_signals() {
         let bars = trending_bars(300);
         let mut hc = TemaCrossover::new(10, 25);
         let hc_sigs = run(&mut hc, &bars);
 
-        let mut dyn_s = build_strategy("dynamic", &json!({
-            "indicators": {
-                "fast": { "type": "tema", "period": 10 },
-                "slow": { "type": "tema", "period": 25 }
-            },
-            "entry": {
-                "logic": "and",
-                "rules": [{ "source": "fast", "field": "value", "op": "cross_above",
-                            "compare": "slow", "compare_field": "value" }]
-            },
-            "exit": {
-                "logic": "and",
-                "rules": [{ "source": "fast", "field": "value", "op": "cross_below",
-                            "compare": "slow", "compare_field": "value" }]
-            }
-        })).unwrap();
-        let dyn_sigs = run(dyn_s.as_mut(), &bars);
-
-        assert!(!hc_sigs.is_empty(), "no signals produced");
-        assert_eq!(hc_sigs, dyn_sigs, "hardcoded vs dynamic mismatch");
-    }
-    */
-
-    #[test]
-    fn parity_cel() {
-        let bars = trending_bars(300);
-        let mut hc = TemaCrossover::new(10, 25);
-        let hc_sigs = run(&mut hc, &bars);
-
-        let mut cel = build_strategy("cel", &json!({
-            "entry": "prev_tema(10) <= prev_tema(25) && tema(10) > tema(25)",
-            "exit":  "prev_tema(10) >= prev_tema(25) && tema(10) < tema(25)"
-        })).unwrap();
-        let cel_sigs = run(cel.as_mut(), &bars);
-
-        assert_eq!(hc_sigs, cel_sigs, "hardcoded vs cel mismatch");
+        assert!(!hc_sigs.is_empty(), "tema_crossover: no signals");
     }
 
     #[test]
@@ -161,44 +124,4 @@ mod tests {
         assert_eq!(r1, r2, "reset parity failed");
     }
 
-    /* // deprecated — DynamicStrategy removed
-    #[test]
-    fn tema_crossover_parity() {
-        let bars = trending_bars(300);
-
-        // 1. hardcoded (fast=10, slow=25)
-        let mut hc = TemaCrossover::new(10, 25);
-        let hc_sigs = run(&mut hc, &bars);
-
-        // 2. dynamic JSON
-        let mut dyn_s = build_strategy("dynamic", &json!({
-            "indicators": {
-                "fast": { "type": "tema", "period": 10 },
-                "slow": { "type": "tema", "period": 25 }
-            },
-            "entry": {
-                "logic": "and",
-                "rules": [{ "source": "fast", "field": "value", "op": "cross_above",
-                            "compare": "slow", "compare_field": "value" }]
-            },
-            "exit": {
-                "logic": "and",
-                "rules": [{ "source": "fast", "field": "value", "op": "cross_below",
-                            "compare": "slow", "compare_field": "value" }]
-            }
-        })).unwrap();
-        let dyn_sigs = run(dyn_s.as_mut(), &bars);
-
-        // 3. CEL
-        let mut cel = build_strategy("cel", &json!({
-            "entry": "prev_tema(10) <= prev_tema(25) && tema(10) > tema(25)",
-            "exit":  "prev_tema(10) >= prev_tema(25) && tema(10) < tema(25)"
-        })).unwrap();
-        let cel_sigs = run(cel.as_mut(), &bars);
-
-        assert!(!hc_sigs.is_empty(), "tema_crossover: hardcoded produced no signals");
-        assert_parity("tema hardcoded vs dynamic", &hc_sigs, &dyn_sigs);
-        assert_parity("tema hardcoded vs cel",     &hc_sigs, &cel_sigs);
-    }
-    */
 }

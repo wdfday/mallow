@@ -1,4 +1,4 @@
-//! Parity tests: RhaiStrategy ↔ named strategies and CelStrategy.
+//! Parity tests: RhaiStrategy ↔ named strategies.
 //!
 //! Each test feeds identical bars to both implementations and asserts that
 //! signal timestamps and directions match exactly.  TP/SL parity tests also
@@ -74,18 +74,14 @@ if cross_below(ema10, ema50) { exit  = true; }
     assert_parity("rhai EMA(10,50) vs MaCrossover(10,50)", &named_sigs, &rhai_sigs);
 }
 
-// ── RSI threshold: Rhai ↔ CEL ────────────────────────────────────────────────
+// ── RSI threshold: Rhai ────────────────────────────────────────────────────────
 
-/// Rhai RSI threshold entry/exit vs CEL equivalent.
-///
-/// Both use `IndicatorBox(rsi,14)` so warmup and values are identical.
-/// Rhai hardcodes strength=1.0, CEL uses default 1.0 — parity helper compares
-/// `(timestamp, direction)` only.
+/// Rhai RSI threshold entry/exit produces expected signals.
 #[test]
-fn rhai_rsi_vs_cel() {
+fn rhai_rsi_threshold() {
     let bars = rsi_bars(200);
 
-    // buf_depth=1: only need current value (no prev) → same warmup as CEL rsi(14)
+    // buf_depth=1: only need current value
     let script = r#"
 let rsi14 = ind.rsi(14, 1);
 
@@ -95,28 +91,15 @@ if rsi14[0] > 70.0 { exit  = true; }
     let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
     let rhai_sigs = run_sigs(rhai.as_mut(), &bars);
 
-    let mut cel = build_strategy("cel", &json!({
-        "entry": "rsi(14) < 30.0",
-        "exit":  "rsi(14) > 70.0"
-    })).unwrap();
-    let cel_sigs = run_sigs(cel.as_mut(), &bars);
-
     assert!(!rhai_sigs.is_empty(), "rhai_rsi: must produce signals");
-    assert_parity("rhai RSI threshold vs CEL", &rhai_sigs, &cel_sigs);
 }
 
-// ── TP/SL: Rhai ↔ CelStrategy ────────────────────────────────────────────────
+// ── TP/SL: Rhai ──────────────────────────────────────────────────────────────
 
-/// ATR-based TP and SL: both Rhai and CEL emit Long signals at the same bars
-/// with identical `target_price` and `stop_price` values.
-///
-/// Rhai:  `tp = close[0] + atr14[0] * 2.0; sl = close[0] - atr14[0] * 1.5`
-/// CEL:   `"tp": "entry_price + atr(14) * 2.0", "sl": "entry_price - atr(14) * 1.5"`
-///
-/// Both use `bar.close` as the entry reference price and ATR(14) from the same
-/// IndicatorBox implementation, so the computed levels must be identical.
+/// ATR-based TP and SL: Rhai emits Long signals with correct `target_price`
+/// and `stop_price` values.
 #[test]
-fn rhai_tp_sl_vs_cel() {
+fn rhai_tp_sl_atr_based() {
     let bars = dip_in_uptrend_bars();
 
     let rhai_script = r#"
@@ -133,34 +116,17 @@ if close[0] < ema20[0] { exit = true; }
     let mut rhai = build_strategy("rhai", &json!({ "script": rhai_script })).unwrap();
     let rhai_full = run_full(rhai.as_mut(), &bars);
 
-    let mut cel = build_strategy("cel", &json!({
-        "entry": "close > ema(20) && close[1] <= ema(20)[1]",
-        "exit":  "close < ema(20)",
-        "tp":    "entry_price + atr(14) * 2.0",
-        "sl":    "entry_price - atr(14) * 1.5"
-    })).unwrap();
-    let cel_full = run_full(cel.as_mut(), &bars);
+    let entries: Vec<&Signal> = rhai_full.iter().filter(|s| s.direction == Direction::Long).collect();
+    assert!(!entries.is_empty(), "rhai_tp_sl: must produce Long signals");
 
-    // Signal counts and timestamps must match
-    let rhai_dirs: Vec<(i64, Direction)> = rhai_full.iter().map(|s| (s.timestamp, s.direction)).collect();
-    let cel_dirs:  Vec<(i64, Direction)> = cel_full.iter().map(|s| (s.timestamp, s.direction)).collect();
-    assert_parity("rhai TP/SL vs CEL TP/SL (directions)", &rhai_dirs, &cel_dirs);
-
-    // Entry signals: TP and SL levels must match within float tolerance
-    let rhai_entries: Vec<&Signal> = rhai_full.iter().filter(|s| s.direction == Direction::Long).collect();
-    let cel_entries:  Vec<&Signal> = cel_full.iter().filter(|s| s.direction == Direction::Long).collect();
-
-    for (r, c) in rhai_entries.iter().zip(cel_entries.iter()) {
-        let eps = 1e-9;
-        let r_tp = r.target_price.expect("rhai entry must have target_price");
-        let c_tp = c.target_price.expect("cel entry must have target_price");
-        assert!((r_tp - c_tp).abs() < eps,
-            "TP mismatch at ts={}: rhai={r_tp}, cel={c_tp}", r.timestamp);
-
-        let r_sl = r.stop_price.expect("rhai entry must have stop_price");
-        let c_sl = c.stop_price.expect("cel entry must have stop_price");
-        assert!((r_sl - c_sl).abs() < eps,
-            "SL mismatch at ts={}: rhai={r_sl}, cel={c_sl}", r.timestamp);
+    for sig in &entries {
+        assert!(sig.target_price.is_some(), "TP must be set on entry at ts={}", sig.timestamp);
+        assert!(sig.stop_price.is_some(),   "SL must be set on entry at ts={}", sig.timestamp);
+        let tp = sig.target_price.unwrap();
+        let sl = sig.stop_price.unwrap();
+        let price = sig.price.unwrap();
+        assert!(tp > price, "TP should be above entry price");
+        assert!(sl < price, "SL should be below entry price");
     }
 }
 

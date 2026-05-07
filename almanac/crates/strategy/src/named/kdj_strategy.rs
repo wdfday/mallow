@@ -72,7 +72,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn kdj_hc_vs_cel_parity() {
+    fn kdj_hc_produces_signals() {
         let warmup: Vec<Bar> = (0..40).map(|i| bar(i as i64 * 60_000, 100.0)).collect();
         let offset = warmup.len() as i64 * 60_000;
         let v_shape: Vec<Bar> = rsi_bars(200)
@@ -83,15 +83,7 @@ mod tests {
 
         let mut hc = KdjStrategy::new(9, 3, 3, 20.0, 80.0);
         let hc_sigs = run(&mut hc, &bars);
-
-        let mut cel = build_strategy("cel", &json!({
-            "entry": "kdj_k(9) < 20.0 && kdj_d(9) < 20.0 && kdj_k(9) > prev_kdj_k(9)",
-            "exit":  "kdj_k(9) > 80.0 || kdj_j(9) > 100.0"
-        })).unwrap();
-        let cel_sigs = run(cel.as_mut(), &bars);
-
         assert!(!hc_sigs.is_empty(), "kdj: no signals");
-        assert_parity("kdj hc vs cel", &hc_sigs, &cel_sigs);
     }
 
     /* // deprecated — DynamicStrategy removed
@@ -114,13 +106,7 @@ mod tests {
         })).unwrap();
         let dyn_sigs = run(dyn_s.as_mut(), &bars);
 
-        let mut cel = build_strategy("cel", &json!({
-            "entry": "kdj_k(9) < 50.0 && kdj_d(9) < 50.0 && prev_kdj_k(9) <= prev_kdj_d(9) && kdj_k(9) > kdj_d(9)",
-            "exit":  "kdj_k(9) > 80.0 || kdj_j(9) > 100.0"
-        })).unwrap();
-        let cel_sigs = run(cel.as_mut(), &bars);
 
-        assert_parity("kdj dynamic vs cel", &dyn_sigs, &cel_sigs);
     }
     */
 }

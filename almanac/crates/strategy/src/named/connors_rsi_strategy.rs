@@ -130,36 +130,4 @@ mod tests {
         strat.reset();
         assert!(!strat.in_position);
     }
-
-    /* // deprecated — DynamicStrategy removed
-    #[test]
-    fn connors_rsi_parity() {
-        let bars = connors_rsi_bars();
-
-        let mut hc = ConnorsRsiStrategy::new(3, 2, 100, 20.0, 80.0);
-        let hc_sigs = run(&mut hc, &bars);
-
-        let mut dyn_s = build_strategy("dynamic", &json!({
-            "indicators": { "crsi": { "type": "connors_rsi",
-                "rsi_period": 3, "streak_period": 2, "rank_period": 100 } },
-            "entry": { "logic": "and", "rules": [
-                { "source": "crsi", "field": "value", "op": "lt", "value": 20.0 }
-            ]},
-            "exit": { "logic": "and", "rules": [
-                { "source": "crsi", "field": "value", "op": "gt", "value": 80.0 }
-            ]}
-        })).unwrap();
-        let dyn_sigs = run(dyn_s.as_mut(), &bars);
-
-        let mut cel = build_strategy("cel", &json!({
-            "entry": "connors_rsi(3) < 20.0",
-            "exit":  "connors_rsi(3) > 80.0"
-        })).unwrap();
-        let cel_sigs = run(cel.as_mut(), &bars);
-
-        assert!(!hc_sigs.is_empty(), "connors_rsi: no signals");
-        assert_parity("connors_rsi hc vs dynamic", &hc_sigs, &dyn_sigs);
-        assert_parity("connors_rsi hc vs cel",     &hc_sigs, &cel_sigs);
-    }
-    */
 }

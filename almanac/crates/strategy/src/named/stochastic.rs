@@ -84,8 +84,6 @@ impl Strategy for StochasticCrossover {
 mod tests {
     use super::*;
     use alm_core::signal::Direction;
-    use serde_json::json;
-    use crate::factory::build_strategy;
     use crate::test_utils::*;
 
     fn bar(ts: i64, close: f64) -> Bar {
@@ -150,18 +148,12 @@ mod tests {
     */
 
     #[test]
-    fn parity_cel() {
+    fn produces_signals() {
         let bars = v_bars(150);
         let mut hc = StochasticCrossover::new(14, 3, 20.0, 80.0);
         let hc_sigs = run(&mut hc, &bars);
 
-        let mut cel = build_strategy("cel", &json!({
-            "entry": "prev_stoch_k(14) <= prev_stoch_d(14) && stoch_k(14) > stoch_d(14) && stoch_d(14) < 20.0",
-            "exit":  "prev_stoch_k(14) >= prev_stoch_d(14) && stoch_k(14) < stoch_d(14) && stoch_d(14) > 80.0"
-        })).unwrap();
-        let cel_sigs = run(cel.as_mut(), &bars);
-
-        assert_eq!(hc_sigs, cel_sigs, "hardcoded vs cel mismatch");
+        assert!(!hc_sigs.is_empty(), "stochastic_crossover: no signals");
     }
 
     #[test]
@@ -206,15 +198,9 @@ mod tests {
         let dyn_sigs = run(dyn_s.as_mut(), &bars);
 
         // 3. CEL
-        let mut cel = build_strategy("cel", &json!({
-            "entry": "prev_stoch_k(14) <= prev_stoch_d(14) && stoch_k(14) > stoch_d(14) && stoch_d(14) < 20.0",
-            "exit":  "prev_stoch_k(14) >= prev_stoch_d(14) && stoch_k(14) < stoch_d(14) && stoch_d(14) > 80.0"
-        })).unwrap();
-        let cel_sigs = run(cel.as_mut(), &bars);
 
         assert!(!hc_sigs.is_empty(), "stochastic_crossover: hardcoded produced no signals");
         assert_parity("stoch hardcoded vs dynamic", &hc_sigs, &dyn_sigs);
-        assert_parity("stoch hardcoded vs cel",     &hc_sigs, &cel_sigs);
     }
     */
 }

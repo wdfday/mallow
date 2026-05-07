@@ -90,46 +90,4 @@ impl Strategy for EquilibriumExplorer {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::test_utils::*;
-    use crate::factory::build_strategy;
-    use serde_json::json;
-
-    /* // deprecated — DynamicStrategy removed
-    #[test]
-    fn equilibrium_explorer_parity() {
-        let bars = dip_in_uptrend_bars();
-
-        let mut hc = EquilibriumExplorer::new(200, 14, 3, 20.0, 80.0, 12, 26, 9);
-        let hc_sigs = run(&mut hc, &bars);
-
-        let mut dyn_s = build_strategy("dynamic", &json!({
-            "indicators": {
-                "ema":   { "type": "ema",        "period": 200 },
-                "stoch": { "type": "stochastic", "k_period": 14, "d_period": 3 },
-                "macd":  { "type": "macd",       "fast": 12, "slow": 26, "signal": 9 }
-            },
-            "entry": { "logic": "and", "rules": [
-                { "source": "close",  "field": "value", "op": "gt", "compare": "ema" },
-                { "source": "stoch",  "field": "k",     "op": "lt", "value": 20.0 },
-                { "source": "macd",   "field": "histogram", "op": "gt", "value": 0.0 }
-            ]},
-            "exit": { "logic": "or", "rules": [
-                { "source": "stoch", "field": "k",         "op": "gt", "value": 80.0 },
-                { "source": "macd",  "field": "histogram", "op": "lt", "value": 0.0 }
-            ]}
-        })).unwrap();
-        let dyn_sigs = run(dyn_s.as_mut(), &bars);
-
-        let mut cel = build_strategy("cel", &json!({
-            "entry": "close > ema(200) && stoch_k(14) < 20.0 && macd_hist(12) > 0.0",
-            "exit":  "stoch_k(14) > 80.0 || macd_hist(12) < 0.0"
-        })).unwrap();
-        let cel_sigs = run(cel.as_mut(), &bars);
-
-        assert!(!hc_sigs.is_empty(), "equilibrium_explorer: no signals");
-        assert_parity("equilibrium_explorer hc vs dynamic", &hc_sigs, &dyn_sigs);
-        assert_parity("equilibrium_explorer hc vs cel",     &hc_sigs, &cel_sigs);
-    }
-    */
 }

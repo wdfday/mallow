@@ -10,7 +10,6 @@ alm-pattern   = { path = "../pattern" }
 serde           = { workspace = true }
 serde_json      = { workspace = true }
 anyhow          = { workspace = true }
-cel-interpreter = { workspace = true }
 rhai            = { version = "1", features = ["sync"] }
 tracing         = { workspace = true }
 # Derives for the strategy / indicator catalogue so HTTP layers can expose

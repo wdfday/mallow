@@ -74,44 +74,5 @@ impl Strategy for WilliamsRMa {
 
 #[cfg(test)]
 mod tests {
-    // use super::*;
-    // use crate::test_utils::*;
-    // use crate::factory::build_strategy;
-    // use serde_json::json;
 
-    /* // deprecated — DynamicStrategy removed
-    #[test]
-    fn williams_r_ma_parity() {
-        let bars = dip_in_uptrend_bars();
-
-        let mut hc = WilliamsRMa::new(14, 50, -80.0, -20.0);
-        let hc_sigs = run(&mut hc, &bars);
-
-        let mut dyn_s = build_strategy("dynamic", &json!({
-            "indicators": {
-                "wr":  { "type": "williams_r", "period": 14 },
-                "ema": { "type": "ema", "period": 50 }
-            },
-            "entry": { "logic": "and", "rules": [
-                { "source": "wr",    "field": "value", "op": "cross_above", "value": -80.0 },
-                { "source": "close", "field": "value", "op": "gt", "compare": "ema" }
-            ]},
-            "exit": { "logic": "or", "rules": [
-                { "source": "wr",    "field": "value", "op": "cross_below", "value": -20.0 },
-                { "source": "close", "field": "value", "op": "lt", "compare": "ema" }
-            ]}
-        })).unwrap();
-        let dyn_sigs = run(dyn_s.as_mut(), &bars);
-
-        let mut cel = build_strategy("cel", &json!({
-            "entry": "prev_williams(14) <= -80.0 && williams(14) > -80.0 && close > ema(50)",
-            "exit":  "(prev_williams(14) >= -20.0 && williams(14) < -20.0) || close < ema(50)"
-        })).unwrap();
-        let cel_sigs = run(cel.as_mut(), &bars);
-
-        assert!(!hc_sigs.is_empty(), "williams_r_ma: no signals");
-        assert_parity("williams_r_ma hc vs dynamic", &hc_sigs, &dyn_sigs);
-        assert_parity("williams_r_ma hc vs cel",     &hc_sigs, &cel_sigs);
-    }
-    */
 }

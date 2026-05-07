@@ -88,46 +88,5 @@ impl Strategy for AdxEmaCross {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::test_utils::*;
-    use crate::factory::build_strategy;
-    use serde_json::json;
 
-    /* // deprecated — DynamicStrategy removed
-    #[test]
-    fn adx_ema_cross_parity() {
-        let bars = trending_bars(300);
-
-        let mut hc = AdxEmaCross::new(20, 50, 14, 25.0);
-        let hc_sigs = run(&mut hc, &bars);
-
-        let mut dyn_s = build_strategy("dynamic", &json!({
-            "indicators": {
-                "fast": { "type": "ema", "period": 20 },
-                "slow": { "type": "ema", "period": 50 },
-                "adx":  { "type": "adx", "period": 14 }
-            },
-            "entry": { "logic": "and", "rules": [
-                { "source": "fast", "field": "value", "op": "cross_above",
-                  "compare": "slow", "compare_field": "value" },
-                { "source": "adx", "field": "adx", "op": "gt", "value": 25.0 }
-            ]},
-            "exit": { "logic": "and", "rules": [
-                { "source": "fast", "field": "value", "op": "cross_below",
-                  "compare": "slow", "compare_field": "value" }
-            ]}
-        })).unwrap();
-        let dyn_sigs = run(dyn_s.as_mut(), &bars);
-
-        let mut cel = build_strategy("cel", &json!({
-            "entry": "prev_ema(20) <= prev_ema(50) && ema(20) > ema(50) && adx(14) > 25.0",
-            "exit":  "prev_ema(20) >= prev_ema(50) && ema(20) < ema(50)"
-        })).unwrap();
-        let cel_sigs = run(cel.as_mut(), &bars);
-
-        assert!(!hc_sigs.is_empty(), "adx_ema_cross: no signals");
-        assert_parity("adx_ema_cross hc vs dynamic", &hc_sigs, &dyn_sigs);
-        assert_parity("adx_ema_cross hc vs cel",     &hc_sigs, &cel_sigs);
-    }
-    */
 }

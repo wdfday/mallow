@@ -1,6 +1,6 @@
 mod bench_utils;
 
-/// Benchmark: CelStrategy vs DynamicStrategy vs RhaiStrategy vs hardcoded struct.
+/// Benchmark: RhaiStrategy vs hardcoded struct.
 ///
 /// Tách rõ 2 phần:
 /// - construct - thời gian tạo strategy (1 lần)
@@ -35,21 +35,6 @@ fn bench_rsi_construct(c: &mut Criterion) {
         RsiMeanRev::new(14, 35.0, 65.0)
     }));
 
-    // group.bench_function("dynamic", |b| b.iter(|| {
-    //     build_strategy("dynamic", &json!({
-    //         "indicators": { "rsi": { "type": "rsi", "period": 14 } },
-    //         "entry": { "logic": "and", "rules": [{ "source": "rsi", "field": "value", "op": "lt", "value": 35.0 }]},
-    //         "exit":  { "logic": "and", "rules": [{ "source": "rsi", "field": "value", "op": "gt", "value": 65.0 }]}
-    //     })).unwrap()
-    // }));
-
-    group.bench_function("cel", |b| b.iter(|| {
-        build_strategy("cel", &json!({
-            "entry": "rsi(14) < 35.0",
-            "exit":  "rsi(14) > 65.0"
-        })).unwrap()
-    }));
-
     group.bench_function("rhai", |b| b.iter(|| {
         build_strategy("rhai", &json!({
             "script": "\
@@ -72,23 +57,6 @@ fn bench_rsi_run(c: &mut Criterion) {
         b.iter(|| { s.reset(); run_all(&mut s, bars) })
     });
 
-    // group.bench_with_input(BenchmarkId::from_parameter("dynamic"), &bars, |b, bars| {
-    //     let mut s = build_strategy("dynamic", &json!({
-    //         "indicators": { "rsi": { "type": "rsi", "period": 14 } },
-    //         "entry": { "logic": "and", "rules": [{ "source": "rsi", "field": "value", "op": "lt", "value": 35.0 }]},
-    //         "exit":  { "logic": "and", "rules": [{ "source": "rsi", "field": "value", "op": "gt", "value": 65.0 }]}
-    //     })).unwrap();
-    //     b.iter(|| { s.reset(); run_all(s.as_mut(), bars) })
-    // });
-
-    group.bench_with_input(BenchmarkId::from_parameter("cel"), &bars, |b, bars| {
-        let mut s = build_strategy("cel", &json!({
-            "entry": "rsi(14) < 35.0",
-            "exit":  "rsi(14) > 65.0"
-        })).unwrap();
-        b.iter(|| { s.reset(); run_all(s.as_mut(), bars) })
-    });
-
     group.bench_with_input(BenchmarkId::from_parameter("rhai"), &bars, |b, bars| {
         let mut s = build_strategy("rhai", &json!({
             "script": "\
@@ -108,26 +76,6 @@ fn bench_rsi_run(c: &mut Criterion) {
 fn bench_ema_run(c: &mut Criterion) {
     let bars = make_bars(1_000);
     let mut group = c.benchmark_group("ema_cross_run/1000bars");
-
-    // group.bench_with_input(BenchmarkId::from_parameter("dynamic"), &bars, |b, bars| {
-    //     let mut s = build_strategy("dynamic", &json!({
-    //         "indicators": {
-    //             "fast": { "type": "ema", "period": 20 },
-    //             "slow": { "type": "ema", "period": 50 }
-    //         },
-    //         "entry": { "logic": "and", "rules": [{ "source": "fast", "field": "value", "op": "cross_above", "compare": "slow", "compare_field": "value" }]},
-    //         "exit":  { "logic": "and", "rules": [{ "source": "fast", "field": "value", "op": "cross_below", "compare": "slow", "compare_field": "value" }]}
-    //     })).unwrap();
-    //     b.iter(|| { s.reset(); run_all(s.as_mut(), bars) })
-    // });
-
-    group.bench_with_input(BenchmarkId::from_parameter("cel"), &bars, |b, bars| {
-        let mut s = build_strategy("cel", &json!({
-            "entry": "prev_ema(20) <= prev_ema(50) && ema(20) > ema(50)",
-            "exit":  "prev_ema(20) >= prev_ema(50) && ema(20) < ema(50)"
-        })).unwrap();
-        b.iter(|| { s.reset(); run_all(s.as_mut(), bars) })
-    });
 
     group.bench_with_input(BenchmarkId::from_parameter("rhai"), &bars, |b, bars| {
         let mut s = build_strategy("rhai", &json!({
@@ -150,36 +98,6 @@ fn bench_multi_run(c: &mut Criterion) {
     let bars = make_bars(1_000);
     let mut group = c.benchmark_group("multi_run/1000bars");
 
-    // group.bench_with_input(BenchmarkId::from_parameter("dynamic"), &bars, |b, bars| {
-    //     let mut s = build_strategy("dynamic", &json!({
-    //         "indicators": {
-    //             "rsi":  { "type": "rsi",    "period": 14 },
-    //             "fast": { "type": "ema",    "period": 20 },
-    //             "slow": { "type": "ema",    "period": 50 },
-    //             "macd": { "type": "macd",   "fast": 12, "slow": 26, "signal": 9 },
-    //             "bb":   { "type": "bbands", "period": 20, "multiplier": 2.0 }
-    //         },
-    //         "entry": { "logic": "and", "rules": [
-    //             { "source": "rsi",  "field": "value",     "op": "lt", "value": 40.0 },
-    //             { "source": "fast", "field": "value",     "op": "gt", "compare": "slow", "compare_field": "value" },
-    //             { "source": "macd", "field": "histogram", "op": "gt", "value": 0.0 }
-    //         ]},
-    //         "exit": { "logic": "or", "rules": [
-    //             { "source": "rsi",  "field": "value", "op": "gt", "value": 60.0 },
-    //             { "source": "fast", "field": "value", "op": "lt", "compare": "slow", "compare_field": "value" }
-    //         ]}
-    //     })).unwrap();
-    //     b.iter(|| { s.reset(); run_all(s.as_mut(), bars) })
-    // });
-
-    group.bench_with_input(BenchmarkId::from_parameter("cel"), &bars, |b, bars| {
-        let mut s = build_strategy("cel", &json!({
-            "entry": "rsi(14) < 40.0 && ema(20) > ema(50) && macd_hist(12) > 0.0",
-            "exit":  "rsi(14) > 60.0 || ema(20) < ema(50)"
-        })).unwrap();
-        b.iter(|| { s.reset(); run_all(s.as_mut(), bars) })
-    });
-
     group.bench_with_input(BenchmarkId::from_parameter("rhai"), &bars, |b, bars| {
         let mut s = build_strategy("rhai", &json!({
             "script": "\
@@ -199,9 +117,8 @@ fn bench_multi_run(c: &mut Criterion) {
 
 // ── Kitchen Sink ──────────────────────────────────────────────────────────────
 //
-// Compares the three flavours on a compute-heavy 10-indicator + MTF strategy:
+// Compares hardcoded vs Rhai on a compute-heavy 10-indicator + MTF strategy:
 //   hardcoded  — pure Rust struct, zero interpreter overhead
-//   cel        — ~60% approximation (no highest/rising_n/MTF/tp-sl in CEL)
 //   rhai       — 100% faithful to the spec script, runs full Rhai VM
 
 fn bench_kitchen_sink_run(c: &mut Criterion) {
@@ -211,20 +128,6 @@ fn bench_kitchen_sink_run(c: &mut Criterion) {
     group.bench_with_input(BenchmarkId::from_parameter("hardcoded"), &bars, |b, bars| {
         let mut s = KitchenSinkStrategy::new();
         b.iter(|| { s.reset(); run_all(&mut s, bars) })
-    });
-
-    group.bench_with_input(BenchmarkId::from_parameter("cel_approx60"), &bars, |b, bars| {
-        // CEL cannot express: highest(close,20), rising_n, momentum, H1 MTF, tp/sl.
-        // This approximation covers the M1 indicator logic only (~60% of conditions).
-        let mut s = build_strategy("cel", &json!({
-            "entry": "cross_above(ema(9), ema(21)) \
-                   && ema(21) > ema(50) \
-                   && rsi(14) > 50.0 && rsi(14) < 70.0 \
-                   && adx(14) > 25.0 \
-                   && (bb_upper(20) - bb_lower(20)) < atr(14) * 1.5",
-            "exit":  "cross_below(ema(9), ema(21)) || rsi(14) > 80.0"
-        })).unwrap();
-        b.iter(|| { s.reset(); run_all(s.as_mut(), bars) })
     });
 
     group.bench_with_input(BenchmarkId::from_parameter("rhai_full"), &bars, |b, bars| {

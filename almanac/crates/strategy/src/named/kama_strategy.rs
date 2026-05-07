@@ -71,8 +71,6 @@ mod tests {
     use super::*;
     use alm_core::bar::Bar;
     use crate::test_utils::*;
-    use crate::factory::build_strategy;
-    use serde_json::json;
 
     fn bar(ts: i64, close: f64) -> Bar {
         Bar::new(ts, "TEST", close, close + 1.0, close - 1.0, close, 1000.0)
@@ -129,39 +127,7 @@ mod tests {
         let mut hc = KamaStrategy::new(10, 2, 30);
         let hc_sigs = run(&mut hc, &bars);
 
-        let mut cel = build_strategy("cel", &json!({
-            "entry": "prev_ema(1) <= prev_kama(10) && ema(1) > kama(10)",
-            "exit":  "prev_ema(1) >= prev_kama(10) && ema(1) < kama(10)"
-        })).unwrap();
-        let cel_sigs = run(cel.as_mut(), &bars);
-
         assert!(!hc_sigs.is_empty(), "kama: no signals");
-        assert_parity("kama hc vs cel", &hc_sigs, &cel_sigs);
     }
 
-    /* // deprecated — DynamicStrategy removed
-    #[test]
-    fn kama_dynamic_cel_parity() {
-        let bars = trending_bars(300);
-
-        let mut dyn_s = build_strategy("dynamic", &json!({
-            "indicators": { "kama": { "type": "kama", "er_period": 10, "fast": 2, "slow": 30 } },
-            "entry": { "logic": "and", "rules": [
-                { "source": "close", "field": "value", "op": "gt", "compare": "kama" }
-            ]},
-            "exit": { "logic": "and", "rules": [
-                { "source": "close", "field": "value", "op": "lt", "compare": "kama" }
-            ]}
-        })).unwrap();
-        let dyn_sigs = run(dyn_s.as_mut(), &bars);
-
-        let mut cel = build_strategy("cel", &json!({
-            "entry": "close > kama(10)",
-            "exit":  "close < kama(10)"
-        })).unwrap();
-        let cel_sigs = run(cel.as_mut(), &bars);
-
-        assert_parity("kama dynamic vs cel (level)", &dyn_sigs, &cel_sigs);
-    }
-    */
 }

@@ -27,10 +27,19 @@
 //! |---|---|
 //! | `ind.ema(9)` | Base-TF, default buf=2 |
 //! | `ind.ema(9, 5)` | Base-TF, buf=5 |
-//! | `ind.ema(20, "H1")` | H1 timeframe, buf=2 |
-//! | `ind.ema(20, "H1", 3)` | H1 timeframe, buf=3 |
+//! | `ind.ema(20, "H1")` | H1 confirmed (fires only at H1 close), buf=2 |
+//! | `ind.ema(20, "H1", 3)` | H1 confirmed, buf=3 |
+//! | `ind.rsi(5, "live_H1")` | H1 **live** — `[0]`=confirmed, `_live`=forming scalar |
+//! | `ind.rsi(5, "live_H1", 3)` | H1 live, confirmed buf=3 |
 //!
-//! 3rd arg is a **timeframe** if it is a quoted string (e.g. `"H1"`, `"M5"`),
+//! **Live semantics**: prefix `live_` to any timeframe string.
+//! - `name[0]`, `name[1]`, … — confirmed HTF values as usual (unchanged).
+//! - `name_live` — scalar f64: current forming-bar indicator value (0.0 before first bucket).
+//! - `name_fill` — scalar f64 in `0.0..=1.0`: fraction of the current HTF bucket filled.
+//!
+//! Check `name_fill > 0.5` before acting on `name_live` to avoid noisy early-bucket signals.
+//!
+//! 3rd arg is a **timeframe** (with optional `live_` prefix) if it is a quoted string,
 //! or a **buffer depth** if it is a number.
 //!
 //! # Key design decisions
@@ -56,6 +65,7 @@ use rhai::{Array, Dynamic, Engine, Scope, AST};
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy, Timeframe};
 use alm_indicator::IndicatorBox;
 use serde_json::json;
+use crate::candle_type::{CandleType, CandleTransform};
 
 pub(super) type PlotBuf = Arc<Mutex<Vec<(String, f64)>>>;
 
@@ -117,6 +127,15 @@ impl HtfAggregator {
         None
     }
 
+    /// Return the current forming bar without advancing state.
+    /// Returns `None` if no bar has been seen yet.
+    fn peek(&self) -> Option<Bar> {
+        self.bucket.map(|_| Bar::new(
+            self.last_ts, "",
+            self.o, self.h, self.l, self.c, self.v,
+        ))
+    }
+
     fn reset(&mut self) {
         self.bucket  = None;
         self.last_ts = 0;
@@ -127,15 +146,40 @@ impl HtfAggregator {
 // ── VarBinding ────────────────────────────────────────────────────────────────
 
 struct VarBinding {
-    ind:        IndicatorBox,
-    field:      String,
-    history:    VecDeque<f64>,
-    buf_depth:  usize,
-    aggregator: Option<HtfAggregator>, // Some → HTF binding
+    ind:          IndicatorBox,
+    field:        String,
+    history:      VecDeque<f64>,
+    buf_depth:    usize,
+    aggregator:   Option<HtfAggregator>,
+    // ── live-only fields ──────────────────────────────────────────────────────
+    /// `true` → this binding exposes a live (forming) scalar alongside confirmed
+    /// history.  Confirmed array `[0]` is always the last *closed* HTF bar.
+    /// Live value is exposed in scope as `{var}_live`; fill ratio as `{var}_fill`.
+    live:         bool,
+    /// Separate indicator instance driven by forming bars only.
+    live_ind:     Option<IndicatorBox>,
+    /// Current live indicator value (0.0 when the bucket hasn't started yet).
+    live_val:     f64,
+    /// Fraction of the current HTF bucket already filled: 0.0 → 1.0.
+    fill_ratio:   f64,
+    /// M1-bar count inside the current HTF bucket.
+    bucket_m1:    u32,
+    /// Total base-TF bars per HTF bucket (e.g. 60 for H1 on M1 feed).
+    tf_total_m1:  u32,
 }
 
 impl VarBinding {
-    fn new(ind: IndicatorBox, field: String, buf_depth: usize, tf: Option<Timeframe>) -> Self {
+    fn new(
+        ind:      IndicatorBox,
+        live_ind: Option<IndicatorBox>,
+        field:    String,
+        buf_depth: usize,
+        tf:       Option<Timeframe>,
+        live:     bool,
+    ) -> Self {
+        let tf_total_m1 = tf
+            .map(|t| (t.duration_ms() / 60_000) as u32)
+            .unwrap_or(1);
         let aggregator = tf.map(|t| HtfAggregator::new(t.duration_ms()));
         Self {
             ind,
@@ -143,34 +187,78 @@ impl VarBinding {
             history: VecDeque::with_capacity(buf_depth),
             buf_depth,
             aggregator,
+            live,
+            live_ind,
+            live_val:    0.0,
+            fill_ratio:  0.0,
+            bucket_m1:   0,
+            tf_total_m1,
         }
     }
 
-    /// Feed a bar. Returns `true` when the history buffer is full (warmed up).
+    /// Feed a bar. Returns `true` when the confirmed history buffer is full.
     fn update(&mut self, bar: &Bar) -> bool {
-        // For HTF bindings, only feed indicator when a bucket completes.
-        let bar_to_feed: Option<Bar> = if let Some(agg) = &mut self.aggregator {
-            match agg.update(bar) {
-                Some(htf_bar) => Some(htf_bar),
-                None          => return self.history.len() >= self.buf_depth,
+        if let Some(agg) = &mut self.aggregator {
+            if self.live {
+                // ── Live HTF binding ───────────────────────────────────────
+                // Confirmed path: advance aggregator; feed indicator only on close.
+                if let Some(htf_bar) = agg.update(bar) {
+                    if let Some(fields) = self.ind.update(&htf_bar) {
+                        if let Some(&v) = fields.get(self.field.as_str()) {
+                            self.history.push_back(v);
+                            if self.history.len() > self.buf_depth {
+                                self.history.pop_front();
+                            }
+                        }
+                    }
+                    // Bucket just closed — reset fill counter.
+                    self.bucket_m1 = 0;
+                }
+
+                // Live path: track fill ratio and feed forming bar to live_ind.
+                self.bucket_m1 += 1;
+                self.fill_ratio = (self.bucket_m1 as f64 / self.tf_total_m1 as f64).min(1.0);
+
+                if let Some(forming) = agg.peek() {
+                    if let Some(live_ind) = &mut self.live_ind {
+                        if let Some(fields) = live_ind.update(&forming) {
+                            if let Some(&v) = fields.get(self.field.as_str()) {
+                                self.live_val = v;
+                            }
+                        }
+                    }
+                }
+            } else {
+                // ── Confirmed-only HTF binding ─────────────────────────────
+                if let Some(htf_bar) = agg.update(bar) {
+                    if let Some(fields) = self.ind.update(&htf_bar) {
+                        if let Some(&v) = fields.get(self.field.as_str()) {
+                            self.history.push_back(v);
+                            if self.history.len() > self.buf_depth {
+                                self.history.pop_front();
+                            }
+                        }
+                    }
+                } else {
+                    return self.history.len() >= self.buf_depth;
+                }
             }
         } else {
-            None // base-TF: feed `bar` directly below
-        };
-
-        let b = bar_to_feed.as_ref().unwrap_or(bar);
-        if let Some(fields) = self.ind.update(b) {
-            if let Some(&v) = fields.get(self.field.as_str()) {
-                self.history.push_back(v);
-                if self.history.len() > self.buf_depth {
-                    self.history.pop_front();
+            // ── Base-TF binding ────────────────────────────────────────────
+            if let Some(fields) = self.ind.update(bar) {
+                if let Some(&v) = fields.get(self.field.as_str()) {
+                    self.history.push_back(v);
+                    if self.history.len() > self.buf_depth {
+                        self.history.pop_front();
+                    }
                 }
             }
         }
+
         self.history.len() >= self.buf_depth
     }
 
-    /// Build a Rhai array with newest value at index 0.
+    /// Build a Rhai array of confirmed values; newest at index 0.
     fn to_rhai_array(&self) -> Array {
         self.history.iter().rev().map(|&v| Dynamic::from_float(v)).collect()
     }
@@ -178,9 +266,11 @@ impl VarBinding {
     fn reset(&mut self) {
         self.ind.reset();
         self.history.clear();
-        if let Some(agg) = &mut self.aggregator {
-            agg.reset();
-        }
+        if let Some(agg) = &mut self.aggregator { agg.reset(); }
+        if let Some(li)  = &mut self.live_ind   { li.reset(); }
+        self.live_val   = 0.0;
+        self.fill_ratio = 0.0;
+        self.bucket_m1  = 0;
     }
 }
 
@@ -193,6 +283,8 @@ pub(super) struct IndicatorDecl {
     pub(super) buf_depth: usize,
     pub(super) field:     String,
     pub(super) timeframe: Option<Timeframe>,
+    /// `true` → live (forming) bar semantics; `false` → confirmed bar only.
+    pub(super) live:      bool,
 }
 
 /// Parse a timeframe string like "H1", "M5", "D1".
@@ -255,13 +347,21 @@ pub(super) fn try_parse_indicator_line(line: &str) -> Option<IndicatorDecl> {
 
     let mut timeframe = None;
     let mut buf_depth = DEFAULT_BUF_DEPTH;
+    let mut live      = false;
 
     if let Some(third) = args.next() {
         let third_str = third.trim().trim_matches('"').trim_matches('\'');
         if let Ok(n) = third_str.parse::<usize>() {
             buf_depth = n;
         } else {
-            timeframe = parse_timeframe(third_str);
+            // Detect optional `live_` prefix: `"live_H1"` → live=true, tf="H1"
+            let (tf_str, is_live) = if let Some(rest) = third_str.strip_prefix("live_") {
+                (rest, true)
+            } else {
+                (third_str, false)
+            };
+            live      = is_live;
+            timeframe = parse_timeframe(tf_str);
             if let Some(fourth) = args.next() {
                 buf_depth = fourth.trim().parse().unwrap_or(DEFAULT_BUF_DEPTH);
             }
@@ -269,7 +369,7 @@ pub(super) fn try_parse_indicator_line(line: &str) -> Option<IndicatorDecl> {
     }
 
     let (ind_type, field) = map_indicator_type(&type_str);
-    Some(IndicatorDecl { var_name, ind_type, period, buf_depth, field, timeframe })
+    Some(IndicatorDecl { var_name, ind_type, period, buf_depth, field, timeframe, live })
 }
 
 /// Map a user-friendly indicator type string to the internal config type and
@@ -479,32 +579,33 @@ pub(super) fn extract_max_lookback(script: &str) -> usize {
 // ── RhaiStrategy ─────────────────────────────────────────────────────────────
 
 pub struct RhaiStrategy {
-    engine:          Engine,
-    ast:             AST,
-    bindings:        HashMap<String, VarBinding>,
-    binding_order:   Vec<String>,
-    bar_buf:         VecDeque<Bar>,
-    bar_buf_depth:   usize,
-    in_position:     bool,
-    entry_price:     f64,
-    plot_buf:        PlotBuf,
+    engine:           Engine,
+    ast:              AST,
+    bindings:         HashMap<String, VarBinding>,
+    binding_order:    Vec<String>,
+    bar_buf:          VecDeque<Bar>,
+    bar_buf_depth:    usize,
+    in_position:      bool,
+    entry_price:      f64,
+    plot_buf:         PlotBuf,
     /// `None` in live mode — plot() calls are silently flushed and discarded.
-    series:          Option<HashMap<String, Vec<(i64, f64)>>>,
+    series:           Option<HashMap<String, Vec<(i64, f64)>>>,
+    candle_transform: CandleTransform,
 }
 
 impl RhaiStrategy {
     /// Backtest mode: `plot()` calls accumulate in `series()` / `take_indicator_series()`.
     pub fn from_script(script: &str) -> Result<Self> {
-        Self::build(script, true)
+        Self::build(script, true, CandleType::Raw)
     }
 
     /// Live (herald) mode: `plot()` calls are registered but immediately discarded.
     /// No memory accumulates regardless of how long the bot runs.
     pub fn from_script_live(script: &str) -> Result<Self> {
-        Self::build(script, false)
+        Self::build(script, false, CandleType::Raw)
     }
 
-    fn build(script: &str, collect_series: bool) -> Result<Self> {
+    fn build(script: &str, collect_series: bool, candle_type: CandleType) -> Result<Self> {
         let mut decls: Vec<IndicatorDecl> = Vec::new();
         let mut cleaned_lines: Vec<&str>  = Vec::new();
 
@@ -528,8 +629,9 @@ impl RhaiStrategy {
 
         for decl in &decls {
             if decl.buf_depth > max_buf { max_buf = decl.buf_depth; }
-            let ind     = make_indicator_box(decl)?;
-            let binding = VarBinding::new(ind, decl.field.clone(), decl.buf_depth, decl.timeframe);
+            let ind      = make_indicator_box(decl)?;
+            let live_ind = if decl.live { Some(make_indicator_box(decl)?) } else { None };
+            let binding  = VarBinding::new(ind, live_ind, decl.field.clone(), decl.buf_depth, decl.timeframe, decl.live);
             binding_order.push(decl.var_name.clone());
             bindings.insert(decl.var_name.clone(), binding);
         }
@@ -549,6 +651,7 @@ impl RhaiStrategy {
             entry_price: 0.0,
             plot_buf,
             series: if collect_series { Some(HashMap::new()) } else { None },
+            candle_transform: CandleTransform::new(candle_type),
         })
     }
 
@@ -560,7 +663,12 @@ impl RhaiStrategy {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("RhaiStrategy requires a 'script' param"))?;
         let live = p.get("_live").and_then(|v| v.as_bool()).unwrap_or(false);
-        if live { Self::from_script_live(script) } else { Self::from_script(script) }
+        let candle_type = {
+            let ct = p.get("candle_type").and_then(|v| v.as_str()).unwrap_or("raw");
+            let sp = p.get("smooth_period").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
+            CandleType::from_str(ct, sp)
+        };
+        if live { Self::build(script, false, candle_type) } else { Self::build(script, true, candle_type) }
     }
 
     /// Snapshot of collected plot series (backtest mode only).
@@ -573,6 +681,11 @@ impl RhaiStrategy {
 
 impl Strategy for RhaiStrategy {
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
+        let Some(bar_owned) = self.candle_transform.apply(bar) else {
+            return vec![];
+        };
+        let bar = &bar_owned;
+
         self.bar_buf.push_back(bar.clone());
         if self.bar_buf.len() > self.bar_buf_depth {
             self.bar_buf.pop_front();
@@ -591,6 +704,10 @@ impl Strategy for RhaiStrategy {
         for name in &self.binding_order {
             if let Some(b) = self.bindings.get(name) {
                 scope.push_dynamic(name.as_str(), Dynamic::from_array(b.to_rhai_array()));
+                if b.live {
+                    scope.push(format!("{name}_live").as_str(), b.live_val);
+                    scope.push(format!("{name}_fill").as_str(), b.fill_ratio);
+                }
             }
         }
 
@@ -669,6 +786,7 @@ impl Strategy for RhaiStrategy {
         self.bar_buf.clear();
         self.in_position = false;
         self.entry_price = 0.0;
+        self.candle_transform.reset();
         if let Some(s) = &mut self.series { s.clear(); }
         if let Ok(mut buf) = self.plot_buf.lock() { buf.clear(); }
     }
@@ -757,6 +875,9 @@ pub struct DeclaredIndicator {
     /// Timeframe string if HTF, e.g. `"H1"`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub timeframe: Option<String>,
+    /// `true` if declared with `live_` prefix, e.g. `ind.rsi(5, "live_H1")`.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub live: bool,
 }
 
 /// Scope information for Monaco autocomplete / hover.
@@ -848,6 +969,7 @@ pub fn rhai_lint(script: &str) -> (Vec<LintDiagnostic>, RhaiLintScope) {
                         ind_type:  raw_type,
                         period:    decl.period,
                         timeframe: decl.timeframe.map(|tf| tf.to_string()),
+                        live:      decl.live,
                     });
                     // Don't add to cleaned_lines — stripped from Rhai AST
                 } else {

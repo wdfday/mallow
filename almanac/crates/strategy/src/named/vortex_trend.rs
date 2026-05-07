@@ -68,41 +68,5 @@ impl Strategy for VortexTrend {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::test_utils::*;
-    use crate::factory::build_strategy;
-    use serde_json::json;
 
-    /* // deprecated — DynamicStrategy removed
-    #[test]
-    fn vortex_trend_parity() {
-        let bars = trending_bars(300);
-
-        let mut hc = VortexTrend::new(14);
-        let hc_sigs = run(&mut hc, &bars);
-
-        let mut dyn_s = build_strategy("dynamic", &json!({
-            "indicators": { "vx": { "type": "vortex", "period": 14 } },
-            "entry": { "logic": "and", "rules": [
-                { "source": "vx", "field": "plus_vi", "op": "cross_above",
-                  "compare": "vx", "compare_field": "minus_vi" }
-            ]},
-            "exit": { "logic": "and", "rules": [
-                { "source": "vx", "field": "plus_vi", "op": "cross_below",
-                  "compare": "vx", "compare_field": "minus_vi" }
-            ]}
-        })).unwrap();
-        let dyn_sigs = run(dyn_s.as_mut(), &bars);
-
-        let mut cel = build_strategy("cel", &json!({
-            "entry": "prev_vortex_plus(14) <= prev_vortex_minus(14) && vortex_plus(14) > vortex_minus(14)",
-            "exit":  "prev_vortex_plus(14) >= prev_vortex_minus(14) && vortex_plus(14) < vortex_minus(14)"
-        })).unwrap();
-        let cel_sigs = run(cel.as_mut(), &bars);
-
-        assert!(!hc_sigs.is_empty(), "vortex_trend: no signals");
-        assert_parity("vortex_trend hc vs dynamic", &hc_sigs, &dyn_sigs);
-        assert_parity("vortex_trend hc vs cel",     &hc_sigs, &cel_sigs);
-    }
-    */
 }

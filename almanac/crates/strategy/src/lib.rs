@@ -7,14 +7,14 @@ pub mod candle_type;
 pub use candle_type::{CandleTransform, CandleType};
 
 // ── Expression / template strategies ─────────────────────────────────────────
-pub mod expr;
-pub use expr::{
-    CelScript, CelStrategy, RhaiStrategy, RhaiStreamEval, StreamDecl, PlotResult,
+pub mod script;
+pub use script::{
+    RhaiStrategy, RhaiStreamEval, StreamDecl, PlotResult,
     rhai_lint, LintDiagnostic, RhaiLintScope, DeclaredIndicator, KNOWN_INDICATOR_TYPES,
 };
 
 // // ── Declarative JSON strategy ─────────────────────────────────────────────────
-// pub mod dynamic;  // deprecated — use CelStrategy instead
+// pub mod dynamic;  // deprecated
 // pub use dynamic::DynamicStrategy;
 
 // ── Bar resampler (MTF helper) ────────────────────────────────────────────────
@@ -35,8 +35,6 @@ pub use named::*;
 pub mod test_utils;
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
-#[cfg(test)]
-mod edge_case_tests;
 #[cfg(test)]
 mod mtf_parity_tests;
 #[cfg(test)]

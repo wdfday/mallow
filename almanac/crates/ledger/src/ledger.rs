@@ -58,7 +58,8 @@ impl Default for LedgerConfig {
         default_window.insert(Timeframe::M1,  1000);
         default_window.insert(Timeframe::M5,  1000);
         default_window.insert(Timeframe::M15, 1000);
-        default_window.insert(Timeframe::H1,  1000);
+        default_window.insert(Timeframe::M30,  500);
+        default_window.insert(Timeframe::H1,   500);
         default_window.insert(Timeframe::H4,   500);
         default_window.insert(Timeframe::D1,   252);
         default_window.insert(Timeframe::W1,   260);
@@ -363,6 +364,19 @@ impl Ledger {
             obs.on_advance(&symbol, tf, &outcome);
         }
         Ok(Some(outcome))
+    }
+
+    /// Update the forming bar for `(symbol, tf)` without confirming it.
+    ///
+    /// Called after every base-TF bar advance to keep `SymbolState::live_bar`
+    /// current for all actively-tracked HTF slices. Does **not** notify
+    /// observers — `live_bar` is a read-only peek for HTTP / strategy use.
+    ///
+    /// Creates the state lazily if it doesn't exist yet (rare: only on the
+    /// very first base-TF bar before the first HTF bar has been confirmed).
+    pub fn advance_live(&self, tf: Timeframe, bar: Bar) {
+        let arc = self.ensure_symbol(&bar.symbol, tf, None);
+        arc.write().advance_live(bar);
     }
 
     /// Read-only snapshot for handing to an HTTP handler. `None` if the

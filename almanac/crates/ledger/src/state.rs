@@ -58,8 +58,15 @@ pub struct IndicatorColumnSlice {
 pub struct SymbolSnapshot {
     pub symbol: String,
     pub timeframe: Timeframe,
+    /// Confirmed closed bars. `bars.last()` (= `bars[bars.len()-1]`) is the
+    /// most recent **closed** bar — same semantics as `[0]` in Rhai scripts.
     pub bars: Vec<Bar>,
     pub indicators: HashMap<IndicatorSpec, IndicatorSeriesSlice>,
+    /// Currently-forming (not yet confirmed) bar for this timeframe.
+    /// Updated on every base-TF bar advance via `Ledger::advance_live`.
+    /// `None` until the first base-TF bar arrives after startup.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub live_bar: Option<Bar>,
 }
 
 /// One registered indicator attached to a `SymbolState`.
@@ -238,6 +245,8 @@ impl IndicatorCell {
 pub struct SymbolState {
     pub symbol: String,
     pub timeframe: Timeframe,
+    /// Confirmed closed bars (sliding window, length ≤ `capacity`).
+    /// Most recent closed bar = `bar_window.back()`.
     pub bar_window: VecDeque<Bar>,
     pub indicators: HashMap<IndicatorSpec, IndicatorCell>,
     /// Maximum number of bars retained in `bar_window` (and each indicator's series).
@@ -248,6 +257,11 @@ pub struct SymbolState {
     /// of unreferenced indicator cells (see `IndicatorCell::pending_drop_at_counter`).
     /// Not the same as `bar_window.len()` — the window is capped; this is not.
     pub advance_counter: u64,
+    /// Currently-forming bar for this timeframe — the incomplete bucket whose
+    /// base-TF bars have arrived but whose close has not been confirmed yet.
+    /// Set by `advance_live()`; `None` until the first base-TF bar is seen.
+    /// Cleared and replaced each time a new HTF bucket opens.
+    pub live_bar: Option<Bar>,
 }
 
 impl SymbolState {
@@ -260,6 +274,7 @@ impl SymbolState {
             capacity,
             last_ts: None,
             advance_counter: 0,
+            live_bar: None,
         }
     }
 
@@ -491,6 +506,14 @@ impl SymbolState {
         Ok(true)
     }
 
+    /// Update the forming bar without advancing the confirmed window.
+    /// Called on every base-TF bar to keep `live_bar` current.
+    /// No observer notification — `live_bar` is a peek, not a confirmed advance.
+    #[inline]
+    pub fn advance_live(&mut self, bar: Bar) {
+        self.live_bar = Some(bar);
+    }
+
     /// Build an immutable snapshot for readers.
     pub fn snapshot(&self) -> SymbolSnapshot {
         SymbolSnapshot {
@@ -501,6 +524,7 @@ impl SymbolState {
                 .iter()
                 .map(|(spec, cell)| (spec.clone(), cell.slice()))
                 .collect(),
+            live_bar: self.live_bar.clone(),
         }
     }
 }

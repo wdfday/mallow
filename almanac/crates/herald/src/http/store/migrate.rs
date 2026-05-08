@@ -13,9 +13,7 @@ CREATE TABLE IF NOT EXISTS strategies (
     name        TEXT    NOT NULL,
     version     INT     NOT NULL DEFAULT 1,
     label       TEXT    NOT NULL,
-    kind        TEXT    NOT NULL CHECK (kind IN ('rhai')),
     spec        JSONB   NOT NULL,
-    exit_config JSONB,
     notes       TEXT,
     created_at  BIGINT  NOT NULL,
     UNIQUE (name, version)
@@ -35,6 +33,7 @@ CREATE TABLE IF NOT EXISTS backtest_cases (
     created_at  BIGINT  NOT NULL,
     updated_at  BIGINT  NOT NULL
 );
+-- exit_config intentionally absent: exit logic lives in the Rhai script spec
 
 CREATE TABLE IF NOT EXISTS backtest_results (
     id               TEXT    PRIMARY KEY,
@@ -66,7 +65,6 @@ CREATE TABLE IF NOT EXISTS watch_entries (
     symbols      JSONB   NOT NULL,
     timeframe    TEXT,
     spec         JSONB   NOT NULL,
-    exit_config  JSONB,
     webhook_url  TEXT,
     nats_subject TEXT,
     created_at   BIGINT  NOT NULL
@@ -195,17 +193,14 @@ ON CONFLICT (symbol_id, frame) DO NOTHING;
 
 /// One-time migrations that alter existing tables (safe to re-run).
 const MIGRATIONS: &str = r#"
--- CEL deprecated: migrate any legacy 'cel' rows to 'rhai' kind.
-UPDATE strategies SET kind = 'rhai' WHERE kind = 'cel';
+ALTER TABLE strategies ADD COLUMN IF NOT EXISTS previous_id TEXT REFERENCES strategies(id);
 
--- Drop the old kind constraint (may include 'cel'); recreated by CREATE TABLE above
--- if the table is new. For existing tables we replace it explicitly.
+-- Drop kind column (always 'rhai', no information content).
 DO $$ BEGIN
     ALTER TABLE strategies DROP CONSTRAINT IF EXISTS strategies_kind_check;
 EXCEPTION WHEN undefined_object THEN NULL;
 END $$;
-ALTER TABLE strategies
-    ADD CONSTRAINT strategies_kind_check CHECK (kind IN ('rhai'));
+ALTER TABLE strategies DROP COLUMN IF EXISTS kind;
 "#;
 
 pub async fn run(pool: &PgPool) -> Result<()> {

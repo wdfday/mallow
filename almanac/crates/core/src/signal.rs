@@ -36,19 +36,22 @@ pub struct Signal {
     /// When true, target_price and stop_price are offsets from the price field (not absolute levels).
     /// Helm computes actual levels as fill_price + target_price / fill_price + stop_price.
     pub is_offset: bool,
+    /// Human-readable reason for this signal — logged by helm for auditability.
+    /// E.g. `"ema cross above H4, rsi < 60"`. Not used for execution logic.
+    pub reason: Option<String>,
 }
 
 impl Signal {
     pub fn long(timestamp: i64, symbol: impl Into<String>, strength: f64) -> Self {
-        Self { timestamp, symbol: symbol.into(), direction: Direction::Long, strength, pattern: None, price: None, target_price: None, stop_price: None, is_offset: false }
+        Self { timestamp, symbol: symbol.into(), direction: Direction::Long, strength, pattern: None, price: None, target_price: None, stop_price: None, is_offset: false, reason: None }
     }
 
     pub fn short(timestamp: i64, symbol: impl Into<String>, strength: f64) -> Self {
-        Self { timestamp, symbol: symbol.into(), direction: Direction::Short, strength, pattern: None, price: None, target_price: None, stop_price: None, is_offset: false }
+        Self { timestamp, symbol: symbol.into(), direction: Direction::Short, strength, pattern: None, price: None, target_price: None, stop_price: None, is_offset: false, reason: None }
     }
 
     pub fn close(timestamp: i64, symbol: impl Into<String>) -> Self {
-        Self { timestamp, symbol: symbol.into(), direction: Direction::Close, strength: 1.0, pattern: None, price: None, target_price: None, stop_price: None, is_offset: false }
+        Self { timestamp, symbol: symbol.into(), direction: Direction::Close, strength: 1.0, pattern: None, price: None, target_price: None, stop_price: None, is_offset: false, reason: None }
     }
 
     pub fn with_pattern(mut self, meta: PatternMeta) -> Self {

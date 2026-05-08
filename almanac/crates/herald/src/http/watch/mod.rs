@@ -78,6 +78,30 @@ pub struct CreateWatchReq {
     pub nats_subject: Option<String>,
 }
 
+/// Partial update for a watch entry.
+///
+/// Only provided fields are applied. `symbols` and `strategy_spec` trigger a
+/// full handle re-pin (old handles dropped, new ones acquired). `webhook_url`
+/// and `nats_subject` are simple metadata — no ledger side-effects.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct UpdateWatchReq {
+    /// Replace the symbol list. Triggers indicator handle re-pin.
+    #[serde(default)]
+    pub symbols: Option<Vec<String>>,
+    /// Replace the strategy spec. Triggers indicator handle re-pin.
+    #[serde(default, rename = "strategy_spec")]
+    pub spec: Option<StrategySpec>,
+    /// Replace the timeframe. Triggers indicator handle re-pin.
+    #[serde(default)]
+    pub timeframe: Option<String>,
+    /// Update the webhook URL. Pass `null` to clear.
+    #[serde(default)]
+    pub webhook_url: Option<String>,
+    /// Update the NATS subject. Pass `null` to clear.
+    #[serde(default)]
+    pub nats_subject: Option<String>,
+}
+
 use super::HttpState;
 
 // ── WatchSlot ─────────────────────────────────────────────────────────────────
@@ -104,7 +128,7 @@ pub fn new_store() -> WatchStore {
 pub fn routes() -> Router<HttpState> {
     Router::new()
         .route("/api/v1/watch", get(list_watches).post(create_watch))
-        .route("/api/v1/watch/:id", get(get_watch).delete(delete_watch))
+        .route("/api/v1/watch/:id", get(get_watch).put(update_watch).delete(delete_watch))
 }
 
 // ── Error helpers ─────────────────────────────────────────────────────────────
@@ -229,6 +253,91 @@ pub async fn get_watch(State(state): State<HttpState>, Path(id): Path<String>) -
         Some(s) => Json(s.entry.clone()).into_response(),
         None    => not_found(),
     }
+}
+
+#[utoipa::path(
+    put,
+    path = "/api/v1/watch/{id}",
+    params(("id" = String, Path, description = "Watch entry UUID")),
+    request_body = UpdateWatchReq,
+    responses(
+        (status = 200, description = "Updated watch entry"),
+        (status = 400, description = "Validation error"),
+        (status = 404, description = "Not found")
+    ),
+    tag = "watch"
+)]
+pub async fn update_watch(
+    State(state): State<HttpState>,
+    Path(id): Path<String>,
+    Json(req): Json<UpdateWatchReq>,
+) -> Response {
+    // Validate before acquiring the write lock.
+    if let Some(ref syms) = req.symbols {
+        if syms.is_empty() {
+            return bad_req("symbols must not be empty");
+        }
+    }
+
+    let mut store = state.watches.write().await;
+    let Some(slot) = store.get_mut(&id) else {
+        return not_found();
+    };
+
+    let needs_repin = req.symbols.is_some() || req.spec.is_some() || req.timeframe.is_some();
+
+    // Apply simple metadata fields.
+    if let Some(url) = req.webhook_url { slot.entry.webhook_url   = Some(url); }
+    if let Some(sub) = req.nats_subject { slot.entry.nats_subject = Some(sub); }
+
+    if needs_repin {
+        if let Some(syms) = req.symbols  { slot.entry.symbols    = syms; }
+        if let Some(spec) = req.spec     { slot.entry.spec        = spec; }
+        if let Some(tf)   = req.timeframe { slot.entry.timeframe  = Some(tf); }
+
+        let tf = slot.entry.timeframe.as_deref().and_then(parse_tf).unwrap_or(state.tf);
+        let (strategy_key, params) = slot.entry.spec.to_factory_args();
+        let deps = indicator_deps(&strategy_key, &params);
+
+        let mut new_handles: Vec<IndicatorHandle> = Vec::new();
+        for sym in &slot.entry.symbols {
+            state.ledger.ensure_symbol(sym, tf, None);
+            for dep in &deps {
+                let spec = match IndicatorSpec::from_config(dep.config.clone(), dep.source_tf) {
+                    Ok(s)  => s,
+                    Err(e) => {
+                        warn!(symbol=%sym, err=%e, "watch update: skipping invalid dep");
+                        continue;
+                    }
+                };
+                match state.ledger.acquire_indicator(sym, tf, spec.clone()) {
+                    Ok(h) => {
+                        debug!(symbol=%sym, spec=%spec.canonical_key(), "watch update: pinned indicator");
+                        new_handles.push(h);
+                    }
+                    Err(e) => warn!(symbol=%sym, spec=?spec, err=%e, "watch update: acquire failed"),
+                }
+            }
+        }
+
+        // Drop old handles (refcount--) only after new ones are acquired.
+        slot._handles = new_handles;
+        slot.entry.pinned_indicators = slot._handles.len();
+    }
+
+    let entry = slot.entry.clone();
+    drop(store);
+
+    if let Err(e) = state.store.update_watch_entry(&entry).await {
+        warn!(id=%entry.id, err=%e, "watch update: failed to persist");
+    }
+    info!(
+        id = %entry.id,
+        symbols = entry.symbols.len(),
+        indicators = entry.pinned_indicators,
+        "watch updated"
+    );
+    Json(entry).into_response()
 }
 
 #[utoipa::path(

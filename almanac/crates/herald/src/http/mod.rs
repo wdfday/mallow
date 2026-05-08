@@ -98,7 +98,7 @@ use tokio::sync::{broadcast, Semaphore};
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
-use crate::registry::SignalBatch;
+use crate::registry::HandSignal;
 use crate::watch_evaluator::WatchEvaluator;
 
 mod backtest;
@@ -136,7 +136,7 @@ pub struct HttpState {
     /// Live bar broadcast — SSE `/api/stream/:symbol` subscribers receive from here.
     pub bar_bcast: broadcast::Sender<Bar>,
     /// Live signal broadcast — SSE `/api/stream/signals` subscribers receive from here.
-    pub sig_bcast: broadcast::Sender<Arc<SignalBatch>>,
+    pub sig_bcast: broadcast::Sender<Arc<HandSignal>>,
     /// Watch evaluator — `delete_watch` calls `remove_watch` to eagerly free handles.
     pub watch_evaluator: Arc<WatchEvaluator>,
 }
@@ -149,7 +149,7 @@ impl HttpState {
         max_concurrent_backtests: usize,
         store: StoreBackend,
         bar_bcast: broadcast::Sender<Bar>,
-        sig_bcast: broadcast::Sender<Arc<SignalBatch>>,
+        sig_bcast: broadcast::Sender<Arc<HandSignal>>,
         watch_evaluator: Arc<WatchEvaluator>,
         watches: WatchStore,
     ) -> Self {

@@ -1,75 +1,79 @@
 use serde::{Deserialize, Serialize};
 
-/// Trend dimension of the current market regime.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum TrendRegime {
-    /// ADX > threshold — market is making directional moves.
-    Trending,
-    /// Chop > threshold — market is oscillating in a range.
-    Ranging,
-    /// Neither strongly trending nor clearly ranging.
-    Neutral,
+/// One dimension of a market regime — a raw indicator value plus a user-defined status label.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RegimeDimension {
+    /// Raw indicator value driving this dimension (e.g. ADX=28.4, ATR_ratio=1.3, vol_ratio=0.8).
+    pub value: f64,
+    /// User-defined classification label (e.g. "trending", "high", "thin").
+    /// Empty string means the dimension has not been set / is unknown.
+    pub status: String,
 }
 
-/// Volatility dimension of the current market regime.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum VolRegime {
-    /// ATR(short) / ATR(long) > high_ratio — volatility expanding.
-    High,
-    /// ATR(short) / ATR(long) < low_ratio — volatility compressing.
-    Low,
-    /// Volatility is within normal historical range.
-    Normal,
+impl RegimeDimension {
+    pub fn new(value: f64, status: impl Into<String>) -> Self {
+        Self { value, status: status.into() }
+    }
+
+    pub fn unknown() -> Self {
+        Self { value: 0.0, status: String::new() }
+    }
+
+    pub fn is(&self, s: &str) -> bool { self.status == s }
+    pub fn is_known(&self) -> bool { !self.status.is_empty() }
 }
 
-/// Combined two-dimensional market regime state.
+/// Three-dimensional market regime state.
+///
+/// Each dimension carries both the raw indicator value and a user-defined status label,
+/// allowing scripts to classify markets however they choose without being locked into
+/// hardcoded thresholds.
+///
+/// Produced by the regime script (if configured) and pushed into the main strategy
+/// script scope as flattened variables: `trend`, `trend_value`, `vol`, `vol_value`,
+/// `liq`, `liq_value`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RegimeState {
-    pub trend: TrendRegime,
-    pub volatility: VolRegime,
+    pub trend:      RegimeDimension,
+    pub volatility: RegimeDimension,
+    pub liquidity:  RegimeDimension,
 }
 
 impl RegimeState {
-    pub fn new(trend: TrendRegime, volatility: VolRegime) -> Self {
-        Self { trend, volatility }
+    pub fn new(trend: RegimeDimension, volatility: RegimeDimension, liquidity: RegimeDimension) -> Self {
+        Self { trend, volatility, liquidity }
     }
 
-    /// Human-readable label, e.g. `"Trending/High"`.
+    pub fn unknown() -> Self {
+        Self {
+            trend:      RegimeDimension::unknown(),
+            volatility: RegimeDimension::unknown(),
+            liquidity:  RegimeDimension::unknown(),
+        }
+    }
+
+    /// Human-readable label, e.g. `"trending/high/normal"`.
     pub fn label(&self) -> String {
-        let t = match self.trend {
-            TrendRegime::Trending => "Trending",
-            TrendRegime::Ranging  => "Ranging",
-            TrendRegime::Neutral  => "Neutral",
-        };
-        let v = match self.volatility {
-            VolRegime::High   => "High",
-            VolRegime::Low    => "Low",
-            VolRegime::Normal => "Normal",
-        };
-        format!("{t}/{v}")
+        format!("{}/{}/{}", self.trend.status, self.volatility.status, self.liquidity.status)
     }
-
-    pub fn is_trending(&self) -> bool { self.trend == TrendRegime::Trending }
-    pub fn is_ranging(&self)  -> bool { self.trend == TrendRegime::Ranging }
-    pub fn is_high_vol(&self) -> bool { self.volatility == VolRegime::High }
-    pub fn is_low_vol(&self)  -> bool { self.volatility == VolRegime::Low }
 }
 
 /// Aggregated regime statistics from a completed backtest.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RegimeSummary {
-    /// % of detected bars in Trending regime.
-    pub trending_pct: f64,
-    /// % of detected bars in Ranging regime.
-    pub ranging_pct: f64,
-    /// % of detected bars in Neutral regime.
-    pub neutral_pct: f64,
-    /// % of detected bars in High volatility regime.
-    pub high_vol_pct: f64,
-    /// % of detected bars in Low volatility regime.
-    pub low_vol_pct: f64,
     /// Regime transitions: `(timestamp_ms, label)`, on-change only.
     pub changes: Vec<(i64, String)>,
+    /// Trade breakdown by regime label: label → (trades, win_rate_pct, avg_return_pct).
+    pub trade_breakdown: Vec<RegimeTradeStats>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegimeTradeStats {
+    pub label:           String,
+    pub trades:          usize,
+    pub win_rate_pct:    f64,
+    pub avg_return_pct:  f64,
+    pub profit_factor:   f64,
 }
 
 #[cfg(test)]
@@ -78,18 +82,25 @@ mod tests {
 
     #[test]
     fn label_format() {
-        let r = RegimeState::new(TrendRegime::Trending, VolRegime::High);
-        assert_eq!(r.label(), "Trending/High");
-        let r2 = RegimeState::new(TrendRegime::Ranging, VolRegime::Low);
-        assert_eq!(r2.label(), "Ranging/Low");
+        let r = RegimeState::new(
+            RegimeDimension::new(28.0, "trending"),
+            RegimeDimension::new(1.3, "high"),
+            RegimeDimension::new(0.8, "normal"),
+        );
+        assert_eq!(r.label(), "trending/high/normal");
     }
 
     #[test]
-    fn helpers() {
-        let r = RegimeState::new(TrendRegime::Trending, VolRegime::High);
-        assert!(r.is_trending());
-        assert!(!r.is_ranging());
-        assert!(r.is_high_vol());
-        assert!(!r.is_low_vol());
+    fn dimension_is() {
+        let d = RegimeDimension::new(28.0, "trending");
+        assert!(d.is("trending"));
+        assert!(!d.is("ranging"));
+    }
+
+    #[test]
+    fn unknown() {
+        let r = RegimeState::unknown();
+        assert!(!r.trend.is_known());
+        assert_eq!(r.label(), "//");
     }
 }

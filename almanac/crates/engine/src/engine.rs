@@ -8,12 +8,13 @@ use alm_core::{
     exit::{ExitReason, ExitRules, PositionTracker},
     order::{Fill, OrderRequest, Side},
     portfolio::Portfolio,
-    regime::{RegimeState, RegimeSummary, TrendRegime, VolRegime},
+    regime::{RegimeState, RegimeSummary},
     signal::{Direction, Signal},
     strategy::{RiskManager, Strategy},
 };
 use alm_data::BarFeed;
 use alm_indicator::{Atr, RegimeDetector};
+use alm_strategy::candle_type::CandleTransform;
 use alm_report::BacktestReport;
 use tracing::{debug, info, trace};
 
@@ -60,8 +61,6 @@ pub struct Engine<S: Strategy, R: RiskManager, B: EventBus> {
     /// Regime transitions recorded on-change: (timestamp_ms, RegimeState).
     regime_changes: Vec<(i64, RegimeState)>,
     last_regime: Option<RegimeState>,
-    /// Bar counts per (TrendRegime, VolRegime) pair for summary statistics.
-    regime_bar_counts: HashMap<(TrendRegime, VolRegime), usize>,
     /// Total bars processed (including warm-up bars without a regime).
     total_bars: usize,
     /// When false (default): skip regime detection per bar (ADX+Chop+ATR×2).
@@ -75,6 +74,13 @@ pub struct Engine<S: Strategy, R: RiskManager, B: EventBus> {
     /// Key = symbol; value = (target_price, stop_price). Signal-level levels take
     /// priority over ATR-rule-derived levels when creating a PositionTracker.
     pending_signal_levels: HashMap<String, (Option<f64>, Option<f64>)>,
+    /// Optional candle transform (Heikin-Ashi etc.) applied before strategy sees the bar.
+    /// Broker and exit-rule checks always use the raw bar; only strategy.on_bar /
+    /// on_window receive the transformed bar.
+    candle_transform: Option<CandleTransform>,
+    /// Sliding window of transformed bars for on_window() — mirrors bar_window but
+    /// contains post-transform bars so strategy sees consistent candle type.
+    strategy_bar_window: VecDeque<Bar>,
 }
 
 // ── Constructors ─────────────────────────────────────────────────────────────
@@ -105,11 +111,12 @@ impl<S: Strategy, R: RiskManager> Engine<S, R, SyncBus> {
             regime_detector: RegimeDetector::new(),
             regime_changes: Vec::new(),
             last_regime: None,
-            regime_bar_counts: HashMap::new(),
             total_bars: 0,
             detect_regime: false,
             exit_atr: None,
             pending_signal_levels: HashMap::new(),
+            candle_transform: None,
+            strategy_bar_window: VecDeque::new(),
         }
     }
 }
@@ -172,6 +179,13 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
     /// already manage `in_position` themselves, so the guard is harmless but redundant).
     pub fn with_single_entry(mut self) -> Self {
         self.single_entry = true;
+        self
+    }
+
+    /// Set candle transform applied before strategy sees each bar.
+    /// Broker fills and exit-rule checks always use the raw bar.
+    pub fn with_candle_transform(mut self, transform: CandleTransform) -> Self {
+        self.candle_transform = Some(transform);
         self
     }
 
@@ -389,6 +403,19 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                     open = bar.open, high = bar.high, low = bar.low, close = bar.close, vol = bar.volume,
                     "bar"
                 );
+
+                // Apply candle transform for strategy (HA etc.). Broker/exit rules always
+                // use the raw bar so fills happen at real market prices.
+                let transformed: Option<Bar> = self.candle_transform.as_mut().and_then(|t| t.apply(bar));
+                let strategy_bar: &Bar = transformed.as_ref().unwrap_or(bar);
+
+                // Mirror bar_window for on_window() — stores transformed bars so strategy
+                // sees a consistent candle type across both on_bar and on_window.
+                self.strategy_bar_window.push_back(strategy_bar.clone());
+                if self.strategy_bar_window.len() > self.window_size {
+                    self.strategy_bar_window.pop_front();
+                }
+
                 self.last_prices.insert(bar.symbol.clone(), bar.close);
 
                 // Notify risk manager with current bar (e.g. for ATR-based sizing).
@@ -403,10 +430,6 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                 self.total_bars += 1;
                 if self.detect_regime {
                     if let Some(regime) = self.regime_detector.update(bar) {
-                        *self
-                            .regime_bar_counts
-                            .entry((regime.trend.clone(), regime.volatility.clone()))
-                            .or_insert(0) += 1;
                         let changed =
                             self.last_regime.as_ref().map_or(true, |last| *last != regime);
                         if changed {
@@ -479,7 +502,7 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                 }
 
                 // ── Indicator-based signals (bar-by-bar) ──────────────────────
-                let signals = self.strategy.on_bar(bar);
+                let signals = self.strategy.on_bar(strategy_bar);
                 for signal in signals {
                     self.bus
                         .send(Event::Signal(alm_core::event::SignalEvent { signal }));
@@ -487,7 +510,7 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
 
                 // ── Pattern-based signals (sliding window, opt-in) ────────────
                 if self.strategy.uses_window() {
-                    let (a, b) = self.bar_window.as_slices();
+                    let (a, b) = self.strategy_bar_window.as_slices();
                     let window_signals = if b.is_empty() {
                         self.strategy.on_window(a)
                     } else {
@@ -660,7 +683,6 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
         self.regime_detector.reset();
         self.regime_changes.clear();
         self.last_regime = None;
-        self.regime_bar_counts.clear();
         self.total_bars = 0;
         if let Some(ref mut atr) = self.exit_atr {
             *atr = Atr::new(self.exit_rules.atr_period.max(1));
@@ -668,57 +690,12 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
         self.strategy.reset();
     }
 
-    /// Compute regime summary statistics from bar counts accumulated during `run()`.
     fn compute_regime_summary(&self) -> RegimeSummary {
-        let detected_bars: usize = self.regime_bar_counts.values().sum();
-        let pct = |count: usize| -> f64 {
-            if detected_bars == 0 { 0.0 } else { count as f64 / detected_bars as f64 * 100.0 }
-        };
-
-        let trending = self
-            .regime_bar_counts
-            .iter()
-            .filter(|((t, _), _)| *t == TrendRegime::Trending)
-            .map(|(_, &c)| c)
-            .sum::<usize>();
-        let ranging = self
-            .regime_bar_counts
-            .iter()
-            .filter(|((t, _), _)| *t == TrendRegime::Ranging)
-            .map(|(_, &c)| c)
-            .sum::<usize>();
-        let neutral = self
-            .regime_bar_counts
-            .iter()
-            .filter(|((t, _), _)| *t == TrendRegime::Neutral)
-            .map(|(_, &c)| c)
-            .sum::<usize>();
-        let high_vol = self
-            .regime_bar_counts
-            .iter()
-            .filter(|((_, v), _)| *v == VolRegime::High)
-            .map(|(_, &c)| c)
-            .sum::<usize>();
-        let low_vol = self
-            .regime_bar_counts
-            .iter()
-            .filter(|((_, v), _)| *v == VolRegime::Low)
-            .map(|(_, &c)| c)
-            .sum::<usize>();
-
         let changes = self
             .regime_changes
             .iter()
             .map(|(ts, r)| (*ts, r.label()))
             .collect();
-
-        RegimeSummary {
-            trending_pct: pct(trending),
-            ranging_pct: pct(ranging),
-            neutral_pct: pct(neutral),
-            high_vol_pct: pct(high_vol),
-            low_vol_pct: pct(low_vol),
-            changes,
-        }
+        RegimeSummary { changes, trade_breakdown: Vec::new() }
     }
 }

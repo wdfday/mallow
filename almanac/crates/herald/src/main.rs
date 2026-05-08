@@ -255,7 +255,7 @@ async fn main() -> Result<()> {
 
     // ── SSE broadcast channels ────────────────────────────────────────────────
     let (bar_bcast_tx, _) = broadcast::channel::<alm_core::Bar>(256);
-    let (sig_bcast_tx, _) = broadcast::channel::<std::sync::Arc<registry::SignalBatch>>(64);
+    let (sig_bcast_tx, _) = broadcast::channel::<std::sync::Arc<registry::HandSignal>>(64);
 
     // ── HTTP server ───────────────────────────────────────────────────────────
     let http_addr = std::env::var("HERALD_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:8090".into());

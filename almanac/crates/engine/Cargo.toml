@@ -3,10 +3,6 @@ name = "alm-engine"
 version = "0.1.0"
 edition = "2021"
 
-[[bin]]
-name = "alm-engine"
-path = "src/main.rs"
-
 # src/bin/*.rs are auto-discovered by Cargo
 
 [dependencies]

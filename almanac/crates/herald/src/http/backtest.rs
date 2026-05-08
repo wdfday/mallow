@@ -6,14 +6,19 @@
 //! - Serialising the request / response envelopes.
 //! - Enforcing a concurrency cap via [`HttpState::backtest_semaphore`].
 //! - Dispatching the CPU-bound engine run onto `spawn_blocking`.
-//! - Optionally auto-saving the result to the store when `save_as` is set.
+//! - Persisting strategy + case + result on every `POST /api/v1/backtest/rhai`.
 //!
-//! # save_as
+//! # Always-persist flow (`POST /api/v1/backtest/rhai`)
 //!
-//! `POST /api/backtest/rhai` accepts an optional
-//! `"save_as"` field. When present, a successful run automatically creates a
-//! strategy version + backtest case + result row in the store and returns their
-//! IDs under `"saved"` in the response. Omit the field for throwaway runs.
+//! Requests that reach this endpoint are "deep backtests" — too large for the
+//! in-browser WASM runner. Every such request is worth keeping:
+//!
+//! 1. Validate → acquire semaphore.
+//! 2. Upsert strategy by `spec_hash` (same script → existing version returned).
+//! 3. Upsert case: `case_id` present → UPDATE that row; absent → CREATE new row.
+//! 4. Run engine on `spawn_blocking`.
+//! 5. Save `BacktestResult` row.
+//! 6. Return merged response: `{ ...report, saved: { strategy_id, case_id, result_id } }`.
 //!
 //! # Concurrency
 //!
@@ -23,13 +28,13 @@
 
 use std::sync::Arc;
 
-use anyhow::Result;
 use axum::{
     extract::State,
     http::StatusCode,
     response::{IntoResponse, Response},
     Json, Router,
 };
+use axum::routing::{get, post};
 use alm_engine::{
     backtest,
     types::{BacktestRequest, BacktestResponse, ErrorResponse, RhaiBacktestRequest},
@@ -39,10 +44,7 @@ use chrono::{NaiveDate, TimeZone, Utc};
 use serde::Serialize;
 use tracing::{error, info, warn};
 
-use axum::routing::{get, post};
-
-use super::store::types::{CapitalConfig, ExecutionConfig, StrategySpec};
-use super::store::StoreBackend;
+use super::store::types::{PositionConfig, ExecutionConfig, StrategySpec};
 use super::HttpState;
 
 pub fn routes() -> Router<HttpState> {
@@ -146,7 +148,7 @@ pub async fn run_backtest(
     post,
     path = "/api/v1/backtest/rhai",
     responses(
-        (status = 200, description = "Rhai backtest report"),
+        (status = 200, description = "Rhai backtest report with saved IDs"),
         (status = 400, description = "Bad request"),
         (status = 429, description = "Too many concurrent backtests")
     ),
@@ -159,30 +161,94 @@ pub async fn run_backtest_rhai(
     let Some(_permit) = try_acquire(&state) else {
         return too_many_requests();
     };
-    let save_as = req.save_as.clone();
-    let spec = StrategySpec { script: req.script.clone() };
-    let symbol = req.symbol.clone();
-    let timeframe = Some(req.timeframe.clone().unwrap_or_else(|| state.tf.to_string()));
-    let from = req.from.clone();
-    let to = req.to.clone();
-    let capital = capital_from_rhai(&req);
-    let execution = execution_from_rhai(&req);
-    let exit = req.exit.clone();
-    let data_source = req.data_source.clone();
 
-    info!(symbol = %req.symbol, ?save_as, "Rhai backtest request");
-    let base: BacktestRequest = req.into();
-    match run_blocking(Arc::clone(&state.data_dir), base).await {
-        Ok(report) => {
-            respond_with_save(
-                report, save_as, spec,
-                symbol, timeframe, from, to,
-                capital, execution, exit, data_source,
-                &state.store,
-            ).await
+    let name      = req.name.clone();
+    let spec      = StrategySpec { script: req.script.clone() };
+    let symbol    = req.symbol.clone();
+    let timeframe = Some(req.timeframe.clone().unwrap_or_else(|| state.tf.to_string()));
+    let label     = req.label.clone().unwrap_or_else(|| format!("{name} on {symbol}"));
+    let case_id   = req.case_id.clone();
+    let from      = req.from.clone();
+    let to        = req.to.clone();
+    let capital   = capital_from_rhai(&req);
+    let execution = execution_from_rhai(&req);
+    let data_source = req.data_source.clone();
+    let notes     = req.notes.clone();
+
+    info!(symbol = %symbol, name = %name, ?case_id, "Rhai backtest request");
+
+    // 1. Upsert strategy (dedup by spec_hash or compare against strategy_id).
+    let strategy_id_hint = req.strategy_id.clone();
+    let strategy = match state.store.upsert_strategy(name, label.clone(), spec, notes, strategy_id_hint).await {
+        Ok(s)  => s,
+        Err(e) => {
+            warn!(error = %e, "strategy upsert failed");
+            return (StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse { error: format!("strategy upsert: {e}") })).into_response();
         }
-        Err(r) => r,
-    }
+    };
+
+    // 2. Upsert case (C if no case_id; U if case_id provided).
+    let case = match state.store.upsert_case(
+        case_id, strategy.id.clone(), label,
+        symbol.clone(), timeframe.clone(),
+        from.as_deref().and_then(date_to_ms),
+        to.as_deref().and_then(date_to_ms),
+        data_source, capital, execution,
+    ).await {
+        Ok(c)  => c,
+        Err(e) => {
+            warn!(error = %e, "case upsert failed");
+            return (StatusCode::BAD_REQUEST,
+                Json(ErrorResponse { error: format!("case upsert: {e}") })).into_response();
+        }
+    };
+
+    // 3. Run engine.
+    let base: BacktestRequest = req.into();
+    let report = match run_blocking(Arc::clone(&state.data_dir), base).await {
+        Ok(r)  => r,
+        Err(r) => return r,
+    };
+
+    // 4. Save result.
+    let ran_at = Utc::now().timestamp_millis();
+    let result = match state.store.save_result(
+        case.id.clone(), ran_at, None,
+        report.returns.total_pct,
+        report.risk_adjusted.sharpe,
+        report.drawdown.max_pct,
+        report.trade_stats.win_rate_pct,
+        report.trade_stats.total as i64,
+    ).await {
+        Ok(r)  => r,
+        Err(e) => {
+            warn!(error = %e, case_id = %case.id, "failed to save result row — report still returned");
+            // Return report anyway; log the save failure.
+            let mut body = serde_json::to_value(&report).unwrap_or_default();
+            body["saved_error"] = serde_json::Value::String(e.to_string());
+            return (StatusCode::OK, Json(body)).into_response();
+        }
+    };
+
+    info!(
+        strategy_id = %strategy.id,
+        case_id      = %case.id,
+        result_id    = %result.id,
+        total_return = report.returns.total_pct,
+        sharpe       = report.risk_adjusted.sharpe,
+        trades       = report.trade_stats.total,
+        "backtest done"
+    );
+
+    // 5. Merge `saved` into response JSON.
+    let mut body = serde_json::to_value(&report).unwrap_or_default();
+    body["saved"] = serde_json::json!({
+        "strategy_id": strategy.id,
+        "case_id":     case.id,
+        "result_id":   result.id,
+    });
+    (StatusCode::OK, Json(body)).into_response()
 }
 
 // ── Core helpers ─────────────────────────────────────────────────────────────
@@ -209,106 +275,8 @@ pub(super) async fn run_blocking(
     }
 }
 
-/// Serialize the report and, if `save_as` is set, auto-save and merge `"saved"` into the JSON.
-#[allow(clippy::too_many_arguments)]
-async fn respond_with_save(
-    report: BacktestResponse,
-    save_as: Option<String>,
-    spec: StrategySpec,
-    symbol: String,
-    timeframe: Option<String>,
-    from: Option<String>,
-    to: Option<String>,
-    capital: CapitalConfig,
-    execution: ExecutionConfig,
-    exit: Option<alm_engine::types::ExitConfig>,
-    data_source: Option<String>,
-    store: &StoreBackend,
-) -> Response {
-    let Some(name) = save_as else {
-        return (StatusCode::OK, Json(report)).into_response();
-    };
-
-    let saved = auto_save(
-        store, name, spec,
-        symbol, timeframe,
-        from.as_deref(), to.as_deref(),
-        capital, execution, exit, data_source,
-        &report,
-    ).await;
-
-    // Merge `"saved"` into the report JSON — avoids touching BacktestResponse type.
-    let mut body = serde_json::to_value(&report).unwrap_or_default();
-    match saved {
-        Ok(r) => {
-            body["saved"] = serde_json::to_value(&r).unwrap_or_default();
-            info!(strategy_id = %r.strategy_id, result_id = %r.result_id, "auto-saved backtest");
-        }
-        Err(e) => {
-            warn!(error = %e, "auto-save failed — result still returned");
-            body["saved_error"] = serde_json::Value::String(e.to_string());
-        }
-    }
-    (StatusCode::OK, Json(body)).into_response()
-}
-
-/// IDs returned when `save_as` triggers auto-save.
-#[derive(Debug, Serialize)]
-pub struct SavedRef {
-    pub strategy_id: String,
-    pub case_id: String,
-    pub result_id: String,
-}
-
-async fn auto_save(
-    store: &StoreBackend,
-    name: String,
-    spec: StrategySpec,
-    symbol: String,
-    timeframe: Option<String>,
-    from: Option<&str>,
-    to: Option<&str>,
-    capital: CapitalConfig,
-    execution: ExecutionConfig,
-    exit: Option<alm_engine::types::ExitConfig>,
-    data_source: Option<String>,
-    report: &BacktestResponse,
-) -> Result<SavedRef> {
-    let label = name.clone();
-    let strategy = store.create_strategy(name.clone(), None, label, spec, None).await?;
-
-    let case = store.create_case(
-        strategy.id.clone(),
-        format!("{name} on {symbol}"),
-        symbol,
-        timeframe,
-        from.and_then(date_to_ms),
-        to.and_then(date_to_ms),
-        data_source,
-        capital,
-        execution,
-        exit,
-    ).await?;
-
-    let ran_at = Utc::now().timestamp_millis();
-    let result = store.save_result(
-        case.id.clone(),
-        ran_at,
-        None,
-        report.returns.total_pct,
-        report.risk_adjusted.sharpe,
-        report.drawdown.max_pct,
-        report.trade_stats.win_rate_pct,
-        report.trade_stats.total as i64,
-    ).await?;
-
-    Ok(SavedRef { strategy_id: strategy.id, case_id: case.id, result_id: result.id })
-}
-
-// ── Request field extractors ──────────────────────────────────────────────────
-
-fn capital_from_rhai(req: &RhaiBacktestRequest) -> CapitalConfig {
-    CapitalConfig {
+fn capital_from_rhai(req: &RhaiBacktestRequest) -> PositionConfig {
+    PositionConfig {
         initial:       req.initial_capital,
         position_pct:  req.position_size_pct,
         position_usd:  req.position_size_usd,
@@ -321,6 +289,7 @@ fn execution_from_rhai(req: &RhaiBacktestRequest) -> ExecutionConfig {
         commission_pct:   req.commission_pct,
         slippage_pct:     req.slippage_pct,
         risk_free_annual: req.risk_free_annual,
+        intra_bar_mode:   req.intra_bar_mode.clone(),
     }
 }
 

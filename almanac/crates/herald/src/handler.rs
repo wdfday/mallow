@@ -24,7 +24,7 @@
 use std::sync::Arc;
 
 use alm_core::msg::{
-    BarMsg, HandInfo, HandListResponse, ConfigMsg, DeregisterMsg, RegisterMsg, ResetMsg, SignalMsg,
+    BarMsg, HandInfo, HandListResponse, DeregisterMsg, RegisterMsg, ResetMsg, SignalMsg,
     SignalResponse,
 };
 use alm_core::{Bar, Timeframe};
@@ -36,12 +36,11 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, error, info, warn};
 
 use crate::feed::{BarEvent, BarRx};
-use crate::registry::{Registry, SignalBatch};
+use crate::registry::{HandSignal, Registry};
 use crate::ring::BarRing;
 
 // ── NATS subjects ─────────────────────────────────────────────────────────────
 
-pub const SUBJ_CONFIG: &str = "engine.configure";
 pub const SUBJ_RESET: &str = "engine.reset";
 pub const SUBJ_REGISTER: &str = "engine.register";
 pub const SUBJ_DEREGISTER: &str = "engine.deregister";
@@ -60,9 +59,9 @@ pub struct Handler {
     /// SSE broadcast + Registry observer fan-out.
     tf: Timeframe,
     bar_rx: BarRx,
-    signal_rx: Option<mpsc::UnboundedReceiver<SignalBatch>>,
+    signal_rx: Option<mpsc::UnboundedReceiver<HandSignal>>,
     bar_bcast: broadcast::Sender<Bar>,
-    sig_bcast: broadcast::Sender<Arc<SignalBatch>>,
+    sig_bcast: broadcast::Sender<Arc<HandSignal>>,
 }
 
 impl Handler {
@@ -73,9 +72,9 @@ impl Handler {
         ring: BarRing,
         tf: Timeframe,
         bar_rx: BarRx,
-        signal_rx: mpsc::UnboundedReceiver<SignalBatch>,
+        signal_rx: mpsc::UnboundedReceiver<HandSignal>,
         bar_bcast: broadcast::Sender<Bar>,
-        sig_bcast: broadcast::Sender<Arc<SignalBatch>>,
+        sig_bcast: broadcast::Sender<Arc<HandSignal>>,
     ) -> Self {
         Self {
             client,
@@ -94,7 +93,6 @@ impl Handler {
         let rx = self.signal_rx.take().expect("signal_rx present at run()");
         tokio::spawn(signal_publisher(self.client.clone(), rx, self.sig_bcast.clone()));
 
-        let mut config_sub     = self.client.subscribe(SUBJ_CONFIG).await?;
         let mut reset_sub      = self.client.subscribe(SUBJ_RESET).await?;
         let mut register_sub   = self.client.subscribe(SUBJ_REGISTER).await?;
         let mut deregister_sub = self.client.subscribe(SUBJ_DEREGISTER).await?;
@@ -108,7 +106,6 @@ impl Handler {
         loop {
             tokio::select! {
                 Some(event) = self.bar_rx.recv() => self.handle_bar_event(event).await,
-                Some(msg) = config_sub.next()      => self.handle_config(msg).await,
                 Some(msg) = reset_sub.next()       => self.handle_reset(msg).await,
                 Some(msg) = register_sub.next()    => self.handle_register(msg).await,
                 Some(msg) = deregister_sub.next()  => self.handle_deregister(msg).await,
@@ -168,16 +165,6 @@ impl Handler {
 
     // ── engine.configure ─────────────────────────────────────────────────────
 
-    async fn handle_config(&self, msg: async_nats::Message) {
-        let config = match ConfigMsg::decode(msg.payload.as_ref()) {
-            Ok(c) => c,
-            Err(e) => { error!(err = %e, "failed to decode ConfigMsg"); return; }
-        };
-        let params_json = serde_json::to_string(&config.params).unwrap_or_default();
-        info!(strategy = %config.strategy, "reconfiguring global strategy (legacy)");
-        self.registry.set_global_config(config.strategy, params_json);
-    }
-
     // ── engine.reset ─────────────────────────────────────────────────────────
 
     async fn handle_reset(&self, msg: async_nats::Message) {
@@ -198,23 +185,23 @@ impl Handler {
             Ok(r) => r,
             Err(e) => { error!(err = %e, "failed to decode RegisterMsg"); return; }
         };
-        info!(hand_id = %req.hand_id, symbol = %req.symbol, strategy = %req.strategy, "registering bot");
+        info!(hand_id = %req.hand_id, symbol = %req.symbol, "registering hand");
         let target_tf = req.timeframe.as_deref()
             .and_then(parse_timeframe_str)
             .unwrap_or(self.tf);
         let result = self.registry.register(
             req.hand_id.clone(), req.helm_id.clone(), req.symbol.clone(),
-            req.strategy.clone(), req.params_json.clone(), target_tf,
+            req.script.clone(), target_tf,
         );
         match result {
             Ok(()) => {
-                info!(hand_id = %req.hand_id, symbol = %req.symbol, "bot registered");
+                info!(hand_id = %req.hand_id, symbol = %req.symbol, "hand registered");
                 if let Some(reply) = msg.reply {
                     let _ = self.client.publish(reply, b"ok".as_ref().into()).await;
                 }
             }
             Err(e) => {
-                warn!(hand_id = %req.hand_id, err = %e, "failed to register bot");
+                warn!(hand_id = %req.hand_id, err = %e, "failed to register hand");
                 if let Some(reply) = msg.reply {
                     let _ = self.client.publish(reply, format!("error: {e}").into()).await;
                 }
@@ -230,7 +217,7 @@ impl Handler {
             Err(e) => { error!(err = %e, "failed to decode DeregisterMsg"); return; }
         };
         let hand_id = req.hand_id.as_str();
-        if hand_id.is_empty() { info!("deregistering ALL bots"); }
+        if hand_id.is_empty() { info!("deregistering ALL hands"); }
         else                  { info!(%hand_id, "deregistering hand"); }
         self.registry.deregister(hand_id);
         if let Some(reply) = msg.reply {
@@ -245,9 +232,9 @@ impl Handler {
             warn!("engine.list without reply subject — ignoring");
             return;
         };
-        let bots = self.registry.list_bots().into_iter()
-            .map(|(hand_id, _helm_id, symbol, strategy, params_json)| HandInfo {
-                hand_id, symbol, strategy, params_json,
+        let bots = self.registry.list_hands().into_iter()
+            .map(|(hand_id, helm_id, symbol, script)| {
+                HandInfo { hand_id, symbol, script, timeframe: String::new(), helm_id }
             })
             .collect();
         let payload = HandListResponse { hands: bots }.encode_to_vec();
@@ -259,8 +246,8 @@ impl Handler {
 
 async fn signal_publisher(
     client: Client,
-    mut rx: mpsc::UnboundedReceiver<SignalBatch>,
-    bcast: broadcast::Sender<Arc<SignalBatch>>,
+    mut rx: mpsc::UnboundedReceiver<HandSignal>,
+    bcast: broadcast::Sender<Arc<HandSignal>>,
 ) {
     while let Some(batch) = rx.recv().await {
         let batch = Arc::new(batch);
@@ -269,25 +256,21 @@ async fn signal_publisher(
         let _ = bcast.send(Arc::clone(&batch));
 
         let response = SignalResponse {
-            signals: batch.signals.iter().map(SignalMsg::from).collect(),
+            signal: Some(SignalMsg::from(&batch.signal)),
             helm_id: batch.helm_id.clone(),
             hand_id: batch.hand_id.clone(),
         };
         let payload = response.encode_to_vec();
-        let n_signals = batch.signals.len();
-        debug!(hand_id = %batch.hand_id, symbol = %batch.symbol, n_signals, "publishing signal batch to NATS");
+        debug!(hand_id = %batch.hand_id, symbol = %batch.signal.symbol, "publishing signal to NATS");
         if let Err(e) = client.publish(SUBJ_SIGNALS, payload.into()).await {
-            error!(subject = SUBJ_SIGNALS, err = %e, "failed to publish signals");
+            error!(subject = SUBJ_SIGNALS, err = %e, "failed to publish signal");
             continue;
         }
-        for sig in &batch.signals {
-            info!(
-                hand_id = %batch.hand_id, symbol = %sig.symbol,
-                direction = ?sig.direction, strength = sig.strength,
-                bar_ts = batch.bar_ts, "signal emitted"
-            );
-        }
-        debug!(hand_id = %batch.hand_id, n_signals, "signal batch published ok");
+        info!(
+            hand_id = %batch.hand_id, symbol = %batch.signal.symbol,
+            direction = ?batch.signal.direction, strength = batch.signal.strength,
+            bar_ts = batch.bar_ts, "signal emitted"
+        );
     }
     info!("signal publisher channel closed");
 }

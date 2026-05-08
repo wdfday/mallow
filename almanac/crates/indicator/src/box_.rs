@@ -6,13 +6,11 @@
 //!
 //! - `alm-ledger`  — the realtime state machine caches one `IndicatorBox`
 //!                   per `(symbol, tf, spec)` and advances it on every bar.
-//! - `alm-strategy::dynamic::DynamicStrategy` — declarative JSON strategy.
-//! - `alm-strategy::expr::cel::CelStrategy` — per-binding live indicator.
+//! - `alm-strategy::script::RhaiStrategy` — per-binding confirmed + live indicators.
 //! - `alm-engine::backtest` / `alm-py` — batch compute on historical bars.
 //!
 //! Originally lived in `alm-strategy/src/dynamic/indicator_box.rs`; moved here
-//! so that `alm-ledger` can depend on it without pulling in `alm-strategy`
-//! (which would create a cycle once CEL/Dynamic consume ledger state).
+//! so that `alm-ledger` can depend on it without pulling in `alm-strategy`.
 
 use std::collections::HashMap;
 

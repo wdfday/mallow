@@ -4,17 +4,17 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
+use sha2::{Digest, Sha256};
 use parking_lot::RwLock;
 use serde_json::Value;
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use super::types::{
-    BacktestCase, BacktestResult, CapitalConfig, ExecutionConfig, Strategy, StrategySpec,
+    BacktestCase, BacktestResult, ExecutionConfig, PositionConfig, Strategy, StrategySpec,
     UpdateCaseReq, UpdateStrategyReq,
 };
 use crate::http::watch::WatchEntry;
-use alm_engine::types::ExitConfig;
 
 // ── In-memory store ───────────────────────────────────────────────────────────
 
@@ -48,23 +48,30 @@ impl StoreBackend {
 fn now_ms() -> i64 { chrono::Utc::now().timestamp_millis() }
 fn new_id() -> String { Uuid::now_v7().to_string() }
 
+/// SHA-256 of the canonical (sorted-key) JSON encoding of the spec script.
+fn compute_spec_hash(spec: &StrategySpec) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(spec.script.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
 fn pg_strategy(row: &sqlx::postgres::PgRow) -> Result<Strategy> {
     let spec_val: Value = row.try_get("spec").map_err(|e| anyhow!("{e}"))?;
     Ok(Strategy {
-        id:         row.try_get("id").map_err(|e| anyhow!("{e}"))?,
-        name:       row.try_get("name").map_err(|e| anyhow!("{e}"))?,
-        version:    row.try_get("version").map_err(|e| anyhow!("{e}"))?,
-        label:      row.try_get("label").map_err(|e| anyhow!("{e}"))?,
-        spec:       serde_json::from_value(spec_val).map_err(|e| anyhow!("spec: {e}"))?,
-        notes:      row.try_get("notes").map_err(|e| anyhow!("{e}"))?,
-        created_at: row.try_get("created_at").map_err(|e| anyhow!("{e}"))?,
+        id:          row.try_get("id").map_err(|e| anyhow!("{e}"))?,
+        name:        row.try_get("name").map_err(|e| anyhow!("{e}"))?,
+        version:     row.try_get("version").map_err(|e| anyhow!("{e}"))?,
+        previous_id: row.try_get("previous_id").map_err(|e| anyhow!("{e}"))?,
+        label:       row.try_get("label").map_err(|e| anyhow!("{e}"))?,
+        spec:        serde_json::from_value(spec_val).map_err(|e| anyhow!("spec: {e}"))?,
+        notes:       row.try_get("notes").map_err(|e| anyhow!("{e}"))?,
+        created_at:  row.try_get("created_at").map_err(|e| anyhow!("{e}"))?,
     })
 }
 
 fn pg_case(row: &sqlx::postgres::PgRow) -> Result<BacktestCase> {
-    let cap_val:  Value         = row.try_get("capital").map_err(|e| anyhow!("{e}"))?;
-    let exec_val: Value         = row.try_get("execution").map_err(|e| anyhow!("{e}"))?;
-    let exit_val: Option<Value> = row.try_get("exit_config").map_err(|e| anyhow!("{e}"))?;
+    let cap_val:  Value = row.try_get("capital").map_err(|e| anyhow!("{e}"))?;
+    let exec_val: Value = row.try_get("execution").map_err(|e| anyhow!("{e}"))?;
     Ok(BacktestCase {
         id:          row.try_get("id").map_err(|e| anyhow!("{e}"))?,
         strategy_id: row.try_get("strategy_id").map_err(|e| anyhow!("{e}"))?,
@@ -76,8 +83,6 @@ fn pg_case(row: &sqlx::postgres::PgRow) -> Result<BacktestCase> {
         data_source: row.try_get("data_source").map_err(|e| anyhow!("{e}"))?,
         capital:     serde_json::from_value(cap_val).map_err(|e| anyhow!("capital: {e}"))?,
         execution:   serde_json::from_value(exec_val).map_err(|e| anyhow!("execution: {e}"))?,
-        exit:        exit_val.map(serde_json::from_value).transpose()
-                         .map_err(|e| anyhow!("exit: {e}"))?,
         created_at:  row.try_get("created_at").map_err(|e| anyhow!("{e}"))?,
         updated_at:  row.try_get("updated_at").map_err(|e| anyhow!("{e}"))?,
     })
@@ -112,7 +117,7 @@ impl StoreBackend {
             }
             StoreBackend::Pg(pool) => {
                 let rows = sqlx::query(
-                    "SELECT id, name, version, label, spec, notes, created_at \
+                    "SELECT id, name, version, previous_id, label, spec, notes, created_at \
                      FROM strategies ORDER BY name ASC, version DESC",
                 )
                 .fetch_all(pool)
@@ -136,7 +141,7 @@ impl StoreBackend {
             }
             StoreBackend::Pg(pool) => {
                 let rows = sqlx::query(
-                    "SELECT id, name, version, label, spec, notes, created_at \
+                    "SELECT id, name, version, previous_id, label, spec, notes, created_at \
                      FROM strategies WHERE name = $1 ORDER BY version DESC",
                 )
                 .bind(name)
@@ -153,6 +158,7 @@ impl StoreBackend {
         &self,
         name: String,
         version: Option<i32>,
+        previous_id: Option<String>,
         label: String,
         spec: StrategySpec,
         notes: Option<String>,
@@ -165,7 +171,7 @@ impl StoreBackend {
             None => self.next_version(&name).await?,
         };
 
-        let saved = Strategy { id: id.clone(), name, version, label, spec, notes, created_at: now };
+        let saved = Strategy { id: id.clone(), name, version, previous_id, label, spec, notes, created_at: now };
 
         match self {
             StoreBackend::Mem(store) => {
@@ -181,14 +187,14 @@ impl StoreBackend {
                 let spec_json = serde_json::to_value(&saved.spec)?;
                 sqlx::query(
                     "INSERT INTO strategies \
-                     (id, name, version, label, kind, spec, notes, created_at) \
+                     (id, name, version, previous_id, label, spec, notes, created_at) \
                      VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
                 )
                 .bind(&saved.id)
                 .bind(&saved.name)
                 .bind(saved.version)
+                .bind(&saved.previous_id)
                 .bind(&saved.label)
-                .bind(saved.spec.kind_str())
                 .bind(&spec_json)
                 .bind(&saved.notes)
                 .bind(saved.created_at)
@@ -204,7 +210,7 @@ impl StoreBackend {
             StoreBackend::Mem(store) => Ok(store.read().strategies.get(id).cloned()),
             StoreBackend::Pg(pool) => {
                 let row = sqlx::query(
-                    "SELECT id, name, version, label, spec, notes, created_at \
+                    "SELECT id, name, version, previous_id, label, spec, notes, created_at \
                      FROM strategies WHERE id = $1",
                 )
                 .bind(id)
@@ -289,6 +295,180 @@ impl StoreBackend {
         }
     }
 
+    /// Create or return existing strategy version for this (name, script) pair.
+    ///
+    /// Two resolution paths depending on `strategy_id`:
+    ///
+    /// **`strategy_id = Some(id)`** — compare against that specific version:
+    /// - Same script → return the referenced version (no new row).
+    /// - Different script → create next version; `previous_id = strategy_id`.
+    ///
+    /// **`strategy_id = None`** — global spec_hash dedup across all versions of `name`:
+    /// - Matching hash found → return existing row unchanged.
+    /// - No match → create next version; `previous_id` points to the latest
+    ///   existing version for `name` (None if this is the first version).
+    pub async fn upsert_strategy(
+        &self,
+        name: String,
+        label: String,
+        spec: StrategySpec,
+        notes: Option<String>,
+        strategy_id: Option<String>,
+    ) -> Result<Strategy> {
+        let hash = compute_spec_hash(&spec);
+
+        // ── Path A: compare against a specific version ───────────────────────
+        if let Some(ref sid) = strategy_id {
+            let existing = self.get_strategy(sid).await?
+                .ok_or_else(|| anyhow!("strategy_id '{}' not found", sid))?;
+
+            if existing.name != name {
+                return Err(anyhow!(
+                    "strategy_id '{}' belongs to '{}', not '{}'",
+                    sid, existing.name, name
+                ));
+            }
+
+            // Same script → reuse that version, no new row.
+            if existing.spec.script == spec.script {
+                return Ok(existing);
+            }
+
+            // Different script → new version branching from sid.
+            return self.create_strategy_with_hash(
+                name, label, spec, notes, Some(sid.clone()), hash,
+            ).await;
+        }
+
+        // ── Path B: global spec_hash dedup ───────────────────────────────────
+        match self {
+            StoreBackend::Mem(store) => {
+                if let Some(existing) = store.read().strategies.values()
+                    .find(|s| s.name == name && s.spec.script == spec.script)
+                    .cloned()
+                {
+                    return Ok(existing);
+                }
+            }
+            StoreBackend::Pg(pool) => {
+                let row = sqlx::query(
+                    "SELECT id, name, version, previous_id, label, spec, notes, created_at \
+                     FROM strategies WHERE spec_hash = $1",
+                )
+                .bind(&hash)
+                .fetch_optional(pool)
+                .await?;
+                if let Some(r) = row {
+                    return pg_strategy(&r);
+                }
+            }
+        }
+
+        // New script — find previous_id (latest version for this name).
+        let previous_id = match self {
+            StoreBackend::Mem(store) => {
+                store.read().strategies.values()
+                    .filter(|s| s.name == name)
+                    .max_by_key(|s| s.version)
+                    .map(|s| s.id.clone())
+            }
+            StoreBackend::Pg(pool) => {
+                let row = sqlx::query(
+                    "SELECT id FROM strategies WHERE name = $1 ORDER BY version DESC LIMIT 1",
+                )
+                .bind(&name)
+                .fetch_optional(pool)
+                .await?;
+                row.map(|r| r.try_get::<String, _>("id").unwrap_or_default())
+            }
+        };
+
+        self.create_strategy_with_hash(name, label, spec, notes, previous_id, hash).await
+    }
+
+    /// Internal: create a new strategy version with a pre-computed spec_hash.
+    async fn create_strategy_with_hash(
+        &self,
+        name: String,
+        label: String,
+        spec: StrategySpec,
+        notes: Option<String>,
+        previous_id: Option<String>,
+        hash: String,
+    ) -> Result<Strategy> {
+        let version = self.next_version(&name).await?;
+        let id  = new_id();
+        let now = now_ms();
+        let saved = Strategy {
+            id: id.clone(), name, version, previous_id, label, spec: spec.clone(), notes,
+            created_at: now,
+        };
+
+        match self {
+            StoreBackend::Mem(store) => {
+                store.write().strategies.insert(id, saved.clone());
+            }
+            StoreBackend::Pg(pool) => {
+                let spec_json = serde_json::to_value(&saved.spec)?;
+                sqlx::query(
+                    "INSERT INTO strategies \
+                     (id, name, version, previous_id, label, spec, notes, spec_hash, created_at) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
+                )
+                .bind(&saved.id)
+                .bind(&saved.name)
+                .bind(saved.version)
+                .bind(&saved.previous_id)
+                .bind(&saved.label)
+                .bind(&spec_json)
+                .bind(&saved.notes)
+                .bind(&hash)
+                .bind(saved.created_at)
+                .execute(pool)
+                .await?;
+            }
+        }
+        Ok(saved)
+    }
+
+    /// Create or update a backtest case.
+    ///
+    /// - `case_id = Some(id)` → UPDATE that case in-place (params may have changed),
+    ///   return the updated row. Returns error if id not found.
+    /// - `case_id = None`     → CREATE new case row.
+    pub async fn upsert_case(
+        &self,
+        case_id: Option<String>,
+        strategy_id: String,
+        label: String,
+        symbol: String,
+        timeframe: Option<String>,
+        from_ms: Option<i64>,
+        to_ms: Option<i64>,
+        data_source: Option<String>,
+        capital: PositionConfig,
+        execution: ExecutionConfig,
+    ) -> Result<BacktestCase> {
+        if let Some(ref id) = case_id {
+            let req = UpdateCaseReq {
+                label: Some(label),
+                strategy_id: Some(strategy_id),
+                symbol: Some(symbol),
+                timeframe,
+                from_ms,
+                to_ms,
+                data_source,
+                capital: Some(capital),
+                execution: Some(execution),
+            };
+            match self.update_case(id, req).await? {
+                Some(c) => return Ok(c),
+                None    => return Err(anyhow!("case '{}' not found", id)),
+            }
+        }
+        self.create_case(strategy_id, label, symbol, timeframe, from_ms, to_ms, data_source, capital, execution).await
+    }
+
     async fn next_version(&self, name: &str) -> Result<i32> {
         match self {
             StoreBackend::Mem(store) => {
@@ -327,7 +507,7 @@ impl StoreBackend {
             StoreBackend::Pg(pool) => {
                 let rows = sqlx::query(
                     "SELECT id, strategy_id, label, symbol, timeframe, from_ms, to_ms, \
-                            data_source, capital, execution, exit_config, created_at, updated_at \
+                            data_source, capital, execution, created_at, updated_at \
                      FROM backtest_cases ORDER BY created_at ASC",
                 )
                 .fetch_all(pool)
@@ -346,15 +526,14 @@ impl StoreBackend {
         from_ms: Option<i64>,
         to_ms: Option<i64>,
         data_source: Option<String>,
-        capital: CapitalConfig,
+        capital: PositionConfig,
         execution: ExecutionConfig,
-        exit: Option<ExitConfig>,
     ) -> Result<BacktestCase> {
         let id  = new_id();
         let now = now_ms();
         let saved = BacktestCase {
             id: id.clone(), strategy_id, label, symbol, timeframe,
-            from_ms, to_ms, data_source, capital, execution, exit,
+            from_ms, to_ms, data_source, capital, execution,
             created_at: now, updated_at: now,
         };
 
@@ -365,18 +544,17 @@ impl StoreBackend {
             StoreBackend::Pg(pool) => {
                 let cap_json  = serde_json::to_value(&saved.capital)?;
                 let exec_json = serde_json::to_value(&saved.execution)?;
-                let exit_json = saved.exit.as_ref().map(serde_json::to_value).transpose()?;
                 sqlx::query(
                     "INSERT INTO backtest_cases \
                      (id, strategy_id, label, symbol, timeframe, from_ms, to_ms, data_source, \
-                      capital, execution, exit_config, created_at, updated_at) \
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)",
+                      capital, execution, created_at, updated_at) \
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)",
                 )
                 .bind(&saved.id).bind(&saved.strategy_id).bind(&saved.label)
                 .bind(&saved.symbol).bind(&saved.timeframe)
                 .bind(saved.from_ms).bind(saved.to_ms)
                 .bind(&saved.data_source)
-                .bind(&cap_json).bind(&exec_json).bind(&exit_json)
+                .bind(&cap_json).bind(&exec_json)
                 .bind(saved.created_at).bind(saved.updated_at)
                 .execute(pool)
                 .await?;
@@ -391,7 +569,7 @@ impl StoreBackend {
             StoreBackend::Pg(pool) => {
                 let row = sqlx::query(
                     "SELECT id, strategy_id, label, symbol, timeframe, from_ms, to_ms, \
-                            data_source, capital, execution, exit_config, created_at, updated_at \
+                            data_source, capital, execution, created_at, updated_at \
                      FROM backtest_cases WHERE id = $1",
                 )
                 .bind(id)
@@ -416,7 +594,6 @@ impl StoreBackend {
                 if req.data_source.is_some()  { c.data_source  = req.data_source;  }
                 if let Some(v) = req.capital   { c.capital   = v; }
                 if let Some(v) = req.execution { c.execution = v; }
-                if req.exit.is_some() { c.exit = req.exit; }
                 c.updated_at = now_ms();
                 Ok(Some(c.clone()))
             }
@@ -437,23 +614,21 @@ impl StoreBackend {
                 let new_ds     = if req.data_source.is_some() { req.data_source } else { cur.data_source };
                 let new_cap    = req.capital.unwrap_or(cur.capital);
                 let new_exec   = req.execution.unwrap_or(cur.execution);
-                let new_exit   = if req.exit.is_some() { req.exit } else { cur.exit };
                 let cap_json   = serde_json::to_value(&new_cap)?;
                 let exec_json  = serde_json::to_value(&new_exec)?;
-                let exit_json: Option<Value> = new_exit.as_ref().map(serde_json::to_value).transpose()?;
 
                 let row = sqlx::query(
                     "UPDATE backtest_cases \
                      SET strategy_id=$2, label=$3, symbol=$4, timeframe=$5, \
                          from_ms=$6, to_ms=$7, data_source=$8, \
-                         capital=$9, execution=$10, exit_config=$11, updated_at=$12 \
+                         capital=$9, execution=$10, updated_at=$11 \
                      WHERE id=$1 \
                      RETURNING id, strategy_id, label, symbol, timeframe, from_ms, to_ms, \
-                               data_source, capital, execution, exit_config, created_at, updated_at",
+                               data_source, capital, execution, created_at, updated_at",
                 )
                 .bind(id).bind(&new_sid).bind(&new_label).bind(&new_symbol)
                 .bind(&new_tf).bind(new_from).bind(new_to).bind(&new_ds)
-                .bind(&cap_json).bind(&exec_json).bind(&exit_json).bind(now)
+                .bind(&cap_json).bind(&exec_json).bind(now)
                 .fetch_optional(pool)
                 .await?;
                 row.map(|r| pg_case(&r)).transpose()
@@ -635,6 +810,30 @@ impl StoreBackend {
                 .bind(&entry.webhook_url)
                 .bind(&entry.nats_subject)
                 .bind(entry.created_at)
+                .execute(pool)
+                .await?;
+                Ok(())
+            }
+        }
+    }
+
+    pub async fn update_watch_entry(&self, entry: &WatchEntry) -> Result<()> {
+        match self {
+            StoreBackend::Mem(_) => Ok(()),
+            StoreBackend::Pg(pool) => {
+                let symbols_json = serde_json::to_value(&entry.symbols)?;
+                let spec_json    = serde_json::to_value(&entry.spec)?;
+                sqlx::query(
+                    "UPDATE watch_entries \
+                     SET symbols=$2, timeframe=$3, spec=$4, webhook_url=$5, nats_subject=$6 \
+                     WHERE id=$1",
+                )
+                .bind(&entry.id)
+                .bind(&symbols_json)
+                .bind(&entry.timeframe)
+                .bind(&spec_json)
+                .bind(&entry.webhook_url)
+                .bind(&entry.nats_subject)
                 .execute(pool)
                 .await?;
                 Ok(())

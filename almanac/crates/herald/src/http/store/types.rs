@@ -4,8 +4,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
 
-use alm_engine::types::ExitConfig;
-
 // ── StrategySpec ──────────────────────────────────────────────────────────────
 
 /// A Rhai script strategy specification.
@@ -30,7 +28,7 @@ impl StrategySpec {
 // ── Capital / execution sub-configs ──────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
-pub struct CapitalConfig {
+pub struct PositionConfig {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub initial: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -41,7 +39,7 @@ pub struct CapitalConfig {
     pub max_positions: Option<usize>,
 }
 
-impl Default for CapitalConfig {
+impl Default for PositionConfig {
     fn default() -> Self {
         Self {
             initial:       Some(10_000.0),
@@ -60,6 +58,9 @@ pub struct ExecutionConfig {
     pub slippage_pct: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub risk_free_annual: Option<f64>,
+    /// `"close_only"` (default) | `"pessimistic"` | `"ohlc_heuristic"`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub intra_bar_mode: Option<String>,
 }
 
 impl Default for ExecutionConfig {
@@ -68,6 +69,7 @@ impl Default for ExecutionConfig {
             commission_pct:   Some(0.001),
             slippage_pct:     Some(0.0005),
             risk_free_annual: Some(0.04),
+            intra_bar_mode:   None,
         }
     }
 }
@@ -84,6 +86,9 @@ pub struct Strategy {
     pub name: String,
     /// User-assigned version number (1, 2, 3 …). Auto-incremented if omitted.
     pub version: i32,
+    /// UUID of the strategy version this was branched/updated from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub previous_id: Option<String>,
     /// Human-readable display label.
     pub label: String,
     #[serde(rename = "strategy_spec")]
@@ -112,10 +117,8 @@ pub struct BacktestCase {
     pub to_ms: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data_source: Option<String>,
-    pub capital: CapitalConfig,
+    pub capital: PositionConfig,
     pub execution: ExecutionConfig,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub exit: Option<ExitConfig>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -156,6 +159,12 @@ pub struct SignalPoint {
     /// Stop-loss price (from Rhai `let sl = …`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_price: Option<f64>,
+    /// True when `tp`/`sl` are offsets from fill price, not absolute prices.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub is_offset: bool,
+    /// Human-readable reason string for audit logs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 // ── Request DTOs ──────────────────────────────────────────────────────────────
@@ -165,6 +174,8 @@ pub struct CreateStrategyReq {
     pub name: String,
     /// If omitted, auto-incremented from the highest existing version for `name`.
     pub version: Option<i32>,
+    /// UUID of the strategy version this is branched/updated from.
+    pub previous_id: Option<String>,
     pub label: String,
     #[serde(rename = "strategy_spec")]
     pub spec: StrategySpec,
@@ -192,11 +203,9 @@ pub struct CreateCaseReq {
     #[serde(default)]
     pub data_source: Option<String>,
     #[serde(default)]
-    pub capital: Option<CapitalConfig>,
+    pub capital: Option<PositionConfig>,
     #[serde(default)]
     pub execution: Option<ExecutionConfig>,
-    #[serde(default)]
-    pub exit: Option<ExitConfig>,
 }
 
 #[derive(Debug, Deserialize, ToSchema)]
@@ -208,7 +217,6 @@ pub struct UpdateCaseReq {
     pub from_ms: Option<i64>,
     pub to_ms: Option<i64>,
     pub data_source: Option<String>,
-    pub capital: Option<CapitalConfig>,
+    pub capital: Option<PositionConfig>,
     pub execution: Option<ExecutionConfig>,
-    pub exit: Option<ExitConfig>,
 }

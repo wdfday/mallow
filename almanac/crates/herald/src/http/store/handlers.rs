@@ -68,9 +68,9 @@ pub async fn create_strategy(
     State(state): State<HttpState>,
     Json(req): Json<CreateStrategyReq>,
 ) -> Response {
-    match state.store.create_strategy(req.name, req.version, req.label, req.spec, req.notes).await {
+    match state.store.create_strategy(req.name, req.version, req.previous_id, req.label, req.spec, req.notes).await {
         Ok(s)  => {
-            tracing::info!(id = %s.id, name = %s.name, version = s.version, kind = %s.spec.kind_str(), "strategy saved");
+            tracing::info!(id = %s.id, name = %s.name, version = s.version, "strategy saved");
             (StatusCode::CREATED, Json(s)).into_response()
         }
         Err(e) if e.to_string().contains("already exists") => conflict(&e.to_string()),
@@ -193,7 +193,7 @@ pub async fn create_case(
     let timeframe = Some(req.timeframe.unwrap_or_else(|| state.tf.to_string()));
     match state.store.create_case(
         req.strategy_id, req.label, req.symbol, timeframe,
-        req.from_ms, req.to_ms, req.data_source, capital, execution, req.exit,
+        req.from_ms, req.to_ms, req.data_source, capital, execution,
     ).await {
         Ok(c)  => {
             tracing::info!(id = %c.id, symbol = %c.symbol, strategy_id = %c.strategy_id, "case created");
@@ -301,7 +301,7 @@ pub async fn run_case(State(state): State<HttpState>, Path(id): Path<String>) ->
         strategy: strategy_key,
         symbol:   case.symbol.clone(),
         params:   if params.is_null() { None } else { Some(params) },
-        exit:     case.exit.clone(),
+        intra_bar_mode: case.execution.intra_bar_mode.clone(),
         from:     case.from_ms.and_then(ms_to_date),
         to:       case.to_ms.and_then(ms_to_date),
         initial_capital:        case.capital.initial,
@@ -320,6 +320,8 @@ pub async fn run_case(State(state): State<HttpState>, Path(id): Path<String>) ->
         monte_carlo:            None,
         walk_forward:           None,
         curve_points:           None,
+        candle_type:            None,
+        smooth_period:          None,
     };
 
     tracing::info!(id = %id, symbol = %case.symbol, strategy_id = %case.strategy_id, "running backtest case");
@@ -465,6 +467,8 @@ fn signal_replay(
                 strength:     sig.strength,
                 target_price: sig.target_price,
                 stop_price:   sig.stop_price,
+                is_offset:    sig.is_offset,
+                reason:       sig.reason.clone(),
             });
         }
     }

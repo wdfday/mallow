@@ -16,7 +16,7 @@ use alm_ledger::{Ledger, LedgerConfig};
 use tokio::sync::broadcast;
 
 use crate::http::{router, HttpState, StoreBackend};
-use crate::registry::SignalBatch;
+use crate::registry::HandSignal;
 use crate::watch_evaluator::WatchEvaluator;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -25,7 +25,7 @@ fn test_state() -> HttpState {
     let ledger = Arc::new(Ledger::new(LedgerConfig::default()));
     let data_dir = Arc::new(PathBuf::from("/nonexistent-test-dir"));
     let (bar_tx, _) = broadcast::channel::<Bar>(256);
-    let (sig_tx, _) = broadcast::channel::<Arc<SignalBatch>>(64);
+    let (sig_tx, _) = broadcast::channel::<Arc<HandSignal>>(64);
     let watch_store = crate::http::new_watch_store();
     let (dispatch_tx, _dispatch_rx) = tokio::sync::mpsc::unbounded_channel();
     let watch_eval = Arc::new(WatchEvaluator::new(
@@ -98,7 +98,7 @@ async fn seed_strategy(state: &HttpState) -> String {
         "strategy_spec": rhai_spec()
     });
     let resp = router(state.clone())
-        .oneshot(post_json("/api/store/strategies", body))
+        .oneshot(post_json("/api/v1/store/strategies", body))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED, "seed_strategy: create failed");
@@ -113,7 +113,7 @@ async fn seed_case(state: &HttpState, strategy_id: &str) -> String {
         "symbol": "BTCUSDT"
     });
     let resp = router(state.clone())
-        .oneshot(post_json("/api/store/cases", body))
+        .oneshot(post_json("/api/v1/store/cases", body))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED, "seed_case: create failed");
@@ -128,7 +128,7 @@ async fn seed_watch(state: &HttpState) -> String {
         "webhook_url": "http://localhost:9999/hook"
     });
     let resp = router(state.clone())
-        .oneshot(post_json("/api/watch", body))
+        .oneshot(post_json("/api/v1/watch", body))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED, "seed_watch: create failed");
@@ -150,7 +150,7 @@ async fn health_ok() {
 
 #[tokio::test]
 async fn symbols_empty_ledger_returns_empty_array() {
-    let resp = test_app().oneshot(get("/api/symbols")).await.unwrap();
+    let resp = test_app().oneshot(get("/api/v1/symbols")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     assert_eq!(json_body(resp).await, serde_json::json!([]));
 }
@@ -163,7 +163,7 @@ async fn symbols_after_advance_lists_symbol() {
         .advance(Timeframe::M1, Bar::new(1_000_000, "BTCUSDT", 100.0, 101.0, 99.0, 100.5, 10.0))
         .unwrap();
 
-    let resp = router(state).oneshot(get("/api/symbols")).await.unwrap();
+    let resp = router(state).oneshot(get("/api/v1/symbols")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
     let arr = body.as_array().unwrap();
@@ -182,7 +182,7 @@ async fn symbols_without_indicators_flag_omits_field() {
         .unwrap();
 
     let resp = router(state)
-        .oneshot(get("/api/symbols?indicators=false"))
+        .oneshot(get("/api/v1/symbols?indicators=false"))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -200,7 +200,7 @@ async fn symbols_with_indicators_flag_includes_array() {
         .unwrap();
 
     let resp = router(state)
-        .oneshot(get("/api/symbols?indicators=true"))
+        .oneshot(get("/api/v1/symbols?indicators=true"))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -213,7 +213,7 @@ async fn symbols_with_indicators_flag_includes_array() {
 
 #[tokio::test]
 async fn indicators_catalogue_non_empty_with_name_field() {
-    let resp = test_app().oneshot(get("/api/indicators")).await.unwrap();
+    let resp = test_app().oneshot(get("/api/v1/indicators")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
     let arr = body.as_array().unwrap();
@@ -231,7 +231,7 @@ async fn create_strategy_returns_201_with_id() {
         "strategy_spec": rhai_spec()
     });
     let resp = test_app()
-        .oneshot(post_json("/api/store/strategies", body))
+        .oneshot(post_json("/api/v1/store/strategies", body))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
@@ -245,7 +245,7 @@ async fn list_strategies_contains_created() {
     let state = test_state();
     let id = seed_strategy(&state).await;
 
-    let resp = router(state).oneshot(get("/api/store/strategies")).await.unwrap();
+    let resp = router(state).oneshot(get("/api/v1/store/strategies")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let list = json_body(resp).await;
     assert!(list.as_array().unwrap().iter().any(|s| s["id"] == id));
@@ -257,7 +257,7 @@ async fn get_strategy_by_id_returns_200() {
     let id = seed_strategy(&state).await;
 
     let resp = router(state)
-        .oneshot(get(&format!("/api/store/strategies/{id}")))
+        .oneshot(get(&format!("/api/v1/store/strategies/{id}")))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -267,7 +267,7 @@ async fn get_strategy_by_id_returns_200() {
 #[tokio::test]
 async fn get_strategy_unknown_id_returns_404() {
     let resp = test_app()
-        .oneshot(get("/api/store/strategies/does-not-exist"))
+        .oneshot(get("/api/v1/store/strategies/does-not-exist"))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -280,7 +280,7 @@ async fn update_strategy_label_returns_200() {
 
     let resp = router(state)
         .oneshot(put_json(
-            &format!("/api/store/strategies/{id}"),
+            &format!("/api/v1/store/strategies/{id}"),
             serde_json::json!({ "label": "Renamed" }),
         ))
         .await
@@ -295,13 +295,13 @@ async fn delete_strategy_then_404() {
     let id = seed_strategy(&state).await;
 
     let del = router(state.clone())
-        .oneshot(delete(&format!("/api/store/strategies/{id}")))
+        .oneshot(delete(&format!("/api/v1/store/strategies/{id}")))
         .await
         .unwrap();
     assert_eq!(del.status(), StatusCode::NO_CONTENT);
 
     let get_resp = router(state)
-        .oneshot(get(&format!("/api/store/strategies/{id}")))
+        .oneshot(get(&format!("/api/v1/store/strategies/{id}")))
         .await
         .unwrap();
     assert_eq!(get_resp.status(), StatusCode::NOT_FOUND);
@@ -320,7 +320,7 @@ async fn create_case_valid_strategy_id_returns_201() {
         "symbol": "BTCUSDT"
     });
     let resp = router(state)
-        .oneshot(post_json("/api/store/cases", body))
+        .oneshot(post_json("/api/v1/store/cases", body))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
@@ -337,7 +337,7 @@ async fn create_case_unknown_strategy_id_rejected() {
         "symbol": "BTCUSDT"
     });
     let resp = test_app()
-        .oneshot(post_json("/api/store/cases", body))
+        .oneshot(post_json("/api/v1/store/cases", body))
         .await
         .unwrap();
     assert!(resp.status().is_client_error());
@@ -350,7 +350,7 @@ async fn get_case_by_id_returns_200() {
     let case_id = seed_case(&state, &strategy_id).await;
 
     let resp = router(state)
-        .oneshot(get(&format!("/api/store/cases/{case_id}")))
+        .oneshot(get(&format!("/api/v1/store/cases/{case_id}")))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -368,7 +368,7 @@ async fn run_case_no_data_returns_error_not_panic() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/store/cases/{case_id}/run"))
+                .uri(format!("/api/v1/store/cases/{case_id}/run"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -390,7 +390,7 @@ async fn delete_case_returns_204() {
     let case_id = seed_case(&state, &strategy_id).await;
 
     let resp = router(state)
-        .oneshot(delete(&format!("/api/store/cases/{case_id}")))
+        .oneshot(delete(&format!("/api/v1/store/cases/{case_id}")))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
@@ -410,7 +410,7 @@ async fn list_watches_contains_created() {
     let state = test_state();
     let id = seed_watch(&state).await;
 
-    let resp = router(state).oneshot(get("/api/watch")).await.unwrap();
+    let resp = router(state).oneshot(get("/api/v1/watch")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let list = json_body(resp).await;
     assert!(list.as_array().unwrap().iter().any(|w| w["id"] == id));
@@ -422,7 +422,7 @@ async fn get_watch_by_id_returns_200() {
     let id = seed_watch(&state).await;
 
     let resp = router(state)
-        .oneshot(get(&format!("/api/watch/{id}")))
+        .oneshot(get(&format!("/api/v1/watch/{id}")))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -435,61 +435,64 @@ async fn delete_watch_then_404() {
     let id = seed_watch(&state).await;
 
     let del = router(state.clone())
-        .oneshot(delete(&format!("/api/watch/{id}")))
+        .oneshot(delete(&format!("/api/v1/watch/{id}")))
         .await
         .unwrap();
     assert_eq!(del.status(), StatusCode::NO_CONTENT);
 
     let get_resp = router(state)
-        .oneshot(get(&format!("/api/watch/{id}")))
+        .oneshot(get(&format!("/api/v1/watch/{id}")))
         .await
         .unwrap();
     assert_eq!(get_resp.status(), StatusCode::NOT_FOUND);
 }
 
-// ── /api/data/duckdb ──────────────────────────────────────────────────────────
+// ── /api/v1/data/:symbol ──────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn duckdb_missing_symbol_returns_error_field() {
-    let body = serde_json::json!({ "symbol": "TOTALLY_NONEXISTENT_XYZ123" });
-    let resp = test_app()
-        .oneshot(post_json("/api/data/duckdb", body))
+async fn data_symbol_empty_body_returns_empty_response() {
+    let state = test_state();
+    state
+        .ledger
+        .advance(Timeframe::M1, Bar::new(1_000_000, "BTCUSDT", 100.0, 101.0, 99.0, 100.5, 10.0))
+        .unwrap();
+    let body = serde_json::json!({});
+    let resp = router(state)
+        .oneshot(post_json("/api/v1/data/BTCUSDT", body))
         .await
         .unwrap();
-    assert!(
-        resp.status().is_client_error() || resp.status().is_server_error(),
-        "expected error status, got {}",
-        resp.status()
-    );
+    assert_eq!(resp.status(), StatusCode::OK);
     let b = json_body(resp).await;
-    assert!(b["error"].is_string());
+    assert_eq!(b["symbol"], "BTCUSDT");
 }
 
 #[tokio::test]
-async fn duckdb_non_select_sql_rejected() {
-    let body = serde_json::json!({
-        "symbol": "BTCUSDT",
-        "sql": "DROP TABLE bars"
-    });
+async fn data_unknown_symbol_no_ledger_entry_returns_empty_candles() {
+    let body = serde_json::json!({ "candles": {} });
     let resp = test_app()
-        .oneshot(post_json("/api/data/duckdb", body))
+        .oneshot(post_json("/api/v1/data/UNKNOWN_XYZ", body))
+        .await
+        .unwrap();
+    // No ledger entry and no parquet dir → returns empty candles (not 5xx).
+    assert!(
+        resp.status().is_success() || resp.status().is_client_error(),
+        "unexpected status {}",
+        resp.status()
+    );
+}
+
+#[tokio::test]
+async fn data_too_many_indicators_rejected() {
+    let indicators: Vec<serde_json::Value> = (0..17)
+        .map(|i| serde_json::json!({"type": "sma", "period": i + 2}))
+        .collect();
+    let body = serde_json::json!({ "indicators": indicators });
+    let resp = test_app()
+        .oneshot(post_json("/api/v1/data/BTCUSDT", body))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     assert!(json_body(resp).await["error"].is_string());
-}
-
-#[tokio::test]
-async fn duckdb_read_parquet_in_custom_sql_blocked() {
-    let body = serde_json::json!({
-        "symbol": "BTCUSDT",
-        "sql": "SELECT * FROM read_parquet('/tmp/test.parquet')"
-    });
-    let resp = test_app()
-        .oneshot(post_json("/api/data/duckdb", body))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 // ── SSE smoke tests ───────────────────────────────────────────────────────────
@@ -497,7 +500,7 @@ async fn duckdb_read_parquet_in_custom_sql_blocked() {
 #[tokio::test]
 async fn sse_bar_stream_content_type_is_event_stream() {
     let resp = test_app()
-        .oneshot(get("/api/stream/BTCUSDT"))
+        .oneshot(get("/api/v1/stream/BTCUSDT"))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -513,7 +516,7 @@ async fn sse_bar_stream_content_type_is_event_stream() {
 #[tokio::test]
 async fn sse_signals_stream_content_type_is_event_stream() {
     let resp = test_app()
-        .oneshot(get("/api/stream/signals"))
+        .oneshot(get("/api/v1/stream/signals"))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);

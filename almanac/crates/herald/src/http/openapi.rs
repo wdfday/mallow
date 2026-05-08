@@ -6,7 +6,7 @@ use utoipa::{Modify, OpenApi};
 use utoipa_swagger_ui::SwaggerUi;
 
 use alm_engine::types::{
-    BacktestRequest, ExitConfig, ExitLevel, MonteCarloConfig,
+    BacktestRequest, MonteCarloConfig,
     RhaiBacktestRequest, WalkForwardConfig,
 };
 
@@ -103,13 +103,11 @@ impl Modify for BearerAuthAddon {
         // Backtest
         BacktestRequest,
         RhaiBacktestRequest,
-        ExitConfig,
-        ExitLevel,
         MonteCarloConfig,
         WalkForwardConfig,
         // Store
         store::types::StrategySpec,
-        store::types::CapitalConfig,
+        store::types::PositionConfig,
         store::types::ExecutionConfig,
         store::types::Strategy,
         store::types::BacktestCase,

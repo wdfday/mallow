@@ -12,6 +12,7 @@ pub mod walk_forward;
 // next to the `Engine` itself, so any consumer (CLI, HTTP, NATS) gets
 // the same dispatcher without a detour.
 pub mod backtest;
+pub mod curve_compress;
 pub mod data;
 pub mod types;
 

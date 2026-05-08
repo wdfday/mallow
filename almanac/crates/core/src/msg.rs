@@ -3,12 +3,6 @@
 //! Single source of truth: `proto/market.proto`
 //! Rust codegen: `prost-build` in `build.rs`
 //! Go codegen:   `protoc-gen-go`
-//!
-//! NATS subjects:
-//!   bars.{symbol}       ← stream-data → herald
-//!   signals.{symbol}    ← herald → orchestrator
-//!   engine.configure    ← orchestrator → herald
-//!   engine.reset        ← orchestrator → herald
 
 // Include the prost-generated code
 include!(concat!(env!("OUT_DIR"), "/market.rs"));
@@ -65,6 +59,7 @@ impl From<&crate::signal::Signal> for SignalMsg {
             pattern_kind,
             confidence,
             is_offset: if sig.is_offset { Some(true) } else { None },
+            reason: sig.reason.clone(),
         }
     }
 }

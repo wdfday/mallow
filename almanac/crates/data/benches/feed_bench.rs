@@ -10,14 +10,10 @@
 ///
 /// Run one group:
 ///   cargo bench -p alm-data -- drain/M1
-///
-/// Flamegraph:
-///   FEED_BENCH_PROFILE=1 RUSTFLAGS="-C force-frame-pointers=yes" cargo bench -p alm-data
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
 
-use criterion::{criterion_group, BatchSize, BenchmarkId, Criterion, Throughput};
-use pprof::criterion::{Output, PProfProfiler};
+use criterion::{BatchSize, BenchmarkId, Criterion, Throughput};
 
 use alm_data::{BarFeed, BarVecFeed, ParquetFeed, RowGroupFeed};
 
@@ -267,33 +263,10 @@ fn bench_full_pass(c: &mut Criterion) {
 
 // ── entry point ───────────────────────────────────────────────────────────────
 
-criterion_group!(
-    name    = benches_timing;
-    config  = Criterion::default();
-    targets = bench_load, bench_drain, bench_full_pass
-);
-
-criterion_group!(
-    name    = benches_flamegraph;
-    config  = Criterion::default()
-                .with_profiler(PProfProfiler::new(1000, Output::Flamegraph(None)));
-    targets = bench_load, bench_drain, bench_full_pass
-);
-
 fn main() {
     ram_report();
 
-    let profiling = std::env::var("FEED_BENCH_PROFILE").map_or(false, |v| v == "1");
-
-    let mut c = if profiling {
-        eprintln!("Flamegraph mode — SVGs → target/criterion/*/profile/flamegraph.svg");
-        Criterion::default()
-            .configure_from_args()
-            .with_profiler(PProfProfiler::new(1000, Output::Flamegraph(None)))
-    } else {
-        Criterion::default().configure_from_args()
-    };
-
+    let mut c = Criterion::default().configure_from_args();
     bench_load(&mut c);
     bench_drain(&mut c);
     bench_full_pass(&mut c);

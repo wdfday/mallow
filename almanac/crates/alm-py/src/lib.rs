@@ -15,7 +15,7 @@
 //!
 //! result  = alm.run_backtest("BTCUSDT", "rsi_mean_rev", {"period": 14}, bars)
 //! kf      = alm.kalman([100.1, 100.5, ...], q_pos=0.001, q_vel=0.001, r=1.0)
-//! mc      = alm.monte_carlo(result["equity_pnl_pct"], capital=10_000, n_iter=5000)
+//! mc      = alm.monte_carlo(result["equity_pnl_pct"], initial_capital=10_000, n_iter=5000)
 //! names   = alm.list_strategies()
 //! ```
 
@@ -200,14 +200,22 @@ fn report_to_pydict<'py>(
 
     // Regime summary
     if let Some(rs) = &report.regime_summary {
-        out.set_item("trending_pct",  rs.trending_pct)?;
-        out.set_item("ranging_pct",   rs.ranging_pct)?;
-        out.set_item("neutral_pct",   rs.neutral_pct)?;
-        out.set_item("high_vol_pct",  rs.high_vol_pct)?;
-        out.set_item("low_vol_pct",   rs.low_vol_pct)?;
-        let changes: Vec<(i64, &str)> =
-            rs.changes.iter().map(|(ts, label)| (*ts, label.as_str())).collect();
-        out.set_item("regime_changes", changes)?;
+        // out.set_item("trending_pct",  rs.trending_pct)?;
+        // out.set_item("ranging_pct",   rs.ranging_pct)?;
+        // out.set_item("neutral_pct",   rs.neutral_pct)?;
+        // out.set_item("high_vol_pct",  rs.high_vol_pct)?;
+        // out.set_item("low_vol_pct",   rs.low_vol_pct)?;
+        // let changes: Vec<(i64, &str)> =
+        //     rs.changes.iter().map(|(ts, label)| (*ts, label.as_str())).collect();
+        // out.set_item("regime_changes", changes)?;
+
+        out.set_item("trending_pct",   0.0_f64)?;
+        out.set_item("ranging_pct",    0.0_f64)?;
+        out.set_item("neutral_pct",    0.0_f64)?;
+        out.set_item("high_vol_pct",   0.0_f64)?;
+        out.set_item("low_vol_pct",    0.0_f64)?;
+        out.set_item("regime_changes", Vec::<(i64, String)>::new())?;
+
     } else {
         out.set_item("trending_pct",   0.0_f64)?;
         out.set_item("ranging_pct",    0.0_f64)?;
@@ -362,11 +370,11 @@ fn add_extra_fields<'py>(
 /// bars : dict
 ///     Bar data with keys ``"t"`` (i64 timestamps ms), ``"o"``, ``"h"``, ``"l"``,
 ///     ``"c"``, ``"v"`` (all f64 lists of equal length).
-/// capital : float, optional
+/// initial_capital : float, optional
 ///     Initial capital in base currency (default 10 000).
-/// commission : float, optional
+/// commission_pct : float, optional
 ///     Round-trip commission as a fraction (default 0.001 = 0.1%).
-/// slippage : float, optional
+/// slippage_pct : float, optional
 ///     Slippage per trade as a fraction (default 0.0005 = 0.05%).
 /// lot_size : float, optional
 ///     Minimum tradeable lot.  ``0.0`` = fractional (crypto).  ``1.0`` = whole
@@ -383,7 +391,7 @@ fn add_extra_fields<'py>(
 /// exit : dict, optional
 ///     Exit overrides: ``{"sl": 0.03, "tp": 0.06, "max_bars": 100}``.
 ///     ``sl``/``tp`` are fractions (0.03 = 3%). Applied on top of strategy signals.
-/// risk_free : float, optional
+/// risk_free_annual : float, optional
 ///     Annual risk-free rate for Sharpe/Sortino (default 0.04).
 ///
 /// Returns
@@ -392,22 +400,22 @@ fn add_extra_fields<'py>(
 ///     All ``BacktestReport`` fields plus ``"equity_curve"``, ``"trades"``,
 ///     ``"pnl_pct"``, ``"indicator_series"``, ``"exposure_pct"``, ``"benchmark"``.
 #[pyfunction]
-#[pyo3(signature = (symbol, strategy, params, bars, capital=10_000.0, commission=0.001, slippage=0.0005, lot_size=-1.0, sizing="fixed", sizing_params=None, next_bar=false, exit=None, risk_free=0.04))]
+#[pyo3(signature = (symbol, strategy, params, bars, initial_capital=10_000.0, commission_pct=0.001, slippage_pct=0.0005, lot_size=-1.0, sizing="fixed", sizing_params=None, next_bar=false, exit=None, risk_free_annual=0.04))]
 fn run_backtest<'py>(
     py: Python<'py>,
     symbol: &str,
     strategy: &str,
     params: &Bound<'py, PyDict>,
     bars: &Bound<'py, PyDict>,
-    capital: f64,
-    commission: f64,
-    slippage: f64,
+    initial_capital: f64,
+    commission_pct: f64,
+    slippage_pct: f64,
     lot_size: f64,
     sizing: &str,
     sizing_params: Option<&Bound<'py, PyDict>>,
     next_bar: bool,
     exit: Option<&Bound<'py, PyDict>>,
-    risk_free: f64,
+    risk_free_annual: f64,
 ) -> PyResult<Bound<'py, PyDict>> {
     let params_json = pydict_to_json(params)?;
     let bar_vec = extract_bars(symbol, bars)?;
@@ -442,17 +450,17 @@ fn run_backtest<'py>(
         ($risk:expr) => {{
             let mut feed = BarVecFeed::new(bar_vec, symbol.to_string());
             let mut engine =
-                Engine::sync(capital, strat, $risk, commission, slippage)
+                Engine::sync(initial_capital, strat, $risk, commission_pct, slippage_pct)
                     .with_exit_rules(exit_rules)
                     .with_next_bar(next_bar);
-            let report = engine.run(&mut feed, risk_free);
+            let report = engine.run(&mut feed, risk_free_annual);
 
             let ind_series  = engine.strategy.take_indicator_series();
             let equity_curve = engine.portfolio.equity_curve.clone();
             let trades       = engine.portfolio.trades.clone();
             let exposure_pct = compute_exposure_pct(&equity_curve, &trades);
             let bh = if bh_closes.len() >= 2 {
-                Some(BuyHoldBenchmark::compute(&bh_closes, &bh_timestamps, risk_free))
+                Some(BuyHoldBenchmark::compute(&bh_closes, &bh_timestamps, risk_free_annual))
             } else { None };
 
             let d = report_to_pydict(py, &report, &equity_curve, &trades)?;
@@ -488,131 +496,6 @@ fn run_backtest<'py>(
     }
 }
 
-/// Run a CEL (expression-based) backtest with ergonomic entry/exit expressions.
-///
-/// Parameters
-/// ----------
-/// symbol : str
-///     Ticker symbol.
-/// entry_expr : str
-///     CEL entry expression, e.g. ``"rsi(14) < 30.0 && close > ema(200)"``.
-/// exit_expr : str
-///     CEL exit expression, e.g. ``"rsi(14) > 70.0 || close < ema(50)"``.
-///     Use ``"false"`` to rely solely on the ``exit`` config.
-/// bars : dict
-///     Bar data — same format as :func:`run_backtest`.
-/// params : dict, optional
-///     Extra strategy parameters (e.g. indicator period overrides).
-/// capital, commission, slippage, lot_size, sizing, sizing_params, next_bar, risk_free
-///     Same meaning as :func:`run_backtest`.
-/// exit : dict, optional
-///     Engine-level exits: ``{"sl": 0.03, "tp": 0.06, "max_bars": 100}``.
-/// candle_type : str, optional
-///     ``"plain"`` (default), ``"heiken_ashi"``, or ``"smooth_heiken_ashi"``.
-///
-/// Returns
-/// -------
-/// dict
-///     Same as :func:`run_backtest`, including ``indicator_series``.
-#[pyfunction]
-#[pyo3(signature = (symbol, entry_expr, exit_expr, bars, params=None, capital=10_000.0, commission=0.001, slippage=0.0005, lot_size=-1.0, sizing="fixed", sizing_params=None, next_bar=false, exit=None, candle_type="plain", risk_free=0.04))]
-#[allow(clippy::too_many_arguments)]
-fn run_cel_backtest<'py>(
-    py: Python<'py>,
-    symbol: &str,
-    entry_expr: &str,
-    exit_expr: &str,
-    bars: &Bound<'py, PyDict>,
-    params: Option<&Bound<'py, PyDict>>,
-    capital: f64,
-    commission: f64,
-    slippage: f64,
-    lot_size: f64,
-    sizing: &str,
-    sizing_params: Option<&Bound<'py, PyDict>>,
-    next_bar: bool,
-    exit: Option<&Bound<'py, PyDict>>,
-    candle_type: &str,
-    risk_free: f64,
-) -> PyResult<Bound<'py, PyDict>> {
-    // Build CEL params map: user params + entry/exit/candle_type
-    let mut cel_map: Map<String, Value> = match params {
-        Some(d) => match pydict_to_json(d)? {
-            Value::Object(m) => m,
-            _ => Map::new(),
-        },
-        None => Map::new(),
-    };
-    cel_map.insert("entry".into(),       json!(entry_expr));
-    cel_map.insert("exit".into(),        json!(exit_expr));
-    cel_map.insert("candle_type".into(), json!(candle_type));
-    let params_json = Value::Object(cel_map);
-
-    let bar_vec = extract_bars(symbol, bars)?;
-    let strat = build_strategy("cel", &params_json)
-        .map_err(|e| PyRuntimeError::new_err(format!("CEL strategy build error: {e}")))?;
-
-    let resolved_lot = if lot_size < 0.0 {
-        if is_crypto(symbol) { 0.0 } else { 1.0 }
-    } else {
-        lot_size
-    };
-
-    let exit_rules = extract_exit_rules(exit)?;
-    let bh_closes: Vec<f64>     = bar_vec.iter().map(|b| b.close).collect();
-    let bh_timestamps: Vec<i64> = bar_vec.iter().map(|b| b.timestamp).collect();
-
-    let sp: Value = match sizing_params {
-        Some(d) => pydict_to_json(d)?,
-        None => Value::Object(Map::new()),
-    };
-    let get_f = |key: &str, default: f64| -> f64 {
-        sp.get(key).and_then(|v| v.as_f64()).unwrap_or(default)
-    };
-    let get_u = |key: &str, default: usize| -> usize {
-        sp.get(key).and_then(|v| v.as_u64()).map(|v| v as usize).unwrap_or(default)
-    };
-
-    macro_rules! run_engine {
-        ($risk:expr) => {{
-            let mut feed = BarVecFeed::new(bar_vec, symbol.to_string());
-            let mut engine =
-                Engine::sync(capital, strat, $risk, commission, slippage)
-                    .with_exit_rules(exit_rules)
-                    .with_next_bar(next_bar);
-            let report = engine.run(&mut feed, risk_free);
-
-            let ind_series   = engine.strategy.take_indicator_series();
-            let equity_curve = engine.portfolio.equity_curve.clone();
-            let trades       = engine.portfolio.trades.clone();
-            let exposure_pct = compute_exposure_pct(&equity_curve, &trades);
-            let bh = if bh_closes.len() >= 2 {
-                Some(BuyHoldBenchmark::compute(&bh_closes, &bh_timestamps, risk_free))
-            } else { None };
-
-            let d = report_to_pydict(py, &report, &equity_curve, &trades)?;
-            add_extra_fields(py, &d, ind_series, exposure_pct, bh)?;
-            Ok(d)
-        }};
-    }
-
-    match sizing {
-        "atr" => run_engine!(AtrSizing::new(
-            get_f("risk_per_trade", 0.01),
-            get_f("atr_multiplier", 2.0),
-            get_u("max_positions", 1),
-        )),
-        "kelly" => run_engine!(KellySizing::new(
-            get_f("win_rate", 0.5),
-            get_f("avg_win", 0.05),
-            get_f("avg_loss", 0.02),
-            get_f("fraction", 0.5),
-            get_u("max_positions", 1),
-        )),
-        _ => run_engine!(FixedFractional::new(0.95, 1).with_lot_size(resolved_lot)),
-    }
-}
-
 // ── run_rhai_backtest ────────────────────────────────────────────────────────
 
 /// Run a backtest using a **Rhai script** strategy.
@@ -642,7 +525,7 @@ fn run_cel_backtest<'py>(
 ///
 /// bars : dict
 ///     Bar data — same format as :func:`run_backtest`.
-/// capital, commission, slippage, lot_size, sizing, sizing_params, next_bar, risk_free
+/// initial_capital, commission_pct, slippage_pct, lot_size, sizing, sizing_params, next_bar, risk_free_annual
 ///     Same meaning as :func:`run_backtest`.
 /// exit : dict, optional
 ///     Engine-level exits: ``{"sl": 0.03, "tp": 0.06, "max_bars": 100}``.
@@ -653,22 +536,22 @@ fn run_cel_backtest<'py>(
 ///     Same as :func:`run_backtest`. ``indicator_series`` contains one entry
 ///     per ``plot()`` call: ``{"name": [{"t": ts_ms, "v": float}, ...]}``.
 #[pyfunction]
-#[pyo3(signature = (symbol, script, bars, capital=10_000.0, commission=0.001, slippage=0.0005, lot_size=-1.0, sizing="fixed", sizing_params=None, next_bar=false, exit=None, risk_free=0.04))]
+#[pyo3(signature = (symbol, script, bars, initial_capital=10_000.0, commission_pct=0.001, slippage_pct=0.0005, lot_size=-1.0, sizing="fixed", sizing_params=None, next_bar=false, exit=None, risk_free_annual=0.04))]
 #[allow(clippy::too_many_arguments)]
 fn run_rhai_backtest<'py>(
     py: Python<'py>,
     symbol: &str,
     script: &str,
     bars: &Bound<'py, PyDict>,
-    capital: f64,
-    commission: f64,
-    slippage: f64,
+    initial_capital: f64,
+    commission_pct: f64,
+    slippage_pct: f64,
     lot_size: f64,
     sizing: &str,
     sizing_params: Option<&Bound<'py, PyDict>>,
     next_bar: bool,
     exit: Option<&Bound<'py, PyDict>>,
-    risk_free: f64,
+    risk_free_annual: f64,
 ) -> PyResult<Bound<'py, PyDict>> {
     let params_json = json!({ "script": script });
     let bar_vec = extract_bars(symbol, bars)?;
@@ -700,17 +583,17 @@ fn run_rhai_backtest<'py>(
         ($risk:expr) => {{
             let mut feed = BarVecFeed::new(bar_vec, symbol.to_string());
             let mut engine =
-                Engine::sync(capital, strat, $risk, commission, slippage)
+                Engine::sync(initial_capital, strat, $risk, commission_pct, slippage_pct)
                     .with_exit_rules(exit_rules)
                     .with_next_bar(next_bar);
-            let report = engine.run(&mut feed, risk_free);
+            let report = engine.run(&mut feed, risk_free_annual);
 
             let ind_series   = engine.strategy.take_indicator_series();
             let equity_curve = engine.portfolio.equity_curve.clone();
             let trades       = engine.portfolio.trades.clone();
             let exposure_pct = compute_exposure_pct(&equity_curve, &trades);
             let bh = if bh_closes.len() >= 2 {
-                Some(BuyHoldBenchmark::compute(&bh_closes, &bh_timestamps, risk_free))
+                Some(BuyHoldBenchmark::compute(&bh_closes, &bh_timestamps, risk_free_annual))
             } else { None };
 
             let d = report_to_pydict(py, &report, &equity_curve, &trades)?;
@@ -792,7 +675,7 @@ fn kalman<'py>(
 ///     Use ``result["equity_pnl_pct"]`` from :func:`run_backtest` for correct compounding.
 ///     ``result["pnl_pct"]`` is position-level and will slightly over-estimate results
 ///     when ``position_size_pct < 1.0``.
-/// capital : float, optional
+/// initial_capital : float, optional
 ///     Starting capital for each simulation path (default 10 000).
 /// n_iter : int, optional
 ///     Number of bootstrap iterations (default 1 000).
@@ -811,18 +694,18 @@ fn kalman<'py>(
 ///     }``
 ///     ``curves`` arrays have length ``n_trades + 1`` (including the starting equity).
 #[pyfunction]
-#[pyo3(signature = (pnl_pct, capital=10_000.0, n_iter=1000, ruin_threshold=0.5, seed=None))]
+#[pyo3(signature = (pnl_pct, initial_capital=10_000.0, n_iter=1000, ruin_threshold=0.5, seed=None))]
 fn monte_carlo<'py>(
     py: Python<'py>,
     pnl_pct: Vec<f64>,
-    capital: f64,
+    initial_capital: f64,
     n_iter: usize,
     ruin_threshold: f64,
     seed: Option<u64>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let cfg = MonteCarloConfig { n_iter, ruin_threshold, seed };
 
-    let result = mc_run(&pnl_pct, capital, &cfg)
+    let result = mc_run(&pnl_pct, initial_capital, &cfg)
         .ok_or_else(|| PyValueError::new_err("monte_carlo requires at least 1 trade"))?;
 
     let out = PyDict::new_bound(py);
@@ -861,7 +744,7 @@ fn monte_carlo<'py>(
 ///     Close prices in chronological order.
 /// timestamps : list[int]
 ///     Unix millisecond timestamps, same length as ``closes``.
-/// risk_free : float, optional
+/// risk_free_annual : float, optional
 ///     Annual risk-free rate (default 0.04 = 4%).
 ///
 /// Returns
@@ -870,17 +753,17 @@ fn monte_carlo<'py>(
 ///     ``{total_return_pct, cagr_pct, annualized_volatility_pct,
 ///        sharpe_ratio, sortino_ratio, max_drawdown_pct, max_dd_duration_bars}``
 #[pyfunction]
-#[pyo3(signature = (closes, timestamps, risk_free=0.04))]
+#[pyo3(signature = (closes, timestamps, risk_free_annual=0.04))]
 fn buy_hold_benchmark<'py>(
     py: Python<'py>,
     closes: Vec<f64>,
     timestamps: Vec<i64>,
-    risk_free: f64,
+    risk_free_annual: f64,
 ) -> PyResult<Bound<'py, PyDict>> {
     if closes.len() != timestamps.len() {
         return Err(PyValueError::new_err("closes and timestamps must have the same length"));
     }
-    let bh = BuyHoldBenchmark::compute(&closes, &timestamps, risk_free);
+    let bh = BuyHoldBenchmark::compute(&closes, &timestamps, risk_free_annual);
     let d = PyDict::new_bound(py);
     d.set_item("total_return_pct",          bh.total_return_pct)?;
     d.set_item("cagr_pct",                  bh.cagr_pct)?;
@@ -903,12 +786,14 @@ fn buy_hold_benchmark<'py>(
 ///     Same strategy name applied to all symbols.
 /// params : dict
 ///     Strategy parameters (same for all symbols).
-/// capital : float, optional
+/// initial_capital : float, optional
 ///     Initial capital per symbol (default 10 000).
-/// commission : float, optional
+/// commission_pct : float, optional
 ///     Commission fraction (default 0.001).
-/// slippage : float, optional
+/// slippage_pct : float, optional
 ///     Slippage fraction (default 0.0005).
+/// risk_free_annual : float, optional
+///     Annual risk-free rate for Sharpe/Sortino (default 0.04).
 /// benchmark_equity : list of float, optional
 ///     Reference equity curve for beta/alpha computation.
 ///
@@ -927,15 +812,16 @@ fn buy_hold_benchmark<'py>(
 ///       }
 ///     }``
 #[pyfunction]
-#[pyo3(signature = (symbol_bar_pairs, strategy, params, capital=10_000.0, commission=0.001, slippage=0.0005, benchmark_equity=None))]
+#[pyo3(signature = (symbol_bar_pairs, strategy, params, initial_capital=10_000.0, commission_pct=0.001, slippage_pct=0.0005, risk_free_annual=0.04, benchmark_equity=None))]
 fn run_portfolio_backtest<'py>(
     py: Python<'py>,
     symbol_bar_pairs: Vec<(String, Bound<'py, PyDict>)>,
     strategy: &str,
     params: &Bound<'py, PyDict>,
-    capital: f64,
-    commission: f64,
-    slippage: f64,
+    initial_capital: f64,
+    commission_pct: f64,
+    slippage_pct: f64,
+    risk_free_annual: f64,
     benchmark_equity: Option<Vec<f64>>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let params_json = pydict_to_json(params)?;
@@ -952,8 +838,8 @@ fn run_portfolio_backtest<'py>(
         let risk = FixedFractional::new(0.95, 1).with_lot_size(resolved_lot);
 
         let mut feed = BarVecFeed::new(bar_vec, symbol.clone());
-        let mut engine = Engine::sync(capital, strat, risk, commission, slippage);
-        let report = engine.run(&mut feed, 0.04);
+        let mut engine = Engine::sync(initial_capital, strat, risk, commission_pct, slippage_pct);
+        let report = engine.run(&mut feed, risk_free_annual);
 
         let equity_curve = engine.portfolio.equity_curve.clone();
         let trades = engine.portfolio.trades.clone();
@@ -1090,7 +976,7 @@ fn run_indicators<'py>(
 /// The implementation is preserved in source and will be re-enabled together
 /// with the optimisation layer (grid search / Optuna) in wf-v2.
 #[pyfunction]
-#[pyo3(signature = (symbol, strategy, params, bars, is_bars, oos_bars, step_bars=0, capital=10_000.0, commission=0.001, slippage=0.0005, risk_free=0.04, mode="rolling", embargo_bars=0, min_oos_trades=None))]
+#[pyo3(signature = (symbol, strategy, params, bars, is_bars, oos_bars, step_bars=0, initial_capital=10_000.0, commission_pct=0.001, slippage_pct=0.0005, risk_free_annual=0.04, mode="rolling", embargo_bars=0, min_oos_trades=None))]
 #[allow(clippy::too_many_arguments, unused_variables)]
 fn run_walk_forward<'py>(
     py: Python<'py>,
@@ -1101,10 +987,10 @@ fn run_walk_forward<'py>(
     is_bars: usize,
     oos_bars: usize,
     step_bars: usize,
-    capital: f64,
-    commission: f64,
-    slippage: f64,
-    risk_free: f64,
+    initial_capital: f64,
+    commission_pct: f64,
+    slippage_pct: f64,
+    risk_free_annual: f64,
     mode: &str,
     embargo_bars: usize,
     min_oos_trades: Option<usize>,
@@ -1125,14 +1011,14 @@ fn run_walk_forward<'py>(
     let risk = FixedFractional::new(0.95, 1).with_lot_size(resolved_lot);
 
     let step = if step_bars == 0 { oos_bars } else { step_bars };
-    let mut cfg = WalkForwardConfig::new(is_bars, oos_bars, capital);
+    let mut cfg = WalkForwardConfig::new(is_bars, oos_bars, initial_capital);
     cfg.step_bars = step;
-    cfg.risk_free_annual = risk_free;
+    cfg.risk_free_annual = risk_free_annual;
     cfg.mode = if mode == "anchored" { WalkForwardMode::Anchored } else { WalkForwardMode::Rolling };
     cfg.embargo_bars = embargo_bars;
     cfg.min_oos_trades = min_oos_trades;
 
-    let result = walk_forward_sync(capital, strat, risk, commission, slippage, &bar_vec, symbol, cfg);
+    let result = walk_forward_sync(initial_capital, strat, risk, commission_pct, slippage_pct, &bar_vec, symbol, cfg);
 
     let windows_list = PyList::empty_bound(py);
     for w in &result.windows {
@@ -1210,7 +1096,6 @@ fn list_strategies() -> Vec<&'static str> {
 #[pymodule]
 fn alm_py(m: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_backtest, m)?)?;
-    m.add_function(wrap_pyfunction!(run_cel_backtest, m)?)?;
     m.add_function(wrap_pyfunction!(run_rhai_backtest, m)?)?;
     m.add_function(wrap_pyfunction!(run_portfolio_backtest, m)?)?;
     m.add_function(wrap_pyfunction!(run_walk_forward, m)?)?;

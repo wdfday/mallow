@@ -130,4 +130,32 @@ mod tests {
         strat.reset();
         assert!(!strat.in_position);
     }
+
+    #[test]
+    fn rhai_parity() {
+        use alm_core::signal::Direction;
+
+        let bars = connors_rsi_bars();
+
+        let mut named = ConnorsRsiStrategy::new(3, 2, 100, 10.0, 70.0);
+        let named_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| named.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        // ind.connors_rsi(3) uses defaults: rsi_period=3, streak_period=2, rank_period=100
+        let script = r#"
+let crsi = ind.connors_rsi(3, 1);
+if crsi[0] < 10.0 { entry = true; }
+if crsi[0] > 70.0 { exit  = true; }
+"#;
+        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+        let rhai_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| rhai.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        assert!(!named_sigs.is_empty(), "connors_rsi: must produce signals");
+        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+    }
 }

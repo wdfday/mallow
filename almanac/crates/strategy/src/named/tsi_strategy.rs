@@ -117,4 +117,32 @@ mod tests {
         assert!(!strat.in_position);
         assert!(strat.prev_tsi.is_none());
     }
+
+    #[test]
+    fn rhai_parity() {
+        use alm_core::signal::Direction;
+
+        let bars = rsi_bars(300);
+
+        let mut named = TsiStrategy::new(25, 13, -25.0, 25.0);
+        let named_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| named.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        // ind.tsi(25) uses defaults: first=25, second=13
+        let script = r#"
+let tsi25 = ind.tsi(25);
+if tsi25[1] < -25.0 && tsi25[0] >= -25.0 { entry = true; }
+if tsi25[1] >= 25.0 && tsi25[0] < 25.0   { exit  = true; }
+"#;
+        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+        let rhai_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| rhai.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        assert!(!named_sigs.is_empty(), "tsi: must produce signals");
+        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+    }
 }

@@ -63,3 +63,35 @@ impl Strategy for MacdCrossover {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alm_core::signal::Direction;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    fn run(s: &mut dyn Strategy, bars: &[Bar]) -> Vec<(i64, Direction)> {
+        bars.iter().flat_map(|b| s.on_bar(b)).map(|s| (s.timestamp, s.direction)).collect()
+    }
+
+    #[test]
+    fn rhai_parity() {
+        let bars = slow_trend_bars();
+
+        let mut named = MacdCrossover::new(12, 26, 9);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = r#"
+let mh = ind.macd_hist(12);
+if mh[1] <= 0.0 && mh[0] > 0.0 { entry = true; }
+if mh[1] >= 0.0 && mh[0] < 0.0 { exit  = true; }
+"#;
+        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+        let rhai_sigs = run(rhai.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "macd_crossover: must produce signals");
+        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+    }
+}

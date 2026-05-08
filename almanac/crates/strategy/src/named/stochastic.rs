@@ -84,7 +84,6 @@ impl Strategy for StochasticCrossover {
 mod tests {
     use super::*;
     use alm_core::signal::Direction;
-    use crate::test_utils::*;
 
     fn bar(ts: i64, close: f64) -> Bar {
         Bar::new(ts, "T", close * 1.005, close * 1.005, close * 0.995, close, 1000.0)
@@ -164,6 +163,29 @@ mod tests {
         hc.reset();
         let r2 = run(&mut hc, &bars);
         assert_eq!(r1, r2, "reset parity failed");
+    }
+
+    #[test]
+    fn rhai_parity() {
+        use crate::factory::build_strategy;
+        use serde_json::json;
+
+        let bars = v_bars(300);
+
+        let mut named = StochasticCrossover::new(14, 3, 20.0, 80.0);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = r#"
+let sk = ind.stoch_k(14);
+let sd = ind.stoch_d(14);
+if sk[1] <= sd[1] && sk[0] > sd[0] && sd[0] < 20.0 { entry = true; }
+if sk[1] >= sd[1] && sk[0] < sd[0] && sd[0] > 80.0 { exit  = true; }
+"#;
+        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+        let rhai_sigs = run(rhai.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "stochastic: must produce signals");
+        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
     }
 
     /* // deprecated — DynamicStrategy removed

@@ -11,10 +11,9 @@ use std::sync::{Arc, Mutex};
 use alm_core::{Bar, Timeframe};
 use anyhow::Result;
 use rhai::{Array, Dynamic, Engine, Scope, AST};
-use serde_json::json;
 
 use super::rhai_strategy::{
-    build_engine, extract_max_lookback, map_indicator_type, try_parse_indicator_line,
+    build_engine, extract_max_lookback, indicator_json_config, try_parse_indicator_line,
     PlotBuf, BAR_FIELDS, DEFAULT_BUF_DEPTH,
 };
 
@@ -25,15 +24,15 @@ use super::rhai_strategy::{
 /// keep the dependency graph acyclic.
 pub struct StreamDecl {
     /// Variable name in the script, e.g. `"ema20"` from `let ema20 = ind.ema(20)`.
-    pub var_name:   String,
+    pub var_name:    String,
     /// JSON config to pass to `IndicatorSpec::from_config`.
     pub spec_config: serde_json::Value,
     /// Optional MTF source timeframe string, e.g. `"H1"`.
-    pub source_tf:  Option<Timeframe>,
+    pub source_tf:   Option<Timeframe>,
     /// Output field to read from the cell, e.g. `"value"`, `"histogram"`.
-    pub field:      String,
+    pub field:       String,
     /// Number of historical values the script needs (default 2 for crossover).
-    pub buf_depth:  usize,
+    pub buf_depth:   usize,
 }
 
 pub type PlotResult = HashMap<String, f64>;
@@ -52,45 +51,42 @@ pub struct RhaiStreamEval {
 
 impl RhaiStreamEval {
     pub fn from_script(script: &str) -> Result<Self> {
-        let mut decls_raw   = Vec::new();
-        let mut clean_lines: Vec<&str> = Vec::new();
+        let mut decls       = Vec::new();
+        let mut cleaned_lines: Vec<&str> = Vec::new();
 
         for line in script.lines() {
             match try_parse_indicator_line(line) {
-                Some(d) => decls_raw.push(d),
-                None    => clean_lines.push(line),
+                Some(d) => decls.push(d),
+                None    => cleaned_lines.push(line),
             }
         }
 
-        let cleaned = clean_lines.join("\n");
+        let cleaned   = cleaned_lines.join("\n");
         let plot_buf: PlotBuf = Arc::new(Mutex::new(Vec::new()));
-        let engine  = build_engine(Arc::clone(&plot_buf));
-        let ast     = engine
+        let engine    = build_engine(Arc::clone(&plot_buf));
+        let ast       = engine
             .compile(&cleaned)
             .map_err(|e| anyhow::anyhow!("Rhai compile error: {e}"))?;
 
         let lookback = extract_max_lookback(&cleaned);
-        let bar_buf_depth = decls_raw.iter()
+        let bar_buf_depth = decls.iter()
             .map(|d| d.buf_depth)
             .max()
             .unwrap_or(DEFAULT_BUF_DEPTH)
             .max(lookback)
             .max(DEFAULT_BUF_DEPTH);
 
-        let mut decls = Vec::with_capacity(decls_raw.len());
-        for d in decls_raw {
-            let (ind_type, field) = map_indicator_type(&d.ind_type);
-            let spec_config = make_spec_config(&ind_type, d.period);
-            decls.push(StreamDecl {
-                var_name: d.var_name,
-                spec_config,
-                source_tf: d.timeframe,
-                field,
-                buf_depth: d.buf_depth,
-            });
-        }
+        // IndicatorDecl already has canonical ind_type + field from map_indicator_type;
+        // build spec_config from those directly without re-mapping.
+        let stream_decls = decls.into_iter().map(|d| StreamDecl {
+            spec_config: indicator_json_config(&d.ind_type, d.period),
+            var_name:    d.var_name,
+            source_tf:   d.timeframe,
+            field:       d.field,
+            buf_depth:   d.buf_depth,
+        }).collect();
 
-        Ok(Self { engine, ast, plot_buf, decls, bar_buf_depth })
+        Ok(Self { engine, ast, plot_buf, decls: stream_decls, bar_buf_depth })
     }
 
     /// Parsed indicator declarations — acquire ledger handles from these.
@@ -142,33 +138,12 @@ impl RhaiStreamEval {
             scope.push_dynamic(*field, Dynamic::from_array(arr));
         }
 
-        // Run the compiled script — errors are silently ignored (indicator may
-        // not yet be warm enough for the script's conditionals to fire).
+        // Errors are silently ignored — the indicator may not be warm enough
+        // for the script's conditionals to fire yet.
         let _ = self.engine.run_ast_with_scope(&mut scope, &self.ast);
 
         self.plot_buf.lock()
             .map(|buf| buf.iter().cloned().collect())
             .unwrap_or_default()
-    }
-}
-
-fn make_spec_config(ind_type: &str, period: usize) -> serde_json::Value {
-    match ind_type {
-        "macd"          => json!({"type": "macd",          "fast": period, "slow": 26, "signal": 9}),
-        "bbands"        => json!({"type": "bbands",        "period": period, "multiplier": 2.0}),
-        "stochastic"    => json!({"type": "stochastic",    "k_period": period, "d_period": 3}),
-        "stoch_rsi"     => json!({"type": "stoch_rsi",     "rsi_period": period, "smooth_d": 3}),
-        "supertrend"    => json!({"type": "supertrend",    "period": period, "multiplier": 3.0}),
-        "donchian"      => json!({"type": "donchian",      "period": period}),
-        "parabolic_sar" => json!({"type": "parabolic_sar", "step": 0.02, "max": 0.2}),
-        "kama"          => json!({"type": "kama",          "er_period": period}),
-        "obv"           => json!({"type": "obv"}),
-        "vwap"          => json!({"type": "vwap"}),
-        "ao"            => json!({"type": "ao",            "fast": 5,    "slow": 34}),
-        "bop"           => json!({"type": "bop"}),
-        "coppock"       => json!({"type": "coppock"}),
-        "uo"            => json!({"type": "uo",            "fast": 7, "medium": 14, "slow": 28}),
-        "vortex"        => json!({"type": "vortex",        "period": period}),
-        t               => json!({"type": t, "period": period}),
     }
 }

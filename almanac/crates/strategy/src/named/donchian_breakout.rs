@@ -103,4 +103,32 @@ mod tests {
         use alm_core::signal::Direction;
         assert!(sigs.iter().any(|s| s.direction == Direction::Long));
     }
+
+    #[test]
+    fn rhai_parity() {
+        use alm_core::signal::Direction;
+
+        let bars = trending_bars(300);
+
+        let mut named = DonchianBreakout::new(20, 10);
+        let named_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| named.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        let script = r#"
+let du20 = ind.donchian_upper(20);
+let dl10 = ind.donchian_lower(10);
+if close[0] > du20[1] { entry = true; }
+if close[0] < dl10[1] { exit  = true; }
+"#;
+        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+        let rhai_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| rhai.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        assert!(!named_sigs.is_empty(), "donchian_breakout: must produce signals");
+        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+    }
 }

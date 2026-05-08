@@ -62,7 +62,6 @@ impl Strategy for AroonTrend {
 mod tests {
     use super::*;
     use alm_core::signal::Direction;
-    use crate::test_utils::*;
 
     fn bar(ts: i64, h: f64, l: f64) -> Bar {
         Bar::new(ts, "T", h, h, l, (h + l) / 2.0, 1000.0)
@@ -104,6 +103,35 @@ mod tests {
         hc.reset();
         let r2 = run(&mut hc, &bars);
         assert_eq!(r1, r2, "reset parity failed");
+    }
+
+    #[test]
+    fn rhai_parity() {
+        use crate::factory::build_strategy;
+        use serde_json::json;
+
+        let bars = trending_bars(400);
+
+        let mut named = AroonTrend::new(25, 70.0, 30.0);
+        let named_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| named.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        let script = r#"
+let au = ind.aroon_up(25, 1);
+let ad = ind.aroon_down(25, 1);
+if au[0] > 70.0 && ad[0] < 30.0 { entry = true; }
+if au[0] < ad[0] { exit = true; }
+"#;
+        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+        let rhai_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| rhai.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        assert!(!named_sigs.is_empty(), "aroon_strategy: must produce signals");
+        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
     }
 
 }

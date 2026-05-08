@@ -67,3 +67,38 @@ impl Strategy for CmoZeroCross {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alm_core::signal::Direction;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn rhai_parity() {
+        let bars = trending_bars(300);
+
+        let mut named = CmoZeroCross::new(14, 50);
+        let named_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| named.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        let script = r#"
+let cmo14 = ind.cmo(14);
+let ema50 = ind.ema(50, 1);
+if cmo14[1] <= 0.0 && cmo14[0] > 0.0 && close[0] > ema50[0] { entry = true; }
+if (cmo14[1] >= 0.0 && cmo14[0] < 0.0) || close[0] < ema50[0] { exit = true; }
+"#;
+        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+        let rhai_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| rhai.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        assert!(!named_sigs.is_empty(), "cmo_zero_cross: must produce signals");
+        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+    }
+}

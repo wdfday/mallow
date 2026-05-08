@@ -51,11 +51,30 @@
 //! - HTF bindings embed an inline aggregator: M1 bars accumulate until the
 //!   target TF bucket closes, then the indicator is updated. No external
 //!   resampler needed.
-//! - Output variables (`entry`, `exit`, `tp`, `sl`, `strength`) are pre-pushed
-//!   into scope before each bar. Use plain assignment — `entry = true`, `tp = ...`
+//! - Output variables (`long`, `short`, `exit`, `tp`, `sl`, `strength`, `is_offset`) are
+//!   pre-pushed into scope before each bar. Use plain assignment — `long = true`, `tp = ...`
 //!   — rather than `let`, so values survive outside block scope.
+//!   `entry` is a legacy alias for `long`.
+//!   When `is_offset = true`, `tp`/`sl` are treated as deltas from the actual fill price
+//!   by helm (e.g. `tp = atr14[0] * 2.0`). Default is `false` (absolute price levels).
 //! - Pre-registered helpers: `cross_above`, `cross_below`, `rising`, `falling`,
 //!   `in_range`, `abs`, `min`, `max`.
+//!
+//! # MTF internals vs named strategies
+//!
+//! Named strategies use [`crate::bar_resampler::TimeBarResampler`], which stamps
+//! the emitted HTF bar with the **bucket-floor** timestamp and has no live-bar
+//! support.
+//!
+//! Rhai bindings use the inline [`HtfAggregator`] defined in this module, which:
+//! - Stamps the HTF bar with the **last M1 bar's timestamp** inside the bucket.
+//! - Supports `live_` prefix: two indicator instances run in parallel — one on
+//!   confirmed (closed) HTF bars, one updated every M1 bar on the forming bucket.
+//! - Exposes `{name}_live` (forming scalar) and `{name}_fill` (0.0–1.0 fill
+//!   ratio) alongside the confirmed `{name}[0]`, `{name}[1]`, … history array.
+//!
+//! Both implementations share the same bucket logic: emit on bucket-boundary
+//! crossing, drop the last partial bucket, never lookahead.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
@@ -379,7 +398,7 @@ pub(super) fn map_indicator_type(type_str: &str) -> (String, String) {
         "ema" | "sma" | "wma" | "hma" | "dema" | "tema" | "smma" | "kama" | "alma" |
         "mcginley" | "lsma" | "vwma" | "rsi" | "cci" | "roc" | "mfi" | "mom" | "cmo" |
         "dpo" | "rci" | "chop" | "williams" | "cmf" | "obv" | "vwap" | "ao" | "bop" |
-        "coppock" | "uo" | "trix" | "tsi" | "pmo" | "kst" | "rvi" | "smi" | "ppo" =>
+        "coppock" | "uo" | "tsi" =>
             (type_str.to_string(), "value".to_string()),
 
         "atr" => ("atr".to_string(), "atr".to_string()),
@@ -410,34 +429,72 @@ pub(super) fn map_indicator_type(type_str: &str) -> (String, String) {
         "vortex_plus"  => ("vortex".to_string(), "plus_vi".to_string()),
         "vortex_minus" => ("vortex".to_string(), "minus_vi".to_string()),
 
+        // Multi-output primaries (their box outputs the named field, not "value")
+        "trix"     => ("trix".to_string(),   "trix".to_string()),
+        "trix_hist"=> ("trix".to_string(),   "histogram".to_string()),
+        "trix_sig" => ("trix".to_string(),   "signal".to_string()),
+        "ppo"      => ("ppo".to_string(),    "ppo".to_string()),
+        "ppo_hist" => ("ppo".to_string(),    "histogram".to_string()),
+        "ppo_sig"  => ("ppo".to_string(),    "signal".to_string()),
+        "kst"      => ("kst".to_string(),    "kst".to_string()),
+        "kst_hist" => ("kst".to_string(),    "histogram".to_string()),
+        "pmo"      => ("pmo".to_string(),    "pmo".to_string()),
+        "pmo_sig"  => ("pmo".to_string(),    "signal".to_string()),
+        "rvi"      => ("rvi".to_string(),    "rvi".to_string()),
+        "rvi_sig"  => ("rvi".to_string(),    "signal".to_string()),
+        "smi"      => ("smi".to_string(),    "smi".to_string()),
+        "smi_sig"  => ("smi".to_string(),    "signal".to_string()),
+
+        // Fisher
+        "fisher"     => ("fisher".to_string(), "fisher".to_string()),
+        "fisher_sig" => ("fisher".to_string(), "signal".to_string()),
+
+        // Aroon
+        "aroon_up"   => ("aroon".to_string(), "up".to_string()),
+        "aroon_down" => ("aroon".to_string(), "down".to_string()),
+        "aroon_osc"  => ("aroon".to_string(), "oscillator".to_string()),
+
+        // KDJ
+        "kdj_k" => ("kdj".to_string(), "k".to_string()),
+        "kdj_d" => ("kdj".to_string(), "d".to_string()),
+        "kdj_j" => ("kdj".to_string(), "j".to_string()),
+
+        // RWI
+        "rwi_h" => ("rwi".to_string(), "rwi_high".to_string()),
+        "rwi_l" => ("rwi".to_string(), "rwi_low".to_string()),
+
         other => (other.to_string(), "value".to_string()),
     }
 }
 
-/// Build an `IndicatorBox` from a parsed declaration.
-fn make_indicator_box(decl: &IndicatorDecl) -> Result<IndicatorBox> {
-    let n = decl.period;
-    let cfg = match decl.ind_type.as_str() {
-        "atr"           => json!({"type": "atr",           "period": n}),
-        "adx"           => json!({"type": "adx",           "period": n}),
-        "macd"          => json!({"type": "macd",          "fast": n, "slow": 26, "signal": 9}),
-        "bbands"        => json!({"type": "bbands",        "period": n, "multiplier": 2.0}),
-        "stochastic"    => json!({"type": "stochastic",    "k_period": n, "d_period": 3}),
-        "stoch_rsi"     => json!({"type": "stoch_rsi",     "rsi_period": n, "smooth_d": 3}),
-        "supertrend"    => json!({"type": "supertrend",    "period": n, "multiplier": 3.0}),
-        "donchian"      => json!({"type": "donchian",      "period": n}),
+/// Build the JSON config for an indicator type.
+///
+/// `ind_type` must already be the canonical internal name (post-`map_indicator_type`),
+/// e.g. `"bbands"` not `"bb_upper"`.  Only types whose config differs from the
+/// default `{"type": t, "period": period}` need an explicit arm.
+pub(super) fn indicator_json_config(ind_type: &str, period: usize) -> serde_json::Value {
+    match ind_type {
+        "macd"          => json!({"type": "macd",          "fast": period, "slow": 26, "signal": 9}),
+        "bbands"        => json!({"type": "bbands",        "period": period, "multiplier": 2.0}),
+        "stochastic"    => json!({"type": "stochastic",    "k_period": period, "d_period": 3}),
+        "stoch_rsi"     => json!({"type": "stoch_rsi",     "rsi_period": period, "smooth_d": 3}),
+        "supertrend"    => json!({"type": "supertrend",    "period": period, "multiplier": 3.0}),
         "parabolic_sar" => json!({"type": "parabolic_sar", "step": 0.02, "max": 0.2}),
-        "kama"          => json!({"type": "kama",          "er_period": n}),
+        "kama"          => json!({"type": "kama",          "er_period": period}),
         "obv"           => json!({"type": "obv"}),
         "vwap"          => json!({"type": "vwap"}),
         "ao"            => json!({"type": "ao",            "fast": 5, "slow": 34}),
         "bop"           => json!({"type": "bop"}),
         "coppock"       => json!({"type": "coppock"}),
         "uo"            => json!({"type": "uo",            "fast": 7, "medium": 14, "slow": 28}),
-        "vortex"        => json!({"type": "vortex",        "period": n}),
-        t               => json!({"type": t, "period": n}),
-    };
-    IndicatorBox::from_config(&cfg)
+        "kdj"           => json!({"type": "kdj", "period": period, "k_period": 3, "d_period": 3}),
+        t               => json!({"type": t, "period": period}),
+    }
+}
+
+/// Build an `IndicatorBox` from a parsed declaration.
+fn make_indicator_box(decl: &IndicatorDecl) -> Result<IndicatorBox> {
+    IndicatorBox::from_config(&indicator_json_config(&decl.ind_type, decl.period))
 }
 
 // ── Rhai Engine + built-in functions ──────────────────────────────────────────
@@ -585,8 +642,6 @@ pub struct RhaiStrategy {
     binding_order:    Vec<String>,
     bar_buf:          VecDeque<Bar>,
     bar_buf_depth:    usize,
-    in_position:      bool,
-    entry_price:      f64,
     plot_buf:         PlotBuf,
     /// `None` in live mode — plot() calls are silently flushed and discarded.
     series:           Option<HashMap<String, Vec<(i64, f64)>>>,
@@ -647,8 +702,6 @@ impl RhaiStrategy {
             binding_order,
             bar_buf: VecDeque::with_capacity(max_buf),
             bar_buf_depth: max_buf,
-            in_position: false,
-            entry_price: 0.0,
             plot_buf,
             series: if collect_series { Some(HashMap::new()) } else { None },
             candle_transform: CandleTransform::new(candle_type),
@@ -725,16 +778,18 @@ impl Strategy for RhaiStrategy {
             scope.push_dynamic(*field, Dynamic::from_array(arr));
         }
 
-        scope.push("entry_price", self.entry_price);
-        scope.push("in_position", self.in_position);
         // Pre-push output vars so scripts can use plain assignment (entry = true)
         // without `let`. Old-style `let entry = expr` at top level still works —
         // the new binding shadows this one and is picked up by get_value.
-        scope.push("entry",    false);
-        scope.push("exit",     false);
-        scope.push("tp",       0.0_f64);
-        scope.push("sl",       0.0_f64);
-        scope.push("strength", 1.0_f64);
+        scope.push("entry",     false);
+        scope.push("exit",      false);
+        scope.push("long",      false);
+        scope.push("short",     false);
+        scope.push("tp",        0.0_f64);
+        scope.push("sl",        0.0_f64);
+        scope.push("strength",  1.0_f64);
+        scope.push("is_offset", false);
+        scope.push("reason",    String::new());
 
         if self.engine.run_ast_with_scope(&mut scope, &self.ast).is_err() {
             return vec![];
@@ -751,24 +806,37 @@ impl Strategy for RhaiStrategy {
             }
         }
 
-        if !self.in_position {
-            if scope.get_value::<bool>("entry").unwrap_or(false) {
-                self.in_position = true;
-                self.entry_price = bar.close;
+        let strength   = scope.get_value::<f64>("strength").unwrap_or(1.0).clamp(0.0, 1.0);
+        let target     = scope.get_value::<f64>("tp").filter(|&v| v != 0.0);
+        let stop       = scope.get_value::<f64>("sl").filter(|&v| v != 0.0);
+        let is_offset  = scope.get_value::<bool>("is_offset").unwrap_or(false);
+        let reason     = scope.get_value::<String>("reason").filter(|s| !s.is_empty());
 
-                let target   = scope.get_value::<f64>("tp").filter(|&v| v != 0.0);
-                let stop     = scope.get_value::<f64>("sl").filter(|&v| v != 0.0);
-                let strength = scope.get_value::<f64>("strength").unwrap_or(1.0).clamp(0.0, 1.0);
+        // `entry` is a legacy alias for `long`.
+        let go_long  = scope.get_value::<bool>("long").unwrap_or(false)
+                    || scope.get_value::<bool>("entry").unwrap_or(false);
+        let go_short = scope.get_value::<bool>("short").unwrap_or(false);
+        let go_exit  = scope.get_value::<bool>("exit").unwrap_or(false);
 
-                let mut sig = Signal::long(bar.timestamp, &bar.symbol, strength);
-                sig.price        = Some(bar.close);
-                sig.target_price = target;
-                sig.stop_price   = stop;
-                return vec![sig];
-            }
-        } else if scope.get_value::<bool>("exit").unwrap_or(false) {
-            self.in_position = false;
-            self.entry_price = 0.0;
+        if go_long {
+            let mut sig = Signal::long(bar.timestamp, &bar.symbol, strength);
+            sig.price        = Some(bar.close);
+            sig.target_price = target;
+            sig.stop_price   = stop;
+            sig.is_offset    = is_offset;
+            sig.reason       = reason;
+            return vec![sig];
+        }
+        if go_short {
+            let mut sig = Signal::short(bar.timestamp, &bar.symbol, strength);
+            sig.price        = Some(bar.close);
+            sig.target_price = target;
+            sig.stop_price   = stop;
+            sig.is_offset    = is_offset;
+            sig.reason       = reason;
+            return vec![sig];
+        }
+        if go_exit {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
 
@@ -784,8 +852,6 @@ impl Strategy for RhaiStrategy {
     fn reset(&mut self) {
         for b in self.bindings.values_mut() { b.reset(); }
         self.bar_buf.clear();
-        self.in_position = false;
-        self.entry_price = 0.0;
         self.candle_transform.reset();
         if let Some(s) = &mut self.series { s.clear(); }
         if let Ok(mut buf) = self.plot_buf.lock() { buf.clear(); }
@@ -807,27 +873,10 @@ pub fn rhai_indicator_deps(params: &serde_json::Value) -> Vec<crate::factory::In
         .filter_map(try_parse_indicator_line)
         .filter_map(|decl| {
             make_indicator_box(&decl).ok()?;
-            let cfg = match decl.ind_type.as_str() {
-                "atr"           => json!({"type": "atr",           "period": decl.period}),
-                "adx"           => json!({"type": "adx",           "period": decl.period}),
-                "macd"          => json!({"type": "macd",          "fast": decl.period, "slow": 26, "signal": 9}),
-                "bbands"        => json!({"type": "bbands",        "period": decl.period, "multiplier": 2.0}),
-                "stochastic"    => json!({"type": "stochastic",    "k_period": decl.period, "d_period": 3}),
-                "stoch_rsi"     => json!({"type": "stoch_rsi",     "rsi_period": decl.period, "smooth_d": 3}),
-                "supertrend"    => json!({"type": "supertrend",    "period": decl.period, "multiplier": 3.0}),
-                "donchian"      => json!({"type": "donchian",      "period": decl.period}),
-                "parabolic_sar" => json!({"type": "parabolic_sar", "step": 0.02, "max": 0.2}),
-                "kama"          => json!({"type": "kama",          "er_period": decl.period}),
-                "obv"           => json!({"type": "obv"}),
-                "vwap"          => json!({"type": "vwap"}),
-                "ao"            => json!({"type": "ao",            "fast": 5, "slow": 34}),
-                "bop"           => json!({"type": "bop"}),
-                "coppock"       => json!({"type": "coppock"}),
-                "uo"            => json!({"type": "uo",            "fast": 7, "medium": 14, "slow": 28}),
-                "vortex"        => json!({"type": "vortex",        "period": decl.period}),
-                t               => json!({"type": t, "period": decl.period}),
-            };
-            Some(crate::factory::IndicatorDep { config: cfg, source_tf: decl.timeframe })
+            Some(crate::factory::IndicatorDep {
+                config: indicator_json_config(&decl.ind_type, decl.period),
+                source_tf: decl.timeframe,
+            })
         })
         .collect()
 }
@@ -837,11 +886,11 @@ pub fn rhai_indicator_deps(params: &serde_json::Value) -> Vec<crate::factory::In
 /// All user-facing indicator type aliases accepted by `ind.TYPE(period)`.
 /// Any alias not in this list is an error.
 pub const KNOWN_INDICATOR_TYPES: &[&str] = &[
-    // Single-output
+    // Single-output (box emits "value" field)
     "ema", "sma", "wma", "hma", "dema", "tema", "smma", "kama", "alma",
     "mcginley", "lsma", "vwma", "rsi", "cci", "roc", "mfi", "mom", "cmo",
     "dpo", "rci", "chop", "williams", "cmf", "obv", "vwap", "ao", "bop",
-    "coppock", "uo", "trix", "tsi", "pmo", "kst", "rvi", "smi", "ppo",
+    "coppock", "uo", "tsi",
     // Multi-output / aliases
     "atr", "adx",
     "macd", "macd_hist", "macd_line",
@@ -852,10 +901,26 @@ pub const KNOWN_INDICATOR_TYPES: &[&str] = &[
     "donchian_upper", "donchian_lower", "donchian_mid",
     "sar", "parabolic_sar",
     "vortex_plus", "vortex_minus",
+    // TRIX / PPO / KST / PMO / RVI / SMI — primary + derived fields
+    "trix", "trix_hist", "trix_sig",
+    "ppo", "ppo_hist", "ppo_sig",
+    "kst", "kst_hist",
+    "pmo", "pmo_sig",
+    "rvi", "rvi_sig",
+    "smi", "smi_sig",
+    // Fisher
+    "fisher", "fisher_sig",
+    // Aroon
+    "aroon_up", "aroon_down", "aroon_osc",
+    // KDJ
+    "kdj_k", "kdj_d", "kdj_j",
+    // RWI
+    "rwi_h", "rwi_l",
 ];
 
 /// A lint diagnostic with Monaco-compatible line/col coordinates (1-based).
-#[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct LintDiagnostic {
     /// 1-based line number (0 = unknown / whole-script).
     pub line: usize,
@@ -867,7 +932,8 @@ pub struct LintDiagnostic {
 }
 
 /// Per-line declared indicator summary returned in the lint scope.
-#[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct DeclaredIndicator {
     pub name:     String,
     pub ind_type: String,
@@ -881,7 +947,8 @@ pub struct DeclaredIndicator {
 }
 
 /// Scope information for Monaco autocomplete / hover.
-#[derive(Debug, Clone, serde::Serialize, utoipa::ToSchema)]
+#[derive(Debug, Clone, serde::Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct RhaiLintScope {
     pub indicators: Vec<DeclaredIndicator>,
     pub bar_fields: Vec<&'static str>,
@@ -1006,7 +1073,7 @@ pub fn rhai_lint(script: &str) -> (Vec<LintDiagnostic>, RhaiLintScope) {
     let scope = RhaiLintScope {
         indicators:  scope_inds,
         bar_fields:  BAR_FIELDS.to_vec(),
-        output_vars: vec!["entry", "exit", "tp", "sl", "strength"],
+        output_vars: vec!["long", "short", "exit", "tp", "sl", "strength", "is_offset", "reason"],
         functions:   vec![
             "cross_above", "cross_below",
             "rising", "falling", "rising_n", "falling_n",
@@ -1232,16 +1299,6 @@ let exit  = cross_below(ema9, ema21);
         let completed = agg.update(&next).expect("should emit on bucket cross");
         assert_eq!(completed.open, 100.0, "HTF bar open = first M1 open");
         assert!((completed.close - 105.9).abs() < 0.01, "HTF bar close = last M1 close");
-    }
-
-    #[test]
-    fn reset_clears_state() {
-        let mut s = RhaiStrategy::from_script(EMA_CROSS_SCRIPT).unwrap();
-        for i in 0..50 { let _ = s.on_bar(&make_bar(i)); }
-        s.reset();
-        assert!(!s.in_position);
-        assert_eq!(s.entry_price, 0.0);
-        assert!(s.bar_buf.is_empty());
     }
 
     #[test]

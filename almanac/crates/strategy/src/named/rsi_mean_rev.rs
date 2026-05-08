@@ -62,8 +62,6 @@ mod tests {
     use super::*;
     use alm_core::bar::Bar;
     use crate::test_utils::*;
-    use crate::factory::build_strategy;
-    use serde_json::json;
 
     fn bar(ts: i64, close: f64) -> Bar {
         Bar::new(ts, "TEST", close, close + 1.0, close - 1.0, close, 1000.0)
@@ -113,5 +111,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rhai_parity() {
+        use crate::factory::build_strategy;
+        use serde_json::json;
 
+        let bars = rsi_bars(200);
+
+        let mut named = RsiMeanRev::new(14, 30.0, 70.0);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = r#"
+let rsi14 = ind.rsi(14, 1);
+if rsi14[0] < 30.0 { entry = true; }
+if rsi14[0] > 70.0 { exit  = true; }
+"#;
+        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+        let rhai_sigs = run(rhai.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "rsi_mean_rev: must produce signals");
+        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+    }
 }

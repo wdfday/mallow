@@ -121,13 +121,31 @@ mod tests {
     }
 
     #[test]
-    fn kama_parity() {
+    fn rhai_parity() {
+        use crate::factory::build_strategy;
+        use serde_json::json;
+        use alm_core::signal::Direction;
+
         let bars = trending_bars(300);
 
-        let mut hc = KamaStrategy::new(10, 2, 30);
-        let hc_sigs = run(&mut hc, &bars);
+        let mut named = KamaStrategy::new(10, 2, 30);
+        let named_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| named.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
 
-        assert!(!hc_sigs.is_empty(), "kama: no signals");
+        let script = r#"
+let kama10 = ind.kama(10);
+if cross_above(close, kama10) { entry = true; }
+if cross_below(close, kama10) { exit  = true; }
+"#;
+        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+        let rhai_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| rhai.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        assert!(!named_sigs.is_empty(), "kama: must produce signals");
+        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
     }
-
 }

@@ -68,8 +68,6 @@ mod tests {
     use super::*;
     use alm_core::bar::Bar;
     use crate::test_utils::*;
-    use crate::factory::build_strategy;
-    use serde_json::json;
 
     #[test]
     fn kdj_hc_produces_signals() {
@@ -86,27 +84,4 @@ mod tests {
         assert!(!hc_sigs.is_empty(), "kdj: no signals");
     }
 
-    /* // deprecated — DynamicStrategy removed
-    #[test]
-    fn kdj_dynamic_cel_parity() {
-        let bars = rsi_bars(200);
-
-        let mut dyn_s = build_strategy("dynamic", &json!({
-            "indicators": { "kdj": { "type": "kdj", "period": 9, "k_period": 3, "d_period": 3 } },
-            "entry": { "logic": "and", "rules": [
-                { "source": "kdj", "field": "k", "op": "lt", "value": 50.0 },
-                { "source": "kdj", "field": "d", "op": "lt", "value": 50.0 },
-                { "source": "kdj", "field": "k", "op": "cross_above",
-                  "compare": "kdj", "compare_field": "d" }
-            ]},
-            "exit": { "logic": "or", "rules": [
-                { "source": "kdj", "field": "k", "op": "gt", "value": 80.0 },
-                { "source": "kdj", "field": "j", "op": "gt", "value": 100.0 }
-            ]}
-        })).unwrap();
-        let dyn_sigs = run(dyn_s.as_mut(), &bars);
-
-
-    }
-    */
 }

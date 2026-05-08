@@ -150,5 +150,30 @@ mod tests {
         assert!(strat.prev_k.is_none());
     }
 
+    #[test]
+    fn rhai_parity() {
+        use alm_core::signal::Direction;
 
+        let bars = stoch_rsi_bars();
+
+        let mut named = StochRsiStrategy::new(14, 3, 0.2, 0.8);
+        let named_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| named.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        let script = r#"
+let sk = ind.srsi_k(14);
+if sk[1] >= 0.2 && sk[0] < 0.2 { entry = true; }
+if sk[1] <= 0.8 && sk[0] > 0.8 { exit  = true; }
+"#;
+        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+        let rhai_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| rhai.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        assert!(!named_sigs.is_empty(), "stoch_rsi: must produce signals");
+        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+    }
 }

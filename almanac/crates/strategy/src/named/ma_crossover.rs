@@ -80,9 +80,6 @@ impl Strategy for MaCrossover {
 mod tests {
     use super::*;
     use alm_core::bar::Bar;
-    use crate::test_utils::*;
-    use crate::factory::build_strategy;
-    use serde_json::json;
 
     fn bar(ts: i64, close: f64) -> Bar {
         Bar::new(ts, "TEST", close, close + 1.0, close - 1.0, close, 1000.0)
@@ -131,6 +128,37 @@ mod tests {
         // After reset, no signals until re-warmed
         let s = strat.on_bar(&bar(100, 200.0));
         assert!(s.is_empty());
+    }
+
+    #[test]
+    fn rhai_parity() {
+        use alm_core::signal::Direction;
+        use crate::test_utils::*;
+        use crate::factory::build_strategy;
+        use serde_json::json;
+
+        let bars = trending_bars(300);
+
+        let mut named = MaCrossover::new(20, 50);
+        let named_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| named.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        let script = r#"
+let e20 = ind.ema(20);
+let e50 = ind.ema(50);
+if cross_above(e20, e50) { entry = true; }
+if cross_below(e20, e50) { exit = true; }
+"#;
+        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+        let rhai_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| rhai.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        assert!(!named_sigs.is_empty(), "ma_crossover: must produce signals");
+        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
     }
 
 }

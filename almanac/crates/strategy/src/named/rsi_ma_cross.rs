@@ -88,3 +88,39 @@ impl Strategy for RsiMaCross {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alm_core::signal::Direction;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn rhai_parity() {
+        let bars = trending_bars(300);
+
+        let mut named = RsiMaCross::new(20, 50, 14, 50.0, 45.0);
+        let named_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| named.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        let script = r#"
+let e20 = ind.ema(20);
+let e50 = ind.ema(50);
+let rsi14 = ind.rsi(14, 1);
+if cross_above(e20, e50) && rsi14[0] > 50.0 { entry = true; }
+if cross_below(e20, e50) || rsi14[0] < 45.0 { exit = true; }
+"#;
+        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+        let rhai_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| rhai.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        assert!(!named_sigs.is_empty(), "rsi_ma_cross: must produce signals");
+        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+    }
+}

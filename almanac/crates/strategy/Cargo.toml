@@ -3,6 +3,11 @@ name = "alm-strategy"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# Enable utoipa::ToSchema derives on catalogue and lint types.
+# Herald enables this; WASM builds must not.
+openapi = ["dep:utoipa"]
+
 [dependencies]
 alm-core      = { workspace = true }
 alm-indicator = { workspace = true }
@@ -12,9 +17,7 @@ serde_json      = { workspace = true }
 anyhow          = { workspace = true }
 rhai            = { version = "1", features = ["sync"] }
 tracing         = { workspace = true }
-# Derives for the strategy / indicator catalogue so HTTP layers can expose
-# the list via Swagger without cloning the schema.
-utoipa          = { version = "4", features = ["axum_extras"] }
+utoipa          = { version = "4", features = ["axum_extras"], optional = true }
 
 [dev-dependencies]
 alm-data  = { path = "../data" }

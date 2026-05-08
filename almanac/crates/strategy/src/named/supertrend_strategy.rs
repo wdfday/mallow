@@ -126,3 +126,36 @@ impl Strategy for SupertrendMacd {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alm_core::signal::Direction;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    fn run(s: &mut dyn Strategy, bars: &[Bar]) -> Vec<(i64, Direction)> {
+        bars.iter().flat_map(|b| s.on_bar(b)).map(|s| (s.timestamp, s.direction)).collect()
+    }
+
+    #[test]
+    fn rhai_parity() {
+        let bars = sar_bars();
+
+        let mut named = SupertrendStrategy::new(10, 3.0);
+        let named_sigs = run(&mut named, &bars);
+
+        // st_bull returns 1.0 when bullish, 0.0 when bearish
+        let script = r#"
+let sb = ind.st_bull(10);
+if sb[1] < 0.5 && sb[0] >= 0.5 { entry = true; }
+if sb[1] >= 0.5 && sb[0] < 0.5 { exit  = true; }
+"#;
+        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+        let rhai_sigs = run(rhai.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "supertrend: must produce signals");
+        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+    }
+}

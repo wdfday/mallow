@@ -57,3 +57,38 @@ impl Strategy for SarStrategy {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alm_core::signal::Direction;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    fn run(s: &mut dyn Strategy, bars: &[Bar]) -> Vec<(i64, Direction)> {
+        bars.iter().flat_map(|b| s.on_bar(b)).map(|s| (s.timestamp, s.direction)).collect()
+    }
+
+    #[test]
+    fn rhai_parity() {
+        let bars = sar_bars();
+
+        let mut named = SarStrategy::new(0.02, 0.2);
+        let named_sigs = run(&mut named, &bars);
+
+        // Detect SAR flip via close crossing the SAR value (is_bullish = close > sar)
+        let script = r#"
+let sar = ind.sar(0);
+let was_bull = close[1] > sar[1];
+let now_bull = close[0] > sar[0];
+if !was_bull && now_bull { entry = true; }
+if was_bull && !now_bull { exit  = true; }
+"#;
+        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+        let rhai_sigs = run(rhai.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "sar: must produce signals");
+        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+    }
+}

@@ -1,3 +1,53 @@
+//! Multi-Timeframe (MTF) bar aggregation for named strategies.
+//!
+//! # How MTF works
+//!
+//! The engine runs on a single base timeframe (e.g. M1). MTF is handled
+//! **inside the strategy** — not at the engine or ledger layer. Each named
+//! strategy that needs a higher timeframe creates a [`TimeBarResampler`] and
+//! feeds every base-TF bar into it:
+//!
+//! ```text
+//! Engine: on_bar(m1_bar)
+//!   └─> resampler.push(m1_bar) → None        (same H4 bucket, accumulate)
+//!   └─> resampler.push(m1_bar) → None
+//!   ...
+//!   └─> resampler.push(m1_bar) → Some(h4_bar)  ← first bar of next bucket
+//!                                                  emits the completed bucket
+//!         └─> htf_indicator.update(h4_bar)
+//! ```
+//!
+//! The HTF bar is emitted **one base-TF bar late**: the H4 bar whose bucket
+//! started at 08:00 is emitted when the first M1 bar of 12:00 arrives, not at
+//! 11:59. This is intentional — it prevents any lookahead bias.
+//!
+//! # Timestamp of the emitted bar
+//!
+//! [`TimeBarResampler`] stamps the HTF bar with the **bucket floor** timestamp
+//! (e.g. `08:00:00` for an H4 bucket starting at 08:00). Compare with
+//! [`HtfAggregator`][crate::script] inside `RhaiStrategy`, which stamps with
+//! the **last M1 bar's timestamp** inside that bucket.
+//!
+//! # Partial-bucket drop
+//!
+//! The forming (open) bucket is never emitted automatically. If a backtest ends
+//! mid-bucket the last partial HTF bar is silently dropped. Use
+//! [`TimeBarResampler::peek`] if the strategy needs the live forming bar.
+//!
+//! # Session boundary (stocks)
+//!
+//! If two consecutive base bars are more than 22 hours apart the resampler
+//! treats it as an overnight gap and resets its bucket state. This prevents
+//! the pre-market open of one session from merging with the close of the
+//! previous session.
+//!
+//! # Rhai scripts
+//!
+//! Rhai strategies do **not** use [`TimeBarResampler`] directly. Instead each
+//! HTF indicator binding contains an inline [`HtfAggregator`] — same bucket
+//! logic but with additional `live_` support. See
+//! [`crate::script::rhai_strategy`] for details.
+
 use alm_core::Bar;
 
 // ── Supported MTF timeframes by asset class ───────────────────────────────────

@@ -71,3 +71,75 @@ impl Strategy for MacdMa {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alm_core::signal::Direction;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn rhai_parity() {
+        let bars = slow_trend_bars();
+
+        let mut named = MacdMa::new(12, 26, 9, 50);
+        let named_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| named.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        let script = r#"
+let mh = ind.macd_hist(12);
+let sma50 = ind.sma(50, 1);
+if mh[1] <= 0.0 && mh[0] > 0.0 && close[0] > sma50[0] { entry = true; }
+if (mh[1] >= 0.0 && mh[0] < 0.0) || close[0] < sma50[0] { exit = true; }
+"#;
+        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+        let rhai_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| rhai.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        assert!(!named_sigs.is_empty(), "macd_ma: must produce signals");
+        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn signal_count_debug() {
+    use crate::named::triple_ema::TripleEma;
+    use crate::named::cmo_zero_cross::CmoZeroCross;
+    use crate::test_utils::*;
+    use alm_core::strategy::Strategy;
+    
+    let slow = slow_trend_bars();
+    let mut ma = MacdMa::new(12, 26, 9, 50);
+    let s: Vec<_> = slow.iter().flat_map(|b| ma.on_bar(b)).collect();
+    eprintln!("macd_ma slow_trend_bars: {} / {}", s.len(), slow.len());
+    
+    let trend400 = trending_bars(400);
+    let mut te = TripleEma::new(10, 20, 50);
+    let s: Vec<_> = trend400.iter().flat_map(|b| te.on_bar(b)).collect();
+    eprintln!("triple_ema trending(400): {}", s.len());
+    
+    let dip = dip_in_uptrend_bars();
+    let mut te2 = TripleEma::new(10, 20, 50);
+    let s: Vec<_> = dip.iter().flat_map(|b| te2.on_bar(b)).collect();
+    eprintln!("triple_ema dip: {}", s.len());
+    
+    let trend300 = trending_bars(300);
+    let mut c = CmoZeroCross::new(14, 50);
+    let s: Vec<_> = trend300.iter().flat_map(|b| c.on_bar(b)).collect();
+    eprintln!("cmo trending(300): {}", s.len());
+    
+    let mut c2 = CmoZeroCross::new(14, 50);
+    let s: Vec<_> = slow.iter().flat_map(|b| c2.on_bar(b)).collect();
+    eprintln!("cmo slow_trend: {}", s.len());
+    
+    let mut c3 = CmoZeroCross::new(14, 50);
+    let s: Vec<_> = dip.iter().flat_map(|b| c3.on_bar(b)).collect();
+    eprintln!("cmo dip: {}", s.len());
+}

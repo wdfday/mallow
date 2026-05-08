@@ -68,5 +68,35 @@ impl Strategy for VortexTrend {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use alm_core::signal::Direction;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
 
+    #[test]
+    fn rhai_parity() {
+        let bars = trending_bars(300);
+
+        let mut named = VortexTrend::new(14);
+        let named_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| named.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        let script = r#"
+let vp = ind.vortex_plus(14);
+let vm = ind.vortex_minus(14);
+if cross_above(vp, vm) { entry = true; }
+if cross_below(vp, vm) { exit = true; }
+"#;
+        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+        let rhai_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| rhai.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        assert!(!named_sigs.is_empty(), "vortex_trend: must produce signals");
+        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+    }
 }

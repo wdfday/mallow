@@ -151,4 +151,32 @@ mod tests {
         assert!(strat.prev_slow.is_none());
     }
 
+    #[test]
+    fn rhai_parity() {
+        use alm_core::signal::Direction;
+
+        let bars = trending_bars(300);
+
+        let mut named = ChopFilterStrategy::new(14, 8, 21, 61.8);
+        let named_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| named.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        let script = r#"
+let ema8  = ind.ema(8);
+let ema21 = ind.ema(21);
+let chop14 = ind.chop(14, 1);
+if ema8[1] <= ema21[1] && ema8[0] > ema21[0] && chop14[0] < 61.8 { entry = true; }
+if ema8[1] >= ema21[1] && ema8[0] < ema21[0] { exit = true; }
+"#;
+        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+        let rhai_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| rhai.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        assert!(!named_sigs.is_empty(), "chop_filter: must produce signals");
+        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+    }
 }

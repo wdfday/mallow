@@ -72,7 +72,6 @@ impl Strategy for TemaCrossover {
 mod tests {
     use super::*;
     use alm_core::signal::Direction;
-    use crate::test_utils::*;
 
     fn bar(ts: i64, close: f64) -> Bar {
         Bar::new(ts, "T", close * 1.005, close * 1.005, close * 0.995, close, 1000.0)
@@ -124,4 +123,29 @@ mod tests {
         assert_eq!(r1, r2, "reset parity failed");
     }
 
+    #[test]
+    fn rhai_parity() {
+        use crate::factory::build_strategy;
+        use serde_json::json;
+        use crate::test_utils::trending_bars as tb;
+
+        let bars = tb(300);
+
+        let mut named = TemaCrossover::new(8, 21);
+        let named_sigs = run(&mut named, &bars);
+
+        // Exit mirrors TemaCrossover: was_above (pf > ps) && !now_above (f <= s).
+        // cross_below only fires when f < s, missing the f == s edge case.
+        let script = r#"
+let tf = ind.tema(8);
+let ts = ind.tema(21);
+if cross_above(tf, ts) { entry = true; }
+if tf[1] > ts[1] && tf[0] <= ts[0] { exit = true; }
+"#;
+        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+        let rhai_sigs = run(rhai.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "tema_crossover: must produce signals");
+        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+    }
 }

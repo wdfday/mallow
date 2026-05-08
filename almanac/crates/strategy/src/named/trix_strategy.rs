@@ -108,4 +108,30 @@ mod tests {
         assert_eq!(r1, r2, "reset parity failed");
     }
 
+    #[test]
+    fn rhai_parity() {
+        use alm_core::signal::Direction;
+        let bars = slow_trend_bars();
+
+        let mut named = TrixStrategy::new(18, 9);
+        let named_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| named.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        let script = r#"
+let th = ind.trix_hist(18);
+if th[1] <= 0.0 && th[0] > 0.0 { entry = true; }
+if th[1] >= 0.0 && th[0] < 0.0 { exit = true; }
+"#;
+        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+        let rhai_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| rhai.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        assert!(!named_sigs.is_empty(), "trix_strategy: must produce signals");
+        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+    }
+
 }

@@ -73,7 +73,6 @@ impl Strategy for DemaCrossover {
 mod tests {
     use super::*;
     use alm_core::signal::Direction;
-    use crate::test_utils::*;
 
     fn bar(ts: i64, close: f64) -> Bar {
         Bar::new(ts, "T", close * 1.005, close * 1.005, close * 0.995, close, 1000.0)
@@ -124,4 +123,27 @@ mod tests {
         assert_eq!(r1, r2, "reset parity failed");
     }
 
+    #[test]
+    fn rhai_parity() {
+        use crate::factory::build_strategy;
+        use serde_json::json;
+        use crate::test_utils::trending_bars as tb;
+
+        let bars = tb(300);
+
+        let mut named = DemaCrossover::new(12, 26);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = r#"
+let dema12 = ind.dema(12);
+let dema26 = ind.dema(26);
+if cross_above(dema12, dema26) { entry = true; }
+if cross_below(dema12, dema26) { exit  = true; }
+"#;
+        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+        let rhai_sigs = run(rhai.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "dema_crossover: must produce signals");
+        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+    }
 }

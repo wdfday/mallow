@@ -810,13 +810,13 @@ mod tests {
     // ── indicator_deps ───────────────────────────────────────────────────────
 
     /// Extract the `"type"` field from each dep config, sorted, for stable asserts.
-    fn dep_types(deps: &[IndicatorDep]) -> Vec<String> {
-        let mut t: Vec<String> = deps.iter()
-            .filter_map(|d| d.config.get("type").and_then(Value::as_str).map(str::to_string))
-            .collect();
-        t.sort();
-        t
-    }
+    // fn dep_types(deps: &[IndicatorDep]) -> Vec<String> {
+    //     let mut t: Vec<String> = deps.iter()
+    //         .filter_map(|d| d.config.get("type").and_then(Value::as_str).map(str::to_string))
+    //         .collect();
+    //     t.sort();
+    //     t
+    // }
 
     #[test]
     fn named_strategies_declare_no_deps() {

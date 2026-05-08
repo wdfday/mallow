@@ -3,6 +3,10 @@
 //! Each test feeds identical bars to both implementations and asserts that
 //! signal timestamps and directions match exactly.  TP/SL parity tests also
 //! compare `target_price` / `stop_price` within floating-point tolerance.
+//!
+//! Per-strategy parity tests (DEMA, HMA, TEMA, MACD, Stochastic, StochRSI,
+//! Donchian, Supertrend, SAR, ChopFilter, ConnorsRSI, KAMA, TSI, RSI) live
+//! directly in each named strategy's own test module.
 
 #![cfg(test)]
 
@@ -13,7 +17,7 @@ use serde_json::json;
 use crate::factory::build_strategy;
 use crate::named::MaCrossover;
 use crate::test_utils::{
-    assert_parity, bar, dip_in_uptrend_bars, rsi_bars, run, trending_bars,
+    assert_parity, dip_in_uptrend_bars, rsi_bars, run, trending_bars,
 };
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -74,7 +78,7 @@ if cross_below(ema10, ema50) { exit  = true; }
     assert_parity("rhai EMA(10,50) vs MaCrossover(10,50)", &named_sigs, &rhai_sigs);
 }
 
-// ── RSI threshold: Rhai ────────────────────────────────────────────────────────
+// ── RSI threshold: Rhai ───────────────────────────────────────────────────────
 
 /// Rhai RSI threshold entry/exit produces expected signals.
 #[test]

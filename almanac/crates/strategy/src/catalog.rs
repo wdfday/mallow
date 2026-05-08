@@ -2,10 +2,10 @@
 
 use serde::Serialize;
 use serde_json::Value;
-use utoipa::ToSchema;
 
 /// A single parameter descriptor.
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct ParamDef {
     pub name: &'static str,
     /// `"int"` | `"float"` | `"int[]"`
@@ -17,7 +17,8 @@ pub struct ParamDef {
 }
 
 /// Metadata for one indicator type.
-#[derive(Debug, Serialize, ToSchema)]
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 pub struct IndicatorMeta {
     /// Identifier used in `"type"` field.
     pub name: &'static str,

@@ -61,3 +61,38 @@ impl Strategy for VwmaRsi {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alm_core::signal::Direction;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn rhai_parity() {
+        let bars = trending_bars(300);
+
+        let mut named = VwmaRsi::new(20, 14, 50.0, 45.0);
+        let named_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| named.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        let script = r#"
+let vwma20 = ind.vwma(20, 1);
+let rsi14 = ind.rsi(14, 1);
+if close[0] > vwma20[0] && rsi14[0] > 50.0 { entry = true; }
+if close[0] < vwma20[0] || rsi14[0] < 45.0 { exit = true; }
+"#;
+        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+        let rhai_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| rhai.on_bar(b))
+            .map(|s| (s.timestamp, s.direction))
+            .collect();
+
+        assert!(!named_sigs.is_empty(), "vwma_rsi: must produce signals");
+        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+    }
+}

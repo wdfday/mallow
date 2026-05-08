@@ -31,7 +31,7 @@ GRANT ALL ON SCHEMA public TO mallow;
 
 \connect helm
 GRANT ALL ON SCHEMA public TO mallow;
-\i /schemas/orchestrator_schema.sql
+\i /schemas/helm_schema.sql
 
 \connect strategist
 GRANT ALL ON SCHEMA public TO mallow;

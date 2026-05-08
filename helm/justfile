@@ -1,0 +1,62 @@
+dc := "docker compose -f ../deployment/docker-compose.yml"
+
+# List all recipes
+default:
+    @just --list
+
+# ── Local dev ─────────────────────────────────────────────────────────────────
+
+# Build binary
+build:
+    go build -o bin/helm ./cmd/helm/
+
+# Run locally
+run:
+    go run ./cmd/helm/
+
+# Hot-reload with air
+dev:
+    ~/.go/bin/air
+
+# Run tests
+test:
+    go test ./...
+
+# Format source files
+fmt:
+    gofmt -w $(rg --files cmd internal | rg '\.go$')
+
+# ── Swagger ───────────────────────────────────────────────────────────────────
+
+# Regenerate swagger docs
+swagger:
+    go run github.com/swaggo/swag/cmd/swag@v1.16.4 init \
+        -g cmd/helm/swagger.go -o docs \
+        --parseInternal --parseDependency --parseDepth 3
+
+# Verify committed swagger docs are up to date
+swagger-check:
+    just swagger
+    git diff --exit-code docs/docs.go docs/swagger.json docs/swagger.yaml
+
+# ── Docker (deployment compose) ───────────────────────────────────────────────
+
+# Build + start helm container
+up:
+    {{dc}} up -d --build helm
+
+# Start helm without rebuild
+start:
+    {{dc}} up -d helm
+
+# Stop all containers
+down:
+    {{dc}} down
+
+# Tail helm logs
+logs:
+    {{dc}} logs -f helm
+
+# Restart helm
+restart:
+    {{dc}} restart helm

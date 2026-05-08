@@ -1,0 +1,489 @@
+// Package position defines the position state machine for a hand's legs.
+//
+// Phase transitions per leg:
+//
+//	Idle ──order_placed──▶ Entering ──order_filled──▶ Open ──order_placed(close)──▶ Exiting ──order_filled──▶ Idle
+//	                            │                       │                                │
+//	                      order_cancelled           order_placed(add)            order_cancelled
+//	                            │                   (pyramid only)                       │
+//	                           Idle                    ▼                                Open
+//	                                                Adding ──order_filled──▶ Open
+//	                                                        ──order_cancelled──▶ Open
+//
+// Non-pyramid: each signal opens an independent leg (bounded by MaxUnits).
+// Pyramid:     all adds merge into Legs[0]; avg_entry recalculated; SL/TP from latest signal.
+//
+// State is fully reconstructed by replaying poslog.Events — no SQL needed.
+package position
+
+import (
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/shopspring/decimal"
+
+	"mallow/helm/internal/infra/poslog"
+	"mallow/helm/internal/module/hand/domain"
+)
+
+// Phase represents where in the lifecycle a position leg is.
+type Phase string
+
+const (
+	// PhaseIdle: no open position, no pending order.
+	PhaseIdle Phase = "idle"
+	// PhaseEntering: entry order placed, waiting for fill.
+	PhaseEntering Phase = "entering"
+	// PhaseAdding: pyramid add order placed on an open leg, waiting for fill.
+	PhaseAdding Phase = "adding"
+	// PhaseOpen: position live at exchange.
+	PhaseOpen Phase = "open"
+	// PhaseExiting: close order placed, waiting for fill.
+	PhaseExiting Phase = "exiting"
+)
+
+// LegState is the state machine for a single position leg (one PositionID).
+//
+// Pyramid mode: one LegState per hand; Qty/EntryPrice accumulate on each add.
+// Non-pyramid:  one LegState per signal; each has its own SL/TP.
+type LegState struct {
+	Phase      Phase
+	PositionID string // = opening order_id; stable across pyramid adds
+
+	Symbol string
+	Side   string // "buy" | "sell"
+
+	PendingOrderID string
+
+	EntryPrice decimal.Decimal // avg_entry (pyramid: recomputed on each add fill)
+	Qty        decimal.Decimal // total qty  (pyramid: accumulated)
+	StopLoss   decimal.Decimal // zero = not set
+	TakeProfit decimal.Decimal // zero = not set
+
+	OpenedAt time.Time
+
+	// pendingAdd* holds SL/TP from a pending pyramid add's order_placed.
+	// Committed to the leg on fill; discarded on cancel.
+	pendingAddSL decimal.Decimal
+	pendingAddTP decimal.Decimal
+}
+
+// IsActive reports whether the leg has an open position or a pending order.
+func (l *LegState) IsActive() bool { return l.Phase != PhaseIdle }
+
+// HasPendingOrder reports whether the leg is waiting for an exchange fill.
+func (l *LegState) HasPendingOrder() bool {
+	return l.Phase == PhaseEntering || l.Phase == PhaseAdding || l.Phase == PhaseExiting
+}
+
+// Apply advances the leg's state machine by one poslog event.
+// Returns an error if the transition is invalid for the current phase.
+func (l *LegState) Apply(e poslog.Event) error {
+	switch e.Kind {
+	case poslog.KindOrderPlaced:
+		return l.applyOrderPlaced(e)
+	case poslog.KindOrderFilled:
+		return l.applyOrderFilled(e)
+	case poslog.KindOrderCancelled:
+		return l.applyOrderCancelled(e)
+	case poslog.KindSLUpdated:
+		return l.applySLUpdated(e)
+	default:
+		return fmt.Errorf("unhandled event kind %q in LegState.Apply", e.Kind)
+	}
+}
+
+func (l *LegState) applyOrderPlaced(e poslog.Event) error {
+	var p poslog.OrderPlacedPayload
+	if err := json.Unmarshal(e.Payload, &p); err != nil {
+		return err
+	}
+	sl, _ := decimal.NewFromString(p.StopLoss)
+	tp, _ := decimal.NewFromString(p.TakeProfit)
+
+	switch {
+	case p.IsClose:
+		if l.Phase != PhaseOpen {
+			return fmt.Errorf("order_placed(close) invalid in phase %q", l.Phase)
+		}
+		l.PendingOrderID = p.OrderID
+		l.Phase = PhaseExiting
+
+	case p.IsPyramidAdd:
+		if l.Phase != PhaseOpen {
+			return fmt.Errorf("order_placed(pyramid_add) invalid in phase %q", l.Phase)
+		}
+		l.PendingOrderID = p.OrderID
+		l.pendingAddSL = sl
+		l.pendingAddTP = tp
+		l.Phase = PhaseAdding
+
+	default:
+		// Opening entry.
+		if l.Phase != PhaseIdle {
+			return fmt.Errorf("order_placed(open) invalid in phase %q", l.Phase)
+		}
+		l.PendingOrderID = p.OrderID
+		l.Symbol = p.Symbol
+		l.Side = p.Side
+		l.StopLoss = sl
+		l.TakeProfit = tp
+		l.Phase = PhaseEntering
+	}
+	return nil
+}
+
+func (l *LegState) applyOrderFilled(e poslog.Event) error {
+	if !l.HasPendingOrder() {
+		return fmt.Errorf("order_filled invalid in phase %q", l.Phase)
+	}
+	var p poslog.OrderFilledPayload
+	if err := json.Unmarshal(e.Payload, &p); err != nil {
+		return err
+	}
+	if p.OrderID != l.PendingOrderID {
+		return fmt.Errorf("order_id mismatch: got %q want %q", p.OrderID, l.PendingOrderID)
+	}
+
+	price, _ := decimal.NewFromString(p.FillPrice)
+	qty, _ := decimal.NewFromString(p.FillQty)
+
+	switch l.Phase {
+	case PhaseEntering:
+		l.EntryPrice = price
+		l.Qty = qty
+		l.OpenedAt = e.At
+		l.Phase = PhaseOpen
+
+	case PhaseAdding:
+		// Recalculate avg_entry and accumulate qty.
+		totalQty := l.Qty.Add(qty)
+		l.EntryPrice = l.Qty.Mul(l.EntryPrice).Add(qty.Mul(price)).Div(totalQty)
+		l.Qty = totalQty
+		// Commit pending SL/TP from the add signal.
+		l.StopLoss = l.pendingAddSL
+		l.TakeProfit = l.pendingAddTP
+		l.pendingAddSL = decimal.Zero
+		l.pendingAddTP = decimal.Zero
+		l.Phase = PhaseOpen
+
+	case PhaseExiting:
+		// Close fill: PnL is computed by HandPositions.Apply (it snapshots state beforehand).
+		// Reset leg to idle.
+		l.reset()
+		return nil
+	}
+
+	l.PendingOrderID = ""
+	return nil
+}
+
+func (l *LegState) applyOrderCancelled(_ poslog.Event) error {
+	if !l.HasPendingOrder() {
+		return fmt.Errorf("order_cancelled invalid in phase %q", l.Phase)
+	}
+	switch l.Phase {
+	case PhaseEntering:
+		l.reset()
+	case PhaseAdding:
+		// Cancelled pyramid add → stay open; discard pending levels.
+		l.pendingAddSL = decimal.Zero
+		l.pendingAddTP = decimal.Zero
+		l.PendingOrderID = ""
+		l.Phase = PhaseOpen
+	case PhaseExiting:
+		// Cancelled close → position remains open.
+		l.PendingOrderID = ""
+		l.Phase = PhaseOpen
+	}
+	return nil
+}
+
+func (l *LegState) applySLUpdated(e poslog.Event) error {
+	if l.Phase != PhaseOpen {
+		return fmt.Errorf("sl_updated invalid in phase %q", l.Phase)
+	}
+	var p poslog.SLUpdatedPayload
+	if err := json.Unmarshal(e.Payload, &p); err != nil {
+		return err
+	}
+	if sl, err := decimal.NewFromString(p.NewSL); err == nil {
+		l.StopLoss = sl
+	}
+	if p.NewTP != "" {
+		if tp, err := decimal.NewFromString(p.NewTP); err == nil {
+			l.TakeProfit = tp
+		}
+	}
+	return nil
+}
+
+func (l *LegState) reset() {
+	l.Phase = PhaseIdle
+	l.Symbol = ""
+	l.Side = ""
+	l.PendingOrderID = ""
+	l.EntryPrice = decimal.Zero
+	l.Qty = decimal.Zero
+	l.StopLoss = decimal.Zero
+	l.TakeProfit = decimal.Zero
+	l.OpenedAt = time.Time{}
+	l.pendingAddSL = decimal.Zero
+	l.pendingAddTP = decimal.Zero
+}
+
+// ── HandPositions ─────────────────────────────────────────────────────────────
+
+// HandPositions is the complete position state for one hand across all its legs.
+//
+// Pyramid (Pyramid=true):   at most 1 active leg; qty/avg_entry accumulate on each add.
+// Non-pyramid (Pyramid=false): up to MaxUnits independent active legs; each has its own SL/TP.
+type HandPositions struct {
+	Pyramid  bool
+	MaxUnits int
+
+	legs        map[string]*LegState // PositionID → leg (includes closed legs for dedup)
+	RealizedPnL decimal.Decimal      // accumulated from all closed legs
+}
+
+// NewHandPositions creates an empty HandPositions.
+func NewHandPositions(pyramid bool, maxUnits int) *HandPositions {
+	if maxUnits <= 0 {
+		maxUnits = 1
+	}
+	return &HandPositions{
+		Pyramid:  pyramid,
+		MaxUnits: maxUnits,
+		legs:     make(map[string]*LegState),
+	}
+}
+
+// ActiveCount returns the number of legs currently in a non-idle phase.
+func (h *HandPositions) ActiveCount() int {
+	n := 0
+	for _, l := range h.legs {
+		if l.IsActive() {
+			n++
+		}
+	}
+	return n
+}
+
+// ActiveLegs returns a slice of all currently active legs, ordered by PositionID.
+func (h *HandPositions) ActiveLegs() []*LegState {
+	out := make([]*LegState, 0, len(h.legs))
+	for _, l := range h.legs {
+		if l.IsActive() {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// PrimaryLeg returns the oldest active leg, or nil if idle.
+// For pyramid mode this is always Legs[0]. For non-pyramid it is the first-opened leg.
+func (h *HandPositions) PrimaryLeg() *LegState {
+	var oldest *LegState
+	for _, l := range h.legs {
+		if !l.IsActive() {
+			continue
+		}
+		if oldest == nil || l.OpenedAt.Before(oldest.OpenedAt) {
+			oldest = l
+		}
+	}
+	return oldest
+}
+
+// IsFlat reports whether the hand has no open exposure and no pending order.
+func (h *HandPositions) IsFlat() bool { return h.ActiveCount() == 0 }
+
+// LegPhase returns the Phase of the leg with the given PositionID.
+// Returns PhaseIdle if the leg does not exist or has been closed.
+func (h *HandPositions) LegPhase(positionID string) Phase {
+	if leg, ok := h.legs[positionID]; ok {
+		return leg.Phase
+	}
+	return PhaseIdle
+}
+
+// Apply dispatches a poslog event to the appropriate leg, creating it if needed.
+//
+// PnL accounting:
+//   - Close fill (order_filled on PhaseExiting): PnL computed from fill vs avg_entry.
+//   - External close (position_closed on non-idle leg with no prior fill): PnL from payload.
+//   - position_closed on already-idle leg: no-op (already handled via order_filled).
+func (h *HandPositions) Apply(e poslog.Event) error {
+	// position_closed is handled directly — it may arrive after order_filled has already
+	// reset the leg (in which case it is a no-op), or it may be the only close signal
+	// (external close — liquidation, manual) with authoritative PnL in the payload.
+	if e.Kind == poslog.KindPositionClosed {
+		return h.applyPositionClosed(e)
+	}
+
+	// position_orphaned: hand released this leg without closing.
+	// Remove it so reconciler never restores it to this hand.
+	if e.Kind == poslog.KindPositionOrphaned {
+		delete(h.legs, e.PositionID)
+		return nil
+	}
+
+	leg, exists := h.legs[e.PositionID]
+	if !exists {
+		// Only a new entry order_placed creates a new leg.
+		if e.Kind != poslog.KindOrderPlaced {
+			return fmt.Errorf("no leg for position_id %q (event: %s)", e.PositionID, e.Kind)
+		}
+		var p poslog.OrderPlacedPayload
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			return err
+		}
+		if p.IsPyramidAdd || p.IsClose {
+			return fmt.Errorf("no active leg for position_id %q but got %s with pyramid_add/close", e.PositionID, e.Kind)
+		}
+		leg = &LegState{PositionID: e.PositionID}
+		h.legs[e.PositionID] = leg
+	}
+
+	// For a closing fill, snapshot what we need for PnL before Apply resets the leg.
+	var (
+		snapPhase      = leg.Phase
+		snapSide       = leg.Side
+		snapEntryPrice = leg.EntryPrice
+	)
+
+	if err := leg.Apply(e); err != nil {
+		return err
+	}
+
+	// Closing fill: leg transitioned Exiting → Idle; compute and accumulate PnL.
+	if e.Kind == poslog.KindOrderFilled && snapPhase == PhaseExiting && leg.Phase == PhaseIdle {
+		var p poslog.OrderFilledPayload
+		if err := json.Unmarshal(e.Payload, &p); err == nil {
+			fillPrice, _ := decimal.NewFromString(p.FillPrice)
+			fillQty, _ := decimal.NewFromString(p.FillQty)
+			h.RealizedPnL = h.RealizedPnL.Add(computePnL(snapSide, snapEntryPrice, fillPrice, fillQty))
+		}
+	}
+
+	return nil
+}
+
+func (h *HandPositions) applyPositionClosed(e poslog.Event) error {
+	leg, exists := h.legs[e.PositionID]
+	if !exists || leg.Phase == PhaseIdle {
+		// Already closed via order_filled, or never opened — no-op.
+		return nil
+	}
+	// External close: use the authoritative PnL from the payload.
+	var p poslog.PositionClosedPayload
+	if err := json.Unmarshal(e.Payload, &p); err != nil {
+		return err
+	}
+	pnl, _ := decimal.NewFromString(p.RealizedPnL)
+	h.RealizedPnL = h.RealizedPnL.Add(pnl)
+	leg.reset()
+	return nil
+}
+
+func computePnL(side string, entryPrice, fillPrice, qty decimal.Decimal) decimal.Decimal {
+	diff := fillPrice.Sub(entryPrice)
+	if side == "sell" {
+		diff = diff.Neg()
+	}
+	return diff.Mul(qty)
+}
+
+// ReplayHand reconstructs HandPositions by replaying all events for a hand.
+// Events must be in ascending sequence order (as returned by poslog.Log.ReplayHand).
+// Invalid events are skipped — replay is best-effort to survive log corruption.
+func ReplayHand(events []poslog.Event, pyramid bool, maxUnits int) *HandPositions {
+	h := NewHandPositions(pyramid, maxUnits)
+	for _, e := range events {
+		if err := h.Apply(e); err != nil {
+			// TODO: log bad event in production; skip for now.
+			_ = err
+		}
+	}
+	return h
+}
+
+// ToPosition converts the current hand state to the canonical domain.Position value object.
+// currentPrice is injected to compute UnrealizedPnL / MarketValue; zero skips market fields.
+func (h *HandPositions) ToPosition(handID, helmID string, currentPrice decimal.Decimal) domain.Position {
+	pos := domain.Position{
+		HandID:      handID,
+		HelmID:      helmID,
+		RealizedPnL: h.RealizedPnL,
+		Pyramid:     h.Pyramid,
+	}
+
+	// Phase priority for aggregate reporting: transitional > open > idle.
+	phaseRank := func(p Phase) int {
+		switch p {
+		case PhaseEntering, PhaseAdding, PhaseExiting:
+			return 2
+		case PhaseOpen:
+			return 1
+		default:
+			return 0
+		}
+	}
+	bestRank := -1
+	bestPhase := PhaseIdle
+
+	for _, leg := range h.legs {
+		if !leg.IsActive() {
+			continue
+		}
+		pos.Symbol = leg.Symbol
+		pos.Side = leg.Side
+
+		dLeg := domain.Leg{
+			PositionID: leg.PositionID,
+			EntryPrice: leg.EntryPrice,
+			Qty:        leg.Qty,
+			StopLoss:   leg.StopLoss,
+			TakeProfit: leg.TakeProfit,
+			OpenedAt:   leg.OpenedAt,
+		}
+		pos.Legs = append(pos.Legs, dLeg)
+
+		if pos.OpenedAt.IsZero() || leg.OpenedAt.Before(pos.OpenedAt) {
+			pos.OpenedAt = leg.OpenedAt
+		}
+		if leg.OpenedAt.After(pos.LastEntryAt) {
+			pos.LastEntryAt = leg.OpenedAt
+		}
+
+		if r := phaseRank(leg.Phase); r > bestRank {
+			bestRank = r
+			bestPhase = leg.Phase
+		}
+	}
+
+	pos.Phase = string(bestPhase)
+
+	// Aggregated qty and avg_entry across all active legs.
+	var totalQtyTimesPrice decimal.Decimal
+	for _, l := range pos.Legs {
+		pos.TotalQty = pos.TotalQty.Add(l.Qty)
+		totalQtyTimesPrice = totalQtyTimesPrice.Add(l.Qty.Mul(l.EntryPrice))
+	}
+	if !pos.TotalQty.IsZero() {
+		pos.AvgEntryPrice = totalQtyTimesPrice.Div(pos.TotalQty)
+	}
+
+	// Pyramid: SL/TP from the single leg (= latest signal's levels).
+	// Non-pyramid: SL/TP are per-leg; pos-level fields remain zero.
+	if h.Pyramid && len(pos.Legs) == 1 {
+		pos.StopLoss = pos.Legs[0].StopLoss
+		pos.TakeProfit = pos.Legs[0].TakeProfit
+	}
+
+	if currentPrice.IsPositive() {
+		return pos.WithPrice(currentPrice)
+	}
+	return pos
+}

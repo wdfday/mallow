@@ -512,7 +512,17 @@ pub(super) fn build_engine(plot_buf: PlotBuf) -> Engine {
         let b1 = get_f(b.get(1)); let b0 = get_f(b.get(0));
         a1 <= b1 && a0 > b0
     });
+    engine.register_fn("crossover", |a: Array, b: Array| -> bool {
+        let a1 = get_f(a.get(1)); let a0 = get_f(a.get(0));
+        let b1 = get_f(b.get(1)); let b0 = get_f(b.get(0));
+        a1 <= b1 && a0 > b0
+    });
     engine.register_fn("cross_below", |a: Array, b: Array| -> bool {
+        let a1 = get_f(a.get(1)); let a0 = get_f(a.get(0));
+        let b1 = get_f(b.get(1)); let b0 = get_f(b.get(0));
+        a1 >= b1 && a0 < b0
+    });
+    engine.register_fn("crossunder", |a: Array, b: Array| -> bool {
         let a1 = get_f(a.get(1)); let a0 = get_f(a.get(0));
         let b1 = get_f(b.get(1)); let b0 = get_f(b.get(0));
         a1 >= b1 && a0 < b0

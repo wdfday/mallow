@@ -71,8 +71,3 @@ impl Strategy for WilliamsRMa {
         self.in_position = false;
     }
 }
-
-#[cfg(test)]
-mod tests {
-
-}

@@ -1,0 +1,30 @@
+[package]
+name = "alm-wasm"
+version = "0.1.0"
+edition = "2024"
+description = "WebAssembly bindings for almanac — candle transforms, indicators, mini backtest"
+
+[lib]
+name = "alm_wasm"
+crate-type = ["cdylib"]
+
+[dependencies]
+alm-core      = { path = "../core" }
+alm-indicator = { path = "../indicator" }
+alm-strategy  = { path = "../strategy" }
+alm-report    = { path = "../report" }
+alm-data      = { path = "../data" }
+
+wasm-bindgen       = "0.2"
+serde-wasm-bindgen = "0.6"
+serde              = { version = "1", features = ["derive"] }
+serde_json         = "1"
+
+# Three getrandom majors coexist in the dep tree (via Rhai transitive deps).
+# Each needs its WASM backend enabled explicitly.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom2 = { package = "getrandom", version = "0.2", features = ["js"] }
+getrandom3 = { package = "getrandom", version = "0.3", features = ["wasm_js"] }
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"

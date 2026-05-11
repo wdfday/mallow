@@ -1,0 +1,14 @@
+use alm_core::signal::Signal;
+
+/// Bars older than this are treated as warm-up only — no signals emitted.
+pub const FRESHNESS_GATE_MS: i64 = 2 * 60 * 1000;
+
+/// A single signal emitted by one hand on one bar advance, with routing metadata.
+/// Pushed through an mpsc channel to the Handler which publishes to NATS.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct HandSignal {
+    pub hand_id: String,
+    pub helm_id: String,
+    pub bar_ts: i64,
+    pub signal: Signal,
+}

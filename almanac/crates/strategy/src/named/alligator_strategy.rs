@@ -1,7 +1,7 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::Alligator;
 
-/// Bot — Williams Alligator.
+/// Williams Alligator.
 ///
 /// Long when Alligator is bullish: Lips > Teeth > Jaw (alligator eating upward).
 /// Close when alignment breaks (any line inverts).

@@ -312,7 +312,6 @@ pub async fn run_case(State(state): State<HttpState>, Path(id): Path<String>) ->
         position_size_usd:      case.capital.position_usd,
         position_size_quantity: None,
         max_positions:          case.capital.max_positions,
-        market_hours_only:      None,
         data_source:            case.data_source.clone(),
         asset_type:             None,
         timeframe:              case.timeframe.clone(),

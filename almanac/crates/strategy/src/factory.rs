@@ -17,7 +17,6 @@ use serde_json::Value;
 
 use crate::{
     script::rhai_strategy::RhaiStrategy,
-    // dynamic::DynamicStrategy,  // deprecated
     AdxEmaCross, AlmaCross, AlligatorStrategy, AroonTrend, AtrTrailingStop, BbKeltnerSqueeze,
     BbRsiReversal, BbSqueeze, BollingerMacd, CciReversal, ChandelierExit, ChopFilterStrategy,
     CmfEmaTrend, CmoZeroCross, ConnorsRsiStrategy, DemaCrossover, DmiAdx, DonchianBreakout,
@@ -829,6 +828,4 @@ mod tests {
         assert!(deps.is_empty(), "named strategy must declare zero deps: {deps:?}");
     }
 
-    // #[test]  // deprecated — DynamicStrategy removed
-    // fn dynamic_declares_base_tf_deps_only() { ... }
 }

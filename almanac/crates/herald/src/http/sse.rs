@@ -22,6 +22,10 @@
 //! indicator. `all_ready: false` means some indicators need more live bars
 //! to converge — the stream flows but those indicators may be absent from
 //! early events.
+//!
+//! NOTE: `GET /api/v1/stream/:symbol` (EventSource-compatible, token-in-query)
+//! has been removed. Use `POST /api/v1/stream/:symbol` with the Authorization
+//! header instead.
 
 use std::collections::{HashMap, VecDeque};
 use std::convert::Infallible;
@@ -32,7 +36,7 @@ use alm_core::Bar;
 use alm_ledger::{IndicatorCell, IndicatorHandle, IndicatorSpec};
 use alm_strategy::RhaiStreamEval;
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Path, State},
     response::sse::{Event, KeepAlive, Sse},
     routing::get,
     Json, Router,
@@ -49,63 +53,7 @@ use super::HttpState;
 pub fn routes() -> Router<HttpState> {
     Router::new()
         .route("/api/v1/stream/signals", get(stream_signals))
-        .route("/api/v1/stream/:symbol", get(stream_bars_simple).post(stream_bars))
-}
-
-// ── GET /api/stream/:symbol ───────────────────────────────────────────────────
-
-#[derive(Debug, serde::Deserialize, utoipa::ToSchema)]
-pub struct StreamBarsQuery {
-    /// Timeframe override, e.g. `"M5"`. Defaults to herald's global TF.
-    pub tf: Option<String>,
-}
-
-/// EventSource-compatible bar stream — raw OHLCV only, no indicator config.
-///
-/// Use `POST /api/v1/stream/:symbol` when you need indicators or a Rhai script.
-#[utoipa::path(
-    get,
-    path = "/api/v1/stream/{symbol}",
-    params(
-        ("symbol" = String, Path, description = "Symbol e.g. BTCUSDT"),
-        ("tf" = Option<String>, Query, description = "Timeframe override e.g. M5")
-    ),
-    responses(
-        (status = 200, description = "SSE bar stream — event: status then bar (text/event-stream)")
-    ),
-    tag = "stream"
-)]
-pub async fn stream_bars_simple(
-    State(state): State<HttpState>,
-    Path(symbol): Path<String>,
-    Query(q): Query<StreamBarsQuery>,
-) -> Sse<BoxStream<'static, Result<Event, Infallible>>> {
-    let tf  = resolve_tf(&q.tf, state.tf);
-    let sym = symbol.to_uppercase();
-
-    let bars_available = state.ledger
-        .with_state(&sym, tf, |s| s.bar_window.len())
-        .unwrap_or(0);
-    let status_event = status_sse_event(&StreamStatus {
-        bars_available,
-        all_ready: true,
-        indicators: HashMap::new(),
-    });
-
-    let rx = state.bar_bcast.subscribe();
-    let bar_stream = TokioStreamExt::filter_map(BroadcastStream::new(rx), move |res| {
-        match res {
-            Ok(bar) if bar.symbol.to_uppercase() == sym => {
-                Some(Ok(bar_sse_event(&bar, HashMap::new())))
-            }
-            _ => None,
-        }
-    });
-
-    let stream: BoxStream<'static, Result<Event, Infallible>> = Box::pin(
-        TokioStreamExt::chain(futures::stream::once(async move { Ok(status_event) }), bar_stream),
-    );
-    Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("ping"))
+        .route("/api/v1/stream/:symbol", axum::routing::post(stream_bars))
 }
 
 // ── POST /api/stream/:symbol ──────────────────────────────────────────────────

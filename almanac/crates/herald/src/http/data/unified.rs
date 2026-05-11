@@ -138,6 +138,7 @@ pub async fn unified_data(
     // run fresh indicator instances — no ledger state involved.
     if outside_window && !label_for_spec.is_empty() && want_candles {
         let before_ms     = before_ms.unwrap();
+        let after_ms      = req.candles.as_ref().and_then(|cq| cq.after);
         let climit        = req.candles.as_ref()
             .map(|cq| clamp_limit(cq.limit, DEFAULT_LIMIT))
             .unwrap_or(DEFAULT_LIMIT);
@@ -146,7 +147,7 @@ pub async fn unified_data(
         let specs_owned   = label_for_spec.clone();
 
         let hist = tokio::task::spawn_blocking(move || {
-            compute_historical(&data_dir, &parquet_sym, tf, &specs_owned, before_ms, climit)
+            compute_historical(&data_dir, &parquet_sym, tf, &specs_owned, before_ms, after_ms, climit)
         })
         .await
         .unwrap_or_else(|_| (vec![], HashMap::new()));
@@ -281,9 +282,13 @@ fn build_spec(cfg: &IndicatorConfig) -> Result<(IndicatorSpec, String), String> 
 
 /// Compute indicator values on historical bars outside the live ledger window.
 ///
-/// Loads `warm_count + limit` bars ending before `before_ms` from parquet,
-/// feeds them through fresh `IndicatorBox` instances (no ledger involved),
-/// then returns only the last `limit` bars with their indicator values.
+/// Loads warm-up + display bars from parquet, feeds them through fresh
+/// `IndicatorBox` instances (no ledger involved), then returns only the
+/// display window bars with their indicator values.
+///
+/// When `after_ms` is `Some(t)`, the display window is `[t, before_ms)` and
+/// warm-up bars are loaded before `t`. When `after_ms` is `None`, the
+/// display window is the last `limit` bars before `before_ms`.
 ///
 /// `parquet_symbol` is the on-disk name (no dashes); `label_for_spec` is the
 /// same list built by `unified_data` — `(label, IndicatorSpec)` pairs.
@@ -293,6 +298,7 @@ fn compute_historical(
     tf: Timeframe,
     label_for_spec: &[(String, IndicatorSpec)],
     before_ms: i64,
+    after_ms: Option<i64>,
     limit: usize,
 ) -> (Vec<BarRecord>, HashMap<String, Vec<IndicatorPoint>>) {
     let max_warm: usize = label_for_spec
@@ -301,10 +307,21 @@ fn compute_historical(
         .max()
         .unwrap_or(0);
 
-    let total    = max_warm + limit;
-    let tf_ms    = tf.duration_ms();
-    let from_ms  = before_ms.saturating_sub(total as i64 * tf_ms);
-    let live_sym = parquet_symbol; // Parquet files store Binance-style names too
+    let tf_ms = tf.duration_ms();
+    let from_ms = match after_ms {
+        Some(after) => after.saturating_sub(max_warm as i64 * tf_ms),
+        None        => before_ms.saturating_sub((max_warm + limit) as i64 * tf_ms),
+    };
+    // Total bar count: warm-up + display. For ranged queries, add a generous
+    // buffer so DuckDB doesn't need to be re-queried for warm-up misses.
+    let total = match after_ms {
+        Some(after) => {
+            let range_bars = ((before_ms - after) / tf_ms.max(1)) as usize;
+            max_warm + range_bars + limit
+        }
+        None => max_warm + limit,
+    };
+    let live_sym = parquet_symbol;
 
     let bars = match duck::query_bars_for_compute(
         data_dir, parquet_symbol, live_sym, &tf.to_string(), from_ms, before_ms, total,
@@ -340,12 +357,17 @@ fn compute_historical(
         }
     }
 
-    // Determine the display window: last `limit` bars.
-    let display_start = bars.len().saturating_sub(limit);
-    let display_bars: Vec<BarRecord> = bars[display_start..]
-        .iter()
-        .map(BarRecord::from)
-        .collect();
+    // Determine the display window.
+    let display_bars: Vec<BarRecord> = match after_ms {
+        Some(after) => bars.iter()
+            .filter(|b| b.timestamp >= after)
+            .map(BarRecord::from)
+            .collect(),
+        None => {
+            let display_start = bars.len().saturating_sub(limit);
+            bars[display_start..].iter().map(BarRecord::from).collect()
+        }
+    };
 
     if display_bars.is_empty() {
         return (vec![], HashMap::new());

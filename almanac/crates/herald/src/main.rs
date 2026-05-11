@@ -122,13 +122,16 @@ async fn main() -> Result<()> {
 
     // ── Bootstrap from parquet ────────────────────────────────────────────────
     if !startup_symbols.is_empty() {
-        let warm_days: i64 = std::env::var("HERALD_WARM_DAYS")
+        // HERALD_WARM_BARS: max M1 bars to load per symbol (1 bar = 1 min).
+        // Default 5000 ≈ 3.5 days — enough to warm all built-in indicators.
+        // Set to 0 to skip bootstrap entirely.
+        let warm_bars: i64 = std::env::var("HERALD_WARM_BARS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(5);
+            .unwrap_or(5000);
 
-        if warm_days > 0 && data_dir.exists() {
-            info!(symbols = startup_symbols.len(), "bootstrapping from parquet");
+        if warm_bars > 0 && data_dir.exists() {
+            info!(symbols = startup_symbols.len(), warm_bars, "bootstrapping from parquet");
 
             for sym in &startup_symbols {
                 // OKX symbols use dashes (e.g. "BTC-USDT"); parquet files are stored
@@ -141,12 +144,9 @@ async fn main() -> Result<()> {
                     continue;
                 }
 
-                // Prefer starting from the latest monthly file so we always pick up
-                // at least one full closed month + any daily files after it.
-                // Fall back to the fixed warm_days window when no monthly file exists.
+                // Derive from_ms from bar count: warm_bars M1 bars × 60 s each.
                 let now_ms = chrono::Utc::now().timestamp_millis();
-                let fallback_ms = now_ms - warm_days * 86_400_000;
-                let from_ms = find_bootstrap_from_ms(&files).unwrap_or(fallback_ms);
+                let from_ms = now_ms - warm_bars * 60_000;
 
                 match load_bars(&files, &parquet_sym, Some(from_ms), None, false, "") {
                     Ok(mut feed) => {
@@ -164,8 +164,8 @@ async fn main() -> Result<()> {
                     Err(e) => warn!(symbol = %sym, err = %e, "parquet bootstrap failed"),
                 }
             }
-        } else if warm_days == 0 {
-            info!("HERALD_WARM_DAYS=0 — skipping bootstrap");
+        } else if warm_bars == 0 {
+            info!("HERALD_WARM_BARS=0 — skipping bootstrap");
         } else {
             warn!(data_dir = %data_dir.display(), "data_dir not found — skipping bootstrap");
         }

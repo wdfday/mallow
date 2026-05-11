@@ -95,6 +95,7 @@ use alm_ledger::Ledger;
 use axum::{routing::get, Json, Router};
 use serde_json::json;
 use tokio::sync::{broadcast, Semaphore};
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
@@ -181,6 +182,7 @@ pub fn router(state: HttpState) -> Router {
         .with_state(state)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
+        .layer(CompressionLayer::new())
 }
 
 async fn health() -> Json<serde_json::Value> {

@@ -2,10 +2,12 @@ package service
 
 import (
 	"context"
-	"mallow/investment/internal/module/broker/domain"
-	"mallow/investment/internal/module/broker/dto"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
+
+	"mallow/investment/internal/module/broker/domain"
+	"mallow/investment/internal/module/broker/dto"
 )
 
 // BrokerConnectionService defines the business logic for broker connections.
@@ -38,11 +40,12 @@ type BrokerConnectionService interface {
 	// Deactivate marks a broker connection as disconnected.
 	Deactivate(ctx context.Context, id uuid.UUID, userID uuid.UUID) error
 
-	// RefreshToken refreshes the access token for a broker connection.
-	RefreshToken(ctx context.Context, id uuid.UUID, userID uuid.UUID) (*domain.BrokerConnection, error)
-
 	// TestConnection verifies the broker credentials are still valid.
 	TestConnection(ctx context.Context, id uuid.UUID, userID uuid.UUID) error
+
+	// SubscribeCredentials subscribes to NATS and handles credential fetch requests from helm.
+	// Helm calls investment.accounts.credentials when it needs to spawn a runtime.
+	SubscribeCredentials(nc *nats.Conn) error
 }
 
 // UpdateBrokerConnectionRequest is the request to update a broker connection.

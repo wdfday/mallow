@@ -82,49 +82,45 @@ func TestAccount_Structure(t *testing.T) {
 		userID := uuid.New()
 		accountID := uuid.New()
 		brokerConnectionID := uuid.New()
-		institutionName := "Test Bank"
-		availableBalance := d(8000000)
-		accountNumberMasked := "****1234"
-		accountNumberEncrypted := "encrypted_data"
+		institutionName := "Binance"
+		availableBalance := d(8000.00)
 		lastSyncedAt := time.Now()
 		syncStatus := SyncStatusActive
 		syncErrorMessage := "no errors"
 
 		account := Account{
-			ID:                     accountID,
-			UserID:                 userID,
-			AccountName:            "Test Account",
-			AccountType:            AccountTypeBank,
-			InstitutionName:        &institutionName,
-			CurrentBalance:         di(10000000),
-			AvailableBalance:       &availableBalance,
-			Currency:               CurrencyVND,
-			AccountNumberMasked:    &accountNumberMasked,
-			AccountNumberEncrypted: &accountNumberEncrypted,
-			IsActive:               true,
-			IsPrimary:              true,
-			IncludeInNetWorth:      true,
-			IsAutoSync:             true,
-			LastSyncedAt:           &lastSyncedAt,
-			SyncStatus:             &syncStatus,
-			SyncErrorMessage:       &syncErrorMessage,
-			BrokerConnectionID:     &brokerConnectionID,
-			CreatedAt:              time.Now(),
-			UpdatedAt:              time.Now(),
+			ID:                 accountID,
+			UserID:             userID,
+			AccountName:        "Binance Spot",
+			AccountType:        AccountTypeSpot,
+			InstitutionName:    &institutionName,
+			CurrentBalance:     d(10000.00),
+			AvailableBalance:   &availableBalance,
+			Equity:             d(10500.00),
+			MarginUsed:         d(500.00),
+			Currency:           CurrencyUSD,
+			IsActive:           true,
+			IncludeInNetWorth:  true,
+			IsAutoSync:         true,
+			LastSyncedAt:       &lastSyncedAt,
+			SyncStatus:         &syncStatus,
+			SyncErrorMessage:   &syncErrorMessage,
+			BrokerConnectionID: &brokerConnectionID,
+			CreatedAt:          time.Now(),
+			UpdatedAt:          time.Now(),
 		}
 
 		assert.Equal(t, accountID, account.ID)
 		assert.Equal(t, userID, account.UserID)
-		assert.Equal(t, "Test Account", account.AccountName)
-		assert.Equal(t, AccountTypeBank, account.AccountType)
+		assert.Equal(t, "Binance Spot", account.AccountName)
+		assert.Equal(t, AccountTypeSpot, account.AccountType)
 		assert.Equal(t, institutionName, *account.InstitutionName)
-		assert.True(t, di(10000000).Equal(account.CurrentBalance))
-		assert.True(t, d(8000000).Equal(*account.AvailableBalance))
-		assert.Equal(t, CurrencyVND, account.Currency)
-		assert.Equal(t, accountNumberMasked, *account.AccountNumberMasked)
-		assert.Equal(t, accountNumberEncrypted, *account.AccountNumberEncrypted)
+		assert.True(t, d(10000.00).Equal(account.CurrentBalance))
+		assert.True(t, d(8000.00).Equal(*account.AvailableBalance))
+		assert.True(t, d(10500.00).Equal(account.Equity))
+		assert.True(t, d(500.00).Equal(account.MarginUsed))
+		assert.Equal(t, CurrencyUSD, account.Currency)
 		assert.True(t, account.IsActive)
-		assert.True(t, account.IsPrimary)
 		assert.True(t, account.IncludeInNetWorth)
 		assert.True(t, account.IsAutoSync)
 		assert.NotNil(t, account.LastSyncedAt)
@@ -137,22 +133,21 @@ func TestAccount_Structure(t *testing.T) {
 
 		account := Account{
 			UserID:         userID,
-			AccountName:    "Cash Account",
-			AccountType:    AccountTypeCash,
+			AccountName:    "Spot Account",
+			AccountType:    AccountTypeSpot,
 			CurrentBalance: decimal.Zero,
-			Currency:       CurrencyVND,
+			Currency:       CurrencyUSD,
 			IsActive:       true,
 		}
 
 		assert.Equal(t, userID, account.UserID)
-		assert.Equal(t, "Cash Account", account.AccountName)
-		assert.Equal(t, AccountTypeCash, account.AccountType)
+		assert.Equal(t, "Spot Account", account.AccountName)
+		assert.Equal(t, AccountTypeSpot, account.AccountType)
 		assert.True(t, account.CurrentBalance.IsZero())
-		assert.Equal(t, CurrencyVND, account.Currency)
+		assert.Equal(t, CurrencyUSD, account.Currency)
 		assert.True(t, account.IsActive)
 		assert.Nil(t, account.InstitutionName)
 		assert.Nil(t, account.AvailableBalance)
-		assert.Nil(t, account.AccountNumberMasked)
 	})
 }
 
@@ -162,12 +157,11 @@ func TestAccountType_Constants(t *testing.T) {
 		accountType AccountType
 		expected    string
 	}{
-		{"cash", AccountTypeCash, "cash"},
-		{"bank", AccountTypeBank, "bank"},
-		{"savings", AccountTypeSavings, "savings"},
-		{"credit_card", AccountTypeCreditCard, "credit_card"},
-		{"investment", AccountTypeInvestment, "investment"},
-		{"crypto_wallet", AccountTypeCryptoWallet, "crypto_wallet"},
+		{"spot", AccountTypeSpot, "spot"},
+		{"futures_usdm", AccountTypeFuturesUSDM, "futures_usdm"},
+		{"futures_coinm", AccountTypeFuturesCOINM, "futures_coinm"},
+		{"unified", AccountTypeUnified, "unified"},
+		{"options", AccountTypeOptions, "options"},
 	}
 
 	for _, tt := range tests {
@@ -223,14 +217,6 @@ func TestAccount_BooleanFlags(t *testing.T) {
 		assert.False(t, inactiveAccount.IsActive)
 	})
 
-	t.Run("IsPrimary flag", func(t *testing.T) {
-		primaryAccount := Account{IsPrimary: true}
-		assert.True(t, primaryAccount.IsPrimary)
-
-		nonPrimaryAccount := Account{IsPrimary: false}
-		assert.False(t, nonPrimaryAccount.IsPrimary)
-	})
-
 	t.Run("IncludeInNetWorth flag", func(t *testing.T) {
 		includedAccount := Account{IncludeInNetWorth: true}
 		assert.True(t, includedAccount.IncludeInNetWorth)
@@ -265,8 +251,6 @@ func TestAccount_NullableFields(t *testing.T) {
 
 		assert.Nil(t, account.InstitutionName)
 		assert.Nil(t, account.AvailableBalance)
-		assert.Nil(t, account.AccountNumberMasked)
-		assert.Nil(t, account.AccountNumberEncrypted)
 		assert.Nil(t, account.LastSyncedAt)
 		assert.Nil(t, account.SyncStatus)
 		assert.Nil(t, account.SyncErrorMessage)
@@ -274,37 +258,27 @@ func TestAccount_NullableFields(t *testing.T) {
 	})
 
 	t.Run("set nullable fields", func(t *testing.T) {
-		institutionName := "Test Bank"
-		availableBalance := d(5000000)
-		accountNumberMasked := "****5678"
-		accountNumberEncrypted := "encrypted"
+		institutionName := "OKX"
+		availableBalance := d(5000.00)
 		lastSyncedAt := time.Now()
 		syncStatus := SyncStatusActive
 		syncErrorMessage := "error message"
 		brokerConnectionID := uuid.New()
 
 		account := Account{
-			InstitutionName:        &institutionName,
-			AvailableBalance:       &availableBalance,
-			AccountNumberMasked:    &accountNumberMasked,
-			AccountNumberEncrypted: &accountNumberEncrypted,
-			LastSyncedAt:           &lastSyncedAt,
-			SyncStatus:             &syncStatus,
-			SyncErrorMessage:       &syncErrorMessage,
-			BrokerConnectionID:     &brokerConnectionID,
+			InstitutionName:    &institutionName,
+			AvailableBalance:   &availableBalance,
+			LastSyncedAt:       &lastSyncedAt,
+			SyncStatus:         &syncStatus,
+			SyncErrorMessage:   &syncErrorMessage,
+			BrokerConnectionID: &brokerConnectionID,
 		}
 
 		require.NotNil(t, account.InstitutionName)
 		assert.Equal(t, institutionName, *account.InstitutionName)
 
 		require.NotNil(t, account.AvailableBalance)
-		assert.True(t, d(5000000).Equal(*account.AvailableBalance))
-
-		require.NotNil(t, account.AccountNumberMasked)
-		assert.Equal(t, accountNumberMasked, *account.AccountNumberMasked)
-
-		require.NotNil(t, account.AccountNumberEncrypted)
-		assert.Equal(t, accountNumberEncrypted, *account.AccountNumberEncrypted)
+		assert.True(t, d(5000.00).Equal(*account.AvailableBalance))
 
 		require.NotNil(t, account.LastSyncedAt)
 		assert.Equal(t, lastSyncedAt.Unix(), account.LastSyncedAt.Unix())
@@ -327,12 +301,11 @@ func TestAccount_DifferentAccountTypes(t *testing.T) {
 		name        string
 		accountType AccountType
 	}{
-		{"cash account", AccountTypeCash},
-		{"bank account", AccountTypeBank},
-		{"savings account", AccountTypeSavings},
-		{"credit card", AccountTypeCreditCard},
-		{"investment account", AccountTypeInvestment},
-		{"crypto wallet", AccountTypeCryptoWallet},
+		{"spot account", AccountTypeSpot},
+		{"futures usdm", AccountTypeFuturesUSDM},
+		{"futures coinm", AccountTypeFuturesCOINM},
+		{"unified account", AccountTypeUnified},
+		{"options account", AccountTypeOptions},
 	}
 
 	for _, tt := range tests {
@@ -341,7 +314,7 @@ func TestAccount_DifferentAccountTypes(t *testing.T) {
 				UserID:      userID,
 				AccountName: tt.name,
 				AccountType: tt.accountType,
-				Currency:    CurrencyVND,
+				Currency:    CurrencyUSD,
 			}
 
 			assert.Equal(t, tt.accountType, account.AccountType)

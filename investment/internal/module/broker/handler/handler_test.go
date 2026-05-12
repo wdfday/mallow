@@ -11,6 +11,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
@@ -64,19 +65,13 @@ func (m *MockBrokerConnectionService) Activate(ctx context.Context, id, userID u
 func (m *MockBrokerConnectionService) Deactivate(ctx context.Context, id, userID uuid.UUID) error {
 	return m.Called(ctx, id, userID).Error(0)
 }
-func (m *MockBrokerConnectionService) RefreshToken(ctx context.Context, id, userID uuid.UUID) (*domain.BrokerConnection, error) {
-	args := m.Called(ctx, id, userID)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(*domain.BrokerConnection), args.Error(1)
-}
 func (m *MockBrokerConnectionService) TestConnection(ctx context.Context, id, userID uuid.UUID) error {
 	return m.Called(ctx, id, userID).Error(0)
 }
 func (m *MockBrokerConnectionService) ReBroker(ctx context.Context, accountID, newBrokerID, userID uuid.UUID) error {
 	return m.Called(ctx, accountID, newBrokerID, userID).Error(0)
 }
+func (m *MockBrokerConnectionService) SubscribeCredentials(nc *nats.Conn) error { return nil }
 
 // compile-time check
 var _ service.BrokerConnectionService = (*MockBrokerConnectionService)(nil)
@@ -113,7 +108,6 @@ func makeTestRequest(t *testing.T, mockSvc service.BrokerConnectionService, meth
 	r.DELETE("/api/v1/investment/broker-connections/:id", h.Delete)
 	r.POST("/api/v1/investment/broker-connections/:id/activate", h.Activate)
 	r.POST("/api/v1/investment/broker-connections/:id/deactivate", h.Deactivate)
-	r.POST("/api/v1/investment/broker-connections/:id/refresh-token", h.RefreshToken)
 	r.POST("/api/v1/investment/broker-connections/:id/test", h.TestConnection)
 
 	var buf bytes.Buffer
@@ -341,35 +335,6 @@ func TestDeactivate_Success(t *testing.T) {
 	w := makeTestRequest(t, mockSvc, http.MethodPost, path, nil, userID.String())
 	assert.Equal(t, http.StatusOK, w.Code)
 	mockSvc.AssertExpectations(t)
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// Tests: RefreshToken
-// ────────────────────────────────────────────────────────────────────────────
-
-func TestRefreshToken_Success(t *testing.T) {
-	mockSvc := new(MockBrokerConnectionService)
-	userID := uuid.New()
-	conn := sampleConn(userID)
-
-	mockSvc.On("RefreshToken", mock.Anything, conn.ID, userID).Return(conn, nil)
-
-	path := fmt.Sprintf("/api/v1/investment/broker-connections/%s/refresh-token", conn.ID)
-	w := makeTestRequest(t, mockSvc, http.MethodPost, path, nil, userID.String())
-	assert.Equal(t, http.StatusOK, w.Code)
-	mockSvc.AssertExpectations(t)
-}
-
-func TestRefreshToken_Error(t *testing.T) {
-	mockSvc := new(MockBrokerConnectionService)
-	userID := uuid.New()
-	connID := uuid.New()
-
-	mockSvc.On("RefreshToken", mock.Anything, connID, userID).Return(nil, fmt.Errorf("no refresh token"))
-
-	path := fmt.Sprintf("/api/v1/investment/broker-connections/%s/refresh-token", connID)
-	w := makeTestRequest(t, mockSvc, http.MethodPost, path, nil, userID.String())
-	assert.Equal(t, http.StatusInternalServerError, w.Code)
 }
 
 // ────────────────────────────────────────────────────────────────────────────

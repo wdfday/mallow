@@ -47,9 +47,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMiddleware *middleware.Middl
 // @Accept json
 // @Produce json
 // @Security BearerAuth
-// @Param account_type query string false "Filter by account type" Enums(cash, bank, savings, credit_card, investment, crypto_wallet)
+// @Param account_type query string false "Filter by account type" Enums(spot,futures_usdm,futures_coinm,unified,options)
 // @Param is_active query bool false "Filter by active status"
-// @Param is_primary query bool false "Filter by primary status"
 // @Param include_deleted query bool false "Include deleted accounts"
 // @Success 200 {object} shared.SuccessResponse[accountdto.AccountsListResponse]
 // @Failure 400 {object} shared.ErrorResponse

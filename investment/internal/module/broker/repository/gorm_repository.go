@@ -102,23 +102,6 @@ func (r *gormBrokerConnectionRepository) GetNeedingSync(ctx context.Context, lim
 	return connections, nil
 }
 
-func (r *gormBrokerConnectionRepository) GetExpiredTokens(ctx context.Context, limit int) ([]*domain.BrokerConnection, error) {
-	var connections []*domain.BrokerConnection
-
-	now := time.Now()
-	err := r.db.WithContext(ctx).
-		Where("status = ?", domain.BrokerConnectionStatusActive).
-		Where("token_expires_at IS NOT NULL AND token_expires_at < ?", now).
-		Limit(limit).
-		Find(&connections).Error
-
-	if err != nil {
-		return nil, err
-	}
-
-	return connections, nil
-}
-
 func (r *gormBrokerConnectionRepository) UpdateSyncStatus(ctx context.Context, id uuid.UUID, lastSyncAt time.Time, syncStatus, syncError *string, stats map[string]int) error {
 	updates := map[string]interface{}{
 		"last_sync_at":     lastSyncAt,
@@ -135,20 +118,6 @@ func (r *gormBrokerConnectionRepository) UpdateSyncStatus(ctx context.Context, i
 	}
 	if failed, ok := stats["failed"]; ok {
 		updates["failed_syncs"] = gorm.Expr("failed_syncs + ?", failed)
-	}
-
-	return r.db.WithContext(ctx).
-		Model(&domain.BrokerConnection{}).
-		Where("id = ?", id).
-		Updates(updates).Error
-}
-
-func (r *gormBrokerConnectionRepository) UpdateTokens(ctx context.Context, id uuid.UUID, accessToken *string, refreshToken *string, expiresAt *time.Time) error {
-	updates := map[string]interface{}{
-		"access_token":      accessToken,
-		"refresh_token":     refreshToken,
-		"token_expires_at":  expiresAt,
-		"last_refreshed_at": time.Now(),
 	}
 
 	return r.db.WithContext(ctx).

@@ -36,9 +36,6 @@ func (s *accountService) GetByUserID(ctx context.Context, userID string, req acc
 	if req.IsActive != nil {
 		filters.IsActive = req.IsActive
 	}
-	if req.IsPrimary != nil {
-		filters.IsPrimary = req.IsPrimary
-	}
 
 	accounts, err := s.repo.ListByUserID(ctx, userID, filters)
 	if err != nil {

@@ -15,7 +15,6 @@ import (
 	positionModule "mallow/investment/internal/module/position"
 	snapshotModule "mallow/investment/internal/module/snapshot"
 	transactionModule "mallow/investment/internal/module/transaction"
-	watchlistModule "mallow/investment/internal/module/watchlist"
 	"mallow/investment/internal/portfolio"
 	"mallow/investment/internal/router"
 	"mallow/investment/internal/server"
@@ -53,7 +52,6 @@ func New() *fx.App {
 		derivativeModule.Module,
 		cashFlowModule.Module,
 		snapshotModule.Module,
-		watchlistModule.Module,
 
 		// Broker connections + financial accounts
 		brokerModule.Module,

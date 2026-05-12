@@ -4,6 +4,5 @@ package domain
 type ListAccountsFilter struct {
 	AccountType    *AccountType
 	IsActive       *bool
-	IsPrimary      *bool
 	IncludeDeleted bool
 }

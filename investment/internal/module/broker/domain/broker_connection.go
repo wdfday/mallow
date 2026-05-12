@@ -43,12 +43,6 @@ type BrokerConnection struct {
 	APISecret  string  `gorm:"type:text;column:api_secret" json:"-"` // Encrypted
 	Passphrase *string `gorm:"type:text;column:passphrase" json:"-"` // For OKX
 
-	// Token management
-	AccessToken     *string    `gorm:"type:text;column:access_token" json:"-"`
-	RefreshToken    *string    `gorm:"type:text;column:refresh_token" json:"-"`
-	TokenExpiresAt  *time.Time `gorm:"column:token_expires_at" json:"token_expires_at,omitempty"`
-	LastRefreshedAt *time.Time `gorm:"column:last_refreshed_at" json:"last_refreshed_at,omitempty"`
-
 	// Sync settings
 	AutoSync       bool       `gorm:"default:true;column:auto_sync" json:"auto_sync"`
 	SyncFrequency  int        `gorm:"default:60;column:sync_frequency" json:"sync_frequency"` // minutes
@@ -60,6 +54,9 @@ type BrokerConnection struct {
 	TotalSyncs      int `gorm:"default:0;column:total_syncs" json:"total_syncs"`
 	SuccessfulSyncs int `gorm:"default:0;column:successful_syncs" json:"successful_syncs"`
 	FailedSyncs     int `gorm:"default:0;column:failed_syncs" json:"failed_syncs"`
+
+	// Paper trading flag (persisted for display; does not affect live credentials)
+	IsPaper bool `gorm:"default:false;column:is_paper" json:"is_paper"`
 
 	// Additional settings
 	SyncAssets       bool `gorm:"default:true;column:sync_assets" json:"sync_assets"`
@@ -88,14 +85,6 @@ func (*BrokerConnection) TableName() string {
 // IsActive returns true if the connection is active
 func (bc *BrokerConnection) IsActive() bool {
 	return bc.Status == BrokerConnectionStatusActive
-}
-
-// IsTokenValid returns true if the access token is still valid
-func (bc *BrokerConnection) IsTokenValid() bool {
-	if bc.TokenExpiresAt == nil {
-		return false
-	}
-	return time.Now().Before(*bc.TokenExpiresAt)
 }
 
 // NeedsSync returns true if auto-sync is enabled and enough time has passed
@@ -133,13 +122,4 @@ func (bc *BrokerConnection) UpdateSyncStatus(success bool, errorMsg *string) {
 			bc.Status = BrokerConnectionStatusError
 		}
 	}
-}
-
-// RefreshAccessToken updates the access token and expiration
-func (bc *BrokerConnection) RefreshAccessToken(token string, expiresIn int) {
-	bc.AccessToken = &token
-	now := time.Now()
-	expiresAt := now.Add(time.Duration(expiresIn) * time.Second)
-	bc.TokenExpiresAt = &expiresAt
-	bc.LastRefreshedAt = &now
 }

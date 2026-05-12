@@ -28,7 +28,6 @@ func NewClient() *Client {
 	return &Client{http: &http.Client{Timeout: 15 * time.Second}}
 }
 
-// sign creates HMAC-SHA256 signature for Bybit V5.
 func sign(apiSecret, timestamp, apiKey, recvWindow, payload string) string {
 	raw := timestamp + apiKey + recvWindow + payload
 	h := hmac.New(sha256.New, []byte(apiSecret))
@@ -36,7 +35,7 @@ func sign(apiSecret, timestamp, apiKey, recvWindow, payload string) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
-func (c *Client) get(ctx context.Context, path string, params map[string]string, apiKey, apiSecret string) ([]byte, error) {
+func (c *Client) get(ctx context.Context, path string, params map[string]string, creds client.Credentials) ([]byte, error) {
 	vals := url.Values{}
 	keys := make([]string, 0, len(params))
 	for k := range params {
@@ -50,7 +49,7 @@ func (c *Client) get(ctx context.Context, path string, params map[string]string,
 
 	ts := fmt.Sprintf("%d", time.Now().UnixMilli())
 	recvWindow := "5000"
-	sig := sign(apiSecret, ts, apiKey, recvWindow, payload)
+	sig := sign(creds.APISecret, ts, creds.APIKey, recvWindow, payload)
 
 	fullURL := bybitBaseURL + path
 	if payload != "" {
@@ -61,7 +60,7 @@ func (c *Client) get(ctx context.Context, path string, params map[string]string,
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("X-BAPI-API-KEY", apiKey)
+	req.Header.Set("X-BAPI-API-KEY", creds.APIKey)
 	req.Header.Set("X-BAPI-SIGN", sig)
 	req.Header.Set("X-BAPI-TIMESTAMP", ts)
 	req.Header.Set("X-BAPI-RECV-WINDOW", recvWindow)
@@ -74,51 +73,37 @@ func (c *Client) get(ctx context.Context, path string, params map[string]string,
 	return io.ReadAll(resp.Body)
 }
 
-func (c *Client) Authenticate(ctx context.Context, creds client.Credentials) (*client.AuthResponse, error) {
-	body, err := c.get(ctx, "/v5/user/query-api", nil, creds.APIKey, creds.APISecret)
+func (c *Client) Validate(ctx context.Context, creds client.Credentials) error {
+	body, err := c.get(ctx, "/v5/user/query-api", nil, creds)
 	if err != nil {
-		return nil, fmt.Errorf("bybit authentication failed: %w", err)
+		return fmt.Errorf("bybit authentication failed: %w", err)
 	}
 	var resp struct {
 		RetCode int `json:"retCode"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil || resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit authentication failed: retCode=%d", resp.RetCode)
+		return fmt.Errorf("bybit authentication failed: retCode=%d", resp.RetCode)
 	}
-	return &client.AuthResponse{
-		AccessToken: creds.APIKey + ":" + creds.APISecret,
-		ExpiresAt:   time.Now().Add(100 * 365 * 24 * time.Hour),
-	}, nil
+	return nil
 }
 
-func (c *Client) RefreshToken(_ context.Context, _ string) (*client.AuthResponse, error) {
-	return &client.AuthResponse{ExpiresAt: time.Now().Add(100 * 365 * 24 * time.Hour)}, nil
-}
-
-func (c *Client) GetPortfolio(ctx context.Context, accessToken string) (*client.Portfolio, error) {
-	apiKey, apiSecret, err := splitToken(accessToken)
-	if err != nil {
-		return nil, err
-	}
+func (c *Client) GetPortfolio(ctx context.Context, creds client.Credentials) (*client.Portfolio, error) {
 	body, err := c.get(ctx, "/v5/account/wallet-balance",
-		map[string]string{"accountType": "UNIFIED"}, apiKey, apiSecret)
+		map[string]string{"accountType": "UNIFIED"}, creds)
 	if err != nil {
 		return nil, fmt.Errorf("bybit get wallet failed: %w", err)
 	}
-
 	var resp struct {
 		RetCode int `json:"retCode"`
 		Result  struct {
 			List []struct {
-				TotalEquity        string `json:"totalEquity"`
-				TotalWalletBalance string `json:"totalWalletBalance"`
+				TotalEquity string `json:"totalEquity"`
 			} `json:"list"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("bybit parse wallet failed: %w", err)
 	}
-
 	var total decimal.Decimal
 	if len(resp.Result.List) > 0 {
 		total, _ = decimal.NewFromString(resp.Result.List[0].TotalEquity)
@@ -126,17 +111,12 @@ func (c *Client) GetPortfolio(ctx context.Context, accessToken string) (*client.
 	return &client.Portfolio{TotalValue: total, Currency: "USDT"}, nil
 }
 
-func (c *Client) GetPositions(ctx context.Context, accessToken string) ([]client.Position, error) {
-	apiKey, apiSecret, err := splitToken(accessToken)
-	if err != nil {
-		return nil, err
-	}
+func (c *Client) GetPositions(ctx context.Context, creds client.Credentials) ([]client.Position, error) {
 	body, err := c.get(ctx, "/v5/position/list",
-		map[string]string{"category": "linear", "limit": "200"}, apiKey, apiSecret)
+		map[string]string{"category": "linear", "limit": "200"}, creds)
 	if err != nil {
 		return nil, fmt.Errorf("bybit get positions failed: %w", err)
 	}
-
 	var resp struct {
 		RetCode int `json:"retCode"`
 		Result  struct {
@@ -152,7 +132,6 @@ func (c *Client) GetPositions(ctx context.Context, accessToken string) ([]client
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, err
 	}
-
 	var positions []client.Position
 	for _, p := range resp.Result.List {
 		qty, _ := decimal.NewFromString(p.Size)
@@ -174,22 +153,17 @@ func (c *Client) GetPositions(ctx context.Context, accessToken string) ([]client
 	return positions, nil
 }
 
-func (c *Client) GetTransactions(ctx context.Context, accessToken string, from, to time.Time) ([]client.Transaction, error) {
-	apiKey, apiSecret, err := splitToken(accessToken)
-	if err != nil {
-		return nil, err
-	}
+func (c *Client) GetTransactions(ctx context.Context, creds client.Credentials, from, to time.Time) ([]client.Transaction, error) {
 	body, err := c.get(ctx, "/v5/execution/list",
 		map[string]string{
 			"category":  "linear",
 			"startTime": fmt.Sprintf("%d", from.UnixMilli()),
 			"endTime":   fmt.Sprintf("%d", to.UnixMilli()),
 			"limit":     "100",
-		}, apiKey, apiSecret)
+		}, creds)
 	if err != nil {
 		return nil, fmt.Errorf("bybit get executions failed: %w", err)
 	}
-
 	var resp struct {
 		Result struct {
 			List []struct {
@@ -205,7 +179,6 @@ func (c *Client) GetTransactions(ctx context.Context, accessToken string, from, 
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, err
 	}
-
 	var txns []client.Transaction
 	for _, e := range resp.Result.List {
 		qty, _ := decimal.NewFromString(e.ExecQty)
@@ -227,12 +200,12 @@ func (c *Client) GetTransactions(ctx context.Context, accessToken string, from, 
 }
 
 func (c *Client) GetMarketPrice(ctx context.Context, symbol string) (*client.MarketPrice, error) {
+	// Market price is public — no credentials needed.
 	body, err := c.get(ctx, "/v5/market/tickers",
-		map[string]string{"category": "spot", "symbol": symbol}, "", "")
+		map[string]string{"category": "spot", "symbol": symbol}, client.Credentials{})
 	if err != nil {
 		return nil, fmt.Errorf("bybit get ticker failed: %w", err)
 	}
-
 	var resp struct {
 		Result struct {
 			List []struct {
@@ -245,7 +218,6 @@ func (c *Client) GetMarketPrice(ctx context.Context, symbol string) (*client.Mar
 	if err := json.Unmarshal(body, &resp); err != nil || len(resp.Result.List) == 0 {
 		return nil, fmt.Errorf("bybit ticker not found for %s", symbol)
 	}
-
 	price, _ := decimal.NewFromString(resp.Result.List[0].LastPrice)
 	return &client.MarketPrice{Symbol: symbol, Price: price}, nil
 }
@@ -260,13 +232,4 @@ func (c *Client) GetBatchMarketPrices(ctx context.Context, symbols []string) (ma
 		result[s] = mp
 	}
 	return result, nil
-}
-
-func splitToken(token string) (string, string, error) {
-	for i, r := range token {
-		if r == ':' {
-			return token[:i], token[i+1:], nil
-		}
-	}
-	return "", "", fmt.Errorf("invalid bybit token format")
 }

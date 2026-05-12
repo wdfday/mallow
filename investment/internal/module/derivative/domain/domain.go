@@ -29,13 +29,13 @@ type DerivativePosition struct {
 
 	// Options-specific
 	StrikePrice *decimal.Decimal `gorm:"type:decimal(15,2);column:strike_price" json:"strike_price,omitempty"`
-	OptionType  string   `gorm:"type:varchar(10);column:option_type" json:"option_type,omitempty"` // call|put
-	ExpiryDate  *string  `gorm:"type:date;column:expiry_date" json:"expiry_date,omitempty"`
+	OptionType  string           `gorm:"type:varchar(10);column:option_type" json:"option_type,omitempty"` // call|put
+	ExpiryDate  *string          `gorm:"type:date;column:expiry_date" json:"expiry_date,omitempty"`
 
 	UnrealizedPnL decimal.Decimal `gorm:"type:decimal(15,2);default:0;column:unrealized_pnl" json:"unrealized_pnl"`
 	RealizedPnL   decimal.Decimal `gorm:"type:decimal(15,2);default:0;column:realized_pnl" json:"realized_pnl"`
 
-	Status   string     `gorm:"type:varchar(20);not null;default:'open';column:status" json:"status"` // open|closed
+	Status   string     `gorm:"type:varchar(20);not null;default:'active';column:status" json:"status"` // active|closed
 	OpenedAt time.Time  `gorm:"not null;column:opened_at" json:"opened_at"`
 	ClosedAt *time.Time `gorm:"column:closed_at" json:"closed_at,omitempty"`
 
@@ -47,5 +47,5 @@ type DerivativePosition struct {
 }
 
 func (DerivativePosition) TableName() string {
-	return "derivative_positions"
+	return "contract_positions"
 }

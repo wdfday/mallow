@@ -33,8 +33,9 @@ type InvestmentTransactionMsg struct {
 	Commission      float64   `json:"commission,omitempty"`
 	Tax             float64   `json:"tax,omitempty"`
 	TransactionDate time.Time `json:"transaction_date"`
-	Broker          string    `json:"broker,omitempty"`
-	ExternalID      string    `json:"external_id,omitempty"`
+	ExternalID      string    `json:"external_id,omitempty"` // orderID (for grouping fills of the same order)
+	TradeID         string    `json:"trade_id,omitempty"`    // exchange fill ID — primary dedup key
+	Kind            string    `json:"kind,omitempty"`        // "open_order" | "fill" | "cancel"
 	Notes           string    `json:"notes,omitempty"`
 	Source          string    `json:"source,omitempty"` // "manual" | "sync"
 	BotID           string    `json:"bot_id,omitempty"` // set by orchestrator bots, empty for manual/sync

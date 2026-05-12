@@ -3,7 +3,6 @@ package binance
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -19,41 +18,23 @@ type Client struct{}
 
 func NewClient() *Client { return &Client{} }
 
-func newBinanceSDK(apiKey, apiSecret string, isPaper bool) *binancesdk.Client {
-	c := binancesdk.NewClient(apiKey, apiSecret)
-	if isPaper {
+func newSDK(creds client.Credentials) *binancesdk.Client {
+	c := binancesdk.NewClient(creds.APIKey, creds.APISecret)
+	if creds.IsPaper {
 		c.BaseURL = demoBinanceURL
 	}
 	return c
 }
 
-func (c *Client) Authenticate(_ context.Context, creds client.Credentials) (*client.AuthResponse, error) {
-	svc := newBinanceSDK(creds.APIKey, creds.APISecret, creds.IsPaper)
-	if _, err := svc.NewGetAccountService().Do(context.Background()); err != nil {
-		return nil, fmt.Errorf("binance authentication failed: %w", err)
+func (c *Client) Validate(_ context.Context, creds client.Credentials) error {
+	if _, err := newSDK(creds).NewGetAccountService().Do(context.Background()); err != nil {
+		return fmt.Errorf("binance authentication failed: %w", err)
 	}
-	mode := "live"
-	if creds.IsPaper {
-		mode = "demo"
-	}
-	token := mode + "|" + creds.APIKey + ":" + creds.APISecret
-	return &client.AuthResponse{
-		AccessToken: token,
-		ExpiresAt:   time.Now().Add(100 * 365 * 24 * time.Hour),
-	}, nil
+	return nil
 }
 
-func (c *Client) RefreshToken(_ context.Context, _ string) (*client.AuthResponse, error) {
-	return &client.AuthResponse{ExpiresAt: time.Now().Add(100 * 365 * 24 * time.Hour)}, nil
-}
-
-func (c *Client) GetPortfolio(ctx context.Context, accessToken string) (*client.Portfolio, error) {
-	apiKey, apiSecret, isPaper, err := splitToken(accessToken)
-	if err != nil {
-		return nil, err
-	}
-	svc := newBinanceSDK(apiKey, apiSecret, isPaper)
-	account, err := svc.NewGetAccountService().Do(ctx)
+func (c *Client) GetPortfolio(ctx context.Context, creds client.Credentials) (*client.Portfolio, error) {
+	account, err := newSDK(creds).NewGetAccountService().Do(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("binance get account failed: %w", err)
 	}
@@ -70,13 +51,8 @@ func (c *Client) GetPortfolio(ctx context.Context, accessToken string) (*client.
 	return &client.Portfolio{TotalValue: total, Currency: "USDT", CashBalance: cash}, nil
 }
 
-func (c *Client) GetPositions(ctx context.Context, accessToken string) ([]client.Position, error) {
-	apiKey, apiSecret, isPaper, err := splitToken(accessToken)
-	if err != nil {
-		return nil, err
-	}
-	svc := newBinanceSDK(apiKey, apiSecret, isPaper)
-	account, err := svc.NewGetAccountService().Do(ctx)
+func (c *Client) GetPositions(ctx context.Context, creds client.Credentials) ([]client.Position, error) {
+	account, err := newSDK(creds).NewGetAccountService().Do(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("binance get positions failed: %w", err)
 	}
@@ -93,7 +69,7 @@ func (c *Client) GetPositions(ctx context.Context, accessToken string) ([]client
 	return positions, nil
 }
 
-func (c *Client) GetTransactions(_ context.Context, _ string, _, _ time.Time) ([]client.Transaction, error) {
+func (c *Client) GetTransactions(_ context.Context, _ client.Credentials, _, _ time.Time) ([]client.Transaction, error) {
 	return nil, nil
 }
 
@@ -128,17 +104,4 @@ func (c *Client) GetBatchMarketPrices(ctx context.Context, symbols []string) (ma
 		}
 	}
 	return result, nil
-}
-
-// splitToken parses "demo|key:secret" or "live|key:secret" or legacy "key:secret".
-func splitToken(token string) (apiKey, apiSecret string, isPaper bool, err error) {
-	if head, tail, ok := strings.Cut(token, "|"); ok {
-		isPaper = head == "demo"
-		token = tail
-	}
-	idx := strings.IndexByte(token, ':')
-	if idx < 0 {
-		return "", "", false, fmt.Errorf("invalid binance token format")
-	}
-	return token[:idx], token[idx+1:], isPaper, nil
 }

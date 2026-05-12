@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -33,6 +34,8 @@ func New(svc service.Service) *Handler {
 // @Security BearerAuth
 // @Param type query string false "Transaction type"
 // @Param symbol query string false "Asset symbol"
+// @Param limit query int false "Max records to return (default 50)"
+// @Param offset query int false "Records to skip (default 0)"
 // @Success 200 {object} shared.SuccessResponse[[]txdomain.PortfolioTransaction]
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 500 {object} shared.ErrorResponse
@@ -43,10 +46,12 @@ func (h *Handler) List(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusUnauthorized, "unauthorized")
 		return
 	}
+	limit, offset := parsePagination(c, 50)
 	filter := repository.ListFilter{
 		TxType: c.Query("type"),
 		Symbol: c.Query("symbol"),
-		Limit:  50,
+		Limit:  limit,
+		Offset: offset,
 	}
 	var txs []txdomain.PortfolioTransaction
 	txs, err := h.svc.List(c.Request.Context(), user.ID, filter)
@@ -57,10 +62,22 @@ func (h *Handler) List(c *gin.Context) {
 	shared.RespondWithSuccess(c, http.StatusOK, "Transactions retrieved successfully", txs)
 }
 
+// Create godoc
+// @Summary Record a manual transaction
+// @Description Record a manual portfolio transaction for the authenticated user
+// @Tags portfolio
+// @Accept json
+// @Produce json
+// @Security BearerAuth
+// @Success 201 {object} shared.SuccessResponse[any]
+// @Failure 400 {object} shared.ErrorResponse
+// @Failure 401 {object} shared.ErrorResponse
+// @Failure 500 {object} shared.ErrorResponse
+// @Router /api/v1/investment/transactions [post]
 func (h *Handler) Create(c *gin.Context) {
 	user, ok := middleware.GetCurrentUser(c)
 	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		shared.RespondWithError(c, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 
@@ -79,11 +96,10 @@ func (h *Handler) Create(c *gin.Context) {
 		Commission      float64               `json:"commission"`
 		Tax             float64               `json:"tax"`
 		TransactionDate time.Time             `json:"transaction_date"`
-		Broker          string                `json:"broker"`
 		Notes           string                `json:"notes"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
 		return
 	}
 	if req.TransactionDate.IsZero() {
@@ -95,7 +111,7 @@ func (h *Handler) Create(c *gin.Context) {
 
 	accountID, err := uuid.Parse(req.AccountID)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid account_id"})
+		shared.RespondWithError(c, http.StatusBadRequest, "invalid account_id")
 		return
 	}
 
@@ -114,14 +130,29 @@ func (h *Handler) Create(c *gin.Context) {
 		Commission:      decimal.NewFromFloat(req.Commission),
 		Tax:             decimal.NewFromFloat(req.Tax),
 		TransactionDate: req.TransactionDate,
-		Broker:          req.Broker,
 		Source:          "manual",
 		Notes:           req.Notes,
 	}
 
 	if err := h.svc.Record(c.Request.Context(), accountID, user.ID, tx); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		shared.HandleError(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, gin.H{"message": "transaction recorded"})
+	shared.RespondWithSuccessNoData(c, http.StatusCreated, "Transaction recorded successfully")
+}
+
+// parsePagination reads limit/offset query params with sensible defaults.
+func parsePagination(c *gin.Context, defaultLimit int) (limit, offset int) {
+	limit = defaultLimit
+	if v := c.Query("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if v := c.Query("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+	return
 }

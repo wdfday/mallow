@@ -2,6 +2,7 @@ package handler
 
 import (
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 
@@ -29,6 +30,8 @@ func New(svc service.Service) *Handler {
 // @Security BearerAuth
 // @Param flow_type query string false "Cash flow type"
 // @Param type query string false "Alias for flow_type"
+// @Param limit query int false "Max records to return (default 50)"
+// @Param offset query int false "Records to skip (default 0)"
 // @Success 200 {object} shared.SuccessResponse[[]cashdomain.PortfolioCashFlow]
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 500 {object} shared.ErrorResponse
@@ -43,9 +46,11 @@ func (h *Handler) List(c *gin.Context) {
 	if flowType == "" {
 		flowType = c.Query("type")
 	}
+	limit, offset := parsePagination(c, 50)
 	filter := repository.ListFilter{
 		FlowType: flowType,
-		Limit:    50,
+		Limit:    limit,
+		Offset:   offset,
 	}
 
 	var flows []cashdomain.PortfolioCashFlow
@@ -55,4 +60,20 @@ func (h *Handler) List(c *gin.Context) {
 		return
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Cash flows retrieved successfully", flows)
+}
+
+// parsePagination reads limit/offset query params with sensible defaults.
+func parsePagination(c *gin.Context, defaultLimit int) (limit, offset int) {
+	limit = defaultLimit
+	if v := c.Query("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if v := c.Query("offset"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
+			offset = n
+		}
+	}
+	return
 }

@@ -43,7 +43,6 @@ func (p *TransactionProjector) Project(ctx context.Context, ev event.InvestmentE
 		Commission:    tx.Commission,
 		Tax:           tx.Tax,
 		RealizedPnL:   tx.RealizedGain,
-		Broker:        tx.Broker,
 		ExternalID:    tx.ExternalID,
 		Source:        tx.Source,
 		BotID:         tx.BotID,

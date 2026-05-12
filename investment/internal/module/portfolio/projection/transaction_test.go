@@ -17,7 +17,11 @@ import (
 
 // ---- TransactionProjector tests ----
 
-// TestTransactionProjector_InsertBuyTransaction verifies a buy event inserts a row with correct fields.
+// Columns inserted by the projector (no broker, no trade_id):
+// account_id, user_id, symbol, tx_type, currency,
+// quantity, price, amount, fees, commission, tax, realized_pnl,
+// external_id, source, bot_id, notes, source_event_id, tx_date, created_at
+
 func TestTransactionProjector_InsertBuyTransaction(t *testing.T) {
 	db, mock := newMockDB(t)
 	proj := NewTransactionProjector(db)
@@ -38,7 +42,6 @@ func TestTransactionProjector_InsertBuyTransaction(t *testing.T) {
 		Fees:            decimal.NewFromFloat(1.5),
 		Commission:      decimal.NewFromFloat(0.5),
 		Tax:             decimal.Zero,
-		Broker:          "alpaca",
 		Source:          "manual",
 		ExternalID:      "ext-001",
 		Notes:           "first buy",
@@ -46,27 +49,25 @@ func TestTransactionProjector_InsertBuyTransaction(t *testing.T) {
 	}
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 1, payload)
 
-	// GORM Create with postgres driver uses RETURNING "id" → ExpectQuery
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "portfolio_transactions"`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "trades"`)).
 		WithArgs(
 			accountID,
 			userID,
 			"AAPL",
 			"buy",
 			"USD",
-			sqlmock.AnyArg(), // quantity (decimal)
-			sqlmock.AnyArg(), // price (decimal)
-			sqlmock.AnyArg(), // amount (decimal)
-			sqlmock.AnyArg(), // fees (decimal)
-			sqlmock.AnyArg(), // commission (decimal)
-			sqlmock.AnyArg(), // tax (decimal)
-			sqlmock.AnyArg(), // realized_pnl (nil)
-			"alpaca",
-			"ext-001",
-			"manual",
-			sqlmock.AnyArg(), // bot_id (empty)
-			"first buy",
+			sqlmock.AnyArg(), // quantity
+			sqlmock.AnyArg(), // price
+			sqlmock.AnyArg(), // amount
+			sqlmock.AnyArg(), // fees
+			sqlmock.AnyArg(), // commission
+			sqlmock.AnyArg(), // tax
+			sqlmock.AnyArg(), // realized_pnl
+			"ext-001",        // external_id
+			"manual",         // source
+			sqlmock.AnyArg(), // bot_id
+			"first buy",      // notes
 			ev.ID,
 			txDate,
 			sqlmock.AnyArg(), // created_at
@@ -79,7 +80,6 @@ func TestTransactionProjector_InsertBuyTransaction(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestTransactionProjector_InsertSellTransaction verifies a sell event inserts a row with txType="sell".
 func TestTransactionProjector_InsertSellTransaction(t *testing.T) {
 	db, mock := newMockDB(t)
 	proj := NewTransactionProjector(db)
@@ -104,21 +104,13 @@ func TestTransactionProjector_InsertSellTransaction(t *testing.T) {
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 2, payload)
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "portfolio_transactions"`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "trades"`)).
 		WithArgs(
-			accountID,
-			userID,
-			"MSFT",
-			"sell",
-			"USD",
-			sqlmock.AnyArg(), // quantity (decimal)
-			sqlmock.AnyArg(), // price (decimal)
-			sqlmock.AnyArg(), // amount (decimal)
-			sqlmock.AnyArg(), // fees (decimal)
-			sqlmock.AnyArg(), // commission (decimal)
-			sqlmock.AnyArg(), // tax (decimal)
+			accountID, userID,
+			"MSFT", "sell", "USD",
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), // qty, price, amount
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), // fees, commission, tax
 			sqlmock.AnyArg(), // realized_pnl
-			sqlmock.AnyArg(), // broker
 			sqlmock.AnyArg(), // external_id
 			sqlmock.AnyArg(), // source
 			sqlmock.AnyArg(), // bot_id
@@ -135,7 +127,6 @@ func TestTransactionProjector_InsertSellTransaction(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestTransactionProjector_InsertDividendTransaction verifies a dividend event inserts with txType="dividend".
 func TestTransactionProjector_InsertDividendTransaction(t *testing.T) {
 	db, mock := newMockDB(t)
 	proj := NewTransactionProjector(db)
@@ -156,14 +147,13 @@ func TestTransactionProjector_InsertDividendTransaction(t *testing.T) {
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 3, payload)
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "portfolio_transactions"`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "trades"`)).
 		WithArgs(
 			accountID, userID,
 			"AAPL", "dividend", "USD",
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), // qty, price, amount
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), // fees, commission, tax
 			sqlmock.AnyArg(), // realized_pnl
-			sqlmock.AnyArg(), // broker
 			sqlmock.AnyArg(), // external_id
 			sqlmock.AnyArg(), // source
 			sqlmock.AnyArg(), // bot_id
@@ -180,7 +170,6 @@ func TestTransactionProjector_InsertDividendTransaction(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestTransactionProjector_InsertDepositTransaction verifies a deposit event inserts with txType="deposit".
 func TestTransactionProjector_InsertDepositTransaction(t *testing.T) {
 	db, mock := newMockDB(t)
 	proj := NewTransactionProjector(db)
@@ -200,15 +189,15 @@ func TestTransactionProjector_InsertDepositTransaction(t *testing.T) {
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 4, payload)
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "portfolio_transactions"`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "trades"`)).
 		WithArgs(
 			accountID, userID,
-			sqlmock.AnyArg(), // symbol (empty string)
+			sqlmock.AnyArg(), // symbol (empty)
 			"deposit", "USD",
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), // qty, price, amount
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), // fees, commission, tax
-			sqlmock.AnyArg(), // realized_pnl
-			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(),                                                       // realized_pnl
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), // ext_id, source, bot_id, notes
 			ev.ID,
 			txDate,
 			sqlmock.AnyArg(), // created_at
@@ -221,7 +210,6 @@ func TestTransactionProjector_InsertDepositTransaction(t *testing.T) {
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestTransactionProjector_AccountInitializedNoInsert verifies AccountInitialized is skipped.
 func TestTransactionProjector_AccountInitializedNoInsert(t *testing.T) {
 	db, mock := newMockDB(t)
 	proj := NewTransactionProjector(db)
@@ -235,13 +223,11 @@ func TestTransactionProjector_AccountInitializedNoInsert(t *testing.T) {
 	}
 	ev := makeEvent(t, event.EventTypeAccountInitialized, accountID, 1, payload)
 
-	// EventType is not TransactionRecorded — no DB call expected
 	err := proj.Project(context.Background(), ev)
 	require.NoError(t, err)
 	assert.NoError(t, mock.ExpectationsWereMet())
 }
 
-// TestTransactionProjector_IdempotentDuplicateSourceEventID verifies ON CONFLICT DO NOTHING returns no error.
 func TestTransactionProjector_IdempotentDuplicateSourceEventID(t *testing.T) {
 	db, mock := newMockDB(t)
 	proj := NewTransactionProjector(db)
@@ -262,20 +248,19 @@ func TestTransactionProjector_IdempotentDuplicateSourceEventID(t *testing.T) {
 	}
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 1, payload)
 
-	// ON CONFLICT DO NOTHING → empty RETURNING result, no error
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "portfolio_transactions"`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "trades"`)).
 		WithArgs(
 			accountID, userID,
 			"AAPL", "buy", "USD",
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), // qty, price, amount
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), // fees, commission, tax
-			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
+			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), // realized_pnl, ext_id, source, bot_id, notes
 			ev.ID,
 			txDate,
 			sqlmock.AnyArg(),
 		).
-		WillReturnRows(sqlmock.NewRows([]string{"id"})) // no rows returned on conflict
+		WillReturnRows(sqlmock.NewRows([]string{"id"})) // no rows on conflict
 	mock.ExpectCommit()
 
 	err := proj.Project(context.Background(), ev)

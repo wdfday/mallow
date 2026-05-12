@@ -2,34 +2,35 @@
 // Single source of truth for inter-service communication via NATS.
 //
 // NATS subjects:
-//   ticks.{symbol}      ← exchange WebSocket → helm (raw ticks)
 //   bars.{symbol}       ← herald → helm (aggregated OHLCV bars)
 //   signals             ← herald → helm (SignalResponse, hand_id+helm_id in payload)
-//   engine.configure    ← helm → herald (legacy global config)
 //   engine.reset        ← helm → herald
 //   engine.register     ← helm → herald (req/rep)
 //   engine.deregister   ← helm → herald (req/rep)
 //   engine.list         ← helm → herald (req/rep → HandListResponse)
+//   engine.ping         ← helm → herald (req/rep → PingResponse)
+//   engine.heartbeat    ← helm → herald (req/rep → HeartbeatResponse)
+//   engine.ready        ← herald → helm (JetStream publish on startup)
 
 syntax = "proto3";
 package market;
 
 option go_package = "mallow/proto/market";
 
-// ── Tick (raw trade event from exchange WebSocket) ──────────────────
+// ── Tick (raw trade event from exchange WebSocket) ───────────────────────────
 
 message TickMsg {
   int64  t     = 1;  // Unix milliseconds
   string s     = 2;  // symbol (normalized uppercase, e.g. "BTCUSDT")
   string class = 3;  // asset class: "crypto" | "stocks" | "forex"
-  string src   = 4;  // source: "binance" | "alpaca" | "twelvedata" | "okx"
+  string src   = 4;  // source: "binance" | "alpaca" | "okx"
   double p     = 5;  // last price
   double v     = 6;  // volume (trade qty)
   double bid   = 7;  // bid (forex only)
   double ask   = 8;  // ask (forex only)
 }
 
-// ── Bar (OHLCV candle, aggregated from ticks) ────────────────────────
+// ── Bar (OHLCV candle, aggregated from ticks) ────────────────────────────────
 
 message BarMsg {
   int64  t = 1;  // Unix milliseconds
@@ -41,71 +42,71 @@ message BarMsg {
   double v = 7;  // volume
 }
 
-// ── Signal (strategy output) ────────────────────────────────────────
+// ── Signal (strategy output) ─────────────────────────────────────────────────
+//
+// Strategy is stateless — it emits signals whenever market conditions are met,
+// without tracking position state. Helm decides whether to execute or ignore
+// each signal and logs the outcome with a reason.
 
 message SignalMsg {
   int64  t        = 1;  // Unix milliseconds
   string s        = 2;  // symbol
   string dir      = 3;  // "long" | "short" | "close"
-  double strength = 4;  // [0.0, 1.0]
+  double strength = 4;  // conviction [0.0, 1.0] — derived from indicator values
 
-  optional double price        = 9;  // bar.close at signal time (entry reference price)
+  // Entry reference price (bar.close at signal time).
+  // Helm uses this for informational purposes; actual fill is at next bar open.
+  optional double price        = 9;
 
-  // Optional pattern metadata (populated by pattern_breakout strategy)
-  optional double target_price = 5;  // projected price target (or offset from price if is_offset=true)
-  optional double stop_price   = 6;  // invalidation stop level (or offset from price if is_offset=true)
-  optional string pattern_kind = 7;  // e.g. "bull_flag", "ascending_triangle"
-  optional double confidence   = 8;  // pattern confidence [0.0, 1.0]
+  // Exit levels. Absolute price by default; deltas from fill_price if is_offset=true.
+  optional double target_price = 5;
+  optional double stop_price   = 6;
 
-  // If true, target_price and stop_price are deltas from the price field
-  // (e.g. target_price=+3.0, stop_price=-1.0).
-  // Helm computes actual levels as: fill_price + target_price / fill_price + stop_price.
-  // If false (default), target_price and stop_price are absolute price levels.
-  optional bool   is_offset    = 15;
+  // When true, target_price and stop_price are offsets from fill_price.
+  // Helm computes: actual_tp = fill_price + target_price
+  //                actual_sl = fill_price - stop_price
+  optional bool   is_offset    = 10;
+
+  // Human-readable reason for this signal — logged by helm for auditability.
+  // Not used for execution logic. E.g. "ema9 cross above H4 ema20, rsi < 60".
+  optional string reason       = 11;
+
+  // Pattern metadata (populated by pattern_breakout strategy only).
+  optional string pattern_kind = 7;
+  optional double confidence   = 8;
 }
 
+// One hand emits at most one signal per bar.
 message SignalResponse {
-  repeated SignalMsg signals = 1;
-  string helm_id = 2;  // owning helm — used for routing on the consumer side
-  string hand_id = 3;  // target hand
+  SignalMsg signal = 1;
+  string helm_id  = 2;  // owning helm — used for routing on the consumer side
+  string hand_id  = 3;  // target hand
 }
 
-// ── Engine Control ──────────────────────────────────────────────────
-
-message ConfigMsg {
-  string strategy            = 1;  // "ma_crossover" | "rsi_mean_rev" | ...
-  map<string, double> params = 2;  // strategy parameters
-}
+// ── Engine Control ───────────────────────────────────────────────────────────
 
 message ResetMsg {
   string symbol = 1;  // empty = reset all
 }
 
-// ── Hand Registry ────────────────────────────────────────────────────
-// NATS subjects (req/rep):
-//   engine.register    ← helm → herald
-//   engine.deregister  ← helm → herald
-//   engine.list        ← helm → herald → HandListResponse
+// ── Hand Registry ─────────────────────────────────────────────────────────────
+// Hands run Rhai scripts only. The script is the full source, not a named strategy key.
 
 message RegisterMsg {
-  string hand_id     = 1;  // unique hand identifier (e.g. "hand_ema_btc_001")
-  string symbol      = 2;  // e.g. "BTCUSDT"
-  string strategy    = 3;  // "ma_crossover" | "rsi_mean_rev" | ...
-  string params_json = 4;  // flat JSON params: {"fast": 20, "slow": 50}
-
-  // Temporary hand fields (optional — omit for permanent hands)
-  optional int64  expires_at_ms = 5;  // Unix ms TTL; auto-deregister after
-  optional double target_price  = 6;  // auto-close when price hits target
-  optional double stop_price    = 7;  // auto-close when price hits stop
-  optional int32  max_bars      = 8;  // auto-expire after N bars
-  optional string pattern_kind  = 9;  // originating pattern e.g. "bull_flag"
-
-  string helm_id = 10;  // owning helm — used for routing in SignalResponse
+  string hand_id   = 1;  // unique hand identifier (e.g. "hand_ema_btc_001")
+  string symbol    = 2;  // e.g. "BTCUSDT"
+  string script    = 3;  // full Rhai script source
 
   // Timeframe the hand operates at (e.g. "M1", "H1", "D1").
-  // Herald aggregates incoming M1 bars to this TF before running the strategy.
+  // Herald resamples incoming base-TF bars to this TF before running the script.
   // Empty = use herald's base TF (default M1).
-  optional string timeframe = 11;
+  optional string timeframe = 4;
+
+  string helm_id = 5;  // owning helm — used for routing in SignalResponse
+
+  // Auto-expiry rules (optional — omit for permanent hands).
+  optional int64  expires_at_ms = 6;  // Unix ms TTL; auto-deregister after
+  optional int32  max_bars      = 7;  // auto-expire after N bars
 }
 
 message DeregisterMsg {
@@ -113,12 +114,44 @@ message DeregisterMsg {
 }
 
 message HandInfo {
-  string hand_id     = 1;
-  string symbol      = 2;
-  string strategy    = 3;
-  string params_json = 4;
+  string hand_id   = 1;
+  string symbol    = 2;
+  string script    = 3;
+  string timeframe = 4;
+  string helm_id   = 5;
 }
 
 message HandListResponse {
   repeated HandInfo hands = 1;
+}
+
+// ── Handshake / Health ────────────────────────────────────────────────────────
+// See HANDSHAKE.md for protocol description and flow diagrams.
+
+// engine.ping — request: empty payload, response: PingResponse
+message PingResponse {
+  bool   ok        = 1;
+  int32  hands     = 2;  // total registered hands
+  int64  uptime_ms = 3;
+  string herald_id = 4;  // instance identifier — changes on restart
+}
+
+// engine.heartbeat — helm sends list of expected hand_ids, herald returns diff
+message HeartbeatRequest {
+  string          helm_id = 1;
+  repeated string hands   = 2;  // hand_ids expected to be registered
+}
+
+message HeartbeatResponse {
+  bool            ok         = 1;
+  repeated string missing    = 2;  // not in registry → helm must re-register
+  repeated string registered = 3;  // confirmed present
+}
+
+// engine.ready — JetStream publish on herald startup
+message ReadyEvent {
+  string          herald_id = 1;
+  int64           ts        = 2;
+  string          tf        = 3;  // base timeframe (e.g. "M1")
+  repeated string symbols   = 4;  // currently ingested symbols
 }

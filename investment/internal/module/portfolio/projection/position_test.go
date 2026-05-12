@@ -79,17 +79,16 @@ func TestPositionProjector_BuyNewPosition(t *testing.T) {
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 1, payload)
 
 	// SELECT returns not-found — new position path
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT * FROM "portfolio_positions" WHERE account_id = $1 AND symbol = $2 ORDER BY "portfolio_positions"."id" LIMIT $3`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT * FROM "positions" WHERE account_id = $1 AND symbol = $2 ORDER BY "positions"."id" LIMIT $3`)).
 		WithArgs(accountID, "AAPL", 1).
 		WillReturnError(gorm.ErrRecordNotFound)
 
 	// GORM Create with postgres RETURNING clause issues a Query, not an Exec
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "portfolio_positions"`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "positions"`)).
 		WithArgs(
 			accountID, userID,
 			"AAPL", "Apple Inc.", "stock",
-			sqlmock.AnyArg(), // asset_class (empty)
 			"NASDAQ", "USD",
 			sqlmock.AnyArg(), // quantity
 			sqlmock.AnyArg(), // avg_cost
@@ -139,32 +138,32 @@ func TestPositionProjector_BuyExistingPosition(t *testing.T) {
 
 	// SELECT: existing position with LastSeq=10
 	rows := sqlmock.NewRows([]string{
-		"id", "account_id", "user_id", "symbol", "name", "asset_type", "asset_class",
+		"id", "account_id", "user_id", "symbol", "name", "asset_type",
 		"exchange", "currency", "quantity", "avg_cost", "total_cost",
 		"current_price", "current_value", "unrealized_pnl", "unrealized_pct",
 		"realized_pnl", "total_dividends", "portfolio_weight", "status",
 		"last_seq", "opened_at", "closed_at", "updated_at",
 	}).AddRow(
-		posID, accountID, userID, "AAPL", "Apple Inc.", "stock", "",
+		posID, accountID, userID, "AAPL", "Apple Inc.", "stock",
 		"NASDAQ", "USD", 10.0, 150.0, 1500.0,
 		0.0, 0.0, 0.0, 0.0,
 		0.0, 0.0, 0.0, "active",
 		int64(10), txDate, nil, txDate,
 	)
 
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT * FROM "portfolio_positions" WHERE account_id = $1 AND symbol = $2 ORDER BY "portfolio_positions"."id" LIMIT $3`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT * FROM "positions" WHERE account_id = $1 AND symbol = $2 ORDER BY "positions"."id" LIMIT $3`)).
 		WithArgs(accountID, "AAPL", 1).
 		WillReturnRows(rows)
 
 	// GORM Save on existing record issues UPDATE (Exec, not Query — no RETURNING needed)
 	mock.ExpectBegin()
-	mock.ExpectExec(regexp.QuoteMeta(`UPDATE "portfolio_positions" SET`)).
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE "positions" SET`)).
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), posID,
+			sqlmock.AnyArg(), sqlmock.AnyArg(), posID,
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
@@ -198,20 +197,20 @@ func TestPositionProjector_BuyIdempotent(t *testing.T) {
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 5, payload)
 
 	rows := sqlmock.NewRows([]string{
-		"id", "account_id", "user_id", "symbol", "name", "asset_type", "asset_class",
+		"id", "account_id", "user_id", "symbol", "name", "asset_type",
 		"exchange", "currency", "quantity", "avg_cost", "total_cost",
 		"current_price", "current_value", "unrealized_pnl", "unrealized_pct",
 		"realized_pnl", "total_dividends", "portfolio_weight", "status",
 		"last_seq", "opened_at", "closed_at", "updated_at",
 	}).AddRow(
-		posID, accountID, userID, "AAPL", "", "", "",
+		posID, accountID, userID, "AAPL", "", "",
 		"", "USD", 10.0, 150.0, 1500.0,
 		0.0, 0.0, 0.0, 0.0,
 		0.0, 0.0, 0.0, "active",
 		int64(10), txDate, nil, txDate,
 	)
 
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT * FROM "portfolio_positions" WHERE account_id = $1 AND symbol = $2 ORDER BY "portfolio_positions"."id" LIMIT $3`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT * FROM "positions" WHERE account_id = $1 AND symbol = $2 ORDER BY "positions"."id" LIMIT $3`)).
 		WithArgs(accountID, "AAPL", 1).
 		WillReturnRows(rows)
 
@@ -244,31 +243,31 @@ func TestPositionProjector_SellReducesQuantity(t *testing.T) {
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 30, payload)
 
 	rows := sqlmock.NewRows([]string{
-		"id", "account_id", "user_id", "symbol", "name", "asset_type", "asset_class",
+		"id", "account_id", "user_id", "symbol", "name", "asset_type",
 		"exchange", "currency", "quantity", "avg_cost", "total_cost",
 		"current_price", "current_value", "unrealized_pnl", "unrealized_pct",
 		"realized_pnl", "total_dividends", "portfolio_weight", "status",
 		"last_seq", "opened_at", "closed_at", "updated_at",
 	}).AddRow(
-		posID, accountID, userID, "AAPL", "Apple Inc.", "stock", "",
+		posID, accountID, userID, "AAPL", "Apple Inc.", "stock",
 		"NASDAQ", "USD", 10.0, 150.0, 1500.0,
 		0.0, 0.0, 0.0, 0.0,
 		0.0, 0.0, 0.0, "active",
 		int64(20), txDate, nil, txDate,
 	)
 
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT * FROM "portfolio_positions" WHERE account_id = $1 AND symbol = $2 ORDER BY "portfolio_positions"."id" LIMIT $3`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT * FROM "positions" WHERE account_id = $1 AND symbol = $2 ORDER BY "positions"."id" LIMIT $3`)).
 		WithArgs(accountID, "AAPL", 1).
 		WillReturnRows(rows)
 
 	mock.ExpectBegin()
-	mock.ExpectExec(regexp.QuoteMeta(`UPDATE "portfolio_positions" SET`)).
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE "positions" SET`)).
 		WithArgs(
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
 			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(),
-			sqlmock.AnyArg(), sqlmock.AnyArg(), sqlmock.AnyArg(), posID,
+			sqlmock.AnyArg(), sqlmock.AnyArg(), posID,
 		).
 		WillReturnResult(sqlmock.NewResult(1, 1))
 	mock.ExpectCommit()
@@ -299,7 +298,7 @@ func TestPositionProjector_SellSymbolNotFound(t *testing.T) {
 	}
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 5, payload)
 
-	mock.ExpectQuery(regexp.QuoteMeta(`SELECT * FROM "portfolio_positions" WHERE account_id = $1 AND symbol = $2 ORDER BY "portfolio_positions"."id" LIMIT $3`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`SELECT * FROM "positions" WHERE account_id = $1 AND symbol = $2 ORDER BY "positions"."id" LIMIT $3`)).
 		WithArgs(accountID, "TSLA", 1).
 		WillReturnError(gorm.ErrRecordNotFound)
 
@@ -329,7 +328,7 @@ func TestPositionProjector_DividendUpdatesTotalDividends(t *testing.T) {
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 40, payload)
 
 	mock.ExpectBegin()
-	mock.ExpectExec(regexp.QuoteMeta(`UPDATE "portfolio_positions" SET "total_dividends"=total_dividends + $1 WHERE account_id = $2 AND symbol = $3`)).
+	mock.ExpectExec(regexp.QuoteMeta(`UPDATE "positions" SET "total_dividends"=total_dividends + $1 WHERE account_id = $2 AND symbol = $3`)).
 		WithArgs(sqlmock.AnyArg(), accountID, "AAPL").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectCommit()

@@ -18,11 +18,11 @@ func NewPgx(pool *pgxpool.Pool) Repository {
 }
 
 func (r *pgxRepo) ListByUserID(ctx context.Context, userID uuid.UUID, filter ListFilter) ([]domain.PortfolioTransaction, error) {
-	q := `SELECT id, user_id, symbol, tx_type, currency,
+	q := `SELECT id, account_id, user_id, symbol, tx_type, currency,
 		quantity::float8, price::float8, amount::float8, fees::float8,
-		commission::float8, tax::float8, realized_pnl::float8,
-		broker, external_id, source, notes, source_event_id, tx_date, created_at
-	FROM portfolio_transactions WHERE user_id = $1`
+		commission::float8, tax::float8, realized_pnl,
+		external_id, source, bot_id, notes, source_event_id, tx_date, created_at
+	FROM trades WHERE user_id = $1`
 
 	args := []any{userID}
 	idx := 2
@@ -53,10 +53,10 @@ func (r *pgxRepo) ListByUserID(ctx context.Context, userID uuid.UUID, filter Lis
 	for rows.Next() {
 		var t domain.PortfolioTransaction
 		err := rows.Scan(
-			&t.ID, &t.UserID, &t.Symbol, &t.TxType, &t.Currency,
+			&t.ID, &t.AccountID, &t.UserID, &t.Symbol, &t.TxType, &t.Currency,
 			&t.Quantity, &t.Price, &t.Amount, &t.Fees,
 			&t.Commission, &t.Tax, &t.RealizedPnL,
-			&t.Broker, &t.ExternalID, &t.Source, &t.Notes, &t.SourceEventID, &t.TxDate, &t.CreatedAt,
+			&t.ExternalID, &t.Source, &t.BotID, &t.Notes, &t.SourceEventID, &t.TxDate, &t.CreatedAt,
 		)
 		if err != nil {
 			return nil, err

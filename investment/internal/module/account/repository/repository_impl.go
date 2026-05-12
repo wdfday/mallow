@@ -81,9 +81,6 @@ func (r *gormRepository) applyFilters(db *gorm.DB, filters domain.ListAccountsFi
 	if filters.IsActive != nil {
 		q = q.Where("is_active = ?", *filters.IsActive)
 	}
-	if filters.IsPrimary != nil {
-		q = q.Where("is_primary = ?", *filters.IsPrimary)
-	}
 	if filters.IncludeDeleted {
 		q = q.Session(&gorm.Session{}).Unscoped()
 	}
@@ -151,15 +148,13 @@ func (r *gormRepository) GetAccountsNeedingSync(ctx context.Context) ([]*domain.
 	var accounts []*domain.Account
 
 	// Query accounts that:
-	// 1. Have broker_integration configured (JSONB field is not null)
-	// 2. Are active
-	// 3. Have investment or crypto_wallet type
-	// 4. Need syncing based on frequency
+	// 1. Have a broker connection linked
+	// 2. Are active and auto-sync enabled
 	err := r.db.WithContext(ctx).
-		Where("broker_integration IS NOT NULL").
+		Where("broker_connection_id IS NOT NULL").
 		Where("is_active = ?", true).
 		Where("deleted_at IS NULL").
-		Where("account_type IN (?)", []string{"investment", "crypto_wallet"}).
+		Where("is_auto_sync = ?", true).
 		Find(&accounts).Error
 
 	if err != nil {

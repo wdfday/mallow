@@ -42,6 +42,11 @@ var Module = fx.Module("broker",
 		// Handler
 		provideBrokerConnectionHandler,
 	),
+
+	// Wire NATS credential fetch handler so helm can request decrypted credentials at runtime.
+	fx.Invoke(func(svc service2.BrokerConnectionService, nc *nats.Conn) error {
+		return svc.SubscribeCredentials(nc)
+	}),
 )
 
 func provideBrokerRegistry(

@@ -11,14 +11,10 @@ import (
 type BrokerConnectionResponse struct {
 	ID         uuid.UUID `json:"id" example:"550e8400-e29b-41d4-a716-446655440000"`
 	UserID     uuid.UUID `json:"user_id" example:"550e8400-e29b-41d4-a716-446655440001"`
-	BrokerType string    `json:"broker_type" example:"ssi"` // ssi, okx, sepay
-	BrokerName string    `json:"broker_name" example:"SSI Securities"`
+	BrokerType string    `json:"broker_type" example:"okx"`
+	BrokerName string    `json:"broker_name" example:"OKX Main"`
 	Status     string    `json:"status" example:"active"` // active, disconnected, error, pending
-
-	// Token info (NOT sensitive values, just metadata)
-	TokenExpiresAt  *time.Time `json:"token_expires_at,omitempty"`
-	LastRefreshedAt *time.Time `json:"last_refreshed_at,omitempty"`
-	IsTokenValid    bool       `json:"is_token_valid"`
+	IsPaper    bool      `json:"is_paper" example:"false"`
 
 	// Sync settings
 	AutoSync         bool `json:"auto_sync" example:"true"`
@@ -94,9 +90,7 @@ func ToBrokerConnectionResponse(conn *domain.BrokerConnection) *BrokerConnection
 		BrokerType:            string(conn.BrokerType),
 		BrokerName:            conn.BrokerName,
 		Status:                string(conn.Status),
-		TokenExpiresAt:        conn.TokenExpiresAt,
-		LastRefreshedAt:       conn.LastRefreshedAt,
-		IsTokenValid:          conn.IsTokenValid(),
+		IsPaper:               conn.IsPaper,
 		AutoSync:              conn.AutoSync,
 		SyncFrequency:         conn.SyncFrequency,
 		SyncAssets:            conn.SyncAssets,

@@ -3,7 +3,6 @@ package alpaca
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -23,17 +22,9 @@ const (
 	paperBaseURL = "https://paper-api.alpaca.markets"
 )
 
-func newSDK(token string) (*alpacasdk.Client, error) {
-	apiKey, apiSecret, isPaper, err := splitToken(token)
-	if err != nil {
-		return nil, err
-	}
-	return newSDKWithMode(apiKey, apiSecret, isPaper), nil
-}
-
-func newSDKWithMode(apiKey, apiSecret string, isPaper bool) *alpacasdk.Client {
-	opts := alpacasdk.ClientOpts{APIKey: apiKey, APISecret: apiSecret}
-	if isPaper {
+func newSDK(creds client.Credentials) *alpacasdk.Client {
+	opts := alpacasdk.ClientOpts{APIKey: creds.APIKey, APISecret: creds.APISecret}
+	if creds.IsPaper {
 		opts.BaseURL = paperBaseURL
 	} else {
 		opts.BaseURL = liveBaseURL
@@ -41,43 +32,27 @@ func newSDKWithMode(apiKey, apiSecret string, isPaper bool) *alpacasdk.Client {
 	return alpacasdk.NewClient(opts)
 }
 
-func (c *Client) Authenticate(_ context.Context, creds client.Credentials) (*client.AuthResponse, error) {
-	ac := newSDKWithMode(creds.APIKey, creds.APISecret, creds.IsPaper)
-	if _, err := ac.GetAccount(); err != nil {
-		return nil, fmt.Errorf("alpaca authentication failed: %w", err)
+func (c *Client) Validate(_ context.Context, creds client.Credentials) error {
+	if _, err := newSDK(creds).GetAccount(); err != nil {
+		return fmt.Errorf("alpaca authentication failed: %w", err)
 	}
-	return &client.AuthResponse{
-		AccessToken: encodeToken(creds.APIKey, creds.APISecret, creds.IsPaper),
-		ExpiresAt:   time.Now().Add(100 * 365 * 24 * time.Hour),
-	}, nil
+	return nil
 }
 
-func (c *Client) RefreshToken(_ context.Context, _ string) (*client.AuthResponse, error) {
-	return &client.AuthResponse{ExpiresAt: time.Now().Add(100 * 365 * 24 * time.Hour)}, nil
-}
-
-func (c *Client) GetPortfolio(_ context.Context, accessToken string) (*client.Portfolio, error) {
-	ac, err := newSDK(accessToken)
-	if err != nil {
-		return nil, err
-	}
-	account, err := ac.GetAccount()
+func (c *Client) GetPortfolio(_ context.Context, creds client.Credentials) (*client.Portfolio, error) {
+	account, err := newSDK(creds).GetAccount()
 	if err != nil {
 		return nil, fmt.Errorf("alpaca get account failed: %w", err)
 	}
 	return &client.Portfolio{TotalValue: account.Equity, Currency: "USD", CashBalance: account.Cash}, nil
 }
 
-func (c *Client) GetPositions(_ context.Context, accessToken string) ([]client.Position, error) {
-	ac, err := newSDK(accessToken)
-	if err != nil {
-		return nil, err
-	}
-	positions, err := ac.GetPositions()
+func (c *Client) GetPositions(_ context.Context, creds client.Credentials) ([]client.Position, error) {
+	positions, err := newSDK(creds).GetPositions()
 	if err != nil {
 		return nil, fmt.Errorf("alpaca get positions failed: %w", err)
 	}
-	var result []client.Position
+	result := make([]client.Position, 0, len(positions))
 	for _, p := range positions {
 		curPrice := decimal.Zero
 		if p.CurrentPrice != nil {
@@ -93,12 +68,8 @@ func (c *Client) GetPositions(_ context.Context, accessToken string) ([]client.P
 	return result, nil
 }
 
-func (c *Client) GetTransactions(_ context.Context, accessToken string, from, to time.Time) ([]client.Transaction, error) {
-	ac, err := newSDK(accessToken)
-	if err != nil {
-		return nil, err
-	}
-	activities, err := ac.GetAccountActivities(alpacasdk.GetAccountActivitiesRequest{
+func (c *Client) GetTransactions(_ context.Context, creds client.Credentials, from, to time.Time) ([]client.Transaction, error) {
+	activities, err := newSDK(creds).GetAccountActivities(alpacasdk.GetAccountActivitiesRequest{
 		ActivityTypes: []string{"FILL"},
 		After:         from,
 		Until:         to,
@@ -106,7 +77,7 @@ func (c *Client) GetTransactions(_ context.Context, accessToken string, from, to
 	if err != nil {
 		return nil, fmt.Errorf("alpaca get activities failed: %w", err)
 	}
-	var txns []client.Transaction
+	txns := make([]client.Transaction, 0, len(activities))
 	for _, a := range activities {
 		txns = append(txns, client.Transaction{
 			ExternalID:      a.ID,
@@ -142,33 +113,4 @@ func (c *Client) GetBatchMarketPrices(_ context.Context, symbols []string) (map[
 		result[sym] = &client.MarketPrice{Symbol: sym, Price: decimal.NewFromFloat(snap.LatestTrade.Price)}
 	}
 	return result, nil
-}
-
-func encodeToken(apiKey, apiSecret string, isPaper bool) string {
-	mode := "live"
-	if isPaper {
-		mode = "paper"
-	}
-	return mode + "|" + apiKey + ":" + apiSecret
-}
-
-func splitToken(token string) (string, string, bool, error) {
-	isPaper := false
-	if head, tail, ok := strings.Cut(token, "|"); ok {
-		switch head {
-		case "paper":
-			isPaper = true
-		case "live":
-			isPaper = false
-		default:
-			return "", "", false, fmt.Errorf("invalid alpaca token mode")
-		}
-		token = tail
-	}
-	for i, r := range token {
-		if r == ':' {
-			return token[:i], token[i+1:], isPaper, nil
-		}
-	}
-	return "", "", false, fmt.Errorf("invalid alpaca token format")
 }

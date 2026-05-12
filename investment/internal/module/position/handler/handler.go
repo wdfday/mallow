@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 
 	"mallow/investment/internal/middleware"
 	positiondomain "mallow/investment/internal/module/position/domain"
@@ -21,13 +22,15 @@ func New(svc service.Service) *Handler {
 
 // List godoc
 // @Summary List portfolio positions
-// @Description Get the authenticated user's portfolio positions
+// @Description Get the authenticated user's portfolio positions; filter by account_id to scope to a single account
 // @Tags portfolio
 // @Accept json
 // @Produce json
 // @Security BearerAuth
 // @Param status query string false "Position status" Enums(active, closed)
+// @Param account_id query string false "Filter by account UUID"
 // @Success 200 {object} shared.SuccessResponse[[]positiondomain.PortfolioPosition]
+// @Failure 400 {object} shared.ErrorResponse
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 500 {object} shared.ErrorResponse
 // @Router /api/v1/investment/positions [get]
@@ -37,8 +40,24 @@ func (h *Handler) List(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusUnauthorized, "unauthorized")
 		return
 	}
-	status := c.DefaultQuery("status", "active")
 
+	// If account_id is provided, scope the query to that account only.
+	if rawID := c.Query("account_id"); rawID != "" {
+		accountID, err := uuid.Parse(rawID)
+		if err != nil {
+			shared.RespondWithError(c, http.StatusBadRequest, "invalid account_id")
+			return
+		}
+		positions, err := h.svc.ListActiveByAccount(c.Request.Context(), accountID)
+		if err != nil {
+			shared.HandleError(c, err)
+			return
+		}
+		shared.RespondWithSuccess(c, http.StatusOK, "Positions retrieved successfully", positions)
+		return
+	}
+
+	status := c.DefaultQuery("status", "active")
 	var positions []positiondomain.PortfolioPosition
 	positions, err := h.svc.List(c.Request.Context(), user.ID, status)
 	if err != nil {

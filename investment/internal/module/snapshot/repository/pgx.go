@@ -30,7 +30,7 @@ func (r *pgxRepo) ListByUserID(ctx context.Context, userID uuid.UUID, filter Lis
 		spot_allocation::text, derivative_allocation::text,
 		sector_allocation::text, metrics::text,
 		source_event_id, created_at, updated_at
-	FROM portfolio_snapshots WHERE user_id = $1`
+	FROM account_snapshots WHERE user_id = $1`
 
 	args := []any{userID}
 	idx := 2

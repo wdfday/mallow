@@ -76,18 +76,8 @@ func (m *MockBrokerConnectionRepository) GetNeedingSync(ctx context.Context, lim
 	}
 	return args.Get(0).([]*domain.BrokerConnection), args.Error(1)
 }
-func (m *MockBrokerConnectionRepository) GetExpiredTokens(ctx context.Context, limit int) ([]*domain.BrokerConnection, error) {
-	args := m.Called(ctx, limit)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).([]*domain.BrokerConnection), args.Error(1)
-}
 func (m *MockBrokerConnectionRepository) UpdateSyncStatus(ctx context.Context, id uuid.UUID, lastSyncAt time.Time, syncStatus, syncError *string, stats map[string]int) error {
 	return m.Called(ctx, id, lastSyncAt, syncStatus, syncError, stats).Error(0)
-}
-func (m *MockBrokerConnectionRepository) UpdateTokens(ctx context.Context, id uuid.UUID, accessToken, refreshToken *string, expiresAt *time.Time) error {
-	return m.Called(ctx, id, accessToken, refreshToken, expiresAt).Error(0)
 }
 func (m *MockBrokerConnectionRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.BrokerConnectionStatus) error {
 	return m.Called(ctx, id, status).Error(0)
@@ -104,36 +94,25 @@ func (m *MockBrokerConnectionRepository) CountByType(ctx context.Context, userID
 // MockBrokerClient mocks client.BrokerClient.
 type MockBrokerClient struct{ mock.Mock }
 
-func (m *MockBrokerClient) Authenticate(ctx context.Context, creds client.Credentials) (*client.AuthResponse, error) {
+func (m *MockBrokerClient) Validate(ctx context.Context, creds client.Credentials) error {
+	return m.Called(ctx, creds).Error(0)
+}
+func (m *MockBrokerClient) GetPortfolio(ctx context.Context, creds client.Credentials) (*client.Portfolio, error) {
 	args := m.Called(ctx, creds)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(*client.AuthResponse), args.Error(1)
-}
-func (m *MockBrokerClient) RefreshToken(ctx context.Context, refreshToken string) (*client.AuthResponse, error) {
-	args := m.Called(ctx, refreshToken)
-	if args.Get(0) == nil {
-		return nil, args.Error(1)
-	}
-	return args.Get(0).(*client.AuthResponse), args.Error(1)
-}
-func (m *MockBrokerClient) GetPortfolio(ctx context.Context, accessToken string) (*client.Portfolio, error) {
-	args := m.Called(ctx, accessToken)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
 	return args.Get(0).(*client.Portfolio), args.Error(1)
 }
-func (m *MockBrokerClient) GetPositions(ctx context.Context, accessToken string) ([]client.Position, error) {
-	args := m.Called(ctx, accessToken)
+func (m *MockBrokerClient) GetPositions(ctx context.Context, creds client.Credentials) ([]client.Position, error) {
+	args := m.Called(ctx, creds)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
 	return args.Get(0).([]client.Position), args.Error(1)
 }
-func (m *MockBrokerClient) GetTransactions(ctx context.Context, accessToken string, start, end time.Time) ([]client.Transaction, error) {
-	args := m.Called(ctx, accessToken, start, end)
+func (m *MockBrokerClient) GetTransactions(ctx context.Context, creds client.Credentials, start, end time.Time) ([]client.Transaction, error) {
+	args := m.Called(ctx, creds, start, end)
 	if args.Get(0) == nil {
 		return nil, args.Error(1)
 	}
@@ -276,20 +255,14 @@ func makeConnRequest(userID uuid.UUID) *dto.CreateBrokerConnectionServiceRequest
 }
 
 func sampleConn(userID uuid.UUID) *domain.BrokerConnection {
-	at := "encrypted-access"
-	rt := "encrypted-refresh"
-	exp := time.Now().Add(time.Hour)
 	return &domain.BrokerConnection{
-		ID:             uuid.New(),
-		UserID:         userID,
-		BrokerType:     domain.BrokerTypeBinance,
-		BrokerName:     "My Binance",
-		Status:         domain.BrokerConnectionStatusActive,
-		APIKey:         "enc-key",
-		APISecret:      "enc-secret",
-		AccessToken:    &at,
-		RefreshToken:   &rt,
-		TokenExpiresAt: &exp,
+		ID:         uuid.New(),
+		UserID:     userID,
+		BrokerType: domain.BrokerTypeBinance,
+		BrokerName: "My Binance",
+		Status:     domain.BrokerConnectionStatusActive,
+		APIKey:     "enc-key",
+		APISecret:  "enc-secret",
 	}
 }
 
@@ -302,7 +275,7 @@ func TestCreate_AuthError(t *testing.T) {
 	ctx := context.Background()
 	userID := uuid.New()
 
-	mockClient.On("Authenticate", ctx, mock.Anything).Return(nil, errors.New("invalid credentials"))
+	mockClient.On("Validate", ctx, mock.Anything).Return(errors.New("invalid credentials"))
 
 	result, err := svc.Create(ctx, makeConnRequest(userID))
 	require.Error(t, err)
@@ -316,13 +289,8 @@ func TestCreate_RepoSaveError(t *testing.T) {
 	ctx := context.Background()
 	userID := uuid.New()
 
-	authResp := &client.AuthResponse{
-		AccessToken:  "access-token",
-		RefreshToken: "refresh-token",
-		ExpiresAt:    time.Now().Add(time.Hour),
-	}
-	mockClient.On("Authenticate", ctx, mock.Anything).Return(authResp, nil)
-	mockClient.On("GetPortfolio", ctx, "access-token").Return(&client.Portfolio{TotalValue: decimal.NewFromInt(1000)}, nil)
+	mockClient.On("Validate", ctx, mock.Anything).Return(nil)
+	mockClient.On("GetPortfolio", ctx, mock.Anything).Return(&client.Portfolio{TotalValue: decimal.NewFromInt(1000)}, nil)
 	mockRepo.On("Create", ctx, mock.AnythingOfType("*domain.BrokerConnection")).Return(errors.New("db error"))
 
 	result, err := svc.Create(ctx, makeConnRequest(userID))
@@ -337,15 +305,10 @@ func TestCreate_Success(t *testing.T) {
 	ctx := context.Background()
 	userID := uuid.New()
 
-	authResp := &client.AuthResponse{
-		AccessToken:  "access-token",
-		RefreshToken: "refresh-token",
-		ExpiresAt:    time.Now().Add(time.Hour),
-	}
 	portfolio := &client.Portfolio{TotalValue: decimal.NewFromInt(5000), CashBalance: decimal.NewFromInt(1000)}
 
-	mockClient.On("Authenticate", ctx, mock.Anything).Return(authResp, nil)
-	mockClient.On("GetPortfolio", ctx, "access-token").Return(portfolio, nil)
+	mockClient.On("Validate", ctx, mock.Anything).Return(nil)
+	mockClient.On("GetPortfolio", ctx, mock.Anything).Return(portfolio, nil)
 	mockRepo.On("Create", ctx, mock.AnythingOfType("*domain.BrokerConnection")).Return(nil)
 
 	// ensureLinkedAccount: no existing accounts → create new one.
@@ -635,65 +598,6 @@ func TestDeactivate_Success(t *testing.T) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// Tests: RefreshToken
-// ────────────────────────────────────────────────────────────────────────────
-
-func TestRefreshToken_Success(t *testing.T) {
-	svc, mockRepo, mockClient := setupService(t)
-	ctx := context.Background()
-	userID := uuid.New()
-
-	// Store a real encrypted refresh token.
-	encSvc := newTestEncryptionService(t)
-	encRefresh, _ := encSvc.Encrypt("original-refresh-token")
-	conn := sampleConn(userID)
-	conn.RefreshToken = &encRefresh
-
-	newAuthResp := &client.AuthResponse{
-		AccessToken:  "new-access",
-		RefreshToken: "new-refresh",
-		ExpiresIn:    3600,
-		ExpiresAt:    time.Now().Add(time.Hour),
-	}
-
-	mockRepo.On("GetByID", ctx, conn.ID).Return(conn, nil)
-	mockClient.On("RefreshToken", ctx, "original-refresh-token").Return(newAuthResp, nil)
-	mockRepo.On("Update", ctx, mock.AnythingOfType("*domain.BrokerConnection")).Return(nil)
-
-	result, err := svc.RefreshToken(ctx, conn.ID, userID)
-	require.NoError(t, err)
-	assert.NotNil(t, result)
-}
-
-func TestRefreshToken_NoRefreshToken(t *testing.T) {
-	svc, mockRepo, _ := setupService(t)
-	ctx := context.Background()
-	userID := uuid.New()
-	conn := sampleConn(userID)
-	conn.RefreshToken = nil
-
-	mockRepo.On("GetByID", ctx, conn.ID).Return(conn, nil)
-
-	result, err := svc.RefreshToken(ctx, conn.ID, userID)
-	require.Error(t, err)
-	assert.Nil(t, result)
-	assert.Contains(t, err.Error(), "no refresh token")
-}
-
-func TestRefreshToken_NotFound(t *testing.T) {
-	svc, mockRepo, _ := setupService(t)
-	ctx := context.Background()
-	connID := uuid.New()
-	userID := uuid.New()
-
-	mockRepo.On("GetByID", ctx, connID).Return(nil, gorm.ErrRecordNotFound)
-
-	result, err := svc.RefreshToken(ctx, connID, userID)
-	require.Error(t, err)
-	assert.Nil(t, result)
-}
-
-// ────────────────────────────────────────────────────────────────────────────
 // Tests: TestConnection
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -703,29 +607,17 @@ func TestTestConnection_Success(t *testing.T) {
 	userID := uuid.New()
 
 	encSvc := newTestEncryptionService(t)
-	encAccess, _ := encSvc.Encrypt("valid-access-token")
+	encKey, _ := encSvc.Encrypt("api-key")
+	encSecret, _ := encSvc.Encrypt("api-secret")
 	conn := sampleConn(userID)
-	conn.AccessToken = &encAccess
+	conn.APIKey = encKey
+	conn.APISecret = encSecret
 
 	mockRepo.On("GetByID", ctx, conn.ID).Return(conn, nil)
-	mockClient.On("GetPortfolio", ctx, "valid-access-token").Return(&client.Portfolio{TotalValue: decimal.NewFromInt(100)}, nil)
+	mockClient.On("Validate", ctx, mock.Anything).Return(nil)
 
 	err := svc.TestConnection(ctx, conn.ID, userID)
 	require.NoError(t, err)
-}
-
-func TestTestConnection_NoAccessToken(t *testing.T) {
-	svc, mockRepo, _ := setupService(t)
-	ctx := context.Background()
-	userID := uuid.New()
-	conn := sampleConn(userID)
-	conn.AccessToken = nil
-
-	mockRepo.On("GetByID", ctx, conn.ID).Return(conn, nil)
-
-	err := svc.TestConnection(ctx, conn.ID, userID)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "no access token")
 }
 
 func TestTestConnection_BrokerFailed(t *testing.T) {
@@ -734,12 +626,14 @@ func TestTestConnection_BrokerFailed(t *testing.T) {
 	userID := uuid.New()
 
 	encSvc := newTestEncryptionService(t)
-	encAccess, _ := encSvc.Encrypt("bad-token")
+	encKey, _ := encSvc.Encrypt("bad-key")
+	encSecret, _ := encSvc.Encrypt("bad-secret")
 	conn := sampleConn(userID)
-	conn.AccessToken = &encAccess
+	conn.APIKey = encKey
+	conn.APISecret = encSecret
 
 	mockRepo.On("GetByID", ctx, conn.ID).Return(conn, nil)
-	mockClient.On("GetPortfolio", ctx, "bad-token").Return(nil, errors.New("401 unauthorized"))
+	mockClient.On("Validate", ctx, mock.Anything).Return(errors.New("401 unauthorized"))
 
 	err := svc.TestConnection(ctx, conn.ID, userID)
 	require.Error(t, err)

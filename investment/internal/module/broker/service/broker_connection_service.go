@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
@@ -24,18 +23,33 @@ import (
 	pkgshared "mallow/pkg/shared"
 )
 
-// accountLinkedEvent mirrors natsapi.AccountLinkedEvent in the orchestrator.
-// Defined locally to avoid cross-service imports.
+// accountLinkedEvent mirrors natsapi.AccountLinkedEvent in helm.
+// Credentials are intentionally excluded — helm fetches them on demand via NATS.
 type accountLinkedEvent struct {
 	AccountID  string          `json:"account_id"`
 	UserID     string          `json:"user_id"`
 	Name       string          `json:"name"`
 	Capital    decimal.Decimal `json:"capital"`
 	BrokerType string          `json:"broker_type"`
-	APIKey     string          `json:"api_key,omitempty"`
-	APISecret  string          `json:"api_secret,omitempty"`
-	Passphrase string          `json:"passphrase,omitempty"`
 	Demo       bool            `json:"demo,omitempty"`
+}
+
+// credentialsFetchReq is the request payload for investment.accounts.credentials.
+type credentialsFetchReq struct {
+	AccountID string `json:"account_id"`
+}
+
+// credentialsFetchResp is the NATS reply payload for credential fetch requests.
+type credentialsFetchResp struct {
+	OK    bool            `json:"ok"`
+	Data  *credentialData `json:"data,omitempty"`
+	Error string          `json:"error,omitempty"`
+}
+
+type credentialData struct {
+	APIKey     string `json:"api_key"`
+	APISecret  string `json:"api_secret"`
+	Passphrase string `json:"passphrase,omitempty"`
 }
 
 // accountUnlinkedEvent mirrors natsapi.AccountUnlinkedEvent.
@@ -93,15 +107,14 @@ func (s *brokerConnectionService) Create(ctx context.Context, req *dto.CreateBro
 		Passphrase: req.Passphrase,
 	}
 
-	// Validate credentials + fetch initial account info.
-	authResp, err := bc.Authenticate(ctx, creds)
-	if err != nil {
+	// Validate credentials then fetch initial portfolio balance.
+	if err := bc.Validate(ctx, creds); err != nil {
 		return nil, mapBrokerError("failed to authenticate with broker", err)
 	}
 
-	portfolio, err := bc.GetPortfolio(ctx, authResp.AccessToken)
+	portfolio, err := bc.GetPortfolio(ctx, creds)
 	if err != nil {
-		return nil, mapBrokerError("failed to validate broker connection", err)
+		return nil, mapBrokerError("failed to fetch initial portfolio", err)
 	}
 
 	encAPIKey, err := s.encrypt.Encrypt(req.APIKey)
@@ -112,29 +125,17 @@ func (s *brokerConnectionService) Create(ctx context.Context, req *dto.CreateBro
 	if err != nil {
 		return nil, fmt.Errorf("failed to encrypt API secret: %w", err)
 	}
-	encAccessToken, err := s.encrypt.Encrypt(authResp.AccessToken)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encrypt access token: %w", err)
-	}
-	encRefreshToken, err := s.encrypt.Encrypt(authResp.RefreshToken)
-	if err != nil {
-		return nil, fmt.Errorf("failed to encrypt refresh token: %w", err)
-	}
 
-	now := time.Now()
 	conn := &domain.BrokerConnection{
-		ID:              uuid.New(),
-		UserID:          req.UserID,
-		BrokerType:      req.BrokerType,
-		BrokerName:      req.BrokerName,
-		Status:          domain.BrokerConnectionStatusActive,
-		APIKey:          encAPIKey,
-		APISecret:       encAPISecret,
-		AccessToken:     &encAccessToken,
-		RefreshToken:    &encRefreshToken,
-		TokenExpiresAt:  &authResp.ExpiresAt,
-		LastRefreshedAt: &now,
-		Notes:           req.Notes,
+		ID:         uuid.New(),
+		UserID:     req.UserID,
+		BrokerType: req.BrokerType,
+		BrokerName: req.BrokerName,
+		Status:     domain.BrokerConnectionStatusActive,
+		IsPaper:    req.IsPaper,
+		APIKey:     encAPIKey,
+		APISecret:  encAPISecret,
+		Notes:      req.Notes,
 	}
 
 	if req.Passphrase != nil {
@@ -157,11 +158,7 @@ func (s *brokerConnectionService) Create(ctx context.Context, req *dto.CreateBro
 
 	// Notify orchestrator to spawn a runtime for this account.
 	if account != nil {
-		passphrase := ""
-		if req.Passphrase != nil {
-			passphrase = *req.Passphrase
-		}
-		s.publishLinked(account.ID.String(), conn.UserID.String(), conn.BrokerName, string(conn.BrokerType), req.APIKey, req.APISecret, passphrase, portfolio.CashBalance, req.IsPaper)
+		s.publishLinked(account.ID.String(), conn.UserID.String(), conn.BrokerName, string(conn.BrokerType), portfolio.CashBalance, req.IsPaper)
 	}
 
 	return conn, nil
@@ -204,7 +201,7 @@ func (s *brokerConnectionService) ensureLinkedAccount(ctx context.Context, conn 
 	return account, nil
 }
 
-func (s *brokerConnectionService) publishLinked(accountID, userID, name, brokerType, apiKey, apiSecret, passphrase string, capital decimal.Decimal, demo bool) {
+func (s *brokerConnectionService) publishLinked(accountID, userID, name, brokerType string, capital decimal.Decimal, demo bool) {
 	if s.nc == nil {
 		return
 	}
@@ -214,15 +211,67 @@ func (s *brokerConnectionService) publishLinked(accountID, userID, name, brokerT
 		Name:       name,
 		Capital:    capital,
 		BrokerType: brokerType,
-		APIKey:     apiKey,
-		APISecret:  apiSecret,
-		Passphrase: passphrase,
 		Demo:       demo,
 	}
 	data, _ := json.Marshal(ev)
-	if err := s.nc.Publish("orchestrator.accounts.linked", data); err != nil {
+	if err := s.nc.Publish("helm.accounts.linked", data); err != nil {
 		slog.Warn("broker: failed to publish account linked event", "account_id", accountID, "err", err)
 	}
+}
+
+// SubscribeCredentials subscribes to investment.accounts.credentials so helm can
+// fetch decrypted broker credentials on demand (at runtime spawn time).
+func (s *brokerConnectionService) SubscribeCredentials(nc *nats.Conn) error {
+	_, err := nc.Subscribe("investment.accounts.credentials", s.handleCredentialsFetch)
+	return err
+}
+
+func (s *brokerConnectionService) handleCredentialsFetch(msg *nats.Msg) {
+	var req credentialsFetchReq
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		s.replyCredsErr(msg, "invalid request")
+		return
+	}
+	accountID, err := uuid.Parse(req.AccountID)
+	if err != nil {
+		s.replyCredsErr(msg, "invalid account_id")
+		return
+	}
+	ctx := context.Background()
+	account, err := s.accountRepo.GetByID(ctx, accountID.String())
+	if err != nil {
+		s.replyCredsErr(msg, "account not found")
+		return
+	}
+	if account.BrokerConnectionID == nil {
+		s.replyCredsErr(msg, "account has no broker connection")
+		return
+	}
+	conn, err := s.repo.GetByID(ctx, *account.BrokerConnectionID)
+	if err != nil {
+		s.replyCredsErr(msg, "broker connection not found")
+		return
+	}
+	creds, err := s.buildCreds(conn)
+	if err != nil {
+		s.replyCredsErr(msg, "failed to decrypt credentials")
+		return
+	}
+	passphrase := ""
+	if creds.Passphrase != nil {
+		passphrase = *creds.Passphrase
+	}
+	resp, _ := json.Marshal(credentialsFetchResp{OK: true, Data: &credentialData{
+		APIKey:     creds.APIKey,
+		APISecret:  creds.APISecret,
+		Passphrase: passphrase,
+	}})
+	_ = msg.Respond(resp)
+}
+
+func (s *brokerConnectionService) replyCredsErr(msg *nats.Msg, errMsg string) {
+	resp, _ := json.Marshal(credentialsFetchResp{OK: false, Error: errMsg})
+	_ = msg.Respond(resp)
 }
 
 func (s *brokerConnectionService) publishUnlinked(accountID, userID string) {
@@ -231,19 +280,19 @@ func (s *brokerConnectionService) publishUnlinked(accountID, userID string) {
 	}
 	ev := accountUnlinkedEvent{AccountID: accountID, UserID: userID}
 	data, _ := json.Marshal(ev)
-	if err := s.nc.Publish("orchestrator.accounts.unlinked", data); err != nil {
+	if err := s.nc.Publish("helm.accounts.unlinked", data); err != nil {
 		slog.Warn("broker: failed to publish account unlinked event", "account_id", accountID, "err", err)
 	}
 }
 
 func accountTypeForBroker(bt domain.BrokerType) (accountDomain.AccountType, accountDomain.Currency) {
 	switch bt {
-	case domain.BrokerTypeAlpaca:
-		return accountDomain.AccountTypeInvestment, accountDomain.CurrencyUSD
-	case domain.BrokerTypeOKX, domain.BrokerTypeBinance, domain.BrokerTypeBybit:
-		return accountDomain.AccountTypeCryptoWallet, accountDomain.CurrencyUSD
+	case domain.BrokerTypeOKX, domain.BrokerTypeBybit:
+		// OKX UTA and Bybit UTA use a single unified margin pool
+		return accountDomain.AccountTypeUnified, accountDomain.CurrencyUSD
 	default:
-		return accountDomain.AccountTypeInvestment, accountDomain.CurrencyUSD
+		// Alpaca, Binance and others default to spot (segregated cash account)
+		return accountDomain.AccountTypeSpot, accountDomain.CurrencyUSD
 	}
 }
 
@@ -286,20 +335,6 @@ func (s *brokerConnectionService) Update(ctx context.Context, id, userID uuid.UU
 
 	credentialsChanged := req.APIKey != nil || req.APISecret != nil || req.Passphrase != nil
 
-	// Decrypt current credentials before overwriting — needed to rebuild the event.
-	var plainAPIKey, plainAPISecret, plainPassphrase string
-	if credentialsChanged {
-		if plainAPIKey, err = s.encrypt.Decrypt(conn.APIKey); err != nil {
-			return nil, fmt.Errorf("failed to decrypt current api key: %w", err)
-		}
-		if plainAPISecret, err = s.encrypt.Decrypt(conn.APISecret); err != nil {
-			return nil, fmt.Errorf("failed to decrypt current api secret: %w", err)
-		}
-		if conn.Passphrase != nil {
-			plainPassphrase, _ = s.encrypt.Decrypt(*conn.Passphrase)
-		}
-	}
-
 	if req.BrokerName != nil {
 		conn.BrokerName = *req.BrokerName
 	}
@@ -307,7 +342,6 @@ func (s *brokerConnectionService) Update(ctx context.Context, id, userID uuid.UU
 		conn.Notes = req.Notes
 	}
 	if req.APIKey != nil {
-		plainAPIKey = *req.APIKey
 		enc, err := s.encrypt.Encrypt(*req.APIKey)
 		if err != nil {
 			return nil, fmt.Errorf("failed to encrypt API key: %w", err)
@@ -315,7 +349,6 @@ func (s *brokerConnectionService) Update(ctx context.Context, id, userID uuid.UU
 		conn.APIKey = enc
 	}
 	if req.APISecret != nil {
-		plainAPISecret = *req.APISecret
 		enc, err := s.encrypt.Encrypt(*req.APISecret)
 		if err != nil {
 			return nil, fmt.Errorf("failed to encrypt API secret: %w", err)
@@ -323,7 +356,6 @@ func (s *brokerConnectionService) Update(ctx context.Context, id, userID uuid.UU
 		conn.APISecret = enc
 	}
 	if req.Passphrase != nil {
-		plainPassphrase = *req.Passphrase
 		enc, err := s.encrypt.Encrypt(*req.Passphrase)
 		if err != nil {
 			return nil, fmt.Errorf("failed to encrypt passphrase: %w", err)
@@ -335,7 +367,7 @@ func (s *brokerConnectionService) Update(ctx context.Context, id, userID uuid.UU
 		return nil, fmt.Errorf("failed to update broker connection: %w", err)
 	}
 
-	// Credentials changed → notify orchestrator to respawn with new credentials.
+	// Credentials changed → notify orchestrator to respawn (helm fetches new creds via NATS on next spawn).
 	if credentialsChanged {
 		accounts, _ := s.accountRepo.ListByUserID(ctx, userID.String(), accountDomain.ListAccountsFilter{})
 		for i := range accounts {
@@ -343,7 +375,7 @@ func (s *brokerConnectionService) Update(ctx context.Context, id, userID uuid.UU
 				accountID := accounts[i].ID.String()
 				s.publishUnlinked(accountID, userID.String())
 				s.publishLinked(accountID, userID.String(), conn.BrokerName, string(conn.BrokerType),
-					plainAPIKey, plainAPISecret, plainPassphrase, accounts[i].CurrentBalance, false)
+					accounts[i].CurrentBalance, conn.IsPaper)
 				break
 			}
 		}
@@ -375,29 +407,15 @@ func (s *brokerConnectionService) ReBroker(ctx context.Context, accountID, newBr
 		s.publishUnlinked(accountID.String(), userID.String())
 	}
 
-	// Decrypt new broker credentials.
-	plainAPIKey, err := s.encrypt.Decrypt(newBroker.APIKey)
-	if err != nil {
-		return fmt.Errorf("failed to decrypt api key: %w", err)
-	}
-	plainAPISecret, err := s.encrypt.Decrypt(newBroker.APISecret)
-	if err != nil {
-		return fmt.Errorf("failed to decrypt api secret: %w", err)
-	}
-	plainPassphrase := ""
-	if newBroker.Passphrase != nil {
-		plainPassphrase, _ = s.encrypt.Decrypt(*newBroker.Passphrase)
-	}
-
 	// Update the account's broker link.
 	account.BrokerConnectionID = &newBrokerID
 	if err := s.accountRepo.Update(ctx, account); err != nil {
 		return fmt.Errorf("failed to update account broker link: %w", err)
 	}
 
-	// Spawn new runtime.
+	// Spawn new runtime (helm fetches fresh credentials via NATS at spawn time).
 	s.publishLinked(accountID.String(), userID.String(), newBroker.BrokerName, string(newBroker.BrokerType),
-		plainAPIKey, plainAPISecret, plainPassphrase, account.CurrentBalance, false)
+		account.CurrentBalance, newBroker.IsPaper)
 
 	return nil
 }
@@ -452,37 +470,6 @@ func (s *brokerConnectionService) Deactivate(ctx context.Context, id, userID uui
 	return s.repo.Update(ctx, conn)
 }
 
-func (s *brokerConnectionService) RefreshToken(ctx context.Context, id, userID uuid.UUID) (*domain.BrokerConnection, error) {
-	conn, err := s.GetByID(ctx, id, userID)
-	if err != nil {
-		return nil, err
-	}
-	bc, err := s.getBrokerClient(conn.BrokerType)
-	if err != nil {
-		return nil, err
-	}
-	if conn.RefreshToken == nil {
-		return nil, fmt.Errorf("no refresh token available")
-	}
-	refreshToken, err := s.encrypt.Decrypt(*conn.RefreshToken)
-	if err != nil {
-		return nil, fmt.Errorf("failed to decrypt refresh token: %w", err)
-	}
-	authResp, err := bc.RefreshToken(ctx, refreshToken)
-	if err != nil {
-		return nil, mapBrokerError("failed to refresh broker token", err)
-	}
-	conn.RefreshAccessToken(authResp.AccessToken, authResp.ExpiresIn)
-	encAccess, _ := s.encrypt.Encrypt(authResp.AccessToken)
-	encRefresh, _ := s.encrypt.Encrypt(authResp.RefreshToken)
-	conn.AccessToken = &encAccess
-	conn.RefreshToken = &encRefresh
-	if err := s.repo.Update(ctx, conn); err != nil {
-		return nil, fmt.Errorf("failed to update tokens: %w", err)
-	}
-	return conn, nil
-}
-
 func (s *brokerConnectionService) TestConnection(ctx context.Context, id, userID uuid.UUID) error {
 	conn, err := s.GetByID(ctx, id, userID)
 	if err != nil {
@@ -492,17 +479,39 @@ func (s *brokerConnectionService) TestConnection(ctx context.Context, id, userID
 	if err != nil {
 		return err
 	}
-	if conn.AccessToken == nil {
-		return fmt.Errorf("no access token available")
-	}
-	accessToken, err := s.encrypt.Decrypt(*conn.AccessToken)
+	creds, err := s.buildCreds(conn)
 	if err != nil {
-		return fmt.Errorf("failed to decrypt access token: %w", err)
+		return err
 	}
-	if _, err := bc.GetPortfolio(ctx, accessToken); err != nil {
+	if err := bc.Validate(ctx, creds); err != nil {
 		return mapBrokerError("broker connection test failed", err)
 	}
 	return nil
+}
+
+// buildCreds decrypts the stored credentials for an existing connection.
+func (s *brokerConnectionService) buildCreds(conn *domain.BrokerConnection) (client.Credentials, error) {
+	apiKey, err := s.encrypt.Decrypt(conn.APIKey)
+	if err != nil {
+		return client.Credentials{}, fmt.Errorf("failed to decrypt API key: %w", err)
+	}
+	apiSecret, err := s.encrypt.Decrypt(conn.APISecret)
+	if err != nil {
+		return client.Credentials{}, fmt.Errorf("failed to decrypt API secret: %w", err)
+	}
+	creds := client.Credentials{
+		APIKey:    apiKey,
+		APISecret: apiSecret,
+		IsPaper:   conn.IsPaper,
+	}
+	if conn.Passphrase != nil {
+		pp, err := s.encrypt.Decrypt(*conn.Passphrase)
+		if err != nil {
+			return client.Credentials{}, fmt.Errorf("failed to decrypt passphrase: %w", err)
+		}
+		creds.Passphrase = &pp
+	}
+	return creds, nil
 }
 
 func (s *brokerConnectionService) matchesFilters(conn *domain.BrokerConnection, f *ListFilters) bool {

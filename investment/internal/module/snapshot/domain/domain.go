@@ -47,5 +47,5 @@ type PortfolioSnapshot struct {
 }
 
 func (PortfolioSnapshot) TableName() string {
-	return "portfolio_snapshots"
+	return "account_snapshots"
 }

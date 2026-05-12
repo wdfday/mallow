@@ -14,12 +14,11 @@ type PortfolioPosition struct {
 	UserID    uuid.UUID `gorm:"type:uuid;not null;index;column:user_id" json:"user_id"`
 
 	// Asset identification
-	Symbol     string `gorm:"type:varchar(20);not null;column:symbol" json:"symbol"`
-	Name       string `gorm:"type:varchar(255);column:name" json:"name"`
-	AssetType  string `gorm:"type:varchar(30);column:asset_type" json:"asset_type"`
-	AssetClass string `gorm:"type:varchar(50);column:asset_class" json:"asset_class,omitempty"`
-	Exchange   string `gorm:"type:varchar(50);column:exchange" json:"exchange,omitempty"`
-	Currency   string `gorm:"type:varchar(3);not null;default:'USD';column:currency" json:"currency"`
+	Symbol    string `gorm:"type:varchar(20);not null;column:symbol" json:"symbol"`
+	Name      string `gorm:"type:varchar(255);column:name" json:"name"`
+	AssetType string `gorm:"type:varchar(30);column:asset_type" json:"asset_type"` // stock | crypto | etf | forex | commodity
+	Exchange  string `gorm:"type:varchar(50);column:exchange" json:"exchange,omitempty"`
+	Currency  string `gorm:"type:varchar(3);not null;default:'USD';column:currency" json:"currency"`
 
 	// Holding
 	Quantity  decimal.Decimal `gorm:"type:decimal(20,8);not null;default:0;column:quantity" json:"quantity"`
@@ -47,7 +46,7 @@ type PortfolioPosition struct {
 }
 
 func (PortfolioPosition) TableName() string {
-	return "portfolio_positions"
+	return "positions"
 }
 
 // CalculateMetrics recomputes derived fields.

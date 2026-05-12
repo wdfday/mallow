@@ -41,14 +41,8 @@ type BrokerConnectionRepository interface {
 	// - LastSyncAt is nil OR (now - LastSyncAt) > SyncFrequency
 	GetNeedingSync(ctx context.Context, limit int) ([]*domain.BrokerConnection, error)
 
-	// GetExpiredTokens retrieves broker connections with expired tokens
-	GetExpiredTokens(ctx context.Context, limit int) ([]*domain.BrokerConnection, error)
-
 	// UpdateSyncStatus updates sync-related fields
 	UpdateSyncStatus(ctx context.Context, id uuid.UUID, lastSyncAt time.Time, syncStatus, syncError *string, stats map[string]int) error
-
-	// UpdateTokens updates access token and expiration
-	UpdateTokens(ctx context.Context, id uuid.UUID, accessToken *string, refreshToken *string, expiresAt *time.Time) error
 
 	// UpdateStatus updates the connection status
 	UpdateStatus(ctx context.Context, id uuid.UUID, status domain.BrokerConnectionStatus) error

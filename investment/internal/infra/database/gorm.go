@@ -18,7 +18,6 @@ import (
 	positionDomain "mallow/investment/internal/module/position/domain"
 	snapshotDomain "mallow/investment/internal/module/snapshot/domain"
 	txDomain "mallow/investment/internal/module/transaction/domain"
-	watchlistDomain "mallow/investment/internal/module/watchlist/domain"
 )
 
 var Module = fx.Module("database", fx.Provide(New))
@@ -38,6 +37,13 @@ func New(cfg *config.Config, logger *slog.Logger) (*gorm.DB, error) {
 
 	logger.Info("Connected to PostgreSQL (investment)")
 
+	// Rename legacy tables before AutoMigrate so existing data is preserved.
+	db.Exec(`ALTER TABLE IF EXISTS portfolio_positions    RENAME TO positions`)
+	db.Exec(`ALTER TABLE IF EXISTS derivative_positions   RENAME TO contract_positions`)
+	db.Exec(`ALTER TABLE IF EXISTS portfolio_transactions RENAME TO trades`)
+	db.Exec(`ALTER TABLE IF EXISTS portfolio_cash_flows   RENAME TO cash_flows`)
+	db.Exec(`ALTER TABLE IF EXISTS portfolio_snapshots    RENAME TO account_snapshots`)
+
 	err = db.AutoMigrate(
 		&eventDomain.InvestmentEvent{}, // event store — source of truth
 		&store.AggregateSnapshot{},     // aggregate snapshots — load optimization
@@ -48,40 +54,51 @@ func New(cfg *config.Config, logger *slog.Logger) (*gorm.DB, error) {
 		&derivDomain.DerivativePosition{},
 		&cashDomain.PortfolioCashFlow{},
 		&snapshotDomain.PortfolioSnapshot{},
-		&watchlistDomain.WatchlistItem{},
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	// Ensure unique constraints that GORM doesn't auto-create from tags alone
+	// Drop columns removed in this migration (AutoMigrate never drops columns).
+	db.Exec(`ALTER TABLE positions         DROP COLUMN IF EXISTS asset_class`)
+	db.Exec(`ALTER TABLE trades            DROP COLUMN IF EXISTS broker`)
+	db.Exec(`ALTER TABLE trades            DROP COLUMN IF EXISTS trade_id`)
+
+	// Unique constraints — rename old indexes to match new table names.
+	db.Exec(`ALTER INDEX IF EXISTS uidx_portfolio_positions_account_symbol  RENAME TO uidx_positions_account_symbol`)
+	db.Exec(`ALTER INDEX IF EXISTS uidx_portfolio_snapshots_account_date_type RENAME TO uidx_account_snapshots_account_date_type`)
+	db.Exec(`ALTER INDEX IF EXISTS uidx_portfolio_transactions_external_id  RENAME TO uidx_trades_external_id`)
+	db.Exec(`ALTER INDEX IF EXISTS uidx_portfolio_transactions_source_event RENAME TO uidx_trades_source_event`)
+	db.Exec(`ALTER INDEX IF EXISTS uidx_portfolio_cash_flows_source_event   RENAME TO uidx_cash_flows_source_event`)
+	db.Exec(`ALTER INDEX IF EXISTS uidx_derivative_positions_open_event     RENAME TO uidx_contract_positions_open_event`)
+	db.Exec(`ALTER INDEX IF EXISTS idx_portfolio_transactions_account_date  RENAME TO idx_trades_account_date`)
+	db.Exec(`ALTER INDEX IF EXISTS idx_portfolio_cash_flows_account_date    RENAME TO idx_cash_flows_account_date`)
+
+	// Create indexes that don't exist yet (fresh installs or after rename).
 	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_investment_events_seq
 		ON investment_events (aggregate_id, sequence)`)
-	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_portfolio_positions_account_symbol
-		ON portfolio_positions (account_id, symbol)`)
+	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_positions_account_symbol
+		ON positions (account_id, symbol)`)
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_broker_connections_user_id
 		ON broker_connections (user_id)`)
 	db.Exec(`CREATE INDEX IF NOT EXISTS idx_accounts_user_id_created_at
 		ON accounts (user_id, created_at DESC)`)
-	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_portfolio_snapshots_account_date_type
-		ON portfolio_snapshots (account_id, snapshot_date, snapshot_type)`)
-	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_investment_watchlist_user_symbol
-		ON investment_watchlist (user_id, symbol)`)
+	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_account_snapshots_account_date_type
+		ON account_snapshots (account_id, snapshot_date, snapshot_type)`)
 	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_aggregate_snapshots_latest
 		ON aggregate_snapshots (aggregate_id, sequence)`)
-	// Partial unique index: external_id deduplication for broker-synced transactions.
-	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_portfolio_transactions_external_id
-		ON portfolio_transactions (external_id) WHERE external_id IS NOT NULL AND external_id != ''`)
-	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_portfolio_transactions_source_event
-		ON portfolio_transactions (source_event_id)`)
-	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_portfolio_cash_flows_source_event
-		ON portfolio_cash_flows (source_event_id)`)
-	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_derivative_positions_open_event
-		ON derivative_positions (open_event_id)`)
-	db.Exec(`CREATE INDEX IF NOT EXISTS idx_portfolio_transactions_account_date
-		ON portfolio_transactions (account_id, tx_date)`)
-	db.Exec(`CREATE INDEX IF NOT EXISTS idx_portfolio_cash_flows_account_date
-		ON portfolio_cash_flows (account_id, occurred_at)`)
+	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_trades_external_id
+		ON trades (external_id) WHERE external_id IS NOT NULL AND external_id != ''`)
+	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_trades_source_event
+		ON trades (source_event_id)`)
+	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_cash_flows_source_event
+		ON cash_flows (source_event_id)`)
+	db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_contract_positions_open_event
+		ON contract_positions (open_event_id)`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_trades_account_date
+		ON trades (account_id, tx_date)`)
+	db.Exec(`CREATE INDEX IF NOT EXISTS idx_cash_flows_account_date
+		ON cash_flows (account_id, occurred_at)`)
 
 	logger.Info("Investment database migrated successfully")
 	return db, nil

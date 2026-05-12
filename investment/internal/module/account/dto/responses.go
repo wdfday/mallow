@@ -9,23 +9,25 @@ import (
 
 // AccountResponse represents an account in API responses.
 type AccountResponse struct {
-	ID                  string     `json:"id"`
-	UserID              string     `json:"userId"`
-	AccountName         string     `json:"accountName"`
-	AccountType         string     `json:"accountType"`
-	InstitutionName     *string    `json:"institutionName,omitempty"`
-	CurrentBalance      decimal.Decimal  `json:"currentBalance"`
-	AvailableBalance    *decimal.Decimal `json:"availableBalance,omitempty"`
-	Currency            string     `json:"currency"`
-	AccountNumberMasked *string    `json:"accountNumberMasked,omitempty"`
-	IsActive            bool       `json:"isActive"`
-	IsPrimary           bool       `json:"isPrimary"`
-	IncludeInNetWorth   bool       `json:"includeInNetWorth"`
-	LastSyncedAt        *time.Time `json:"lastSyncedAt,omitempty"`
-	SyncStatus          *string    `json:"syncStatus,omitempty"`
-	SyncErrorMessage    *string    `json:"syncErrorMessage,omitempty"`
-	CreatedAt           time.Time  `json:"createdAt"`
-	UpdatedAt           time.Time  `json:"updatedAt"`
+	ID                 string           `json:"id"`
+	UserID             string           `json:"user_id"`
+	AccountName        string           `json:"account_name"`
+	AccountType        string           `json:"account_type"`
+	InstitutionName    *string          `json:"institution_name,omitempty"`
+	Currency           string           `json:"currency"`
+	CurrentBalance     decimal.Decimal  `json:"current_balance"`
+	AvailableBalance   *decimal.Decimal `json:"available_balance,omitempty"`
+	Equity             decimal.Decimal  `json:"equity"`
+	MarginUsed         decimal.Decimal  `json:"margin_used"`
+	IsActive           bool             `json:"is_active"`
+	IncludeInNetWorth  bool             `json:"include_in_net_worth"`
+	IsAutoSync         bool             `json:"is_auto_sync"`
+	LastSyncedAt       *time.Time       `json:"last_synced_at,omitempty"`
+	SyncStatus         *string          `json:"sync_status,omitempty"`
+	SyncErrorMessage   *string          `json:"sync_error_message,omitempty"`
+	BrokerConnectionID *string          `json:"broker_connection_id,omitempty"`
+	CreatedAt          time.Time        `json:"created_at"`
+	UpdatedAt          time.Time        `json:"updated_at"`
 }
 
 // ToResponse converts a domain account to DTO response.
@@ -35,25 +37,32 @@ func ToResponse(account domain.Account) AccountResponse {
 		status := string(*account.SyncStatus)
 		syncStatus = &status
 	}
+	var brokerConnID *string
+	if account.BrokerConnectionID != nil {
+		s := account.BrokerConnectionID.String()
+		brokerConnID = &s
+	}
 
 	return AccountResponse{
-		ID:                  account.ID.String(),
-		UserID:              account.UserID.String(),
-		AccountName:         account.AccountName,
-		AccountType:         string(account.AccountType),
-		InstitutionName:     account.InstitutionName,
-		CurrentBalance:      account.CurrentBalance,
-		AvailableBalance:    account.AvailableBalance,
-		Currency:            string(account.Currency),
-		AccountNumberMasked: account.AccountNumberMasked,
-		IsActive:            account.IsActive,
-		IsPrimary:           account.IsPrimary,
-		IncludeInNetWorth:   account.IncludeInNetWorth,
-		LastSyncedAt:        account.LastSyncedAt,
-		SyncStatus:          syncStatus,
-		SyncErrorMessage:    account.SyncErrorMessage,
-		CreatedAt:           account.CreatedAt,
-		UpdatedAt:           account.UpdatedAt,
+		ID:                 account.ID.String(),
+		UserID:             account.UserID.String(),
+		AccountName:        account.AccountName,
+		AccountType:        string(account.AccountType),
+		InstitutionName:    account.InstitutionName,
+		Currency:           string(account.Currency),
+		CurrentBalance:     account.CurrentBalance,
+		AvailableBalance:   account.AvailableBalance,
+		Equity:             account.Equity,
+		MarginUsed:         account.MarginUsed,
+		IsActive:           account.IsActive,
+		IncludeInNetWorth:  account.IncludeInNetWorth,
+		IsAutoSync:         account.IsAutoSync,
+		LastSyncedAt:       account.LastSyncedAt,
+		SyncStatus:         syncStatus,
+		SyncErrorMessage:   account.SyncErrorMessage,
+		BrokerConnectionID: brokerConnID,
+		CreatedAt:          account.CreatedAt,
+		UpdatedAt:          account.UpdatedAt,
 	}
 }
 

@@ -18,9 +18,9 @@ func NewPgx(pool *pgxpool.Pool) Repository {
 }
 
 func (r *pgxRepo) ListByUserID(ctx context.Context, userID uuid.UUID, filter ListFilter) ([]domain.PortfolioCashFlow, error) {
-	q := `SELECT id, user_id, flow_type, amount::float8, currency,
-		symbol, description, source_event_id, occurred_at, created_at
-	FROM portfolio_cash_flows WHERE user_id = $1`
+	q := `SELECT id, account_id, user_id, flow_type, amount::float8, currency,
+		symbol, description, transfer_id, source_event_id, occurred_at, created_at
+	FROM cash_flows WHERE user_id = $1`
 
 	args := []any{userID}
 	idx := 2
@@ -47,8 +47,8 @@ func (r *pgxRepo) ListByUserID(ctx context.Context, userID uuid.UUID, filter Lis
 		var f domain.PortfolioCashFlow
 		var symbol, description *string
 		err := rows.Scan(
-			&f.ID, &f.UserID, &f.FlowType, &f.Amount, &f.Currency,
-			&symbol, &description, &f.SourceEventID, &f.OccurredAt, &f.CreatedAt,
+			&f.ID, &f.AccountID, &f.UserID, &f.FlowType, &f.Amount, &f.Currency,
+			&symbol, &description, &f.TransferID, &f.SourceEventID, &f.OccurredAt, &f.CreatedAt,
 		)
 		if err != nil {
 			return nil, err

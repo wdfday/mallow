@@ -1,8 +1,22 @@
-# Whitelist: only what identity needs from the workspace
-*
-!go.work
-!go.work.sum
-!pkg/
-!pkg/**
-!identity/
-!identity/**
+.git
+.github
+.idea
+.vscode
+
+.env
+*.log
+
+# Rust build artifacts (large)
+almanac/target/
+
+# Python build artifacts
+almanac/crates/alm-py/
+
+# Parquet / raw data files (mounted as volumes at runtime)
+data/
+hist-data/data/
+
+# test / coverage
+*.test
+*.out
+coverage.html

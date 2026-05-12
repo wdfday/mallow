@@ -15,9 +15,6 @@ import (
 // AccountCreator defines account creation operations
 type AccountCreator interface {
 	CreateAccount(ctx context.Context, userID string, req accountdto.CreateAccountRequest) (*domain.Account, error)
-	CreateDefaultCashAccount(ctx context.Context, userID string) error
-	// DEPRECATED: Use broker module API instead
-	// CreateAccountWithBroker has been moved to internal/module/identify/broker
 }
 
 // AccountReader defines account read operations

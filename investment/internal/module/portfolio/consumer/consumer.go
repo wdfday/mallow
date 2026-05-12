@@ -30,11 +30,17 @@ const (
 	fetchWait = 50 * time.Millisecond
 )
 
+// transactionHandler abstracts command.Handler for testability.
+type transactionHandler interface {
+	HandleRecordTransaction(ctx context.Context, cmd command.RecordTransaction) error
+	HandleRecordTransactionBatch(ctx context.Context, accountID, userID uuid.UUID, txns []event.TransactionRecorded) error
+}
+
 // Consumer polls INVESTMENT_TRANSACTIONS via JetStream pull subscription
 // and flushes batches when maxBatchSize or flushInterval is reached.
 type Consumer struct {
 	sub     *nats.Subscription
-	handler *command.Handler
+	handler transactionHandler
 	logger  *slog.Logger
 }
 
@@ -205,8 +211,8 @@ func (c *Consumer) parse(msg *nats.Msg) (*accountBatch, error) {
 		Commission:      decimal.NewFromFloat(tm.Commission),
 		Tax:             decimal.NewFromFloat(tm.Tax),
 		TransactionDate: tm.TransactionDate,
-		Broker:          tm.Broker,
 		ExternalID:      tm.ExternalID,
+		Kind:            tm.Kind,
 		Source:          "sync",
 		BotID:           tm.BotID,
 		Notes:           tm.Notes,

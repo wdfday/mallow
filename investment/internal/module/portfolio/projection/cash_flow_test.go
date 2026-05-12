@@ -40,7 +40,7 @@ func TestCashFlowProjector_DividendInsert(t *testing.T) {
 
 	// GORM Create with postgres RETURNING clause → ExpectQuery
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "portfolio_cash_flows"`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "cash_flows"`)).
 		WithArgs(
 			accountID,
 			userID,
@@ -49,6 +49,7 @@ func TestCashFlowProjector_DividendInsert(t *testing.T) {
 			"USD",
 			"AAPL",
 			"Q1 dividend",
+			sqlmock.AnyArg(), // transfer_id (nullable)
 			ev.ID,
 			txDate,
 			sqlmock.AnyArg(), // created_at
@@ -82,7 +83,7 @@ func TestCashFlowProjector_DepositInsert(t *testing.T) {
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 1, payload)
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "portfolio_cash_flows"`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "cash_flows"`)).
 		WithArgs(
 			accountID,
 			userID,
@@ -91,6 +92,7 @@ func TestCashFlowProjector_DepositInsert(t *testing.T) {
 			"USD",
 			sqlmock.AnyArg(), // symbol (empty string)
 			"wire transfer",
+			sqlmock.AnyArg(), // transfer_id (nullable)
 			ev.ID,
 			txDate,
 			sqlmock.AnyArg(), // created_at
@@ -124,7 +126,7 @@ func TestCashFlowProjector_WithdrawalInsert(t *testing.T) {
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 2, payload)
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "portfolio_cash_flows"`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "cash_flows"`)).
 		WithArgs(
 			accountID,
 			userID,
@@ -133,6 +135,7 @@ func TestCashFlowProjector_WithdrawalInsert(t *testing.T) {
 			"USD",
 			sqlmock.AnyArg(), // symbol (empty string)
 			"monthly withdrawal",
+			sqlmock.AnyArg(), // transfer_id (nullable)
 			ev.ID,
 			txDate,
 			sqlmock.AnyArg(), // created_at
@@ -166,7 +169,7 @@ func TestCashFlowProjector_FeeInsert(t *testing.T) {
 	ev := makeEvent(t, event.EventTypeTransactionRecorded, accountID, 3, payload)
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "portfolio_cash_flows"`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "cash_flows"`)).
 		WithArgs(
 			accountID,
 			userID,
@@ -175,6 +178,7 @@ func TestCashFlowProjector_FeeInsert(t *testing.T) {
 			"USD",
 			sqlmock.AnyArg(), // symbol (empty string)
 			"management fee",
+			sqlmock.AnyArg(), // transfer_id (nullable)
 			ev.ID,
 			txDate,
 			sqlmock.AnyArg(), // created_at
@@ -304,7 +308,7 @@ func TestCashFlowProjector_IdempotentDuplicateSourceEventID(t *testing.T) {
 
 	// ON CONFLICT DO NOTHING — RETURNING returns empty result set, no error
 	mock.ExpectBegin()
-	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "portfolio_cash_flows"`)).
+	mock.ExpectQuery(regexp.QuoteMeta(`INSERT INTO "cash_flows"`)).
 		WithArgs(
 			accountID,
 			userID,
@@ -313,6 +317,7 @@ func TestCashFlowProjector_IdempotentDuplicateSourceEventID(t *testing.T) {
 			"USD",
 			sqlmock.AnyArg(), // symbol
 			sqlmock.AnyArg(), // description
+			sqlmock.AnyArg(), // transfer_id (nullable)
 			ev.ID,
 			txDate,
 			sqlmock.AnyArg(), // created_at

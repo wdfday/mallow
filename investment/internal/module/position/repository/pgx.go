@@ -21,13 +21,13 @@ func NewPgx(pool *pgxpool.Pool) Repository {
 }
 
 const selectPositionCols = `
-	id, account_id, user_id, symbol, name, asset_type, asset_class, exchange, currency,
+	id, account_id, user_id, symbol, name, asset_type, exchange, currency,
 	quantity::float8, avg_cost::float8, total_cost::float8,
 	current_price::float8, current_value::float8,
 	unrealized_pnl::float8, unrealized_pct::float8,
 	realized_pnl::float8, total_dividends::float8, portfolio_weight::float8,
 	status, last_seq, opened_at, closed_at, updated_at
-FROM portfolio_positions`
+FROM positions`
 
 func (r *pgxRepo) ListByUserID(ctx context.Context, userID uuid.UUID, filter ListFilter) ([]domain.PortfolioPosition, error) {
 	query := `SELECT ` + selectPositionCols + ` WHERE user_id = $1`
@@ -108,7 +108,7 @@ func scanPosition(rows pgx.Rows) (domain.PortfolioPosition, error) {
 	var p domain.PortfolioPosition
 	var closedAt *time.Time
 	err := rows.Scan(
-		&p.ID, &p.AccountID, &p.UserID, &p.Symbol, &p.Name, &p.AssetType, &p.AssetClass, &p.Exchange, &p.Currency,
+		&p.ID, &p.AccountID, &p.UserID, &p.Symbol, &p.Name, &p.AssetType, &p.Exchange, &p.Currency,
 		&p.Quantity, &p.AvgCost, &p.TotalCost,
 		&p.CurrentPrice, &p.CurrentValue,
 		&p.UnrealizedPnL, &p.UnrealizedPct,

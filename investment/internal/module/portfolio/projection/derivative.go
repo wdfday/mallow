@@ -55,7 +55,7 @@ func (p *DerivativeProjector) handleOpen(ctx context.Context, ev event.Investmen
 		CurrentPrice:   tx.PricePerUnit,
 		Leverage:       tx.Leverage,
 		ContractSize:   tx.ContractSize,
-		Status:         "open",
+		Status:         "active",
 		OpenedAt:       tx.TransactionDate,
 		OpenEventID:    ev.ID,
 	}
@@ -80,7 +80,7 @@ func (p *DerivativeProjector) handleOpen(ctx context.Context, ev event.Investmen
 func (p *DerivativeProjector) handleClose(ctx context.Context, ev event.InvestmentEvent, tx event.TransactionRecorded) error {
 	var pos derivDomain.DerivativePosition
 	err := p.db.WithContext(ctx).
-		Where("account_id = ? AND symbol = ? AND side = ? AND status = 'open'", ev.AggregateID, tx.Symbol, tx.Side).
+		Where("account_id = ? AND symbol = ? AND side = ? AND status = 'active'", ev.AggregateID, tx.Symbol, tx.Side).
 		Order("opened_at ASC").
 		First(&pos).Error
 	if err != nil {

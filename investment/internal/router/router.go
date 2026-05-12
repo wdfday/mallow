@@ -20,7 +20,6 @@ import (
 	positionHandler "mallow/investment/internal/module/position/handler"
 	snapshotHandler "mallow/investment/internal/module/snapshot/handler"
 	txHandler "mallow/investment/internal/module/transaction/handler"
-	watchlistHandler "mallow/investment/internal/module/watchlist/handler"
 	pkgmw "mallow/pkg/middleware"
 	pkgtelemetry "mallow/pkg/telemetry"
 )
@@ -37,7 +36,6 @@ type Params struct {
 	Derivatives  *derivHandler.Handler
 	CashFlows    *cashHandler.Handler
 	Snapshots    *snapshotHandler.Handler
-	Watchlist    *watchlistHandler.Handler
 	Replay       *replay.Handler
 	Broker       *brokerHandler.BrokerConnectionHandler
 	Account      *accountHandler.Handler
@@ -59,16 +57,14 @@ func Register(p Params) {
 		v1.GET("/positions/:symbol", p.Positions.Get)
 
 		v1.GET("/transactions", p.Transactions.List)
+		v1.POST("/transactions", p.Transactions.Create)
 
 		v1.GET("/derivatives", p.Derivatives.List)
 
 		v1.GET("/cash-flows", p.CashFlows.List)
 
 		v1.GET("/snapshots", p.Snapshots.List)
-
-		v1.GET("/watchlist", p.Watchlist.List)
-		v1.POST("/watchlist", p.Watchlist.Add)
-		v1.DELETE("/watchlist/:symbol", p.Watchlist.Delete)
+		v1.POST("/snapshots", p.Snapshots.Trigger)
 
 		// Admin ops
 		v1.POST("/admin/rebuild", p.Replay.Rebuild)

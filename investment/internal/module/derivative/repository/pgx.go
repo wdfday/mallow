@@ -28,7 +28,7 @@ func (r *pgxRepo) ListByUserID(ctx context.Context, userID uuid.UUID, filter Lis
 		contract_size::text, strike_price::text, option_type, expiry_date,
 		unrealized_pnl::text, realized_pnl::text,
 		status, opened_at, closed_at, open_event_id, close_event_id, updated_at
-	FROM derivative_positions WHERE user_id = $1`
+	FROM contract_positions WHERE user_id = $1`
 
 	args := []any{userID}
 	if filter.Status != "" {

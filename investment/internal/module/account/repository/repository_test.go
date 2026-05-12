@@ -155,7 +155,7 @@ func TestApplyFilters(t *testing.T) {
 	})
 
 	t.Run("account type filter", func(t *testing.T) {
-		accountType := domain.AccountTypeCash
+		accountType := domain.AccountTypeSpot
 		filters := domain.ListAccountsFilter{
 			AccountType: &accountType,
 		}
@@ -172,15 +172,6 @@ func TestApplyFilters(t *testing.T) {
 		assert.NotNil(t, query)
 	})
 
-	t.Run("is primary filter", func(t *testing.T) {
-		isPrimary := true
-		filters := domain.ListAccountsFilter{
-			IsPrimary: &isPrimary,
-		}
-		query := repo.applyFilters(db, filters)
-		assert.NotNil(t, query)
-	})
-
 	t.Run("include deleted filter", func(t *testing.T) {
 		filters := domain.ListAccountsFilter{
 			IncludeDeleted: true,
@@ -190,13 +181,11 @@ func TestApplyFilters(t *testing.T) {
 	})
 
 	t.Run("all filters combined", func(t *testing.T) {
-		accountType := domain.AccountTypeBank
+		accountType := domain.AccountTypeUnified
 		isActive := true
-		isPrimary := false
 		filters := domain.ListAccountsFilter{
 			AccountType:    &accountType,
 			IsActive:       &isActive,
-			IsPrimary:      &isPrimary,
 			IncludeDeleted: true,
 		}
 		query := repo.applyFilters(db, filters)

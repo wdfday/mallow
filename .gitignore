@@ -6,20 +6,16 @@ deployment/.env
 
 # ── Go ────────────────────────────────────────────────────────────────────────
 # Binaries
-**/bin/
 # Built outputs next to cmd/ dirs
 **/cmd/*/*.exe
 **/cmd/*/$(basename $(pwd))
-tmp/*
+/*/tmp/*
 go.sum
+go.work.sum
+
 # ── Rust ─────────────────────────────────────────────────────────────────────
 almanac/target/
-
-## ── Data & logs ───────────────────────────────────────────────────────────────
-#/data/
-#**/*.log
-#**/*.parquet
-#**/*.csv
+almanac/Cargo.lock
 
 # ── IDE ───────────────────────────────────────────────────────────────────────
 .idea/
@@ -39,10 +35,9 @@ docker-compose.override.yml
 /**/swagger.json
 /**/swagger.yaml
 
-# ── Data ───────────────────────────────────────────────────────────────────
+# ── data ───────────────────────────────────────────────────────────────────
 *.parquet
-Cargo.lock
 monitoring/grafana/provisioning/dashboards/*.json
-go.work.sum
 /reference
 *.json
+

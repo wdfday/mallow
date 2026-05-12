@@ -25,7 +25,6 @@ type PortfolioTransaction struct {
 	Tax         decimal.Decimal  `gorm:"type:decimal(15,2);default:0;column:tax" json:"tax"`
 	RealizedPnL *decimal.Decimal `gorm:"type:decimal(15,2);column:realized_pnl" json:"realized_pnl,omitempty"`
 
-	Broker     string `gorm:"type:varchar(100);column:broker" json:"broker,omitempty"`
 	ExternalID string `gorm:"type:varchar(255);index;column:external_id" json:"external_id,omitempty"`
 	Source     string `gorm:"type:varchar(20);column:source" json:"source,omitempty"` // manual|sync
 	BotID      string `gorm:"type:varchar(100);index;column:bot_id" json:"bot_id,omitempty"`
@@ -39,5 +38,5 @@ type PortfolioTransaction struct {
 }
 
 func (PortfolioTransaction) TableName() string {
-	return "portfolio_transactions"
+	return "trades"
 }

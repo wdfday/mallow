@@ -1,18 +1,17 @@
 package domain
 
-// AccountType represents the type of account.
+// AccountType reflects the actual sub-account structure at the exchange.
 type AccountType string
 
 const (
-	AccountTypeCash         AccountType = "cash"
-	AccountTypeBank         AccountType = "bank" // debit card 1 : 1 with bank account
-	AccountTypeSavings      AccountType = "savings"
-	AccountTypeCreditCard   AccountType = "credit_card"
-	AccountTypeInvestment   AccountType = "investment"
-	AccountTypeCryptoWallet AccountType = "crypto_wallet"
+	AccountTypeSpot         AccountType = "spot"          // spot equity/crypto (Alpaca, Binance spot)
+	AccountTypeFuturesUSDM  AccountType = "futures_usdm"  // USDT-margined perp/futures
+	AccountTypeFuturesCOINM AccountType = "futures_coinm" // coin-margined futures
+	AccountTypeUnified      AccountType = "unified"       // unified margin pool (OKX UTA, Bybit UTA)
+	AccountTypeOptions      AccountType = "options"       // options-only account
 )
 
-// SyncStatus represents the sync status for Open Banking.
+// SyncStatus represents the sync status of a broker account.
 type SyncStatus string
 
 const (

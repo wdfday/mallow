@@ -44,7 +44,6 @@ func (h *BrokerConnectionHandler) RegisterRoutes(router *gin.Engine, authMiddlew
 		protected.DELETE("/:id", h.Delete)
 		protected.POST("/:id/activate", h.Activate)
 		protected.POST("/:id/deactivate", h.Deactivate)
-		protected.POST("/:id/refresh-token", h.RefreshToken)
 		protected.POST("/:id/test", h.TestConnection)
 
 		// ReBroker: change the broker linked to an account.
@@ -389,38 +388,6 @@ func (h *BrokerConnectionHandler) simpleAction(c *gin.Context, fn func(ctx conte
 		return
 	}
 	shared.RespondWithSuccessNoData(c, http.StatusOK, msg)
-}
-
-// RefreshToken godoc
-// @Summary Refresh broker token
-// @Description Refresh token or credentials for a broker connection
-// @Tags broker-connections
-// @Accept json
-// @Produce json
-// @Security BearerAuth
-// @Param id path string true "Connection ID"
-// @Success 200 {object} shared.SuccessResponse[dto.BrokerConnectionResponse]
-// @Failure 400 {object} shared.ErrorResponse
-// @Failure 401 {object} shared.ErrorResponse
-// @Failure 500 {object} shared.ErrorResponse
-// @Router /api/v1/investment/broker-connections/{id}/refresh-token [post]
-func (h *BrokerConnectionHandler) RefreshToken(c *gin.Context) {
-	userID, err := getUserIDFromContext(c)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusUnauthorized, err.Error())
-		return
-	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, "invalid connection ID")
-		return
-	}
-	conn, err := h.service.RefreshToken(c.Request.Context(), id, userID)
-	if err != nil {
-		shared.HandleError(c, err)
-		return
-	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Token refreshed successfully", dto.ToBrokerConnectionResponse(conn))
 }
 
 // TestConnection godoc

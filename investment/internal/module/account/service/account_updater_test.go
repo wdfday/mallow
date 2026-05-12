@@ -3,8 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"io"
-	"log/slog"
 	"testing"
 	"time"
 
@@ -16,24 +14,8 @@ import (
 
 	"mallow/investment/internal/module/account/domain"
 	accountdto "mallow/investment/internal/module/account/dto"
-	internalService "mallow/investment/internal/service"
 	"mallow/investment/internal/shared"
 )
-
-// setupServiceWithEncrypt builds a service with a real encryption service,
-// needed for tests that pass AccountNumber (triggers s.encrypt.Encrypt).
-func setupServiceWithEncrypt(t *testing.T) (*accountService, *MockRepository) {
-	t.Helper()
-	enc, err := internalService.NewEncryptionService("test-encryption-key-32bytes-xxx!")
-	require.NoError(t, err)
-	mockRepo := new(MockRepository)
-	svc := &accountService{
-		repo:    mockRepo,
-		encrypt: enc,
-		logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}
-	return svc, mockRepo
-}
 
 // captureMap returns a MatchedBy matcher that captures the map into dst and always matches.
 func captureMap(dst *map[string]any) interface{} {
@@ -46,9 +28,8 @@ func captureMap(dst *map[string]any) interface{} {
 // existingAccount returns a base account for a given user/id pair.
 func existingAccount(accountID, userID string) *domain.Account {
 	return &domain.Account{
-		ID:        uuid.MustParse(accountID),
-		UserID:    uuid.MustParse(userID),
-		IsPrimary: false,
+		ID:     uuid.MustParse(accountID),
+		UserID: uuid.MustParse(userID),
 	}
 }
 
@@ -82,21 +63,21 @@ func TestUpdateAccount_MapKeys(t *testing.T) {
 		mockRepo.AssertExpectations(t)
 	})
 
-	t.Run("account_type parsed and lowercased", func(t *testing.T) {
+	t.Run("account_type spot", func(t *testing.T) {
 		svc, mockRepo, captured := setup(t)
-		at := "BANK"
+		at := "spot"
 		_, err := svc.UpdateAccount(ctx, accountID, userID, accountdto.UpdateAccountRequest{AccountType: &at})
 		require.NoError(t, err)
-		assert.Equal(t, "bank", (*captured)["account_type"])
+		assert.Equal(t, "spot", (*captured)["account_type"])
 		mockRepo.AssertExpectations(t)
 	})
 
 	t.Run("institution_name non-empty", func(t *testing.T) {
 		svc, mockRepo, captured := setup(t)
-		inst := "  Vietcombank  "
+		inst := "  Binance  "
 		_, err := svc.UpdateAccount(ctx, accountID, userID, accountdto.UpdateAccountRequest{InstitutionName: &inst})
 		require.NoError(t, err)
-		assert.Equal(t, "Vietcombank", (*captured)["institution_name"])
+		assert.Equal(t, "Binance", (*captured)["institution_name"])
 		mockRepo.AssertExpectations(t)
 	})
 
@@ -123,7 +104,6 @@ func TestUpdateAccount_MapKeys(t *testing.T) {
 		avail := 500.0
 		_, err := svc.UpdateAccount(ctx, accountID, userID, accountdto.UpdateAccountRequest{AvailableBalance: &avail})
 		require.NoError(t, err)
-		// stored as *float64, dereference to compare
 		stored, ok := (*captured)["available_balance"].(*float64)
 		require.True(t, ok, "expected *float64")
 		assert.Equal(t, avail, *stored)
@@ -163,17 +143,6 @@ func TestUpdateAccount_MapKeys(t *testing.T) {
 		_, err := svc.UpdateAccount(ctx, accountID, userID, accountdto.UpdateAccountRequest{IncludeInNetWorth: &inc})
 		require.NoError(t, err)
 		assert.Equal(t, false, (*captured)["include_in_net_worth"])
-		mockRepo.AssertExpectations(t)
-	})
-
-	t.Run("is_primary false — no unsetPrimary call", func(t *testing.T) {
-		svc, mockRepo, captured := setup(t)
-		prim := false
-		_, err := svc.UpdateAccount(ctx, accountID, userID, accountdto.UpdateAccountRequest{IsPrimary: &prim})
-		require.NoError(t, err)
-		assert.Equal(t, false, (*captured)["is_primary"])
-		// ListByUserID (unsetPrimary) must NOT have been called
-		mockRepo.AssertNotCalled(t, "ListByUserID")
 		mockRepo.AssertExpectations(t)
 	})
 
@@ -226,175 +195,6 @@ func TestUpdateAccount_MapKeys(t *testing.T) {
 		_, err := svc.UpdateAccount(ctx, accountID, userID, accountdto.UpdateAccountRequest{SyncErrorMessage: &msg})
 		require.NoError(t, err)
 		assert.Nil(t, (*captured)["sync_error_message"])
-		mockRepo.AssertExpectations(t)
-	})
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// AccountNumber — encryption + masking combinations
-// ─────────────────────────────────────────────────────────────────────────────
-
-func TestUpdateAccount_AccountNumber(t *testing.T) {
-	ctx := context.Background()
-	userID := uuid.New().String()
-	accountID := uuid.New().String()
-	returned := &domain.Account{ID: uuid.MustParse(accountID), UserID: uuid.MustParse(userID)}
-
-	t.Run("account_number only — auto-masked, encrypted", func(t *testing.T) {
-		svc, mockRepo := setupServiceWithEncrypt(t)
-		mockRepo.On("GetByIDAndUserID", ctx, accountID, userID).Return(existingAccount(accountID, userID), nil).Once()
-		var captured map[string]any
-		mockRepo.On("UpdateColumns", ctx, accountID, captureMap(&captured)).Return(nil)
-		mockRepo.On("GetByIDAndUserID", ctx, accountID, userID).Return(returned, nil).Once()
-
-		num := "1234567890"
-		_, err := svc.UpdateAccount(ctx, accountID, userID, accountdto.UpdateAccountRequest{AccountNumber: &num})
-		require.NoError(t, err)
-
-		// encrypted value must be non-empty and different from plain text
-		enc, ok := captured["account_number_encrypted"].(string)
-		require.True(t, ok)
-		assert.NotEmpty(t, enc)
-		assert.NotEqual(t, "1234567890", enc)
-
-		// auto-mask: last 4 digits
-		assert.Equal(t, "****7890", captured["account_number_masked"])
-		mockRepo.AssertExpectations(t)
-	})
-
-	t.Run("account_number + explicit masked — uses explicit mask", func(t *testing.T) {
-		svc, mockRepo := setupServiceWithEncrypt(t)
-		mockRepo.On("GetByIDAndUserID", ctx, accountID, userID).Return(existingAccount(accountID, userID), nil).Once()
-		var captured map[string]any
-		mockRepo.On("UpdateColumns", ctx, accountID, captureMap(&captured)).Return(nil)
-		mockRepo.On("GetByIDAndUserID", ctx, accountID, userID).Return(returned, nil).Once()
-
-		num := "1234567890"
-		mask := "****-custom"
-		_, err := svc.UpdateAccount(ctx, accountID, userID, accountdto.UpdateAccountRequest{
-			AccountNumber:       &num,
-			AccountNumberMasked: &mask,
-		})
-		require.NoError(t, err)
-
-		// masked should come from explicit value, not auto
-		assert.Equal(t, "****-custom", captured["account_number_masked"])
-		// encrypted still set
-		assert.NotEmpty(t, captured["account_number_encrypted"])
-		mockRepo.AssertExpectations(t)
-	})
-
-	t.Run("account_number_masked only — no encryption", func(t *testing.T) {
-		svc, mockRepo := setupService()
-		mockRepo.On("GetByIDAndUserID", ctx, accountID, userID).Return(existingAccount(accountID, userID), nil).Once()
-		var captured map[string]any
-		mockRepo.On("UpdateColumns", ctx, accountID, captureMap(&captured)).Return(nil)
-		mockRepo.On("GetByIDAndUserID", ctx, accountID, userID).Return(returned, nil).Once()
-
-		mask := "****1234"
-		_, err := svc.UpdateAccount(ctx, accountID, userID, accountdto.UpdateAccountRequest{AccountNumberMasked: &mask})
-		require.NoError(t, err)
-
-		assert.Equal(t, "****1234", captured["account_number_masked"])
-		assert.NotContains(t, captured, "account_number_encrypted")
-		mockRepo.AssertExpectations(t)
-	})
-
-	t.Run("account_number whitespace-only — not stored", func(t *testing.T) {
-		svc, mockRepo := setupService()
-		mockRepo.On("GetByIDAndUserID", ctx, accountID, userID).Return(existingAccount(accountID, userID), nil).Once()
-
-		num := "   "
-		// empty request after trimming → UpdateColumns NOT called
-		result, err := svc.UpdateAccount(ctx, accountID, userID, accountdto.UpdateAccountRequest{AccountNumber: &num})
-		require.NoError(t, err)
-		assert.NotNil(t, result) // returns existing account
-		mockRepo.AssertNotCalled(t, "UpdateColumns")
-		mockRepo.AssertExpectations(t)
-	})
-
-	t.Run("account_number short (≤4 chars) — fully masked", func(t *testing.T) {
-		svc, mockRepo := setupServiceWithEncrypt(t)
-		mockRepo.On("GetByIDAndUserID", ctx, accountID, userID).Return(existingAccount(accountID, userID), nil).Once()
-		var captured map[string]any
-		mockRepo.On("UpdateColumns", ctx, accountID, captureMap(&captured)).Return(nil)
-		mockRepo.On("GetByIDAndUserID", ctx, accountID, userID).Return(returned, nil).Once()
-
-		num := "123"
-		_, err := svc.UpdateAccount(ctx, accountID, userID, accountdto.UpdateAccountRequest{AccountNumber: &num})
-		require.NoError(t, err)
-		assert.Equal(t, "***", captured["account_number_masked"])
-		mockRepo.AssertExpectations(t)
-	})
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// IsPrimary — side-effect: unsetPrimaryAccount
-// ─────────────────────────────────────────────────────────────────────────────
-
-func TestUpdateAccount_IsPrimary(t *testing.T) {
-	ctx := context.Background()
-	userID := uuid.New().String()
-	accountID := uuid.New().String()
-	returned := &domain.Account{ID: uuid.MustParse(accountID), UserID: uuid.MustParse(userID), IsPrimary: true}
-
-	t.Run("set primary on non-primary account — unsets others first", func(t *testing.T) {
-		svc, mockRepo := setupService()
-		existing := existingAccount(accountID, userID) // IsPrimary = false
-
-		otherID := uuid.New()
-		otherPrimary := domain.Account{ID: otherID, UserID: uuid.MustParse(userID), IsPrimary: true}
-
-		mockRepo.On("GetByIDAndUserID", ctx, accountID, userID).Return(existing, nil).Once()
-		// unsetPrimaryAccount: find current primaries
-		isPrim := true
-		mockRepo.On("ListByUserID", ctx, userID, domain.ListAccountsFilter{IsPrimary: &isPrim}).
-			Return([]domain.Account{otherPrimary}, nil)
-		// unset the other one
-		mockRepo.On("UpdateColumns", ctx, otherID.String(), map[string]any{"is_primary": false}).Return(nil)
-		// update this account
-		mockRepo.On("UpdateColumns", ctx, accountID, map[string]any{"is_primary": true}).Return(nil)
-		mockRepo.On("GetByIDAndUserID", ctx, accountID, userID).Return(returned, nil).Once()
-
-		prim := true
-		result, err := svc.UpdateAccount(ctx, accountID, userID, accountdto.UpdateAccountRequest{IsPrimary: &prim})
-		require.NoError(t, err)
-		assert.True(t, result.IsPrimary)
-		mockRepo.AssertExpectations(t)
-	})
-
-	t.Run("set primary on already-primary account — no unsetPrimary", func(t *testing.T) {
-		svc, mockRepo := setupService()
-		existing := &domain.Account{
-			ID:        uuid.MustParse(accountID),
-			UserID:    uuid.MustParse(userID),
-			IsPrimary: true, // already primary
-		}
-
-		mockRepo.On("GetByIDAndUserID", ctx, accountID, userID).Return(existing, nil).Once()
-		mockRepo.On("UpdateColumns", ctx, accountID, map[string]any{"is_primary": true}).Return(nil)
-		mockRepo.On("GetByIDAndUserID", ctx, accountID, userID).Return(returned, nil).Once()
-
-		prim := true
-		_, err := svc.UpdateAccount(ctx, accountID, userID, accountdto.UpdateAccountRequest{IsPrimary: &prim})
-		require.NoError(t, err)
-		mockRepo.AssertNotCalled(t, "ListByUserID")
-		mockRepo.AssertExpectations(t)
-	})
-
-	t.Run("unsetPrimary repo error propagates", func(t *testing.T) {
-		svc, mockRepo := setupService()
-		existing := existingAccount(accountID, userID)
-
-		isPrim := true
-		mockRepo.On("GetByIDAndUserID", ctx, accountID, userID).Return(existing, nil).Once()
-		mockRepo.On("ListByUserID", ctx, userID, domain.ListAccountsFilter{IsPrimary: &isPrim}).
-			Return(nil, errors.New("db error"))
-
-		prim := true
-		result, err := svc.UpdateAccount(ctx, accountID, userID, accountdto.UpdateAccountRequest{IsPrimary: &prim})
-		require.Error(t, err)
-		assert.Nil(t, result)
 		mockRepo.AssertExpectations(t)
 	})
 }
@@ -526,7 +326,6 @@ func TestUpdateAccount_MultipleFields(t *testing.T) {
 		assert.Equal(t, "USD", captured["currency"])
 		assert.Equal(t, 12345.67, captured["current_balance"])
 		assert.Equal(t, true, captured["is_active"])
-		// only these 4 keys — nothing extra
 		assert.Len(t, captured, 4)
 		mockRepo.AssertExpectations(t)
 	})
@@ -551,8 +350,6 @@ func TestUpdateAvailableBalance(t *testing.T) {
 		avail, ok := captured["available_balance"].(decimal.Decimal)
 		require.True(t, ok, "expected decimal.Decimal in map")
 		assert.True(t, decimal.NewFromFloat(8888.88).Equal(avail))
-
-		// only one key updated
 		assert.Len(t, captured, 1)
 		mockRepo.AssertExpectations(t)
 	})

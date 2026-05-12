@@ -13,12 +13,13 @@ type PortfolioCashFlow struct {
 	AccountID uuid.UUID `gorm:"type:uuid;not null;index;column:account_id" json:"account_id"`
 	UserID    uuid.UUID `gorm:"type:uuid;not null;index;column:user_id" json:"user_id"`
 
-	FlowType string          `gorm:"type:varchar(20);not null;index;column:flow_type" json:"flow_type"` // dividend|deposit|withdrawal|fee
+	FlowType string          `gorm:"type:varchar(20);not null;index;column:flow_type" json:"flow_type"` // dividend|deposit|withdrawal|transfer_in|transfer_out|funding|interest|fee
 	Amount   decimal.Decimal `gorm:"type:decimal(15,2);not null;column:amount" json:"amount"`
-	Currency string  `gorm:"type:varchar(3);not null;default:'USD';column:currency" json:"currency"`
+	Currency string          `gorm:"type:varchar(3);not null;default:'USD';column:currency" json:"currency"`
 
-	Symbol      string `gorm:"type:varchar(20);column:symbol" json:"symbol,omitempty"` // nullable — dividends have symbol, deposits don't
-	Description string `gorm:"type:text;column:description" json:"description,omitempty"`
+	Symbol      string     `gorm:"type:varchar(20);column:symbol" json:"symbol,omitempty"`
+	Description string     `gorm:"type:text;column:description" json:"description,omitempty"`
+	TransferID  *uuid.UUID `gorm:"type:uuid;column:transfer_id;index" json:"transfer_id,omitempty"` // links the two sides of a spot↔futures transfer
 
 	SourceEventID uuid.UUID `gorm:"type:uuid;column:source_event_id" json:"source_event_id"`
 
@@ -27,5 +28,5 @@ type PortfolioCashFlow struct {
 }
 
 func (PortfolioCashFlow) TableName() string {
-	return "portfolio_cash_flows"
+	return "cash_flows"
 }

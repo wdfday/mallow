@@ -37,12 +37,11 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "enum": [
-                            "cash",
-                            "bank",
-                            "savings",
-                            "credit_card",
-                            "investment",
-                            "crypto_wallet"
+                            "spot",
+                            "futures_usdm",
+                            "futures_coinm",
+                            "unified",
+                            "options"
                         ],
                         "type": "string",
                         "description": "Filter by account type",
@@ -53,12 +52,6 @@ const docTemplate = `{
                         "type": "boolean",
                         "description": "Filter by active status",
                         "name": "is_active",
-                        "in": "query"
-                    },
-                    {
-                        "type": "boolean",
-                        "description": "Filter by primary status",
-                        "name": "is_primary",
                         "in": "query"
                     },
                     {
@@ -537,63 +530,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/investment/broker-connections/ssi": {
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Create a new SSI broker connection for the authenticated user",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "broker-connections"
-                ],
-                "summary": "Create SSI broker connection",
-                "parameters": [
-                    {
-                        "description": "SSI connection payload",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/mallow_investment_internal_module_broker_dto.CreateSSIConnectionRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "201": {
-                        "description": "Created",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_investment_internal_shared.SuccessResponse-mallow_investment_internal_module_broker_dto_BrokerConnectionResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_investment_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_investment_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_investment_internal_shared.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
         "/api/v1/investment/broker-connections/{id}": {
             "get": {
                 "security": [
@@ -874,6 +810,70 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/investment/broker-connections/{id}/rebroker": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Link an account to a different broker connection, restarting the orchestrator runtime",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "broker-connections"
+                ],
+                "summary": "Change broker for an account",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "New broker connection ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Account to rebroker",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/mallow_investment_internal_module_broker_dto.ReBrokerRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_investment_internal_shared.Success"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_investment_internal_shared.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_investment_internal_shared.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_investment_internal_shared.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/investment/broker-connections/{id}/refresh-token": {
             "post": {
                 "security": [
@@ -906,61 +906,6 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/mallow_investment_internal_shared.SuccessResponse-mallow_investment_internal_module_broker_dto_BrokerConnectionResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_investment_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_investment_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_investment_internal_shared.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/api/v1/investment/broker-connections/{id}/sync": {
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Trigger an on-demand sync for a broker connection",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "broker-connections"
-                ],
-                "summary": "Sync broker connection",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Connection ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_investment_internal_shared.SuccessResponse-mallow_investment_internal_module_broker_dto_SyncResultResponse"
                         }
                     },
                     "400": {
@@ -1069,6 +1014,18 @@ const docTemplate = `{
                         "description": "Alias for flow_type",
                         "name": "type",
                         "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Max records to return (default 50)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Records to skip (default 0)",
+                        "name": "offset",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -1152,7 +1109,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Get the authenticated user's portfolio positions",
+                "description": "Get the authenticated user's portfolio positions; filter by account_id to scope to a single account",
                 "consumes": [
                     "application/json"
                 ],
@@ -1173,6 +1130,12 @@ const docTemplate = `{
                         "description": "Position status",
                         "name": "status",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by account UUID",
+                        "name": "account_id",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -1180,6 +1143,12 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/mallow_investment_internal_shared.SuccessResponse-array_mallow_investment_internal_module_position_domain_PortfolioPosition"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_investment_internal_shared.ErrorResponse"
                         }
                     },
                     "401": {
@@ -1288,6 +1257,18 @@ const docTemplate = `{
                         "description": "Alias for snapshot_type",
                         "name": "type",
                         "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Max records to return (default 90)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Records to skip (default 0)",
+                        "name": "offset",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -1295,6 +1276,50 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/mallow_investment_internal_shared.SuccessResponse-array_mallow_investment_internal_module_snapshot_domain_PortfolioSnapshot"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_investment_internal_shared.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_investment_internal_shared.ErrorResponse"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Take an immediate portfolio snapshot for a given account",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "portfolio"
+                ],
+                "summary": "Trigger a manual portfolio snapshot",
+                "responses": {
+                    "202": {
+                        "description": "Accepted",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_investment_internal_shared.SuccessResponse-any"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_investment_internal_shared.ErrorResponse"
                         }
                     },
                     "401": {
@@ -1342,6 +1367,18 @@ const docTemplate = `{
                         "description": "Asset symbol",
                         "name": "symbol",
                         "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Max records to return (default 50)",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "Records to skip (default 0)",
+                        "name": "offset",
+                        "in": "query"
                     }
                 ],
                 "responses": {
@@ -1364,46 +1401,6 @@ const docTemplate = `{
                         }
                     }
                 }
-            }
-        },
-        "/api/v1/investment/watchlist": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Get the authenticated user's watchlist",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "watchlist"
-                ],
-                "summary": "List watchlist items",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_investment_internal_shared.SuccessResponse-array_mallow_investment_internal_module_watchlist_dto_ItemResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_investment_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_investment_internal_shared.ErrorResponse"
-                        }
-                    }
-                }
             },
             "post": {
                 "security": [
@@ -1411,7 +1408,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Add a symbol to the authenticated user's watchlist",
+                "description": "Record a manual portfolio transaction for the authenticated user",
                 "consumes": [
                     "application/json"
                 ],
@@ -1419,80 +1416,20 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "watchlist"
+                    "portfolio"
                 ],
-                "summary": "Add watchlist item",
-                "parameters": [
-                    {
-                        "description": "Watchlist item",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/mallow_investment_internal_module_watchlist_dto.AddRequest"
-                        }
-                    }
-                ],
+                "summary": "Record a manual transaction",
                 "responses": {
                     "201": {
                         "description": "Created",
                         "schema": {
-                            "$ref": "#/definitions/mallow_investment_internal_shared.SuccessResponse-mallow_investment_internal_module_watchlist_dto_ItemResponse"
+                            "$ref": "#/definitions/mallow_investment_internal_shared.SuccessResponse-any"
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/mallow_investment_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_investment_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "409": {
-                        "description": "Conflict",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_investment_internal_shared.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/api/v1/investment/watchlist/{symbol}": {
-            "delete": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Remove a symbol from the authenticated user's watchlist",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "watchlist"
-                ],
-                "summary": "Delete watchlist item",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Asset symbol",
-                        "name": "symbol",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "204": {
-                        "description": "No Content",
-                        "schema": {
-                            "type": "string"
                         }
                     },
                     "401": {
@@ -1515,55 +1452,61 @@ const docTemplate = `{
         "mallow_investment_internal_module_account_dto.AccountResponse": {
             "type": "object",
             "properties": {
-                "accountName": {
+                "account_name": {
                     "type": "string"
                 },
-                "accountNumberMasked": {
+                "account_type": {
                     "type": "string"
                 },
-                "accountType": {
-                    "type": "string"
-                },
-                "availableBalance": {
+                "available_balance": {
                     "type": "number"
                 },
-                "createdAt": {
+                "broker_connection_id": {
+                    "type": "string"
+                },
+                "created_at": {
                     "type": "string"
                 },
                 "currency": {
                     "type": "string"
                 },
-                "currentBalance": {
+                "current_balance": {
+                    "type": "number"
+                },
+                "equity": {
                     "type": "number"
                 },
                 "id": {
                     "type": "string"
                 },
-                "includeInNetWorth": {
+                "include_in_net_worth": {
                     "type": "boolean"
                 },
-                "institutionName": {
+                "institution_name": {
                     "type": "string"
                 },
-                "isActive": {
+                "is_active": {
                     "type": "boolean"
                 },
-                "isPrimary": {
+                "is_auto_sync": {
                     "type": "boolean"
                 },
-                "lastSyncedAt": {
+                "last_synced_at": {
                     "type": "string"
                 },
-                "syncErrorMessage": {
+                "margin_used": {
+                    "type": "number"
+                },
+                "sync_error_message": {
                     "type": "string"
                 },
-                "syncStatus": {
+                "sync_status": {
                     "type": "string"
                 },
-                "updatedAt": {
+                "updated_at": {
                     "type": "string"
                 },
-                "userId": {
+                "user_id": {
                     "type": "string"
                 }
             }
@@ -1759,34 +1702,15 @@ const docTemplate = `{
                 "api_secret": {
                     "type": "string"
                 },
-                "auto_sync": {
-                    "type": "boolean"
-                },
                 "broker_name": {
                     "type": "string"
                 },
                 "is_paper": {
-                    "description": "paper trading mode",
+                    "description": "paper trading",
                     "type": "boolean"
                 },
                 "notes": {
                     "type": "string"
-                },
-                "sync_assets": {
-                    "type": "boolean"
-                },
-                "sync_balance": {
-                    "type": "boolean"
-                },
-                "sync_frequency": {
-                    "description": "minutes",
-                    "type": "integer"
-                },
-                "sync_prices": {
-                    "type": "boolean"
-                },
-                "sync_transactions": {
-                    "type": "boolean"
                 }
             }
         },
@@ -1804,30 +1728,15 @@ const docTemplate = `{
                 "api_secret": {
                     "type": "string"
                 },
-                "auto_sync": {
-                    "type": "boolean"
-                },
                 "broker_name": {
                     "type": "string"
                 },
+                "is_paper": {
+                    "description": "demo trading",
+                    "type": "boolean"
+                },
                 "notes": {
                     "type": "string"
-                },
-                "sync_assets": {
-                    "type": "boolean"
-                },
-                "sync_balance": {
-                    "type": "boolean"
-                },
-                "sync_frequency": {
-                    "description": "minutes",
-                    "type": "integer"
-                },
-                "sync_prices": {
-                    "type": "boolean"
-                },
-                "sync_transactions": {
-                    "type": "boolean"
                 }
             }
         },
@@ -1845,30 +1754,14 @@ const docTemplate = `{
                 "api_secret": {
                     "type": "string"
                 },
-                "auto_sync": {
-                    "type": "boolean"
-                },
                 "broker_name": {
                     "type": "string"
                 },
+                "is_paper": {
+                    "type": "boolean"
+                },
                 "notes": {
                     "type": "string"
-                },
-                "sync_assets": {
-                    "type": "boolean"
-                },
-                "sync_balance": {
-                    "type": "boolean"
-                },
-                "sync_frequency": {
-                    "description": "minutes",
-                    "type": "integer"
-                },
-                "sync_prices": {
-                    "type": "boolean"
-                },
-                "sync_transactions": {
-                    "type": "boolean"
                 }
             }
         },
@@ -1887,81 +1780,18 @@ const docTemplate = `{
                 "api_secret": {
                     "type": "string"
                 },
-                "auto_sync": {
-                    "type": "boolean"
-                },
                 "broker_name": {
                     "type": "string"
+                },
+                "is_paper": {
+                    "description": "simulated trading",
+                    "type": "boolean"
                 },
                 "notes": {
                     "type": "string"
                 },
                 "passphrase": {
                     "type": "string"
-                },
-                "sync_assets": {
-                    "type": "boolean"
-                },
-                "sync_balance": {
-                    "type": "boolean"
-                },
-                "sync_frequency": {
-                    "description": "minutes",
-                    "type": "integer"
-                },
-                "sync_prices": {
-                    "type": "boolean"
-                },
-                "sync_transactions": {
-                    "type": "boolean"
-                }
-            }
-        },
-        "mallow_investment_internal_module_broker_dto.CreateSSIConnectionRequest": {
-            "type": "object",
-            "required": [
-                "broker_name",
-                "consumer_id",
-                "consumer_secret"
-            ],
-            "properties": {
-                "auto_sync": {
-                    "type": "boolean"
-                },
-                "broker_name": {
-                    "type": "string"
-                },
-                "consumer_id": {
-                    "type": "string"
-                },
-                "consumer_secret": {
-                    "type": "string"
-                },
-                "notes": {
-                    "type": "string"
-                },
-                "otp_code": {
-                    "type": "string"
-                },
-                "otp_method": {
-                    "description": "PIN/SMS/EMAIL/SMART",
-                    "type": "string"
-                },
-                "sync_assets": {
-                    "type": "boolean"
-                },
-                "sync_balance": {
-                    "type": "boolean"
-                },
-                "sync_frequency": {
-                    "description": "minutes",
-                    "type": "integer"
-                },
-                "sync_prices": {
-                    "type": "boolean"
-                },
-                "sync_transactions": {
-                    "type": "boolean"
                 }
             }
         },
@@ -1976,33 +1806,14 @@ const docTemplate = `{
                 }
             }
         },
-        "mallow_investment_internal_module_broker_dto.SyncResultResponse": {
+        "mallow_investment_internal_module_broker_dto.ReBrokerRequest": {
             "type": "object",
+            "required": [
+                "account_id"
+            ],
             "properties": {
-                "assets_count": {
-                    "type": "integer"
-                },
-                "balance_updated": {
-                    "type": "boolean"
-                },
-                "details": {
-                    "type": "object",
-                    "additionalProperties": {}
-                },
-                "error": {
+                "account_id": {
                     "type": "string"
-                },
-                "success": {
-                    "type": "boolean"
-                },
-                "synced_at": {
-                    "type": "string"
-                },
-                "transactions_count": {
-                    "type": "integer"
-                },
-                "updated_prices_count": {
-                    "type": "integer"
                 }
             }
         },
@@ -2015,41 +1826,14 @@ const docTemplate = `{
                 "api_secret": {
                     "type": "string"
                 },
-                "auto_sync": {
-                    "type": "boolean"
-                },
                 "broker_name": {
-                    "type": "string"
-                },
-                "consumer_id": {
-                    "type": "string"
-                },
-                "consumer_secret": {
                     "type": "string"
                 },
                 "notes": {
                     "type": "string"
                 },
-                "otp_method": {
-                    "type": "string"
-                },
                 "passphrase": {
                     "type": "string"
-                },
-                "sync_assets": {
-                    "type": "boolean"
-                },
-                "sync_balance": {
-                    "type": "boolean"
-                },
-                "sync_frequency": {
-                    "type": "integer"
-                },
-                "sync_prices": {
-                    "type": "boolean"
-                },
-                "sync_transactions": {
-                    "type": "boolean"
                 }
             }
         },
@@ -2072,7 +1856,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "flow_type": {
-                    "description": "dividend|deposit|withdrawal|fee",
+                    "description": "dividend|deposit|withdrawal|transfer_in|transfer_out|funding|interest|fee",
                     "type": "string"
                 },
                 "id": {
@@ -2085,7 +1869,10 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "symbol": {
-                    "description": "nullable — dividends have symbol, deposits don't",
+                    "type": "string"
+                },
+                "transfer_id": {
+                    "description": "links the two sides of a spot↔futures transfer",
                     "type": "string"
                 },
                 "user_id": {
@@ -2158,7 +1945,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "status": {
-                    "description": "open|closed",
+                    "description": "active|closed",
                     "type": "string"
                 },
                 "strike_price": {
@@ -2213,10 +2000,8 @@ const docTemplate = `{
                 "account_id": {
                     "type": "string"
                 },
-                "asset_class": {
-                    "type": "string"
-                },
                 "asset_type": {
+                    "description": "stock | crypto | etf | forex | commodity",
                     "type": "string"
                 },
                 "avg_cost": {
@@ -2399,7 +2184,7 @@ const docTemplate = `{
                 "amount": {
                     "type": "number"
                 },
-                "broker": {
+                "bot_id": {
                     "type": "string"
                 },
                 "commission": {
@@ -2458,58 +2243,6 @@ const docTemplate = `{
                 }
             }
         },
-        "mallow_investment_internal_module_watchlist_dto.AddRequest": {
-            "type": "object",
-            "required": [
-                "symbol"
-            ],
-            "properties": {
-                "asset_type": {
-                    "type": "string"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "notes": {
-                    "type": "string"
-                },
-                "symbol": {
-                    "type": "string"
-                },
-                "target_price": {
-                    "type": "number"
-                }
-            }
-        },
-        "mallow_investment_internal_module_watchlist_dto.ItemResponse": {
-            "type": "object",
-            "properties": {
-                "added_at": {
-                    "type": "string"
-                },
-                "asset_type": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "string"
-                },
-                "name": {
-                    "type": "string"
-                },
-                "notes": {
-                    "type": "string"
-                },
-                "symbol": {
-                    "type": "string"
-                },
-                "target_price": {
-                    "type": "number"
-                },
-                "updated_at": {
-                    "type": "string"
-                }
-            }
-        },
         "mallow_investment_internal_shared.ErrorResponse": {
             "type": "object",
             "properties": {
@@ -2531,6 +2264,21 @@ const docTemplate = `{
         "mallow_investment_internal_shared.Success": {
             "type": "object",
             "properties": {
+                "detail": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "integer"
+                }
+            }
+        },
+        "mallow_investment_internal_shared.SuccessResponse-any": {
+            "type": "object",
+            "properties": {
+                "data": {},
                 "detail": {
                     "type": "string"
                 },
@@ -2615,23 +2363,6 @@ const docTemplate = `{
             "properties": {
                 "data": {
                     "$ref": "#/definitions/mallow_investment_internal_module_transaction_domain.PortfolioTransaction"
-                },
-                "detail": {
-                    "type": "string"
-                },
-                "message": {
-                    "type": "string"
-                },
-                "status": {
-                    "type": "integer"
-                }
-            }
-        },
-        "mallow_investment_internal_shared.SuccessResponse-array_mallow_investment_internal_module_watchlist_dto_ItemResponse": {
-            "type": "object",
-            "properties": {
-                "data": {
-                    "$ref": "#/definitions/mallow_investment_internal_module_watchlist_dto.ItemResponse"
                 },
                 "detail": {
                     "type": "string"
@@ -2729,23 +2460,6 @@ const docTemplate = `{
                 }
             }
         },
-        "mallow_investment_internal_shared.SuccessResponse-mallow_investment_internal_module_broker_dto_SyncResultResponse": {
-            "type": "object",
-            "properties": {
-                "data": {
-                    "$ref": "#/definitions/mallow_investment_internal_module_broker_dto.SyncResultResponse"
-                },
-                "detail": {
-                    "type": "string"
-                },
-                "message": {
-                    "type": "string"
-                },
-                "status": {
-                    "type": "integer"
-                }
-            }
-        },
         "mallow_investment_internal_shared.SuccessResponse-mallow_investment_internal_module_portfolio_replay_dto_RebuildResponse": {
             "type": "object",
             "properties": {
@@ -2768,23 +2482,6 @@ const docTemplate = `{
             "properties": {
                 "data": {
                     "$ref": "#/definitions/mallow_investment_internal_module_position_domain.PortfolioPosition"
-                },
-                "detail": {
-                    "type": "string"
-                },
-                "message": {
-                    "type": "string"
-                },
-                "status": {
-                    "type": "integer"
-                }
-            }
-        },
-        "mallow_investment_internal_shared.SuccessResponse-mallow_investment_internal_module_watchlist_dto_ItemResponse": {
-            "type": "object",
-            "properties": {
-                "data": {
-                    "$ref": "#/definitions/mallow_investment_internal_module_watchlist_dto.ItemResponse"
                 },
                 "detail": {
                     "type": "string"

@@ -37,9 +37,6 @@ func (m *MockAccountService) CreateAccount(ctx context.Context, userID string, r
 	}
 	return args.Get(0).(*domain.Account), args.Error(1)
 }
-func (m *MockAccountService) CreateDefaultCashAccount(ctx context.Context, userID string) error {
-	return m.Called(ctx, userID).Error(0)
-}
 func (m *MockAccountService) GetByID(ctx context.Context, id, userID string) (*domain.Account, error) {
 	args := m.Called(ctx, id, userID)
 	if args.Get(0) == nil {
@@ -124,7 +121,7 @@ func sampleAccount(userID uuid.UUID) *domain.Account {
 		ID:          uuid.New(),
 		UserID:      userID,
 		AccountName: "Test Cash",
-		AccountType: domain.AccountTypeCash,
+		AccountType: domain.AccountTypeSpot,
 		Currency:    domain.CurrencyVND,
 		IsActive:    true,
 	}

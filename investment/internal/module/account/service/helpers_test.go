@@ -17,60 +17,14 @@ func TestParseAccountType(t *testing.T) {
 		expected    domain.AccountType
 		shouldError bool
 	}{
-		{
-			name:        "valid cash",
-			input:       "cash",
-			expected:    domain.AccountTypeCash,
-			shouldError: false,
-		},
-		{
-			name:        "valid cash uppercase",
-			input:       "CASH",
-			expected:    domain.AccountTypeCash,
-			shouldError: false,
-		},
-		{
-			name:        "valid bank",
-			input:       "bank",
-			expected:    domain.AccountTypeBank,
-			shouldError: false,
-		},
-		{
-			name:        "valid savings",
-			input:       "savings",
-			expected:    domain.AccountTypeSavings,
-			shouldError: false,
-		},
-		{
-			name:        "valid credit_card",
-			input:       "credit_card",
-			expected:    domain.AccountTypeCreditCard,
-			shouldError: false,
-		},
-		{
-			name:        "valid investment",
-			input:       "investment",
-			expected:    domain.AccountTypeInvestment,
-			shouldError: false,
-		},
-		{
-			name:        "valid crypto_wallet",
-			input:       "crypto_wallet",
-			expected:    domain.AccountTypeCryptoWallet,
-			shouldError: false,
-		},
-		{
-			name:        "invalid type",
-			input:       "invalid_type",
-			expected:    "",
-			shouldError: true,
-		},
-		{
-			name:        "empty string",
-			input:       "",
-			expected:    "",
-			shouldError: true,
-		},
+		{"spot", "spot", domain.AccountTypeSpot, false},
+		{"spot uppercase", "SPOT", domain.AccountTypeSpot, false},
+		{"futures_usdm", "futures_usdm", domain.AccountTypeFuturesUSDM, false},
+		{"futures_coinm", "futures_coinm", domain.AccountTypeFuturesCOINM, false},
+		{"unified", "unified", domain.AccountTypeUnified, false},
+		{"options", "options", domain.AccountTypeOptions, false},
+		{"invalid type", "invalid_type", "", true},
+		{"empty string", "", "", true},
 	}
 
 	for _, tt := range tests {
@@ -95,42 +49,12 @@ func TestParseSyncStatus(t *testing.T) {
 		expected    domain.SyncStatus
 		shouldError bool
 	}{
-		{
-			name:        "valid active",
-			input:       "active",
-			expected:    domain.SyncStatusActive,
-			shouldError: false,
-		},
-		{
-			name:        "valid active uppercase",
-			input:       "ACTIVE",
-			expected:    domain.SyncStatusActive,
-			shouldError: false,
-		},
-		{
-			name:        "valid error",
-			input:       "error",
-			expected:    domain.SyncStatusError,
-			shouldError: false,
-		},
-		{
-			name:        "valid disconnected",
-			input:       "disconnected",
-			expected:    domain.SyncStatusDisconnected,
-			shouldError: false,
-		},
-		{
-			name:        "invalid status",
-			input:       "invalid_status",
-			expected:    "",
-			shouldError: true,
-		},
-		{
-			name:        "empty string",
-			input:       "",
-			expected:    "",
-			shouldError: true,
-		},
+		{"active", "active", domain.SyncStatusActive, false},
+		{"active uppercase", "ACTIVE", domain.SyncStatusActive, false},
+		{"error", "error", domain.SyncStatusError, false},
+		{"disconnected", "disconnected", domain.SyncStatusDisconnected, false},
+		{"invalid status", "invalid_status", "", true},
+		{"empty string", "", "", true},
 	}
 
 	for _, tt := range tests {
@@ -154,36 +78,12 @@ func TestNormalizeString(t *testing.T) {
 		input    string
 		expected *string
 	}{
-		{
-			name:     "normal string",
-			input:    "test",
-			expected: stringPtr("test"),
-		},
-		{
-			name:     "string with leading spaces",
-			input:    "  test",
-			expected: stringPtr("test"),
-		},
-		{
-			name:     "string with trailing spaces",
-			input:    "test  ",
-			expected: stringPtr("test"),
-		},
-		{
-			name:     "string with both leading and trailing spaces",
-			input:    "  test  ",
-			expected: stringPtr("test"),
-		},
-		{
-			name:     "empty string",
-			input:    "",
-			expected: nil,
-		},
-		{
-			name:     "only spaces",
-			input:    "   ",
-			expected: nil,
-		},
+		{"normal string", "test", stringPtr("test")},
+		{"leading spaces", "  test", stringPtr("test")},
+		{"trailing spaces", "test  ", stringPtr("test")},
+		{"both spaces", "  test  ", stringPtr("test")},
+		{"empty string", "", nil},
+		{"only spaces", "   ", nil},
 	}
 
 	for _, tt := range tests {
@@ -206,31 +106,11 @@ func TestNormalizeNullableString(t *testing.T) {
 		input    *string
 		expected any
 	}{
-		{
-			name:     "nil input",
-			input:    nil,
-			expected: nil,
-		},
-		{
-			name:     "normal string",
-			input:    stringPtr("test"),
-			expected: "test",
-		},
-		{
-			name:     "string with spaces",
-			input:    stringPtr("  test  "),
-			expected: "test",
-		},
-		{
-			name:     "empty string",
-			input:    stringPtr(""),
-			expected: nil,
-		},
-		{
-			name:     "only spaces",
-			input:    stringPtr("   "),
-			expected: nil,
-		},
+		{"nil input", nil, nil},
+		{"normal string", stringPtr("test"), "test"},
+		{"string with spaces", stringPtr("  test  "), "test"},
+		{"empty string", stringPtr(""), nil},
+		{"only spaces", stringPtr("   "), nil},
 	}
 
 	for _, tt := range tests {

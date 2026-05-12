@@ -177,8 +177,6 @@ pub struct ExitReasonBreakdownResponse {
     pub stop_loss: usize,
     pub take_profit: usize,
     pub trailing_stop: usize,
-    pub atr_stop: usize,
-    pub atr_target: usize,
     pub max_bars: usize,
     pub end_of_data: usize,
 }

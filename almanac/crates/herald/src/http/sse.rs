@@ -34,7 +34,7 @@ use std::time::Duration;
 
 use alm_core::Bar;
 use alm_ledger::{IndicatorCell, IndicatorHandle, IndicatorSpec};
-use alm_strategy::RhaiStreamEval;
+use alm_strategy::{IndicatorSnapshot, RhaiStreamEval};
 use axum::{
     extract::{Path, State},
     response::sse::{Event, KeepAlive, Sse},
@@ -78,8 +78,8 @@ pub async fn stream_bars(
 
     // ── Parse script / structured indicators ─────────────────────────────────
 
-    // (var_name/label, IndicatorSpec, field, buf_depth)
-    type DeclEntry = (String, IndicatorSpec, String, usize);
+    // (var_name/label, IndicatorSpec, field (None = multi-output), buf_depth)
+    type DeclEntry = (String, IndicatorSpec, Option<String>, usize);
 
     let (evaluator, decl_entries): (Option<RhaiStreamEval>, Vec<DeclEntry>) =
         if let Some(script) = &req.script {
@@ -101,8 +101,7 @@ pub async fn stream_bars(
         } else {
             let entries = req.indicators.unwrap_or_default().iter().filter_map(|cfg| {
                 let (spec, label) = build_spec(cfg).ok()?;
-                let field = "value".to_string();
-                Some((label, spec, field, 1usize))
+                Some((label, spec, Some("value".to_string()), 1usize))
             }).collect();
             (None, entries)
         };
@@ -140,17 +139,21 @@ pub async fn stream_bars(
                 let indicators: HashMap<String, HashMap<String, f64>> =
                     if let Some(ev) = &evaluator {
                         // Rhai mode: read arrays from ledger, run script, collect plot().
-                        let ind_arrays = ledger.with_state(&sym, tf, |s| {
-                            let mut map: HashMap<String, Vec<f64>> = HashMap::new();
-                            for (var_name, spec, field, buf) in &decl_entries {
+                        let snapshots = ledger.with_state(&sym, tf, |s| {
+                            let mut map: HashMap<String, IndicatorSnapshot> = HashMap::new();
+                            for (var_name, spec, field_opt, buf) in &decl_entries {
                                 if let Some(cell) = s.indicators.get(spec) {
-                                    map.insert(var_name.clone(), cell_last_n(cell, field, *buf));
+                                    let snap = match field_opt {
+                                        Some(f) => IndicatorSnapshot::Single(cell_last_n(cell, f, *buf)),
+                                        None    => IndicatorSnapshot::Multi(cell_last_n_multi(cell, *buf)),
+                                    };
+                                    map.insert(var_name.clone(), snap);
                                 }
                             }
                             map
                         }).unwrap_or_default();
                         let history: Vec<Bar> = bar_history.iter().cloned().collect();
-                        ev.run(&ind_arrays, &history)
+                        ev.run(&snapshots, &history)
                             .into_iter()
                             .map(|(k, v)| (k, HashMap::from([("value".to_string(), v)])))
                             .collect()
@@ -260,6 +263,23 @@ fn cell_last_n(cell: &IndicatorCell, field: &str, n: usize) -> Vec<f64> {
     cell.column(field)
         .map(|col| col.iter().rev().take(n).filter_map(|v| *v).collect())
         .unwrap_or_default()
+}
+
+fn cell_last_n_multi(cell: &IndicatorCell, n: usize) -> Vec<HashMap<String, f64>> {
+    let names: Vec<&str> = cell.field_names().to_vec();
+    let cols: Vec<_> = names.iter().map(|f| cell.column(f)).collect();
+    let len = cols.first()
+        .and_then(|c| c.as_ref())
+        .map_or(0, |c| c.len());
+    (0..n.min(len))
+        .map(|i| {
+            let ri = len - 1 - i;
+            names.iter().zip(cols.iter()).filter_map(|(name, col)| {
+                col.as_ref().and_then(|c| c.get(ri)).and_then(|v| *v)
+                    .map(|v| (name.to_string(), v))
+            }).collect()
+        })
+        .collect()
 }
 
 fn build_spec(cfg: &IndicatorConfig) -> Result<(IndicatorSpec, String), String> {

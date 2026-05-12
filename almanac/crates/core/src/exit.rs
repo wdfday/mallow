@@ -4,16 +4,12 @@
 pub enum ExitReason {
     /// Closed by strategy signal (`Direction::Close`).
     Signal,
-    /// Fixed stop-loss level hit.
+    /// Stop-loss level hit (fixed % or signal-level absolute price).
     StopLoss,
-    /// Fixed take-profit level hit.
+    /// Take-profit level hit (fixed % or signal-level absolute price).
     TakeProfit,
     /// Trailing stop level hit.
     TrailingStop,
-    /// ATR-based stop level hit.
-    AtrStop,
-    /// ATR-based target level hit.
-    AtrTarget,
     /// Time-based exit: position held for `max_bars_held` bars.
     MaxBarsHeld,
     /// Force-closed at end of data (backtest termination).
@@ -27,8 +23,6 @@ impl std::fmt::Display for ExitReason {
             Self::StopLoss     => "stop_loss",
             Self::TakeProfit   => "take_profit",
             Self::TrailingStop => "trailing_stop",
-            Self::AtrStop      => "atr_stop",
-            Self::AtrTarget    => "atr_target",
             Self::MaxBarsHeld  => "max_bars",
             Self::EndOfData    => "end_of_data",
         };
@@ -80,15 +74,6 @@ pub struct ExitRules {
     /// Time-based exit: force-close after this many bars in position.
     pub max_bars_held: Option<usize>,
 
-    /// ATR period for dynamic stop/target calculation.
-    pub atr_period: usize,
-
-    /// ATR-based stop-loss multiplier. Stop = entry ± ATR * multiplier.
-    pub atr_stop_multiplier: Option<f64>,
-
-    /// ATR-based take-profit multiplier. Target = entry ± ATR * multiplier.
-    pub atr_target_multiplier: Option<f64>,
-
     /// Controls how OHLC data is used to check exit levels within a bar.
     pub intra_bar_mode: IntraBarMode,
 }
@@ -100,12 +85,6 @@ impl ExitRules {
             || self.take_profit_pct.is_some()
             || self.trailing_stop_pct.is_some()
             || self.max_bars_held.is_some()
-            || self.needs_atr()
-    }
-
-    /// Returns `true` if ATR-based exits are configured (requires ATR indicator).
-    pub fn needs_atr(&self) -> bool {
-        self.atr_stop_multiplier.is_some() || self.atr_target_multiplier.is_some()
     }
 }
 
@@ -245,16 +224,16 @@ impl PositionTracker {
             if self.is_long { self.entry_price * (1.0 + tp) } else { self.entry_price * (1.0 - tp) }
         });
 
-        // ATR stop/target
-        let atr_stop   = self.stop_price;
-        let atr_target = self.target_price;
+        // Signal-level absolute stop / target prices.
+        let sig_stop   = self.stop_price;
+        let sig_target = self.target_price;
 
-        // Check a stop-side level (trailing / SL / ATR stop).
+        // Check a stop-side level (trailing / SL / signal stop).
         let check_stop = |level: f64| -> bool {
             if self.is_long { stop_check <= level } else { stop_check >= level }
         };
 
-        // Check a target-side level (TP / ATR target).
+        // Check a target-side level (TP / signal target).
         let check_target = |level: f64| -> bool {
             if self.is_long { target_check >= level } else { target_check <= level }
         };
@@ -263,11 +242,11 @@ impl PositionTracker {
         let stops: &[Option<(f64, ExitReason)>] = &[
             trail_stop_price.map(|p| (p, ExitReason::TrailingStop)),
             sl_price.map(|p| (p, ExitReason::StopLoss)),
-            atr_stop.map(|p| (p, ExitReason::AtrStop)),
+            sig_stop.map(|p| (p, ExitReason::StopLoss)),
         ];
         let targets: &[Option<(f64, ExitReason)>] = &[
             tp_price.map(|p| (p, ExitReason::TakeProfit)),
-            atr_target.map(|p| (p, ExitReason::AtrTarget)),
+            sig_target.map(|p| (p, ExitReason::TakeProfit)),
         ];
 
         let find_stop   = || stops.iter().flatten().find(|(p, _)| check_stop(*p)).map(|(p, r)| (*p, r.clone()));

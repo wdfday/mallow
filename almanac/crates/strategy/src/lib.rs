@@ -9,7 +9,7 @@ pub use candle_type::{CandleTransform, CandleType};
 // ── Expression / template strategies ─────────────────────────────────────────
 pub mod script;
 pub use script::{
-    RhaiStrategy, RhaiStreamEval, StreamDecl, PlotResult,
+    RhaiStrategy, RhaiStreamEval, StreamDecl, IndicatorSnapshot, PlotResult,
     rhai_lint, LintDiagnostic, RhaiLintScope, DeclaredIndicator, KNOWN_INDICATOR_TYPES,
 };
 

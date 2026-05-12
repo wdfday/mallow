@@ -12,7 +12,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use alm_core::Timeframe;
 use alm_data::feed::BarFeed;
-use alm_engine::data::{find_bootstrap_from_ms, find_parquet_files, load_bars};
+use alm_engine::data::{find_parquet_files, load_bars};
 use alm_ledger::{default_warm_set, Ledger, LedgerConfig, LedgerObserver};
 use handler::Handler;
 use registry::Registry;

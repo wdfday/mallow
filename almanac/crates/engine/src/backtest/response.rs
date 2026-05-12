@@ -222,8 +222,6 @@ pub fn build(
                 stop_loss:      report.exit_reasons.stop_loss,
                 take_profit:    report.exit_reasons.take_profit,
                 trailing_stop:  report.exit_reasons.trailing_stop,
-                atr_stop:       report.exit_reasons.atr_stop,
-                atr_target:     report.exit_reasons.atr_target,
                 max_bars:       report.exit_reasons.max_bars,
                 end_of_data:    report.exit_reasons.end_of_data,
             },

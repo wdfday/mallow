@@ -105,15 +105,6 @@ impl SymbolResamplers {
         out
     }
 
-    /// Peek the currently-forming (incomplete) bar for `(symbol, tf)`.
-    ///
-    /// Returns `None` when the symbol has never been seen, or when `tf`
-    /// is not in the active level set.
-    pub fn peek(&self, symbol: &str, tf: Timeframe) -> Option<Bar> {
-        let idx = self.levels.iter().position(|t| *t == tf)?;
-        self.by_symbol.get(symbol)?.get(idx)?.peek()
-    }
-
     /// Iterator over the actively-tracked timeframes (above base TF).
     pub fn active_tfs(&self) -> impl Iterator<Item = Timeframe> + '_ {
         self.levels.iter().copied()

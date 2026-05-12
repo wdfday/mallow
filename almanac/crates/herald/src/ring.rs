@@ -28,24 +28,4 @@ impl BarRing {
         deq.push_back(bar);
     }
 
-    /// Return the last `n` bars for `symbol` (oldest first).
-    /// Returns fewer than `n` if not enough history is available.
-    pub fn last_n(&self, symbol: &str, n: usize) -> Vec<Bar> {
-        let map = self.0.read();
-        let Some(deq) = map.get(symbol) else {
-            return vec![];
-        };
-        let skip = deq.len().saturating_sub(n);
-        deq.iter().skip(skip).cloned().collect()
-    }
-
-    /// Symbols currently tracked.
-    pub fn symbols(&self) -> Vec<String> {
-        self.0.read().keys().cloned().collect()
-    }
-
-    /// Bar count for `symbol`.
-    pub fn len(&self, symbol: &str) -> usize {
-        self.0.read().get(symbol).map_or(0, |d| d.len())
-    }
 }

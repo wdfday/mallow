@@ -134,7 +134,9 @@ impl VarBinding {
                     self.history.push(&fields, self.buf_depth);
                 }
             } else {
-                return self.history.len() >= self.buf_depth;
+                // Confirmed mode: no HTF bar closed this M1 bar — skip evaluation.
+                // The script only runs at HTF boundaries, not on every M1 bar.
+                return false;
             }
         } else if let Some(fields) = self.ind.update(bar) {
             self.history.push(&fields, self.buf_depth);

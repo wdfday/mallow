@@ -198,31 +198,27 @@ fn report_to_pydict<'py>(
     // Timeframe
     out.set_item("timeframe", report.timeframe.to_string())?;
 
-    // Regime summary
+    // Regime summary — populated when a Rhai script sets regime.* variables.
+    // changes: [(timestamp_ms, label), ...] — on-change transitions only.
+    // trade_breakdown: [{"label", "trades", "win_rate_pct", "avg_return_pct", "profit_factor"}, ...]
     if let Some(rs) = &report.regime_summary {
-        // out.set_item("trending_pct",  rs.trending_pct)?;
-        // out.set_item("ranging_pct",   rs.ranging_pct)?;
-        // out.set_item("neutral_pct",   rs.neutral_pct)?;
-        // out.set_item("high_vol_pct",  rs.high_vol_pct)?;
-        // out.set_item("low_vol_pct",   rs.low_vol_pct)?;
-        // let changes: Vec<(i64, &str)> =
-        //     rs.changes.iter().map(|(ts, label)| (*ts, label.as_str())).collect();
-        // out.set_item("regime_changes", changes)?;
-
-        out.set_item("trending_pct",   0.0_f64)?;
-        out.set_item("ranging_pct",    0.0_f64)?;
-        out.set_item("neutral_pct",    0.0_f64)?;
-        out.set_item("high_vol_pct",   0.0_f64)?;
-        out.set_item("low_vol_pct",    0.0_f64)?;
-        out.set_item("regime_changes", Vec::<(i64, String)>::new())?;
-
+        let changes: Vec<(i64, &str)> =
+            rs.changes.iter().map(|(ts, label)| (*ts, label.as_str())).collect();
+        out.set_item("regime_changes", changes)?;
+        let breakdown = PyList::empty_bound(py);
+        for s in &rs.trade_breakdown {
+            let d = PyDict::new_bound(py);
+            d.set_item("label",           &s.label)?;
+            d.set_item("trades",          s.trades)?;
+            d.set_item("win_rate_pct",    s.win_rate_pct)?;
+            d.set_item("avg_return_pct",  s.avg_return_pct)?;
+            d.set_item("profit_factor",   s.profit_factor)?;
+            breakdown.append(d)?;
+        }
+        out.set_item("regime_trade_breakdown", breakdown)?;
     } else {
-        out.set_item("trending_pct",   0.0_f64)?;
-        out.set_item("ranging_pct",    0.0_f64)?;
-        out.set_item("neutral_pct",    0.0_f64)?;
-        out.set_item("high_vol_pct",   0.0_f64)?;
-        out.set_item("low_vol_pct",    0.0_f64)?;
-        out.set_item("regime_changes", Vec::<(i64, String)>::new())?;
+        out.set_item("regime_changes",        Vec::<(i64, String)>::new())?;
+        out.set_item("regime_trade_breakdown", Vec::<()>::new())?;
     }
 
     // Equity curve
@@ -278,9 +274,6 @@ fn report_to_pydict<'py>(
 /// - `tp`: fixed take-profit fraction (e.g. 0.06)
 /// - `trailing_stop`: trailing stop fraction from peak (e.g. 0.05)
 /// - `max_bars`: time-based exit after N bars
-/// - `atr_sl`: ATR stop multiplier (e.g. 1.5)
-/// - `atr_tp`: ATR target multiplier (e.g. 3.0)
-/// - `atr_period`: ATR period for dynamic levels (default 14)
 /// - `intra_bar_mode`: `"close_only"` (default) | `"pessimistic"` | `"ohlc_heuristic"`
 fn extract_exit_rules(exit: Option<&Bound<PyDict>>) -> PyResult<ExitRules> {
     let Some(d) = exit else { return Ok(ExitRules::default()); };
@@ -288,9 +281,6 @@ fn extract_exit_rules(exit: Option<&Bound<PyDict>>) -> PyResult<ExitRules> {
     let tp            = d.get_item("tp")?.and_then(|v| v.extract::<f64>().ok());
     let trailing_stop = d.get_item("trailing_stop")?.and_then(|v| v.extract::<f64>().ok());
     let max_bars      = d.get_item("max_bars")?.and_then(|v| v.extract::<usize>().ok());
-    let atr_sl        = d.get_item("atr_sl")?.and_then(|v| v.extract::<f64>().ok());
-    let atr_tp        = d.get_item("atr_tp")?.and_then(|v| v.extract::<f64>().ok());
-    let atr_period    = d.get_item("atr_period")?.and_then(|v| v.extract::<usize>().ok()).unwrap_or(14);
     let intra_bar_mode = match d.get_item("intra_bar_mode")?.and_then(|v| v.extract::<String>().ok()).as_deref() {
         Some("pessimistic")    => IntraBarMode::Pessimistic,
         Some("ohlc_heuristic") => IntraBarMode::OhlcHeuristic,
@@ -301,11 +291,7 @@ fn extract_exit_rules(exit: Option<&Bound<PyDict>>) -> PyResult<ExitRules> {
         take_profit_pct: tp,
         trailing_stop_pct: trailing_stop,
         max_bars_held: max_bars,
-        atr_stop_multiplier: atr_sl,
-        atr_target_multiplier: atr_tp,
-        atr_period,
         intra_bar_mode,
-        ..Default::default()
     })
 }
 
@@ -887,8 +873,8 @@ fn run_portfolio_backtest<'py>(
 ///     Same format as :func:`run_backtest` — ``"t"``, ``"o"``, ``"h"``, ``"l"``,
 ///     ``"c"``, ``"v"`` lists.
 /// indicators : dict
-///     Mapping of ``name → config_dict`` using the same config format as
-///     ``DynamicStrategy``.  Examples:
+///     Mapping of ``name → config_dict`` using the indicator config format
+///     accepted by ``IndicatorBox::from_config``.  Examples:
 ///
 /// ```text
 /// {

@@ -17,7 +17,6 @@ use std::collections::VecDeque;
 
 use alm_core::{Bar, signal::Signal};
 use alm_core::strategy::Strategy;
-use alm_core::portfolio::PortfolioSnapshot;
 
 pub struct Pixel3 {
     symbol: String,

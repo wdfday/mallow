@@ -18,14 +18,13 @@ use crate::bar_resampler::TimeBarResampler;
 /// let rsi14   = ind.rsi(14, 4);
 /// let adx14   = ind.adx(14, 5);
 /// let atr14   = ind.atr(14, 3);
-/// let macd    = ind.macd(12, 3);  // histogram, not used in signals
-/// let bb_u    = ind.bb_upper(20, 3);
-/// let bb_l    = ind.bb_lower(20, 3);
+/// let macd    = ind.macd(12, 3);  // not used in signals
+/// let bb      = ind.bbands(20, 3);
 /// let h1_ema  = ind.ema(20, "H1", 3);
 ///
-/// let trend   = adx14[0] > 25.0 && rising_n(adx14, 3);
+/// let trend   = adx14[0].adx > 25.0 && rising_n(adx14.adx, 3);
 /// let mom     = momentum(rsi14, 3) > 0.0;
-/// let squeeze = (bb_u[0] - bb_l[0]) < atr14[0] * 1.5;
+/// let squeeze = (bb[0].upper - bb[0].lower) < atr14[0].atr * 1.5;
 /// let h_break = highest(close, 20) == close[0];
 ///
 /// let entry = cross_above(ema9, ema21)
@@ -34,9 +33,9 @@ use crate::bar_resampler::TimeBarResampler;
 ///          && trend && mom && squeeze && h_break
 ///          && above(h1_ema, ema50);
 ///
-/// let exit  = cross_below(ema9, ema21) || rsi14[0] > 80.0 || falling_n(adx14, 2);
-/// let tp    = close[0] + atr14[0] * 2.5;
-/// let sl    = close[0] - atr14[0] * 1.5;
+/// let exit  = cross_below(ema9, ema21) || rsi14[0] > 80.0 || falling_n(adx14.adx, 2);
+/// let tp    = close[0] + atr14[0].atr * 2.5;
+/// let sl    = close[0] - atr14[0].atr * 1.5;
 /// ```
 pub struct KitchenSinkStrategy {
     // ── M1 indicators ──────────────────────────────────────────────────────────
@@ -342,13 +341,12 @@ let rsi14   = ind.rsi(14, 4);
 let adx14   = ind.adx(14, 5);
 let atr14   = ind.atr(14, 3);
 let macd    = ind.macd(12, 3);
-let bb_u    = ind.bb_upper(20, 3);
-let bb_l    = ind.bb_lower(20, 3);
+let bb      = ind.bbands(20, 3);
 let h1_ema  = ind.ema(20, "H1", 3);
 
-let trend   = adx14[0] > 25.0 && rising_n(adx14, 3);
+let trend   = adx14[0].adx > 25.0 && rising_n(adx14.adx, 3);
 let mom     = momentum(rsi14, 3) > 0.0;
-let squeeze = (bb_u[0] - bb_l[0]) < atr14[0] * 1.5;
+let squeeze = (bb[0].upper - bb[0].lower) < atr14[0].atr * 1.5;
 let h_break = highest(close, 20) == close[0];
 
 let entry = cross_above(ema9, ema21)
@@ -357,9 +355,9 @@ let entry = cross_above(ema9, ema21)
          && trend && mom && squeeze && h_break
          && above(h1_ema, ema50);
 
-let exit  = cross_below(ema9, ema21) || rsi14[0] > 80.0 || falling_n(adx14, 2);
-let tp    = close[0] + atr14[0] * 2.5;
-let sl    = close[0] - atr14[0] * 1.5;
+let exit  = cross_below(ema9, ema21) || rsi14[0] > 80.0 || falling_n(adx14.adx, 2);
+let tp    = close[0] + atr14[0].atr * 2.5;
+let sl    = close[0] - atr14[0].atr * 1.5;
 "#;
 
     #[test]

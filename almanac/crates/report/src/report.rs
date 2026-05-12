@@ -13,8 +13,6 @@ pub struct ExitReasonBreakdown {
     pub stop_loss: usize,
     pub take_profit: usize,
     pub trailing_stop: usize,
-    pub atr_stop: usize,
-    pub atr_target: usize,
     pub max_bars: usize,
     pub end_of_data: usize,
 }
@@ -274,8 +272,6 @@ impl BacktestReport {
                 ExitReason::StopLoss     => exit_reasons.stop_loss += 1,
                 ExitReason::TakeProfit   => exit_reasons.take_profit += 1,
                 ExitReason::TrailingStop => exit_reasons.trailing_stop += 1,
-                ExitReason::AtrStop      => exit_reasons.atr_stop += 1,
-                ExitReason::AtrTarget    => exit_reasons.atr_target += 1,
                 ExitReason::MaxBarsHeld  => exit_reasons.max_bars += 1,
                 ExitReason::EndOfData    => exit_reasons.end_of_data += 1,
             }

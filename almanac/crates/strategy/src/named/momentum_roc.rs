@@ -96,7 +96,7 @@ impl Strategy for DualMomentum {
         if f > 0.0 && s > 0.0 {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if (f < 0.0 || s < 0.0) {
+        if f < 0.0 || s < 0.0 {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]

@@ -185,7 +185,7 @@ struct BacktestOut {
 /// }
 /// ```
 fn run_strategy(
-    symbol: &str,
+    _symbol: &str,
     bars: &[Bar],
     strategy: &mut dyn Strategy,
     initial_capital: f64,

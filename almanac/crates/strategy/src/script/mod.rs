@@ -17,4 +17,4 @@ pub use rhai_strategy::{
 };
 
 pub mod rhai_stream;
-pub use rhai_stream::{RhaiStreamEval, StreamDecl, PlotResult};
+pub use rhai_stream::{RhaiStreamEval, StreamDecl, IndicatorSnapshot, PlotResult};

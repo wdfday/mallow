@@ -28,7 +28,7 @@ func buildRouter(cfg config.Config, h *handler.Handler, rdb *redis.Client, ident
 	// ── Proxies ─────────────────────────────────────────────────────────
 	identityProxy := handler.IdentityProxy(cfg.IdentityURL)
 	investmentProxy := handler.InvestmentProxy(cfg.InvestmentURL)
-	orchestratorProxy := handler.OrchestratorProxy(cfg.OrchestratorURL)
+	helmProxy := handler.HelmProxy(cfg.HelmURL)
 	strategistProxy := handler.StrategistProxy(cfg.StrategistURL)
 	heraldProxy := handler.HeraldProxy(cfg.HeraldURL)
 
@@ -68,15 +68,15 @@ func buildRouter(cfg config.Config, h *handler.Handler, rdb *redis.Client, ident
 
 	// Service swagger UIs — public, kept outside /api/v1/* to avoid Gin catch-all conflicts
 	r.Any("/swagger/investment/*path", investmentProxy)
-	r.Any("/swagger/orchestrator/*path", orchestratorProxy)
+	r.Any("/swagger/orchestrator/*path", helmProxy)
 
 	// ── Protected routes ─────────────────────────────────────────────────
 	r.Any("/api/v1/investment/*path", jwtAuth, injectHeaders, investmentProxy)
-	r.Any("/api/v1/orchestrator/*path", jwtAuth, injectHeaders, orchestratorProxy)
+	r.Any("/api/v1/helm/*path", jwtAuth, injectHeaders, helmProxy)
 	r.Any("/api/v1/strategist/*path", jwtAuth, injectHeaders, strategistProxy)
 
 	// Protected endpoints
-	api := r.Group("/api", jwtAuth, injectHeaders)
+	api := r.Group("/api/v1", jwtAuth, injectHeaders)
 	{
 		// Chat (gateway-native: injects user_id into strategist session)
 		api.POST("/chat", h.Chat)
@@ -93,16 +93,19 @@ func buildRouter(cfg config.Config, h *handler.Handler, rdb *redis.Client, ident
 		// Herald — backtest
 		api.GET("/strategies", heraldProxy)
 		api.POST("/backtest", heraldProxy)
-		api.POST("/backtest/cel", heraldProxy)
+		api.POST("/backtest/estimate", heraldProxy)
 		api.POST("/backtest/rhai", heraldProxy)
+		api.POST("/rhai/validate", heraldProxy)
 
 		// Herald — SSE streams
 		api.GET("/stream/signals", heraldProxy)
 		api.GET("/stream/:symbol", heraldProxy)
+		api.POST("/stream/:symbol", heraldProxy)
 
 		// Herald — store + watch (admin)
 		api.Any("/store/*path", heraldProxy)
 		api.Any("/watch", heraldProxy)
+		api.Any("/watch/:id", heraldProxy)
 	}
 
 	// Identity catch-all: /api/v1/* not matched above — Gin cannot mix catch-all

@@ -5,10 +5,23 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 )
+
+// heraldTransport is used for the herald reverse proxy.
+// ResponseHeaderTimeout is set generously to accommodate long-running backtests
+// (engine can take several minutes on large date ranges) while still releasing
+// goroutines if herald crashes or deadlocks mid-request.
+var heraldTransport http.RoundTripper = &http.Transport{
+	ResponseHeaderTimeout: 10 * time.Minute,
+	// Keep everything else at DefaultTransport defaults.
+	MaxIdleConns:        100,
+	MaxIdleConnsPerHost: 10,
+	IdleConnTimeout:     90 * time.Second,
+}
 
 // IdentityProxy returns a gin handler that reverse-proxies all requests to the identity service.
 func IdentityProxy(identityURL string) gin.HandlerFunc {
@@ -26,17 +39,17 @@ func InvestmentProxy(investmentURL string) gin.HandlerFunc {
 	})
 }
 
-// OrchestratorProxy returns a gin handler that reverse-proxies to the orchestrator service.
-// Public gateway paths use /api/v1/orchestrator/* and are rewritten to the upstream /api/* surface.
-func OrchestratorProxy(orchestratorURL string) gin.HandlerFunc {
+// HelmProxy returns a gin handler that reverse-proxies to the orchestrator service.
+// Public gateway paths use /api/v1/helm/* and are rewritten to the upstream /api/* surface.
+func HelmProxy(orchestratorURL string) gin.HandlerFunc {
 	return newProxy(orchestratorURL, func(path string) string {
 		if rest, ok := strings.CutPrefix(path, "/swagger/orchestrator/"); ok {
 			return "/swagger/" + rest
 		}
-		if rest, ok := strings.CutPrefix(path, "/api/v1/orchestrator/"); ok {
+		if rest, ok := strings.CutPrefix(path, "/api/v1/helm/"); ok {
 			return "/api/" + rest
 		}
-		if path == "/api/v1/orchestrator" {
+		if path == "/api/v1/helm" {
 			return "/api"
 		}
 		return path
@@ -150,10 +163,20 @@ func proxyWS(c *gin.Context, target *url.URL, path string) {
 }
 
 // HeraldProxy proxies requests to the Rust herald service.
-// No path rewriting — herald mounts SwaggerUI at /swagger/logbook so all
-// gateway paths match the upstream paths directly.
+// Uses heraldTransport with a 10-minute ResponseHeaderTimeout to handle
+// long-running backtest requests without leaking goroutines on herald failures.
 func HeraldProxy(heraldURL string) gin.HandlerFunc {
-	return newProxy(heraldURL)
+	target, err := url.Parse(heraldURL)
+	if err != nil {
+		panic("invalid herald URL: " + heraldURL + ": " + err.Error())
+	}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.Transport = heraldTransport
+	proxy.ModifyResponse = stripUpstreamCORS
+	return func(c *gin.Context) {
+		c.Request.Host = target.Host
+		proxy.ServeHTTP(c.Writer, c.Request)
+	}
 }
 
 func newProxy(rawURL string, rewritePath ...func(string) string) gin.HandlerFunc {

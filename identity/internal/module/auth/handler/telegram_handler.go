@@ -68,6 +68,11 @@ func (h *TelegramHandler) RegisterRoutes(
 	authMiddle *middleware.Middleware,
 	serviceSecret string,
 ) {
+	// Skip all Telegram routes when the bot is not configured.
+	if h.botUsername == "" {
+		return
+	}
+
 	// Public: bot info for frontend "Connect Telegram" button
 	r.GET("/api/v1/auth/telegram/bot", h.botInfo)
 
@@ -209,7 +214,7 @@ func (h *TelegramHandler) unlink(c *gin.Context) {
 
 // publishTelegramEvent fires a fire-and-forget JetStream message for telegram account lifecycle changes.
 func (h *TelegramHandler) publishTelegramEvent(subject, action, userID, telegramID string) {
-	if h.js == nil {
+	if h.js == nil || h.botUsername == "" {
 		return
 	}
 	payload, err := json.Marshal(telegramLinkEvent{

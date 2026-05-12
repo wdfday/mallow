@@ -72,63 +72,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/backtest/cel": {
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Runs a backtest using custom entry/exit CEL expressions. See /backtesting/docs/cel-strategy.md for variable reference.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "Backtest"
-                ],
-                "summary": "Run a CEL expression backtest",
-                "parameters": [
-                    {
-                        "description": "CEL backtest parameters",
-                        "name": "request",
-                        "in": "body",
-                        "required": true,
-                        "schema": {
-                            "$ref": "#/definitions/handler.CelBacktestRequest"
-                        }
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/handler.BacktestReport"
-                        }
-                    },
-                    "400": {
-                        "description": "validation error",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
-                        }
-                    },
-                    "504": {
-                        "description": "engine unavailable (NATS timeout)",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
-                        }
-                    }
-                }
-            }
-        },
         "/api/chat": {
             "post": {
                 "security": [
@@ -409,7 +352,7 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "params": {
-                    "description": "Strategy params — flat JSON object or CEL entry/exit strings",
+                    "description": "Strategy params — flat JSON object",
                     "type": "object",
                     "additionalProperties": {}
                 },
@@ -422,60 +365,6 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "symbol": {
-                    "type": "string"
-                },
-                "to": {
-                    "type": "string"
-                }
-            }
-        },
-        "handler.CelBacktestRequest": {
-            "type": "object",
-            "required": [
-                "entry",
-                "exit",
-                "symbol"
-            ],
-            "properties": {
-                "commission_pct": {
-                    "type": "number"
-                },
-                "entry": {
-                    "description": "CEL expression, e.g. \"rsi_14 \u003c 30.0\"",
-                    "type": "string"
-                },
-                "exchange": {
-                    "type": "string"
-                },
-                "exit": {
-                    "description": "CEL expression, e.g. \"rsi_14 \u003e 70.0\"",
-                    "type": "string"
-                },
-                "exit_rules": {
-                    "description": "Optional exit overrides",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/handler.ExitConfig"
-                        }
-                    ]
-                },
-                "from": {
-                    "description": "Date range (\"YYYY-MM-DD\")",
-                    "type": "string"
-                },
-                "initial_capital": {
-                    "description": "Capital \u0026 costs",
-                    "type": "number"
-                },
-                "market_hours_only": {
-                    "description": "Market hours filter",
-                    "type": "boolean"
-                },
-                "slippage_pct": {
-                    "type": "number"
-                },
-                "symbol": {
-                    "description": "Required",
                     "type": "string"
                 },
                 "to": {

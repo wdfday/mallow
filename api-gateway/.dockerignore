@@ -10,3 +10,14 @@
 *.test
 *.out
 coverage.html
+
+# Other services not needed for gateway build
+identity/
+investment/
+orchestrator/
+thstrategist/
+hist-data/
+almanac/
+proto/
+deployment/
+data/

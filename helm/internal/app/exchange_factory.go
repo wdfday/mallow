@@ -81,7 +81,7 @@ type marketStreamerFactory struct {
 	cfg config.MarketDataConfig
 }
 
-func newMarketStreamerFactory(cfg config.Config) *marketStreamerFactory {
+func newMarketStreamerFactory(cfg *config.Config) *marketStreamerFactory {
 	return &marketStreamerFactory{cfg: cfg.MarketData}
 }
 

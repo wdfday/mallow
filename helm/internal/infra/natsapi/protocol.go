@@ -110,19 +110,50 @@ const (
 
 // AccountLinkedEvent is published to helm.accounts.linked when a broker account is linked.
 // Helm subscribes and auto-creates an HelmConfig for that account.
+// Credentials are NOT included — helm fetches them on demand via investment.accounts.credentials.
 type AccountLinkedEvent struct {
 	AccountID  string          `json:"account_id"`
 	UserID     string          `json:"user_id"`
 	Name       string          `json:"name"`
 	Capital    decimal.Decimal `json:"capital"`
 	BrokerType string          `json:"broker_type"`
-	APIKey     string          `json:"api_key,omitempty"`
-	APISecret  string          `json:"api_secret,omitempty"`
-	Passphrase string          `json:"passphrase,omitempty"`
 	AccountRef string          `json:"account_ref,omitempty"` // IBKR/Oanda account ID
 	BaseURL    string          `json:"base_url,omitempty"`
 	Demo       bool            `json:"demo,omitempty"`
 	Testnet    bool            `json:"testnet,omitempty"`
+}
+
+// SubjCredentialsFetch is the NATS request/reply subject to fetch decrypted broker credentials
+// from the investment service. Helm calls this before spawning a runtime.
+const SubjCredentialsFetch = "investment.accounts.credentials"
+
+// CredentialsFetchResp is the data payload returned by investment.accounts.credentials.
+type CredentialsFetchResp struct {
+	APIKey     string `json:"api_key"`
+	APISecret  string `json:"api_secret"`
+	Passphrase string `json:"passphrase,omitempty"`
+}
+
+// FetchCredentials requests decrypted broker credentials from the investment service via NATS.
+// The accountID is the investment Account UUID (not the broker connection UUID).
+func FetchCredentials(nc *nats.Conn, accountID string) (CredentialsFetchResp, error) {
+	req, _ := json.Marshal(map[string]string{"account_id": accountID})
+	msg, err := nc.Request(SubjCredentialsFetch, req, 10*time.Second)
+	if err != nil {
+		return CredentialsFetchResp{}, fmt.Errorf("fetch credentials: %w", err)
+	}
+	var reply Reply
+	if err := json.Unmarshal(msg.Data, &reply); err != nil {
+		return CredentialsFetchResp{}, fmt.Errorf("parse credentials reply: %w", err)
+	}
+	if !reply.OK {
+		return CredentialsFetchResp{}, fmt.Errorf("credentials fetch: %s", reply.Error)
+	}
+	var data CredentialsFetchResp
+	if err := json.Unmarshal(reply.Data, &data); err != nil {
+		return CredentialsFetchResp{}, fmt.Errorf("parse credentials data: %w", err)
+	}
+	return data, nil
 }
 
 // AccountUnlinkedEvent is published to helm.accounts.unlinked when a broker account is removed.
@@ -231,7 +262,6 @@ func PublishInvestmentTransaction(js nats.JetStreamContext, orchID, accountID, u
 		Amount:          txn.Qty.Mul(txn.AvgPrice).InexactFloat64(),
 		Fees:            txn.Fee.InexactFloat64(),
 		TransactionDate: txn.FilledAt,
-		Broker:          brokerType,
 		ExternalID:      txn.OrderID,
 		TradeID:         txn.TradeID,
 		Kind:            txn.Kind,

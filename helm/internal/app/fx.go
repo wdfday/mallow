@@ -12,6 +12,7 @@ import (
 	"mallow/helm/internal/config"
 	"mallow/helm/internal/infra"
 	"mallow/helm/internal/infra/engine"
+	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/infra/poslog"
 	"mallow/helm/internal/module/hand/domain"
 	handhandler "mallow/helm/internal/module/hand/handler"
@@ -38,6 +39,9 @@ var Module = fx.Options(
 
 	// Signal engine client
 	fx.Provide(engine.NewSignalClient),
+
+	// Adapt *runtime.Registry → runtime.SignalSink for SignalDispatcher
+	fx.Provide(func(r *runtime.Registry) runtime.SignalSink { return r }),
 
 	// Position event log (JetStream-backed; nil-safe when NATS unavailable)
 	fx.Provide(newPosLog),
@@ -157,13 +161,39 @@ func wireSyncStore(repo orchdomain.HelmRepo, reg *runtime.Registry) {
 }
 
 // hydrateRuntimes loads all active helm configs from DB and spawns their runtimes.
-func hydrateRuntimes(repo orchdomain.HelmRepo, reg *runtime.Registry) error {
+// Broker credentials are fetched from the investment service via NATS at hydration time
+// and set transiently — they are never stored in helm's DB.
+func hydrateRuntimes(repo orchdomain.HelmRepo, reg *runtime.Registry, nc *nats.Conn) error {
 	cfgs, err := repo.All()
 	if err != nil {
 		return err
 	}
-	reg.SpawnAll(cfgs)
-	slog.Info("runtimes hydrated", "count", len(cfgs))
+	spawned := 0
+	for _, cfg := range cfgs {
+		if cfg.Status == "halted" {
+			continue
+		}
+		creds, err := natsapi.FetchCredentials(nc, cfg.AccountID.String())
+		if err != nil {
+			slog.Error("runtimes hydrate: fetch credentials failed", "helm_id", cfg.ID, "account_id", cfg.AccountID, "err", err)
+			continue
+		}
+		cfg.Exchange.APIKey = creds.APIKey
+		cfg.Exchange.APISecret = creds.APISecret
+		cfg.Exchange.Passphrase = creds.Passphrase
+		if err := reg.Spawn(cfg); err != nil {
+			slog.Error("runtime: spawn failed", "helm_id", cfg.ID, "err", err)
+			continue
+		}
+		if cfg.Status == "paused" {
+			if rt, err := reg.Get(cfg.ID); err == nil {
+				rt.Pause()
+				slog.Info("runtime: spawned paused", "helm_id", cfg.ID)
+			}
+		}
+		spawned++
+	}
+	slog.Info("runtimes hydrated", "count", spawned, "total", len(cfgs))
 	return nil
 }
 

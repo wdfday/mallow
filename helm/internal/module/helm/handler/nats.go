@@ -22,6 +22,7 @@ type NATSHandler struct {
 	svc     *service.Service
 	handMgr HandManager
 	reg     *runtime.Registry
+	nc      *nats.Conn
 	subs    []*nats.Subscription
 }
 
@@ -30,6 +31,7 @@ func NewNATSHandler(svc *service.Service, handMgr HandManager, reg *runtime.Regi
 }
 
 func (h *NATSHandler) Subscribe(nc *nats.Conn) error {
+	h.nc = nc
 	routes := map[string]nats.MsgHandler{
 		// User-scoped request/reply (via strategist/gateway)
 		natsapi.SubjOrchList:      h.list,
@@ -191,6 +193,14 @@ func (h *NATSHandler) accountLinked(msg *nats.Msg) {
 		slog.Warn("nats: helm.accounts.linked: invalid user_id", "err", err)
 		return
 	}
+
+	// Fetch broker credentials from investment service — not included in the event.
+	creds, err := natsapi.FetchCredentials(h.nc, ev.AccountID)
+	if err != nil {
+		slog.Error("nats: helm.accounts.linked: fetch credentials failed", "account_id", ev.AccountID, "err", err)
+		return
+	}
+
 	cfg, err := h.svc.CreateForAccount(service.CreateForAccountReq{
 		UserID:    userID,
 		AccountID: accountID,
@@ -198,14 +208,12 @@ func (h *NATSHandler) accountLinked(msg *nats.Msg) {
 		Capital:   ev.Capital,
 		Exchange: domain.ExchangeConfig{
 			BrokerType: ev.BrokerType,
-			APIKey:     ev.APIKey,
-			APISecret:  ev.APISecret,
-			Passphrase: ev.Passphrase,
 			AccountID:  ev.AccountRef,
 			BaseURL:    ev.BaseURL,
 			Demo:       ev.Demo,
 			Testnet:    ev.Testnet,
 		},
+		Creds: creds,
 	})
 	if err != nil {
 		slog.Error("nats: helm.accounts.linked: create orchestrator failed", "account_id", ev.AccountID, "err", err)

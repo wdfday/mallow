@@ -73,6 +73,12 @@ func autoMigrate(db *sql.DB) error {
 		`ALTER TABLE helms ADD COLUMN IF NOT EXISTS last_synced_at    TIMESTAMPTZ`,
 		`ALTER TABLE helms ADD COLUMN IF NOT EXISTS portfolio_config  JSONB NOT NULL DEFAULT '{}'`,
 
+		// Strip broker credentials from exchange_config — credentials are now fetched
+		// on demand from the investment service and must not be persisted in helm's DB.
+		`UPDATE helms
+			SET exchange_config = exchange_config - 'api_key' - 'api_secret' - 'passphrase'
+			WHERE exchange_config ? 'api_key' OR exchange_config ? 'api_secret' OR exchange_config ? 'passphrase'`,
+
 		// Move sizing fields from risk_config → portfolio_config (idempotent).
 		`UPDATE helms
 			SET
@@ -86,7 +92,7 @@ func autoMigrate(db *sql.DB) error {
 		// ── hands ─────────────────────────────────────────────────────────────
 		`CREATE TABLE IF NOT EXISTS hands (
 			id              TEXT PRIMARY KEY,
-			orchestrator_id UUID NOT NULL REFERENCES helms(id) ON DELETE CASCADE,
+			helm_id UUID NOT NULL REFERENCES helms(id) ON DELETE CASCADE,
 			name            TEXT NOT NULL,
 			type            TEXT NOT NULL DEFAULT 'signal_follower',
 			market          TEXT NOT NULL DEFAULT 'spot',
@@ -99,30 +105,8 @@ func autoMigrate(db *sql.DB) error {
 			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
-		`CREATE INDEX IF NOT EXISTS idx_hands_orchestrator_id ON hands(orchestrator_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_hands_helm_id ON hands(helm_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_hands_status          ON hands(status)`,
-
-		// ── schema migrations (idempotent) ───────────────────────────────────
-
-		// 0. Rename orchestrator_id → helm_id if the old column still exists.
-		`DO $$ BEGIN
-			IF EXISTS (
-				SELECT 1 FROM information_schema.columns
-				WHERE table_name='hands' AND column_name='orchestrator_id'
-			) THEN
-				ALTER TABLE hands RENAME COLUMN orchestrator_id TO helm_id;
-			END IF;
-		END $$`,
-
-		// 1. Rename old 'tactic' column → 'strategy' if still present.
-		`DO $$ BEGIN
-			IF EXISTS (
-				SELECT 1 FROM information_schema.columns
-				WHERE table_name='hands' AND column_name='tactic'
-			) THEN
-				ALTER TABLE hands RENAME COLUMN tactic TO strategy;
-			END IF;
-		END $$`,
 
 		// 2. Add new columns for hands that were created before this schema version.
 		`ALTER TABLE hands ADD COLUMN IF NOT EXISTS market   TEXT NOT NULL DEFAULT 'spot'`,

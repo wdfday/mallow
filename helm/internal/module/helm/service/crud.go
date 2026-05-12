@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
+	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/module/helm/domain"
 )
 
@@ -16,7 +17,8 @@ type CreateForAccountReq struct {
 	AccountID uuid.UUID
 	Name      string
 	Capital   decimal.Decimal
-	Exchange  domain.ExchangeConfig
+	Exchange  domain.ExchangeConfig        // config only — no credentials; stored to DB
+	Creds     natsapi.CredentialsFetchResp // transient credentials for spawn; NOT stored to DB
 	Portfolio domain.PortfolioConfig
 	Risk      domain.RiskConfig
 }
@@ -53,7 +55,12 @@ func (s *Service) CreateForAccount(req CreateForAccountReq) (*domain.HelmConfig,
 	if err := s.repo.Save(cfg); err != nil {
 		return nil, fmt.Errorf("save orchestrator: %w", err)
 	}
-	if err := s.spawner.Spawn(cfg); err != nil {
+	// Populate credentials transiently for spawning — they are NOT persisted to DB.
+	spawnCfg := *cfg
+	spawnCfg.Exchange.APIKey = req.Creds.APIKey
+	spawnCfg.Exchange.APISecret = req.Creds.APISecret
+	spawnCfg.Exchange.Passphrase = req.Creds.Passphrase
+	if err := s.spawner.Spawn(&spawnCfg); err != nil {
 		return cfg, fmt.Errorf("spawn runtime (config saved): %w", err)
 	}
 	s.spawner.SyncOne(cfg.ID)

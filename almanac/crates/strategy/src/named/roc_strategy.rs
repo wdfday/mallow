@@ -8,7 +8,6 @@ use alm_indicator::Roc;
 pub struct RocCrossover {
     roc: Roc,
     prev_roc: Option<f64>,
-    in_position: bool,
     period: usize,
 }
 
@@ -17,7 +16,6 @@ impl RocCrossover {
         Self {
             roc: Roc::new(period),
             prev_roc: None,
-            in_position: false,
             period,
         }
     }
@@ -34,12 +32,10 @@ impl Strategy for RocCrossover {
             return vec![];
         };
 
-        if p <= 0.0 && v > 0.0 && !self.in_position {
-            self.in_position = true;
+        if p <= 0.0 && v > 0.0 {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if p >= 0.0 && v < 0.0 && self.in_position {
-            self.in_position = false;
+        if p >= 0.0 && v < 0.0 {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -52,7 +48,6 @@ impl Strategy for RocCrossover {
     fn reset(&mut self) {
         self.roc = Roc::new(self.period);
         self.prev_roc = None;
-        self.in_position = false;
     }
 }
 
@@ -77,7 +72,7 @@ mod tests {
         let script = r#"
 let roc10 = ind.roc(10);
 if roc10[1] <= 0.0 && roc10[0] > 0.0 { entry = true; }
-if roc10[1] >= 0.0 && roc10[0] < 0.0 { exit = true; }
+if roc10[1] >= 0.0 && roc10[0] < 0.0 { exit  = true; }
 "#;
         let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
         let rhai_sigs: Vec<(i64, Direction)> = bars.iter()

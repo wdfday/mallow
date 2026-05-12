@@ -9,7 +9,6 @@ pub struct StochasticDk {
     stoch: Stochastic,
     prev_k: Option<f64>,
     prev_d: Option<f64>,
-    in_position: bool,
     k_period: usize,
     d_period: usize,
 }
@@ -20,7 +19,6 @@ impl StochasticDk {
             stoch: Stochastic::new(k_period, d_period),
             prev_k: None,
             prev_d: None,
-            in_position: false,
             k_period,
             d_period,
         }
@@ -45,12 +43,10 @@ impl Strategy for StochasticDk {
         self.prev_k = Some(v.k);
         self.prev_d = Some(v.d);
 
-        if crossed_up && !self.in_position {
-            self.in_position = true;
+        if crossed_up  {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if crossed_down && self.in_position {
-            self.in_position = false;
+        if crossed_down {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -64,6 +60,5 @@ impl Strategy for StochasticDk {
         self.stoch = Stochastic::new(self.k_period, self.d_period);
         self.prev_k = None;
         self.prev_d = None;
-        self.in_position = false;
     }
 }

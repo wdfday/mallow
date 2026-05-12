@@ -8,7 +8,6 @@ pub struct KamaStrategy {
     fast: usize,
     slow: usize,
     kama: Kama,
-    in_position: bool,
     prev_above: Option<bool>,
 }
 
@@ -19,7 +18,6 @@ impl KamaStrategy {
             fast,
             slow,
             kama: Kama::new(er_period, fast, slow),
-            in_position: false,
             prev_above: None,
         }
     }
@@ -35,14 +33,12 @@ impl Strategy for KamaStrategy {
 
         let signal = match self.prev_above {
             Some(was_above) => {
-                if above && !was_above && !self.in_position {
+                if above && !was_above {
                     // Cross above KAMA → Long
-                    self.in_position = true;
                     let strength = ((bar.close - kama_val) / kama_val).clamp(0.0, 1.0);
                     Some(Signal::long(bar.timestamp, &bar.symbol, strength))
-                } else if !above && was_above && self.in_position {
+                } else if !above && was_above {
                     // Cross below KAMA → Close
-                    self.in_position = false;
                     Some(Signal::close(bar.timestamp, &bar.symbol))
                 } else {
                     None
@@ -61,7 +57,6 @@ impl Strategy for KamaStrategy {
 
     fn reset(&mut self) {
         self.kama = Kama::new(self.er_period, self.fast, self.slow);
-        self.in_position = false;
         self.prev_above = None;
     }
 }
@@ -116,7 +111,6 @@ mod tests {
             strat.on_bar(&bar(i, 100.0 + i as f64));
         }
         strat.reset();
-        assert!(!strat.in_position);
         assert!(strat.prev_above.is_none());
     }
 
@@ -136,8 +130,10 @@ mod tests {
 
         let script = r#"
 let kama10 = ind.kama(10);
-if cross_above(close, kama10) { entry = true; }
-if cross_below(close, kama10) { exit  = true; }
+let was_above = close[1] > kama10[1];
+let is_above  = close[0] > kama10[0];
+if !was_above && is_above  { entry = true; }
+if  was_above && !is_above { exit  = true; }
 "#;
         let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
         let rhai_sigs: Vec<(i64, Direction)> = bars.iter()

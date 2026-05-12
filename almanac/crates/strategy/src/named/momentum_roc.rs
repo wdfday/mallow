@@ -14,7 +14,6 @@ pub struct MomentumRoc {
     ema_p: usize,
     entry_threshold: f64,
     exit_threshold: f64,
-    in_position: bool,
 }
 
 impl MomentumRoc {
@@ -26,7 +25,6 @@ impl MomentumRoc {
             ema_p: ema_period,
             entry_threshold,
             exit_threshold,
-            in_position: false,
         }
     }
 }
@@ -42,14 +40,12 @@ impl Strategy for MomentumRoc {
 
         let above_trend = bar.close > e;
 
-        if r > self.entry_threshold && above_trend && !self.in_position {
-            self.in_position = true;
+        if r > self.entry_threshold && above_trend {
             let strength = (r / (self.entry_threshold * 3.0)).clamp(0.0, 1.0);
             return vec![Signal::long(bar.timestamp, &bar.symbol, strength)];
         }
 
-        if (r < self.exit_threshold || !above_trend) && self.in_position {
-            self.in_position = false;
+        if r < self.exit_threshold || !above_trend {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
 
@@ -63,7 +59,6 @@ impl Strategy for MomentumRoc {
     fn reset(&mut self) {
         self.roc = Roc::new(self.roc_p);
         self.ema = Ema::new(self.ema_p);
-        self.in_position = false;
     }
 }
 
@@ -76,7 +71,6 @@ pub struct DualMomentum {
     slow: Roc,
     fast_p: usize,
     slow_p: usize,
-    in_position: bool,
 }
 
 impl DualMomentum {
@@ -86,7 +80,6 @@ impl DualMomentum {
             slow: Roc::new(slow_period),
             fast_p: fast_period,
             slow_p: slow_period,
-            in_position: false,
         }
     }
 }
@@ -100,12 +93,10 @@ impl Strategy for DualMomentum {
             return vec![];
         };
 
-        if f > 0.0 && s > 0.0 && !self.in_position {
-            self.in_position = true;
+        if f > 0.0 && s > 0.0 {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if (f < 0.0 || s < 0.0) && self.in_position {
-            self.in_position = false;
+        if (f < 0.0 || s < 0.0) {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -118,6 +109,5 @@ impl Strategy for DualMomentum {
     fn reset(&mut self) {
         self.fast = Roc::new(self.fast_p);
         self.slow = Roc::new(self.slow_p);
-        self.in_position = false;
     }
 }

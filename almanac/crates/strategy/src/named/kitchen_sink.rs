@@ -12,16 +12,16 @@ use crate::bar_resampler::TimeBarResampler;
 /// Logic mirrors the canonical Rhai script verbatim so the two can be parity-tested:
 ///
 /// ```rhai
-/// let ema9    = indicator("ema",  9,    4);
-/// let ema21   = indicator("ema",  21,   4);
-/// let ema50   = indicator("ema",  50,   4);
-/// let rsi14   = indicator("rsi",  14,   4);
-/// let adx14   = indicator("adx",  14,   5);
-/// let atr14   = indicator("atr",  14,   3);
-/// let macd    = indicator("macd", 12,   3);  // histogram, not used in signals
-/// let bb_u    = indicator("bb_upper", 20, 3);
-/// let bb_l    = indicator("bb_lower", 20, 3);
-/// let h1_ema  = indicator("ema",  20, "H1", 3);
+/// let ema9    = ind.ema(9, 4);
+/// let ema21   = ind.ema(21, 4);
+/// let ema50   = ind.ema(50, 4);
+/// let rsi14   = ind.rsi(14, 4);
+/// let adx14   = ind.adx(14, 5);
+/// let atr14   = ind.atr(14, 3);
+/// let macd    = ind.macd(12, 3);  // histogram, not used in signals
+/// let bb_u    = ind.bb_upper(20, 3);
+/// let bb_l    = ind.bb_lower(20, 3);
+/// let h1_ema  = ind.ema(20, "H1", 3);
 ///
 /// let trend   = adx14[0] > 25.0 && rising_n(adx14, 3);
 /// let mom     = momentum(rsi14, 3) > 0.0;
@@ -335,16 +335,16 @@ mod tests {
     }
 
     const RHAI_SCRIPT: &str = r#"
-let ema9    = indicator("ema",  9,    4);
-let ema21   = indicator("ema",  21,   4);
-let ema50   = indicator("ema",  50,   4);
-let rsi14   = indicator("rsi",  14,   4);
-let adx14   = indicator("adx",  14,   5);
-let atr14   = indicator("atr",  14,   3);
-let macd    = indicator("macd", 12,   3);
-let bb_u    = indicator("bb_upper", 20, 3);
-let bb_l    = indicator("bb_lower", 20, 3);
-let h1_ema  = indicator("ema",  20, "H1", 3);
+let ema9    = ind.ema(9, 4);
+let ema21   = ind.ema(21, 4);
+let ema50   = ind.ema(50, 4);
+let rsi14   = ind.rsi(14, 4);
+let adx14   = ind.adx(14, 5);
+let atr14   = ind.atr(14, 3);
+let macd    = ind.macd(12, 3);
+let bb_u    = ind.bb_upper(20, 3);
+let bb_l    = ind.bb_lower(20, 3);
+let h1_ema  = ind.ema(20, "H1", 3);
 
 let trend   = adx14[0] > 25.0 && rising_n(adx14, 3);
 let mom     = momentum(rsi14, 3) > 0.0;

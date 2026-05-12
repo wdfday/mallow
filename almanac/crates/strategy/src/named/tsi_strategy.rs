@@ -9,7 +9,6 @@ pub struct TsiStrategy {
     entry_threshold: f64,
     exit_threshold: f64,
     tsi: Tsi,
-    in_position: bool,
     prev_tsi: Option<f64>,
 }
 
@@ -21,7 +20,6 @@ impl TsiStrategy {
             entry_threshold,
             exit_threshold,
             tsi: Tsi::new(first, second),
-            in_position: false,
             prev_tsi: None,
         }
     }
@@ -35,15 +33,13 @@ impl Strategy for TsiStrategy {
 
         let signal = match self.prev_tsi {
             Some(prev) => {
-                if prev < self.entry_threshold && tsi_val >= self.entry_threshold && !self.in_position {
+                if prev < self.entry_threshold && tsi_val >= self.entry_threshold {
                     // Cross above entry threshold → Long
-                    self.in_position = true;
                     let strength = ((tsi_val - self.entry_threshold) / (100.0 - self.entry_threshold))
                         .clamp(0.0, 1.0);
                     Some(Signal::long(bar.timestamp, &bar.symbol, strength))
-                } else if prev >= self.exit_threshold && tsi_val < self.exit_threshold && self.in_position {
+                } else if prev >= self.exit_threshold && tsi_val < self.exit_threshold {
                     // Cross below exit threshold → Close
-                    self.in_position = false;
                     Some(Signal::close(bar.timestamp, &bar.symbol))
                 } else {
                     None
@@ -62,7 +58,6 @@ impl Strategy for TsiStrategy {
 
     fn reset(&mut self) {
         self.tsi = Tsi::new(self.first, self.second);
-        self.in_position = false;
         self.prev_tsi = None;
     }
 }
@@ -114,7 +109,6 @@ mod tests {
             strat.on_bar(&bar(i, 100.0 + i as f64));
         }
         strat.reset();
-        assert!(!strat.in_position);
         assert!(strat.prev_tsi.is_none());
     }
 

@@ -11,7 +11,6 @@ pub struct TrendFollower {
     macd: Macd,
     prev_fast: Option<f64>,
     prev_slow: Option<f64>,
-    in_position: bool,
     fast_period: usize,
     slow_period: usize,
     macd_fast: usize,
@@ -33,7 +32,6 @@ impl TrendFollower {
             macd: Macd::new(macd_fast, macd_slow, macd_signal),
             prev_fast: None,
             prev_slow: None,
-            in_position: false,
             fast_period,
             slow_period,
             macd_fast,
@@ -65,12 +63,10 @@ impl Strategy for TrendFollower {
         self.prev_fast = Some(f);
         self.prev_slow = Some(s);
 
-        if crossed_above && m.histogram > 0.0 && !self.in_position {
-            self.in_position = true;
+        if crossed_above && m.histogram > 0.0 {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if self.in_position && (crossed_below || m.histogram < 0.0) {
-            self.in_position = false;
+        if crossed_below || m.histogram < 0.0 {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -86,6 +82,5 @@ impl Strategy for TrendFollower {
         self.macd = Macd::new(self.macd_fast, self.macd_slow, self.macd_signal);
         self.prev_fast = None;
         self.prev_slow = None;
-        self.in_position = false;
     }
 }

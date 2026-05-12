@@ -7,7 +7,6 @@ pub struct RsiMeanRev {
     rsi: Rsi,
     oversold: f64,
     overbought: f64,
-    in_position: bool,
     period: usize,
 }
 
@@ -17,7 +16,6 @@ impl RsiMeanRev {
             rsi: Rsi::new(period),
             oversold,
             overbought,
-            in_position: false,
             period,
         }
     }
@@ -29,8 +27,7 @@ impl Strategy for RsiMeanRev {
             return vec![];
         };
 
-        if rsi < self.oversold && !self.in_position {
-            self.in_position = true;
+        if rsi < self.oversold {
             let strength = (self.oversold - rsi) / self.oversold;
             return vec![Signal::long(
                 bar.timestamp,
@@ -39,8 +36,7 @@ impl Strategy for RsiMeanRev {
             )];
         }
 
-        if rsi > self.overbought && self.in_position {
-            self.in_position = false;
+        if rsi > self.overbought {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
 
@@ -53,7 +49,6 @@ impl Strategy for RsiMeanRev {
 
     fn reset(&mut self) {
         self.rsi = Rsi::new(self.period);
-        self.in_position = false;
     }
 }
 

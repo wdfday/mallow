@@ -8,7 +8,6 @@ use alm_indicator::{Stochastic, StochasticValue};
 pub struct StochasticCrossover {
     stoch: Stochastic,
     prev: Option<StochasticValue>,
-    in_position: bool,
     k_period: usize,
     d_period: usize,
     oversold: f64,
@@ -20,7 +19,6 @@ impl StochasticCrossover {
         Self {
             stoch: Stochastic::new(k_period, d_period),
             prev: None,
-            in_position: false,
             k_period,
             d_period,
             oversold,
@@ -54,11 +52,9 @@ impl Strategy for StochasticCrossover {
             let k_crossed_below = prev.k >= prev.d && curr.k < curr.d;
             let in_overbought = curr.d > self.overbought;
 
-            if k_crossed_above && in_oversold && !self.in_position {
-                self.in_position = true;
+            if k_crossed_above && in_oversold {
                 vec![Signal::long(bar.timestamp, &bar.symbol, curr.k / 100.0)]
-            } else if k_crossed_below && in_overbought && self.in_position {
-                self.in_position = false;
+            } else if k_crossed_below && in_overbought {
                 vec![Signal::close(bar.timestamp, &bar.symbol)]
             } else {
                 vec![]
@@ -76,7 +72,6 @@ impl Strategy for StochasticCrossover {
     fn reset(&mut self) {
         self.stoch = Stochastic::new(self.k_period, self.d_period);
         self.prev = None;
-        self.in_position = false;
     }
 }
 
@@ -113,39 +108,6 @@ mod tests {
         }
     }
 
-    /* // deprecated — DynamicStrategy removed
-    #[test]
-    fn parity_dynamic() {
-        let bars = v_bars(150);
-        let mut hc = StochasticCrossover::new(14, 3, 20.0, 80.0);
-        let hc_sigs = run(&mut hc, &bars);
-
-        let mut dyn_s = build_strategy("dynamic", &json!({
-            "indicators": { "stoch": { "type": "stochastic", "k_period": 14, "d_period": 3 } },
-            "entry": {
-                "logic": "and",
-                "rules": [
-                    { "source": "stoch", "field": "k", "op": "cross_above",
-                      "compare": "stoch", "compare_field": "d" },
-                    { "source": "stoch", "field": "d", "op": "lt", "value": 20.0 }
-                ]
-            },
-            "exit": {
-                "logic": "and",
-                "rules": [
-                    { "source": "stoch", "field": "k", "op": "cross_below",
-                      "compare": "stoch", "compare_field": "d" },
-                    { "source": "stoch", "field": "d", "op": "gt", "value": 80.0 }
-                ]
-            }
-        })).unwrap();
-        let dyn_sigs = run(dyn_s.as_mut(), &bars);
-
-        assert!(!hc_sigs.is_empty(), "no signals produced");
-        assert_eq!(hc_sigs, dyn_sigs, "hardcoded vs dynamic mismatch");
-    }
-    */
-
     #[test]
     fn produces_signals() {
         let bars = v_bars(150);
@@ -176,10 +138,9 @@ mod tests {
         let named_sigs = run(&mut named, &bars);
 
         let script = r#"
-let sk = ind.stoch_k(14);
-let sd = ind.stoch_d(14);
-if sk[1] <= sd[1] && sk[0] > sd[0] && sd[0] < 20.0 { entry = true; }
-if sk[1] >= sd[1] && sk[0] < sd[0] && sd[0] > 80.0 { exit  = true; }
+let st = ind.stochastic(14);
+if st[1].k <= st[1].d && st[0].k > st[0].d && st[0].d < 20.0 { entry = true; }
+if st[1].k >= st[1].d && st[0].k < st[0].d && st[0].d > 80.0 { exit  = true; }
 "#;
         let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
         let rhai_sigs = run(rhai.as_mut(), &bars);

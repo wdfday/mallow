@@ -11,7 +11,6 @@ pub struct SwingTrader {
     adx: Adx,
     prev_cci: Option<f64>,
     adx_threshold: f64,
-    in_position: bool,
     cci_period: usize,
     adx_period: usize,
 }
@@ -23,7 +22,6 @@ impl SwingTrader {
             adx: Adx::new(adx_period),
             prev_cci: None,
             adx_threshold,
-            in_position: false,
             cci_period,
             adx_period,
         }
@@ -49,12 +47,10 @@ impl Strategy for SwingTrader {
 
         self.prev_cci = Some(cci);
 
-        if cci_crossed_above_100 && adx.adx > self.adx_threshold && !self.in_position {
-            self.in_position = true;
+        if cci_crossed_above_100 && adx.adx > self.adx_threshold {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if cci_crossed_below_minus100 && self.in_position {
-            self.in_position = false;
+        if cci_crossed_below_minus100 {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -68,6 +64,5 @@ impl Strategy for SwingTrader {
         self.cci = Cci::new(self.cci_period);
         self.adx = Adx::new(self.adx_period);
         self.prev_cci = None;
-        self.in_position = false;
     }
 }

@@ -10,7 +10,6 @@ pub struct CciReversal {
     entry_level: f64,
     exit_level: f64,
     prev_cci: Option<f64>,
-    in_position: bool,
     period: usize,
 }
 
@@ -21,7 +20,6 @@ impl CciReversal {
             entry_level,
             exit_level,
             prev_cci: None,
-            in_position: false,
             period,
         }
     }
@@ -39,13 +37,11 @@ impl Strategy for CciReversal {
         };
 
         // Cross above entry_level (e.g. -100 → oversold recovery)
-        if p <= self.entry_level && v > self.entry_level && !self.in_position {
-            self.in_position = true;
+        if p <= self.entry_level && v > self.entry_level {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         // Cross above exit_level (e.g. +100 → overbought)
-        if p <= self.exit_level && v > self.exit_level && self.in_position {
-            self.in_position = false;
+        if p <= self.exit_level && v > self.exit_level {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -58,7 +54,6 @@ impl Strategy for CciReversal {
     fn reset(&mut self) {
         self.cci = Cci::new(self.period);
         self.prev_cci = None;
-        self.in_position = false;
     }
 }
 

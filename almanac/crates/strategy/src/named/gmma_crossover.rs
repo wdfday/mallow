@@ -10,7 +10,6 @@ use alm_indicator::Gmma;
 pub struct GmmaCrossover {
     gmma: Gmma,
     prev_bullish: Option<bool>,
-    in_position: bool,
 }
 
 impl GmmaCrossover {
@@ -18,7 +17,6 @@ impl GmmaCrossover {
         Self {
             gmma: Gmma::default(),
             prev_bullish: None,
-            in_position: false,
         }
     }
 }
@@ -40,12 +38,10 @@ impl Strategy for GmmaCrossover {
             return vec![];
         };
 
-        if v.bullish && !was_bullish && !self.in_position {
-            self.in_position = true;
+        if v.bullish && !was_bullish  {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if !v.bullish && was_bullish && self.in_position {
-            self.in_position = false;
+        if !v.bullish && was_bullish {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -58,6 +54,5 @@ impl Strategy for GmmaCrossover {
     fn reset(&mut self) {
         self.gmma = Gmma::default();
         self.prev_bullish = None;
-        self.in_position = false;
     }
 }

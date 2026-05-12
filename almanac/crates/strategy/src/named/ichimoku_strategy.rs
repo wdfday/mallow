@@ -10,7 +10,6 @@ pub struct IchimokuCloud {
     tenkan: usize,
     kijun: usize,
     senkou_b: usize,
-    in_position: bool,
 }
 
 impl IchimokuCloud {
@@ -20,7 +19,6 @@ impl IchimokuCloud {
             tenkan,
             kijun,
             senkou_b,
-            in_position: false,
         }
     }
 }
@@ -31,12 +29,10 @@ impl Strategy for IchimokuCloud {
             return vec![];
         };
 
-        if v.above_cloud && !self.in_position {
-            self.in_position = true;
+        if v.above_cloud {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if !v.above_cloud && self.in_position {
-            self.in_position = false;
+        if !v.above_cloud {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -48,7 +44,6 @@ impl Strategy for IchimokuCloud {
 
     fn reset(&mut self) {
         self.ichi = Ichimoku::new(self.tenkan, self.kijun, self.senkou_b);
-        self.in_position = false;
     }
 }
 
@@ -63,7 +58,6 @@ pub struct IchimokuCross {
     senkou_b: usize,
     prev_tenkan: Option<f64>,
     prev_kijun: Option<f64>,
-    in_position: bool,
 }
 
 impl IchimokuCross {
@@ -75,7 +69,6 @@ impl IchimokuCross {
             senkou_b,
             prev_tenkan: None,
             prev_kijun: None,
-            in_position: false,
         }
     }
 }
@@ -98,12 +91,10 @@ impl Strategy for IchimokuCross {
         self.prev_tenkan = Some(v.tenkan);
         self.prev_kijun = Some(v.kijun);
 
-        if bullish_cross && v.above_cloud && !self.in_position {
-            self.in_position = true;
+        if bullish_cross && v.above_cloud {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if bearish_cross && self.in_position {
-            self.in_position = false;
+        if bearish_cross {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -117,6 +108,5 @@ impl Strategy for IchimokuCross {
         self.ichi = Ichimoku::new(self.tenkan, self.kijun, self.senkou_b);
         self.prev_tenkan = None;
         self.prev_kijun = None;
-        self.in_position = false;
     }
 }

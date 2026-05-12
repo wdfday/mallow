@@ -10,7 +10,6 @@ use alm_indicator::Ppo;
 pub struct PpoHistogram {
     ppo: Ppo,
     prev_hist: Option<f64>,
-    in_position: bool,
     fast: usize,
     slow: usize,
     signal: usize,
@@ -21,7 +20,6 @@ impl PpoHistogram {
         Self {
             ppo: Ppo::new(fast, slow, signal),
             prev_hist: None,
-            in_position: false,
             fast,
             slow,
             signal,
@@ -44,12 +42,10 @@ impl Strategy for PpoHistogram {
         let crossed_below = prev >= 0.0 && pv.histogram < 0.0;
         self.prev_hist = Some(pv.histogram);
 
-        if crossed_above && !self.in_position {
-            self.in_position = true;
+        if crossed_above {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if crossed_below && self.in_position {
-            self.in_position = false;
+        if crossed_below {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -62,6 +58,5 @@ impl Strategy for PpoHistogram {
     fn reset(&mut self) {
         self.ppo = Ppo::new(self.fast, self.slow, self.signal);
         self.prev_hist = None;
-        self.in_position = false;
     }
 }

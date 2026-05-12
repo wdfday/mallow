@@ -9,7 +9,6 @@ pub struct FisherCrossover {
     fisher: Fisher,
     prev_fisher: Option<f64>,
     prev_signal: Option<f64>,
-    in_position: bool,
     period: usize,
 }
 
@@ -19,7 +18,6 @@ impl FisherCrossover {
             fisher: Fisher::new(period),
             prev_fisher: None,
             prev_signal: None,
-            in_position: false,
             period,
         }
     }
@@ -43,12 +41,10 @@ impl Strategy for FisherCrossover {
         self.prev_fisher = Some(fv.fisher);
         self.prev_signal = Some(fv.signal);
 
-        if crossed_above && !self.in_position {
-            self.in_position = true;
+        if crossed_above {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if crossed_below && self.in_position {
-            self.in_position = false;
+        if crossed_below {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -62,7 +58,6 @@ impl Strategy for FisherCrossover {
         self.fisher = Fisher::new(self.period);
         self.prev_fisher = None;
         self.prev_signal = None;
-        self.in_position = false;
     }
 }
 
@@ -85,10 +80,9 @@ mod tests {
             .collect();
 
         let script = r#"
-let fl = ind.fisher(10);
-let fs = ind.fisher_sig(10);
-if cross_above(fl, fs) { entry = true; }
-if cross_below(fl, fs) { exit = true; }
+let fi = ind.fisher(10);
+if fi[1].fisher <= fi[1].signal && fi[0].fisher > fi[0].signal { entry = true; }
+if fi[1].fisher >= fi[1].signal && fi[0].fisher < fi[0].signal { exit  = true; }
 "#;
         let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
         let rhai_sigs: Vec<(i64, Direction)> = bars.iter()

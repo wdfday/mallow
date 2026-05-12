@@ -8,7 +8,6 @@ use alm_indicator::Trix;
 pub struct TrixStrategy {
     trix: Trix,
     prev_hist: Option<f64>,
-    in_position: bool,
     period: usize,
     signal_period: usize,
 }
@@ -18,7 +17,6 @@ impl TrixStrategy {
         Self {
             trix: Trix::new(period, signal_period),
             prev_hist: None,
-            in_position: false,
             period,
             signal_period,
         }
@@ -37,12 +35,10 @@ impl Strategy for TrixStrategy {
         };
 
         // Histogram crosses above 0: TRIX crossed above signal
-        if p <= 0.0 && v.histogram > 0.0 && !self.in_position {
-            self.in_position = true;
+        if p <= 0.0 && v.histogram > 0.0 {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if p >= 0.0 && v.histogram < 0.0 && self.in_position {
-            self.in_position = false;
+        if p >= 0.0 && v.histogram < 0.0 {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -55,7 +51,6 @@ impl Strategy for TrixStrategy {
     fn reset(&mut self) {
         self.trix = Trix::new(self.period, self.signal_period);
         self.prev_hist = None;
-        self.in_position = false;
     }
 }
 
@@ -120,9 +115,9 @@ mod tests {
             .collect();
 
         let script = r#"
-let th = ind.trix_hist(18);
-if th[1] <= 0.0 && th[0] > 0.0 { entry = true; }
-if th[1] >= 0.0 && th[0] < 0.0 { exit = true; }
+let th = ind.trix(18);
+if th[1].histogram <= 0.0 && th[0].histogram > 0.0 { entry = true; }
+if th[1].histogram >= 0.0 && th[0].histogram < 0.0 { exit  = true; }
 "#;
         let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
         let rhai_sigs: Vec<(i64, Direction)> = bars.iter()

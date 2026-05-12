@@ -9,7 +9,6 @@ pub struct StochRsiStrategy {
     oversold: f64,
     overbought: f64,
     srsi: StochasticRsi,
-    in_position: bool,
     prev_k: Option<f64>,
 }
 
@@ -21,7 +20,6 @@ impl StochRsiStrategy {
             oversold,
             overbought,
             srsi: StochasticRsi::new(rsi_period, smooth_d),
-            in_position: false,
             prev_k: None,
         }
     }
@@ -35,14 +33,12 @@ impl Strategy for StochRsiStrategy {
 
         let signal = match self.prev_k {
             Some(prev) => {
-                if prev >= self.oversold && v.k < self.oversold && !self.in_position {
+                if prev >= self.oversold && v.k < self.oversold {
                     // K drops below oversold → Long (mean reversion)
-                    self.in_position = true;
                     let strength = ((self.oversold - v.k) / self.oversold).clamp(0.0, 1.0);
                     Some(Signal::long(bar.timestamp, &bar.symbol, strength))
-                } else if prev <= self.overbought && v.k > self.overbought && self.in_position {
+                } else if prev <= self.overbought && v.k > self.overbought {
                     // K rises above overbought → Close
-                    self.in_position = false;
                     Some(Signal::close(bar.timestamp, &bar.symbol))
                 } else {
                     None
@@ -61,7 +57,6 @@ impl Strategy for StochRsiStrategy {
 
     fn reset(&mut self) {
         self.srsi = StochasticRsi::new(self.rsi_period, self.smooth_d);
-        self.in_position = false;
         self.prev_k = None;
     }
 }
@@ -146,7 +141,6 @@ mod tests {
             strat.on_bar(&bar(i, 100.0 + i as f64));
         }
         strat.reset();
-        assert!(!strat.in_position);
         assert!(strat.prev_k.is_none());
     }
 
@@ -163,9 +157,9 @@ mod tests {
             .collect();
 
         let script = r#"
-let sk = ind.srsi_k(14);
-if sk[1] >= 0.2 && sk[0] < 0.2 { entry = true; }
-if sk[1] <= 0.8 && sk[0] > 0.8 { exit  = true; }
+let sk = ind.stoch_rsi(14);
+if sk[1].k >= 0.2 && sk[0].k < 0.2 { entry = true; }
+if sk[1].k <= 0.8 && sk[0].k > 0.8 { exit  = true; }
 "#;
         let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
         let rhai_sigs: Vec<(i64, Direction)> = bars.iter()

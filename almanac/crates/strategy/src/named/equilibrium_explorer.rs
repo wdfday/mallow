@@ -12,7 +12,6 @@ pub struct EquilibriumExplorer {
     macd: Macd,
     stoch_oversold: f64,
     stoch_overbought: f64,
-    in_position: bool,
     ema_period: usize,
     stoch_k: usize,
     stoch_d: usize,
@@ -38,7 +37,6 @@ impl EquilibriumExplorer {
             macd: Macd::new(macd_fast, macd_slow, macd_signal),
             stoch_oversold,
             stoch_overbought,
-            in_position: false,
             ema_period,
             stoch_k,
             stoch_d,
@@ -65,12 +63,10 @@ impl Strategy for EquilibriumExplorer {
         let hist_positive = m.histogram > 0.0;
         let hist_negative = m.histogram < 0.0;
 
-        if !self.in_position && trending_up && oversold && hist_positive {
-            self.in_position = true;
+        if trending_up && oversold && hist_positive {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if self.in_position && (overbought || hist_negative) {
-            self.in_position = false;
+        if overbought || hist_negative {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -84,7 +80,6 @@ impl Strategy for EquilibriumExplorer {
         self.ema = Ema::new(self.ema_period);
         self.stoch = Stochastic::new(self.stoch_k, self.stoch_d);
         self.macd = Macd::new(self.macd_fast, self.macd_slow, self.macd_signal);
-        self.in_position = false;
     }
 }
 

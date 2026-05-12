@@ -9,7 +9,6 @@ use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 pub struct HighestBreakout {
     period: usize,
     closes: VecDeque<f64>,
-    in_position: bool,
 }
 
 impl HighestBreakout {
@@ -18,7 +17,6 @@ impl HighestBreakout {
         Self {
             period,
             closes: VecDeque::with_capacity(period + 1),
-            in_position: false,
         }
     }
 }
@@ -38,12 +36,10 @@ impl Strategy for HighestBreakout {
         let highest = lookback.cloned().fold(f64::NEG_INFINITY, f64::max);
         let lowest = self.closes.range(..self.period).cloned().fold(f64::INFINITY, f64::min);
 
-        if bar.close > highest && !self.in_position {
-            self.in_position = true;
+        if bar.close > highest {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if bar.close < lowest && self.in_position {
-            self.in_position = false;
+        if bar.close < lowest {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -55,6 +51,5 @@ impl Strategy for HighestBreakout {
 
     fn reset(&mut self) {
         self.closes.clear();
-        self.in_position = false;
     }
 }

@@ -9,7 +9,6 @@ pub struct VortexTrend {
     vortex: Vortex,
     prev_plus: Option<f64>,
     prev_minus: Option<f64>,
-    in_position: bool,
     period: usize,
 }
 
@@ -19,7 +18,6 @@ impl VortexTrend {
             vortex: Vortex::new(period),
             prev_plus: None,
             prev_minus: None,
-            in_position: false,
             period,
         }
     }
@@ -43,12 +41,10 @@ impl Strategy for VortexTrend {
         self.prev_plus = Some(vv.plus_vi);
         self.prev_minus = Some(vv.minus_vi);
 
-        if bull_cross && !self.in_position {
-            self.in_position = true;
+        if bull_cross {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if bear_cross && self.in_position {
-            self.in_position = false;
+        if bear_cross {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -62,7 +58,6 @@ impl Strategy for VortexTrend {
         self.vortex = Vortex::new(self.period);
         self.prev_plus = None;
         self.prev_minus = None;
-        self.in_position = false;
     }
 }
 
@@ -85,10 +80,9 @@ mod tests {
             .collect();
 
         let script = r#"
-let vp = ind.vortex_plus(14);
-let vm = ind.vortex_minus(14);
-if cross_above(vp, vm) { entry = true; }
-if cross_below(vp, vm) { exit = true; }
+let vx = ind.vortex(14);
+if vx[1].plus_vi <= vx[1].minus_vi && vx[0].plus_vi > vx[0].minus_vi { entry = true; }
+if vx[1].plus_vi >= vx[1].minus_vi && vx[0].plus_vi < vx[0].minus_vi { exit  = true; }
 "#;
         let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
         let rhai_sigs: Vec<(i64, Direction)> = bars.iter()

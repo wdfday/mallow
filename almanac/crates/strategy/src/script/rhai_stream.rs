@@ -12,16 +12,15 @@ use alm_core::{Bar, Timeframe};
 use anyhow::Result;
 use rhai::{Array, Dynamic, Engine, Scope, AST};
 
-use super::rhai_strategy::{
-    build_engine, extract_max_lookback, indicator_json_config, try_parse_indicator_line,
-    PlotBuf, BAR_FIELDS, DEFAULT_BUF_DEPTH,
-};
+use super::engine::{build_engine, extract_max_lookback, PlotBuf, BAR_FIELDS, DEFAULT_BUF_DEPTH};
+use super::parse::{indicator_json_config, try_parse_indicator_line, IndicatorKind};
+
+// ── StreamDecl ────────────────────────────────────────────────────────────────
 
 /// One indicator declaration parsed from the script.
 ///
 /// Herald uses `spec_config` + `source_tf` to build an `IndicatorSpec` and
-/// call `ledger.acquire_indicator`. We don't depend on `alm-ledger` here to
-/// keep the dependency graph acyclic.
+/// call `ledger.acquire_indicator`.
 pub struct StreamDecl {
     /// Variable name in the script, e.g. `"ema20"` from `let ema20 = ind.ema(20)`.
     pub var_name:    String,
@@ -30,14 +29,29 @@ pub struct StreamDecl {
     /// Optional MTF source timeframe string, e.g. `"H1"`.
     pub source_tf:   Option<Timeframe>,
     /// Output field to read from the cell, e.g. `"value"`, `"histogram"`.
-    pub field:       String,
+    /// `None` = multi-output indicator — herald must supply all fields as a Map.
+    pub field:       Option<String>,
     /// Number of historical values the script needs (default 2 for crossover).
     pub buf_depth:   usize,
 }
 
+// ── IndicatorSnapshot ─────────────────────────────────────────────────────────
+
+/// Per-variable indicator data supplied to [`RhaiStreamEval::run`].
+///
+/// Herald reads values from the ledger cell and packages them here.
+pub enum IndicatorSnapshot {
+    /// Single field — newest value at index 0.
+    Single(Vec<f64>),
+    /// Multi-field — newest snapshot at index 0; keys are IndicatorBox field names.
+    Multi(Vec<HashMap<String, f64>>),
+}
+
 pub type PlotResult = HashMap<String, f64>;
 
-/// Stateless Rhai evaluator backed by ledger-provided indicator arrays.
+// ── RhaiStreamEval ────────────────────────────────────────────────────────────
+
+/// Stateless Rhai evaluator backed by ledger-provided indicator snapshots.
 ///
 /// Call [`RhaiStreamEval::run`] once per bar with fresh indicator values; it
 /// returns the `plot()` outputs from the script for that bar.
@@ -51,12 +65,12 @@ pub struct RhaiStreamEval {
 
 impl RhaiStreamEval {
     pub fn from_script(script: &str) -> Result<Self> {
-        let mut decls       = Vec::new();
+        let mut raw_decls    = Vec::new();
         let mut cleaned_lines: Vec<&str> = Vec::new();
 
         for line in script.lines() {
             match try_parse_indicator_line(line) {
-                Some(d) => decls.push(d),
+                Some(d) => raw_decls.push(d),
                 None    => cleaned_lines.push(line),
             }
         }
@@ -69,59 +83,66 @@ impl RhaiStreamEval {
             .map_err(|e| anyhow::anyhow!("Rhai compile error: {e}"))?;
 
         let lookback = extract_max_lookback(&cleaned);
-        let bar_buf_depth = decls.iter()
+        let bar_buf_depth = raw_decls.iter()
             .map(|d| d.buf_depth)
             .max()
             .unwrap_or(DEFAULT_BUF_DEPTH)
             .max(lookback)
             .max(DEFAULT_BUF_DEPTH);
 
-        // IndicatorDecl already has canonical ind_type + field from map_indicator_type;
-        // build spec_config from those directly without re-mapping.
-        let stream_decls = decls.into_iter().map(|d| StreamDecl {
-            spec_config: indicator_json_config(&d.ind_type, d.period),
-            var_name:    d.var_name,
-            source_tf:   d.timeframe,
-            field:       d.field,
-            buf_depth:   d.buf_depth,
+        let decls = raw_decls.into_iter().map(|d| {
+            let field = match d.kind {
+                IndicatorKind::Single(f) => Some(f),
+                IndicatorKind::Multi     => None,
+            };
+            StreamDecl {
+                spec_config: indicator_json_config(&d.ind_type, d.period),
+                var_name:    d.var_name,
+                source_tf:   d.timeframe,
+                field,
+                buf_depth:   d.buf_depth,
+            }
         }).collect();
 
-        Ok(Self { engine, ast, plot_buf, decls: stream_decls, bar_buf_depth })
+        Ok(Self { engine, ast, plot_buf, decls, bar_buf_depth })
     }
 
-    /// Parsed indicator declarations — acquire ledger handles from these.
-    pub fn decls(&self) -> &[StreamDecl] {
-        &self.decls
-    }
+    /// Parsed indicator declarations — herald acquires ledger handles from these.
+    pub fn decls(&self) -> &[StreamDecl] { &self.decls }
 
-    pub fn bar_buf_depth(&self) -> usize {
-        self.bar_buf_depth
-    }
+    pub fn bar_buf_depth(&self) -> usize { self.bar_buf_depth }
 
     /// Run the script for one bar.
     ///
-    /// `indicator_arrays`: keyed by `StreamDecl::var_name`, newest-first values
-    /// read from the ledger cell column (length = decl.buf_depth).
+    /// `indicators`: keyed by `StreamDecl::var_name`.
+    ///   - `Single` → newest-first `Vec<f64>`, length = decl.buf_depth.
+    ///   - `Multi`  → newest-first `Vec<HashMap<String,f64>>`, length = decl.buf_depth.
     /// `bar_history`: newest-first OHLCV bars (length = bar_buf_depth).
     ///
     /// Returns the `plot("name", value)` outputs emitted by the script.
     pub fn run(
         &self,
-        indicator_arrays: &HashMap<String, Vec<f64>>,
+        indicators:  &HashMap<String, IndicatorSnapshot>,
         bar_history: &[Bar],
     ) -> PlotResult {
-        if let Ok(mut buf) = self.plot_buf.lock() {
-            buf.clear();
-        }
+        if let Ok(mut buf) = self.plot_buf.lock() { buf.clear(); }
 
         let mut scope = Scope::new();
 
         for decl in &self.decls {
-            let arr: Array = indicator_arrays
-                .get(&decl.var_name)
-                .map(|vals| vals.iter().map(|&v| Dynamic::from_float(v)).collect())
-                .unwrap_or_default();
-            scope.push_dynamic(decl.var_name.as_str(), Dynamic::from_array(arr));
+            let dyn_arr: Array = match indicators.get(&decl.var_name) {
+                Some(IndicatorSnapshot::Single(vals)) =>
+                    vals.iter().map(|&v| Dynamic::from_float(v)).collect(),
+                Some(IndicatorSnapshot::Multi(snapshots)) =>
+                    snapshots.iter().map(|fields| {
+                        let map: rhai::Map = fields.iter()
+                            .map(|(k, &v)| (k.clone().into(), Dynamic::from_float(v)))
+                            .collect();
+                        Dynamic::from_map(map)
+                    }).collect(),
+                None => Array::new(),
+            };
+            scope.push_dynamic(decl.var_name.as_str(), Dynamic::from_array(dyn_arr));
         }
 
         for field in BAR_FIELDS {
@@ -138,8 +159,6 @@ impl RhaiStreamEval {
             scope.push_dynamic(*field, Dynamic::from_array(arr));
         }
 
-        // Errors are silently ignored — the indicator may not be warm enough
-        // for the script's conditionals to fire yet.
         let _ = self.engine.run_ast_with_scope(&mut scope, &self.ast);
 
         self.plot_buf.lock()

@@ -18,7 +18,6 @@ pub struct ScalpingEma {
     atr_ma_p: usize,
     prev_fast: Option<f64>,
     prev_slow: Option<f64>,
-    in_position: bool,
 }
 
 impl ScalpingEma {
@@ -34,7 +33,6 @@ impl ScalpingEma {
             atr_ma_p: atr_ma_period,
             prev_fast: None,
             prev_slow: None,
-            in_position: false,
         }
     }
 }
@@ -63,15 +61,13 @@ impl Strategy for ScalpingEma {
         let atr_expanding = a.atr > a_ma;
 
         // Bullish cross: fast crosses above slow
-        if pf <= ps && f > s && !self.in_position && atr_expanding {
-            self.in_position = true;
+        if pf <= ps && f > s && atr_expanding {
             let strength = ((f - s) / s).clamp(0.0, 1.0);
             return vec![Signal::long(bar.timestamp, &bar.symbol, strength)];
         }
 
         // Bearish cross: fast crosses below slow
-        if pf >= ps && f < s && self.in_position {
-            self.in_position = false;
+        if pf >= ps && f < s {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
 
@@ -89,7 +85,6 @@ impl Strategy for ScalpingEma {
         self.atr_ma = Ema::new(self.atr_ma_p);
         self.prev_fast = None;
         self.prev_slow = None;
-        self.in_position = false;
     }
 }
 

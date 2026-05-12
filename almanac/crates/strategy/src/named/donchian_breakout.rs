@@ -14,7 +14,6 @@ pub struct DonchianBreakout {
     exit_p: usize,
     prev_upper: Option<f64>,
     prev_lower: Option<f64>,
-    in_position: bool,
 }
 
 impl DonchianBreakout {
@@ -26,7 +25,6 @@ impl DonchianBreakout {
             exit_p: exit_period,
             prev_upper: None,
             prev_lower: None,
-            in_position: false,
         }
     }
 }
@@ -49,14 +47,12 @@ impl Strategy for DonchianBreakout {
         };
 
         // Entry: close breaks above previous upper channel
-        if bar.close > pu && !self.in_position {
-            self.in_position = true;
+        if bar.close > pu {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
 
         // Exit: close drops below previous exit channel lower
-        if bar.close < pl && self.in_position {
-            self.in_position = false;
+        if bar.close < pl {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
 
@@ -72,7 +68,6 @@ impl Strategy for DonchianBreakout {
         self.exit = Donchian::new(self.exit_p);
         self.prev_upper = None;
         self.prev_lower = None;
-        self.in_position = false;
     }
 }
 
@@ -117,10 +112,10 @@ mod tests {
             .collect();
 
         let script = r#"
-let du20 = ind.donchian_upper(20);
-let dl10 = ind.donchian_lower(10);
-if close[0] > du20[1] { entry = true; }
-if close[0] < dl10[1] { exit  = true; }
+let du20 = ind.donchian(20);
+let dl10 = ind.donchian(10);
+if close[0] > du20[1].upper { entry = true; }
+if close[0] < dl10[1].lower { exit  = true; }
 "#;
         let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
         let rhai_sigs: Vec<(i64, Direction)> = bars.iter()

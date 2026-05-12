@@ -11,7 +11,6 @@ pub struct RsiMaCross {
     rsi: Rsi,
     prev_fast: Option<f64>,
     prev_slow: Option<f64>,
-    in_position: bool,
     fast_period: usize,
     slow_period: usize,
     rsi_period: usize,
@@ -33,7 +32,6 @@ impl RsiMaCross {
             rsi: Rsi::new(rsi_period),
             prev_fast: None,
             prev_slow: None,
-            in_position: false,
             fast_period,
             slow_period,
             rsi_period,
@@ -64,12 +62,10 @@ impl Strategy for RsiMaCross {
         self.prev_fast = Some(f);
         self.prev_slow = Some(s);
 
-        if crossed_above && r > self.rsi_entry && !self.in_position {
-            self.in_position = true;
+        if crossed_above && r > self.rsi_entry {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if self.in_position && (crossed_below || r < self.rsi_exit) {
-            self.in_position = false;
+        if crossed_below || r < self.rsi_exit {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -85,7 +81,6 @@ impl Strategy for RsiMaCross {
         self.rsi = Rsi::new(self.rsi_period);
         self.prev_fast = None;
         self.prev_slow = None;
-        self.in_position = false;
     }
 }
 

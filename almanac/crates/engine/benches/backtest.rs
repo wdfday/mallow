@@ -214,8 +214,8 @@ fn bench_strategy_expr(c: &mut Criterion) {
                 "rhai",
                 &json!({
                     "script": "\
-                        let ema20 = indicator(\"ema\", 20);\
-                        let ema50 = indicator(\"ema\", 50);\
+                        let ema20 = ind.ema(20);\
+                        let ema50 = ind.ema(50);\
                         let entry = cross_above(ema20, ema50);\
                         let exit  = cross_below(ema20, ema50);\
                     "
@@ -241,11 +241,11 @@ fn bench_strategy_expr(c: &mut Criterion) {
                 "rhai",
                 &json!({
                     "script": "\
-                        let rsi14 = indicator(\"rsi\", 14);\
-                        let ema20 = indicator(\"ema\", 20);\
-                        let ema50 = indicator(\"ema\", 50);\
-                        let macd  = indicator(\"macd\", 12, 26, 9);\
-                        let entry = rsi14[0] < 40.0 && ema20[0] > ema50[0] && macd[\"histogram\"][0] > 0.0;\
+                        let rsi14 = ind.rsi(14);\
+                        let ema20 = ind.ema(20);\
+                        let ema50 = ind.ema(50);\
+                        let macd  = ind.macd(12);\
+                        let entry = rsi14[0] < 40.0 && ema20[0] > ema50[0] && macd[0] > 0.0;\
                         let exit  = rsi14[0] > 60.0 || ema20[0] < ema50[0];\
                     "
                 }),

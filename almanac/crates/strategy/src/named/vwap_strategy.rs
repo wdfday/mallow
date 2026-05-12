@@ -16,7 +16,6 @@ pub struct VwapBounce {
     overbought: f64,
     session_gap_mins: u64,
     prev_above: Option<bool>,
-    in_position: bool,
 }
 
 impl VwapBounce {
@@ -29,7 +28,6 @@ impl VwapBounce {
             overbought,
             session_gap_mins,
             prev_above: None,
-            in_position: false,
         }
     }
 }
@@ -49,20 +47,17 @@ impl Strategy for VwapBounce {
         };
 
         // Cross above VWAP + RSI was oversold → long
-        if !was_above && above_vwap && rsi < self.oversold + 10.0 && !self.in_position {
-            self.in_position = true;
+        if !was_above && above_vwap && rsi < self.oversold + 10.0 {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 0.8)];
         }
 
         // Cross below VWAP → close
-        if was_above && !above_vwap && self.in_position {
-            self.in_position = false;
+        if was_above && !above_vwap {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
 
         // RSI overbought → close
-        if rsi > self.overbought && self.in_position {
-            self.in_position = false;
+        if rsi > self.overbought {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
 
@@ -77,7 +72,6 @@ impl Strategy for VwapBounce {
         self.vwap = Vwap::new(self.session_gap_mins);
         self.rsi = Rsi::new(self.rsi_p);
         self.prev_above = None;
-        self.in_position = false;
     }
 }
 

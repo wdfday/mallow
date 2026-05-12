@@ -10,7 +10,6 @@ pub struct VolatilityRatioBreakout {
     threshold: f64,
     lookback: usize,
     prev_close: Option<f64>,
-    in_position: bool,
 }
 
 impl VolatilityRatioBreakout {
@@ -20,7 +19,6 @@ impl VolatilityRatioBreakout {
             threshold,
             lookback,
             prev_close: None,
-            in_position: false,
         }
     }
 }
@@ -36,12 +34,10 @@ impl Strategy for VolatilityRatioBreakout {
 
         let bullish_move = prev_close.map_or(false, |pc| bar.close > pc);
 
-        if v > self.threshold && bullish_move && !self.in_position {
-            self.in_position = true;
+        if v > self.threshold && bullish_move {
             return vec![Signal::long(bar.timestamp, &bar.symbol, v.min(1.0))];
         }
-        if v <= self.threshold && self.in_position {
-            self.in_position = false;
+        if v <= self.threshold {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -54,7 +50,6 @@ impl Strategy for VolatilityRatioBreakout {
     fn reset(&mut self) {
         self.vr = VolatilityRatio::new(self.lookback);
         self.prev_close = None;
-        self.in_position = false;
     }
 }
 
@@ -145,7 +140,6 @@ pub struct KeltnerBreakout {
     period: usize,
     atr_period: usize,
     multiplier: f64,
-    in_position: bool,
 }
 
 impl KeltnerBreakout {
@@ -155,7 +149,6 @@ impl KeltnerBreakout {
             period,
             atr_period,
             multiplier,
-            in_position: false,
         }
     }
 }
@@ -166,12 +159,10 @@ impl Strategy for KeltnerBreakout {
             return vec![];
         };
 
-        if bar.close > v.upper && !self.in_position {
-            self.in_position = true;
+        if bar.close > v.upper {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if bar.close < v.middle && self.in_position {
-            self.in_position = false;
+        if bar.close < v.middle {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -183,7 +174,6 @@ impl Strategy for KeltnerBreakout {
 
     fn reset(&mut self) {
         self.keltner = Keltner::new(self.period, self.atr_period, self.multiplier);
-        self.in_position = false;
     }
 }
 

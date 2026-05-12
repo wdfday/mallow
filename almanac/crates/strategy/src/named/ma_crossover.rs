@@ -9,7 +9,6 @@ pub struct MaCrossover {
     slow: Ema,
     prev_fast: Option<f64>,
     prev_slow: Option<f64>,
-    in_position: bool,
     fast_period: usize,
     slow_period: usize,
 }
@@ -22,7 +21,6 @@ impl MaCrossover {
             slow: Ema::new(slow),
             prev_fast: None,
             prev_slow: None,
-            in_position: false,
             fast_period: fast,
             slow_period: slow,
         }
@@ -50,13 +48,11 @@ impl Strategy for MaCrossover {
         self.prev_fast = Some(f);
         self.prev_slow = Some(s);
 
-        if crossed_above && !self.in_position {
-            self.in_position = true;
+        if crossed_above {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
 
-        if crossed_below && self.in_position {
-            self.in_position = false;
+        if crossed_below {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
 
@@ -72,7 +68,6 @@ impl Strategy for MaCrossover {
         self.slow = Ema::new(self.slow_period);
         self.prev_fast = None;
         self.prev_slow = None;
-        self.in_position = false;
     }
 }
 

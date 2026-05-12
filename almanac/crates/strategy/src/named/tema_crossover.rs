@@ -13,7 +13,6 @@ pub struct TemaCrossover {
     slow: Tema,
     prev_fast: Option<f64>,
     prev_slow: Option<f64>,
-    in_position: bool,
 }
 
 impl TemaCrossover {
@@ -23,7 +22,6 @@ impl TemaCrossover {
             slow: Tema::new(slow_period),
             prev_fast: None,
             prev_slow: None,
-            in_position: false,
         }
     }
 }
@@ -43,11 +41,9 @@ impl Strategy for TemaCrossover {
             let was_above = pf > ps;
             let now_above = f > s;
 
-            if !self.in_position && !was_above && now_above {
-                self.in_position = true;
+            if !was_above && now_above {
                 signals.push(Signal::long(bar.timestamp, &bar.symbol, 1.0));
-            } else if self.in_position && was_above && !now_above {
-                self.in_position = false;
+            } else if was_above && !now_above {
                 signals.push(Signal::close(bar.timestamp, &bar.symbol));
             }
         }
@@ -64,7 +60,6 @@ impl Strategy for TemaCrossover {
         self.slow.reset();
         self.prev_fast = None;
         self.prev_slow = None;
-        self.in_position = false;
     }
 }
 

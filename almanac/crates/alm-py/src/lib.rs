@@ -500,7 +500,7 @@ fn run_backtest<'py>(
 
 /// Run a backtest using a **Rhai script** strategy.
 ///
-/// The script declares indicators with ``indicator(type, period)`` and assigns
+/// The script declares indicators with ``ind.TYPE(period)`` and assigns
 /// boolean variables ``entry`` / ``exit`` (and optionally ``tp`` / ``sl`` for
 /// target/stop prices). Any ``plot("name", value)`` calls accumulate into the
 /// ``indicator_series`` key of the returned dict.
@@ -513,8 +513,8 @@ fn run_backtest<'py>(
 ///     Rhai script. Example:
 ///
 /// ```text
-/// let ema9  = indicator("ema", 9);
-/// let ema21 = indicator("ema", 21);
+/// let ema9  = ind.ema(9);
+/// let ema21 = ind.ema(21);
 ///
 /// let entry = cross_above(ema9, ema21);
 /// let exit  = cross_below(ema9, ema21);

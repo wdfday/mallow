@@ -10,7 +10,6 @@ pub struct RangeRover {
     ma: Sma,
     oversold: f64,
     overbought: f64,
-    in_position: bool,
     k_period: usize,
     d_period: usize,
     ma_period: usize,
@@ -23,7 +22,6 @@ impl RangeRover {
             ma: Sma::new(ma_period),
             oversold,
             overbought,
-            in_position: false,
             k_period,
             d_period,
             ma_period,
@@ -40,12 +38,10 @@ impl Strategy for RangeRover {
             return vec![];
         };
 
-        if !self.in_position && st.k < self.oversold && bar.close > ma {
-            self.in_position = true;
+        if st.k < self.oversold && bar.close > ma {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if self.in_position && st.k > self.overbought {
-            self.in_position = false;
+        if st.k > self.overbought {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -58,6 +54,5 @@ impl Strategy for RangeRover {
     fn reset(&mut self) {
         self.stoch = Stochastic::new(self.k_period, self.d_period);
         self.ma = Sma::new(self.ma_period);
-        self.in_position = false;
     }
 }

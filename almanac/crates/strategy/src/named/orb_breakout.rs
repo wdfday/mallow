@@ -28,7 +28,6 @@ pub struct OrbBreakout {
     or_high: f64,
     or_low: f64,
     range_ready: bool,
-    in_position: bool,
     last_ts: Option<i64>,
 
     // ── stored for reset ─────────────────────────────────────────────────────
@@ -46,7 +45,6 @@ impl OrbBreakout {
             or_high: f64::NEG_INFINITY,
             or_low: f64::INFINITY,
             range_ready: false,
-            in_position: false,
             last_ts: None,
             range_bars_cfg: range_bars,
             session_gap_mins_cfg: session_gap_mins,
@@ -58,7 +56,6 @@ impl OrbBreakout {
         self.or_high = f64::NEG_INFINITY;
         self.or_low = f64::INFINITY;
         self.range_ready = false;
-        self.in_position = false;
     }
 }
 
@@ -89,15 +86,13 @@ impl Strategy for OrbBreakout {
 
         // ── signal generation ────────────────────────────────────────────────
         // Long breakout: close crosses above opening range high
-        if bar.close > self.or_high && !self.in_position {
-            self.in_position = true;
+        if bar.close > self.or_high {
             let strength = ((bar.close - self.or_high) / self.or_high).clamp(0.0, 1.0);
             return vec![Signal::long(bar.timestamp, &bar.symbol, strength)];
         }
 
         // Stop-out: close falls below opening range low while in position
-        if bar.close < self.or_low && self.in_position {
-            self.in_position = false;
+        if bar.close < self.or_low {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
 

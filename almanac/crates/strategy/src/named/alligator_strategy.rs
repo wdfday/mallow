@@ -8,7 +8,6 @@ use alm_indicator::Alligator;
 pub struct AlligatorStrategy {
     alligator: Alligator,
     prev_bullish: Option<bool>,
-    in_position: bool,
 }
 
 impl AlligatorStrategy {
@@ -16,7 +15,6 @@ impl AlligatorStrategy {
         Self {
             alligator: Alligator::new(jaw, teeth, lips),
             prev_bullish: None,
-            in_position: false,
         }
     }
 }
@@ -32,12 +30,10 @@ impl Strategy for AlligatorStrategy {
             return vec![];
         };
 
-        if v.bullish && !was_bullish && !self.in_position {
-            self.in_position = true;
+        if v.bullish && !was_bullish {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if !v.bullish && was_bullish && self.in_position {
-            self.in_position = false;
+        if !v.bullish && was_bullish {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -50,7 +46,6 @@ impl Strategy for AlligatorStrategy {
     fn reset(&mut self) {
         self.alligator = Alligator::default();
         self.prev_bullish = None;
-        self.in_position = false;
     }
 }
 

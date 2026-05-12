@@ -10,7 +10,6 @@ pub struct ReversalCatcher {
     rsi: Rsi,
     prev_k: Option<f64>,
     prev_d: Option<f64>,
-    in_position: bool,
     k_period: usize,
     d_period: usize,
     rsi_period: usize,
@@ -23,7 +22,6 @@ impl ReversalCatcher {
             rsi: Rsi::new(rsi_period),
             prev_k: None,
             prev_d: None,
-            in_position: false,
             k_period,
             d_period,
             rsi_period,
@@ -52,12 +50,10 @@ impl Strategy for ReversalCatcher {
         self.prev_k = Some(st.k);
         self.prev_d = Some(st.d);
 
-        if k_crossed_above_d && rsi < 50.0 && !self.in_position {
-            self.in_position = true;
+        if k_crossed_above_d && rsi < 50.0 {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if self.in_position && (k_crossed_below_d || rsi > 70.0) {
-            self.in_position = false;
+        if k_crossed_below_d || rsi > 70.0 {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -72,6 +68,5 @@ impl Strategy for ReversalCatcher {
         self.rsi = Rsi::new(self.rsi_period);
         self.prev_k = None;
         self.prev_d = None;
-        self.in_position = false;
     }
 }

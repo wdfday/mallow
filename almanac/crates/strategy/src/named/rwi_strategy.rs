@@ -9,7 +9,6 @@ pub struct RwiStrategy {
     rwi: Rwi,
     threshold: f64,
     period: usize,
-    in_position: bool,
 }
 
 impl RwiStrategy {
@@ -18,7 +17,6 @@ impl RwiStrategy {
             rwi: Rwi::new(period),
             threshold,
             period,
-            in_position: false,
         }
     }
 }
@@ -29,12 +27,10 @@ impl Strategy for RwiStrategy {
             return vec![];
         };
 
-        if v.rwi_high > self.threshold && !self.in_position {
-            self.in_position = true;
+        if v.rwi_high > self.threshold {
             return vec![Signal::long(bar.timestamp, &bar.symbol, (v.rwi_high - 1.0).min(1.0).max(0.0))];
         }
-        if v.rwi_low > self.threshold && self.in_position {
-            self.in_position = false;
+        if v.rwi_low > self.threshold {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -46,6 +42,5 @@ impl Strategy for RwiStrategy {
 
     fn reset(&mut self) {
         self.rwi = Rwi::new(self.period);
-        self.in_position = false;
     }
 }

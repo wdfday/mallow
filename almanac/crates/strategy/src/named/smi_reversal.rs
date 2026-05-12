@@ -12,7 +12,6 @@ pub struct SmiReversal {
     smi: Smi,
     prev_smi: Option<f64>,
     prev_signal: Option<f64>,
-    in_position: bool,
     period: usize,
     smooth1: usize,
     smooth2: usize,
@@ -34,7 +33,6 @@ impl SmiReversal {
             smi: Smi::new(period, smooth1, smooth2, signal_period),
             prev_smi: None,
             prev_signal: None,
-            in_position: false,
             period,
             smooth1,
             smooth2,
@@ -63,12 +61,10 @@ impl Strategy for SmiReversal {
         self.prev_smi = Some(sv.smi);
         self.prev_signal = Some(sv.signal);
 
-        if crossed_above_signal && ps < self.oversold && !self.in_position {
-            self.in_position = true;
+        if crossed_above_signal && ps < self.oversold {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if self.in_position && (sv.smi > self.overbought || crossed_below_signal) {
-            self.in_position = false;
+        if sv.smi > self.overbought || crossed_below_signal {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -82,6 +78,5 @@ impl Strategy for SmiReversal {
         self.smi = Smi::new(self.period, self.smooth1, self.smooth2, self.signal_period);
         self.prev_smi = None;
         self.prev_signal = None;
-        self.in_position = false;
     }
 }

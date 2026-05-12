@@ -12,7 +12,6 @@ pub struct BbSqueeze {
     bb: BBands,
     squeeze_threshold: f64,
     was_squeezed: bool,
-    in_position: bool,
     period: usize,
     std: f64,
 }
@@ -24,7 +23,6 @@ impl BbSqueeze {
             bb: BBands::new(period, std),
             squeeze_threshold: 0.04,
             was_squeezed: false,
-            in_position: false,
             period,
             std,
         }
@@ -48,13 +46,11 @@ impl Strategy for BbSqueeze {
             self.was_squeezed = true;
         }
 
-        if !self.in_position && self.was_squeezed && bar.close > bb.upper {
-            self.in_position = true;
+        if self.was_squeezed && bar.close > bb.upper {
             self.was_squeezed = false;
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if self.in_position && bar.close < bb.middle {
-            self.in_position = false;
+        if bar.close < bb.middle {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -67,6 +63,5 @@ impl Strategy for BbSqueeze {
     fn reset(&mut self) {
         self.bb = BBands::new(self.period, self.std);
         self.was_squeezed = false;
-        self.in_position = false;
     }
 }

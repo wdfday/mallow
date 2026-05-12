@@ -8,7 +8,6 @@ use alm_indicator::{BBands, Macd};
 pub struct BollingerMacd {
     bb: BBands,
     macd: Macd,
-    in_position: bool,
     bb_period: usize,
     bb_std: f64,
     fast: usize,
@@ -21,7 +20,6 @@ impl BollingerMacd {
         Self {
             bb: BBands::new(bb_period, bb_std),
             macd: Macd::new(fast, slow, signal_period),
-            in_position: false,
             bb_period,
             bb_std,
             fast,
@@ -40,12 +38,10 @@ impl Strategy for BollingerMacd {
             return vec![];
         };
 
-        if !self.in_position && bar.close > bb.upper && m.histogram > 0.0 {
-            self.in_position = true;
+        if bar.close > bb.upper && m.histogram > 0.0 {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if self.in_position && (bar.close < bb.middle || m.histogram < 0.0) {
-            self.in_position = false;
+        if bar.close < bb.middle || m.histogram < 0.0 {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -58,7 +54,6 @@ impl Strategy for BollingerMacd {
     fn reset(&mut self) {
         self.bb = BBands::new(self.bb_period, self.bb_std);
         self.macd = Macd::new(self.fast, self.slow, self.signal_period);
-        self.in_position = false;
     }
 }
 

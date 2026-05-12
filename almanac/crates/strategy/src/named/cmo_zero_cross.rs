@@ -9,7 +9,6 @@ pub struct CmoZeroCross {
     cmo: Cmo,
     ema: Ema,
     prev_cmo: Option<f64>,
-    in_position: bool,
     cmo_period: usize,
     ema_period: usize,
 }
@@ -20,7 +19,6 @@ impl CmoZeroCross {
             cmo: Cmo::new(cmo_period),
             ema: Ema::new(ema_period),
             prev_cmo: None,
-            in_position: false,
             cmo_period,
             ema_period,
         }
@@ -32,25 +30,17 @@ impl Strategy for CmoZeroCross {
         let cmo = self.cmo.update(bar.close);
         let ema = self.ema.update(bar.close);
 
-        let (Some(cmo), Some(ema)) = (cmo, ema) else {
-            return vec![];
-        };
-
-        let Some(prev) = self.prev_cmo else {
-            self.prev_cmo = Some(cmo);
-            return vec![];
-        };
+        let Some(cmo) = cmo else { return vec![]; };
+        let prev = self.prev_cmo.replace(cmo);
+        let (Some(ema), Some(prev)) = (ema, prev) else { return vec![]; };
 
         let crossed_above_zero = prev <= 0.0 && cmo > 0.0;
         let crossed_below_zero = prev >= 0.0 && cmo < 0.0;
-        self.prev_cmo = Some(cmo);
 
-        if crossed_above_zero && bar.close > ema && !self.in_position {
-            self.in_position = true;
+        if crossed_above_zero && bar.close > ema {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if self.in_position && (crossed_below_zero || bar.close < ema) {
-            self.in_position = false;
+        if crossed_below_zero || bar.close < ema {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -64,7 +54,6 @@ impl Strategy for CmoZeroCross {
         self.cmo = Cmo::new(self.cmo_period);
         self.ema = Ema::new(self.ema_period);
         self.prev_cmo = None;
-        self.in_position = false;
     }
 }
 
@@ -87,7 +76,7 @@ mod tests {
             .collect();
 
         let script = r#"
-let cmo14 = ind.cmo(14);
+let cmo14 = ind.cmo(14, 2);
 let ema50 = ind.ema(50, 1);
 if cmo14[1] <= 0.0 && cmo14[0] > 0.0 && close[0] > ema50[0] { entry = true; }
 if (cmo14[1] >= 0.0 && cmo14[0] < 0.0) || close[0] < ema50[0] { exit = true; }

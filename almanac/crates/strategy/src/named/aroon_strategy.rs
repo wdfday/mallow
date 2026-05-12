@@ -12,7 +12,6 @@ pub struct AroonTrend {
     period: usize,
     bull_threshold: f64,
     bear_threshold: f64,
-    in_position: bool,
 }
 
 impl AroonTrend {
@@ -22,7 +21,6 @@ impl AroonTrend {
             period,
             bull_threshold,
             bear_threshold,
-            in_position: false,
         }
     }
 }
@@ -33,15 +31,13 @@ impl Strategy for AroonTrend {
             return vec![];
         };
 
-        if v.up > self.bull_threshold && v.down < self.bear_threshold && !self.in_position {
-            self.in_position = true;
+        if v.up > self.bull_threshold && v.down < self.bear_threshold {
             let strength = (v.up - v.down) / 200.0 + 0.5;
             return vec![Signal::long(bar.timestamp, &bar.symbol, strength.clamp(0.0, 1.0))];
         }
 
         // Exit when aroon up drops below down (trend lost)
-        if v.up < v.down && self.in_position {
-            self.in_position = false;
+        if v.up < v.down {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
 
@@ -54,7 +50,6 @@ impl Strategy for AroonTrend {
 
     fn reset(&mut self) {
         self.aroon = Aroon::new(self.period);
-        self.in_position = false;
     }
 }
 
@@ -119,10 +114,9 @@ mod tests {
             .collect();
 
         let script = r#"
-let au = ind.aroon_up(25, 1);
-let ad = ind.aroon_down(25, 1);
-if au[0] > 70.0 && ad[0] < 30.0 { entry = true; }
-if au[0] < ad[0] { exit = true; }
+let ar = ind.aroon(25, 1);
+if ar[0].up > 70.0 && ar[0].down < 30.0 { entry = true; }
+if ar[0].up < ar[0].down { exit = true; }
 "#;
         let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
         let rhai_sigs: Vec<(i64, Direction)> = bars.iter()

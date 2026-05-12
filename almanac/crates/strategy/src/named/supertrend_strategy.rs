@@ -10,7 +10,6 @@ pub struct SupertrendStrategy {
     period: usize,
     multiplier: f64,
     prev_bullish: Option<bool>,
-    in_position: bool,
 }
 
 impl SupertrendStrategy {
@@ -20,7 +19,6 @@ impl SupertrendStrategy {
             period,
             multiplier,
             prev_bullish: None,
-            in_position: false,
         }
     }
 }
@@ -38,12 +36,10 @@ impl Strategy for SupertrendStrategy {
             return vec![];
         };
 
-        if v.is_bullish && !was_bullish && !self.in_position {
-            self.in_position = true;
+        if v.is_bullish && !was_bullish {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if !v.is_bullish && was_bullish && self.in_position {
-            self.in_position = false;
+        if !v.is_bullish && was_bullish {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -56,7 +52,6 @@ impl Strategy for SupertrendStrategy {
     fn reset(&mut self) {
         self.st = SuperTrend::new(self.period, self.multiplier);
         self.prev_bullish = None;
-        self.in_position = false;
     }
 }
 
@@ -72,7 +67,6 @@ pub struct SupertrendMacd {
     macd_fast: usize,
     macd_slow: usize,
     macd_signal: usize,
-    in_position: bool,
 }
 
 impl SupertrendMacd {
@@ -91,7 +85,6 @@ impl SupertrendMacd {
             macd_fast,
             macd_slow,
             macd_signal,
-            in_position: false,
         }
     }
 }
@@ -105,12 +98,10 @@ impl Strategy for SupertrendMacd {
             return vec![];
         };
 
-        if st.is_bullish && mc.histogram > 0.0 && !self.in_position {
-            self.in_position = true;
+        if st.is_bullish && mc.histogram > 0.0 {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if !st.is_bullish && self.in_position {
-            self.in_position = false;
+        if !st.is_bullish {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -123,7 +114,6 @@ impl Strategy for SupertrendMacd {
     fn reset(&mut self) {
         self.st = SuperTrend::new(self.st_period, self.multiplier);
         self.macd = Macd::new(self.macd_fast, self.macd_slow, self.macd_signal);
-        self.in_position = false;
     }
 }
 
@@ -148,9 +138,9 @@ mod tests {
 
         // st_bull returns 1.0 when bullish, 0.0 when bearish
         let script = r#"
-let sb = ind.st_bull(10);
-if sb[1] < 0.5 && sb[0] >= 0.5 { entry = true; }
-if sb[1] >= 0.5 && sb[0] < 0.5 { exit  = true; }
+let st = ind.supertrend(10);
+if st[1].bullish < 0.5 && st[0].bullish >= 0.5 { entry = true; }
+if st[1].bullish >= 0.5 && st[0].bullish < 0.5 { exit  = true; }
 "#;
         let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
         let rhai_sigs = run(rhai.as_mut(), &bars);

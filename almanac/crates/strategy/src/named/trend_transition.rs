@@ -12,7 +12,6 @@ pub struct TrendTransition {
     prev_fast: Option<f64>,
     prev_slow: Option<f64>,
     adx_threshold: f64,
-    in_position: bool,
     fast_period: usize,
     slow_period: usize,
     adx_period: usize,
@@ -27,7 +26,6 @@ impl TrendTransition {
             prev_fast: None,
             prev_slow: None,
             adx_threshold,
-            in_position: false,
             fast_period,
             slow_period,
             adx_period,
@@ -57,12 +55,10 @@ impl Strategy for TrendTransition {
         self.prev_fast = Some(f);
         self.prev_slow = Some(s);
 
-        if crossed_above && adx.adx > self.adx_threshold && !self.in_position {
-            self.in_position = true;
+        if crossed_above && adx.adx > self.adx_threshold {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if crossed_below && self.in_position {
-            self.in_position = false;
+        if crossed_below {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -78,7 +74,6 @@ impl Strategy for TrendTransition {
         self.adx = Adx::new(self.adx_period);
         self.prev_fast = None;
         self.prev_slow = None;
-        self.in_position = false;
     }
 }
 

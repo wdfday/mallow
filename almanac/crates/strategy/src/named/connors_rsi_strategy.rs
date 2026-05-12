@@ -10,7 +10,6 @@ pub struct ConnorsRsiStrategy {
     oversold: f64,
     overbought: f64,
     crsi: ConnorsRsi,
-    in_position: bool,
 }
 
 impl ConnorsRsiStrategy {
@@ -28,7 +27,6 @@ impl ConnorsRsiStrategy {
             oversold,
             overbought,
             crsi: ConnorsRsi::new(rsi_period, streak_period, rank_period),
-            in_position: false,
         }
     }
 }
@@ -39,14 +37,12 @@ impl Strategy for ConnorsRsiStrategy {
             return vec![];
         };
 
-        if crsi_val < self.oversold && !self.in_position {
-            self.in_position = true;
+        if crsi_val < self.oversold {
             let strength = ((self.oversold - crsi_val) / self.oversold).clamp(0.0, 1.0);
             return vec![Signal::long(bar.timestamp, &bar.symbol, strength)];
         }
 
-        if crsi_val > self.overbought && self.in_position {
-            self.in_position = false;
+        if crsi_val > self.overbought {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
 
@@ -59,7 +55,6 @@ impl Strategy for ConnorsRsiStrategy {
 
     fn reset(&mut self) {
         self.crsi = ConnorsRsi::new(self.rsi_period, self.streak_period, self.rank_period);
-        self.in_position = false;
     }
 }
 
@@ -128,7 +123,6 @@ mod tests {
             strat.on_bar(&bar(i, 100.0 + (i % 5) as f64));
         }
         strat.reset();
-        assert!(!strat.in_position);
     }
 
     #[test]

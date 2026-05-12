@@ -8,7 +8,6 @@ use alm_indicator::Macd;
 pub struct MacdCrossover {
     macd: Macd,
     prev_hist: Option<f64>,
-    in_position: bool,
     fast: usize,
     slow: usize,
     signal_period: usize,
@@ -19,7 +18,6 @@ impl MacdCrossover {
         Self {
             macd: Macd::new(fast, slow, signal_period),
             prev_hist: None,
-            in_position: false,
             fast,
             slow,
             signal_period,
@@ -42,12 +40,10 @@ impl Strategy for MacdCrossover {
         let crossed_down = prev >= 0.0 && v.histogram < 0.0;
         self.prev_hist = Some(v.histogram);
 
-        if crossed_up && !self.in_position {
-            self.in_position = true;
+        if crossed_up {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if crossed_down && self.in_position {
-            self.in_position = false;
+        if crossed_down {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -60,7 +56,6 @@ impl Strategy for MacdCrossover {
     fn reset(&mut self) {
         self.macd = Macd::new(self.fast, self.slow, self.signal_period);
         self.prev_hist = None;
-        self.in_position = false;
     }
 }
 
@@ -84,9 +79,9 @@ mod tests {
         let named_sigs = run(&mut named, &bars);
 
         let script = r#"
-let mh = ind.macd_hist(12);
-if mh[1] <= 0.0 && mh[0] > 0.0 { entry = true; }
-if mh[1] >= 0.0 && mh[0] < 0.0 { exit  = true; }
+let mh = ind.macd(12);
+if mh[1].histogram <= 0.0 && mh[0].histogram > 0.0 { entry = true; }
+if mh[1].histogram >= 0.0 && mh[0].histogram < 0.0 { exit  = true; }
 "#;
         let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
         let rhai_sigs = run(rhai.as_mut(), &bars);

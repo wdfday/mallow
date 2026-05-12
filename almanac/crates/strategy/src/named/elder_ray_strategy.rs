@@ -13,7 +13,6 @@ pub struct ElderRayStrategy {
     prev_bear: Option<f64>,
     prev_bull: Option<f64>,
     prev_ema: Option<f64>,
-    in_position: bool,
 }
 
 impl ElderRayStrategy {
@@ -24,7 +23,6 @@ impl ElderRayStrategy {
             prev_bear: None,
             prev_bull: None,
             prev_ema: None,
-            in_position: false,
         }
     }
 }
@@ -46,14 +44,12 @@ impl Strategy for ElderRayStrategy {
         let ema_rising = v.ema > pe;
 
         // Long: EMA uptrend + bear power negative but rising (weakening bears)
-        if ema_rising && v.bear_power < 0.0 && v.bear_power > pb && !self.in_position {
-            self.in_position = true;
+        if ema_rising && v.bear_power < 0.0 && v.bear_power > pb {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
 
         // Close: bull power turns negative (bulls exhausted)
-        if v.bull_power < 0.0 && pbl >= 0.0 && self.in_position {
-            self.in_position = false;
+        if v.bull_power < 0.0 && pbl >= 0.0 {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
 
@@ -69,7 +65,6 @@ impl Strategy for ElderRayStrategy {
         self.prev_bear = None;
         self.prev_bull = None;
         self.prev_ema = None;
-        self.in_position = false;
     }
 }
 

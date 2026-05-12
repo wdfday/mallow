@@ -11,7 +11,6 @@ pub struct AdxEmaCross {
     adx: Adx,
     prev_fast: Option<f64>,
     prev_slow: Option<f64>,
-    in_position: bool,
     fast_period: usize,
     slow_period: usize,
     adx_period: usize,
@@ -31,7 +30,6 @@ impl AdxEmaCross {
             adx: Adx::new(adx_period),
             prev_fast: None,
             prev_slow: None,
-            in_position: false,
             fast_period,
             slow_period,
             adx_period,
@@ -61,12 +59,10 @@ impl Strategy for AdxEmaCross {
         self.prev_fast = Some(f);
         self.prev_slow = Some(s);
 
-        if crossed_above && adx.adx > self.adx_threshold && !self.in_position {
-            self.in_position = true;
+        if crossed_above && adx.adx > self.adx_threshold {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if crossed_below && self.in_position {
-            self.in_position = false;
+        if crossed_below {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -82,7 +78,6 @@ impl Strategy for AdxEmaCross {
         self.adx = Adx::new(self.adx_period);
         self.prev_fast = None;
         self.prev_slow = None;
-        self.in_position = false;
     }
 }
 
@@ -108,7 +103,7 @@ mod tests {
 let e20 = ind.ema(20);
 let e50 = ind.ema(50);
 let adx14 = ind.adx(14, 1);
-if cross_above(e20, e50) && adx14[0] > 25.0 { entry = true; }
+if cross_above(e20, e50) && adx14[0].adx > 25.0 { entry = true; }
 if cross_below(e20, e50) { exit = true; }
 "#;
         let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();

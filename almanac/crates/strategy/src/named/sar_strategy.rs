@@ -10,7 +10,6 @@ pub struct SarStrategy {
     step: f64,
     max: f64,
     prev_bullish: Option<bool>,
-    in_position: bool,
 }
 
 impl SarStrategy {
@@ -20,7 +19,6 @@ impl SarStrategy {
             step,
             max,
             prev_bullish: None,
-            in_position: false,
         }
     }
 }
@@ -36,12 +34,10 @@ impl Strategy for SarStrategy {
             return vec![];
         };
 
-        if v.is_bullish && !was_bullish && !self.in_position {
-            self.in_position = true;
+        if v.is_bullish && !was_bullish {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if !v.is_bullish && was_bullish && self.in_position {
-            self.in_position = false;
+        if !v.is_bullish && was_bullish {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -54,7 +50,6 @@ impl Strategy for SarStrategy {
     fn reset(&mut self) {
         self.sar = ParabolicSar::new(self.step, self.max);
         self.prev_bullish = None;
-        self.in_position = false;
     }
 }
 
@@ -79,11 +74,11 @@ mod tests {
 
         // Detect SAR flip via close crossing the SAR value (is_bullish = close > sar)
         let script = r#"
-let sar = ind.sar(0);
-let was_bull = close[1] > sar[1];
-let now_bull = close[0] > sar[0];
-if !was_bull && now_bull { entry = true; }
-if was_bull && !now_bull { exit  = true; }
+let ps = ind.parabolic_sar(0);
+let was_bull = ps[1].bullish >= 0.5;
+let now_bull = ps[0].bullish >= 0.5;
+if !was_bull && now_bull  { entry = true; }
+if  was_bull && !now_bull { exit  = true; }
 "#;
         let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
         let rhai_sigs = run(rhai.as_mut(), &bars);

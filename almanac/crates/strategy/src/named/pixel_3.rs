@@ -28,8 +28,6 @@ pub struct Pixel3 {
     period_short:  usize,
     period_medium: usize,
     period_long:   usize,
-    /// Whether we currently hold a position.
-    in_position: bool,
 }
 
 impl Pixel3 {
@@ -51,7 +49,6 @@ impl Pixel3 {
             period_short,
             period_medium,
             period_long,
-            in_position: false,
         }
     }
 
@@ -93,14 +90,12 @@ impl Strategy for Pixel3 {
         let green_count = [ts5, ts4, ts3].iter().filter(|&&v| v).count();
         let all_red = green_count == 0;
 
-        if !self.in_position && green_count >= 2 {
-            self.in_position = true;
+        if green_count >= 2 {
             let strength = green_count as f64 / 3.0; // 0.67 or 1.0
             return vec![Signal::long(bar.timestamp, &self.symbol, strength)];
         }
 
-        if self.in_position && all_red {
-            self.in_position = false;
+        if all_red {
             return vec![Signal::close(bar.timestamp, &self.symbol)];
         }
 
@@ -118,10 +113,5 @@ impl Strategy for Pixel3 {
         self.window_short.clear();
         self.window_medium.clear();
         self.window_long.clear();
-        self.in_position = false;
-    }
-
-    fn set_portfolio_snapshot(&mut self, snapshot: &PortfolioSnapshot) {
-        self.in_position = snapshot.is_long(&self.symbol);
     }
 }

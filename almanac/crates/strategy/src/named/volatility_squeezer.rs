@@ -10,7 +10,6 @@ pub struct VolatilitySqueezer {
     atr: Atr,
     ma: Sma,
     prev_atr: Option<f64>,
-    in_position: bool,
     atr_period: usize,
     ma_period: usize,
 }
@@ -21,7 +20,6 @@ impl VolatilitySqueezer {
             atr: Atr::new(atr_period),
             ma: Sma::new(ma_period),
             prev_atr: None,
-            in_position: false,
             atr_period,
             ma_period,
         }
@@ -45,12 +43,10 @@ impl Strategy for VolatilitySqueezer {
         let atr_expanding = atr.atr > prev_atr;
         self.prev_atr = Some(atr.atr);
 
-        if !self.in_position && atr_expanding && bar.close > ma {
-            self.in_position = true;
+        if atr_expanding && bar.close > ma {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if self.in_position && bar.close < ma {
-            self.in_position = false;
+        if bar.close < ma {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -64,6 +60,5 @@ impl Strategy for VolatilitySqueezer {
         self.atr = Atr::new(self.atr_period);
         self.ma = Sma::new(self.ma_period);
         self.prev_atr = None;
-        self.in_position = false;
     }
 }

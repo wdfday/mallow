@@ -9,7 +9,6 @@ pub struct WilliamsRMa {
     wr: WilliamsR,
     ema: Ema,
     prev_wr: Option<f64>,
-    in_position: bool,
     wr_period: usize,
     ema_period: usize,
     oversold: f64,
@@ -22,7 +21,6 @@ impl WilliamsRMa {
             wr: WilliamsR::new(wr_period),
             ema: Ema::new(ema_period),
             prev_wr: None,
-            in_position: false,
             wr_period,
             ema_period,
             oversold,
@@ -49,12 +47,10 @@ impl Strategy for WilliamsRMa {
         let entered_overbought = prev_wr >= self.overbought && wr < self.overbought;
         self.prev_wr = Some(wr);
 
-        if exited_oversold && bar.close > ema && !self.in_position {
-            self.in_position = true;
+        if exited_oversold && bar.close > ema {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if self.in_position && (entered_overbought || bar.close < ema) {
-            self.in_position = false;
+        if entered_overbought || bar.close < ema {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -68,6 +64,5 @@ impl Strategy for WilliamsRMa {
         self.wr = WilliamsR::new(self.wr_period);
         self.ema = Ema::new(self.ema_period);
         self.prev_wr = None;
-        self.in_position = false;
     }
 }

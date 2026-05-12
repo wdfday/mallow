@@ -9,7 +9,6 @@ pub struct HaColor {
     ha: HeikenAshi,
     smooth: usize,
     prev_bullish: Option<bool>,
-    in_position: bool,
 }
 
 impl HaColor {
@@ -19,7 +18,6 @@ impl HaColor {
             ha: HeikenAshi::new(smooth),
             smooth,
             prev_bullish: None,
-            in_position: false,
         }
     }
 }
@@ -35,12 +33,10 @@ impl Strategy for HaColor {
             return vec![];
         };
 
-        if v.is_bullish && !was_bullish && !self.in_position {
-            self.in_position = true;
+        if v.is_bullish && !was_bullish {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if !v.is_bullish && was_bullish && self.in_position {
-            self.in_position = false;
+        if !v.is_bullish && was_bullish {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -53,7 +49,6 @@ impl Strategy for HaColor {
     fn reset(&mut self) {
         self.ha = HeikenAshi::new(self.smooth);
         self.prev_bullish = None;
-        self.in_position = false;
     }
 }
 
@@ -67,7 +62,6 @@ pub struct HaBreakout {
     consecutive_bars: usize,
     bull_count: usize,
     bear_count: usize,
-    in_position: bool,
 }
 
 impl HaBreakout {
@@ -78,7 +72,6 @@ impl HaBreakout {
             consecutive_bars,
             bull_count: 0,
             bear_count: 0,
-            in_position: false,
         }
     }
 }
@@ -97,12 +90,10 @@ impl Strategy for HaBreakout {
             self.bull_count = 0;
         }
 
-        if self.bull_count >= self.consecutive_bars && !self.in_position {
-            self.in_position = true;
+        if self.bull_count >= self.consecutive_bars {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if self.bear_count >= self.consecutive_bars && self.in_position {
-            self.in_position = false;
+        if self.bear_count >= self.consecutive_bars {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -116,7 +107,6 @@ impl Strategy for HaBreakout {
         self.ha = HeikenAshi::new(self.smooth);
         self.bull_count = 0;
         self.bear_count = 0;
-        self.in_position = false;
     }
 }
 
@@ -129,7 +119,6 @@ pub struct HaHarmonizer {
     ema: Ema,
     smooth: usize,
     ema_period: usize,
-    in_position: bool,
 }
 
 impl HaHarmonizer {
@@ -139,7 +128,6 @@ impl HaHarmonizer {
             ema: Ema::new(ema_period),
             smooth,
             ema_period,
-            in_position: false,
         }
     }
 }
@@ -156,12 +144,10 @@ impl Strategy for HaHarmonizer {
 
         let bullish_setup = ha.is_bullish && bar.close > ema;
 
-        if bullish_setup && !self.in_position {
-            self.in_position = true;
+        if bullish_setup {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if (!ha.is_bullish || bar.close < ema) && self.in_position {
-            self.in_position = false;
+        if !ha.is_bullish || bar.close < ema {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -174,6 +160,5 @@ impl Strategy for HaHarmonizer {
     fn reset(&mut self) {
         self.ha = HeikenAshi::new(self.smooth);
         self.ema = Ema::new(self.ema_period);
-        self.in_position = false;
     }
 }

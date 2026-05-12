@@ -13,7 +13,6 @@ pub struct OscillatorOverlord {
     rsi: Rsi,
     stoch: Stochastic,
     cci: Cci,
-    in_position: bool,
     rsi_period: usize,
     stoch_k: usize,
     stoch_d: usize,
@@ -26,7 +25,6 @@ impl OscillatorOverlord {
             rsi: Rsi::new(rsi_period),
             stoch: Stochastic::new(stoch_k, stoch_d),
             cci: Cci::new(cci_period),
-            in_position: false,
             rsi_period,
             stoch_k,
             stoch_d,
@@ -54,12 +52,10 @@ impl Strategy for OscillatorOverlord {
             .filter(|&&x| x)
             .count();
 
-        if !self.in_position && os_count >= 2 {
-            self.in_position = true;
+        if os_count >= 2 {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if self.in_position && ob_count >= 2 {
-            self.in_position = false;
+        if ob_count >= 2 {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -73,7 +69,6 @@ impl Strategy for OscillatorOverlord {
         self.rsi = Rsi::new(self.rsi_period);
         self.stoch = Stochastic::new(self.stoch_k, self.stoch_d);
         self.cci = Cci::new(self.cci_period);
-        self.in_position = false;
     }
 }
 

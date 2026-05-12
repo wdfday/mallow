@@ -26,6 +26,10 @@ pub mod bar_resampler;
 // truth for what strategies + indicators exist is this crate.
 pub mod catalog;
 
+// ── Position sizing / risk managers ──────────────────────────────────────────
+pub mod risk;
+pub use risk::{AnySizer, AtrSizing, EqualWeight, FixedFractional, FixedQuantity, FixedUsd, KellySizing};
+
 // ── Concrete named strategies (58) ───────────────────────────────────────────
 pub mod named;
 pub use named::*;

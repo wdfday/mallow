@@ -10,7 +10,6 @@ pub struct MfiTrend {
     bull_threshold: f64,
     bear_threshold: f64,
     prev_mfi: Option<f64>,
-    in_position: bool,
     period: usize,
 }
 
@@ -21,7 +20,6 @@ impl MfiTrend {
             bull_threshold,
             bear_threshold,
             prev_mfi: None,
-            in_position: false,
             period,
         }
     }
@@ -38,12 +36,10 @@ impl Strategy for MfiTrend {
             return vec![];
         };
 
-        if p <= self.bull_threshold && v > self.bull_threshold && !self.in_position {
-            self.in_position = true;
+        if p <= self.bull_threshold && v > self.bull_threshold {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if v < self.bear_threshold && self.in_position {
-            self.in_position = false;
+        if v < self.bear_threshold {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -56,7 +52,6 @@ impl Strategy for MfiTrend {
     fn reset(&mut self) {
         self.mfi = Mfi::new(self.period);
         self.prev_mfi = None;
-        self.in_position = false;
     }
 }
 
@@ -69,7 +64,6 @@ pub struct MfiRevert {
     oversold: f64,
     overbought: f64,
     prev_mfi: Option<f64>,
-    in_position: bool,
     period: usize,
 }
 
@@ -80,7 +74,6 @@ impl MfiRevert {
             oversold,
             overbought,
             prev_mfi: None,
-            in_position: false,
             period,
         }
     }
@@ -97,12 +90,10 @@ impl Strategy for MfiRevert {
             return vec![];
         };
 
-        if p <= self.oversold && v > self.oversold && !self.in_position {
-            self.in_position = true;
+        if p <= self.oversold && v > self.oversold  {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if p <= self.overbought && v > self.overbought && self.in_position {
-            self.in_position = false;
+        if p <= self.overbought && v > self.overbought  {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -115,6 +106,5 @@ impl Strategy for MfiRevert {
     fn reset(&mut self) {
         self.mfi = Mfi::new(self.period);
         self.prev_mfi = None;
-        self.in_position = false;
     }
 }

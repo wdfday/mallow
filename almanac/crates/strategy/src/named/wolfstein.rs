@@ -9,7 +9,6 @@ pub struct Wolfstein {
     adx: Adx,
     long_threshold: f64,
     short_threshold: f64,
-    in_position: bool,
     period: usize,
 }
 
@@ -19,7 +18,6 @@ impl Wolfstein {
             adx: Adx::new(period),
             long_threshold,
             short_threshold,
-            in_position: false,
             period,
         }
     }
@@ -31,12 +29,10 @@ impl Strategy for Wolfstein {
             return vec![];
         };
 
-        if !self.in_position && v.adx > self.long_threshold && v.plus_di > v.minus_di {
-            self.in_position = true;
+        if v.adx > self.long_threshold && v.plus_di > v.minus_di {
             return vec![Signal::long(bar.timestamp, &bar.symbol, v.adx / 100.0)];
         }
-        if self.in_position && v.adx < self.short_threshold {
-            self.in_position = false;
+        if v.adx < self.short_threshold {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -48,10 +44,5 @@ impl Strategy for Wolfstein {
 
     fn reset(&mut self) {
         self.adx = Adx::new(self.period);
-        self.in_position = false;
     }
-}
-
-#[cfg(test)]
-mod tests {
 }

@@ -3,7 +3,6 @@
 // ── Original ──────────────────────────────────────────────────────────────────
 pub mod atr_trailing;
 pub mod ma_crossover;
-pub mod risk;
 pub mod rsi_mean_rev;
 pub mod stochastic;
 
@@ -134,7 +133,6 @@ pub use pixel_3::Pixel3;
 pub use price_action::PriceActionSwing;
 pub use range_rover::RangeRover;
 pub use reversal_catcher::ReversalCatcher;
-pub use risk::{AnySizer, AtrSizing, EqualWeight, FixedFractional, FixedQuantity, FixedUsd, KellySizing};
 pub use roc_strategy::RocCrossover;
 pub use rsi_mean_rev::RsiMeanRev;
 pub use rwi_strategy::RwiStrategy;

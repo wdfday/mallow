@@ -8,7 +8,6 @@ use alm_indicator::{Cmf, Ema};
 pub struct CmfEmaTrend {
     cmf: Cmf,
     ema: Ema,
-    in_position: bool,
     cmf_period: usize,
     ema_period: usize,
     bull_threshold: f64,
@@ -25,7 +24,6 @@ impl CmfEmaTrend {
         Self {
             cmf: Cmf::new(cmf_period),
             ema: Ema::new(ema_period),
-            in_position: false,
             cmf_period,
             ema_period,
             bull_threshold,
@@ -43,12 +41,10 @@ impl Strategy for CmfEmaTrend {
             return vec![];
         };
 
-        if cmf > self.bull_threshold && bar.close > ema && !self.in_position {
-            self.in_position = true;
+        if cmf > self.bull_threshold && bar.close > ema {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if self.in_position && (cmf < -self.bear_threshold || bar.close < ema) {
-            self.in_position = false;
+        if cmf < -self.bear_threshold || bar.close < ema {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -61,6 +57,5 @@ impl Strategy for CmfEmaTrend {
     fn reset(&mut self) {
         self.cmf = Cmf::new(self.cmf_period);
         self.ema = Ema::new(self.ema_period);
-        self.in_position = false;
     }
 }

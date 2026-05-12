@@ -12,7 +12,7 @@ fn main() -> Result<()> {
 
     // --- Single backtest example ---
     let data_dir = PathBuf::from(
-        std::env::var("DATA_DIR").unwrap_or_else(|_| "../../us-data/data/Polygon/stocks".into()),
+        std::env::var("DATA_DIR").unwrap_or_else(|_| "../../data/Polygon/stocks".into()),
     );
 
     let symbol = std::env::var("SYMBOL").unwrap_or_else(|_| "AAPL".into());

@@ -4,6 +4,12 @@
 //! |---------|----------------|------------------|---------|
 //! | `rhai`  | Rhai scripting | `ind.ema(9)[0]`  | Active  |
 
+mod htf;
+mod binding;
+mod parse;
+mod engine;
+mod lint;
+
 pub mod rhai_strategy;
 pub use rhai_strategy::{
     RhaiStrategy,

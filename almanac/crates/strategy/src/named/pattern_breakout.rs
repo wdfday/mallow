@@ -59,7 +59,6 @@ pub struct PatternBreakoutStrategy {
     detector: CompositeDetector,
     pub window_size: usize,
     min_confidence: f64,
-    in_position: bool,
 }
 
 impl PatternBreakoutStrategy {
@@ -68,7 +67,7 @@ impl PatternBreakoutStrategy {
         window_size: usize,
         min_confidence: f64,
     ) -> Self {
-        Self { detector, window_size, min_confidence, in_position: false }
+        Self { detector, window_size, min_confidence}
     }
 
     /// All-patterns preset: 4 reversal + 5 continuation detectors, 60% confidence gate.
@@ -117,13 +116,11 @@ impl Strategy for PatternBreakoutStrategy {
 
         let Some(sig) = best else { return vec![]; };
 
-        if is_bullish(&sig.kind) && !self.in_position {
-            self.in_position = true;
+        if is_bullish(&sig.kind) {
             return vec![Signal::long(ts, symbol, sig.confidence)];
         }
 
-        if is_bearish(&sig.kind) && self.in_position {
-            self.in_position = false;
+        if is_bearish(&sig.kind) {
             return vec![Signal::close(ts, symbol)];
         }
 
@@ -134,7 +131,7 @@ impl Strategy for PatternBreakoutStrategy {
     fn name(&self) -> &str { "pattern_breakout" }
 
     fn reset(&mut self) {
-        self.in_position = false;
+        
     }
 }
 
@@ -160,13 +157,5 @@ mod tests {
         let mut s = PatternBreakoutStrategy::default_setup(60);
         let b = bar(0, 100.0);
         assert!(s.on_bar(&b).is_empty());
-    }
-
-    #[test]
-    fn test_reset_clears_position() {
-        let mut s = PatternBreakoutStrategy::default_setup(60);
-        s.in_position = true;
-        s.reset();
-        assert!(!s.in_position);
     }
 }

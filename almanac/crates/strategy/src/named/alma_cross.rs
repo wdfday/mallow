@@ -13,7 +13,6 @@ pub struct AlmaCross {
     slow: Alma,
     prev_fast: Option<f64>,
     prev_slow: Option<f64>,
-    in_position: bool,
     fast_period: usize,
     slow_period: usize,
     offset: f64,
@@ -28,7 +27,6 @@ impl AlmaCross {
             slow: Alma::new(slow_period, offset, sigma),
             prev_fast: None,
             prev_slow: None,
-            in_position: false,
             fast_period,
             slow_period,
             offset,
@@ -57,12 +55,10 @@ impl Strategy for AlmaCross {
         self.prev_fast = Some(f);
         self.prev_slow = Some(s);
 
-        if crossed_above && !self.in_position {
-            self.in_position = true;
+        if crossed_above {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if crossed_below && self.in_position {
-            self.in_position = false;
+        if crossed_below  {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -77,7 +73,6 @@ impl Strategy for AlmaCross {
         self.slow = Alma::new(self.slow_period, self.offset, self.sigma);
         self.prev_fast = None;
         self.prev_slow = None;
-        self.in_position = false;
     }
 }
 

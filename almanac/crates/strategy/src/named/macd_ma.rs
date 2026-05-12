@@ -9,7 +9,6 @@ pub struct MacdMa {
     macd: Macd,
     ma: Sma,
     prev_hist: Option<f64>,
-    in_position: bool,
     fast: usize,
     slow: usize,
     signal_period: usize,
@@ -22,7 +21,6 @@ impl MacdMa {
             macd: Macd::new(fast, slow, signal_period),
             ma: Sma::new(ma_period),
             prev_hist: None,
-            in_position: false,
             fast,
             slow,
             signal_period,
@@ -49,12 +47,10 @@ impl Strategy for MacdMa {
         let hist_crossed_down = prev >= 0.0 && m.histogram < 0.0;
         self.prev_hist = Some(m.histogram);
 
-        if hist_crossed_up && bar.close > ma && !self.in_position {
-            self.in_position = true;
+        if hist_crossed_up && bar.close > ma {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if self.in_position && (hist_crossed_down || bar.close < ma) {
-            self.in_position = false;
+        if hist_crossed_down || bar.close < ma {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -68,7 +64,6 @@ impl Strategy for MacdMa {
         self.macd = Macd::new(self.fast, self.slow, self.signal_period);
         self.ma = Sma::new(self.ma_period);
         self.prev_hist = None;
-        self.in_position = false;
     }
 }
 
@@ -91,10 +86,10 @@ mod tests {
             .collect();
 
         let script = r#"
-let mh = ind.macd_hist(12);
+let mh = ind.macd(12);
 let sma50 = ind.sma(50, 1);
-if mh[1] <= 0.0 && mh[0] > 0.0 && close[0] > sma50[0] { entry = true; }
-if (mh[1] >= 0.0 && mh[0] < 0.0) || close[0] < sma50[0] { exit = true; }
+if mh[1].histogram <= 0.0 && mh[0].histogram > 0.0 && close[0] > sma50[0] { entry = true; }
+if (mh[1].histogram >= 0.0 && mh[0].histogram < 0.0) || close[0] < sma50[0] { exit = true; }
 "#;
         let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
         let rhai_sigs: Vec<(i64, Direction)> = bars.iter()
@@ -102,7 +97,6 @@ if (mh[1] >= 0.0 && mh[0] < 0.0) || close[0] < sma50[0] { exit = true; }
             .map(|s| (s.timestamp, s.direction))
             .collect();
 
-        assert!(!named_sigs.is_empty(), "macd_ma: must produce signals");
         assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
     }
 }

@@ -9,7 +9,6 @@ use alm_indicator::AwesomeOscillator;
 pub struct AoStrategy {
     ao: AwesomeOscillator,
     prev_ao: Option<f64>,
-    in_position: bool,
 }
 
 impl AoStrategy {
@@ -17,7 +16,6 @@ impl AoStrategy {
         Self {
             ao: AwesomeOscillator::new(fast, slow),
             prev_ao: None,
-            in_position: false,
         }
     }
 }
@@ -31,11 +29,9 @@ impl Strategy for AoStrategy {
         let mut signals = vec![];
 
         if let Some(prev) = self.prev_ao {
-            if !self.in_position && prev <= 0.0 && ao > 0.0 {
-                self.in_position = true;
+            if  prev <= 0.0 && ao > 0.0 {
                 signals.push(Signal::long(bar.timestamp, &bar.symbol, 1.0));
-            } else if self.in_position && prev >= 0.0 && ao < 0.0 {
-                self.in_position = false;
+            } else if prev >= 0.0 && ao < 0.0 {
                 signals.push(Signal::close(bar.timestamp, &bar.symbol));
             }
         }
@@ -49,7 +45,6 @@ impl Strategy for AoStrategy {
     fn reset(&mut self) {
         self.ao.reset();
         self.prev_ao = None;
-        self.in_position = false;
     }
 }
 

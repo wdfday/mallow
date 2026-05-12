@@ -12,7 +12,6 @@ pub struct TripleEma {
     ema3: Ema,
     prev_e1: Option<f64>,
     prev_e2: Option<f64>,
-    in_position: bool,
     period1: usize,
     period2: usize,
     period3: usize,
@@ -27,7 +26,6 @@ impl TripleEma {
             ema3: Ema::new(period3),
             prev_e1: None,
             prev_e2: None,
-            in_position: false,
             period1,
             period2,
             period3,
@@ -58,12 +56,10 @@ impl Strategy for TripleEma {
         self.prev_e2 = Some(e2);
 
         // Bullish: fast crosses mid AND mid already above slow
-        if fast_crossed_above_mid && e2 > e3 && !self.in_position {
-            self.in_position = true;
+        if fast_crossed_above_mid && e2 > e3 {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if fast_crossed_below_mid && self.in_position {
-            self.in_position = false;
+        if fast_crossed_below_mid {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -79,7 +75,6 @@ impl Strategy for TripleEma {
         self.ema3 = Ema::new(self.period3);
         self.prev_e1 = None;
         self.prev_e2 = None;
-        self.in_position = false;
     }
 }
 

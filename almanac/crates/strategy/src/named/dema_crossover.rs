@@ -12,7 +12,6 @@ pub struct DemaCrossover {
     slow_p: usize,
     prev_fast: Option<f64>,
     prev_slow: Option<f64>,
-    in_position: bool,
 }
 
 impl DemaCrossover {
@@ -24,7 +23,6 @@ impl DemaCrossover {
             slow_p: slow,
             prev_fast: None,
             prev_slow: None,
-            in_position: false,
         }
     }
 }
@@ -45,12 +43,10 @@ impl Strategy for DemaCrossover {
             return vec![];
         };
 
-        if pf <= ps && f > s && !self.in_position {
-            self.in_position = true;
+        if pf <= ps && f > s {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if pf >= ps && f < s && self.in_position {
-            self.in_position = false;
+        if pf >= ps && f < s {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -65,7 +61,6 @@ impl Strategy for DemaCrossover {
         self.slow = Dema::new(self.slow_p);
         self.prev_fast = None;
         self.prev_slow = None;
-        self.in_position = false;
     }
 }
 

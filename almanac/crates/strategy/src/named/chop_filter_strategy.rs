@@ -15,7 +15,6 @@ pub struct ChopFilterStrategy {
     chop: Chop,
     fast_ema: Ema,
     slow_ema: Ema,
-    in_position: bool,
     prev_fast: Option<f64>,
     prev_slow: Option<f64>,
 }
@@ -35,7 +34,6 @@ impl ChopFilterStrategy {
             chop: Chop::new(chop_period),
             fast_ema: Ema::new(fast_ema),
             slow_ema: Ema::new(slow_ema),
-            in_position: false,
             prev_fast: None,
             prev_slow: None,
         }
@@ -63,14 +61,12 @@ impl Strategy for ChopFilterStrategy {
             (Some(pf), Some(ps)) => {
                 let chop_ok = chop_val.map_or(true, |c| c < self.chop_threshold);
 
-                if pf <= ps && fast > slow && !self.in_position && chop_ok {
+                if pf <= ps && fast > slow && chop_ok {
                     // Fast crosses above slow in trending market → Long
-                    self.in_position = true;
                     let strength = ((fast - slow) / slow).abs().clamp(0.0, 1.0);
                     Some(Signal::long(bar.timestamp, &bar.symbol, strength))
-                } else if pf >= ps && fast < slow && self.in_position {
+                } else if pf >= ps && fast < slow {
                     // Fast crosses below slow → Close (regardless of CHOP)
-                    self.in_position = false;
                     Some(Signal::close(bar.timestamp, &bar.symbol))
                 } else {
                     None
@@ -92,7 +88,6 @@ impl Strategy for ChopFilterStrategy {
         self.chop = Chop::new(self.chop_period);
         self.fast_ema = Ema::new(self.fast_period);
         self.slow_ema = Ema::new(self.slow_period);
-        self.in_position = false;
         self.prev_fast = None;
         self.prev_slow = None;
     }
@@ -146,7 +141,6 @@ mod tests {
             strat.on_bar(&bar(i, 100.0 + i as f64));
         }
         strat.reset();
-        assert!(!strat.in_position);
         assert!(strat.prev_fast.is_none());
         assert!(strat.prev_slow.is_none());
     }

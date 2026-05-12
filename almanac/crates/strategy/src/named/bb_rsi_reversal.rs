@@ -8,7 +8,6 @@ use alm_indicator::{BBands, Rsi};
 pub struct BbRsiReversal {
     bb: BBands,
     rsi: Rsi,
-    in_position: bool,
     bb_period: usize,
     bb_std: f64,
     rsi_period: usize,
@@ -27,7 +26,6 @@ impl BbRsiReversal {
         Self {
             bb: BBands::new(bb_period, bb_std),
             rsi: Rsi::new(rsi_period),
-            in_position: false,
             bb_period,
             bb_std,
             rsi_period,
@@ -46,12 +44,10 @@ impl Strategy for BbRsiReversal {
             return vec![];
         };
 
-        if bar.close < bb.lower && rsi < self.oversold && !self.in_position {
-            self.in_position = true;
+        if bar.close < bb.lower && rsi < self.oversold {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if self.in_position && (bar.close > bb.middle || rsi > self.overbought) {
-            self.in_position = false;
+        if bar.close > bb.middle || rsi > self.overbought {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -64,7 +60,6 @@ impl Strategy for BbRsiReversal {
     fn reset(&mut self) {
         self.bb = BBands::new(self.bb_period, self.bb_std);
         self.rsi = Rsi::new(self.rsi_period);
-        self.in_position = false;
     }
 }
 

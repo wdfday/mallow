@@ -8,7 +8,6 @@ use alm_indicator::Uo;
 pub struct UoReversal {
     uo: Uo,
     prev_uo: Option<f64>,
-    in_position: bool,
     fast: usize,
     medium: usize,
     slow: usize,
@@ -21,7 +20,6 @@ impl UoReversal {
         Self {
             uo: Uo::new(fast, medium, slow),
             prev_uo: None,
-            in_position: false,
             fast,
             medium,
             slow,
@@ -45,12 +43,10 @@ impl Strategy for UoReversal {
         let crossed_oversold_up = prev <= self.oversold && uo > self.oversold;
         self.prev_uo = Some(uo);
 
-        if crossed_oversold_up && !self.in_position {
-            self.in_position = true;
+        if crossed_oversold_up {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if self.in_position && uo > self.overbought {
-            self.in_position = false;
+        if uo > self.overbought {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -63,7 +59,6 @@ impl Strategy for UoReversal {
     fn reset(&mut self) {
         self.uo = Uo::new(self.fast, self.medium, self.slow);
         self.prev_uo = None;
-        self.in_position = false;
     }
 }
 

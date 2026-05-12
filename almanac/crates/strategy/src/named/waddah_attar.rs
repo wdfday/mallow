@@ -15,7 +15,6 @@ pub struct WaddahAttar {
     bb: BBands,
     prev_macd_line: Option<f64>,
     sensitivity: f64,
-    in_position: bool,
     fast: usize,
     slow: usize,
     signal_period: usize,
@@ -31,7 +30,6 @@ impl WaddahAttar {
             bb: BBands::new(bb_period, bb_std),
             prev_macd_line: None,
             sensitivity: 150.0,
-            in_position: false,
             fast,
             slow,
             signal_period: 9,
@@ -61,12 +59,10 @@ impl Strategy for WaddahAttar {
 
         self.prev_macd_line = Some(m.macd);
 
-        if !self.in_position && explosion > dead_zone && m.histogram > 0.0 {
-            self.in_position = true;
+        if explosion > dead_zone && m.histogram > 0.0 {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if self.in_position && (explosion < dead_zone || m.histogram < 0.0) {
-            self.in_position = false;
+        if explosion < dead_zone || m.histogram < 0.0 {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -80,6 +76,5 @@ impl Strategy for WaddahAttar {
         self.macd = Macd::new(self.fast, self.slow, self.signal_period);
         self.bb = BBands::new(self.bb_period, self.bb_std);
         self.prev_macd_line = None;
-        self.in_position = false;
     }
 }

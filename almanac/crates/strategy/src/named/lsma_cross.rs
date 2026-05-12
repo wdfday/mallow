@@ -13,7 +13,6 @@ pub struct LsmaCross {
     slow: Lsma,
     prev_fast: Option<f64>,
     prev_slow: Option<f64>,
-    in_position: bool,
     fast_period: usize,
     slow_period: usize,
 }
@@ -26,7 +25,6 @@ impl LsmaCross {
             slow: Lsma::new(slow_period),
             prev_fast: None,
             prev_slow: None,
-            in_position: false,
             fast_period,
             slow_period,
         }
@@ -56,12 +54,10 @@ impl Strategy for LsmaCross {
         self.prev_fast = Some(fv);
         self.prev_slow = Some(sv);
 
-        if crossed_above && !self.in_position {
-            self.in_position = true;
+        if crossed_above {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if crossed_below && self.in_position {
-            self.in_position = false;
+        if crossed_below {
             return vec![Signal::close(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -76,7 +72,6 @@ impl Strategy for LsmaCross {
         self.slow = Lsma::new(self.slow_period);
         self.prev_fast = None;
         self.prev_slow = None;
-        self.in_position = false;
     }
 }
 

@@ -1,0 +1,298 @@
+package act
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	gobinance "github.com/adshao/go-binance/v2"
+	"github.com/adshao/go-binance/v2/futures"
+
+	"mallow/helm/internal/infra/exchange"
+)
+
+// isPermanentStreamError returns true for errors that won't self-heal on retry —
+// bad credentials, revoked keys, deprecated endpoints. These get max backoff immediately.
+func isPermanentStreamError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "-2015") || // Invalid API-key / IP / permissions
+		strings.Contains(s, "-2014") || // API-key format invalid
+		strings.Contains(s, "410") || // Endpoint gone (deprecated)
+		strings.Contains(s, "401") // Unauthorized
+}
+
+// streamBackoff returns the next wait duration using exponential backoff.
+// Permanent errors jump straight to maxWait.
+func streamBackoff(attempt int, permanent bool) time.Duration {
+	const (
+		base    = 5 * time.Second
+		maxWait = 5 * time.Minute
+	)
+	if permanent {
+		return maxWait
+	}
+	d := base * (1 << min(attempt, 6)) // cap exponent at 64×
+	if d > maxWait {
+		d = maxWait
+	}
+	return d
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// wsMu guards gobinance.UseTestnet global flag.
+var wsMu sync.Mutex
+
+// StreamOrders implements exchange.AccountStreamer.
+func (c *Client) StreamOrders(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent)) error {
+	go c.streamSpotOrders(ctx, creds, handler)
+	if !c.paper {
+		fut := c.newFut(creds)
+		go c.streamFuturesOrders(ctx, fut, handler)
+	} else {
+		slog.Info("binance: futures order streaming skipped on paper account")
+	}
+	slog.Info("binance: order streaming started")
+	return nil
+}
+
+// ── Spot ──────────────────────────────────────────────────────────────────────
+
+func (c *Client) streamSpotOrders(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent)) {
+	for attempt := 0; ; attempt++ {
+		if ctx.Err() != nil {
+			return
+		}
+		err := c.streamSpotOrdersOnce(ctx, creds, handler)
+		if ctx.Err() != nil {
+			return
+		}
+		permanent := isPermanentStreamError(err)
+		wait := streamBackoff(attempt, permanent)
+		slog.Warn("binance: spot order stream disconnected", "err", err, "retry_in", wait, "permanent", permanent)
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+// streamSpotOrdersOnce uses WsUserDataServeSignature (HMAC, no listen key).
+// WsUserDataServe (listen-key) is deprecated and returns 410 — always use signature auth.
+func (c *Client) streamSpotOrdersOnce(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent)) error {
+	wsMu.Lock()
+	gobinance.UseDemo = c.paper
+	doneC, stopC, err := gobinance.WsUserDataServeSignature(
+		creds.APIKey, creds.APISecret, "HMAC", 0,
+		spotOrderHandler(handler),
+		func(err error) { slog.Warn("binance: spot ws error", "err", err) },
+	)
+	gobinance.UseDemo = false
+	wsMu.Unlock()
+	if err != nil {
+		return fmt.Errorf("ws spot user data (signature): %w", err)
+	}
+	select {
+	case <-ctx.Done():
+		close(stopC)
+		return nil
+	case <-doneC:
+		return fmt.Errorf("spot user stream closed")
+	}
+}
+
+func spotOrderHandler(handler func(exchange.OrderEvent)) gobinance.WsUserDataHandler {
+	return func(event *gobinance.WsUserDataEvent) {
+		if event.Event != gobinance.UserDataEventTypeExecutionReport {
+			return
+		}
+		ou := event.OrderUpdate
+		side := exchange.Buy
+		if gobinance.SideType(ou.Side) == gobinance.SideTypeSell {
+			side = exchange.Sell
+		}
+		ts := time.UnixMilli(ou.TransactionTime).UTC()
+		orderID := strconv.FormatInt(ou.Id, 10)
+
+		switch ou.ExecutionType {
+		case "NEW":
+			handler(exchange.OrderEvent{
+				Type:      exchange.OrderEventLive,
+				OrderID:   orderID,
+				TradeID:   orderID + "_open",
+				Symbol:    ou.Symbol,
+				Side:      side,
+				Qty:       parseDecimal(ou.Volume),
+				Timestamp: ts,
+			})
+		case "TRADE":
+			evType := exchange.OrderEventPartialFill
+			if ou.Status == "FILLED" {
+				evType = exchange.OrderEventFilled
+			}
+			qty := parseDecimal(ou.LatestVolume)
+			if !qty.IsPositive() {
+				return
+			}
+			slog.Info("binance: spot fill received",
+				"order_id", orderID,
+				"trade_id", ou.TradeId,
+				"symbol", ou.Symbol,
+				"side", side,
+				"fill_qty", qty,
+				"fill_avg", parseDecimal(ou.LatestPrice),
+				"status", ou.Status,
+				"exchange_ts", ts,
+			)
+			handler(exchange.OrderEvent{
+				Type:      evType,
+				OrderID:   orderID,
+				TradeID:   strconv.FormatInt(ou.TradeId, 10),
+				Symbol:    ou.Symbol,
+				Side:      side,
+				Qty:       parseDecimal(ou.Volume),
+				FilledQty: qty,
+				FilledAvg: parseDecimal(ou.LatestPrice),
+				Timestamp: ts,
+			})
+		case "CANCELED", "EXPIRED", "REJECTED":
+			handler(exchange.OrderEvent{
+				Type:      exchange.OrderEventCanceled,
+				OrderID:   orderID,
+				TradeID:   orderID + "_cancel",
+				Symbol:    ou.Symbol,
+				Side:      side,
+				Qty:       parseDecimal(ou.Volume),
+				Timestamp: ts,
+			})
+		}
+	}
+}
+
+// ── Futures ───────────────────────────────────────────────────────────────────
+
+func (c *Client) streamFuturesOrders(ctx context.Context, fut *futures.Client, handler func(exchange.OrderEvent)) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		err := c.streamFuturesOrdersOnce(ctx, fut, handler)
+		if ctx.Err() != nil {
+			return
+		}
+		slog.Warn("binance: futures order stream disconnected, reconnecting in 5s", "err", err)
+		select {
+		case <-time.After(5 * time.Second):
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (c *Client) streamFuturesOrdersOnce(ctx context.Context, fut *futures.Client, handler func(exchange.OrderEvent)) error {
+	listenKey, err := fut.NewStartUserStreamService().Do(ctx)
+	if err != nil {
+		return fmt.Errorf("start futures user stream: %w", err)
+	}
+
+	doneC, stopC, err := futures.WsUserDataServe(listenKey, func(event *futures.WsUserDataEvent) {
+		if event.Event != futures.UserDataEventTypeOrderTradeUpdate {
+			return
+		}
+		ou := event.OrderTradeUpdate
+		side := exchange.Buy
+		if ou.Side == futures.SideTypeSell {
+			side = exchange.Sell
+		}
+		ts := time.UnixMilli(ou.TradeTime).UTC()
+		orderID := strconv.FormatInt(ou.ID, 10)
+
+		switch ou.ExecutionType {
+		case "NEW":
+			handler(exchange.OrderEvent{
+				Type:      exchange.OrderEventLive,
+				OrderID:   orderID,
+				TradeID:   orderID + "_open",
+				Symbol:    ou.Symbol,
+				Side:      side,
+				Qty:       parseDecimal(ou.OriginalQty),
+				Timestamp: ts,
+			})
+		case "TRADE":
+			evType := exchange.OrderEventPartialFill
+			if ou.Status == futures.OrderStatusTypeFilled {
+				evType = exchange.OrderEventFilled
+			}
+			qty := parseDecimal(ou.LastFilledQty)
+			if !qty.IsPositive() {
+				return
+			}
+			slog.Info("binance: futures fill received",
+				"order_id", orderID,
+				"trade_id", ou.TradeID,
+				"symbol", ou.Symbol,
+				"side", side,
+				"fill_qty", qty,
+				"fill_avg", parseDecimal(ou.LastFilledPrice),
+				"status", ou.Status,
+				"exchange_ts", ts,
+			)
+			handler(exchange.OrderEvent{
+				Type:      evType,
+				OrderID:   orderID,
+				TradeID:   strconv.FormatInt(ou.TradeID, 10),
+				Symbol:    ou.Symbol,
+				Side:      side,
+				Qty:       parseDecimal(ou.OriginalQty),
+				FilledQty: qty,
+				FilledAvg: parseDecimal(ou.LastFilledPrice),
+				Timestamp: ts,
+			})
+		case "CANCELED", "EXPIRED", "CALCULATED":
+			handler(exchange.OrderEvent{
+				Type:      exchange.OrderEventCanceled,
+				OrderID:   orderID,
+				TradeID:   orderID + "_cancel",
+				Symbol:    ou.Symbol,
+				Side:      side,
+				Qty:       parseDecimal(ou.OriginalQty),
+				Timestamp: ts,
+			})
+		}
+	}, func(err error) {
+		slog.Warn("binance: futures ws error", "err", err)
+	})
+	if err != nil {
+		return fmt.Errorf("ws futures user data: %w", err)
+	}
+
+	keepAlive := time.NewTicker(25 * time.Minute)
+	defer keepAlive.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			close(stopC)
+			return nil
+		case <-keepAlive.C:
+			if err := fut.NewKeepaliveUserStreamService().ListenKey(listenKey).Do(ctx); err != nil {
+				slog.Warn("binance: futures listen key keep-alive failed", "err", err)
+			}
+		case <-doneC:
+			return fmt.Errorf("futures user stream closed")
+		}
+	}
+}

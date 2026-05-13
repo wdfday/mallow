@@ -127,3 +127,15 @@ type BookStreamer interface {
 type OrderReconciler interface {
 	GetPendingOrders(ctx context.Context, creds Credentials, symbol string) ([]OrderResult, error)
 }
+
+// HistoryFetcher is optionally implemented by exchanges that support querying
+// filled order history over a time range. Used for gap recovery on restart:
+// replays fills that occurred while helm was offline so investment JetStream
+// stays consistent.
+//
+// symbols is a hint for exchanges that require a per-symbol query (e.g. Binance).
+// Exchanges that support global history queries (OKX, Bybit, Alpaca) may ignore it.
+// Pass the set of symbols currently in the orderbook / poslog as the hint.
+type HistoryFetcher interface {
+	FilledOrders(ctx context.Context, creds Credentials, symbols []string, from, to time.Time) ([]AccountTransaction, error)
+}

@@ -26,7 +26,7 @@ type (
 type AggregatedSignal struct {
 	Symbol    string
 	Timestamp int64
-	// Direction: "long" | "short" | "close" | "none"
+	// Direction: "long" | "short" | "exit" | "none"
 	Direction string
 	// Strength [0,1] — weighted net of contributing signals.
 	Strength float64

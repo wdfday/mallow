@@ -72,15 +72,9 @@ type SizingConfig struct {
 	// MaxPositions limits concurrent open positions (default 1).
 	MaxPositions int `json:"max_positions,omitempty"`
 
-	RiskPerTradePct   float64         `json:"risk_per_trade_pct"`   // for volatility mode (e.g. 0.01 = 1% of unit capital at risk)
-	MaxPositionPct    float64         `json:"max_position_pct"`     // legacy fallback unit size (% of allocated equity)
-	FixedQty          decimal.Decimal `json:"fixed_qty"`            // for fixed_qty mode
-	StopLossATRMult   float64         `json:"stop_loss_atr_mult"`   // stop loss = ATR * mult (e.g. 2.0); 0 = disabled
-	TakeProfitATRMult float64         `json:"take_profit_atr_mult"` // take profit = ATR * mult; 0 = use 2x SL rule
-	StopLossPct       float64         `json:"stop_loss_pct"`        // fixed stop as % of entry (0 = disabled)
-	TakeProfitPct     float64         `json:"take_profit_pct"`      // fixed TP as % of entry (0 = disabled)
-	TrailingStopPct   float64         `json:"trailing_stop_pct"`    // trailing stop as % of entry (0 = disabled); replaces StopLoss when set
-	MaxBarsHeld       int             `json:"max_bars_held"`        // time-stop: close after N bars (0 = disabled); bot-managed
+	RiskPerTradePct float64         `json:"risk_per_trade_pct"` // for volatility mode (e.g. 0.01 = 1% of unit capital at risk)
+	MaxPositionPct  float64         `json:"max_position_pct"`   // legacy fallback unit size (% of allocated equity)
+	FixedQty        decimal.Decimal `json:"fixed_qty"`          // for fixed_qty mode
 }
 
 // DefaultSizingConfig returns sensible defaults.
@@ -89,8 +83,15 @@ func DefaultSizingConfig() SizingConfig {
 		Mode:            SizingFixedFractional,
 		RiskPerTradePct: 0.01,
 		MaxPositionPct:  0.10,
-		StopLossATRMult: 2.0,
 	}
+}
+
+// ── Planner interface ──────────────────────────────────────────────────────
+
+// Planner is the outbound port for position sizing. Satisfied by *Tactician.
+type Planner interface {
+	Plan(intent strategy.Intent, ctx MarketContext) ExecutionPlan
+	UpdateEquity(equity decimal.Decimal)
 }
 
 // ── Tactician ──────────────────────────────────────────────────────────────
@@ -172,22 +173,8 @@ func (t *Tactician) Plan(intent strategy.Intent, ctx MarketContext) ExecutionPla
 		plan.Qty = plan.Qty.Div(decimal.NewFromInt(5))
 	}
 
-	// Stop loss, trailing stop, and take profit (only for entries).
-	if intent.Action == strategy.ActionEnterLong || intent.Action == strategy.ActionEnterShort {
-		if t.sizing.TrailingStopPct > 0 {
-			// Trailing stop takes precedence over fixed stop loss.
-			plan.TrailingStop = decimal.NewFromFloat(t.sizing.TrailingStopPct)
-		} else {
-			plan.StopLoss = t.stopLoss(plan.Side, ctx)
-		}
-		plan.TakeProfit = t.takeProfit(plan.Side, ctx)
-	}
-
 	return plan
 }
-
-// MaxBarsHeld returns the time-stop limit configured for this tactician (0 = disabled).
-func (t *Tactician) MaxBarsHeld() int { return t.sizing.MaxBarsHeld }
 
 // size calculates position quantity based on sizing mode.
 func (t *Tactician) size(intent strategy.Intent, ctx MarketContext) decimal.Decimal {
@@ -213,12 +200,11 @@ func (t *Tactician) size(intent strategy.Intent, ctx MarketContext) decimal.Deci
 		qty = t.sizing.FixedQty
 
 	case SizingVolatility:
-		// Risk-parity: risk $ per trade / (ATR * multiplier) = qty.
-		// Risk dollar is RiskPerTradePct of unit capital (not total equity).
-		if ctx.ATR.IsPositive() && t.sizing.StopLossATRMult > 0 {
+		// Risk-parity: risk $ = RiskPerTradePct * unit; stop_distance = 1× ATR.
+		// Script embeds stop_price directly in the signal; ATR here is just for sizing.
+		if ctx.ATR.IsPositive() {
 			riskDollar := unit.Mul(decimal.NewFromFloat(t.sizing.RiskPerTradePct))
-			stopDistance := ctx.ATR.Mul(decimal.NewFromFloat(t.sizing.StopLossATRMult))
-			qty = riskDollar.Div(stopDistance)
+			qty = riskDollar.Div(ctx.ATR)
 		}
 
 	case SizingPercentEquity:
@@ -261,50 +247,4 @@ func (t *Tactician) limitPrice(side string, ctx MarketContext) decimal.Decimal {
 		return ctx.Price.Sub(offset) // buy below market
 	}
 	return ctx.Price.Add(offset) // sell above market
-}
-
-// stopLoss calculates stop loss price.
-// Priority: ATR-based (when ATR available) → pct-based → 0 (disabled).
-func (t *Tactician) stopLoss(side string, ctx MarketContext) decimal.Decimal {
-	if ctx.ATR.IsPositive() && t.sizing.StopLossATRMult > 0 {
-		distance := ctx.ATR.Mul(decimal.NewFromFloat(t.sizing.StopLossATRMult))
-		if side == "buy" {
-			return ctx.Price.Sub(distance)
-		}
-		return ctx.Price.Add(distance)
-	}
-	if t.sizing.StopLossPct > 0 {
-		distance := ctx.Price.Mul(decimal.NewFromFloat(t.sizing.StopLossPct))
-		if side == "buy" {
-			return ctx.Price.Sub(distance)
-		}
-		return ctx.Price.Add(distance)
-	}
-	return decimal.Zero
-}
-
-// takeProfit calculates take profit price.
-// Priority: explicit ATR mult → 2x SL ATR mult → pct-based → 0 (disabled).
-func (t *Tactician) takeProfit(side string, ctx MarketContext) decimal.Decimal {
-	if ctx.ATR.IsPositive() {
-		mult := t.sizing.TakeProfitATRMult
-		if mult <= 0 && t.sizing.StopLossATRMult > 0 {
-			mult = t.sizing.StopLossATRMult * 2.0 // default 2:1 R:R
-		}
-		if mult > 0 {
-			distance := ctx.ATR.Mul(decimal.NewFromFloat(mult))
-			if side == "buy" {
-				return ctx.Price.Add(distance)
-			}
-			return ctx.Price.Sub(distance)
-		}
-	}
-	if t.sizing.TakeProfitPct > 0 {
-		distance := ctx.Price.Mul(decimal.NewFromFloat(t.sizing.TakeProfitPct))
-		if side == "buy" {
-			return ctx.Price.Add(distance)
-		}
-		return ctx.Price.Sub(distance)
-	}
-	return decimal.Zero
 }

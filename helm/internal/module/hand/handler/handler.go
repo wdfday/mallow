@@ -8,10 +8,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
-	"mallow/helm/internal/infra/engine"
 	"mallow/helm/internal/module/hand/domain"
 	dto "mallow/helm/internal/module/hand/dto"
-	helmdomain "mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/runtime"
 	"mallow/helm/internal/shared"
 	pkgmw "mallow/pkg/middleware"
@@ -20,12 +18,11 @@ import (
 type Handler struct {
 	handMgr HandService
 	helmSvc HelmService
-	sigCli  *engine.SignalClient
-	reg     *runtime.Registry
+	reg     RuntimeRegistry
 }
 
-func New(handMgr HandService, helmSvc HelmService, sigCli *engine.SignalClient, reg *runtime.Registry) *Handler {
-	return &Handler{handMgr: handMgr, helmSvc: helmSvc, sigCli: sigCli, reg: reg}
+func New(handMgr HandService, helmSvc HelmService, reg RuntimeRegistry) *Handler {
+	return &Handler{handMgr: handMgr, helmSvc: helmSvc, reg: reg}
 }
 
 func callerUserID(c *gin.Context) (uuid.UUID, bool) {
@@ -81,6 +78,7 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 		b.GET("/:id", h.get)
 		b.PUT("/:id", h.update)
 		b.DELETE("/:id", h.delete)
+		b.GET("/:id/activity", h.activity)
 		b.POST("/:id/start", h.start)
 		b.POST("/:id/stop", h.stop)
 		b.POST("/:id/restart", h.restart)
@@ -93,9 +91,9 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 }
 
 // checkCapitalAllocation validates that adding newPos to a Helm doesn't exceed
-// its configured capital. excludeHandID is the hand being updated (skip its existing allocation);
-// pass "" when creating a new hand.
-func checkCapitalAllocation(helm *helmdomain.HelmConfig, existing []domain.HandSummary, newPos domain.PositionConfig, excludeHandID string) error {
+// the available capital (live portfolio equity). excludeHandID is the hand being updated
+// (skip its existing allocation); pass "" when creating a new hand.
+func checkCapitalAllocation(totalCapital float64, existing []domain.HandSummary, newPos domain.PositionConfig, excludeHandID string) error {
 	// ── Fixed-USD allocation check ──────────────────────────────────────────
 	if newPos.AllocatedCapital.IsPositive() {
 		var used float64
@@ -105,10 +103,10 @@ func checkCapitalAllocation(helm *helmdomain.HelmConfig, existing []domain.HandS
 			}
 			used += b.Position.AllocatedCapital.InexactFloat64()
 		}
-		available := helm.Capital - used
+		available := totalCapital - used
 		if newPos.AllocatedCapital.InexactFloat64() > available {
 			return fmt.Errorf("insufficient capital: requesting %.2f but only %.2f available (%.2f total, %.2f allocated to other hands)",
-				newPos.AllocatedCapital.InexactFloat64(), available, helm.Capital, used)
+				newPos.AllocatedCapital.InexactFloat64(), available, totalCapital, used)
 		}
 	}
 
@@ -177,7 +175,12 @@ func (h *Handler) create(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusForbidden, "helm is disabled")
 		return
 	}
-	if err := checkCapitalAllocation(helm, h.handMgr.ListByHelm(helmID), cfg.Position, ""); err != nil {
+	rt, err := h.reg.Get(helmID)
+	if err != nil {
+		shared.RespondWithError(c, http.StatusBadRequest, "helm runtime not available")
+		return
+	}
+	if err := checkCapitalAllocation(rt.Portfolio.Summary().Equity.InexactFloat64(), h.handMgr.ListByHelm(helmID), cfg.Position, ""); err != nil {
 		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -312,12 +315,12 @@ func (h *Handler) update(c *gin.Context) {
 
 	// Validate capital allocation when sizing changes.
 	if req.Position != nil && (req.Position.AllocatedCapital > 0 || req.Position.AllocatedPct > 0) {
-		helm, err := h.helmSvc.Get(helmID)
+		rt, err := h.reg.Get(helmID)
 		if err != nil {
-			shared.RespondWithError(c, http.StatusNotFound, "helm not found")
+			shared.RespondWithError(c, http.StatusBadRequest, "helm runtime not available")
 			return
 		}
-		if err := checkCapitalAllocation(helm, h.handMgr.ListByHelm(helmID), patch.Position, id.String()); err != nil {
+		if err := checkCapitalAllocation(rt.Portfolio.Summary().Equity.InexactFloat64(), h.handMgr.ListByHelm(helmID), patch.Position, id.String()); err != nil {
 			shared.RespondWithError(c, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -567,6 +570,39 @@ func (h *Handler) release(c *gin.Context) {
 // @Produce plain
 // @Success 200 {string} string
 // @Router /metrics [get]
+// activity godoc
+// @Summary Get hand activity log
+// @Description Returns the last 200 signal/order events for a hand in chronological order
+// @Tags hands
+// @Security BearerAuth
+// @Produce json
+// @Param id path string true "Hand ID"
+// @Success 200 {object} shared.SuccessResponse[[]runtime.ActivityEntry]
+// @Failure 401 {object} shared.ErrorResponse
+// @Failure 404 {object} shared.ErrorResponse
+// @Router /api/v1/hands/{id}/activity [get]
+func (h *Handler) activity(c *gin.Context) {
+	userID, ok := callerUserID(c)
+	if !ok {
+		return
+	}
+	id, _, err := h.checkHandOwner(c.Param("id"), userID)
+	if err != nil {
+		shared.RespondWithError(c, http.StatusNotFound, "not found")
+		return
+	}
+	bi, err := h.handMgr.Get(id)
+	if err != nil {
+		shared.RespondWithError(c, http.StatusNotFound, err.Error())
+		return
+	}
+	entries := bi.Runner.Activity()
+	if entries == nil {
+		entries = []runtime.ActivityEntry{}
+	}
+	shared.RespondWithSuccess(c, http.StatusOK, "Activity retrieved", entries)
+}
+
 func (h *Handler) Metrics(c *gin.Context) {
 	runtimes := h.reg.All()
 	c.Header("Content-Type", "text/plain; version=0.0.4")

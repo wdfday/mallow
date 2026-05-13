@@ -15,15 +15,15 @@ type PriceHandler = func(symbol string, price decimal.Decimal)
 // Client is a shared, broker-level market data WebSocket client for Bybit.
 // Uses the public V5 WebSocket endpoints (no API key required).
 type Client struct {
-	testnet bool
+	paper bool
 
 	mu            sync.RWMutex
 	priceHandlers []PriceHandler
 }
 
 // New creates a shared Bybit market data streaming client.
-func New(testnet bool) *Client {
-	return &Client{testnet: testnet}
+func New(paper bool) *Client {
+	return &Client{paper: paper}
 }
 
 // AddPriceHandler registers a callback fired on every live price update.

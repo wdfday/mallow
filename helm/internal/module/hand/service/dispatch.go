@@ -7,6 +7,7 @@ import (
 
 	"mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/runtime"
+	"mallow/helm/internal/runtime/core/strategy"
 )
 
 // RunningHands returns all running hand instances.
@@ -49,7 +50,7 @@ func (s *Service) SignalFollowerBots(symbol string) []*runtime.HandRef {
 func (s *Service) DispatchSignal(symbol, direction string, strength float64) {
 	sig := runtime.Signal{
 		Symbol:     symbol,
-		Direction:  direction,
+		Direction:  strategy.Direction(direction),
 		Strength:   strength,
 		ReceivedAt: time.Now(),
 	}
@@ -58,7 +59,7 @@ func (s *Service) DispatchSignal(symbol, direction string, strength float64) {
 			select {
 			case bi.Runner.UrgentSignals <- sig:
 			default:
-				slog.Error("hand urgent signal channel full, dropping close signal",
+				slog.Error("hand urgent signal channel full, dropping exit signal",
 					"hand_id", bi.Data.ID, "symbol", symbol)
 			}
 		} else {

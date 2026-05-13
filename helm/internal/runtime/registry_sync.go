@@ -8,7 +8,6 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"mallow/helm/internal/infra/exchange"
-	orchdomain "mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/runtime/core/orderbook"
 )
 
@@ -33,8 +32,8 @@ func (r *Registry) persistSyncTime(rt *HelmRuntime) {
 func (r *Registry) StartPollingSync(ctx context.Context, nc *nats.Conn, interval time.Duration) {
 	syncAll := func() {
 		r.mu.RLock()
-		rts := make([]*HelmRuntime, 0, len(r.runtimes))
-		for _, rt := range r.runtimes {
+		rts := make([]*HelmRuntime, 0, len(r.helmRuntimes))
+		for _, rt := range r.helmRuntimes {
 			rts = append(rts, rt)
 		}
 		js := r.js
@@ -68,41 +67,96 @@ func (r *Registry) StartPollingSync(ctx context.Context, nc *nats.Conn, interval
 	slog.Info("registry: polling sync started", "interval", interval)
 }
 
-// SpawnAll hydrates runtimes from a list of configs (called at startup).
-// All non-halted configs are spawned; disabled ones get polling sync only (no streaming).
-// Configs with status "paused" are spawned in paused state.
-func (r *Registry) SpawnAll(cfgs []*orchdomain.HelmConfig) {
-	for _, cfg := range cfgs {
-		if cfg.Status == "halted" {
-			continue
-		}
-		if err := r.Spawn(cfg); err != nil {
-			slog.Error("runtime: spawn failed", "helm_id", cfg.ID, "err", err)
-			continue
-		}
-		if cfg.Status == "paused" {
-			if rt, err := r.Get(cfg.ID); err == nil {
-				rt.Pause()
-				slog.Info("runtime: spawned paused", "helm_id", cfg.ID)
-			}
-		}
-	}
-}
-
 // ReconcileAllOrders fetches open orders from the exchange for each runtime
 // and re-tracks any that are missing from the in-memory orderbook.
 // Call this after SpawnAll + StartFillStreaming so the fill processor is ready
 // to handle fills that arrive for reconciled orders.
 func (r *Registry) ReconcileAllOrders(ctx context.Context) {
 	r.mu.RLock()
-	rts := make([]*HelmRuntime, 0, len(r.runtimes))
-	for _, rt := range r.runtimes {
+	rts := make([]*HelmRuntime, 0, len(r.helmRuntimes))
+	for _, rt := range r.helmRuntimes {
 		rts = append(rts, rt)
 	}
 	r.mu.RUnlock()
 
 	for _, rt := range rts {
 		r.reconcileOrders(ctx, rt)
+	}
+}
+
+// RecoverGapFills fetches filled order history from each exchange that implements
+// HistoryFetcher, covering the window [lastSyncAt, now). Fills that were missed
+// while helm was offline are applied to the portfolio and published to investment
+// JetStream. Call this after ReconcileAllOrders but before starting WS streaming
+// so the fill processor is ready to receive.
+func (r *Registry) RecoverGapFills(ctx context.Context, nc *nats.Conn) {
+	r.mu.RLock()
+	rts := make([]*HelmRuntime, 0, len(r.helmRuntimes))
+	js := r.js
+	r.mu.RUnlock()
+	for _, rt := range r.helmRuntimes {
+		rts = append(rts, rt)
+	}
+
+	for _, rt := range rts {
+		historian, ok := rt.Exchange.(exchange.HistoryFetcher)
+		if !ok {
+			continue
+		}
+		lastSync := rt.LastSyncAt()
+		if lastSync.IsZero() {
+			continue // never synced — no gap to recover
+		}
+		now := time.Now().UTC()
+		if now.Sub(lastSync) < 5*time.Second {
+			continue // restarted too recently, nothing to recover
+		}
+
+		// Collect symbols from the orderbook as a hint for per-symbol exchanges (Binance).
+		orchID := rt.HelmID.String()
+		symbolSet := make(map[string]struct{})
+		for _, p := range rt.OrderBook.PendingOrders(orchID) {
+			symbolSet[p.Symbol] = struct{}{}
+		}
+		symbols := make([]string, 0, len(symbolSet))
+		for s := range symbolSet {
+			symbols = append(symbols, s)
+		}
+
+		slog.Info("gap recovery: fetching fill history",
+			"helm_id", rt.HelmID, "from", lastSync, "to", now, "symbols", len(symbols))
+
+		fills, err := historian.FilledOrders(ctx, rt.Creds, symbols, lastSync, now)
+		if err != nil {
+			slog.Error("gap recovery: fetch failed", "helm_id", rt.HelmID, "err", err)
+			continue
+		}
+		if len(fills) == 0 {
+			slog.Info("gap recovery: no fills in gap", "helm_id", rt.HelmID)
+			continue
+		}
+
+		applied := 0
+		for _, txn := range fills {
+			// Dedup: skip if this trade was already processed (poslog has it).
+			if rt.HasProcessedTrade(txn.TradeID) {
+				continue
+			}
+			ev := exchange.OrderEvent{
+				Type:      exchange.OrderEventFilled,
+				OrderID:   txn.OrderID,
+				TradeID:   txn.TradeID,
+				Symbol:    txn.Symbol,
+				Side:      exchange.OrderSide(txn.Side),
+				FilledQty: txn.Qty,
+				FilledAvg: txn.AvgPrice,
+				Timestamp: txn.FilledAt,
+			}
+			r.applyFill(nc, js, rt, ev)
+			applied++
+		}
+		slog.Info("gap recovery: fills applied",
+			"helm_id", rt.HelmID, "total", len(fills), "applied", applied, "skipped", len(fills)-applied)
 	}
 }
 

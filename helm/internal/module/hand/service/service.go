@@ -13,7 +13,12 @@ import (
 	"mallow/helm/internal/runtime"
 )
 
-// heraldClient is the subset of engine.SignalClient used by the service.
+// helmRegistry is the outbound port to the helm execution runtime.
+type helmRegistry interface {
+	Get(helmID uuid.UUID) (*runtime.HelmRuntime, error)
+}
+
+// heraldClient is the outbound port to the signal herald.
 type heraldClient interface {
 	Register(ctx context.Context, req *engine.RegisterMsg) (string, error)
 	Deregister(ctx context.Context, botID string) error
@@ -24,7 +29,7 @@ type heraldClient interface {
 // Business logic (signal handling, order placement, portfolio) lives in runtime.Hand.
 type Service struct {
 	repo     domain.HandRepo
-	registry *runtime.Registry
+	registry helmRegistry
 	herald   heraldClient // nil when NATS unavailable (dev/test)
 
 	mu    sync.RWMutex
@@ -63,7 +68,7 @@ func (s *Service) hydrate(data *domain.Hand) (*runtime.HandRef, error) {
 		return nil, fmt.Errorf("no runtime for helm %q: %w", data.HelmID, err)
 	}
 	strat, tact := runtime.BuildHandComponents(data)
-	hand := runtime.NewHand(data.ID, data.HelmID, rt, strat, tact, data.Position.Pyramid, data.Position.MaxUnits)
+	hand := runtime.NewHand(data.ID, data.HelmID, rt, strat, tact, data.Position.Pyramid, data.Position.MaxUnits, runtime.SignalTTLFor(data), data.Futures)
 	setMeta(hand, data)
 	rt.AddHand(hand)
 	if data.Status == "running" {

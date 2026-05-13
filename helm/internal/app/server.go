@@ -9,7 +9,7 @@ import (
 
 	_ "mallow/helm/docs"
 	handhandler "mallow/helm/internal/module/hand/handler"
-	orchhandler "mallow/helm/internal/module/helm/handler"
+	helmhandler "mallow/helm/internal/module/helm/handler"
 	"mallow/helm/internal/shared"
 	pkgmw "mallow/pkg/middleware"
 	pkgtelemetry "mallow/pkg/telemetry"
@@ -22,7 +22,7 @@ type HealthResponse struct {
 
 // NewServer creates the Gin engine and registers all module routes.
 func NewServer(
-	orchH *orchhandler.Handler,
+	helmH *helmhandler.Handler,
 	handH *handhandler.Handler,
 ) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
@@ -32,8 +32,8 @@ func NewServer(
 
 	// Orchestrator is an internal service; it trusts X-User-* headers from the gateway.
 	// All /api routes require a valid user identity.
-	api := r.Group("/api/v1", pkgmw.TrustedHeaders())
-	orchH.Register(api)
+	api := r.Group("/api", pkgmw.TrustedHeaders())
+	helmH.Register(api)
 	handH.Register(api)
 
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))

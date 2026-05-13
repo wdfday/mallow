@@ -34,7 +34,6 @@ type ServerConfig struct {
 }
 
 type RuntimeConfig struct {
-	BarInterval  time.Duration
 	SyncInterval time.Duration
 }
 
@@ -53,7 +52,6 @@ func Load() Config {
 	v.SetDefault("POSTGRES_URL", "")
 	v.SetDefault("API_ADDR", "localhost:8084")
 	v.SetDefault("PYROSCOPE_URL", "")
-	v.SetDefault("BAR_INTERVAL", "5m")
 	v.SetDefault("SYNC_INTERVAL", "5m")
 	v.SetDefault("MARKET_DATA_SOURCE", "none")
 	v.SetDefault("MARKET_DATA_SYMBOLS", "")
@@ -68,12 +66,6 @@ func Load() Config {
 	}
 	v.AutomaticEnv()
 
-	barInterval := getDuration(v, "BAR_INTERVAL", 5*time.Minute)
-	if barInterval < time.Minute {
-		slog.Warn("BAR_INTERVAL too small, clamped to 1m", "requested", barInterval)
-		barInterval = time.Minute
-	}
-
 	cfg := Config{
 		Infra: InfraConfig{
 			NATSURL:     v.GetString("NATS_URL"),
@@ -84,7 +76,6 @@ func Load() Config {
 			PyroscopeURL: v.GetString("PYROSCOPE_URL"),
 		},
 		Runtime: RuntimeConfig{
-			BarInterval:  barInterval,
 			SyncInterval: getDuration(v, "SYNC_INTERVAL", 5*time.Minute),
 		},
 		MarketData: MarketDataConfig{
@@ -99,7 +90,6 @@ func Load() Config {
 	slog.Info("loaded config",
 		"nats_url", cfg.Infra.NATSURL,
 		"postgres_enabled", cfg.Infra.PostgresURL != "",
-		"bar_interval", cfg.Runtime.BarInterval,
 		"sync_interval", cfg.Runtime.SyncInterval,
 		"market_data_source", cfg.MarketData.Source,
 		"market_data_symbols", cfg.MarketData.Symbols,

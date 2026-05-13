@@ -63,6 +63,11 @@ type LegState struct {
 
 	OpenedAt time.Time
 
+	// entryCount is the number of fills that have opened or added to this leg.
+	// Initial entry = 1; each pyramid add increments by 1.
+	// Used by HandPositions.EntryCount() to enforce MaxUnits in pyramid mode.
+	entryCount int
+
 	// pendingAdd* holds SL/TP from a pending pyramid add's order_placed.
 	// Committed to the leg on fill; discarded on cancel.
 	pendingAddSL decimal.Decimal
@@ -154,6 +159,7 @@ func (l *LegState) applyOrderFilled(e poslog.Event) error {
 		l.EntryPrice = price
 		l.Qty = qty
 		l.OpenedAt = e.At
+		l.entryCount++
 		l.Phase = PhaseOpen
 
 	case PhaseAdding:
@@ -166,6 +172,7 @@ func (l *LegState) applyOrderFilled(e poslog.Event) error {
 		l.TakeProfit = l.pendingAddTP
 		l.pendingAddSL = decimal.Zero
 		l.pendingAddTP = decimal.Zero
+		l.entryCount++
 		l.Phase = PhaseOpen
 
 	case PhaseExiting:
@@ -229,6 +236,7 @@ func (l *LegState) reset() {
 	l.StopLoss = decimal.Zero
 	l.TakeProfit = decimal.Zero
 	l.OpenedAt = time.Time{}
+	l.entryCount = 0
 	l.pendingAddSL = decimal.Zero
 	l.pendingAddTP = decimal.Zero
 }
@@ -268,6 +276,23 @@ func (h *HandPositions) ActiveCount() int {
 		}
 	}
 	return n
+}
+
+// EntryCount returns the number of filled entries against the MaxUnits cap.
+//
+// Non-pyramid: equals ActiveCount() — each signal opens an independent leg.
+// Pyramid:     equals the entryCount of the active leg — each add increments it.
+//
+// A return value of 0 means the hand is flat and ready for a fresh entry.
+func (h *HandPositions) EntryCount() int {
+	if !h.Pyramid {
+		return h.ActiveCount()
+	}
+	leg := h.PrimaryLeg()
+	if leg == nil {
+		return 0
+	}
+	return leg.entryCount
 }
 
 // ActiveLegs returns a slice of all currently active legs, ordered by PositionID.

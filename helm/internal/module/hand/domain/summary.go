@@ -23,6 +23,7 @@ type HandSummary struct {
 	OrderCount int             `json:"order_count"`
 	Health     HandHealthView  `json:"health"`
 	Metrics    HandMetricsView `json:"metrics"`
+	Futures    *FuturesConfig  `json:"futures,omitempty"`
 	CreatedAt  time.Time       `json:"created_at"`
 }
 

@@ -13,10 +13,10 @@ import (
 
 const (
 	// Bybit V5 public WebSocket endpoints.
-	bybitSpotWSURL     = "wss://stream.bybit.com/v5/public/spot"
-	bybitLinearWSURL   = "wss://stream.bybit.com/v5/public/linear"
-	bybitSpotTestnet   = "wss://stream-testnet.bybit.com/v5/public/spot"
-	bybitLinearTestnet = "wss://stream-testnet.bybit.com/v5/public/linear"
+	bybitSpotWSURL      = "wss://stream.bybit.com/v5/public/spot"
+	bybitLinearWSURL    = "wss://stream.bybit.com/v5/public/linear"
+	bybitSpotPaperURL   = "wss://stream-testnet.bybit.com/v5/public/spot"
+	bybitLinearPaperURL = "wss://stream-testnet.bybit.com/v5/public/linear"
 
 	bybitPingInterval = 20 * time.Second
 )
@@ -57,15 +57,15 @@ func isLinear(sym string) bool {
 }
 
 func (c *Client) spotURL() string {
-	if c.testnet {
-		return bybitSpotTestnet
+	if c.paper {
+		return bybitSpotPaperURL
 	}
 	return bybitSpotWSURL
 }
 
 func (c *Client) linearURL() string {
-	if c.testnet {
-		return bybitLinearTestnet
+	if c.paper {
+		return bybitLinearPaperURL
 	}
 	return bybitLinearWSURL
 }

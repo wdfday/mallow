@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/module/helm/service"
@@ -17,21 +18,21 @@ import (
 
 type stubHelmRepo struct {
 	mu   sync.RWMutex
-	rows map[uuid.UUID]*domain.HelmConfig
+	rows map[uuid.UUID]*domain.Helm
 }
 
 func newStubHelmRepo() *stubHelmRepo {
-	return &stubHelmRepo{rows: map[uuid.UUID]*domain.HelmConfig{}}
+	return &stubHelmRepo{rows: map[uuid.UUID]*domain.Helm{}}
 }
 
-func (r *stubHelmRepo) Save(o *domain.HelmConfig) error {
+func (r *stubHelmRepo) Save(o *domain.Helm) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	cp := *o
 	r.rows[o.ID] = &cp
 	return nil
 }
-func (r *stubHelmRepo) Get(id uuid.UUID) (*domain.HelmConfig, error) {
+func (r *stubHelmRepo) Get(id uuid.UUID) (*domain.Helm, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if v, ok := r.rows[id]; ok {
@@ -40,7 +41,7 @@ func (r *stubHelmRepo) Get(id uuid.UUID) (*domain.HelmConfig, error) {
 	}
 	return nil, fmt.Errorf("helm %v not found", id)
 }
-func (r *stubHelmRepo) GetByAccountID(accountID uuid.UUID) (*domain.HelmConfig, error) {
+func (r *stubHelmRepo) GetByAccountID(accountID uuid.UUID) (*domain.Helm, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, v := range r.rows {
@@ -51,20 +52,20 @@ func (r *stubHelmRepo) GetByAccountID(accountID uuid.UUID) (*domain.HelmConfig, 
 	}
 	return nil, fmt.Errorf("helm for account %v not found", accountID)
 }
-func (r *stubHelmRepo) All() ([]*domain.HelmConfig, error) {
+func (r *stubHelmRepo) All() ([]*domain.Helm, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := make([]*domain.HelmConfig, 0, len(r.rows))
+	out := make([]*domain.Helm, 0, len(r.rows))
 	for _, v := range r.rows {
 		cp := *v
 		out = append(out, &cp)
 	}
 	return out, nil
 }
-func (r *stubHelmRepo) AllByUser(userID uuid.UUID) ([]*domain.HelmConfig, error) {
+func (r *stubHelmRepo) AllByUser(userID uuid.UUID) ([]*domain.Helm, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	var out []*domain.HelmConfig
+	var out []*domain.Helm
 	for _, v := range r.rows {
 		if v.UserID == userID {
 			cp := *v
@@ -73,7 +74,7 @@ func (r *stubHelmRepo) AllByUser(userID uuid.UUID) ([]*domain.HelmConfig, error)
 	}
 	return out, nil
 }
-func (r *stubHelmRepo) Update(id uuid.UUID, fn func(*domain.HelmConfig) error) error {
+func (r *stubHelmRepo) Update(id uuid.UUID, fn func(*domain.Helm) error) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	v, ok := r.rows[id]
@@ -83,7 +84,7 @@ func (r *stubHelmRepo) Update(id uuid.UUID, fn func(*domain.HelmConfig) error) e
 	return fn(v)
 }
 func (r *stubHelmRepo) UpdateLastSyncedAt(id uuid.UUID, t time.Time) error {
-	return r.Update(id, func(c *domain.HelmConfig) error {
+	return r.Update(id, func(c *domain.Helm) error {
 		c.UpdatedAt = t
 		return nil
 	})
@@ -116,7 +117,7 @@ type mockSpawner struct {
 	resetHaltErr error
 }
 
-func (m *mockSpawner) Spawn(cfg *domain.HelmConfig) error {
+func (m *mockSpawner) Spawn(cfg *domain.Helm, _ domain.ExchangeConfig, _ decimal.Decimal) error {
 	m.spawned = append(m.spawned, cfg.ID)
 	return nil
 }
@@ -166,13 +167,12 @@ func (m *mockBotLifecycle) PurgeBots(ids []string) { m.purged = append(m.purged,
 
 // ── test helpers ─────────────────────────────────────────────────────────────
 
-func newOrch(id uuid.UUID, status string) *domain.HelmConfig {
-	return &domain.HelmConfig{
+func newOrch(id uuid.UUID, status string) *domain.Helm {
+	return &domain.Helm{
 		ID:        id,
 		UserID:    uuid.New(),
 		AccountID: uuid.New(),
 		Name:      "test-orch",
-		Capital:   10_000,
 		Enabled:   true,
 		Status:    status,
 		CreatedAt: time.Now(),

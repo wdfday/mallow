@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/nats-io/nats.go"
 
@@ -18,8 +19,8 @@ import (
 // implements AccountStreamer. Called once after SpawnAll, from the app lifecycle.
 func (r *Registry) StartFillStreaming(ctx context.Context, nc *nats.Conn) {
 	r.mu.RLock()
-	rts := make([]*HelmRuntime, 0, len(r.runtimes))
-	for _, rt := range r.runtimes {
+	rts := make([]*HelmRuntime, 0, len(r.helmRuntimes))
+	for _, rt := range r.helmRuntimes {
 		rts = append(rts, rt)
 	}
 	r.mu.RUnlock()
@@ -103,6 +104,21 @@ func (r *Registry) applyFill(nc *nats.Conn, js nats.JetStreamContext, rt *HelmRu
 		}
 	}
 
+	slog.Info("exchange: fill processing",
+		"helm_id", rt.HelmID,
+		"hand_id", botID,
+		"order_id", ev.OrderID,
+		"trade_id", ev.TradeID,
+		"symbol", ev.Symbol,
+		"side", ev.Side,
+		"fill_qty", ev.FilledQty,
+		"fill_avg", ev.FilledAvg,
+		"type", ev.Type,
+		"exchange_ts", ev.Timestamp,
+		"processing_lag", time.Since(ev.Timestamp).Truncate(time.Millisecond),
+	)
+
+	rt.MarkTradeProcessed(ev.TradeID)
 	rt.ReportFill(orchdomain.FillReport{
 		BotID:          botID,
 		OrchestratorID: orchID,
@@ -113,6 +129,20 @@ func (r *Registry) applyFill(nc *nats.Conn, js nats.JetStreamContext, rt *HelmRu
 		Price:          ev.FilledAvg,
 		Timestamp:      ev.Timestamp,
 	})
+
+	// For a full fill, forward the event to the owning hand's run-loop so that
+	// hand-level state (exit levels, poslog, metrics) is updated immediately
+	// instead of waiting for the 5s REST poll cycle.
+	// Partial fills are intentionally excluded: the poll path handles them
+	// once fully filled to avoid partial-state complexity.
+	if ev.Type == exchange.OrderEventFilled && botID != "" {
+		rt.mu.RLock()
+		hand, ok := rt.bots[botID]
+		rt.mu.RUnlock()
+		if ok {
+			hand.EnqueueFill(ev)
+		}
+	}
 
 	if nc == nil {
 		return

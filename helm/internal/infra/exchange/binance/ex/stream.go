@@ -11,7 +11,7 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// wsMu guards the gobinance.UseTestnet global flag.
+// wsMu guards the gobinance.UseDemo global flag.
 var wsMu sync.Mutex
 
 // Subscribe connects to Binance WebSocket trade streams for the given symbols
@@ -55,7 +55,7 @@ func (c *Client) streamSymbolOnce(ctx context.Context, symbol string) error {
 	}
 
 	wsMu.Lock()
-	gobinance.UseDemo = c.testnet
+	gobinance.UseDemo = c.paper
 	doneC, stopC, err := gobinance.WsTradeServe(symbol, func(event *gobinance.WsTradeEvent) {
 		if p, err := decimal.NewFromString(event.Price); err == nil {
 			handler(p)

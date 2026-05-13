@@ -7,7 +7,15 @@ import (
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/engine"
+	"mallow/helm/internal/runtime/core/strategy"
 )
+
+func msToTime(ms int64) time.Time {
+	if ms == 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(ms).UTC()
+}
 
 // SignalDispatcher bridges the NATS "signals" subject into helm hand channels.
 // Both helm_id and hand_id are read from SignalResponse payload — subject is fixed "signals".
@@ -20,8 +28,9 @@ func NewSignalDispatcher(sink SignalSink) *SignalDispatcher {
 }
 
 // Dispatch routes the signal in the response to the target helm/hand.
+// receivedAt is the NATS server ingestion timestamp, used for TTL checks in each hand.
 // Called directly from the NATS subscription goroutine — must not block.
-func (d *SignalDispatcher) Dispatch(resp *engine.SignalResponse) {
+func (d *SignalDispatcher) Dispatch(resp *engine.SignalResponse, receivedAt time.Time) {
 	helmID := resp.HelmId
 	handID := resp.HandId
 	if helmID == "" || handID == "" {
@@ -35,10 +44,14 @@ func (d *SignalDispatcher) Dispatch(resp *engine.SignalResponse) {
 		return
 	}
 	s := Signal{
-		Symbol:     sig.S,
-		Direction:  sig.Dir,
-		Strength:   sig.Strength,
-		ReceivedAt: time.Now(),
+		Symbol:      sig.S,
+		Direction:   strategy.Direction(sig.Dir),
+		Strength:    sig.Strength,
+		ReceivedAt:  receivedAt,
+		GeneratedAt: msToTime(sig.T),
+	}
+	if sig.Price != nil {
+		s.Price = decimal.NewFromFloat(*sig.Price)
 	}
 	if sig.TargetPrice != nil {
 		s.TargetPrice = decimal.NewFromFloat(*sig.TargetPrice)
@@ -49,5 +62,19 @@ func (d *SignalDispatcher) Dispatch(resp *engine.SignalResponse) {
 	if sig.IsOffset != nil {
 		s.IsOffset = *sig.IsOffset
 	}
+	if sig.Atr != nil {
+		s.ATR = decimal.NewFromFloat(*sig.Atr)
+	}
+	if sig.Reason != nil {
+		s.Reason = *sig.Reason
+	}
+	slog.Debug("signal: dispatched to hand",
+		"helm_id", helmID,
+		"hand_id", handID,
+		"symbol", s.Symbol,
+		"dir", s.Direction,
+		"strength", s.Strength,
+		"urgent", s.IsUrgent(),
+	)
 	d.sink.RouteSignal(helmID, handID, s)
 }

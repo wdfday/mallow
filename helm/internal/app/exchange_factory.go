@@ -6,14 +6,14 @@ import (
 
 	"mallow/helm/internal/config"
 	"mallow/helm/internal/infra/exchange"
-	alpacaaction "mallow/helm/internal/infra/exchange/alpaca/action"
+	alpacaact "mallow/helm/internal/infra/exchange/alpaca/act"
 	alpacaex "mallow/helm/internal/infra/exchange/alpaca/ex"
-	binanceaction "mallow/helm/internal/infra/exchange/binance/action"
+	binanceact "mallow/helm/internal/infra/exchange/binance/act"
 	binanceex "mallow/helm/internal/infra/exchange/binance/ex"
-	bybitaction "mallow/helm/internal/infra/exchange/bybit/action"
+	bybitact "mallow/helm/internal/infra/exchange/bybit/act"
 	bybitex "mallow/helm/internal/infra/exchange/bybit/ex"
 	"mallow/helm/internal/infra/exchange/oanda"
-	okxaction "mallow/helm/internal/infra/exchange/okx/action"
+	okxact "mallow/helm/internal/infra/exchange/okx/act"
 	okxex "mallow/helm/internal/infra/exchange/okx/ex"
 	orchdomain "mallow/helm/internal/module/helm/domain"
 )
@@ -22,7 +22,7 @@ import (
 // Returns a stateless shared client per (broker, env) — no credentials stored.
 type exchangeFactory struct {
 	mu      sync.Mutex
-	clients map[string]exchange.Exchange // cache key: "brokerType|baseURL|testnet|demo"
+	clients map[string]exchange.Exchange // cache key: "brokerType|baseURL|paper"
 }
 
 func newExchangeFactory() *exchangeFactory {
@@ -30,7 +30,7 @@ func newExchangeFactory() *exchangeFactory {
 }
 
 func (f *exchangeFactory) New(cfg orchdomain.ExchangeConfig) (exchange.Exchange, error) {
-	key := fmt.Sprintf("%s|%s|testnet=%v|demo=%v", cfg.BrokerType, cfg.BaseURL, cfg.Testnet, cfg.Demo)
+	key := fmt.Sprintf("%s|%s|paper=%v", cfg.BrokerType, cfg.BaseURL, cfg.Paper)
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if cl, ok := f.clients[key]; ok {
@@ -47,16 +47,16 @@ func (f *exchangeFactory) New(cfg orchdomain.ExchangeConfig) (exchange.Exchange,
 func (f *exchangeFactory) create(cfg orchdomain.ExchangeConfig) (exchange.Exchange, error) {
 	switch cfg.BrokerType {
 	case "okx":
-		return okxaction.New(okxaction.Config{
+		return okxact.New(okxact.Config{
 			BaseURL: cfg.BaseURL,
-			Demo:    cfg.Demo,
+			Paper:   cfg.Paper,
 		}), nil
 	case "binance":
-		return binanceaction.New(cfg.Testnet), nil
+		return binanceact.New(cfg.Paper), nil
 	case "bybit":
-		return bybitaction.New(bybitaction.Config{
+		return bybitact.New(bybitact.Config{
 			BaseURL: cfg.BaseURL,
-			Testnet: cfg.Testnet,
+			Paper:   cfg.Paper,
 		}), nil
 	case "oanda":
 		return oanda.New(oanda.Config{
@@ -64,10 +64,10 @@ func (f *exchangeFactory) create(cfg orchdomain.ExchangeConfig) (exchange.Exchan
 		}), nil
 	case "alpaca", "":
 		baseURL := cfg.BaseURL
-		if baseURL == "" && cfg.Demo {
+		if baseURL == "" && cfg.Paper {
 			baseURL = "https://paper-api.alpaca.markets"
 		}
-		return alpacaaction.New(alpacaaction.Config{
+		return alpacaact.New(alpacaact.Config{
 			BaseURL: baseURL,
 		}), nil
 	default:
@@ -88,11 +88,11 @@ func newMarketStreamerFactory(cfg *config.Config) *marketStreamerFactory {
 func (f *marketStreamerFactory) New(cfg orchdomain.ExchangeConfig) exchange.MarketStreamer {
 	switch cfg.BrokerType {
 	case "binance":
-		return binanceex.New(cfg.Testnet)
+		return binanceex.New(cfg.Paper)
 	case "bybit":
-		return bybitex.New(cfg.Testnet)
+		return bybitex.New(cfg.Paper)
 	case "okx":
-		return okxex.New(cfg.Demo)
+		return okxex.New(cfg.Paper)
 	case "alpaca", "":
 		// Use shared admin-level key from service config (not per-account).
 		return alpacaex.New(f.cfg.AlpacaAPIKey, f.cfg.AlpacaAPISecret)

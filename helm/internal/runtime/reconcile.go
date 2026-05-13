@@ -18,17 +18,17 @@ import (
 type ReconcileAction string
 
 const (
-	// ReconcileRestored: hand had an open position; confirmed still live at exchange.
+	// ReconcileRestored : hand had an open position; confirmed still live at exchange.
 	ReconcileRestored ReconcileAction = "restored"
-	// ReconcileFillApplied: pending order was filled while app was down; fill event emitted.
+	// ReconcileFillApplied : pending order was filled while app was down; fill event emitted.
 	ReconcileFillApplied ReconcileAction = "fill_applied"
-	// ReconcileCancelled: pending order was cancelled or rejected at exchange.
+	// ReconcileCancelled : pending order was cancelled or rejected at exchange.
 	ReconcileCancelled ReconcileAction = "order_cancelled"
-	// ReconcileExternalClose: position was closed externally (liquidation, manual).
+	// ReconcileExternalClose : position was closed externally (liquidation, manual).
 	ReconcileExternalClose ReconcileAction = "external_close"
-	// ReconcileSkipped: hand was idle; nothing to do.
+	// ReconcileSkipped : hand was idle; nothing to do.
 	ReconcileSkipped ReconcileAction = "skipped"
-	// ReconcileFailed: could not determine state; hand left stopped for manual review.
+	// ReconcileFailed : could not determine state; hand left stopped for manual review.
 	ReconcileFailed ReconcileAction = "failed"
 )
 

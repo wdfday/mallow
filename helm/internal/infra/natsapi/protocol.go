@@ -112,15 +112,15 @@ const (
 // Helm subscribes and auto-creates an HelmConfig for that account.
 // Credentials are NOT included — helm fetches them on demand via investment.accounts.credentials.
 type AccountLinkedEvent struct {
-	AccountID  string          `json:"account_id"`
-	UserID     string          `json:"user_id"`
-	Name       string          `json:"name"`
-	Capital    decimal.Decimal `json:"capital"`
-	BrokerType string          `json:"broker_type"`
-	AccountRef string          `json:"account_ref,omitempty"` // IBKR/Oanda account ID
-	BaseURL    string          `json:"base_url,omitempty"`
-	Demo       bool            `json:"demo,omitempty"`
-	Testnet    bool            `json:"testnet,omitempty"`
+	AccountID   string          `json:"account_id"`
+	UserID      string          `json:"user_id"`
+	Name        string          `json:"name"`
+	Capital     decimal.Decimal `json:"capital"`
+	BrokerType  string          `json:"broker_type"`
+	AccountType string          `json:"account_type,omitempty"` // spot | futures | unified
+	AccountRef  string          `json:"account_ref,omitempty"`  // IBKR/Oanda account ID
+	BaseURL     string          `json:"base_url,omitempty"`
+	Paper       bool            `json:"paper,omitempty"` // true = paper/demo trading
 }
 
 // SubjCredentialsFetch is the NATS request/reply subject to fetch decrypted broker credentials
@@ -128,10 +128,17 @@ type AccountLinkedEvent struct {
 const SubjCredentialsFetch = "investment.accounts.credentials"
 
 // CredentialsFetchResp is the data payload returned by investment.accounts.credentials.
+// Includes both credentials and exchange metadata so a single call is enough to spawn a runtime.
 type CredentialsFetchResp struct {
 	APIKey     string `json:"api_key"`
 	APISecret  string `json:"api_secret"`
 	Passphrase string `json:"passphrase,omitempty"`
+	// Exchange metadata
+	BrokerType  string `json:"broker_type,omitempty"`
+	AccountType string `json:"account_type,omitempty"` // spot | futures | unified
+	AccountRef  string `json:"account_ref,omitempty"`  // IBKR / Oanda account ID
+	BaseURL     string `json:"base_url,omitempty"`
+	Paper       bool   `json:"paper,omitempty"` // true = paper/demo trading
 }
 
 // FetchCredentials requests decrypted broker credentials from the investment service via NATS.

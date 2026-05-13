@@ -16,11 +16,12 @@ import (
 type NATSHandler struct {
 	handMgr HandService
 	helmSvc HelmService
+	reg     RuntimeRegistry
 	subs    []*nats.Subscription
 }
 
-func NewNATSHandler(handMgr HandService, helmSvc HelmService) *NATSHandler {
-	return &NATSHandler{handMgr: handMgr, helmSvc: helmSvc}
+func NewNATSHandler(handMgr HandService, helmSvc HelmService, reg RuntimeRegistry) *NATSHandler {
+	return &NATSHandler{handMgr: handMgr, helmSvc: helmSvc, reg: reg}
 }
 
 func (h *NATSHandler) Subscribe(nc *nats.Conn) error {
@@ -123,12 +124,12 @@ func (h *NATSHandler) create(msg *nats.Msg) {
 		req.HelmID = helm.ID
 	}
 	cfg := req.ToDomain()
-	helm, err := h.helmSvc.Get(cfg.HelmID)
+	rt, err := h.reg.Get(cfg.HelmID)
 	if err != nil {
-		_ = msg.Respond(natsapi.ReplyErr("helm not found"))
+		_ = msg.Respond(natsapi.ReplyErr("helm runtime not available"))
 		return
 	}
-	if err := checkCapitalAllocation(helm, h.handMgr.ListByHelm(cfg.HelmID), cfg.Position, ""); err != nil {
+	if err := checkCapitalAllocation(rt.Portfolio.Summary().Equity.InexactFloat64(), h.handMgr.ListByHelm(cfg.HelmID), cfg.Position, ""); err != nil {
 		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
 		return
 	}
@@ -163,12 +164,12 @@ func (h *NATSHandler) update(msg *nats.Msg) {
 	patch := raw.UpdateHandReq.ToDomain()
 	// Validate capital allocation when sizing changes.
 	if raw.Position != nil && (raw.Position.AllocatedCapital > 0 || raw.Position.AllocatedPct > 0) {
-		helm, err := h.helmSvc.Get(bi.Data.HelmID)
+		rt, err := h.reg.Get(bi.Data.HelmID)
 		if err != nil {
-			_ = msg.Respond(natsapi.ReplyErr("helm not found"))
+			_ = msg.Respond(natsapi.ReplyErr("helm runtime not available"))
 			return
 		}
-		if err := checkCapitalAllocation(helm, h.handMgr.ListByHelm(bi.Data.HelmID), patch.Position, id.String()); err != nil {
+		if err := checkCapitalAllocation(rt.Portfolio.Summary().Equity.InexactFloat64(), h.handMgr.ListByHelm(bi.Data.HelmID), patch.Position, id.String()); err != nil {
 			_ = msg.Respond(natsapi.ReplyErr(err.Error()))
 			return
 		}

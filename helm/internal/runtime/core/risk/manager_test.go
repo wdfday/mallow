@@ -7,27 +7,33 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"mallow/helm/internal/infra/engine"
 	"mallow/helm/internal/runtime/core/portfolio"
 	"mallow/helm/internal/runtime/core/risk"
+	"mallow/helm/internal/runtime/core/strategy"
 )
-
-// ── helpers ──────────────────────────────────────────────────────────────────
 
 func newPort(capital float64) *portfolio.Portfolio {
 	return portfolio.New(decimal.NewFromFloat(capital))
 }
 
-func longSignal(sym string, strength float64) *engine.SignalMsg {
-	return &engine.SignalMsg{S: sym, Dir: "long", Strength: strength}
+func entryIntent(sym string, strength float64) strategy.Intent {
+	return strategy.Intent{
+		Signal:     strategy.Signal{Symbol: sym, Direction: strategy.DirLong, Strength: strength},
+		Action:     strategy.ActionEnterLong,
+		Urgency:    strategy.UrgencyNormal,
+		Confidence: strength,
+	}
 }
 
-func closeSignal(sym string) *engine.SignalMsg {
-	return &engine.SignalMsg{S: sym, Dir: "close", Strength: 1}
+func closeIntent(sym string) strategy.Intent {
+	return strategy.Intent{
+		Signal:     strategy.Signal{Symbol: sym, Direction: strategy.DirExit, Strength: 1.0},
+		Action:     strategy.ActionExitLong,
+		Urgency:    strategy.UrgencyImmediate,
+		Confidence: 1.0,
+	}
 }
 
-// applyLoss simulates a round-trip losing trade, reducing portfolio equity by ~pct.
-// Buys qty shares at entryPrice, records equity peak, then sells at exitPrice.
 func applyLoss(p *portfolio.Portfolio, sym string, qty int64, entryPrice, exitPrice float64) {
 	now := time.Now()
 	p.ApplyFill(portfolio.Fill{
@@ -37,7 +43,7 @@ func applyLoss(p *portfolio.Portfolio, sym string, qty int64, entryPrice, exitPr
 		Qty:       decimal.NewFromInt(qty),
 		Price:     decimal.NewFromFloat(entryPrice),
 	})
-	p.RecordEquity(now) // capture peak equity after buy (total equity unchanged by buy)
+	p.RecordEquity(now)
 	p.ApplyFill(portfolio.Fill{
 		Timestamp: now.Add(time.Minute),
 		Symbol:    sym,
@@ -47,7 +53,7 @@ func applyLoss(p *portfolio.Portfolio, sym string, qty int64, entryPrice, exitPr
 	})
 }
 
-// ── IsHalted ─────────────────────────────────────────────────────────────────
+// ── IsHalted ──────────────────────────────────────────────────────────────────
 
 func TestIsHalted_StartsUnhalted(t *testing.T) {
 	m := risk.New(risk.DefaultConfig(), newPort(10_000))
@@ -63,28 +69,23 @@ func TestResetHalt_ClearsHaltedFlag(t *testing.T) {
 	cfg := risk.Config{
 		MaxPositions:      10,
 		MaxPositionPct:    0.50,
-		DailyLossLimitPct: 1.0,  // disabled — won't fire
-		MaxDrawdownPct:    0.05, // 5%
+		DailyLossLimitPct: 1.0,
+		MaxDrawdownPct:    0.05,
 	}
 	m := risk.New(cfg, p)
+	applyLoss(p, "AAPL", 100, 100, 94) // 6% drawdown > 5% limit
 
-	// Buy 100 shares @ $100 = $10 000 (all cash).
-	// Sell @ $94 → equity $9 400 → drawdown 6% > 5% → triggers halt.
-	applyLoss(p, "AAPL", 100, 100, 94)
-
-	ok, reason := m.Validate(longSignal("AAPL", 0.5))
+	ok, reason := m.Validate(entryIntent("AAPL", 0.5))
 	if ok {
-		t.Fatalf("expected halt after max drawdown breach, got approved; reason=%q", reason)
+		t.Fatalf("expected halt after max drawdown breach; reason=%q", reason)
 	}
-
 	if !m.IsHalted() {
-		t.Fatal("IsHalted should return true after max drawdown breach")
+		t.Fatal("IsHalted should be true after max drawdown breach")
 	}
 
 	m.ResetHalt()
-
 	if m.IsHalted() {
-		t.Fatal("IsHalted should return false after ResetHalt")
+		t.Fatal("IsHalted should be false after ResetHalt")
 	}
 }
 
@@ -93,65 +94,49 @@ func TestResetHalt_AlsoClearsDailyHalt(t *testing.T) {
 	cfg := risk.Config{
 		MaxPositions:      10,
 		MaxPositionPct:    0.50,
-		DailyLossLimitPct: 0.01, // 1% daily loss limit — easy to breach
-		MaxDrawdownPct:    1.0,  // disabled
+		DailyLossLimitPct: 0.01,
+		MaxDrawdownPct:    1.0,
 	}
 	m := risk.New(cfg, p)
+	applyLoss(p, "AAPL", 50, 100, 90) // ~5% loss > 1% limit
 
-	// Lose ~5% daily → triggers daily halt.
-	applyLoss(p, "AAPL", 50, 100, 90)
-
-	ok, _ := m.Validate(longSignal("AAPL", 0.5))
+	ok, _ := m.Validate(entryIntent("AAPL", 0.5))
 	if ok {
 		t.Fatal("expected daily loss halt to fire")
 	}
 
 	m.ResetHalt()
-
-	// ResetHalt clears the global halted flag; IsHalted returns false.
-	// (The daily loss limit will re-trigger on the next Validate call if the
-	// losses are still present — that is intentional and correct behaviour.
-	// ResetHalt provides a one-shot manual override, not a permanent bypass.)
 	if m.IsHalted() {
-		t.Fatal("IsHalted should return false after ResetHalt (global halt flag)")
+		t.Fatal("IsHalted should be false after ResetHalt")
 	}
 }
 
-// ── Validate — close signals ──────────────────────────────────────────────────
+// ── Validate — exit intents ───────────────────────────────────────────────────
 
-func TestValidate_CloseSignal_AlwaysApproved(t *testing.T) {
-	// Even with MaxPositions=0 and a halted manager, close must pass.
+func TestValidate_CloseIntent_AlwaysApproved(t *testing.T) {
 	p := newPort(10_000)
-	cfg := risk.Config{MaxPositions: 0}
-	m := risk.New(cfg, p)
+	m := risk.New(risk.Config{MaxPositions: 0}, p)
 
-	ok, reason := m.Validate(closeSignal("AAPL"))
+	ok, reason := m.Validate(closeIntent("AAPL"))
 	if !ok {
-		t.Fatalf("close signal must always be approved, got rejected: %s", reason)
+		t.Fatalf("close intent must always be approved; got: %s", reason)
 	}
 }
 
-func TestValidate_CloseSignal_ApprovedWhenHalted(t *testing.T) {
+func TestValidate_CloseIntent_ApprovedWhenHalted(t *testing.T) {
 	p := newPort(10_000)
-	cfg := risk.Config{
-		MaxPositions:      10,
-		MaxPositionPct:    0.50,
-		DailyLossLimitPct: 1.0,
-		MaxDrawdownPct:    0.05,
-	}
+	cfg := risk.Config{MaxPositions: 10, MaxPositionPct: 0.50, DailyLossLimitPct: 1.0, MaxDrawdownPct: 0.05}
 	m := risk.New(cfg, p)
-	applyLoss(p, "AAPL", 100, 100, 94) // trigger halt
+	applyLoss(p, "AAPL", 100, 100, 94)
 
-	// Long entry blocked.
-	ok, _ := m.Validate(longSignal("AAPL", 0.5))
+	ok, _ := m.Validate(entryIntent("AAPL", 0.5))
 	if ok {
-		t.Fatal("long should be blocked when halted")
+		t.Fatal("entry should be blocked when halted")
 	}
 
-	// Close still allowed.
-	ok, reason := m.Validate(closeSignal("AAPL"))
+	ok, reason := m.Validate(closeIntent("AAPL"))
 	if !ok {
-		t.Fatalf("close should be allowed even when halted, got: %s", reason)
+		t.Fatalf("close should be allowed even when halted; got: %s", reason)
 	}
 }
 
@@ -159,12 +144,10 @@ func TestValidate_CloseSignal_ApprovedWhenHalted(t *testing.T) {
 
 func TestValidate_MaxPositions_Zero_BlocksEntry(t *testing.T) {
 	p := newPort(10_000)
-	// DailyLossLimitPct=1.0 and MaxDrawdownPct=1.0 effectively disable those
-	// guards so only the MaxPositions check fires.
 	cfg := risk.Config{MaxPositions: 0, MaxPositionPct: 0.10, DailyLossLimitPct: 1.0, MaxDrawdownPct: 1.0}
 	m := risk.New(cfg, p)
 
-	ok, reason := m.Validate(longSignal("AAPL", 0.5))
+	ok, reason := m.Validate(entryIntent("AAPL", 0.5))
 	if ok {
 		t.Fatal("expected entry blocked when MaxPositions=0")
 	}
@@ -179,7 +162,7 @@ func TestValidate_MaxPositions_AllowsNewWhenBelowLimit(t *testing.T) {
 	cfg.MaxPositions = 3
 	m := risk.New(cfg, p)
 
-	ok, _ := m.Validate(longSignal("AAPL", 0.5))
+	ok, _ := m.Validate(entryIntent("AAPL", 0.5))
 	if !ok {
 		t.Fatal("expected entry allowed when position count below max")
 	}
@@ -191,7 +174,6 @@ func TestValidate_MaxPositions_AllowsAddingToExistingPosition(t *testing.T) {
 	cfg.MaxPositions = 1
 	m := risk.New(cfg, p)
 
-	// Open one position in AAPL (fills the slot).
 	p.ApplyFill(portfolio.Fill{
 		Timestamp: time.Now(),
 		Symbol:    "AAPL",
@@ -200,14 +182,12 @@ func TestValidate_MaxPositions_AllowsAddingToExistingPosition(t *testing.T) {
 		Price:     decimal.NewFromInt(100),
 	})
 
-	// Adding to AAPL (existing position) must be allowed.
-	ok, reason := m.Validate(longSignal("AAPL", 0.5))
+	ok, reason := m.Validate(entryIntent("AAPL", 0.5))
 	if !ok {
 		t.Fatalf("adding to existing position should be allowed: %s", reason)
 	}
 
-	// Opening a new TSLA position when max=1 and AAPL fills it → blocked.
-	ok, reason = m.Validate(longSignal("TSLA", 0.5))
+	ok, reason = m.Validate(entryIntent("TSLA", 0.5))
 	if ok {
 		t.Fatal("expected new position blocked when max positions reached")
 	}
@@ -220,97 +200,18 @@ func TestValidate_MaxPositions_AllowsAddingToExistingPosition(t *testing.T) {
 
 func TestUpdateConfig_ChangesMaxPositionsImmediately(t *testing.T) {
 	p := newPort(10_000)
-	// Use high limit values so daily-loss / drawdown guards never fire.
-	// MaxPositions=0 is the only active gate here.
 	m := risk.New(risk.Config{MaxPositions: 0, MaxPositionPct: 0.10, DailyLossLimitPct: 1.0, MaxDrawdownPct: 1.0}, p)
 
-	ok, _ := m.Validate(longSignal("AAPL", 0.5))
+	ok, _ := m.Validate(entryIntent("AAPL", 0.5))
 	if ok {
 		t.Fatal("expected blocked with MaxPositions=0")
 	}
 
 	m.UpdateConfig(risk.Config{MaxPositions: 5, MaxPositionPct: 0.10, DailyLossLimitPct: 0.02, MaxDrawdownPct: 0.10})
 
-	ok, _ = m.Validate(longSignal("AAPL", 0.5))
+	ok, _ = m.Validate(entryIntent("AAPL", 0.5))
 	if !ok {
 		t.Fatal("expected allowed after MaxPositions raised to 5")
-	}
-}
-
-func TestUpdateConfig_ReducesMaxPositionPctForSizing(t *testing.T) {
-	p := newPort(10_000)
-	cfg := risk.DefaultConfig()
-	cfg.MaxPositionPct = 0.20 // 20%
-	m := risk.New(cfg, p)
-
-	price := decimal.NewFromInt(100)
-
-	// At 20% equity ($10 000) → $2000 / $100 = 20 shares at full strength.
-	qty := m.Size(longSignal("AAPL", 1.0), price)
-	if !qty.Equal(decimal.NewFromInt(20)) {
-		t.Fatalf("expected 20 shares at 20%% allocation, got %s", qty)
-	}
-
-	// Drop to 10%.
-	m.UpdateConfig(risk.Config{MaxPositions: 5, MaxPositionPct: 0.10, DailyLossLimitPct: 0.02, MaxDrawdownPct: 0.10})
-
-	qty = m.Size(longSignal("AAPL", 1.0), price)
-	if !qty.Equal(decimal.NewFromInt(10)) {
-		t.Fatalf("expected 10 shares at 10%% allocation, got %s", qty)
-	}
-}
-
-// ── Size ─────────────────────────────────────────────────────────────────────
-
-func TestSize_ScalesByStrength(t *testing.T) {
-	p := newPort(10_000)
-	cfg := risk.DefaultConfig()
-	cfg.MaxPositionPct = 0.10 // 10% of $10 000 = $1 000
-	m := risk.New(cfg, p)
-
-	price := decimal.NewFromInt(100)
-
-	// Strength 1.0 → $1 000 / $100 = 10 shares.
-	qty := m.Size(longSignal("AAPL", 1.0), price)
-	if !qty.Equal(decimal.NewFromInt(10)) {
-		t.Fatalf("expected 10 shares at strength 1.0, got %s", qty)
-	}
-
-	// Strength 0.5 → $500 / $100 = 5 shares.
-	qty = m.Size(longSignal("AAPL", 0.5), price)
-	if !qty.Equal(decimal.NewFromInt(5)) {
-		t.Fatalf("expected 5 shares at strength 0.5, got %s", qty)
-	}
-
-	// Strength 0.0 → 0 shares.
-	qty = m.Size(longSignal("AAPL", 0.0), price)
-	if !qty.IsZero() {
-		t.Fatalf("expected 0 shares at strength 0.0, got %s", qty)
-	}
-}
-
-func TestSize_ZeroPrice_ReturnsZero(t *testing.T) {
-	p := newPort(10_000)
-	m := risk.New(risk.DefaultConfig(), p)
-
-	qty := m.Size(longSignal("AAPL", 1.0), decimal.Zero)
-	if !qty.IsZero() {
-		t.Fatalf("expected zero qty for zero price, got %s", qty)
-	}
-}
-
-func TestSize_FractionalPriceAllowsFractionalQty(t *testing.T) {
-	p := newPort(1_000)
-	cfg := risk.Config{MaxPositions: 5, MaxPositionPct: 1.0} // 100% = $1000
-	m := risk.New(cfg, p)
-
-	// Price < $1 → fractional crypto allowed (no floor).
-	price := decimal.NewFromFloat(0.5)
-	qty := m.Size(longSignal("DOGE", 1.0), price)
-	// $1000 / $0.50 = 2000 units
-	expected := decimal.NewFromInt(2000)
-	if !qty.Equal(expected) {
-		t.Fatalf("expected %s units for crypto-priced asset, got %s", expected, qty)
 	}
 }
 
@@ -321,9 +222,8 @@ func TestManager_ConcurrentUpdateConfig_NoRace(t *testing.T) {
 	m := risk.New(risk.DefaultConfig(), p)
 
 	var wg sync.WaitGroup
-	iterations := 200
+	const iterations = 200
 
-	// Writer goroutine.
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -337,15 +237,12 @@ func TestManager_ConcurrentUpdateConfig_NoRace(t *testing.T) {
 		}
 	}()
 
-	// Reader goroutines exercising every public method.
 	for j := 0; j < 4; j++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			price := decimal.NewFromInt(100)
 			for i := 0; i < iterations; i++ {
-				m.Validate(longSignal("AAPL", 0.5))
-				m.Size(longSignal("AAPL", 0.5), price)
+				m.Validate(entryIntent("AAPL", 0.5))
 				m.IsHalted()
 			}
 		}()

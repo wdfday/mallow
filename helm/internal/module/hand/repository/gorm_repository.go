@@ -2,6 +2,7 @@ package repository
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -10,8 +11,6 @@ import (
 )
 
 // GORMHandRepo implements domain.HandRepo using GORM + PostgreSQL.
-// Hand is the GORM model directly — no intermediate mapping needed
-// because all JSONB columns implement driver.Valuer / sql.Scanner.
 type GORMHandRepo struct{ db *gorm.DB }
 
 func New(db *gorm.DB) *GORMHandRepo { return &GORMHandRepo{db: db} }
@@ -19,31 +18,31 @@ func New(db *gorm.DB) *GORMHandRepo { return &GORMHandRepo{db: db} }
 func (r *GORMHandRepo) GenerateID() uuid.UUID { return uuid.Must(uuid.NewV7()) }
 
 func (r *GORMHandRepo) Save(b *domain.Hand) error {
-	return r.db.Save(b).Error
+	return r.db.Save(toModel(b)).Error
 }
 
 func (r *GORMHandRepo) Get(id uuid.UUID) (*domain.Hand, error) {
-	var b domain.Hand
-	if err := r.db.First(&b, "id = ?", id).Error; err != nil {
+	var m handModel
+	if err := r.db.First(&m, "id = ?", id.String()).Error; err != nil {
 		return nil, fmt.Errorf("hand %q: %w", id, err)
 	}
-	return &b, nil
+	return toDomain(&m)
 }
 
 func (r *GORMHandRepo) All() []*domain.Hand {
-	var out []*domain.Hand
-	r.db.Order("created_at").Find(&out)
-	return out
+	var models []handModel
+	r.db.Order("created_at").Find(&models)
+	return sliceToDomain(models)
 }
 
 func (r *GORMHandRepo) AllByHelm(helmID uuid.UUID) []*domain.Hand {
-	var out []*domain.Hand
-	r.db.Order("created_at").Where("helm_id = ?", helmID).Find(&out)
-	return out
+	var models []handModel
+	r.db.Order("created_at").Where("helm_id = ?", helmID.String()).Find(&models)
+	return sliceToDomain(models)
 }
 
 func (r *GORMHandRepo) Delete(id uuid.UUID) error {
-	res := r.db.Delete(&domain.Hand{}, "id = ?", id)
+	res := r.db.Delete(&handModel{}, "id = ?", id.String())
 	if res.Error != nil {
 		return res.Error
 	}
@@ -61,5 +60,87 @@ func (r *GORMHandRepo) Update(id uuid.UUID, fn func(*domain.Hand) error) error {
 	if err := fn(b); err != nil {
 		return err
 	}
+	b.UpdatedAt = time.Now().UTC()
 	return r.Save(b)
+}
+
+// ── GORM model ────────────────────────────────────────────────────────────────
+
+// handModel is the internal GORM mapping for the hands table.
+// UUID fields are stored as strings to avoid pgx type-coercion friction.
+// JSONB columns use domain types directly — they implement driver.Valuer/sql.Scanner.
+type handModel struct {
+	ID        string                `gorm:"column:id;type:uuid;primaryKey"`
+	HelmID    string                `gorm:"column:helm_id;type:uuid;not null;index:idx_hands_helm_id"`
+	Name      string                `gorm:"column:name;not null"`
+	Type      domain.HandType       `gorm:"column:type;not null;default:signal_follower"`
+	Market    domain.MarketType     `gorm:"column:market;not null;default:spot"`
+	Status    string                `gorm:"column:status;not null;default:stopped"`
+	Symbols   domain.StringSlice    `gorm:"column:symbols;type:jsonb;not null;default:'[]'"`
+	Strategy  domain.StrategySpec   `gorm:"column:strategy;type:jsonb;not null;default:'{}'"`
+	Position  domain.PositionConfig `gorm:"column:position;type:jsonb;not null;default:'{}'"`
+	Risk      domain.HandRiskConfig `gorm:"column:risk;type:jsonb;not null;default:'{}'"`
+	Futures   *domain.FuturesConfig `gorm:"column:futures;type:jsonb"`
+	CreatedAt time.Time             `gorm:"column:created_at;not null;autoCreateTime"`
+	UpdatedAt time.Time             `gorm:"column:updated_at;not null;autoUpdateTime"`
+}
+
+func (handModel) TableName() string { return "hands" }
+
+// ── mapping ───────────────────────────────────────────────────────────────────
+
+func toModel(h *domain.Hand) *handModel {
+	return &handModel{
+		ID:        h.ID.String(),
+		HelmID:    h.HelmID.String(),
+		Name:      h.Name,
+		Type:      h.Type,
+		Market:    h.Market,
+		Status:    h.Status,
+		Symbols:   h.Symbols,
+		Strategy:  h.Strategy,
+		Position:  h.Position,
+		Risk:      h.Risk,
+		Futures:   h.Futures,
+		CreatedAt: h.CreatedAt,
+		UpdatedAt: h.UpdatedAt,
+	}
+}
+
+func toDomain(m *handModel) (*domain.Hand, error) {
+	id, err := uuid.Parse(m.ID)
+	if err != nil {
+		return nil, fmt.Errorf("parse id %q: %w", m.ID, err)
+	}
+	helmID, err := uuid.Parse(m.HelmID)
+	if err != nil {
+		return nil, fmt.Errorf("parse helm_id %q: %w", m.HelmID, err)
+	}
+	return &domain.Hand{
+		ID:        id,
+		HelmID:    helmID,
+		Name:      m.Name,
+		Type:      m.Type,
+		Market:    m.Market,
+		Status:    m.Status,
+		Symbols:   m.Symbols,
+		Strategy:  m.Strategy,
+		Position:  m.Position,
+		Risk:      m.Risk,
+		Futures:   m.Futures,
+		CreatedAt: m.CreatedAt,
+		UpdatedAt: m.UpdatedAt,
+	}, nil
+}
+
+func sliceToDomain(models []handModel) []*domain.Hand {
+	out := make([]*domain.Hand, 0, len(models))
+	for i := range models {
+		h, err := toDomain(&models[i])
+		if err != nil {
+			continue
+		}
+		out = append(out, h)
+	}
+	return out
 }

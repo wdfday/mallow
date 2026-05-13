@@ -47,7 +47,7 @@ func (c *Client) run(ctx context.Context, symbols []string) {
 
 func (c *Client) runOnce(ctx context.Context, symbols []string) error {
 	wsURL := okxPublicWSURL
-	if c.demo {
+	if c.paper {
 		wsURL = okxPublicWSDemoURL
 	}
 

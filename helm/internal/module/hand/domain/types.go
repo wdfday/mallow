@@ -122,15 +122,13 @@ func (p *PositionConfig) Scan(src any) error          { return jsonScan(src, p) 
 
 // ── HandRiskConfig ─────────────────────────────────────────────────────────────
 
-// HandRiskConfig holds exit rules only.
+// HandRiskConfig holds per-hand risk settings.
 // Sizing lives in PositionConfig; portfolio-level risk lives in HelmConfig.
 type HandRiskConfig struct {
-	// Exit rules — mirrors almanac's ExitConfig for backtest/live parity.
-	// sl/tp: fixed fraction (0.05) or ATR expression ("2*atr", "1.5*atr(21)").
-	Exit *ExitConfig `json:"exit,omitempty"`
-
-	// TrailingStopPct is live-only (not in backtest ExitConfig).
-	TrailingStopPct float64 `json:"trailing_stop_pct,omitempty"`
+	// SignalTTLSec is the maximum age (in seconds) of a signal before it is
+	// discarded without execution. Age is measured from NATS ingestion time.
+	// 0 = use default (10s). Set to a negative value to disable the check.
+	SignalTTLSec int `json:"signal_ttl_sec,omitempty"`
 }
 
 func (r HandRiskConfig) Value() (driver.Value, error) { return jsonValue(r) }
@@ -197,9 +195,6 @@ func (c *HandConfig) Defaults() {
 	}
 	if c.Position.MaxUnits == 0 {
 		c.Position.MaxUnits = 1
-	}
-	if c.Risk.Exit == nil {
-		c.Risk.Exit = &ExitConfig{SL: ExitLevelATR(2.0)}
 	}
 	if c.Strategy.Timeframe == "" {
 		c.Strategy.Timeframe = "M1"

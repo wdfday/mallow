@@ -3,20 +3,19 @@ package main
 import (
 	"context"
 	"log"
-	"log/slog"
-	"os"
 	"time"
 
 	pyroscope "github.com/grafana/pyroscope-go"
 
 	"mallow/helm/internal/app"
 	"mallow/helm/internal/config"
+	pkglogger "mallow/pkg/logger"
 	pkgtelemetry "mallow/pkg/telemetry"
 )
 
 func main() {
-	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	slog.SetDefault(logger)
+	closeLog := pkglogger.Setup("helm")
+	defer closeLog()
 
 	cfg := config.Load()
 
@@ -45,7 +44,7 @@ func main() {
 			log.Fatalf("pyroscope start failed: %v", err)
 		}
 		defer profiler.Stop()
-		slog.Info("pyroscope profiling active", "server", cfg.Server.PyroscopeURL)
+		log.Printf("pyroscope profiling active: %s", cfg.Server.PyroscopeURL)
 	}
 
 	// ── OpenTelemetry tracing ─────────────────────────────────────────

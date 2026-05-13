@@ -298,6 +298,54 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/hands/{id}/activity": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the last 200 signal/order events for a hand in chronological order",
+                "produces": [
+                    "text/plain",
+                    "application/json"
+                ],
+                "tags": [
+                    "system",
+                    "hands"
+                ],
+                "summary": "Get hand activity log",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Hand ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_runtime_ActivityEntry"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/hands/{id}/kill": {
             "post": {
                 "security": [
@@ -1565,18 +1613,38 @@ const docTemplate = `{
         },
         "/metrics": {
             "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the last 200 signal/order events for a hand in chronological order",
                 "produces": [
-                    "text/plain"
+                    "text/plain",
+                    "application/json"
                 ],
                 "tags": [
-                    "system"
+                    "system",
+                    "hands"
                 ],
-                "summary": "Prometheus metrics",
+                "summary": "Get hand activity log",
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "type": "string"
+                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_runtime_ActivityEntry"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
                         }
                     }
                 }
@@ -1619,6 +1687,19 @@ const docTemplate = `{
                 "pct": {
                     "description": "non-nil when fixed fraction",
                     "type": "number"
+                }
+            }
+        },
+        "mallow_helm_internal_module_hand_domain.FuturesConfig": {
+            "type": "object",
+            "properties": {
+                "leverage": {
+                    "description": "e.g. 10 for 10x; 1 = no leverage",
+                    "type": "integer"
+                },
+                "margin_type": {
+                    "description": "\"isolated\" | \"cross\"",
+                    "type": "string"
                 }
             }
         },
@@ -1691,6 +1772,10 @@ const docTemplate = `{
                         }
                     ]
                 },
+                "signal_ttl_sec": {
+                    "description": "SignalTTLSec is the maximum age (in seconds) of a signal before it is\ndiscarded without execution. Age is measured from NATS ingestion time.\n0 = use default (10s). Set to a negative value to disable the check.",
+                    "type": "integer"
+                },
                 "trailing_stop_pct": {
                     "description": "TrailingStopPct is live-only (not in backtest ExitConfig).",
                     "type": "number"
@@ -1702,6 +1787,9 @@ const docTemplate = `{
             "properties": {
                 "created_at": {
                     "type": "string"
+                },
+                "futures": {
+                    "$ref": "#/definitions/mallow_helm_internal_module_hand_domain.FuturesConfig"
                 },
                 "health": {
                     "$ref": "#/definitions/mallow_helm_internal_module_hand_domain.HandHealthView"
@@ -2067,23 +2155,6 @@ const docTemplate = `{
                 }
             }
         },
-        "mallow_helm_internal_module_helm_dto.ExchangeConfigResp": {
-            "type": "object",
-            "properties": {
-                "base_url": {
-                    "type": "string"
-                },
-                "broker_type": {
-                    "type": "string"
-                },
-                "demo": {
-                    "type": "boolean"
-                },
-                "testnet": {
-                    "type": "boolean"
-                }
-            }
-        },
         "mallow_helm_internal_module_helm_dto.ExchangeOrderResp": {
             "type": "object",
             "properties": {
@@ -2144,17 +2215,14 @@ const docTemplate = `{
                 "account_id": {
                     "type": "string"
                 },
-                "capital": {
-                    "type": "number"
+                "broker_type": {
+                    "type": "string"
                 },
                 "created_at": {
                     "type": "string"
                 },
                 "enabled": {
                     "type": "boolean"
-                },
-                "exchange": {
-                    "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.ExchangeConfigResp"
                 },
                 "hands": {
                     "type": "array",
@@ -2197,17 +2265,14 @@ const docTemplate = `{
                 "account_id": {
                     "type": "string"
                 },
-                "capital": {
-                    "type": "number"
+                "broker_type": {
+                    "type": "string"
                 },
                 "created_at": {
                     "type": "string"
                 },
                 "enabled": {
                     "type": "boolean"
-                },
-                "exchange": {
-                    "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.ExchangeConfigResp"
                 },
                 "id": {
                     "type": "string"
@@ -2433,9 +2498,6 @@ const docTemplate = `{
         "mallow_helm_internal_module_helm_dto.UpdateHelmReq": {
             "type": "object",
             "properties": {
-                "capital": {
-                    "type": "number"
-                },
                 "name": {
                     "type": "string",
                     "maxLength": 128,
@@ -2446,6 +2508,43 @@ const docTemplate = `{
                 },
                 "risk": {
                     "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.RiskConfigDTO"
+                }
+            }
+        },
+        "mallow_helm_internal_runtime.ActivityEntry": {
+            "type": "object",
+            "properties": {
+                "at": {
+                    "type": "string"
+                },
+                "code": {
+                    "type": "integer"
+                },
+                "direction": {
+                    "description": "signal direction (long/short/close/…)",
+                    "type": "string"
+                },
+                "order_id": {
+                    "type": "string"
+                },
+                "price": {
+                    "type": "number"
+                },
+                "qty": {
+                    "type": "number"
+                },
+                "reason": {
+                    "description": "human-readable detail (filter cause, rejection message, error)",
+                    "type": "string"
+                },
+                "side": {
+                    "type": "string"
+                },
+                "strength": {
+                    "type": "number"
+                },
+                "symbol": {
+                    "type": "string"
                 }
             }
         },
@@ -2569,6 +2668,26 @@ const docTemplate = `{
                     "type": "array",
                     "items": {
                         "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.TradeResp"
+                    }
+                },
+                "detail": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "integer"
+                }
+            }
+        },
+        "mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_runtime_ActivityEntry": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/mallow_helm_internal_runtime.ActivityEntry"
                     }
                 },
                 "detail": {

@@ -79,7 +79,7 @@ func (s *Service) Create(cfg domain.HandConfig) (*runtime.HandRef, error) {
 	}
 
 	strat, tact := runtime.BuildHandComponents(data)
-	hand := runtime.NewHand(id, cfg.HelmID, rt, strat, tact, data.Position.Pyramid, data.Position.MaxUnits)
+	hand := runtime.NewHand(id, cfg.HelmID, rt, strat, tact, data.Position.Pyramid, data.Position.MaxUnits, runtime.SignalTTLFor(data), data.Futures)
 	setMeta(hand, data)
 	rt.AddHand(hand)
 	bi := &runtime.HandRef{Data: data, Runner: hand, Exchange: rt.Exchange}
@@ -113,7 +113,7 @@ func (s *Service) Update(id uuid.UUID, patch domain.HandConfig) error {
 		if patch.Position.SizeMode != "" {
 			d.Position = patch.Position
 		}
-		if patch.Risk.Exit != nil || patch.Risk.TrailingStopPct > 0 {
+		if patch.Risk.SignalTTLSec != 0 {
 			d.Risk = patch.Risk
 		}
 		return nil
@@ -132,7 +132,7 @@ func (s *Service) Update(id uuid.UUID, patch domain.HandConfig) error {
 	if rt, _ := s.registry.Get(orchID); rt != nil {
 		rt.RemoveHand(id.String())
 		strat, tact := runtime.BuildHandComponents(updated)
-		bi.Runner = runtime.NewHand(updated.ID, orchID, rt, strat, tact, updated.Position.Pyramid, updated.Position.MaxUnits)
+		bi.Runner = runtime.NewHand(updated.ID, orchID, rt, strat, tact, updated.Position.Pyramid, updated.Position.MaxUnits, runtime.SignalTTLFor(updated), updated.Futures)
 		setMeta(bi.Runner, updated)
 		rt.AddHand(bi.Runner)
 	}

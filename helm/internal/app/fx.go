@@ -1,11 +1,11 @@
 package app
 
 import (
-	"context"
 	"log/slog"
 
 	"github.com/gin-gonic/gin"
 	"github.com/nats-io/nats.go"
+	"github.com/shopspring/decimal"
 	"go.uber.org/fx"
 	"gorm.io/gorm"
 
@@ -23,7 +23,6 @@ import (
 	helmrepo "mallow/helm/internal/module/helm/repository"
 	orchservice "mallow/helm/internal/module/helm/service"
 	"mallow/helm/internal/runtime"
-	"mallow/helm/internal/runtime/core/tick"
 )
 
 // Module declares all orchestrator components and lifecycle.
@@ -58,10 +57,6 @@ var Module = fx.Options(
 	fx.Provide(newOrchService),
 	fx.Provide(newBotService),
 
-	// Bar builder + tick router
-	fx.Provide(newBarBuilder),
-	fx.Provide(tick.NewRouter),
-
 	// Handlers — Gin (HTTP)
 	fx.Provide(newOrchHandler),
 	fx.Provide(newHandHandler),
@@ -72,12 +67,15 @@ var Module = fx.Options(
 	fx.Provide(newHandNATSHandler),
 
 	// Lifecycle hooks (order matters)
+	fx.Invoke(runMigrations),
 	fx.Invoke(wireHandLifecycle),
 	fx.Invoke(wireSyncStore),
 	fx.Invoke(wirePosLog),
 	fx.Invoke(hydrateRuntimes), // helm runtimes must be ready before hands are hydrated
 	fx.Invoke(hydrateHands),    // depends on hydrateRuntimes having run first
 	fx.Invoke(subscribeSignals),
+	fx.Invoke(subscribeHeraldReady),
+	fx.Invoke(startHeartbeatLoop),
 	fx.Invoke(startNATSAPI),
 	fx.Invoke(runOrchestrator),
 )
@@ -87,6 +85,13 @@ func asRuntimeFactory(f *exchangeFactory) runtime.ExchangeFactory { return f }
 
 // asStreamerFactory adapts *marketStreamerFactory to the runtime.MarketStreamerFactory interface.
 func asStreamerFactory(f *marketStreamerFactory) runtime.MarketStreamerFactory { return f }
+
+func runMigrations(db *gorm.DB) error {
+	if err := helmrepo.Migrate(db); err != nil {
+		return err
+	}
+	return handrepo.Migrate(db)
+}
 
 func newHelmRepo(db *gorm.DB) orchdomain.HelmRepo {
 	return helmrepo.New(db)
@@ -104,32 +109,24 @@ func newBotService(r domain.HandRepo, reg *runtime.Registry, sc *engine.SignalCl
 	return service.NewService(r, reg, sc)
 }
 
-func newBarBuilder(cfg *config.Config, sc *engine.SignalClient) *tick.BarBuilder {
-	return tick.NewBarBuilder(cfg.Runtime.BarInterval, func(bar *engine.BarMsg) {
-		if err := sc.PublishBar(context.Background(), bar); err != nil {
-			slog.Error("failed to publish bar", "symbol", bar.S, "err", err)
-		}
-	})
-}
-
 func newOrchHandler(svc *orchservice.Service, handMgr *service.Service, reg *runtime.Registry) *orchhandler.Handler {
 	return orchhandler.New(svc, handMgr, reg)
 }
 
-func newHandHandler(handMgr *service.Service, helmSvc *orchservice.Service, sc *engine.SignalClient, reg *runtime.Registry) *handhandler.Handler {
-	return handhandler.New(handMgr, helmSvc, sc, reg)
+func newHandHandler(handMgr *service.Service, helmSvc *orchservice.Service, reg *runtime.Registry) *handhandler.Handler {
+	return handhandler.New(handMgr, helmSvc, reg)
 }
 
 func newServer(orchH *orchhandler.Handler, handH *handhandler.Handler) *gin.Engine {
 	return NewServer(orchH, handH)
 }
 
-func newOrchNATSHandler(svc *orchservice.Service, handMgr *service.Service, reg *runtime.Registry) *orchhandler.NATSHandler {
-	return orchhandler.NewNATSHandler(svc, handMgr, reg)
+func newOrchNATSHandler(svc *orchservice.Service, handMgr *service.Service, reg *runtime.Registry, js nats.JetStreamContext) *orchhandler.NATSHandler {
+	return orchhandler.NewNATSHandler(svc, handMgr, reg, js)
 }
 
-func newHandNATSHandler(handMgr *service.Service, helmSvc *orchservice.Service) *handhandler.NATSHandler {
-	return handhandler.NewNATSHandler(handMgr, helmSvc)
+func newHandNATSHandler(handMgr *service.Service, helmSvc *orchservice.Service, reg *runtime.Registry) *handhandler.NATSHandler {
+	return handhandler.NewNATSHandler(handMgr, helmSvc, reg)
 }
 
 // newPosLog creates the JetStream-backed position event log.
@@ -161,8 +158,8 @@ func wireSyncStore(repo orchdomain.HelmRepo, reg *runtime.Registry) {
 }
 
 // hydrateRuntimes loads all active helm configs from DB and spawns their runtimes.
-// Broker credentials are fetched from the investment service via NATS at hydration time
-// and set transiently — they are never stored in helm's DB.
+// Exchange credentials and metadata are fetched transiently from investment service via NATS.
+// Initial capital starts at zero and is updated on the first portfolio sync.
 func hydrateRuntimes(repo orchdomain.HelmRepo, reg *runtime.Registry, nc *nats.Conn) error {
 	cfgs, err := repo.All()
 	if err != nil {
@@ -178,10 +175,17 @@ func hydrateRuntimes(repo orchdomain.HelmRepo, reg *runtime.Registry, nc *nats.C
 			slog.Error("runtimes hydrate: fetch credentials failed", "helm_id", cfg.ID, "account_id", cfg.AccountID, "err", err)
 			continue
 		}
-		cfg.Exchange.APIKey = creds.APIKey
-		cfg.Exchange.APISecret = creds.APISecret
-		cfg.Exchange.Passphrase = creds.Passphrase
-		if err := reg.Spawn(cfg); err != nil {
+		exchCfg := orchdomain.ExchangeConfig{
+			BrokerType:  cfg.BrokerType,
+			AccountType: orchdomain.AccountType(creds.AccountType),
+			AccountID:   creds.AccountRef,
+			BaseURL:     creds.BaseURL,
+			APIKey:      creds.APIKey,
+			APISecret:   creds.APISecret,
+			Passphrase:  creds.Passphrase,
+			Paper:       creds.Paper,
+		}
+		if err := reg.Spawn(cfg, exchCfg, decimal.Zero); err != nil {
 			slog.Error("runtime: spawn failed", "helm_id", cfg.ID, "err", err)
 			continue
 		}

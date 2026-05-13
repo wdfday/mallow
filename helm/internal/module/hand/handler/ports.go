@@ -12,10 +12,10 @@ import (
 
 // HelmService is the subset of helm/service.Service used by the hand handler.
 type HelmService interface {
-	Get(id uuid.UUID) (*helmdomain.HelmConfig, error)
-	GetByAccount(accountID uuid.UUID) (*helmdomain.HelmConfig, error)
+	Get(id uuid.UUID) (*helmdomain.Helm, error)
+	GetByAccount(accountID uuid.UUID) (*helmdomain.Helm, error)
 	CheckOwner(id, userID uuid.UUID) error
-	ListByUser(userID uuid.UUID) ([]*helmdomain.HelmConfig, error)
+	ListByUser(userID uuid.UUID) ([]*helmdomain.Helm, error)
 }
 
 // HandService is the full hand management interface used by this handler.
@@ -34,4 +34,10 @@ type HandService interface {
 	Kill(ctx context.Context, id uuid.UUID) error
 	Release(ctx context.Context, id uuid.UUID) error
 	RunningHands() []*runtime.HandRef
+}
+
+// RuntimeRegistry is the subset of runtime.Registry used by hand handlers.
+type RuntimeRegistry interface {
+	Get(id uuid.UUID) (*runtime.HelmRuntime, error)
+	All() []*runtime.HelmRuntime
 }

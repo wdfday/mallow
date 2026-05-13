@@ -16,7 +16,7 @@
 // versions:
 // 	protoc-gen-go v1.36.11
 // 	protoc        v6.33.2
-// source: proto/market.proto
+// source: market.proto
 
 package market
 
@@ -51,7 +51,7 @@ type TickMsg struct {
 
 func (x *TickMsg) Reset() {
 	*x = TickMsg{}
-	mi := &file_proto_market_proto_msgTypes[0]
+	mi := &file_market_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -63,7 +63,7 @@ func (x *TickMsg) String() string {
 func (*TickMsg) ProtoMessage() {}
 
 func (x *TickMsg) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_market_proto_msgTypes[0]
+	mi := &file_market_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -76,7 +76,7 @@ func (x *TickMsg) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TickMsg.ProtoReflect.Descriptor instead.
 func (*TickMsg) Descriptor() ([]byte, []int) {
-	return file_proto_market_proto_rawDescGZIP(), []int{0}
+	return file_market_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *TickMsg) GetT() int64 {
@@ -150,7 +150,7 @@ type BarMsg struct {
 
 func (x *BarMsg) Reset() {
 	*x = BarMsg{}
-	mi := &file_proto_market_proto_msgTypes[1]
+	mi := &file_market_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -162,7 +162,7 @@ func (x *BarMsg) String() string {
 func (*BarMsg) ProtoMessage() {}
 
 func (x *BarMsg) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_market_proto_msgTypes[1]
+	mi := &file_market_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -175,7 +175,7 @@ func (x *BarMsg) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BarMsg.ProtoReflect.Descriptor instead.
 func (*BarMsg) Descriptor() ([]byte, []int) {
-	return file_proto_market_proto_rawDescGZIP(), []int{1}
+	return file_market_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *BarMsg) GetT() int64 {
@@ -231,7 +231,7 @@ type SignalMsg struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	T        int64                  `protobuf:"varint,1,opt,name=t,proto3" json:"t,omitempty"`                // Unix milliseconds
 	S        string                 `protobuf:"bytes,2,opt,name=s,proto3" json:"s,omitempty"`                 // symbol
-	Dir      string                 `protobuf:"bytes,3,opt,name=dir,proto3" json:"dir,omitempty"`             // "long" | "short" | "close"
+	Dir      string                 `protobuf:"bytes,3,opt,name=dir,proto3" json:"dir,omitempty"`             // "long" | "short" | "exit"
 	Strength float64                `protobuf:"fixed64,4,opt,name=strength,proto3" json:"strength,omitempty"` // conviction [0.0, 1.0] — derived from indicator values
 	// Entry reference price (bar.close at signal time).
 	// Helm uses this for informational purposes; actual fill is at next bar open.
@@ -247,6 +247,10 @@ type SignalMsg struct {
 	// Human-readable reason for this signal — logged by helm for auditability.
 	// Not used for execution logic. E.g. "ema9 cross above H4 ema20, rsi < 60".
 	Reason *string `protobuf:"bytes,11,opt,name=reason,proto3,oneof" json:"reason,omitempty"`
+	// ATR (Average True Range) at bar close — forwarded from the herald ledger.
+	// Used by helm's tactician for ATR-based stop-loss / take-profit sizing and
+	// the volatility position-sizing mode. Zero when the strategy does not use ATR.
+	Atr *float64 `protobuf:"fixed64,12,opt,name=atr,proto3,oneof" json:"atr,omitempty"`
 	// Pattern metadata (populated by pattern_breakout strategy only).
 	PatternKind   *string  `protobuf:"bytes,7,opt,name=pattern_kind,json=patternKind,proto3,oneof" json:"pattern_kind,omitempty"`
 	Confidence    *float64 `protobuf:"fixed64,8,opt,name=confidence,proto3,oneof" json:"confidence,omitempty"`
@@ -256,7 +260,7 @@ type SignalMsg struct {
 
 func (x *SignalMsg) Reset() {
 	*x = SignalMsg{}
-	mi := &file_proto_market_proto_msgTypes[2]
+	mi := &file_market_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -268,7 +272,7 @@ func (x *SignalMsg) String() string {
 func (*SignalMsg) ProtoMessage() {}
 
 func (x *SignalMsg) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_market_proto_msgTypes[2]
+	mi := &file_market_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -281,7 +285,7 @@ func (x *SignalMsg) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalMsg.ProtoReflect.Descriptor instead.
 func (*SignalMsg) Descriptor() ([]byte, []int) {
-	return file_proto_market_proto_rawDescGZIP(), []int{2}
+	return file_market_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *SignalMsg) GetT() int64 {
@@ -347,6 +351,13 @@ func (x *SignalMsg) GetReason() string {
 	return ""
 }
 
+func (x *SignalMsg) GetAtr() float64 {
+	if x != nil && x.Atr != nil {
+		return *x.Atr
+	}
+	return 0
+}
+
 func (x *SignalMsg) GetPatternKind() string {
 	if x != nil && x.PatternKind != nil {
 		return *x.PatternKind
@@ -373,7 +384,7 @@ type SignalResponse struct {
 
 func (x *SignalResponse) Reset() {
 	*x = SignalResponse{}
-	mi := &file_proto_market_proto_msgTypes[3]
+	mi := &file_market_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -385,7 +396,7 @@ func (x *SignalResponse) String() string {
 func (*SignalResponse) ProtoMessage() {}
 
 func (x *SignalResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_market_proto_msgTypes[3]
+	mi := &file_market_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -398,7 +409,7 @@ func (x *SignalResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SignalResponse.ProtoReflect.Descriptor instead.
 func (*SignalResponse) Descriptor() ([]byte, []int) {
-	return file_proto_market_proto_rawDescGZIP(), []int{3}
+	return file_market_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *SignalResponse) GetSignal() *SignalMsg {
@@ -431,7 +442,7 @@ type ResetMsg struct {
 
 func (x *ResetMsg) Reset() {
 	*x = ResetMsg{}
-	mi := &file_proto_market_proto_msgTypes[4]
+	mi := &file_market_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -443,7 +454,7 @@ func (x *ResetMsg) String() string {
 func (*ResetMsg) ProtoMessage() {}
 
 func (x *ResetMsg) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_market_proto_msgTypes[4]
+	mi := &file_market_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -456,7 +467,7 @@ func (x *ResetMsg) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ResetMsg.ProtoReflect.Descriptor instead.
 func (*ResetMsg) Descriptor() ([]byte, []int) {
-	return file_proto_market_proto_rawDescGZIP(), []int{4}
+	return file_market_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ResetMsg) GetSymbol() string {
@@ -485,7 +496,7 @@ type RegisterMsg struct {
 
 func (x *RegisterMsg) Reset() {
 	*x = RegisterMsg{}
-	mi := &file_proto_market_proto_msgTypes[5]
+	mi := &file_market_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -497,7 +508,7 @@ func (x *RegisterMsg) String() string {
 func (*RegisterMsg) ProtoMessage() {}
 
 func (x *RegisterMsg) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_market_proto_msgTypes[5]
+	mi := &file_market_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -510,7 +521,7 @@ func (x *RegisterMsg) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegisterMsg.ProtoReflect.Descriptor instead.
 func (*RegisterMsg) Descriptor() ([]byte, []int) {
-	return file_proto_market_proto_rawDescGZIP(), []int{5}
+	return file_market_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *RegisterMsg) GetHandId() string {
@@ -571,7 +582,7 @@ type DeregisterMsg struct {
 
 func (x *DeregisterMsg) Reset() {
 	*x = DeregisterMsg{}
-	mi := &file_proto_market_proto_msgTypes[6]
+	mi := &file_market_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -583,7 +594,7 @@ func (x *DeregisterMsg) String() string {
 func (*DeregisterMsg) ProtoMessage() {}
 
 func (x *DeregisterMsg) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_market_proto_msgTypes[6]
+	mi := &file_market_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -596,7 +607,7 @@ func (x *DeregisterMsg) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeregisterMsg.ProtoReflect.Descriptor instead.
 func (*DeregisterMsg) Descriptor() ([]byte, []int) {
-	return file_proto_market_proto_rawDescGZIP(), []int{6}
+	return file_market_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *DeregisterMsg) GetHandId() string {
@@ -619,7 +630,7 @@ type HandInfo struct {
 
 func (x *HandInfo) Reset() {
 	*x = HandInfo{}
-	mi := &file_proto_market_proto_msgTypes[7]
+	mi := &file_market_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -631,7 +642,7 @@ func (x *HandInfo) String() string {
 func (*HandInfo) ProtoMessage() {}
 
 func (x *HandInfo) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_market_proto_msgTypes[7]
+	mi := &file_market_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -644,7 +655,7 @@ func (x *HandInfo) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HandInfo.ProtoReflect.Descriptor instead.
 func (*HandInfo) Descriptor() ([]byte, []int) {
-	return file_proto_market_proto_rawDescGZIP(), []int{7}
+	return file_market_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *HandInfo) GetHandId() string {
@@ -691,7 +702,7 @@ type HandListResponse struct {
 
 func (x *HandListResponse) Reset() {
 	*x = HandListResponse{}
-	mi := &file_proto_market_proto_msgTypes[8]
+	mi := &file_market_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -703,7 +714,7 @@ func (x *HandListResponse) String() string {
 func (*HandListResponse) ProtoMessage() {}
 
 func (x *HandListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_market_proto_msgTypes[8]
+	mi := &file_market_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -716,7 +727,7 @@ func (x *HandListResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HandListResponse.ProtoReflect.Descriptor instead.
 func (*HandListResponse) Descriptor() ([]byte, []int) {
-	return file_proto_market_proto_rawDescGZIP(), []int{8}
+	return file_market_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *HandListResponse) GetHands() []*HandInfo {
@@ -739,7 +750,7 @@ type PingResponse struct {
 
 func (x *PingResponse) Reset() {
 	*x = PingResponse{}
-	mi := &file_proto_market_proto_msgTypes[9]
+	mi := &file_market_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -751,7 +762,7 @@ func (x *PingResponse) String() string {
 func (*PingResponse) ProtoMessage() {}
 
 func (x *PingResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_market_proto_msgTypes[9]
+	mi := &file_market_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -764,7 +775,7 @@ func (x *PingResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PingResponse.ProtoReflect.Descriptor instead.
 func (*PingResponse) Descriptor() ([]byte, []int) {
-	return file_proto_market_proto_rawDescGZIP(), []int{9}
+	return file_market_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *PingResponse) GetOk() bool {
@@ -806,7 +817,7 @@ type HeartbeatRequest struct {
 
 func (x *HeartbeatRequest) Reset() {
 	*x = HeartbeatRequest{}
-	mi := &file_proto_market_proto_msgTypes[10]
+	mi := &file_market_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -818,7 +829,7 @@ func (x *HeartbeatRequest) String() string {
 func (*HeartbeatRequest) ProtoMessage() {}
 
 func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_market_proto_msgTypes[10]
+	mi := &file_market_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -831,7 +842,7 @@ func (x *HeartbeatRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatRequest.ProtoReflect.Descriptor instead.
 func (*HeartbeatRequest) Descriptor() ([]byte, []int) {
-	return file_proto_market_proto_rawDescGZIP(), []int{10}
+	return file_market_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *HeartbeatRequest) GetHelmId() string {
@@ -859,7 +870,7 @@ type HeartbeatResponse struct {
 
 func (x *HeartbeatResponse) Reset() {
 	*x = HeartbeatResponse{}
-	mi := &file_proto_market_proto_msgTypes[11]
+	mi := &file_market_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -871,7 +882,7 @@ func (x *HeartbeatResponse) String() string {
 func (*HeartbeatResponse) ProtoMessage() {}
 
 func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_market_proto_msgTypes[11]
+	mi := &file_market_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -884,7 +895,7 @@ func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatResponse.ProtoReflect.Descriptor instead.
 func (*HeartbeatResponse) Descriptor() ([]byte, []int) {
-	return file_proto_market_proto_rawDescGZIP(), []int{11}
+	return file_market_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *HeartbeatResponse) GetOk() bool {
@@ -921,7 +932,7 @@ type ReadyEvent struct {
 
 func (x *ReadyEvent) Reset() {
 	*x = ReadyEvent{}
-	mi := &file_proto_market_proto_msgTypes[12]
+	mi := &file_market_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -933,7 +944,7 @@ func (x *ReadyEvent) String() string {
 func (*ReadyEvent) ProtoMessage() {}
 
 func (x *ReadyEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_market_proto_msgTypes[12]
+	mi := &file_market_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -946,7 +957,7 @@ func (x *ReadyEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReadyEvent.ProtoReflect.Descriptor instead.
 func (*ReadyEvent) Descriptor() ([]byte, []int) {
-	return file_proto_market_proto_rawDescGZIP(), []int{12}
+	return file_market_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *ReadyEvent) GetHeraldId() string {
@@ -977,11 +988,11 @@ func (x *ReadyEvent) GetSymbols() []string {
 	return nil
 }
 
-var File_proto_market_proto protoreflect.FileDescriptor
+var File_market_proto protoreflect.FileDescriptor
 
-const file_proto_market_proto_rawDesc = "" +
+const file_market_proto_rawDesc = "" +
 	"\n" +
-	"\x12proto/market.proto\x12\x06market\"\x8d\x01\n" +
+	"\fmarket.proto\x12\x06market\"\x8d\x01\n" +
 	"\aTickMsg\x12\f\n" +
 	"\x01t\x18\x01 \x01(\x03R\x01t\x12\f\n" +
 	"\x01s\x18\x02 \x01(\tR\x01s\x12\x14\n" +
@@ -998,7 +1009,7 @@ const file_proto_market_proto_rawDesc = "" +
 	"\x01h\x18\x04 \x01(\x01R\x01h\x12\f\n" +
 	"\x01l\x18\x05 \x01(\x01R\x01l\x12\f\n" +
 	"\x01c\x18\x06 \x01(\x01R\x01c\x12\f\n" +
-	"\x01v\x18\a \x01(\x01R\x01v\"\xab\x03\n" +
+	"\x01v\x18\a \x01(\x01R\x01v\"\xca\x03\n" +
 	"\tSignalMsg\x12\f\n" +
 	"\x01t\x18\x01 \x01(\x03R\x01t\x12\f\n" +
 	"\x01s\x18\x02 \x01(\tR\x01s\x12\x10\n" +
@@ -1010,17 +1021,19 @@ const file_proto_market_proto_rawDesc = "" +
 	"stop_price\x18\x06 \x01(\x01H\x02R\tstopPrice\x88\x01\x01\x12 \n" +
 	"\tis_offset\x18\n" +
 	" \x01(\bH\x03R\bisOffset\x88\x01\x01\x12\x1b\n" +
-	"\x06reason\x18\v \x01(\tH\x04R\x06reason\x88\x01\x01\x12&\n" +
-	"\fpattern_kind\x18\a \x01(\tH\x05R\vpatternKind\x88\x01\x01\x12#\n" +
+	"\x06reason\x18\v \x01(\tH\x04R\x06reason\x88\x01\x01\x12\x15\n" +
+	"\x03atr\x18\f \x01(\x01H\x05R\x03atr\x88\x01\x01\x12&\n" +
+	"\fpattern_kind\x18\a \x01(\tH\x06R\vpatternKind\x88\x01\x01\x12#\n" +
 	"\n" +
-	"confidence\x18\b \x01(\x01H\x06R\n" +
+	"confidence\x18\b \x01(\x01H\aR\n" +
 	"confidence\x88\x01\x01B\b\n" +
 	"\x06_priceB\x0f\n" +
 	"\r_target_priceB\r\n" +
 	"\v_stop_priceB\f\n" +
 	"\n" +
 	"_is_offsetB\t\n" +
-	"\a_reasonB\x0f\n" +
+	"\a_reasonB\x06\n" +
+	"\x04_atrB\x0f\n" +
 	"\r_pattern_kindB\r\n" +
 	"\v_confidence\"m\n" +
 	"\x0eSignalResponse\x12)\n" +
@@ -1073,19 +1086,19 @@ const file_proto_market_proto_rawDesc = "" +
 	"\asymbols\x18\x04 \x03(\tR\asymbolsB\x15Z\x13mallow/proto/marketb\x06proto3"
 
 var (
-	file_proto_market_proto_rawDescOnce sync.Once
-	file_proto_market_proto_rawDescData []byte
+	file_market_proto_rawDescOnce sync.Once
+	file_market_proto_rawDescData []byte
 )
 
-func file_proto_market_proto_rawDescGZIP() []byte {
-	file_proto_market_proto_rawDescOnce.Do(func() {
-		file_proto_market_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_proto_market_proto_rawDesc), len(file_proto_market_proto_rawDesc)))
+func file_market_proto_rawDescGZIP() []byte {
+	file_market_proto_rawDescOnce.Do(func() {
+		file_market_proto_rawDescData = protoimpl.X.CompressGZIP(unsafe.Slice(unsafe.StringData(file_market_proto_rawDesc), len(file_market_proto_rawDesc)))
 	})
-	return file_proto_market_proto_rawDescData
+	return file_market_proto_rawDescData
 }
 
-var file_proto_market_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
-var file_proto_market_proto_goTypes = []any{
+var file_market_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
+var file_market_proto_goTypes = []any{
 	(*TickMsg)(nil),           // 0: market.TickMsg
 	(*BarMsg)(nil),            // 1: market.BarMsg
 	(*SignalMsg)(nil),         // 2: market.SignalMsg
@@ -1100,7 +1113,7 @@ var file_proto_market_proto_goTypes = []any{
 	(*HeartbeatResponse)(nil), // 11: market.HeartbeatResponse
 	(*ReadyEvent)(nil),        // 12: market.ReadyEvent
 }
-var file_proto_market_proto_depIdxs = []int32{
+var file_market_proto_depIdxs = []int32{
 	2, // 0: market.SignalResponse.signal:type_name -> market.SignalMsg
 	7, // 1: market.HandListResponse.hands:type_name -> market.HandInfo
 	2, // [2:2] is the sub-list for method output_type
@@ -1110,28 +1123,28 @@ var file_proto_market_proto_depIdxs = []int32{
 	0, // [0:2] is the sub-list for field type_name
 }
 
-func init() { file_proto_market_proto_init() }
-func file_proto_market_proto_init() {
-	if File_proto_market_proto != nil {
+func init() { file_market_proto_init() }
+func file_market_proto_init() {
+	if File_market_proto != nil {
 		return
 	}
-	file_proto_market_proto_msgTypes[2].OneofWrappers = []any{}
-	file_proto_market_proto_msgTypes[5].OneofWrappers = []any{}
+	file_market_proto_msgTypes[2].OneofWrappers = []any{}
+	file_market_proto_msgTypes[5].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
-			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_market_proto_rawDesc), len(file_proto_market_proto_rawDesc)),
+			RawDescriptor: unsafe.Slice(unsafe.StringData(file_market_proto_rawDesc), len(file_market_proto_rawDesc)),
 			NumEnums:      0,
 			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
-		GoTypes:           file_proto_market_proto_goTypes,
-		DependencyIndexes: file_proto_market_proto_depIdxs,
-		MessageInfos:      file_proto_market_proto_msgTypes,
+		GoTypes:           file_market_proto_goTypes,
+		DependencyIndexes: file_market_proto_depIdxs,
+		MessageInfos:      file_market_proto_msgTypes,
 	}.Build()
-	File_proto_market_proto = out.File
-	file_proto_market_proto_goTypes = nil
-	file_proto_market_proto_depIdxs = nil
+	File_market_proto = out.File
+	file_market_proto_goTypes = nil
+	file_market_proto_depIdxs = nil
 }

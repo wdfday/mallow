@@ -32,27 +32,66 @@ const (
 	Limit  OrderType = "limit"
 )
 
+// AccountType mirrors the investment service's account type enum.
+// Duplicated here to avoid import cycle across service boundaries.
+type AccountType string
+
+const (
+	AccountSpot         AccountType = "spot"          // spot / equities (Alpaca, Binance spot)
+	AccountFuturesUSDM  AccountType = "futures_usdm"  // USDT-margined perp/futures (Binance /fapi/)
+	AccountFuturesCOINM AccountType = "futures_coinm" // coin-margined futures (Binance /dapi/)
+	AccountUnified      AccountType = "unified"       // unified margin pool (OKX UTA, Bybit UTA)
+	AccountOptions      AccountType = "options"       // options-only account
+)
+
 // Credentials holds per-account API credentials passed to each exchange call.
 // The exchange client itself is stateless — one shared instance serves all accounts.
 type Credentials struct {
-	APIKey     string
-	APISecret  string
-	Passphrase string // OKX only
-	AccountID  string // OANDA only
+	APIKey      string
+	APISecret   string
+	Passphrase  string      // OKX only
+	AccountID   string      // OANDA only
+	AccountType AccountType // spot | futures | unified
 }
 
-// OrderRequest contains parameters for placing an order.
+// OrderRequest contains parameters for placing an entry or exit order.
+// SL/TP are NOT set here — use ExitOrderPlacer.PlaceExitOrders after fill.
 type OrderRequest struct {
-	Symbol       string
-	Market       MarketKind // routes to spot or futures endpoint
-	Side         OrderSide
-	Type         OrderType
-	Qty          decimal.Decimal
-	Price        decimal.Decimal // only for limit orders
-	StopLoss     decimal.Decimal // optional: bracket/OTO fixed stop price
-	TakeProfit   decimal.Decimal // optional: bracket/OTO limit price
-	TrailingStop decimal.Decimal // optional: trailing stop as fraction of entry (e.g. 0.02 = 2%); mutually exclusive with StopLoss
-	ReduceOnly   bool            // futures only: close-only, never opens a position
+	Symbol     string
+	Market     MarketKind // routes to spot or futures endpoint
+	Side       OrderSide
+	Type       OrderType
+	Qty        decimal.Decimal
+	Price      decimal.Decimal // only for limit orders
+	ReduceOnly bool            // futures only: close-only, never opens a position
+}
+
+// ExitOrderRequest carries bracket order parameters for post-fill SL/TP placement.
+// All prices are absolute. Zero value means not set.
+type ExitOrderRequest struct {
+	Symbol     string
+	Market     MarketKind
+	Side       OrderSide // exit side (opposite of entry)
+	Qty        decimal.Decimal
+	StopLoss   decimal.Decimal // absolute trigger price; zero = not set
+	TakeProfit decimal.Decimal // absolute trigger price; zero = not set
+}
+
+// ExitOrderResult holds the exchange-assigned order IDs for placed exit orders.
+// May contain 1 ID (OCO) or 2 IDs (STOP + TP as separate futures orders).
+type ExitOrderResult struct {
+	OrderIDs []string
+}
+
+// ExitOrderPlacer is an optional interface for exchanges that support
+// post-fill bracket orders (SL/TP). Adapters that implement this will
+// have PlaceExitOrders called by the hand after each entry fill.
+//
+// Binance spot: OCO order.
+// Binance futures: separate STOP_MARKET + TAKE_PROFIT_MARKET orders.
+// OKX: order-algo (oco or conditional).
+type ExitOrderPlacer interface {
+	PlaceExitOrders(ctx context.Context, creds Credentials, req ExitOrderRequest) (*ExitOrderResult, error)
 }
 
 // OrderResult contains the result of an order operation.
@@ -83,6 +122,15 @@ type FillEvent struct {
 	FilledQty decimal.Decimal
 	FillPrice decimal.Decimal
 	Timestamp time.Time
+}
+
+// LeverageSetter is an optional interface for futures exchanges that support
+// setting leverage and margin type per symbol.
+// Implemented by adapters that support futures trading.
+type LeverageSetter interface {
+	// SetLeverage sets the leverage multiplier for a given symbol.
+	// marginType: "isolated" | "cross". Called once before the first order.
+	SetLeverage(ctx context.Context, creds Credentials, symbol string, leverage int, marginType string) error
 }
 
 // Exchange is the core interface every broker adapter must implement.

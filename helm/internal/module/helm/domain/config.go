@@ -1,43 +1,29 @@
 package domain
 
-import (
-	"time"
+// AccountType identifies the trading account segment.
+// Mirrors investment's account_type enum so no information is lost crossing the NATS boundary.
+type AccountType string
 
-	"github.com/google/uuid"
+const (
+	AccountTypeSpot         AccountType = "spot"          // spot / equities (Alpaca, Binance spot)
+	AccountTypeFuturesUSDM  AccountType = "futures_usdm"  // USDT-margined perp/futures (Binance /fapi/)
+	AccountTypeFuturesCOINM AccountType = "futures_coinm" // coin-margined futures (Binance /dapi/)
+	AccountTypeUnified      AccountType = "unified"       // unified margin pool (OKX UTA, Bybit UTA)
+	AccountTypeOptions      AccountType = "options"       // options-only account
 )
 
-// HelmConfig Orchestrator is the persisted configuration of one orchestrator instance.
-// 1:1 with an investment account (via AccountID).
-// Auto-created on account.linked event; never manually created/deleted via API.
-// Runtime state (portfolio, orderbook, running bots) lives in runtime.OrchestratorRuntime.
-type HelmConfig struct {
-	ID           uuid.UUID       `json:"id"`
-	UserID       uuid.UUID       `json:"user_id"`    // owner — from identity.users.id
-	AccountID    uuid.UUID       `json:"account_id"` // → investment.accounts.id
-	Name         string          `json:"name"`
-	Capital      float64         `json:"capital"`
-	Exchange     ExchangeConfig  `json:"exchange"`
-	Portfolio    PortfolioConfig `json:"portfolio"`      // capital allocation at account level
-	Risk         RiskConfig      `json:"risk"`           // circuit-breakers / drawdown guards
-	Enabled      bool            `json:"enabled"`        // user toggle — gates hand create/delete
-	Status       string          `json:"status"`         // active | paused | halted (runtime state)
-	LastSyncedAt *time.Time      `json:"last_synced_at"` // persisted after each successful REST sync
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
-}
-
-// ExchangeConfig holds broker connection credentials for this orchestrator.
-// Sourced from investment.broker_connections; copied here so the orchestrator is self-contained.
+// ExchangeConfig holds broker connection details used transiently when spawning a runtime.
+// Never persisted to the helms table — always fetched from investment service at spawn time.
 type ExchangeConfig struct {
-	BrokerType string `json:"broker_type"` // alpaca | binance | okx | bybit | ibkr | oanda
-	APIKey     string `json:"api_key,omitempty"`
-	APISecret  string `json:"api_secret,omitempty"`
-	Passphrase string `json:"passphrase,omitempty"` // OKX
-	AccountID  string `json:"account_id,omitempty"` // IBKR / Oanda
-	BaseURL    string `json:"base_url,omitempty"`
-	StreamURL  string `json:"stream_url,omitempty"` // Oanda
-	Demo       bool   `json:"demo,omitempty"`
-	Testnet    bool   `json:"testnet,omitempty"`
+	BrokerType  string      `json:"broker_type"`            // alpaca | binance | okx | bybit | ibkr | oanda
+	AccountType AccountType `json:"account_type,omitempty"` // spot | futures | unified
+	APIKey      string      `json:"api_key,omitempty"`
+	APISecret   string      `json:"api_secret,omitempty"`
+	Passphrase  string      `json:"passphrase,omitempty"` // OKX
+	AccountID   string      `json:"account_id,omitempty"` // IBKR / Oanda
+	BaseURL     string      `json:"base_url,omitempty"`
+	StreamURL   string      `json:"stream_url,omitempty"` // Oanda
+	Paper       bool        `json:"paper,omitempty"`      // true = paper/demo trading (no real money)
 }
 
 // PortfolioConfig manages how the orchestrator allocates capital across bots.
@@ -88,16 +74,4 @@ func (r *RiskConfig) Defaults() {
 	if r.MaxDrawdownPct == 0 {
 		r.MaxDrawdownPct = 0.10
 	}
-}
-
-// HelmRepo is the port for persisting and retrieving orchestrator configs.
-type HelmRepo interface {
-	Save(o *HelmConfig) error
-	Get(id uuid.UUID) (*HelmConfig, error)
-	GetByAccountID(accountID uuid.UUID) (*HelmConfig, error)
-	All() ([]*HelmConfig, error)
-	AllByUser(userID uuid.UUID) ([]*HelmConfig, error)
-	Update(id uuid.UUID, fn func(*HelmConfig) error) error
-	UpdateLastSyncedAt(id uuid.UUID, t time.Time) error
-	Delete(id uuid.UUID) error
 }

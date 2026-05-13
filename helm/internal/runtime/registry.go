@@ -47,7 +47,7 @@ type SignalSink interface {
 // OrderBooks and MarketStreamers are shared per broker type.
 type Registry struct {
 	mu              sync.RWMutex
-	runtimes        map[uuid.UUID]*HelmRuntime
+	helmRuntimes    map[uuid.UUID]*HelmRuntime
 	orderBooks      map[string]orderbook.OrderBook     // broker_type → shared OrderBook
 	marketStreamers map[string]exchange.MarketStreamer // broker_type → shared streamer
 
@@ -65,7 +65,7 @@ type Registry struct {
 // NewRegistry creates an empty Registry.
 func NewRegistry(factory ExchangeFactory, streamerFactory MarketStreamerFactory) *Registry {
 	return &Registry{
-		runtimes:        make(map[uuid.UUID]*HelmRuntime),
+		helmRuntimes:    make(map[uuid.UUID]*HelmRuntime),
 		orderBooks:      make(map[string]orderbook.OrderBook),
 		marketStreamers: make(map[string]exchange.MarketStreamer),
 		exchFactory:     factory,
@@ -112,14 +112,23 @@ func (r *Registry) OrderBook(brokerType string) orderbook.OrderBook {
 	return r.orderBooks[brokerType]
 }
 
-// Spawn creates and registers an OrchestratorRuntime for the given config.
-func (r *Registry) Spawn(cfg *orchdomain.HelmConfig) error {
-	ex, err := r.exchFactory.New(cfg.Exchange)
+// Spawn creates and registers a HelmRuntime for the given config.
+// exchCfg and capital are transient — sourced from investment service, never persisted.
+func (r *Registry) Spawn(cfg *orchdomain.Helm, exchCfg orchdomain.ExchangeConfig, capital decimal.Decimal) error {
+	r.mu.RLock()
+	_, exists := r.helmRuntimes[cfg.ID]
+	r.mu.RUnlock()
+	if exists {
+		slog.Debug("runtime: already spawned, skipping", "helm_id", cfg.ID)
+		return nil
+	}
+
+	ex, err := r.exchFactory.New(exchCfg)
 	if err != nil {
 		return fmt.Errorf("registry: create exchange for %q: %w", cfg.ID, err)
 	}
 
-	pf := portfolio.New(decimal.NewFromFloat(cfg.Capital))
+	pf := portfolio.New(capital)
 	riskCfg := risk.Config{
 		// Sizing limits from PortfolioConfig
 		MaxPositions:   cfg.Portfolio.MaxPositions,
@@ -130,30 +139,30 @@ func (r *Registry) Spawn(cfg *orchdomain.HelmConfig) error {
 	}
 	riskMgr := risk.New(riskCfg, pf)
 
+	brokerType := exchCfg.BrokerType
 	r.mu.Lock()
-	ob, ok := r.orderBooks[cfg.Exchange.BrokerType]
+	ob, ok := r.orderBooks[brokerType]
 	if !ok {
-		ob = orderbook.NewOrderBook(cfg.Exchange.BrokerType)
-		r.orderBooks[cfg.Exchange.BrokerType] = ob
-		slog.Info("runtime: orderbook created", "broker", cfg.Exchange.BrokerType)
+		ob = orderbook.NewNoopOrderBook()
+		r.orderBooks[brokerType] = ob
 	}
-	if _, ok := r.marketStreamers[cfg.Exchange.BrokerType]; !ok {
+	if _, ok := r.marketStreamers[brokerType]; !ok {
 		if r.streamerFactory != nil {
-			if ms := r.streamerFactory.New(cfg.Exchange); ms != nil {
-				r.marketStreamers[cfg.Exchange.BrokerType] = ms
-				slog.Info("runtime: market streamer created", "broker", cfg.Exchange.BrokerType)
+			if ms := r.streamerFactory.New(exchCfg); ms != nil {
+				r.marketStreamers[brokerType] = ms
+				slog.Info("runtime: market streamer created", "broker", brokerType)
 			}
 		}
 	}
 	r.mu.Unlock()
 
 	creds := exchange.Credentials{
-		APIKey:     cfg.Exchange.APIKey,
-		APISecret:  cfg.Exchange.APISecret,
-		Passphrase: cfg.Exchange.Passphrase,
-		AccountID:  cfg.Exchange.AccountID,
+		APIKey:     exchCfg.APIKey,
+		APISecret:  exchCfg.APISecret,
+		Passphrase: exchCfg.Passphrase,
+		AccountID:  exchCfg.AccountID,
 	}
-	rt := NewHelmRuntime(cfg.ID, cfg.AccountID, cfg.UserID, cfg.Exchange.BrokerType, pf, riskMgr, ob, ex, creds, cfg.LastSyncedAt)
+	rt := NewHelmRuntime(cfg.ID, cfg.AccountID, cfg.UserID, brokerType, pf, riskMgr, ob, ex, creds, cfg.LastSyncedAt)
 	// Restore pause state so signal gating survives a restart.
 	if cfg.Status == "paused" || cfg.Status == "halted" {
 		rt.paused = true
@@ -165,23 +174,23 @@ func (r *Registry) Spawn(cfg *orchdomain.HelmConfig) error {
 
 	// Register this runtime's price updater with the shared market streamer.
 	r.mu.RLock()
-	ms := r.marketStreamers[cfg.Exchange.BrokerType]
+	ms := r.marketStreamers[brokerType]
 	r.mu.RUnlock()
 	if ms != nil {
 		ms.AddPriceHandler(rt.UpdatePrice)
 		if bs, ok := ms.(exchange.BookStreamer); ok {
 			bs.AddBookHandler(rt.UpdateL2)
-			slog.Info("runtime: L2 book streaming registered", "helm_id", cfg.ID, "broker", cfg.Exchange.BrokerType)
+			slog.Info("runtime: L2 book streaming registered", "helm_id", cfg.ID, "broker", brokerType)
 		}
 	}
 
 	r.mu.Lock()
-	r.runtimes[cfg.ID] = rt
+	r.helmRuntimes[cfg.ID] = rt
 	ctx := r.runCtx
 	nc := r.nc
 	r.mu.Unlock()
 
-	slog.Info("runtime: spawned", "helm_id", cfg.ID, "account_id", cfg.AccountID, "broker", cfg.Exchange.BrokerType)
+	slog.Info("runtime: spawned", "helm_id", cfg.ID, "account_id", cfg.AccountID, "broker", brokerType)
 
 	// If the app is already running (SetRuntime was called), start fill streaming immediately
 	// so hot-plugged orchestrators (from accountLinked events) get WS fills right away.
@@ -195,12 +204,12 @@ func (r *Registry) Spawn(cfg *orchdomain.HelmConfig) error {
 // Returns hand IDs that were registered so the caller can stop them.
 func (r *Registry) Teardown(id uuid.UUID) []string {
 	r.mu.Lock()
-	rt, ok := r.runtimes[id]
+	rt, ok := r.helmRuntimes[id]
 	var botIDs []string
 	if ok {
 		botIDs = rt.BotIDs()
 		rt.Stop()
-		delete(r.runtimes, id)
+		delete(r.helmRuntimes, id)
 	}
 	r.mu.Unlock()
 
@@ -213,7 +222,7 @@ func (r *Registry) Teardown(id uuid.UUID) []string {
 // Pause pauses a runtime: signals rejected, returns hand IDs that were running.
 func (r *Registry) Pause(id uuid.UUID) ([]string, error) {
 	r.mu.RLock()
-	rt, ok := r.runtimes[id]
+	rt, ok := r.helmRuntimes[id]
 	r.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("registry: no runtime for orchestrator %q", id)
@@ -227,7 +236,7 @@ func (r *Registry) Pause(id uuid.UUID) ([]string, error) {
 // Resume resumes a paused runtime: returns hand IDs that should be restarted.
 func (r *Registry) Resume(id uuid.UUID) ([]string, error) {
 	r.mu.RLock()
-	rt, ok := r.runtimes[id]
+	rt, ok := r.helmRuntimes[id]
 	r.mu.RUnlock()
 	if !ok {
 		return nil, fmt.Errorf("registry: no runtime for orchestrator %q", id)
@@ -242,7 +251,7 @@ func (r *Registry) Resume(id uuid.UUID) ([]string, error) {
 // No-op if the runtime is not active (e.g. halted/disabled).
 func (r *Registry) UpdateRiskConfig(id uuid.UUID, portfolio orchdomain.PortfolioConfig, riskCfg orchdomain.RiskConfig) error {
 	r.mu.RLock()
-	rt, ok := r.runtimes[id]
+	rt, ok := r.helmRuntimes[id]
 	r.mu.RUnlock()
 	if !ok {
 		return nil // not running; new config will be used on next Spawn
@@ -259,7 +268,7 @@ func (r *Registry) UpdateRiskConfig(id uuid.UUID, portfolio orchdomain.Portfolio
 // ResetHalt clears the risk-manager halt flag for the given orchestrator.
 func (r *Registry) ResetHalt(id uuid.UUID) error {
 	r.mu.RLock()
-	rt, ok := r.runtimes[id]
+	rt, ok := r.helmRuntimes[id]
 	r.mu.RUnlock()
 	if !ok {
 		return fmt.Errorf("registry: no runtime for orchestrator %q", id)
@@ -273,7 +282,7 @@ func (r *Registry) ResetHalt(id uuid.UUID) error {
 func (r *Registry) Get(id uuid.UUID) (*HelmRuntime, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	rt, ok := r.runtimes[id]
+	rt, ok := r.helmRuntimes[id]
 	if !ok {
 		return nil, fmt.Errorf("registry: no runtime for orchestrator %q", id)
 	}
@@ -284,8 +293,8 @@ func (r *Registry) Get(id uuid.UUID) (*HelmRuntime, error) {
 func (r *Registry) All() []*HelmRuntime {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := make([]*HelmRuntime, 0, len(r.runtimes))
-	for _, rt := range r.runtimes {
+	out := make([]*HelmRuntime, 0, len(r.helmRuntimes))
+	for _, rt := range r.helmRuntimes {
 		out = append(out, rt)
 	}
 	return out
@@ -301,7 +310,7 @@ func (r *Registry) RouteSignal(orchID, botID string, sig Signal) {
 		return
 	}
 	r.mu.RLock()
-	orch := r.runtimes[id]
+	orch := r.helmRuntimes[id]
 	r.mu.RUnlock()
 	if orch == nil {
 		slog.Warn("signal route: no orchestrator found", "orch_id", orchID, "hand_id", botID)

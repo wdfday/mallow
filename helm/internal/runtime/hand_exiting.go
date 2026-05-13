@@ -8,7 +8,31 @@ import (
 
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/poslog"
+	"mallow/helm/internal/runtime/core/strategy"
 )
+
+// cancelExitOrders cancels any exchange-side SL/TP orders for the given symbol.
+// Must be called while b.mu is held (reads exitLevels without locking).
+// Launches a goroutine to avoid blocking the caller on network I/O.
+func (b *Hand) cancelExitOrders(_ context.Context, symbol string) {
+	lv, ok := b.exitLevels[symbol]
+	if !ok || len(lv.ExchangeOrderIDs) == 0 {
+		return
+	}
+	ids := make([]string, len(lv.ExchangeOrderIDs))
+	copy(ids, lv.ExchangeOrderIDs)
+	go func() {
+		cancelCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		for _, id := range ids {
+			if err := b.rt.Exchange.CancelOrder(cancelCtx, b.rt.Creds, id); err != nil {
+				slog.Warn("bot: cancel exit order failed", "hand_id", b.id, "symbol", symbol, "order_id", id, "err", err)
+			} else {
+				slog.Info("bot: exit order cancelled", "hand_id", b.id, "symbol", symbol, "order_id", id)
+			}
+		}
+	}()
+}
 
 // flattenPositions closes this hand's own open legs with market orders. Called by Kill.
 // Only closes the qty tracked in this hand's poslog — does not touch other hands' positions.
@@ -98,7 +122,7 @@ func (b *Hand) checkExits() {
 		delete(b.exitLevels, sym)
 		b.mu.Unlock()
 		select {
-		case b.UrgentSignals <- Signal{Symbol: sym, Direction: "close", Strength: 1.0, ReceivedAt: time.Now()}:
+		case b.UrgentSignals <- Signal{Symbol: sym, Direction: strategy.DirExit, Strength: 1.0, ReceivedAt: time.Now()}:
 		default:
 			slog.Warn("exit monitor: urgent channel full", "hand_id", b.id, "symbol", sym)
 		}

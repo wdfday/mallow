@@ -4,13 +4,15 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/module/helm/domain"
 )
 
 // RuntimeSpawner is the port for managing runtime lifecycle.
 type RuntimeSpawner interface {
-	Spawn(cfg *domain.HelmConfig) error
+	// Spawn creates a runtime for cfg. exchCfg and capital are transient — never stored to DB.
+	Spawn(cfg *domain.Helm, exchCfg domain.ExchangeConfig, capital decimal.Decimal) error
 	Teardown(id uuid.UUID) []string
 	Pause(id uuid.UUID) (wasRunning []string, err error)
 	Resume(id uuid.UUID) (toRestart []string, err error)
@@ -51,22 +53,22 @@ func (s *Service) SetHandLifecycle(bl HandLifecycle) {
 }
 
 // Get returns a single orchestrator config.
-func (s *Service) Get(id uuid.UUID) (*domain.HelmConfig, error) {
+func (s *Service) Get(id uuid.UUID) (*domain.Helm, error) {
 	return s.repo.Get(id)
 }
 
 // GetByAccount returns the orchestrator config for an investment account.
-func (s *Service) GetByAccount(accountID uuid.UUID) (*domain.HelmConfig, error) {
+func (s *Service) GetByAccount(accountID uuid.UUID) (*domain.Helm, error) {
 	return s.repo.GetByAccountID(accountID)
 }
 
 // List returns all orchestrator configs (admin use).
-func (s *Service) List() ([]*domain.HelmConfig, error) {
+func (s *Service) List() ([]*domain.Helm, error) {
 	return s.repo.All()
 }
 
 // ListByUser returns orchestrators owned by the given user.
-func (s *Service) ListByUser(userID uuid.UUID) ([]*domain.HelmConfig, error) {
+func (s *Service) ListByUser(userID uuid.UUID) ([]*domain.Helm, error) {
 	return s.repo.AllByUser(userID)
 }
 

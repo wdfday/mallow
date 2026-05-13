@@ -16,16 +16,16 @@ type PriceHandler = func(symbol string, price decimal.Decimal)
 // Uses the public WsCombinedMarketStatServe (or individual symbol streams)
 // so no API key is needed for spot price streaming.
 type Client struct {
-	testnet bool
+	paper bool
 
 	mu            sync.RWMutex
 	priceHandlers []PriceHandler
 }
 
 // New creates a shared Binance market data streaming client.
-// Set testnet=true to connect to testnet WebSocket endpoints.
-func New(testnet bool) *Client {
-	return &Client{testnet: testnet}
+// Set paper=true to connect to paper/demo WebSocket endpoints.
+func New(paper bool) *Client {
+	return &Client{paper: paper}
 }
 
 // AddPriceHandler registers a callback fired on every live trade price.

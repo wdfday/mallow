@@ -3,23 +3,75 @@
 // into structured intents with direction, confidence, and urgency.
 package strategy
 
-import "time"
+import (
+	"time"
 
-// Signal is a raw signal from the signal engine.
+	"github.com/shopspring/decimal"
+)
+
+// ── Direction ──────────────────────────────────────────────────────────────────
+
+// Direction is the market direction emitted by a Rhai script.
+// Maps directly to proto SignalMsg.dir; typed for compile-time safety.
+type Direction string
+
+const (
+	DirLong  Direction = "long"
+	DirShort Direction = "short"
+	DirExit  Direction = "exit" // exit current position (direction-agnostic)
+)
+
+// ── Signal ─────────────────────────────────────────────────────────────────────
+
+// Signal is the fully decoded signal from the herald engine.
+// Populated from protobuf SignalMsg + NATS metadata by the dispatcher.
 type Signal struct {
-	Symbol    string    `json:"symbol"`
-	Direction string    `json:"direction"` // "long", "short", "close"
-	Strength  float64   `json:"strength"`  // [0, 1]
-	Timestamp time.Time `json:"timestamp"`
+	Symbol    string
+	Direction Direction // emitted by Rhai script
+	Strength  float64   // conviction [0.0, 1.0]
+
+	// Reference price at signal time (bar.close). Informational only.
+	Price decimal.Decimal
+
+	// Exit levels from the Rhai script.
+	// When IsOffset=false: absolute price levels.
+	// When IsOffset=true: deltas from fill price (e.g. StopPrice=-1.5 → SL 1.5 below fill).
+	TargetPrice decimal.Decimal
+	StopPrice   decimal.Decimal
+	IsOffset    bool
+
+	// ATR at signal time — forwarded from herald ledger.
+	// Used by tactician for volatility-based position sizing.
+	ATR decimal.Decimal
+
+	// Reason is the human-readable explanation from the Rhai script (audit log only).
+	Reason string
+
+	// GeneratedAt is when the Rhai script emitted the signal (proto field t, unix ms).
+	GeneratedAt time.Time
+
+	// ReceivedAt is the NATS server ingestion timestamp.
+	// Used for per-hand TTL checks; more accurate than time.Now() at dispatch.
+	ReceivedAt time.Time
 }
 
-// Intent is a structured trade intent produced by a strategy.
-type Intent struct {
-	Signal     Signal  `json:"signal"`
-	Action     Action  `json:"action"`     // what to do
-	Urgency    Urgency `json:"urgency"`    // how fast
-	Confidence float64 `json:"confidence"` // [0, 1] strategy's confidence in this trade
+// IsUrgent reports whether this signal must not be dropped.
+// Exit signals are urgent — dropping them leaves positions open.
+func (s Signal) IsUrgent() bool {
+	return s.Direction == DirExit
 }
+
+// ── Intent ─────────────────────────────────────────────────────────────────────
+
+// Intent is the structured trade decision produced by a strategy.
+type Intent struct {
+	Signal     Signal  // originating signal — carries all execution hints
+	Action     Action  // what to do
+	Urgency    Urgency // how fast
+	Confidence float64 // [0, 1] strategy's confidence in this trade
+}
+
+// ── Action ─────────────────────────────────────────────────────────────────────
 
 // Action defines what kind of trade action to take.
 type Action string
@@ -29,10 +81,22 @@ const (
 	ActionEnterShort Action = "enter_short"
 	ActionExitLong   Action = "exit_long"
 	ActionExitShort  Action = "exit_short"
-	ActionScaleIn    Action = "scale_in"  // add to existing position
-	ActionScaleOut   Action = "scale_out" // reduce existing position
+	ActionScaleIn    Action = "scale_in"
+	ActionScaleOut   Action = "scale_out"
 	ActionDoNothing  Action = "do_nothing"
 )
+
+// IsEntry reports whether this action opens a new position.
+func (a Action) IsEntry() bool {
+	return a == ActionEnterLong || a == ActionEnterShort || a == ActionScaleIn
+}
+
+// IsExit reports whether this action closes or reduces a position.
+func (a Action) IsExit() bool {
+	return a == ActionExitLong || a == ActionExitShort || a == ActionScaleOut
+}
+
+// ── Urgency ────────────────────────────────────────────────────────────────────
 
 // Urgency defines how quickly the intent should be executed.
 type Urgency string
@@ -43,67 +107,78 @@ const (
 	UrgencyPatient   Urgency = "patient"   // TWAP / VWAP, spread over time
 )
 
+// ── Strategy interface ─────────────────────────────────────────────────────────
+
 // Strategy interprets signals and produces trade intents.
 type Strategy interface {
-	// Name returns the strategy identifier.
 	Name() string
-
-	// Evaluate processes a signal and returns a trade intent.
-	// May return ActionDoNothing if the signal doesn't meet strategy criteria.
 	Evaluate(signal Signal) Intent
 }
 
-// ── Built-in strategies ────────────────────────────────────────────────────
+// ── SignalFollower ─────────────────────────────────────────────────────────────
 
-// SignalFollower is the simplest strategy: follow signal engine's direction directly.
-// Maps signal direction to action, strength to confidence.
+// SignalFollower is the canonical strategy for Rhai-driven hands.
+// It maps herald's direction directly to an action, applying only a
+// minimum-strength filter on entries. All execution hints (StopPrice,
+// TargetPrice, ATR, IsOffset) pass through unchanged in intent.Signal.
 type SignalFollower struct {
-	minStrength float64 // minimum signal strength to act on
+	minStrength float64
 }
 
-// NewSignalFollower creates a SignalFollower with the given minimum strength threshold.
 func NewSignalFollower(minStrength float64) *SignalFollower {
 	if minStrength <= 0 {
-		minStrength = 0.3 // default: ignore weak signals
+		minStrength = 0.3
 	}
 	return &SignalFollower{minStrength: minStrength}
 }
 
 func (s *SignalFollower) Name() string { return "signal_follower" }
 
-func (s *SignalFollower) Evaluate(signal Signal) Intent {
+func (s *SignalFollower) Evaluate(sig Signal) Intent {
 	intent := Intent{
-		Signal:     signal,
-		Confidence: signal.Strength,
+		Signal:     sig,
+		Confidence: sig.Strength,
 	}
 
-	// Filter weak signals.
-	if signal.Strength < s.minStrength {
+	// Exits always pass through — never drop a close signal.
+	if sig.IsUrgent() {
+		intent.Action = s.exitAction(sig)
+		intent.Urgency = UrgencyImmediate
+		if intent.Confidence == 0 {
+			intent.Confidence = 1.0
+		}
+		return intent
+	}
+
+	// Weak entry signals are filtered.
+	if sig.Strength < s.minStrength {
 		intent.Action = ActionDoNothing
 		return intent
 	}
 
-	// Map direction to action.
-	switch signal.Direction {
-	case "long":
+	switch sig.Direction {
+	case DirLong:
 		intent.Action = ActionEnterLong
-	case "short":
+	case DirShort:
 		intent.Action = ActionEnterShort
-	case "close":
-		intent.Action = ActionExitLong // default: close means exit long
 	default:
 		intent.Action = ActionDoNothing
 	}
 
-	// Map strength to urgency.
 	switch {
-	case signal.Strength >= 0.8:
+	case sig.Strength >= 0.8:
 		intent.Urgency = UrgencyImmediate
-	case signal.Strength >= 0.5:
+	case sig.Strength >= 0.5:
 		intent.Urgency = UrgencyNormal
 	default:
 		intent.Urgency = UrgencyPatient
 	}
 
 	return intent
+}
+
+// exitAction maps an exit direction to the concrete exit action.
+// DirExit is resolved against position side at the call site (hand_run.go).
+func (s *SignalFollower) exitAction(_ Signal) Action {
+	return ActionExitLong
 }

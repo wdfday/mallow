@@ -13,7 +13,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"mallow/helm/internal/infra/poslog"
+	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/runtime/core/orderbook"
 	"mallow/helm/internal/runtime/core/strategy"
@@ -36,6 +36,10 @@ type exitLevel struct {
 	IsOffset         bool
 	StopOffset       decimal.Decimal // delta from fill price (e.g. -1.0 for long stop 1 point below)
 	TakeProfitOffset decimal.Decimal // delta from fill price (e.g. +3.0 for long TP 3 points above)
+
+	// ExchangeOrderIDs are the exchange-side SL/TP order IDs placed via PlaceExitOrders.
+	// Cancelled automatically when the position closes (so the other leg doesn't linger).
+	ExchangeOrderIDs []string
 }
 
 // l2Guard holds per-symbol warm-up state for reactive L2 monitoring.
@@ -52,12 +56,24 @@ type Hand struct {
 	helmID    uuid.UUID
 	rt        *HelmRuntime
 	strategy  strategy.Strategy
-	tactician *tactics.Tactician
+	tactician tactics.Planner
 	limiter   *rate.Limiter
 
 	// Position sizing config — used by the reconciler to replay poslog correctly.
 	pyramid  bool
 	maxUnits int
+
+	// signalTTL is the per-hand maximum age of a signal (measured from NATS
+	// ingestion time) before it is discarded. 0 disables the check.
+	signalTTL time.Duration
+
+	// futuresConfig holds leverage/margin type for futures hands. nil for spot.
+	futuresConfig *domain.FuturesConfig
+
+	// leverageApplied tracks which symbols have had SetLeverage called to avoid
+	// redundant calls on every entry order.
+	leverageAppliedMu sync.Mutex
+	leverageApplied   map[string]bool
 
 	// Signals receives regular (non-urgent) entry/exit signals.
 	// Buffer=1 with drain-replace: always holds the latest signal, never stale ones.
@@ -68,6 +84,16 @@ type Hand struct {
 	// Drained with priority in the run-loop before Signals.
 	UrgentSignals chan Signal
 
+	// fillCh receives fully-filled OrderEvents from the WS order processor so that
+	// hand-level state (exit levels, poslog, metrics) is updated immediately without
+	// waiting for the 5s REST poll cycle.
+	// Buffer=8: registry never blocks; hand processes at run-loop pace.
+	fillCh chan exchange.OrderEvent
+
+	// seenFills tracks order IDs already processed via the WS fill path so that
+	// the REST poll fallback does not double-apply portfolio and poslog updates.
+	seenFills map[string]struct{}
+
 	// Metadata — set by the service layer, used for runtime bookkeeping and display.
 	Symbol       string
 	StrategyName string
@@ -76,20 +102,21 @@ type Hand struct {
 	// WasRunning remembers pre-pause state so OrchestratorRuntime.Resume can restore the bot.
 	WasRunning bool
 
-	mu             sync.RWMutex
-	running        bool
-	paused         bool
-	cancel         context.CancelFunc
-	done           chan struct{}
-	orders         []domain.Order
-	barsSinceEntry map[string]int       // symbol → bar count since position entry (time-stop)
-	pendingExits   map[string]exitLevel // orderID → SL/TP levels; promoted to exitLevels on entry fill
-	exitLevels     map[string]exitLevel // symbol → active SL/TP for open position (local safety net)
-	l2Guards       map[string]*l2Guard  // symbol → L2 warm-up state
+	mu           sync.RWMutex
+	running      bool
+	paused       bool
+	cancel       context.CancelFunc
+	done         chan struct{}
+	orders       []domain.Order
+	pendingExits map[string]exitLevel // orderID → SL/TP levels; promoted to exitLevels on entry fill
+	exitLevels   map[string]exitLevel // symbol → active SL/TP for open position (local safety net)
+	l2Guards     map[string]*l2Guard  // symbol → L2 warm-up state
 
 	// Position event log — durable write-ahead log for crash resilience.
 	pos             *position.HandPositions // live in-memory position state (mirrors poslog)
 	pendingOrderPos map[string]string       // orderID → positionID (for fill/cancel attribution)
+
+	activityLog ActivityRing
 
 	health  HandHealth
 	metrics struct {
@@ -154,41 +181,6 @@ func (b *Hand) restorePosition(hp *position.HandPositions, currentPrice decimal.
 	b.mu.Unlock()
 }
 
-// publishAndApply publishes a poslog event to JetStream and applies it to the in-memory
-// position state. The NATS publish failure is logged but does not halt the hand —
-// the reconciler will detect and patch the missing event on next startup.
-// Must NOT be called while b.mu is held.
-func (b *Hand) publishAndApply(ctx context.Context, e poslog.Event) {
-	if b.rt.PosLog != nil {
-		if err := b.rt.PosLog.Publish(ctx, e); err != nil {
-			slog.Error("poslog publish failed", "hand_id", b.id, "event_id", e.ID, "kind", e.Kind, "err", err)
-		}
-	}
-	b.mu.Lock()
-	if err := b.pos.Apply(e); err != nil {
-		slog.Warn("poslog in-memory apply failed", "hand_id", b.id, "event_id", e.ID, "err", err)
-	}
-	// Keep pendingOrderPos in sync.
-	switch e.Kind {
-	case poslog.KindOrderPlaced:
-		var p poslog.OrderPlacedPayload
-		if jsonErr := unmarshalJSON(e.Payload, &p); jsonErr == nil {
-			b.pendingOrderPos[p.OrderID] = e.PositionID
-		}
-	case poslog.KindOrderFilled:
-		var p poslog.OrderFilledPayload
-		if jsonErr := unmarshalJSON(e.Payload, &p); jsonErr == nil {
-			delete(b.pendingOrderPos, p.OrderID)
-		}
-	case poslog.KindOrderCancelled:
-		var p poslog.OrderCancelledPayload
-		if jsonErr := unmarshalJSON(e.Payload, &p); jsonErr == nil {
-			delete(b.pendingOrderPos, p.OrderID)
-		}
-	}
-	b.mu.Unlock()
-}
-
 // ID returns the bot's unique identifier.
 func (b *Hand) ID() uuid.UUID { return b.id }
 
@@ -231,9 +223,11 @@ func NewHand(
 	id, helmID uuid.UUID,
 	rt *HelmRuntime,
 	strat strategy.Strategy,
-	tact *tactics.Tactician,
+	tact tactics.Planner,
 	pyramid bool,
 	maxUnits int,
+	signalTTL time.Duration,
+	futuresConfig *domain.FuturesConfig,
 ) *Hand {
 	if maxUnits <= 0 {
 		maxUnits = 1
@@ -247,16 +241,33 @@ func NewHand(
 		limiter:         rate.NewLimiter(rate.Every(1*time.Second), 5),
 		pyramid:         pyramid,
 		maxUnits:        maxUnits,
+		futuresConfig:   futuresConfig,
+		signalTTL:       signalTTL,
+		leverageApplied: make(map[string]bool),
 		Signals:         make(chan Signal, 1),
 		UrgentSignals:   make(chan Signal, 4),
+		fillCh:          make(chan exchange.OrderEvent, 8),
+		seenFills:       make(map[string]struct{}),
 		orders:          make([]domain.Order, 0, 256),
-		barsSinceEntry:  make(map[string]int),
 		pendingExits:    make(map[string]exitLevel),
 		exitLevels:      make(map[string]exitLevel),
 		l2Guards:        make(map[string]*l2Guard),
 		pos:             position.NewHandPositions(pyramid, maxUnits),
 		pendingOrderPos: make(map[string]string),
 		health:          HandHealth{Status: "stopped"},
+	}
+}
+
+// SignalTTLFor returns the per-hand signal TTL from domain config.
+// Default is 10s when SignalTTLSec is 0; negative values disable the check.
+func SignalTTLFor(b *domain.Hand) time.Duration {
+	switch {
+	case b.Risk.SignalTTLSec < 0:
+		return 0
+	case b.Risk.SignalTTLSec > 0:
+		return time.Duration(b.Risk.SignalTTLSec) * time.Second
+	default:
+		return 10 * time.Second
 	}
 }
 
@@ -289,18 +300,6 @@ func BuildHandComponents(b *domain.Hand) (strategy.Strategy, *tactics.Tactician)
 		RiskPerTradePct:  b.Position.RiskPerTradePct,
 		MaxPositionPct:   b.Position.MaxPositionPct,
 		FixedQty:         b.Position.FixedQty,
-		TrailingStopPct:  b.Risk.TrailingStopPct,
-	}
-	if e := b.Risk.Exit; e != nil {
-		if e.SL != nil {
-			sc.StopLossATRMult, sc.StopLossPct = e.SL.ATRMult(), e.SL.PctValue()
-		}
-		if e.TP != nil {
-			sc.TakeProfitATRMult, sc.TakeProfitPct = e.TP.ATRMult(), e.TP.PctValue()
-		}
-		if e.MaxBars != nil {
-			sc.MaxBarsHeld = *e.MaxBars
-		}
 	}
 	tact := tactics.New(sc)
 
@@ -322,6 +321,29 @@ func (b *Hand) Start() {
 	b.health.StartedAt = timePtr(time.Now().UTC())
 	go b.run(ctx)
 	slog.Info("hand started", "hand_id", b.id, "exchange", b.rt.Exchange.Name())
+}
+
+// applyFuturesLeverage calls SetLeverage on the exchange if the hand is configured
+// for futures and the exchange supports it. Non-blocking on failure (just logs).
+func (b *Hand) applyFuturesLeverage(ctx context.Context, symbol string, futures *domain.FuturesConfig) {
+	if futures == nil || futures.Leverage <= 0 {
+		return
+	}
+	setter, ok := b.rt.Exchange.(exchange.LeverageSetter)
+	if !ok {
+		return
+	}
+	marginType := futures.MarginType
+	if marginType == "" {
+		marginType = "isolated"
+	}
+	if err := setter.SetLeverage(ctx, b.rt.Creds, symbol, futures.Leverage, marginType); err != nil {
+		slog.Warn("hand: set leverage failed (non-fatal)", "hand_id", b.id, "symbol", symbol,
+			"leverage", futures.Leverage, "margin_type", marginType, "err", err)
+	} else {
+		slog.Info("hand: leverage set", "hand_id", b.id, "symbol", symbol,
+			"leverage", futures.Leverage, "margin_type", marginType)
+	}
 }
 
 // Stop cancels the run-loop and waits for it to exit.
@@ -440,6 +462,23 @@ func (b *Hand) Metrics() HandMetrics {
 		LossCount:       b.metrics.lossCount,
 	}
 }
+
+// EnqueueFill forwards a fully-filled WS OrderEvent to the hand's run-loop.
+// Non-blocking: if the buffer is full, the fill will be picked up by the REST poll
+// fallback instead. Called by the registry fill processor from its own goroutine.
+func (b *Hand) EnqueueFill(ev exchange.OrderEvent) {
+	select {
+	case b.fillCh <- ev:
+	default:
+		slog.Warn("hand: fill channel full, REST poll will handle",
+			"hand_id", b.id, "order_id", ev.OrderID)
+	}
+}
+
+// Activity returns a chronological snapshot of the hand's recent activity log.
+func (b *Hand) Activity() []ActivityEntry { return b.activityLog.Snapshot() }
+
+func (b *Hand) recordActivity(e ActivityEntry) { b.activityLog.push(e) }
 
 // trackOrder records a placed order in the shared orderbook.
 func (b *Hand) trackOrder(o orderbook.PendingOrder) {

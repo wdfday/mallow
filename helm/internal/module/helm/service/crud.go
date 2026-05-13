@@ -7,60 +7,61 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
-	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/module/helm/domain"
+	helmDto "mallow/helm/internal/module/helm/dto"
 )
 
-// CreateForAccountReq is the input for auto-creating an orchestrator when an account is linked.
-type CreateForAccountReq struct {
-	UserID    uuid.UUID
-	AccountID uuid.UUID
-	Name      string
-	Capital   decimal.Decimal
-	Exchange  domain.ExchangeConfig        // config only — no credentials; stored to DB
-	Creds     natsapi.CredentialsFetchResp // transient credentials for spawn; NOT stored to DB
-	Portfolio domain.PortfolioConfig
-	Risk      domain.RiskConfig
-}
-
-// CreateForAccount persists a new orchestrator config (disabled by default) and spawns its runtime.
-// Called by the NATS account.linked event handler.
-func (s *Service) CreateForAccount(req CreateForAccountReq) (*domain.HelmConfig, error) {
+// CreateForAccount ensures exactly one Helm exists for the given account and that its
+// runtime is spawned. Idempotent: if a Helm already exists for the account it re-spawns
+// the runtime (safe no-op if already running) and returns the existing record.
+// Called by the NATS helm.accounts.linked event handler.
+func (s *Service) CreateForAccount(req helmDto.CreateForAccountReq) (*domain.Helm, error) {
 	if req.UserID == uuid.Nil {
 		return nil, fmt.Errorf("user_id is required")
 	}
 	if req.AccountID == uuid.Nil {
 		return nil, fmt.Errorf("account_id is required")
 	}
+
+	// Build transient exchange config (credentials never persisted).
+	exchCfg := req.Exchange
+	exchCfg.APIKey = req.Creds.APIKey
+	exchCfg.APISecret = req.Creds.APISecret
+	exchCfg.Passphrase = req.Creds.Passphrase
+
+	// Idempotency: if a Helm already exists for this account, ensure its runtime
+	// is running and return the existing record instead of creating a duplicate.
+	if existing, err := s.repo.GetByAccountID(req.AccountID); err == nil {
+		if spawnErr := s.spawner.Spawn(existing, exchCfg, decimal.Zero); spawnErr != nil {
+			return existing, fmt.Errorf("re-spawn existing runtime: %w", spawnErr)
+		}
+		s.spawner.SyncOne(existing.ID)
+		return existing, nil
+	}
+
 	if req.Name == "" {
-		req.Name = "My Orchestrator"
+		req.Name = "My Helm"
 	}
 	req.Portfolio.Defaults()
 	req.Risk.Defaults()
 
-	cfg := &domain.HelmConfig{
-		ID:        uuid.New(),
-		UserID:    req.UserID,
-		AccountID: req.AccountID,
-		Name:      req.Name,
-		Capital:   req.Capital.InexactFloat64(),
-		Exchange:  req.Exchange,
-		Portfolio: req.Portfolio,
-		Risk:      req.Risk,
-		Enabled:   false,
-		Status:    "active",
-		CreatedAt: time.Now().UTC(),
-		UpdatedAt: time.Now().UTC(),
+	cfg := &domain.Helm{
+		ID:         uuid.New(),
+		UserID:     req.UserID,
+		AccountID:  req.AccountID,
+		Name:       req.Name,
+		BrokerType: req.Exchange.BrokerType,
+		Portfolio:  req.Portfolio,
+		Risk:       req.Risk,
+		Enabled:    false,
+		Status:     "active",
+		CreatedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
 	}
 	if err := s.repo.Save(cfg); err != nil {
-		return nil, fmt.Errorf("save orchestrator: %w", err)
+		return nil, fmt.Errorf("save helm: %w", err)
 	}
-	// Populate credentials transiently for spawning — they are NOT persisted to DB.
-	spawnCfg := *cfg
-	spawnCfg.Exchange.APIKey = req.Creds.APIKey
-	spawnCfg.Exchange.APISecret = req.Creds.APISecret
-	spawnCfg.Exchange.Passphrase = req.Creds.Passphrase
-	if err := s.spawner.Spawn(&spawnCfg); err != nil {
+	if err := s.spawner.Spawn(cfg, exchCfg, decimal.Zero); err != nil {
 		return cfg, fmt.Errorf("spawn runtime (config saved): %w", err)
 	}
 	s.spawner.SyncOne(cfg.ID)
@@ -87,20 +88,16 @@ func (s *Service) DeleteForAccount(accountID uuid.UUID) error {
 // UpdateReq is the patch payload for updating an orchestrator config.
 type UpdateReq struct {
 	Name      string
-	Capital   decimal.Decimal
 	Portfolio *domain.PortfolioConfig
 	Risk      *domain.RiskConfig
 }
 
 // Update patches an orchestrator config and refreshes live risk parameters.
-func (s *Service) Update(id uuid.UUID, req UpdateReq) (*domain.HelmConfig, error) {
-	var updated *domain.HelmConfig
-	if err := s.repo.Update(id, func(o *domain.HelmConfig) error {
+func (s *Service) Update(id uuid.UUID, req helmDto.UpdateReq) (*domain.Helm, error) {
+	var updated *domain.Helm
+	if err := s.repo.Update(id, func(o *domain.Helm) error {
 		if req.Name != "" {
 			o.Name = req.Name
-		}
-		if req.Capital.IsPositive() {
-			o.Capital = req.Capital.InexactFloat64()
 		}
 		if req.Portfolio != nil {
 			o.Portfolio = *req.Portfolio

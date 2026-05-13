@@ -8,7 +8,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
-	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/module/helm/domain"
@@ -23,17 +22,19 @@ type NATSHandler struct {
 	handMgr HandManager
 	reg     *runtime.Registry
 	nc      *nats.Conn
+	js      nats.JetStreamContext
 	subs    []*nats.Subscription
 }
 
-func NewNATSHandler(svc *service.Service, handMgr HandManager, reg *runtime.Registry) *NATSHandler {
-	return &NATSHandler{svc: svc, handMgr: handMgr, reg: reg}
+func NewNATSHandler(svc *service.Service, handMgr HandManager, reg *runtime.Registry, js nats.JetStreamContext) *NATSHandler {
+	return &NATSHandler{svc: svc, handMgr: handMgr, reg: reg, js: js}
 }
 
 func (h *NATSHandler) Subscribe(nc *nats.Conn) error {
 	h.nc = nc
-	routes := map[string]nats.MsgHandler{
-		// User-scoped request/reply (via strategist/gateway)
+
+	// Request/reply subjects — plain core NATS (low latency, no persistence needed).
+	reqReply := map[string]nats.MsgHandler{
 		natsapi.SubjOrchList:      h.list,
 		natsapi.SubjOrchGet:       h.get,
 		natsapi.SubjOrchUpdate:    h.update,
@@ -47,18 +48,39 @@ func (h *NATSHandler) Subscribe(nc *nats.Conn) error {
 		natsapi.SubjOrchPositions: h.positions,
 		natsapi.SubjOrchTrades:    h.trades,
 		natsapi.SubjOrchOrders:    h.orders,
-		// System events (fire-and-forget from identity/investment service)
-		natsapi.SubjAccountLinked:   h.accountLinked,
-		natsapi.SubjAccountUnlinked: h.accountUnlinked,
 	}
-	for subj, fn := range routes {
+	for subj, fn := range reqReply {
 		sub, err := nc.Subscribe(subj, fn)
 		if err != nil {
 			return err
 		}
 		h.subs = append(h.subs, sub)
 	}
-	slog.Info("nats: orchestrator handlers subscribed", "count", len(routes))
+
+	// Account events — durable JetStream push subscriptions so events are not
+	// lost if helm is down when investment publishes them.
+	jsSubs := []struct {
+		subj    string
+		durable string
+		handler nats.MsgHandler
+	}{
+		{natsapi.SubjAccountLinked, "helm-account-linked", h.accountLinked},
+		{natsapi.SubjAccountUnlinked, "helm-account-unlinked", h.accountUnlinked},
+	}
+	for _, s := range jsSubs {
+		sub, err := h.js.Subscribe(s.subj, s.handler,
+			nats.Durable(s.durable),
+			nats.AckExplicit(),
+			nats.DeliverAll(),
+			nats.ManualAck(),
+		)
+		if err != nil {
+			return err
+		}
+		h.subs = append(h.subs, sub)
+	}
+
+	slog.Info("nats: orchestrator handlers subscribed", "req_reply", len(reqReply), "js_consumers", len(jsSubs))
 	return nil
 }
 
@@ -181,45 +203,49 @@ func (h *NATSHandler) accountLinked(msg *nats.Msg) {
 	var ev natsapi.AccountLinkedEvent
 	if err := json.Unmarshal(msg.Data, &ev); err != nil {
 		slog.Warn("nats: helm.accounts.linked: invalid json", "err", err)
+		_ = msg.Ack()
 		return
 	}
 	accountID, err := uuid.Parse(ev.AccountID)
 	if err != nil {
 		slog.Warn("nats: helm.accounts.linked: invalid account_id", "err", err)
+		_ = msg.Ack()
 		return
 	}
 	userID, err := uuid.Parse(ev.UserID)
 	if err != nil {
 		slog.Warn("nats: helm.accounts.linked: invalid user_id", "err", err)
+		_ = msg.Ack()
 		return
 	}
 
-	// Fetch broker credentials from investment service — not included in the event.
 	creds, err := natsapi.FetchCredentials(h.nc, ev.AccountID)
 	if err != nil {
 		slog.Error("nats: helm.accounts.linked: fetch credentials failed", "account_id", ev.AccountID, "err", err)
+		// Nack so JetStream redelivers — credentials fetch is transient.
+		_ = msg.Nak()
 		return
 	}
 
-	cfg, err := h.svc.CreateForAccount(service.CreateForAccountReq{
+	cfg, err := h.svc.CreateForAccount(helmDto.CreateForAccountReq{
 		UserID:    userID,
 		AccountID: accountID,
 		Name:      ev.Name,
-		Capital:   ev.Capital,
 		Exchange: domain.ExchangeConfig{
 			BrokerType: ev.BrokerType,
 			AccountID:  ev.AccountRef,
 			BaseURL:    ev.BaseURL,
-			Demo:       ev.Demo,
-			Testnet:    ev.Testnet,
+			Paper:      ev.Paper,
 		},
 		Creds: creds,
 	})
 	if err != nil {
-		slog.Error("nats: helm.accounts.linked: create orchestrator failed", "account_id", ev.AccountID, "err", err)
+		slog.Error("nats: helm.accounts.linked: create helm failed", "account_id", ev.AccountID, "err", err)
+		_ = msg.Nak()
 		return
 	}
-	slog.Info("nats: orchestrator auto-created (disabled)", "id", cfg.ID, "account_id", ev.AccountID)
+	slog.Info("nats: helm auto-created (disabled)", "id", cfg.ID, "account_id", ev.AccountID)
+	_ = msg.Ack()
 }
 
 // accountUnlinked handles the helm.accounts.unlinked event and auto-deletes the orchestrator.
@@ -227,18 +253,22 @@ func (h *NATSHandler) accountUnlinked(msg *nats.Msg) {
 	var ev natsapi.AccountUnlinkedEvent
 	if err := json.Unmarshal(msg.Data, &ev); err != nil {
 		slog.Warn("nats: helm.accounts.unlinked: invalid json", "err", err)
+		_ = msg.Ack()
 		return
 	}
 	accountID, err := uuid.Parse(ev.AccountID)
 	if err != nil {
 		slog.Warn("nats: helm.accounts.unlinked: invalid account_id", "err", err)
+		_ = msg.Ack()
 		return
 	}
 	if err := h.svc.DeleteForAccount(accountID); err != nil {
-		slog.Error("nats: helm.accounts.unlinked: delete orchestrator failed", "account_id", ev.AccountID, "err", err)
+		slog.Error("nats: helm.accounts.unlinked: delete helm failed", "account_id", ev.AccountID, "err", err)
+		_ = msg.Nak()
 		return
 	}
 	slog.Info("nats: orchestrator auto-deleted", "account_id", ev.AccountID)
+	_ = msg.Ack()
 }
 
 func (h *NATSHandler) update(msg *nats.Msg) {
@@ -251,7 +281,6 @@ func (h *NATSHandler) update(msg *nats.Msg) {
 	var raw struct {
 		ID        string                      `json:"id"`
 		Name      string                      `json:"name"`
-		Capital   float64                     `json:"capital"`
 		Portfolio *helmDto.PortfolioConfigDTO `json:"portfolio"`
 		Risk      *helmDto.RiskConfigDTO      `json:"risk"`
 	}
@@ -269,7 +298,7 @@ func (h *NATSHandler) update(msg *nats.Msg) {
 		return
 	}
 
-	updateReq := service.UpdateReq{Name: raw.Name, Capital: decimal.NewFromFloat(raw.Capital)}
+	updateReq := helmDto.UpdateReq{Name: raw.Name}
 	if raw.Portfolio != nil {
 		p := raw.Portfolio.ToDomain()
 		updateReq.Portfolio = &p

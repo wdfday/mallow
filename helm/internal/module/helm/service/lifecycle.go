@@ -12,7 +12,7 @@ import (
 
 // Enable marks an orchestrator as enabled and triggers an immediate portfolio sync.
 func (s *Service) Enable(id uuid.UUID) error {
-	if err := s.repo.Update(id, func(o *domain.HelmConfig) error {
+	if err := s.repo.Update(id, func(o *domain.Helm) error {
 		o.Enabled = true
 		return nil
 	}); err != nil {
@@ -24,7 +24,7 @@ func (s *Service) Enable(id uuid.UUID) error {
 
 // Disable marks an orchestrator as disabled, blocking hand creation and deletion.
 func (s *Service) Disable(id uuid.UUID) error {
-	return s.repo.Update(id, func(o *domain.HelmConfig) error {
+	return s.repo.Update(id, func(o *domain.Helm) error {
 		o.Enabled = false
 		return nil
 	})
@@ -39,7 +39,7 @@ func (s *Service) Pause(id uuid.UUID) error {
 	if s.hands != nil && len(wasRunning) > 0 {
 		s.hands.StopBots(wasRunning)
 	}
-	if err := s.repo.Update(id, func(o *domain.HelmConfig) error {
+	if err := s.repo.Update(id, func(o *domain.Helm) error {
 		o.Status = "paused"
 		return nil
 	}); err != nil {
@@ -58,7 +58,7 @@ func (s *Service) Resume(id uuid.UUID) error {
 	if s.hands != nil && len(toRestart) > 0 {
 		s.hands.StartBots(toRestart)
 	}
-	if err := s.repo.Update(id, func(o *domain.HelmConfig) error {
+	if err := s.repo.Update(id, func(o *domain.Helm) error {
 		o.Status = "active"
 		return nil
 	}); err != nil {
@@ -79,7 +79,7 @@ func (s *Service) Kill(ctx context.Context, id uuid.UUID) error {
 		// Kill (flatten + stop) each running hand.
 		s.hands.KillBots(runningHands)
 	}
-	if err := s.repo.Update(id, func(o *domain.HelmConfig) error {
+	if err := s.repo.Update(id, func(o *domain.Helm) error {
 		o.Status = "halted"
 		return nil
 	}); err != nil {
@@ -95,7 +95,7 @@ func (s *Service) ResetHalt(id uuid.UUID) error {
 	if err := s.spawner.ResetHalt(id); err != nil {
 		return err
 	}
-	if err := s.repo.Update(id, func(o *domain.HelmConfig) error {
+	if err := s.repo.Update(id, func(o *domain.Helm) error {
 		o.Status = "active"
 		return nil
 	}); err != nil {

@@ -19,9 +19,9 @@ import (
 	mdbybit "mallow/helm/internal/infra/marketdata/bybit"
 	mdokx "mallow/helm/internal/infra/marketdata/okx"
 	handhandler "mallow/helm/internal/module/hand/handler"
+	handservice "mallow/helm/internal/module/hand/service"
 	orchhandler "mallow/helm/internal/module/helm/handler"
 	"mallow/helm/internal/runtime"
-	"mallow/helm/internal/runtime/core/tick"
 )
 
 // startNATSAPI subscribes per-module NATS request/reply handlers on start, drains on stop.
@@ -51,8 +51,8 @@ func subscribeSignals(lc fx.Lifecycle, sc *engine.SignalClient, dispatcher *runt
 	var sub interface{ Drain() error }
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
-			s, err := sc.SubscribeSignals(func(resp *engine.SignalResponse) {
-				dispatcher.Dispatch(resp)
+			s, err := sc.SubscribeSignals(func(resp *engine.SignalResponse, receivedAt time.Time) {
+				dispatcher.Dispatch(resp, receivedAt)
 			})
 			if err != nil {
 				return err
@@ -69,12 +69,99 @@ func subscribeSignals(lc fx.Lifecycle, sc *engine.SignalClient, dispatcher *runt
 	})
 }
 
-// runOrchestrator starts market data listener, equity recorder, API server, tick router,
+// subscribeHeraldReady subscribes to engine.ready and triggers re-registration
+// of all running hands when herald restarts (detected by herald_id change).
+func subscribeHeraldReady(lc fx.Lifecycle, sc *engine.SignalClient, handMgr *handservice.Service) {
+	var (
+		sub          interface{ Drain() error }
+		lastHeraldID string
+	)
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			s, err := sc.SubscribeReady(func(ev *engine.ReadyEvent) {
+				if ev.HeraldId == lastHeraldID {
+					return
+				}
+				if lastHeraldID != "" {
+					slog.Warn("herald restart detected — re-registering all running hands",
+						"old_herald_id", lastHeraldID, "new_herald_id", ev.HeraldId)
+				}
+				lastHeraldID = ev.HeraldId
+				handMgr.ReregisterAll()
+			})
+			if err != nil {
+				// Non-fatal: herald may not be running yet; heartbeat loop is the safety net.
+				slog.Warn("engine.ready subscribe failed (non-fatal)", "err", err)
+				return nil
+			}
+			sub = s
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			if sub != nil {
+				return sub.Drain()
+			}
+			return nil
+		},
+	})
+}
+
+// startHeartbeatLoop periodically checks that all running hands are registered
+// in herald. Runs every 30s; re-registers any that herald reports as missing.
+func startHeartbeatLoop(lc fx.Lifecycle, sc *engine.SignalClient, reg *runtime.Registry, handMgr *handservice.Service) {
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			runCtx, cancel := context.WithCancel(context.Background())
+			go func() {
+				defer cancel()
+				runHeraldHeartbeat(runCtx, sc, reg, handMgr, 30*time.Second)
+			}()
+			// Store cancel so OnStop can shut it down.
+			lc.Append(fx.Hook{OnStop: func(ctx context.Context) error { cancel(); return nil }})
+			return nil
+		},
+	})
+}
+
+func runHeraldHeartbeat(ctx context.Context, sc *engine.SignalClient, reg *runtime.Registry, handMgr *handservice.Service, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			doHeraldHeartbeat(ctx, sc, reg, handMgr)
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func doHeraldHeartbeat(ctx context.Context, sc *engine.SignalClient, reg *runtime.Registry, handMgr *handservice.Service) {
+	for _, rt := range reg.All() {
+		runningIDs := rt.RunningBotIDs()
+		if len(runningIDs) == 0 {
+			continue
+		}
+		handIDs := runningIDs
+		resp, err := sc.Heartbeat(ctx, rt.HelmID.String(), handIDs)
+		if err != nil {
+			slog.Warn("herald heartbeat failed", "helm_id", rt.HelmID, "err", err)
+			continue
+		}
+		if len(resp.Missing) == 0 {
+			continue
+		}
+		slog.Warn("herald heartbeat: missing hands — re-registering",
+			"helm_id", rt.HelmID, "missing", resp.Missing)
+		handMgr.ReregisterByIDs(resp.Missing)
+	}
+}
+
+// runOrchestrator starts market data listener, equity recorder, API server,
 // and account fill streaming for exchanges that support it.
 func runOrchestrator(
 	lc fx.Lifecycle,
 	cfg *config.Config,
-	router *tick.Router,
 	ginEngine *gin.Engine,
 	reg *runtime.Registry,
 	nc *nats.Conn,
@@ -88,8 +175,9 @@ func runOrchestrator(
 			cancel = c
 
 			reg.SetRuntime(runCtx, nc)
-			reg.StartFillStreaming(runCtx, nc)
 			reg.ReconcileAllOrders(ctx)
+			reg.RecoverGapFills(ctx, nc)
+			reg.StartFillStreaming(runCtx, nc)
 			reg.StartPollingSync(runCtx, nc, cfg.Runtime.SyncInterval)
 
 			if cfg.MarketData.Source != "none" && cfg.MarketData.Source != "" {
@@ -110,20 +198,13 @@ func runOrchestrator(
 				}
 			}
 
-			go recordEquity(runCtx, reg, cfg.Runtime.BarInterval)
+			go recordEquity(runCtx, reg, 5*time.Minute)
 			go heartbeat(runCtx, reg, 30*time.Second)
 
 			go func() {
 				slog.Info("API server starting", "addr", cfg.Server.APIAddr)
 				if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 					slog.Error("API server error", "err", err)
-				}
-			}()
-
-			go func() {
-				slog.Info("helm running", "bar_interval", cfg.Runtime.BarInterval, "api_addr", cfg.Server.APIAddr)
-				if err := router.Run(runCtx); err != nil {
-					slog.Error("tick router stopped", "err", err)
 				}
 			}()
 
@@ -150,16 +231,62 @@ func heartbeat(ctx context.Context, reg *runtime.Registry, interval time.Duratio
 				continue
 			}
 			for _, rt := range rts {
+				pf := rt.Portfolio
 				slog.Info("heartbeat",
 					"helm_id", rt.HelmID,
 					"account_id", rt.AccountID,
 					"broker", rt.BrokerType,
-					"hands", len(rt.BotIDs()),
-					"running_hands", len(rt.RunningBotIDs()),
-					"equity", rt.Portfolio.Equity(),
 					"paused", rt.IsPaused(),
 					"last_sync_at", rt.LastSyncAt(),
+					// portfolio
+					"cash", pf.Cash(),
+					"equity", pf.Equity(),
+					"total_return_pct", fmt.Sprintf("%.2f%%", pf.TotalReturn()*100),
+					"drawdown_pct", fmt.Sprintf("%.2f%%", pf.CurrentDrawdown()*100),
+					"max_drawdown_pct", fmt.Sprintf("%.2f%%", pf.MaxDrawdown()*100),
+					"daily_pnl", pf.DailyPnL(),
+					// hands
+					"hands", len(rt.BotIDs()),
+					"running_hands", len(rt.RunningBotIDs()),
 				)
+
+				// positions
+				for _, pos := range pf.Positions() {
+					side := "long"
+					if pos.Qty.IsNegative() {
+						side = "short"
+					}
+					unrealized := pos.CurrentPrice.Sub(pos.AvgPrice).Mul(pos.Qty)
+					slog.Info("heartbeat: position",
+						"helm_id", rt.HelmID,
+						"symbol", pos.Symbol,
+						"side", side,
+						"qty", pos.Qty,
+						"avg_price", pos.AvgPrice,
+						"current_price", pos.CurrentPrice,
+						"unrealized_pnl", unrealized,
+					)
+				}
+
+				// per-hand metrics
+				for _, h := range rt.HandSummaries() {
+					m := h.Metrics
+					slog.Info("heartbeat: hand",
+						"helm_id", rt.HelmID,
+						"hand_id", h.ID,
+						"symbol", h.Symbol,
+						"status", h.Status,
+						"signals_received", m.SignalsReceived,
+						"signals_filtered", m.SignalsFiltered,
+						"trades_approved", m.TradesApproved,
+						"orders_placed", m.OrdersPlaced,
+						"orders_filled", m.OrdersFilled,
+						"orders_failed", m.OrdersFailed,
+						"total_pnl", m.TotalPnL,
+						"win", m.WinCount,
+						"loss", m.LossCount,
+					)
+				}
 			}
 		case <-ctx.Done():
 			return

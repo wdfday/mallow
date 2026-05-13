@@ -6,7 +6,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 
 	dto "mallow/helm/internal/module/helm/dto"
 	"mallow/helm/internal/module/helm/service"
@@ -232,9 +231,8 @@ func (h *Handler) update(c *gin.Context) {
 		return
 	}
 
-	updateReq := service.UpdateReq{
-		Name:    req.Name,
-		Capital: decimal.NewFromFloat(req.Capital),
+	updateReq := dto.UpdateReq{
+		Name: req.Name,
 	}
 	if req.Portfolio != nil {
 		p := req.Portfolio.ToDomain()

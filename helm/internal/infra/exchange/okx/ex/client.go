@@ -42,7 +42,7 @@ type L2Book struct {
 // Client is a shared, broker-level market data WebSocket client for OKX.
 // Uses the public WS endpoint (no API key required).
 type Client struct {
-	demo bool
+	paper bool
 
 	mu            sync.RWMutex
 	priceHandlers []PriceHandler
@@ -53,10 +53,10 @@ type Client struct {
 }
 
 // New creates a shared OKX market data streaming client.
-// Set demo=true to use the OKX demo paper trading WS endpoint.
-func New(demo bool) *Client {
+// Set paper=true to use the OKX paper trading WS endpoint.
+func New(paper bool) *Client {
 	return &Client{
-		demo:     demo,
+		paper:    paper,
 		bboCache: make(map[string]BBO),
 		l2Cache:  make(map[string]L2Book),
 	}

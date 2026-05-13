@@ -29,23 +29,11 @@ type EquityLogPage struct {
 
 // EquityLog is the append-only store for per-hand equity curve points.
 //
-// Schema (Postgres):
+// Implementation: JetStream stream HELM_EQUITY, subjects helm.equity.{hand_id}.
+// Storage: FileStorage, MaxAge 90 days, dedup window 5 min (Nats-Msg-Id = hand_id+ts_ms).
 //
-//	CREATE TABLE hand_equity_log (
-//	    hand_id  UUID    NOT NULL,
-//	    ts       BIGINT  NOT NULL,   -- Unix ms; bar close time
-//	    equity   FLOAT8  NOT NULL,
-//	    PRIMARY KEY (hand_id, ts)    -- dedup: same bar emitted twice → no-op
-//	);
-//	CREATE INDEX IF NOT EXISTS idx_hand_equity_log_hand_ts ON hand_equity_log(hand_id, ts);
-//
-// Migration for existing tables:
-//
-//	CREATE TABLE IF NOT EXISTS hand_equity_log ( ... );
-//
-// Dedup contract: Append with a (hand_id, ts) that already exists is silently
-// ignored (ON CONFLICT DO NOTHING). Safe to call on every bar from multiple
-// processes.
+// Dedup contract: Append with the same (hand_id, ts) within the dedup window is
+// silently ignored. Safe to call on every bar or on restart.
 type EquityLog interface {
 	// Append writes one equity snapshot. Idempotent on (hand_id, ts).
 	Append(ctx context.Context, p EquityLogPoint) error

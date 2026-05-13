@@ -13,7 +13,7 @@ import (
 // signal in a window to handle any stragglers.
 //
 // Rules:
-//  1. "close" from any hand → AggregatedSignal{Direction: "close"} immediately.
+//  1. "exit" from any hand → AggregatedSignal{Direction: "exit"} immediately.
 //  2. net = mean(long strengths) - mean(short strengths)
 //     net >  deadband → Long,  strength = net
 //     net < -deadband → Short, strength = |net|
@@ -63,8 +63,8 @@ func (a *SignalAggregator) Add(symbol string, barTS int64, botID, direction stri
 	defer a.mu.Unlock()
 
 	// Close is high-priority: flush immediately.
-	if direction == "close" {
-		a.flushNow(symbol, barTS, []rawSignal{{botID: botID, direction: "close", strength: 1.0}})
+	if direction == "exit" {
+		a.flushNow(symbol, barTS, []rawSignal{{botID: botID, direction: "exit", strength: 1.0}})
 		return
 	}
 
@@ -105,7 +105,7 @@ func (a *SignalAggregator) flush(key string, w *signalWindow) {
 	}
 }
 
-// flushNow handles a close signal immediately, cancelling any pending window.
+// flushNow handles an exit signal immediately, cancelling any pending window.
 // Must be called with a.mu held.
 func (a *SignalAggregator) flushNow(symbol string, barTS int64, msgs []rawSignal) {
 	key := windowKey(symbol, barTS)
@@ -135,10 +135,10 @@ func aggregate(symbol string, barTS int64, msgs []rawSignal, deadband float64) A
 			longs = append(longs, m)
 		case "short":
 			shorts = append(shorts, m)
-		case "close":
+		case "exit":
 			return AggregatedSignal{
 				Symbol: symbol, Timestamp: barTS,
-				Direction: "close", Strength: 1.0, Sources: sources,
+				Direction: "exit", Strength: 1.0, Sources: sources,
 			}
 		}
 	}

@@ -90,10 +90,41 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 
 }
 
+// CapitalSuggestion is one hand that can free up capital for a new hand.
+type CapitalSuggestion struct {
+	HandID          string          `json:"hand_id"`
+	Name            string          `json:"name"`
+	Allocated       decimal.Decimal `json:"allocated"`
+	Deployed        decimal.Decimal `json:"deployed"`
+	ReducibleBy     decimal.Decimal `json:"reducible_by"`     // max freeable = allocated - deployed
+	SuggestedTarget decimal.Decimal `json:"suggested_target"` // allocated - min(reducibleBy, shortage)
+}
+
+// CapitalOverflow is returned (as JSON body) when a new or updated hand would
+// exceed the helm's available capital. It carries actionable suggestions so the
+// caller knows exactly which hands can be reduced and by how much.
+type CapitalOverflow struct {
+	Error       string              `json:"error"`
+	HelmEquity  float64             `json:"helm_equity"`
+	TotalAlloc  float64             `json:"total_allocated"`
+	Requested   float64             `json:"requested"`
+	Available   float64             `json:"available"`
+	Suggestions []CapitalSuggestion `json:"suggestions"`
+}
+
 // checkCapitalAllocation validates that adding newPos to a Helm doesn't exceed
-// the available capital (live portfolio equity). excludeHandID is the hand being updated
-// (skip its existing allocation); pass "" when creating a new hand.
-func checkCapitalAllocation(totalCapital float64, existing []domain.HandSummary, newPos domain.PositionConfig, excludeHandID string) error {
+// the available capital (live portfolio equity). excludeHandID is the hand being
+// updated (skip its existing allocation); pass "" when creating a new hand.
+//
+// Returns (*CapitalOverflow, nil) when capital is insufficient — the caller should
+// respond with 422 and the overflow payload so the client can act on suggestions.
+// Returns (nil, nil) when allocation is valid.
+func checkCapitalAllocation(
+	totalCapital float64,
+	existing []domain.HandSummary,
+	newPos domain.PositionConfig,
+	excludeHandID string,
+) (*CapitalOverflow, error) {
 	// ── Fixed-USD allocation check ──────────────────────────────────────────
 	if newPos.AllocatedCapital.IsPositive() {
 		var used float64
@@ -104,9 +135,13 @@ func checkCapitalAllocation(totalCapital float64, existing []domain.HandSummary,
 			used += b.Position.AllocatedCapital.InexactFloat64()
 		}
 		available := totalCapital - used
-		if newPos.AllocatedCapital.InexactFloat64() > available {
-			return fmt.Errorf("insufficient capital: requesting %.2f but only %.2f available (%.2f total, %.2f allocated to other hands)",
-				newPos.AllocatedCapital.InexactFloat64(), available, totalCapital, used)
+		requesting := newPos.AllocatedCapital.InexactFloat64()
+		if requesting > available {
+			shortage := requesting - available
+			return buildOverflow(
+				fmt.Sprintf("insufficient capital: requesting %.2f but only %.2f available", requesting, available),
+				totalCapital, used, requesting, available, shortage, existing, excludeHandID,
+			), nil
 		}
 	}
 
@@ -121,11 +156,73 @@ func checkCapitalAllocation(totalCapital float64, existing []domain.HandSummary,
 		}
 		available := 1.0 - usedPct
 		if newPos.AllocatedPct > available {
-			return fmt.Errorf("insufficient capital: requesting %.1f%% but only %.1f%% available (%.1f%% allocated to other hands)",
-				newPos.AllocatedPct*100, available*100, usedPct*100)
+			// Convert pct to absolute for suggestions.
+			usedAbs := usedPct * totalCapital
+			availAbs := available * totalCapital
+			requestingAbs := newPos.AllocatedPct * totalCapital
+			shortage := requestingAbs - availAbs
+			return buildOverflow(
+				fmt.Sprintf("insufficient capital: requesting %.1f%% but only %.1f%% available", newPos.AllocatedPct*100, available*100),
+				totalCapital, usedAbs, requestingAbs, availAbs, shortage, existing, excludeHandID,
+			), nil
 		}
 	}
-	return nil
+	return nil, nil
+}
+
+// buildOverflow assembles a CapitalOverflow with sorted suggestions.
+// Hands with the most reducible free capital are listed first.
+func buildOverflow(
+	msg string,
+	helmEquity, usedAbs, requesting, available, shortage float64,
+	existing []domain.HandSummary,
+	excludeHandID string,
+) *CapitalOverflow {
+	var suggestions []CapitalSuggestion
+	remaining := shortage
+	for _, b := range existing {
+		if b.ID.String() == excludeHandID {
+			continue
+		}
+		alloc := b.Position.AllocatedCapital
+		if alloc.IsZero() && b.Position.AllocatedPct > 0 {
+			alloc = decimal.NewFromFloat(b.Position.AllocatedPct * helmEquity)
+		}
+		if !alloc.IsPositive() {
+			continue
+		}
+		deployed := b.DeployedCapital
+		reducible := alloc.Sub(deployed)
+		if !reducible.IsPositive() {
+			continue
+		}
+		reduceBy := reducible
+		if remaining > 0 {
+			cap := decimal.NewFromFloat(remaining)
+			if reducible.LessThan(cap) {
+				reduceBy = reducible
+			} else {
+				reduceBy = cap
+			}
+			remaining -= reduceBy.InexactFloat64()
+		}
+		suggestions = append(suggestions, CapitalSuggestion{
+			HandID:          b.ID.String(),
+			Name:            b.Name,
+			Allocated:       alloc,
+			Deployed:        deployed,
+			ReducibleBy:     reducible,
+			SuggestedTarget: alloc.Sub(reduceBy),
+		})
+	}
+	return &CapitalOverflow{
+		Error:       msg,
+		HelmEquity:  helmEquity,
+		TotalAlloc:  usedAbs,
+		Requested:   requesting,
+		Available:   available,
+		Suggestions: suggestions,
+	}
 }
 
 // create godoc
@@ -180,8 +277,8 @@ func (h *Handler) create(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusBadRequest, "helm runtime not available")
 		return
 	}
-	if err := checkCapitalAllocation(rt.Portfolio.Summary().Equity.InexactFloat64(), h.handMgr.ListByHelm(helmID), cfg.Position, ""); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
+	if overflow, _ := checkCapitalAllocation(rt.Portfolio.Summary().Equity.InexactFloat64(), h.handMgr.ListByHelm(helmID), cfg.Position, ""); overflow != nil {
+		c.JSON(http.StatusUnprocessableEntity, overflow)
 		return
 	}
 	instance, err := h.handMgr.Create(cfg)
@@ -320,8 +417,8 @@ func (h *Handler) update(c *gin.Context) {
 			shared.RespondWithError(c, http.StatusBadRequest, "helm runtime not available")
 			return
 		}
-		if err := checkCapitalAllocation(rt.Portfolio.Summary().Equity.InexactFloat64(), h.handMgr.ListByHelm(helmID), patch.Position, id.String()); err != nil {
-			shared.RespondWithError(c, http.StatusBadRequest, err.Error())
+		if overflow, _ := checkCapitalAllocation(rt.Portfolio.Summary().Equity.InexactFloat64(), h.handMgr.ListByHelm(helmID), patch.Position, id.String()); overflow != nil {
+			c.JSON(http.StatusUnprocessableEntity, overflow)
 			return
 		}
 	}

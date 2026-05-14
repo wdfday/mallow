@@ -35,7 +35,7 @@ func New(cfg Config) *Client {
 	baseURL := cfg.BaseURL
 	if baseURL == "" {
 		if cfg.Paper {
-			baseURL = "https://api-testnet.bybit.com"
+			baseURL = "https://api-demo.bybit.com"
 		} else {
 			baseURL = "https://api.bybit.com"
 		}
@@ -46,6 +46,14 @@ func New(cfg Config) *Client {
 		client:  &http.Client{Timeout: 10 * time.Second},
 	}
 }
+
+var (
+	_ exchange.Exchange        = (*Client)(nil)
+	_ exchange.ExitOrderPlacer = (*Client)(nil)
+	_ exchange.LeverageSetter  = (*Client)(nil)
+	_ exchange.AccountStreamer = (*Client)(nil)
+	_ exchange.HistoryFetcher  = (*Client)(nil)
+)
 
 func (c *Client) Name() string { return "bybit" }
 

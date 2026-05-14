@@ -129,8 +129,8 @@ func (h *NATSHandler) create(msg *nats.Msg) {
 		_ = msg.Respond(natsapi.ReplyErr("helm runtime not available"))
 		return
 	}
-	if err := checkCapitalAllocation(rt.Portfolio.Summary().Equity.InexactFloat64(), h.handMgr.ListByHelm(cfg.HelmID), cfg.Position, ""); err != nil {
-		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
+	if overflow, _ := checkCapitalAllocation(rt.Portfolio.Summary().Equity.InexactFloat64(), h.handMgr.ListByHelm(cfg.HelmID), cfg.Position, ""); overflow != nil {
+		_ = msg.Respond(natsapi.ReplyErr(overflow.Error))
 		return
 	}
 	instance, err := h.handMgr.Create(cfg)
@@ -169,8 +169,8 @@ func (h *NATSHandler) update(msg *nats.Msg) {
 			_ = msg.Respond(natsapi.ReplyErr("helm runtime not available"))
 			return
 		}
-		if err := checkCapitalAllocation(rt.Portfolio.Summary().Equity.InexactFloat64(), h.handMgr.ListByHelm(bi.Data.HelmID), patch.Position, id.String()); err != nil {
-			_ = msg.Respond(natsapi.ReplyErr(err.Error()))
+		if overflow, _ := checkCapitalAllocation(rt.Portfolio.Summary().Equity.InexactFloat64(), h.handMgr.ListByHelm(bi.Data.HelmID), patch.Position, id.String()); overflow != nil {
+			_ = msg.Respond(natsapi.ReplyErr(overflow.Error))
 			return
 		}
 	}

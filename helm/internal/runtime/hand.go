@@ -134,6 +134,18 @@ type Hand struct {
 	}
 }
 
+// DeployedCapital returns the notional capital currently committed in open positions:
+// sum(leg.Qty × leg.EntryPrice) across all active legs.
+func (h *Hand) DeployedCapital() decimal.Decimal {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	total := decimal.Zero
+	for _, leg := range h.pos.ActiveLegs() {
+		total = total.Add(leg.Qty.Mul(leg.EntryPrice))
+	}
+	return total
+}
+
 // restorePosition re-applies HandPositions reconstructed from poslog replay.
 // Called by the reconciler after startup to bring the in-memory hand in sync
 // with what actually happened at the exchange while the app was down.

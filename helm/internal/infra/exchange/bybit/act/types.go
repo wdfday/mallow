@@ -62,6 +62,8 @@ type createOrderReq struct {
 	StopOrderType string `json:"stopOrderType,omitempty"` // Stop | TakeProfit
 	TriggerPrice  string `json:"triggerPrice,omitempty"`  // conditional trigger
 	TriggerBy     string `json:"triggerBy,omitempty"`     // LastPrice | MarkPrice
+	// Bybit V5 spot: market Buy defaults qty to quote (USDT); "baseCoin" makes qty base (BTC).
+	MarketUnit string `json:"marketUnit,omitempty"`
 }
 
 // cancelOrderReq is the body for POST /v5/order/cancel.
@@ -114,6 +116,7 @@ type coinDetail struct {
 	Coin                string `json:"coin"`
 	WalletBalance       string `json:"walletBalance"`
 	AvailableToWithdraw string `json:"availableToWithdraw"`
+	AvailableBalance    string `json:"availableBalance"` // UNIFIED: available for trading
 	Locked              string `json:"locked"`
 	UnrealizedPnl       string `json:"unrealisedPnl"`
 	CumRealisedPnl      string `json:"cumRealisedPnl"`

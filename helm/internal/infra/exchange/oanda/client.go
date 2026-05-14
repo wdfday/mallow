@@ -36,6 +36,11 @@ func New(cfg Config) *Client {
 	}
 }
 
+var (
+	_ exchange.Exchange        = (*Client)(nil)
+	_ exchange.OrderReconciler = (*Client)(nil)
+)
+
 func (c *Client) Name() string { return "oanda" }
 
 // doRequest performs an authenticated HTTP request to OANDA v20 API using the given credentials.

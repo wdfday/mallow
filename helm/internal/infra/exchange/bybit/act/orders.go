@@ -30,6 +30,10 @@ func (c *Client) PlaceOrder(ctx context.Context, creds exchange.Credentials, req
 		TimeInForce: "GTC",
 		ReduceOnly:  req.ReduceOnly,
 	}
+	// Bybit V5 spot market Buy: qty defaults to quote coin (USDT); specify baseCoin so qty is in BTC.
+	if category == "spot" && orderType == "Market" && req.Side == exchange.Buy {
+		body.MarketUnit = "baseCoin"
+	}
 	if orderType == "Limit" && req.Price.IsPositive() {
 		body.Price = req.Price.String()
 	}

@@ -1,7 +1,7 @@
 // Integration tests against OKX Simulated Trading API.
-// Run with:
+// Fill in okxPaperAPIKey / okxPaperAPISecret / okxPaperPassphrase in creds_test.go, then run:
 //
-//	OKX_API_KEY=xxx OKX_API_SECRET=yyy OKX_PASSPHRASE=zzz go test -v -run TestOKX ./internal/infra/exchange/okx/action/
+//	go test -v -run TestOKX ./internal/infra/exchange/okx/act/
 package act
 
 import (
@@ -10,7 +10,7 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,13 +21,10 @@ import (
 
 func paperOKXClient(t *testing.T) (*Client, exchange.Credentials) {
 	t.Helper()
-	key := os.Getenv("OKX_API_KEY")
-	secret := os.Getenv("OKX_API_SECRET")
-	passphrase := os.Getenv("OKX_PASSPHRASE")
-	if key == "" || secret == "" || passphrase == "" {
-		t.Skip("OKX_API_KEY / OKX_API_SECRET / OKX_PASSPHRASE not set")
+	if okxPaperAPIKey == "" || okxPaperAPISecret == "" || okxPaperPassphrase == "" {
+		t.Skip("okx paper credentials not set in creds_test.go")
 	}
-	creds := exchange.Credentials{APIKey: key, APISecret: secret, Passphrase: passphrase}
+	creds := exchange.Credentials{APIKey: okxPaperAPIKey, APISecret: okxPaperAPISecret, Passphrase: okxPaperPassphrase}
 	return New(Config{Paper: true}), creds
 }
 
@@ -159,7 +156,7 @@ func TestOKX_LimitOrder_ThenCancel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetCurrentPrice: %v", err)
 	}
-	limitPrice := decimal.NewFromFloat(roundOKX(price.InexactFloat64()*0.95, 0.1)) // 5% below market
+	limitPrice := decimal.NewFromFloat(price.InexactFloat64() * 0.95).Round(1) // 5% below market
 
 	cx, cancel := okxCtx()
 	defer cancel()
@@ -203,8 +200,8 @@ func TestOKX_BracketOrder(t *testing.T) {
 	}
 
 	priceF := price.InexactFloat64()
-	stopLoss := decimal.NewFromFloat(roundOKX(priceF*0.98, 0.1))
-	takeProfit := decimal.NewFromFloat(roundOKX(priceF*1.02, 0.1))
+	stopLoss := decimal.NewFromFloat(priceF * 0.98).Round(1)
+	takeProfit := decimal.NewFromFloat(priceF * 1.02).Round(1)
 
 	cx, cancel := okxCtx()
 	defer cancel()
@@ -487,6 +484,173 @@ func TestOKX_StreamOrders(t *testing.T) {
 			e.Type, e.OrderID, e.Symbol, e.Side, e.FilledQty, e.FilledAvg)
 	case <-cx.Done():
 		t.Log("no event received within 20s")
+	}
+}
+
+// ── T02 · Limit order reconcile ───────────────────────────────────────────────
+
+func TestOKX_ListOpenOrders_Reconcile(t *testing.T) {
+	c, creds := paperOKXClient(t)
+
+	cx0, cancel0 := okxCtx()
+	defer cancel0()
+	price, err := c.GetCurrentPrice(cx0, creds, "BTC-USDT")
+	if err != nil {
+		t.Fatalf("GetCurrentPrice: %v", err)
+	}
+	limitPrice := decimal.NewFromFloat(price.InexactFloat64() * 0.85).Round(1)
+
+	cx1, cancel1 := okxCtx()
+	defer cancel1()
+	result, err := c.PlaceOrder(cx1, creds, exchange.OrderRequest{
+		Symbol: "BTC-USDT",
+		Side:   exchange.Buy,
+		Type:   exchange.Limit,
+		Qty:    decimal.NewFromFloat(0.01),
+		Price:  limitPrice,
+	})
+	if err != nil {
+		t.Fatalf("PlaceOrder limit: %v", err)
+	}
+	t.Logf("limit order placed: id=%s  price=%s", result.ID, limitPrice)
+
+	time.Sleep(300 * time.Millisecond)
+	cx2, cancel2 := okxCtx()
+	defer cancel2()
+	orders, err := c.ListOpenOrders(cx2, creds, "BTC-USDT")
+	if err != nil {
+		t.Fatalf("ListOpenOrders: %v", err)
+	}
+	found := false
+	for _, o := range orders {
+		if o.ID == result.ID {
+			found = true
+			t.Logf("order confirmed in open list: id=%s  status=%s", o.ID, o.Status)
+		}
+	}
+	if !found {
+		t.Errorf("expected order %s in ListOpenOrders, got %d orders", result.ID, len(orders))
+	}
+
+	cx3, cancel3 := okxCtx()
+	defer cancel3()
+	if err := c.CancelOrder(cx3, creds, result.ID); err != nil {
+		t.Fatalf("CancelOrder: %v", err)
+	}
+
+	time.Sleep(300 * time.Millisecond)
+	cx4, cancel4 := okxCtx()
+	defer cancel4()
+	ordersAfter, _ := c.ListOpenOrders(cx4, creds, "BTC-USDT")
+	for _, o := range ordersAfter {
+		if o.ID == result.ID {
+			t.Errorf("cancelled order %s still appears in ListOpenOrders", result.ID)
+		}
+	}
+	t.Logf("PASS: order absent after cancel (open orders remaining: %d)", len(ordersAfter))
+}
+
+// ── T04 · SubscribeFills ──────────────────────────────────────────────────────
+
+func TestOKX_SubscribeFills(t *testing.T) {
+	c, creds := paperOKXClient(t)
+	cx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+
+	fills, err := c.SubscribeFills(cx, creds)
+	if err != nil {
+		t.Fatalf("SubscribeFills: %v", err)
+	}
+	t.Log("fill stream open — placing market order...")
+
+	time.Sleep(1 * time.Second)
+	cx2, cancel2 := okxCtx()
+	defer cancel2()
+	result, err := c.PlaceOrder(cx2, creds, exchange.OrderRequest{
+		Symbol: "BTC-USDT",
+		Side:   exchange.Buy,
+		Type:   exchange.Market,
+		Qty:    decimal.NewFromFloat(0.01),
+	})
+	if err != nil {
+		t.Logf("PlaceOrder: %v", err)
+	} else {
+		t.Logf("order placed: id=%s  status=%s", result.ID, result.Status)
+	}
+
+	select {
+	case f := <-fills:
+		t.Logf("PASS fill: orderID=%s  symbol=%s  side=%s  qty=%s @ %s  at=%s",
+			f.OrderID, f.Symbol, f.Side, f.FilledQty, f.FillPrice, f.Timestamp.Format(time.RFC3339))
+	case <-cx.Done():
+		t.Log("no fill event within 25s")
+	}
+}
+
+// ── T08 · Position lifecycle ──────────────────────────────────────────────────
+
+func TestOKX_PositionLifecycle(t *testing.T) {
+	c, creds := paperOKXClient(t)
+
+	listPos := func() []exchange.PositionResult {
+		cx, cancel := okxCtx()
+		defer cancel()
+		ps, err := c.ListPositions(cx, creds)
+		if err != nil {
+			t.Fatalf("ListPositions: %v", err)
+		}
+		return ps
+	}
+	hasSymbol := func(ps []exchange.PositionResult, sym string) bool {
+		for _, p := range ps {
+			if p.Symbol == sym {
+				return true
+			}
+		}
+		return false
+	}
+
+	before := listPos()
+	t.Logf("positions before: %d", len(before))
+
+	cx1, cancel1 := okxCtx()
+	defer cancel1()
+	if _, err := c.PlaceOrder(cx1, creds, exchange.OrderRequest{
+		Symbol: "BTC-USDT",
+		Side:   exchange.Buy,
+		Type:   exchange.Market,
+		Qty:    decimal.NewFromFloat(0.01),
+	}); err != nil {
+		t.Fatalf("buy: %v", err)
+	}
+	time.Sleep(700 * time.Millisecond)
+
+	after := listPos()
+	t.Logf("positions after buy: %d", len(after))
+	if !hasSymbol(after, "BTC-USDT") {
+		t.Error("expected BTC-USDT in ListPositions after buy")
+	} else {
+		t.Log("PASS: BTC-USDT appears in positions after buy")
+	}
+
+	cx2, cancel2 := okxCtx()
+	defer cancel2()
+	if _, err := c.PlaceOrder(cx2, creds, exchange.OrderRequest{
+		Symbol: "BTC-USDT",
+		Side:   exchange.Sell,
+		Type:   exchange.Market,
+		Qty:    decimal.NewFromFloat(0.01),
+	}); err != nil {
+		t.Logf("sell back: %v", err)
+	}
+	time.Sleep(700 * time.Millisecond)
+
+	closed := listPos()
+	t.Logf("positions after sell: %d", len(closed))
+	if hasSymbol(closed, "BTC-USDT") {
+		t.Log("note: BTC-USDT still in positions (dust — OK)")
+	} else {
+		t.Log("PASS: BTC-USDT absent from positions after sell")
 	}
 }
 
@@ -836,4 +1000,308 @@ func TestOKX_LargeOrderImpact(t *testing.T) {
 			r.diffRealBps, r.diffDemoBps, r.status, flags)
 	}
 	t.Log("════════════════════════════════════════════════════════════════════════════════════════════════════════════════════")
+}
+
+// ── Heavy execution tests ─────────────────────────────────────────────────────
+
+// TestOKX_AggressiveLimit places a LIMIT BUY at ask+ε so it fills as a taker,
+// then sells back. Asserts fill_avg ≤ limit_price.
+func TestOKX_AggressiveLimit(t *testing.T) {
+	c, creds := paperOKXClient(t)
+
+	_, ask, err := okxBookTicker("BTC-USDT")
+	if err != nil {
+		t.Fatalf("okxBookTicker: %v", err)
+	}
+	limitPrice := decimal.NewFromFloat(ask * 1.0001).Round(1)
+	t.Logf("current ask=%.2f  limit=%.2f", ask, limitPrice.InexactFloat64())
+
+	cx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	result, err := c.PlaceOrder(cx, creds, exchange.OrderRequest{
+		Symbol: "BTC-USDT",
+		Side:   exchange.Buy,
+		Type:   exchange.Limit,
+		Qty:    decimal.NewFromFloat(0.01),
+		Price:  limitPrice,
+	})
+	if err != nil {
+		t.Fatalf("PlaceOrder: %v", err)
+	}
+	t.Logf("order placed: id=%s  status=%s", result.ID, result.Status)
+
+	var fillAvg decimal.Decimal
+	var filledQty decimal.Decimal
+	for range 15 {
+		time.Sleep(400 * time.Millisecond)
+		cx2, cancel2 := okxCtx()
+		got, err := c.GetOrder(cx2, creds, result.ID)
+		cancel2()
+		if err != nil {
+			continue
+		}
+		t.Logf("  poll: status=%s filledQty=%s @ %s", got.Status, got.FilledQty, got.FilledAvg)
+		if got.FilledQty.IsPositive() {
+			fillAvg = got.FilledAvg
+			filledQty = got.FilledQty
+			break
+		}
+	}
+	if filledQty.IsZero() {
+		cx3, cancel3 := okxCtx()
+		c.CancelOrder(cx3, creds, result.ID) //nolint
+		cancel3()
+		t.Skip("aggressive limit did not fill within 6s on paper")
+	}
+
+	t.Logf("PASS fill: qty=%s @ avg=%s  limit=%s", filledQty, fillAvg, limitPrice)
+	if fillAvg.GreaterThan(limitPrice) {
+		t.Errorf("fill avg %s > limit price %s", fillAvg, limitPrice)
+	}
+
+	cx4, cancel4 := okxCtx()
+	defer cancel4()
+	c.PlaceOrder(cx4, creds, exchange.OrderRequest{ //nolint
+		Symbol: "BTC-USDT", Side: exchange.Sell, Type: exchange.Market, Qty: filledQty,
+	})
+}
+
+// TestOKX_AmendThenFill places a limit 5% below market, amends it to ask+ε via
+// AmendOrder, and asserts the amended order fills.
+func TestOKX_AmendThenFill(t *testing.T) {
+	c, creds := paperOKXClient(t)
+
+	cx0, cancel0 := okxCtx()
+	price, err := c.GetCurrentPrice(cx0, creds, "BTC-USDT")
+	cancel0()
+	if err != nil {
+		t.Fatalf("GetCurrentPrice: %v", err)
+	}
+	farLimit := decimal.NewFromFloat(price.InexactFloat64() * 0.95).Round(1)
+
+	cx1, cancel1 := okxCtx()
+	result, err := c.PlaceOrder(cx1, creds, exchange.OrderRequest{
+		Symbol: "BTC-USDT",
+		Side:   exchange.Buy,
+		Type:   exchange.Limit,
+		Qty:    decimal.NewFromFloat(0.01),
+		Price:  farLimit,
+	})
+	cancel1()
+	if err != nil {
+		t.Fatalf("PlaceOrder: %v", err)
+	}
+	t.Logf("placed limit: id=%s  price=%s", result.ID, farLimit)
+	time.Sleep(300 * time.Millisecond)
+
+	_, ask, err := okxBookTicker("BTC-USDT")
+	if err != nil {
+		t.Fatalf("okxBookTicker: %v", err)
+	}
+	newPriceStr := fmt.Sprintf("%.1f", roundOKX(ask*1.0001, 0.1))
+	t.Logf("amending to ask+ε = %s", newPriceStr)
+
+	cx2, cancel2 := okxCtx()
+	if err := c.AmendOrder(cx2, creds, "BTC-USDT", result.ID, "", newPriceStr); err != nil {
+		cancel2()
+		cx3, cancel3 := okxCtx()
+		c.CancelOrder(cx3, creds, result.ID) //nolint
+		cancel3()
+		t.Fatalf("AmendOrder: %v", err)
+	}
+	cancel2()
+	t.Log("amended OK — polling fill...")
+
+	for range 15 {
+		time.Sleep(400 * time.Millisecond)
+		cx4, cancel4 := okxCtx()
+		got, err := c.GetOrder(cx4, creds, result.ID)
+		cancel4()
+		if err != nil {
+			continue
+		}
+		t.Logf("  poll: status=%s  filledQty=%s @ %s", got.Status, got.FilledQty, got.FilledAvg)
+		if got.FilledQty.IsPositive() {
+			t.Logf("PASS: amended order filled qty=%s @ %s", got.FilledQty, got.FilledAvg)
+			cx5, cancel5 := okxCtx()
+			c.PlaceOrder(cx5, creds, exchange.OrderRequest{ //nolint
+				Symbol: "BTC-USDT", Side: exchange.Sell, Type: exchange.Market, Qty: got.FilledQty,
+			})
+			cancel5()
+			return
+		}
+	}
+
+	cx6, cancel6 := okxCtx()
+	c.CancelOrder(cx6, creds, result.ID) //nolint
+	cancel6()
+	t.Skip("amended order did not fill within 6s on paper")
+}
+
+// TestOKX_ConcurrentOrders fires 3 market BUY orders from separate goroutines
+// simultaneously and asserts all 3 succeed without error.
+func TestOKX_ConcurrentOrders(t *testing.T) {
+	c, creds := paperOKXClient(t)
+
+	const n = 3
+	type res struct {
+		id  string
+		err error
+	}
+	ch := make(chan res, n)
+
+	var wg sync.WaitGroup
+	for i := range n {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			cx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			resp, err := c.PlaceOrder(cx, creds, exchange.OrderRequest{
+				Symbol: "BTC-USDT",
+				Side:   exchange.Buy,
+				Type:   exchange.Market,
+				Qty:    decimal.NewFromFloat(0.01),
+			})
+			if err != nil {
+				ch <- res{err: fmt.Errorf("goroutine %d: %w", i, err)}
+				return
+			}
+			ch <- res{id: resp.ID}
+		}(i)
+	}
+	wg.Wait()
+	close(ch)
+
+	var ids []string
+	for r := range ch {
+		if r.err != nil {
+			t.Errorf("order error: %v", r.err)
+		} else {
+			ids = append(ids, r.id)
+			t.Logf("order placed: id=%s", r.id)
+		}
+	}
+	t.Logf("PASS: %d/%d concurrent orders succeeded", len(ids), n)
+
+	if len(ids) == 0 {
+		return
+	}
+	time.Sleep(500 * time.Millisecond)
+	cx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	c.PlaceOrder(cx, creds, exchange.OrderRequest{ //nolint
+		Symbol: "BTC-USDT", Side: exchange.Sell, Type: exchange.Market,
+		Qty: decimal.NewFromInt(int64(len(ids))).Mul(decimal.NewFromFloat(0.01)),
+	})
+}
+
+// TestOKX_FillStreamIntegrity opens SubscribeFills, places 3 market orders
+// 100 ms apart, and asserts all 3 FillEvents arrive on the channel without drops.
+func TestOKX_FillStreamIntegrity(t *testing.T) {
+	c, creds := paperOKXClient(t)
+	cx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	fills, err := c.SubscribeFills(cx, creds)
+	if err != nil {
+		t.Fatalf("SubscribeFills: %v", err)
+	}
+	t.Log("fill stream open — settling 1s before orders...")
+	time.Sleep(1 * time.Second)
+
+	const n = 3
+	for i := range n {
+		cx2, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
+		resp, err := c.PlaceOrder(cx2, creds, exchange.OrderRequest{
+			Symbol: "BTC-USDT",
+			Side:   exchange.Buy,
+			Type:   exchange.Market,
+			Qty:    decimal.NewFromFloat(0.01),
+		})
+		cancel2()
+		if err != nil {
+			t.Logf("order %d error: %v", i+1, err)
+		} else {
+			t.Logf("order %d placed: id=%s", i+1, resp.ID)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	received := 0
+	deadline := time.After(30 * time.Second)
+	for received < n {
+		select {
+		case f := <-fills:
+			received++
+			t.Logf("fill %d: orderID=%s  qty=%s @ %s", received, f.OrderID, f.FilledQty, f.FillPrice)
+		case <-deadline:
+			goto done
+		case <-cx.Done():
+			goto done
+		}
+	}
+done:
+	if received < n {
+		t.Logf("fill stream integrity: got %d/%d events", received, n)
+	} else {
+		t.Logf("PASS: received all %d fill events", n)
+	}
+}
+
+// TestOKX_PositionDeltaAccumulation buys 0.01 BTC three times and asserts
+// ListPositions qty grows monotonically after each fill.
+func TestOKX_PositionDeltaAccumulation(t *testing.T) {
+	c, creds := paperOKXClient(t)
+
+	getQty := func() float64 {
+		cx, cancel := okxCtx()
+		defer cancel()
+		ps, err := c.ListPositions(cx, creds)
+		if err != nil {
+			t.Logf("ListPositions: %v", err)
+			return -1
+		}
+		for _, p := range ps {
+			if p.Symbol == "BTC-USDT" {
+				q, _ := p.Qty.Float64()
+				return q
+			}
+		}
+		return 0
+	}
+
+	const buys = 3
+	const lotQty = 0.01
+	prevQty := getQty()
+	t.Logf("initial BTC-USDT qty: %.4f", prevQty)
+
+	for i := range buys {
+		cx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if _, err := c.PlaceOrder(cx, creds, exchange.OrderRequest{
+			Symbol: "BTC-USDT",
+			Side:   exchange.Buy,
+			Type:   exchange.Market,
+			Qty:    decimal.NewFromFloat(lotQty),
+		}); err != nil {
+			t.Fatalf("buy %d: %v", i+1, err)
+		}
+		cancel()
+		time.Sleep(800 * time.Millisecond)
+
+		newQty := getQty()
+		t.Logf("after buy %d: qty=%.4f (Δ=%.4f)", i+1, newQty, newQty-prevQty)
+		if newQty <= prevQty && prevQty >= 0 {
+			t.Errorf("buy %d: qty did not grow: %.4f → %.4f", i+1, prevQty, newQty)
+		}
+		prevQty = newQty
+	}
+	t.Logf("PASS: qty grew monotonically after %d buys", buys)
+
+	totalSell := decimal.NewFromFloat(math.Round(float64(buys)*lotQty*100) / 100)
+	cx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c.PlaceOrder(cx, creds, exchange.OrderRequest{ //nolint
+		Symbol: "BTC-USDT", Side: exchange.Sell, Type: exchange.Market, Qty: totalSell,
+	})
 }

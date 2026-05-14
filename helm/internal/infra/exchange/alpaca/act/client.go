@@ -29,6 +29,14 @@ func New(cfg Config) *Client {
 	return &Client{baseURL: baseURL}
 }
 
+var (
+	_ exchange.Exchange        = (*Client)(nil)
+	_ exchange.ExitOrderPlacer = (*Client)(nil)
+	_ exchange.AccountSyncer   = (*Client)(nil)
+	_ exchange.AccountStreamer = (*Client)(nil)
+	_ exchange.HistoryFetcher  = (*Client)(nil)
+)
+
 func (c *Client) Name() string { return "alpaca" }
 
 // newSDK creates an Alpaca trading SDK client with the given credentials.

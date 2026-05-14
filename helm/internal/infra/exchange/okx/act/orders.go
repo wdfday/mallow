@@ -118,7 +118,8 @@ func (c *Client) GetPendingOrders(ctx context.Context, creds exchange.Credential
 
 // AmendOrder modifies price or qty of an existing live order.
 func (c *Client) AmendOrder(ctx context.Context, creds exchange.Credentials, instID, orderID, newSz, newPx string) error {
-	body := map[string]string{"instId": instID, "ordId": orderID}
+	_, ordID := parseOKXOrderID(orderID) // strip "instID:" prefix if present
+	body := map[string]string{"instId": instID, "ordId": ordID}
 	if newSz != "" {
 		body["newSz"] = newSz
 	}

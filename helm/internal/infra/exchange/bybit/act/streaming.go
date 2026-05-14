@@ -19,7 +19,7 @@ import (
 
 const (
 	bybitPrivateWSURL      = "wss://stream.bybit.com/v5/private"
-	bybitPrivateWSPaperURL = "wss://stream-testnet.bybit.com/v5/private"
+	bybitPrivateWSPaperURL = "wss://stream-demo.bybit.com/v5/private"
 	bybitWsPingInterval    = 20 * time.Second
 )
 

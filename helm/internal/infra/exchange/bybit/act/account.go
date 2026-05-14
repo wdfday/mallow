@@ -53,9 +53,14 @@ func (c *Client) GetWalletBalance(ctx context.Context, creds exchange.Credential
 	coins := make([]WalletBalance, 0, len(acct.Coin))
 	for _, coin := range acct.Coin {
 		if wb := parseFloat(coin.WalletBalance); wb > 0 {
+			// UNIFIED accounts use availableBalance for trading; SPOT uses availableToWithdraw.
+			free := parseFloat(coin.AvailableBalance)
+			if free == 0 {
+				free = parseFloat(coin.AvailableToWithdraw)
+			}
 			coins = append(coins, WalletBalance{
 				Coin:                coin.Coin,
-				Free:                parseFloat(coin.AvailableToWithdraw),
+				Free:                free,
 				Locked:              parseFloat(coin.Locked),
 				WalletBalance:       wb,
 				UnrealizedPL:        parseFloat(coin.UnrealizedPnl),

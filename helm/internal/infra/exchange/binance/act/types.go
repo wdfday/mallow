@@ -109,7 +109,7 @@ func slippagePrice(stopTrigger decimal.Decimal, exitSide exchange.OrderSide) dec
 	one := decimal.NewFromInt(1)
 	buf := decimal.NewFromFloat(exitSlippageRate)
 	if exitSide == exchange.Sell {
-		return stopTrigger.Mul(one.Sub(buf))
+		return stopTrigger.Mul(one.Sub(buf)).Round(2)
 	}
-	return stopTrigger.Mul(one.Add(buf))
+	return stopTrigger.Mul(one.Add(buf)).Round(2)
 }

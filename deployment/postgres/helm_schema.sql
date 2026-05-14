@@ -17,8 +17,6 @@ CREATE TABLE IF NOT EXISTS helms (
     user_id         UUID            NOT NULL,                -- → identity.users.id
     account_id      UUID            NOT NULL UNIQUE,         -- → investment.accounts.id
     name            TEXT            NOT NULL,
-    capital         DOUBLE PRECISION NOT NULL DEFAULT 0,     -- total capital budget (quote currency)
-    exchange_config JSONB           NOT NULL DEFAULT '{}',   -- ExchangeConfig: broker creds
     portfolio       JSONB           NOT NULL DEFAULT '{}',   -- PortfolioConfig: allocation rules
     risk_config     JSONB           NOT NULL DEFAULT '{}',   -- RiskConfig: circuit-breakers
     enabled         BOOLEAN         NOT NULL DEFAULT FALSE,  -- user toggle; gates hand CRUD
@@ -68,3 +66,27 @@ CREATE TABLE IF NOT EXISTS hand_equity_log (
 );
 
 CREATE INDEX IF NOT EXISTS idx_hand_equity_log_hand_ts ON hand_equity_log(hand_id, ts);
+
+-- ── hand_trade_log ────────────────────────────────────────────────────────────
+-- Append-only closed round-trip trades written when a position is fully exited.
+-- Dedup contract: same (hand_id, entry_ts, exit_ts) → ON CONFLICT DO NOTHING.
+
+CREATE TABLE IF NOT EXISTS hand_trade_log (
+    id        UUID   NOT NULL DEFAULT gen_random_uuid(),
+    hand_id   UUID   NOT NULL REFERENCES hands(id) ON DELETE CASCADE,
+    symbol    TEXT   NOT NULL,
+    side      TEXT   NOT NULL CHECK (side IN ('buy', 'sell')),
+    qty       FLOAT8 NOT NULL,
+    entry_px  FLOAT8 NOT NULL,
+    exit_px   FLOAT8 NOT NULL,
+    entry_ts  BIGINT NOT NULL,  -- Unix ms
+    exit_ts   BIGINT NOT NULL,  -- Unix ms
+    pnl       FLOAT8 NOT NULL,
+    pnl_pct   FLOAT8 NOT NULL,
+    PRIMARY KEY (id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS uidx_hand_trade_log_round_trip
+    ON hand_trade_log(hand_id, entry_ts, exit_ts);
+CREATE INDEX IF NOT EXISTS idx_hand_trade_log_hand_exit
+    ON hand_trade_log(hand_id, exit_ts);

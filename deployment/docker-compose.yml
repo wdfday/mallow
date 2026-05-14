@@ -184,7 +184,7 @@ services:
   helm:
     build:
       context: ..
-      dockerfile: orchestrator/Dockerfile
+      dockerfile: helm/Dockerfile
     image: helm:latest
     container_name: helm
     ports:
@@ -197,19 +197,18 @@ services:
     environment:
       NATS_URL: nats://helm:${NATS_PASS_HELM:-helm-dev}@nats:4222
       POSTGRES_URL: "postgres://mallow:${POSTGRES_PASSWORD:-mallow-dev}@postgres:5432/helm?sslmode=disable"
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
       API_ADDR: "0.0.0.0:8084"
-      PYROSCOPE_URL: http://pyroscope:4040
       SYNC_INTERVAL: ${SYNC_INTERVAL:-5m}
-      INITIAL_CAPITAL: ${INITIAL_CAPITAL:-100000}
-      # Alpaca
-      ALPACA_API_KEY: ${ALPACA_API_KEY:-}
-      ALPACA_API_SECRET: ${ALPACA_API_SECRET:-}
-      ALPACA_BASE_URL: ${ALPACA_BASE_URL:-https://paper-api.alpaca.markets}
-      OKX_DEMO: ${OKX_DEMO:-true}
-      # OANDA
-      OANDA_TOKEN: ${OANDA_TOKEN:-}
-      OANDA_ACCOUNT_ID: ${OANDA_ACCOUNT_ID:-}
+      GIN_MODE: ${GIN_MODE:-release}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FILE: ${HELM_LOG_FILE:-}
+      PYROSCOPE_URL: ${PYROSCOPE_URL:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8084/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
   # ═══════════════════════════════════════════════════════════════════
@@ -235,6 +234,9 @@ services:
       NATS_URL: "nats://investment:${NATS_PASS_INVESTMENT:-investment-dev}@nats:4222"
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
       GIN_MODE: ${GIN_MODE:-release}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_ENV: ${LOG_ENV:-production}
+      LOG_FILE: ${INVESTMENT_LOG_FILE:-}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     restart: unless-stopped
     healthcheck:
@@ -310,10 +312,7 @@ services:
       INVESTMENT_URL: http://investment:8083
       HELM_URL: http://helm:8084
       STRATEGIST_URL: http://strategist:8081
-      # LOGBOOK_URL retained as the env key the Go gateway currently reads —
-      # points at herald. Rename to HERALD_URL in a follow-up once the Go
-      # side is refactored (cf. TODO `deployment_docker`).
-      LOGBOOK_URL: http://herald:8090
+      HERALD_URL: http://herald:8090
       REDIS_URL: redis://redis:6379
       GIN_MODE: ${GIN_MODE:-release}
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}

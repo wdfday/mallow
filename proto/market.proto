@@ -51,7 +51,7 @@ message BarMsg {
 message SignalMsg {
   int64  t        = 1;  // Unix milliseconds
   string s        = 2;  // symbol
-  string dir      = 3;  // "long" | "short" | "close"
+  string dir      = 3;  // "long" | "short" | "exit"
   double strength = 4;  // conviction [0.0, 1.0] — derived from indicator values
 
   // Entry reference price (bar.close at signal time).
@@ -70,6 +70,11 @@ message SignalMsg {
   // Human-readable reason for this signal — logged by helm for auditability.
   // Not used for execution logic. E.g. "ema9 cross above H4 ema20, rsi < 60".
   optional string reason       = 11;
+
+  // ATR (Average True Range) at bar close — forwarded from the herald ledger.
+  // Used by helm's tactician for ATR-based stop-loss / take-profit sizing and
+  // the volatility position-sizing mode. Zero when the strategy does not use ATR.
+  optional double atr          = 12;
 
   // Pattern metadata (populated by pattern_breakout strategy only).
   optional string pattern_kind = 7;

@@ -72,7 +72,10 @@ func buildRouter(cfg config.Config, h *handler.Handler, rdb *redis.Client, ident
 
 	// ── Protected routes ─────────────────────────────────────────────────
 	r.Any("/api/v1/investment/*path", jwtAuth, injectHeaders, investmentProxy)
-	r.Any("/api/v1/helm/*path", jwtAuth, injectHeaders, helmProxy)
+	r.Any("/api/v1/helms", jwtAuth, injectHeaders, helmProxy)
+	r.Any("/api/v1/helms/*path", jwtAuth, injectHeaders, helmProxy)
+	r.Any("/api/v1/hands", jwtAuth, injectHeaders, helmProxy)
+	r.Any("/api/v1/hands/*path", jwtAuth, injectHeaders, helmProxy)
 	r.Any("/api/v1/strategist/*path", jwtAuth, injectHeaders, strategistProxy)
 
 	// Protected endpoints

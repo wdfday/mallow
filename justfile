@@ -8,7 +8,7 @@ default:
 
 # Start infra only (nats + postgres + redis + nats-ui + cloudflared)
 infra:
-    {{dc}} --profile monitoring up -d nats postgres redis nats-ui cloudflared
+    {{dc}} --profile monitoring up -d nats postgres redis nats-ui cloudflared identity
 
 # Start infra + monitoring stack (Grafana :3000, nats-ui :3001)
 infra-mon:

@@ -150,9 +150,9 @@ func (h *Handler) SwaggerIndex(c *gin.Context) {
         </div>
       </article>
       <article class="card">
-        <p class="eyebrow">Orchestrator</p>
-        <h2>Bots and runtime APIs</h2>
-        <p>Swagger UI is proxied publicly, while protected API calls run through gateway auth at <code>/api/v1/helm</code>.</p>
+        <p class="eyebrow">Helm</p>
+        <h2>Helms and hands APIs</h2>
+        <p>Trade execution service. Helms at <code>/api/v1/helms</code>, autonomous bots (hands) at <code>/api/v1/hands</code>.</p>
         <div class="actions">
           <a class="button" href="/swagger/orchestrator/index.html">Open Swagger UI</a>
           <a class="link" href="/swagger/orchestrator/doc.json">Open spec JSON</a>

@@ -3,6 +3,7 @@
 .env.local
 .env.*.local
 deployment/.env
+**/creds_test.go
 
 # ── Go ────────────────────────────────────────────────────────────────────────
 # Binaries
@@ -30,14 +31,7 @@ Thumbs.db
 # keep Dockerfiles, ignore compose overrides
 docker-compose.override.yml
 
-
-# ── OpenAPI ───────────────────────────────────────────────────────────────────
-/**/swagger.json
-/**/swagger.yaml
-
 # ── data ───────────────────────────────────────────────────────────────────
 *.parquet
 monitoring/grafana/provisioning/dashboards/*.json
-/reference
 *.json
-

@@ -39,18 +39,18 @@ func InvestmentProxy(investmentURL string) gin.HandlerFunc {
 	})
 }
 
-// HelmProxy returns a gin handler that reverse-proxies to the orchestrator service.
-// Public gateway paths use /api/v1/helm/* and are rewritten to the upstream /api/* surface.
+// HelmProxy returns a gin handler that reverse-proxies to the helm service.
+// Gateway paths /api/v1/helms/* and /api/v1/hands/* are rewritten to the upstream /api/* surface.
 func HelmProxy(orchestratorURL string) gin.HandlerFunc {
 	return newProxy(orchestratorURL, func(path string) string {
 		if rest, ok := strings.CutPrefix(path, "/swagger/orchestrator/"); ok {
 			return "/swagger/" + rest
 		}
-		if rest, ok := strings.CutPrefix(path, "/api/v1/helm/"); ok {
-			return "/api/" + rest
+		if rest, ok := strings.CutPrefix(path, "/api/v1/helms"); ok {
+			return "/api/helms" + rest
 		}
-		if path == "/api/v1/helm" {
-			return "/api"
+		if rest, ok := strings.CutPrefix(path, "/api/v1/hands"); ok {
+			return "/api/hands" + rest
 		}
 		return path
 	})

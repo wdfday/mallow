@@ -9,6 +9,7 @@ package logger
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"os"
 	"strings"
@@ -68,6 +69,38 @@ func WithContext(ctx context.Context, l *slog.Logger) context.Context {
 // Call once in main() for services that use slog.Info / slog.Error directly.
 func Default(service string) {
 	slog.SetDefault(New(service))
+}
+
+// Setup initialises the global slog default with text format.
+// Reads LOG_LEVEL (debug|info|warn|error) and LOG_FILE (path).
+// When LOG_FILE is set, logs go to both stdout and the file (append mode).
+// Returns a cleanup func that must be deferred in main().
+func Setup(service string) func() {
+	level := parseLevel(os.Getenv("LOG_LEVEL"))
+
+	var w io.Writer = os.Stdout
+	var closeFile func()
+
+	if path := os.Getenv("LOG_FILE"); path != "" {
+		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+		if err != nil {
+			slog.Warn("logger: could not open log file, using stdout only", "path", path, "err", err)
+		} else {
+			w = io.MultiWriter(os.Stdout, f)
+			closeFile = func() { _ = f.Close() }
+		}
+	}
+
+	handler := slog.NewTextHandler(w, &slog.HandlerOptions{
+		Level:     level,
+		AddSource: level == slog.LevelDebug,
+	})
+	slog.SetDefault(slog.New(handler).With("service", service))
+
+	if closeFile != nil {
+		return closeFile
+	}
+	return func() {}
 }
 
 func parseLevel(s string) slog.Level {

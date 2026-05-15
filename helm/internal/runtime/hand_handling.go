@@ -396,10 +396,17 @@ func (b *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 				b.rt.Creds.AccountType == exchange.AccountFuturesCOINM {
 				market = exchange.MarketFutures
 			}
+			// Capture the hand's lifecycle context so the goroutine exits
+			// immediately when Hand.Stop() is called — prevents goroutine leaks
+			// when tests or operators shut down a hand during the retry window.
+			b.mu.RLock()
+			handCtx := b.ctx
+			b.mu.RUnlock()
+
 			go func(el exitLevel) {
 				// Retry loop: spot exchanges may return "insufficient balance" briefly after
 				// a fill if the asset has not yet settled into the available balance.
-				// Retry up to 3 times with exponential backoff (1s, 2s, 4s).
+				// Retries up to 5× with linear backoff (1s, 2s … 5s = 15s total).
 				exitReq := exchange.ExitOrderRequest{
 					Symbol:     symbol,
 					Market:     market,
@@ -411,8 +418,13 @@ func (b *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 				var result *exchange.ExitOrderResult
 				var err error
 				for attempt := 1; attempt <= 5; attempt++ {
-					time.Sleep(time.Duration(attempt) * time.Second)
-					exitCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					select {
+					case <-handCtx.Done():
+						slog.Info("bot: exit order goroutine cancelled (hand stopped)", "hand_id", b.id, "symbol", symbol)
+						return
+					case <-time.After(time.Duration(attempt) * time.Second):
+					}
+					exitCtx, cancel := context.WithTimeout(handCtx, 10*time.Second)
 					result, err = placer.PlaceExitOrders(exitCtx, b.rt.Creds, exitReq)
 					cancel()
 					if err == nil {

@@ -44,6 +44,9 @@ type okxTestEnv struct {
 
 func newOKXEnv(t *testing.T) *okxTestEnv {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping exchange integration test in -short mode")
+	}
 	if okxPaperAPIKey == "" {
 		t.Skip("OKX paper credentials not set in creds_test.go")
 	}

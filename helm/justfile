@@ -18,9 +18,21 @@ run:
 dev:
     ~/.go/bin/air
 
-# Run tests
+# Run unit tests (no credentials, no exchange I/O, max 2 packages in parallel)
 test:
-    go test ./...
+    go test -p 2 -count=1 -short ./...
+
+# Run only fast unit tests (excludes runtime integration package)
+test-unit:
+    go test -p 2 -count=1 -short \
+        ./internal/runtime/core/... \
+        ./internal/module/...
+
+# Run runtime integration tests (requires live credentials + market hours)
+# Usage: just test-int TestBinance_
+test-int filter="TestBinance_":
+    go test -v -count=1 -run "{{filter}}" \
+        ./internal/runtime/ -timeout 120s
 
 # Format source files
 fmt:

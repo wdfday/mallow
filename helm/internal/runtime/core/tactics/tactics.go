@@ -92,11 +92,6 @@ type SizingConfig struct {
 	FixedQty        decimal.Decimal `json:"fixed_qty"`          // for fixed_qty mode
 	FixedQuoteQty   decimal.Decimal `json:"fixed_quote_qty"`    // for quote_qty mode (e.g. 1000 USDT per trade)
 
-	// Limit order lifecycle. Applies to EntryLimit orders only.
-	// LimitTimeoutSec: cancel the order if not filled within N seconds (0 = no timeout).
-	// LimitFallback: action after timeout — "cancel" (default) | "market" (re-place as market).
-	LimitTimeoutSec int    `json:"limit_timeout_sec,omitempty"`
-	LimitFallback   string `json:"limit_fallback,omitempty"` // "cancel" | "market"
 }
 
 // DefaultSizingConfig returns sensible defaults.

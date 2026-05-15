@@ -27,6 +27,9 @@ type depthLevel struct {
 
 func demoClient(t *testing.T) (*Client, exchange.Credentials) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping exchange integration test in -short mode")
+	}
 	if bybitTestAPIKey == "" || bybitTestAPISecret == "" {
 		t.Skip("bybit demo credentials not set in creds_test.go")
 	}

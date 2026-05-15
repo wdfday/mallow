@@ -129,6 +129,9 @@ func cancelAllOrders(t *testing.T, rt *runtime.HelmRuntime, hand *runtime.Hand) 
 // ── Binance Demo ──────────────────────────────────────────────────────────────
 
 func TestSignalToOrder_Binance(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping exchange integration test in -short mode")
+	}
 	if binanceDemoAPIKey == "" {
 		t.Skip("binance demo credentials not set in creds_test.go")
 	}
@@ -184,6 +187,9 @@ func TestSignalToOrder_Binance(t *testing.T) {
 // ── OKX Simulated ─────────────────────────────────────────────────────────────
 
 func TestSignalToOrder_OKX(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping exchange integration test in -short mode")
+	}
 	if okxPaperAPIKey == "" {
 		t.Skip("OKX paper credentials not set in creds_test.go")
 	}
@@ -238,6 +244,9 @@ func TestSignalToOrder_OKX(t *testing.T) {
 // ── Bybit Demo ────────────────────────────────────────────────────────────────
 
 func TestSignalToOrder_Bybit(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping exchange integration test in -short mode")
+	}
 	if bybitTestAPIKey == "" {
 		t.Skip("Bybit demo credentials not set in creds_test.go")
 	}
@@ -294,6 +303,9 @@ func TestSignalToOrder_Bybit(t *testing.T) {
 // ── Alpaca Paper ──────────────────────────────────────────────────────────────
 
 func TestSignalToOrder_Alpaca(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping exchange integration test in -short mode")
+	}
 	if alpacaPaperAPIKey == "" {
 		t.Skip("Alpaca paper credentials not set in creds_test.go")
 	}

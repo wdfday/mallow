@@ -61,6 +61,9 @@ func isUSMarketOpen() bool {
 
 func newAlpacaEnv(t *testing.T) *alpacaTestEnv {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping exchange integration test in -short mode")
+	}
 	if alpacaPaperAPIKey == "" {
 		t.Skip("Alpaca paper credentials not set in creds_test.go")
 	}

@@ -13,15 +13,15 @@ import (
 
 // PortfolioConfigDTO is the API shape for account-level capital allocation settings.
 type PortfolioConfigDTO struct {
-	MaxPositions   int     `json:"max_positions" binding:"omitempty,min=1"`
-	MaxPositionPct float64 `json:"max_position_pct" binding:"omitempty,gt=0,lte=1"`
-	ReserveRatio   float64 `json:"reserve_ratio" binding:"omitempty,gte=0,lt=1"`
+	MaxPositions   int     `json:"max_positions,omitempty" binding:"omitempty,min=1"`
+	MaxPositionPct float64 `json:"max_position_pct,omitempty" binding:"omitempty,gt=0,lte=1"`
+	ReserveRatio   float64 `json:"reserve_ratio,omitempty" binding:"omitempty,gte=0,lt=1"`
 }
 
 // RiskConfigDTO is the API shape for account-level risk circuit-breakers.
 type RiskConfigDTO struct {
-	DailyLossLimitPct float64 `json:"daily_loss_limit_pct" binding:"omitempty,gt=0,lte=1"`
-	MaxDrawdownPct    float64 `json:"max_drawdown_pct" binding:"omitempty,gt=0,lte=1"`
+	DailyLossLimitPct float64 `json:"daily_loss_limit_pct,omitempty" binding:"omitempty,gt=0,lte=1"`
+	MaxDrawdownPct    float64 `json:"max_drawdown_pct,omitempty" binding:"omitempty,gt=0,lte=1"`
 }
 
 // ── Response DTOs ──────────────────────────────────────────────────────────

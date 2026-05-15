@@ -33,6 +33,9 @@ import (
 const natsURL = "nats://helm:helm-dev@127.0.0.1:4222"
 
 func TestPoslog_E2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping exchange integration test in -short mode")
+	}
 	if binanceDemoAPIKey == "" {
 		t.Skip("binance demo credentials not set in creds_test.go")
 	}

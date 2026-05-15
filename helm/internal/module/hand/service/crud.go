@@ -53,7 +53,18 @@ func (s *Service) Create(cfg domain.HandConfig) (*runtime.HandRef, error) {
 	if len(cfg.Symbols) == 0 {
 		return nil, fmt.Errorf("at least one symbol is required")
 	}
+	for _, sym := range cfg.Symbols {
+		if sym == "" {
+			return nil, fmt.Errorf("symbols must not contain empty strings")
+		}
+	}
+	if err := cfg.Strategy.Validate(); err != nil {
+		return nil, err
+	}
 	cfg.Defaults()
+	if err := validateSizingConfig(cfg.Position); err != nil {
+		return nil, err
+	}
 
 	rt, err := s.registry.Get(cfg.HelmID)
 	if err != nil {
@@ -159,6 +170,26 @@ func (s *Service) Delete(id uuid.UUID) error {
 	delete(s.hands, id)
 	s.mu.Unlock()
 	slog.Info("hand deleted", "id", id)
+	return nil
+}
+
+// validateSizingConfig enforces cross-field invariants for sizing modes.
+// Called after Defaults() so SizeMode is always non-empty.
+func validateSizingConfig(p domain.PositionConfig) error {
+	switch p.SizeMode {
+	case "fixed_qty":
+		if p.FixedQty.IsZero() {
+			return fmt.Errorf("position: fixed_qty mode requires fixed_qty > 0")
+		}
+	case "quote_qty":
+		if p.FixedQuoteQty.IsZero() {
+			return fmt.Errorf("position: quote_qty mode requires fixed_quote_qty > 0")
+		}
+	case "volatility":
+		if p.RiskPerTradePct == 0 {
+			return fmt.Errorf("position: volatility mode requires risk_per_trade_pct > 0")
+		}
+	}
 	return nil
 }
 

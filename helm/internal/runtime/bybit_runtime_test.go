@@ -44,6 +44,9 @@ type bybitTestEnv struct {
 
 func newBybitEnv(t *testing.T) *bybitTestEnv {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping exchange integration test in -short mode")
+	}
 	if bybitTestAPIKey == "" {
 		t.Skip("Bybit demo credentials not set in creds_test.go")
 	}

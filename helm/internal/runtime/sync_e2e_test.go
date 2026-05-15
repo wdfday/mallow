@@ -36,6 +36,9 @@ import (
 )
 
 func TestSync_E2E(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping exchange integration test in -short mode")
+	}
 	// ── Prerequisites ──────────────────────────────────────────────────────────
 	natsURL := os.Getenv("NATS_URL")
 	if natsURL == "" {

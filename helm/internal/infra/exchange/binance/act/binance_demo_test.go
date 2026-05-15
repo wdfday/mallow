@@ -27,6 +27,9 @@ func roundTick(price, tick float64) float64 {
 
 func demoClient(t *testing.T) (*Client, exchange.Credentials) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping exchange integration test in -short mode")
+	}
 	if binanceDemoAPIKey == "" || binanceDemoAPISecret == "" {
 		t.Skip("binance demo credentials not set in creds_test.go")
 	}

@@ -21,6 +21,9 @@ import (
 
 func paperOKXClient(t *testing.T) (*Client, exchange.Credentials) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping exchange integration test in -short mode")
+	}
 	if okxPaperAPIKey == "" || okxPaperAPISecret == "" || okxPaperPassphrase == "" {
 		t.Skip("okx paper credentials not set in creds_test.go")
 	}

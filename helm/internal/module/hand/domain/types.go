@@ -34,24 +34,24 @@ const (
 // rhai_strategy; indicators declared via ind.TYPE(period) syntax.
 type StrategySpec struct {
 	// Rhai script — full Rhai source code (required)
-	Script string `json:"script"`
+	Script string `json:"script" binding:"required"`
 
 	// Timeframe the script operates on (e.g. "M1", "M5", "H1", "D1").
 	// Defaults to "M1" via HandConfig.Defaults().
-	Timeframe string `json:"timeframe,omitempty"`
+	Timeframe string `json:"timeframe,omitempty" binding:"omitempty,oneof=M1 M5 M15 M30 H1 H4 D1 W1"`
 
 	// CandleType controls the bar transform applied before indicators:
 	//   ""              / "raw"         — standard OHLCV (default)
 	//   "heiken_ashi"   / "ha"          — Heikin Ashi
 	//   "smooth_ha"                     — EMA-smoothed Heikin Ashi (see SmoothPeriod)
-	CandleType string `json:"candle_type,omitempty"`
+	CandleType string `json:"candle_type,omitempty" binding:"omitempty,oneof=raw heiken_ashi ha smooth_ha"`
 
 	// SmoothPeriod is the EMA period for "smooth_ha" mode (default 3, min 2).
 	// Ignored for other candle types.
-	SmoothPeriod int `json:"smooth_period,omitempty"`
+	SmoothPeriod int `json:"smooth_period,omitempty" binding:"omitempty,min=2,max=100"`
 
 	// Signal strength filter [0–1]
-	MinStrength float64 `json:"min_strength,omitempty"`
+	MinStrength float64 `json:"min_strength,omitempty" binding:"omitempty,gte=0,lte=1"`
 }
 
 // validTimeframes is the set of timeframe strings accepted by herald.
@@ -210,6 +210,9 @@ func (c *HandConfig) Defaults() {
 	}
 	if c.Strategy.MinStrength == 0 {
 		c.Strategy.MinStrength = 0.3
+	}
+	if c.Position.LimitTimeoutSec > 0 && c.Position.LimitFallback == "" {
+		c.Position.LimitFallback = "cancel"
 	}
 }
 

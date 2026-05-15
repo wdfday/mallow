@@ -23,6 +23,9 @@ import (
 
 func paperClient(t *testing.T) (*Client, exchange.Credentials) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping exchange integration test in -short mode")
+	}
 	key := os.Getenv("ALPACA_API_KEY")
 	if key == "" {
 		key = alpacaPaperAPIKey

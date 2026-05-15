@@ -110,6 +110,7 @@ type Hand struct {
 	mu           sync.RWMutex
 	running      bool
 	paused       bool
+	ctx          context.Context // cancelled when Stop() is called; used by goroutines spawned during run
 	cancel       context.CancelFunc
 	done         chan struct{}
 	orders       []domain.Order
@@ -320,8 +321,6 @@ func BuildHandComponents(b *domain.Hand) (strategy.Strategy, *tactics.Tactician)
 		MaxPositionPct:   b.Position.MaxPositionPct,
 		FixedQty:         b.Position.FixedQty,
 		FixedQuoteQty:    b.Position.FixedQuoteQty,
-		LimitTimeoutSec:  b.Position.LimitTimeoutSec,
-		LimitFallback:    b.Position.LimitFallback,
 	}
 	tact := tactics.New(sc)
 
@@ -338,6 +337,7 @@ func (b *Hand) Start() {
 	b.running = true
 	b.done = make(chan struct{})
 	ctx, cancel := context.WithCancel(context.Background())
+	b.ctx = ctx
 	b.cancel = cancel
 	b.health.Status = "running"
 	b.health.StartedAt = timePtr(time.Now().UTC())

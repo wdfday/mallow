@@ -16,6 +16,9 @@ import (
 
 func practiceClient(t *testing.T) (*Client, exchange.Credentials) {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping exchange integration test in -short mode")
+	}
 	if oandaPracticeToken == "" || oandaPracticeAccountID == "" {
 		t.Skip("oanda practice credentials not set in creds_test.go")
 	}

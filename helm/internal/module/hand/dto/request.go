@@ -9,7 +9,7 @@ import (
 // CreateHandReq is the full hand creation payload.
 type CreateHandReq struct {
 	Name      string            `json:"name" binding:"required,min=1,max=128"`
-	Type      domain.HandType   `json:"type" binding:"omitempty,oneof=signal_follower manual dca grid"`
+	Type      domain.HandType   `json:"type" binding:"omitempty,oneof=signal_follower"`
 	Market    domain.MarketType `json:"market" binding:"omitempty,oneof=spot futures"`
 	HelmID    uuid.UUID         `json:"helm_id"`
 	AccountID uuid.UUID         `json:"account_id"`

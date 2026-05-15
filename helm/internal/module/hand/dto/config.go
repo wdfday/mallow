@@ -33,13 +33,14 @@ type PositionDTO struct {
 
 // HandRiskConfigDTO is the API representation of per-hand risk settings.
 type HandRiskConfigDTO struct {
-	SignalTTLSec int `json:"signal_ttl_sec,omitempty"`
+	// SignalTTLSec: 0 = use default (10s), -1 = disable TTL check, >0 = custom TTL in seconds.
+	SignalTTLSec int `json:"signal_ttl_sec,omitempty" binding:"omitempty,min=-1,max=3600"`
 }
 
 // FuturesDTO holds futures-specific parameters.
 type FuturesDTO struct {
-	Leverage   int    `json:"leverage" binding:"omitempty,min=1,max=125"`
-	MarginType string `json:"margin_type" binding:"omitempty,oneof=isolated cross"`
+	Leverage   int    `json:"leverage,omitempty" binding:"omitempty,min=1,max=125"`
+	MarginType string `json:"margin_type,omitempty" binding:"omitempty,oneof=isolated cross"`
 }
 
 // ── conversions ────────────────────────────────────────────────────────────

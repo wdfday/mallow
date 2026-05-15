@@ -31,6 +31,9 @@ type bboSnapshot struct {
 }
 
 func TestOrderbook_BBO(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping exchange integration test in -short mode")
+	}
 	cx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
@@ -122,6 +125,9 @@ type depthSnapshot struct {
 }
 
 func TestOrderbook_Depth5(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping exchange integration test in -short mode")
+	}
 	cx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 

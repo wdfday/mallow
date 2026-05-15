@@ -39,6 +39,9 @@ type binanceTestEnv struct {
 
 func newBinanceEnv(t *testing.T) *binanceTestEnv {
 	t.Helper()
+	if testing.Short() {
+		t.Skip("skipping exchange integration test in -short mode")
+	}
 	if binanceDemoAPIKey == "" {
 		t.Skip("binance demo credentials not set in creds_test.go")
 	}

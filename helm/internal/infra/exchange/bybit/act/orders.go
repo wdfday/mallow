@@ -27,7 +27,7 @@ func (c *Client) PlaceOrder(ctx context.Context, creds exchange.Credentials, req
 		Side:        toBybitSide(req.Side),
 		OrderType:   orderType,
 		Qty:         req.Qty.String(),
-		TimeInForce: "GTC",
+		TimeInForce: bybitTIF(req.TIF),
 		ReduceOnly:  req.ReduceOnly,
 	}
 	// Bybit V5 spot market Buy: qty defaults to quote coin (USDT); specify baseCoin so qty is in BTC.
@@ -71,14 +71,18 @@ func (c *Client) GetOrder(ctx context.Context, creds exchange.Credentials, order
 	return orderDetailToResult(&resp.Result.List[0]), nil
 }
 
-// GetOrders lists orders with optional category/symbol/status filters.
-func (c *Client) GetOrders(ctx context.Context, creds exchange.Credentials, category, symbol, status string) ([]exchange.OrderResult, error) {
+// GetOrders lists orders with optional category/symbol/status/orderFilter filters.
+// orderFilter: "" (regular orders), "StopOrder" (conditional stop/TP orders), "tpslOrder".
+func (c *Client) GetOrders(ctx context.Context, creds exchange.Credentials, category, symbol, status string, orderFilter ...string) ([]exchange.OrderResult, error) {
 	body := map[string]string{"category": category}
 	if symbol != "" {
 		body["symbol"] = symbol
 	}
 	if status != "" {
 		body["orderStatus"] = status
+	}
+	if len(orderFilter) > 0 && orderFilter[0] != "" {
+		body["orderFilter"] = orderFilter[0]
 	}
 
 	var resp apiResponse[orderListResult]
@@ -192,4 +196,18 @@ func (c *Client) PlaceExitOrders(ctx context.Context, creds exchange.Credentials
 	}
 
 	return &exchange.ExitOrderResult{OrderIDs: ids}, nil
+}
+
+// bybitTIF maps canonical TIF to Bybit V5 timeInForce string. Default: GTC.
+func bybitTIF(tif exchange.TimeInForce) string {
+	switch tif {
+	case exchange.TIFIOC:
+		return "IOC"
+	case exchange.TIFFOK:
+		return "FOK"
+	case exchange.TIFDay:
+		return "PostOnly" // closest Bybit analogue for session-scoped
+	default:
+		return "GTC"
+	}
 }

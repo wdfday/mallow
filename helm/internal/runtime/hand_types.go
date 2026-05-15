@@ -47,9 +47,14 @@ const (
 	CodeSignalRejected    = 10007 // ProcessTrade rejected (risk, capital, duplicate, etc.)
 
 	// Order lifecycle codes.
-	CodeOrderPlaced = 10100 // order successfully submitted to exchange
-	CodeOrderFilled = 10101 // order confirmed filled (via WS or poll)
-	CodeOrderFailed = 10102 // exchange returned an error for the order
+	CodeOrderPlaced        = 10100 // order successfully submitted to exchange
+	CodeOrderFilled        = 10101 // order confirmed filled (via WS or poll)
+	CodeOrderFailed        = 10102 // exchange returned an error for the order
+	CodeOrderPartialCancel = 10103 // partial fill remainder auto-cancelled (below min lot)
+	CodeOrderLimitTimeout  = 10104 // limit order cancelled by helm after timeout with no fill
+	CodeOrderLimitReprice  = 10105 // limit order cancelled and re-placed at new price after timeout
+	CodeOrderLimitFallback = 10106 // limit order cancelled and re-placed as market after timeout
+	CodeHandAutoPaused     = 10200 // hand auto-paused due to persistent sizing failure (no open position)
 )
 
 // ActivityEntry records a single hand event in the activity ring buffer.

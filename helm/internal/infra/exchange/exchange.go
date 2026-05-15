@@ -32,6 +32,17 @@ const (
 	Limit  OrderType = "limit"
 )
 
+// TimeInForce controls how long an order remains active.
+type TimeInForce string
+
+const (
+	TIFDefault TimeInForce = ""    // use exchange default (market=IOC, limit=GTC typically)
+	TIFDay     TimeInForce = "day" // cancel at end of trading session
+	TIFGTC     TimeInForce = "gtc" // good till cancelled
+	TIFIOC     TimeInForce = "ioc" // immediate-or-cancel: fill available, cancel remainder
+	TIFFOK     TimeInForce = "fok" // fill-or-kill: fill entire qty or reject
+)
+
 // AccountType mirrors the investment service's account type enum.
 // Duplicated here to avoid import cycle across service boundaries.
 type AccountType string
@@ -61,7 +72,9 @@ type OrderRequest struct {
 	Market     MarketKind // routes to spot or futures endpoint
 	Side       OrderSide
 	Type       OrderType
-	Qty        decimal.Decimal
+	TIF        TimeInForce     // time-in-force; zero = exchange default
+	Qty        decimal.Decimal // base asset quantity; zero when QuoteQty is set
+	QuoteQty   decimal.Decimal // quote asset quantity (e.g. 1000 USDT); spot market buy only; mutually exclusive with Qty
 	Price      decimal.Decimal // only for limit orders
 	ReduceOnly bool            // futures only: close-only, never opens a position
 }

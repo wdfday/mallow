@@ -73,24 +73,31 @@ func (r *HelmRuntime) ProcessTrade(
 		PositionQty: posQty,
 	})
 
-	if !plan.Qty.IsPositive() {
+	if !plan.Qty.IsPositive() && !plan.QuoteQty.IsPositive() {
 		return orchdomain.TradeReply{Approved: false, Reason: "tactics: zero quantity after sizing"}
 	}
 
-	slog.Info("runtime: trade approved",
+	logArgs := []any{
 		"hand_id", proposal.BotID,
 		"symbol", proposal.Symbol,
 		"action", proposal.Intent.Action,
 		"side", plan.Side,
-		"qty", plan.Qty,
 		"price", price,
-	)
+	}
+	if plan.QuoteQty.IsPositive() {
+		logArgs = append(logArgs, "quote_qty", plan.QuoteQty)
+	} else {
+		logArgs = append(logArgs, "qty", plan.Qty)
+	}
+	slog.Info("runtime: trade approved", logArgs...)
 
 	return orchdomain.TradeReply{
 		Approved:     true,
 		Qty:          plan.Qty,
+		QuoteQty:     plan.QuoteQty,
 		Side:         plan.Side,
 		EntryType:    string(plan.EntryType),
+		TIF:          string(plan.TIF),
 		LimitPrice:   plan.LimitPrice,
 		StopLoss:     plan.StopLoss,
 		TakeProfit:   plan.TakeProfit,

@@ -14,10 +14,7 @@ import (
 func (c *Client) PlaceOrder(_ context.Context, creds exchange.Credentials, req exchange.OrderRequest) (*exchange.OrderResult, error) {
 	sdk := c.newSDK(creds)
 
-	tif := alpacasdk.Day
-	if isCrypto(req.Symbol) {
-		tif = alpacasdk.GTC
-	}
+	tif := alpacaTIF(req.TIF, req.Symbol)
 
 	orderType := alpacasdk.Market
 	if req.Type == exchange.Limit {
@@ -143,4 +140,24 @@ func (c *Client) PlaceExitOrders(_ context.Context, creds exchange.Credentials, 
 	}
 
 	return &exchange.ExitOrderResult{OrderIDs: ids}, nil
+}
+
+// alpacaTIF maps canonical TIF to Alpaca TimeInForce.
+// Alpaca default: Day for equities, GTC for crypto.
+func alpacaTIF(tif exchange.TimeInForce, symbol string) alpacasdk.TimeInForce {
+	switch tif {
+	case exchange.TIFGTC:
+		return alpacasdk.GTC
+	case exchange.TIFDay:
+		return alpacasdk.Day
+	case exchange.TIFIOC:
+		return alpacasdk.IOC
+	case exchange.TIFFOK:
+		return alpacasdk.FOK
+	default:
+		if isCrypto(symbol) {
+			return alpacasdk.GTC
+		}
+		return alpacasdk.Day
+	}
 }

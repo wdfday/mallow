@@ -67,6 +67,11 @@ type Hand struct {
 	// ingestion time) before it is discarded. 0 disables the check.
 	signalTTL time.Duration
 
+	// LimitTimeoutSec / LimitFallback control what happens when a limit order
+	// hasn't filled after the specified number of seconds. 0 = no timeout.
+	LimitTimeoutSec int
+	LimitFallback   string // "cancel" (default) | "market"
+
 	// futuresConfig holds leverage/margin type for futures hands. nil for spot.
 	futuresConfig *domain.FuturesConfig
 
@@ -296,6 +301,8 @@ func BuildHandComponents(b *domain.Hand) (strategy.Strategy, *tactics.Tactician)
 	switch b.Position.SizeMode {
 	case "fixed_qty":
 		sizingMode = tactics.SizingFixedQty
+	case "quote_qty":
+		sizingMode = tactics.SizingQuoteQty
 	case "volatility":
 		sizingMode = tactics.SizingVolatility
 	case "percent_equity":
@@ -312,6 +319,9 @@ func BuildHandComponents(b *domain.Hand) (strategy.Strategy, *tactics.Tactician)
 		RiskPerTradePct:  b.Position.RiskPerTradePct,
 		MaxPositionPct:   b.Position.MaxPositionPct,
 		FixedQty:         b.Position.FixedQty,
+		FixedQuoteQty:    b.Position.FixedQuoteQty,
+		LimitTimeoutSec:  b.Position.LimitTimeoutSec,
+		LimitFallback:    b.Position.LimitFallback,
 	}
 	tact := tactics.New(sc)
 

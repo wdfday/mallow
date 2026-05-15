@@ -20,18 +20,30 @@ var bybitStablecoins = map[string]bool{
 }
 
 // ListOpenOrders returns all live/partially-filled orders across spot and linear categories.
+// Includes regular open orders (Order) and untriggered stop/TP conditional orders (StopOrder).
 func (c *Client) ListOpenOrders(ctx context.Context, creds exchange.Credentials, symbol string) ([]exchange.OrderResult, error) {
-	spot, err := c.GetOrders(ctx, creds, "spot", symbol, "New")
+	spot, err := c.GetOrders(ctx, creds, "spot", symbol, "")
 	if err != nil {
 		return nil, fmt.Errorf("bybit list open orders (spot): %w", err)
 	}
 
-	linear, linErr := c.GetOrders(ctx, creds, "linear", symbol, "New")
+	// Conditional stop/TP orders use orderFilter=StopOrder; not returned by default query.
+	spotStop, stopErr := c.GetOrders(ctx, creds, "spot", symbol, "", "StopOrder")
+	if stopErr != nil {
+		slog.Warn("bybit list open orders (spot stop): skipping", "err", stopErr)
+	}
+
+	linear, linErr := c.GetOrders(ctx, creds, "linear", symbol, "")
 	if linErr != nil {
 		slog.Warn("bybit list open orders (linear): skipping", "err", linErr)
 	}
 
-	return append(spot, linear...), nil
+	linearStop, linStopErr := c.GetOrders(ctx, creds, "linear", symbol, "", "StopOrder")
+	if linStopErr != nil {
+		slog.Warn("bybit list open orders (linear stop): skipping", "err", linStopErr)
+	}
+
+	return append(append(spot, spotStop...), append(linear, linearStop...)...), nil
 }
 
 // ListPositions returns all currently held positions in the Unified Trading Account.

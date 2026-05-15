@@ -35,13 +35,23 @@ func (c *Client) placeSpotOrder(ctx context.Context, creds exchange.Credentials,
 	svc := c.newSpot(creds).NewCreateOrderService().
 		Symbol(req.Symbol).
 		Side(side).
-		Type(orderType).
-		Quantity(req.Qty.String())
+		Type(orderType)
+	if req.QuoteQty.IsPositive() {
+		svc = svc.QuoteOrderQty(req.QuoteQty.String())
+	} else {
+		svc = svc.Quantity(req.Qty.String())
+	}
 	if orderType == gobinance.OrderTypeLimit {
-		svc = svc.TimeInForce(gobinance.TimeInForceTypeGTC).Price(req.Price.String())
+		svc = svc.TimeInForce(binanceTIF(req.TIF)).Price(req.Price.String())
 	}
 
-	slog.Info("binance: placing spot order", "symbol", req.Symbol, "side", req.Side, "qty", req.Qty, "type", orderType)
+	if req.QuoteQty.IsPositive() {
+		slog.Info("binance: placing spot order", "symbol", req.Symbol, "side", req.Side,
+			"quote_qty", req.QuoteQty, "type", orderType)
+	} else {
+		slog.Info("binance: placing spot order", "symbol", req.Symbol, "side", req.Side,
+			"qty", req.Qty, "type", orderType)
+	}
 	t0 := time.Now()
 	resp, err := svc.Do(ctx)
 	if err != nil {
@@ -73,7 +83,7 @@ func (c *Client) placeFuturesOrder(ctx context.Context, creds exchange.Credentia
 		Quantity(req.Qty.String()).
 		ReduceOnly(req.ReduceOnly)
 	if orderType == futures.OrderTypeLimit {
-		svc = svc.TimeInForce(futures.TimeInForceTypeGTC).Price(req.Price.String())
+		svc = svc.TimeInForce(binanceFuturesTIF(req.TIF)).Price(req.Price.String())
 	}
 
 	slog.Info("binance: placing futures order", "symbol", req.Symbol, "side", req.Side,
@@ -140,7 +150,7 @@ func (c *Client) GetFuturesOrder(ctx context.Context, creds exchange.Credentials
 		ID:        strconv.FormatInt(resp.OrderID, 10),
 		Symbol:    resp.Symbol,
 		Side:      exchange.OrderSide(string(resp.Side)),
-		Status:    string(resp.Status),
+		Status:    strings.ToLower(string(resp.Status)),
 		Qty:       parseDecimal(resp.OrigQuantity),
 		FilledQty: parseDecimal(resp.ExecutedQuantity),
 	}, nil
@@ -280,4 +290,28 @@ func (c *Client) placeFuturesExitOrders(ctx context.Context, creds exchange.Cred
 	}
 
 	return &exchange.ExitOrderResult{OrderIDs: ids}, nil
+}
+
+// binanceTIF maps the canonical TIF to Binance spot TimeInForce. Default: GTC.
+func binanceTIF(tif exchange.TimeInForce) gobinance.TimeInForceType {
+	switch tif {
+	case exchange.TIFIOC:
+		return gobinance.TimeInForceTypeIOC
+	case exchange.TIFFOK:
+		return gobinance.TimeInForceTypeFOK
+	default:
+		return gobinance.TimeInForceTypeGTC
+	}
+}
+
+// binanceFuturesTIF maps the canonical TIF to Binance futures TimeInForce. Default: GTC.
+func binanceFuturesTIF(tif exchange.TimeInForce) futures.TimeInForceType {
+	switch tif {
+	case exchange.TIFIOC:
+		return futures.TimeInForceTypeIOC
+	case exchange.TIFFOK:
+		return futures.TimeInForceTypeFOK
+	default:
+		return futures.TimeInForceTypeGTC
+	}
 }

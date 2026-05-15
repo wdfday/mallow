@@ -9,9 +9,11 @@ import (
 // TradeReply is the orchestrator runtime's decision on a trade proposal.
 type TradeReply struct {
 	Approved     bool            `json:"approved"`
-	Qty          decimal.Decimal `json:"qty"`
-	Side         string          `json:"side"`       // "buy" | "sell"
-	EntryType    string          `json:"entry_type"` // "market" | "limit" | "twap"
+	Qty          decimal.Decimal `json:"qty"`           // base qty; zero when QuoteQty is set
+	QuoteQty     decimal.Decimal `json:"quote_qty"`     // quote qty (e.g. 1000 USDT); mutually exclusive with Qty
+	Side         string          `json:"side"`          // "buy" | "sell"
+	EntryType    string          `json:"entry_type"`    // "market" | "limit" | "twap"
+	TIF          string          `json:"tif,omitempty"` // time-in-force: "" | "gtc" | "ioc" | "fok" | "day"
 	LimitPrice   decimal.Decimal `json:"limit_price,omitempty"`
 	StopLoss     decimal.Decimal `json:"stop_loss,omitempty"`
 	TakeProfit   decimal.Decimal `json:"take_profit,omitempty"`

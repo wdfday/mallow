@@ -27,7 +27,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
-	binanceaction "mallow/helm/internal/infra/exchange/binance/action"
+	binanceaction "mallow/helm/internal/infra/exchange/binance/act"
 	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/runtime"
 	"mallow/helm/internal/runtime/core/orderbook"
@@ -39,7 +39,7 @@ func TestSync_E2E(t *testing.T) {
 	// ── Prerequisites ──────────────────────────────────────────────────────────
 	natsURL := os.Getenv("NATS_URL")
 	if natsURL == "" {
-		natsURL = "nats://orchestrator:orchestrator-dev@127.0.0.1:4222"
+		natsURL = "nats://helm:helm-dev@127.0.0.1:4222"
 	}
 	apiKey := os.Getenv("BINANCE_API_KEY")
 	apiSecret := os.Getenv("BINANCE_API_SECRET")
@@ -54,12 +54,12 @@ func TestSync_E2E(t *testing.T) {
 		t.Skipf("NATS unavailable at %s: %v", natsURL, err)
 	}
 	defer nc.Close()
-	t.Logf("NATS connected (orchestrator): %s", natsURL)
+	t.Logf("NATS connected (helm): %s", natsURL)
 
 	// investment user: subscribes to portfolio.synced.> to mirror what the investment service does
 	investURL := os.Getenv("NATS_INVEST_URL")
 	if investURL == "" {
-		investURL = "nats://investment:investment-dev@127.0.0.1:4222"
+		investURL = "nats://helm:helm-dev@127.0.0.1:4222"
 	}
 	ncInvest, err := nats.Connect(investURL)
 	if err != nil {

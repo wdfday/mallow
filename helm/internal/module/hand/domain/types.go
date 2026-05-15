@@ -99,6 +99,9 @@ type PositionConfig struct {
 
 	// Fixed qty mode — overrides USD/pct sizing.
 	FixedQty decimal.Decimal `json:"fixed_qty,omitempty"`
+	// Fixed quote qty mode — spend exactly this many quote units (e.g. 1000 USDT) per trade.
+	// Only for market buy orders on spot; exchange fills as much base qty as possible.
+	FixedQuoteQty decimal.Decimal `json:"fixed_quote_qty,omitempty"`
 
 	// MaxUnits is the maximum number of concurrent entry legs.
 	// 1 = no scaling (default). Each new entry signal while at max is rejected.
@@ -112,9 +115,15 @@ type PositionConfig struct {
 	Pyramid bool `json:"pyramid,omitempty"`
 
 	// Sizing algorithm.
-	SizeMode        string  `json:"size_mode,omitempty"`          // fixed_fractional|fixed_qty|percent_equity|volatility
+	SizeMode        string  `json:"size_mode,omitempty"`          // fixed_fractional|fixed_qty|quote_qty|percent_equity|volatility
 	RiskPerTradePct float64 `json:"risk_per_trade_pct,omitempty"` // for volatility mode
 	MaxPositionPct  float64 `json:"max_position_pct,omitempty"`   // legacy fallback
+
+	// Limit order lifecycle.
+	// LimitTimeoutSec: cancel the unfilled limit order after N seconds (0 = no timeout).
+	// LimitFallback: action after timeout — "cancel" (default) | "market" (re-place as market).
+	LimitTimeoutSec int    `json:"limit_timeout_sec,omitempty"`
+	LimitFallback   string `json:"limit_fallback,omitempty"` // "cancel" | "market"
 }
 
 func (p PositionConfig) Value() (driver.Value, error) { return jsonValue(p) }

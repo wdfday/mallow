@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -217,7 +218,9 @@ func (b *Hand) handleSignal(ctx context.Context, sig Signal) {
 		Symbol:     sig.Symbol,
 		Side:       exchange.OrderSide(reply.Side),
 		Type:       orderType,
+		TIF:        exchange.TimeInForce(reply.TIF),
 		Qty:        reply.Qty,
+		QuoteQty:   reply.QuoteQty,
 		Price:      limitPrice,
 		ReduceOnly: isFutures && isExitOrder,
 	})
@@ -239,17 +242,38 @@ func (b *Hand) handleSignal(ctx context.Context, sig Signal) {
 			Qty:       reply.Qty,
 			Reason:    err.Error(),
 		})
+		// Auto-pause when a sizing/lot constraint causes a persistent entry failure.
+		// Only pause if there is no open position — if we already hold a position
+		// the failure is on a scale-in or exit, which should not pause the hand.
+		if isLotSizeError(err) && !isExitOrder {
+			if pos := b.rt.Portfolio.GetPosition(sig.Symbol); pos == nil || pos.Qty.IsZero() {
+				b.Pause()
+				reason := fmt.Sprintf("auto-paused: lot/notional constraint — %s", err.Error())
+				b.recordActivity(ActivityEntry{
+					At:     time.Now(),
+					Code:   CodeHandAutoPaused,
+					Symbol: sig.Symbol,
+					Reason: reason,
+				})
+				slog.Warn("bot: auto-paused due to sizing constraint", "hand_id", b.id, "symbol", sig.Symbol, "err", err)
+			}
+		}
 		return
 	}
 	b.metrics.ordersPlaced.Add(1)
 
+	// Use exchange-confirmed base qty for tracking; reply.Qty is zero in quote_qty mode.
+	orderedQty := reply.Qty
+	if !orderedQty.IsPositive() {
+		orderedQty = result.Qty
+	}
 	b.trackOrder(orderbook.PendingOrder{
 		OrderID:        result.ID,
 		BotID:          b.id.String(),
 		OrchestratorID: b.helmID.String(),
 		Symbol:         sig.Symbol,
 		Side:           orderbook.OrderSide(reply.Side),
-		Qty:            reply.Qty,
+		Qty:            orderedQty,
 	})
 
 	if pending.StopLoss.IsPositive() || pending.TakeProfit.IsPositive() || pending.IsOffset {
@@ -269,7 +293,7 @@ func (b *Hand) handleSignal(ctx context.Context, sig Signal) {
 		ID:         result.ID,
 		Symbol:     sig.Symbol,
 		Side:       reply.Side,
-		Qty:        reply.Qty,
+		Qty:        orderedQty,
 		Type:       string(orderType),
 		Status:     result.Status,
 		FilledQty:  result.FilledQty,
@@ -373,16 +397,30 @@ func (b *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 				market = exchange.MarketFutures
 			}
 			go func(el exitLevel) {
-				exitCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-				result, err := placer.PlaceExitOrders(exitCtx, b.rt.Creds, exchange.ExitOrderRequest{
+				// Retry loop: spot exchanges may return "insufficient balance" briefly after
+				// a fill if the asset has not yet settled into the available balance.
+				// Retry up to 3 times with exponential backoff (1s, 2s, 4s).
+				exitReq := exchange.ExitOrderRequest{
 					Symbol:     symbol,
 					Market:     market,
 					Side:       exitSide,
 					Qty:        qty,
 					StopLoss:   el.StopLoss,
 					TakeProfit: el.TakeProfit,
-				})
+				}
+				var result *exchange.ExitOrderResult
+				var err error
+				for attempt := 1; attempt <= 5; attempt++ {
+					time.Sleep(time.Duration(attempt) * time.Second)
+					exitCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+					result, err = placer.PlaceExitOrders(exitCtx, b.rt.Creds, exitReq)
+					cancel()
+					if err == nil {
+						break
+					}
+					slog.Warn("bot: place exit orders retry", "hand_id", b.id, "symbol", symbol,
+						"attempt", attempt, "err", err)
+				}
 				if err != nil {
 					slog.Error("bot: place exit orders failed", "hand_id", b.id, "symbol", symbol, "err", err)
 					return
@@ -497,6 +535,58 @@ func (b *Hand) pollOrders(ctx context.Context) {
 				break
 			}
 			b.applyFill(ctx, result.ID, result.Symbol, side, result.FilledQty, result.FilledAvg, "poll", false)
+
+		case "new", "accepted", "submitted", "pending_new":
+			// Limit order timeout: cancel (and optionally re-place) if it hasn't filled
+			// within LimitTimeoutSec seconds.
+			if o.Type == "limit" && b.LimitTimeoutSec > 0 {
+				timeout := time.Duration(b.LimitTimeoutSec) * time.Second
+				if time.Since(o.SubmitTime) > timeout {
+					b.handleLimitTimeout(ctx, o, result)
+				}
+			}
+
+		case "partially_filled":
+			// Limit timeout for partially-filled orders (same policy).
+			if o.Type == "limit" && b.LimitTimeoutSec > 0 {
+				timeout := time.Duration(b.LimitTimeoutSec) * time.Second
+				if time.Since(o.SubmitTime) > timeout && result.FilledQty.IsPositive() {
+					b.handleLimitTimeout(ctx, o, result)
+					break
+				}
+			}
+			// Cancel remainder when the unfilled portion is dust (< 2% of original qty).
+			// This prevents tiny open orders that may never fill or fail min-notional.
+			if result.FilledQty.IsPositive() && o.Qty.IsPositive() {
+				remaining := o.Qty.Sub(result.FilledQty)
+				if remaining.IsPositive() && remaining.Div(o.Qty).LessThan(decimal.NewFromFloat(0.02)) {
+					if err := b.rt.Exchange.CancelOrder(ctx, b.rt.Creds, o.ID); err != nil {
+						slog.Warn("bot: cancel partial remainder failed", "order_id", o.ID, "err", err)
+					} else {
+						slog.Info("bot: cancelled dust remainder on partial fill",
+							"order_id", o.ID, "filled", result.FilledQty, "original", o.Qty)
+						b.recordActivity(ActivityEntry{
+							At:      time.Now(),
+							Code:    CodeOrderPartialCancel,
+							Symbol:  result.Symbol,
+							OrderID: o.ID,
+							Qty:     result.FilledQty,
+							Reason:  fmt.Sprintf("remainder %.4f < 2%% of original %.4f — cancelled", remaining.InexactFloat64(), o.Qty.InexactFloat64()),
+						})
+					}
+					side := "buy"
+					if result.Side == exchange.Sell {
+						side = "sell"
+					}
+					b.mu.RLock()
+					_, alreadySeen := b.seenFills[result.ID]
+					b.mu.RUnlock()
+					if !alreadySeen {
+						b.applyFill(ctx, result.ID, result.Symbol, side, result.FilledQty, result.FilledAvg, "partial_cancel", false)
+					}
+				}
+			}
+
 		case "cancelled", "rejected", "expired":
 			b.mu.RLock()
 			posID := b.pendingOrderPos[o.ID]
@@ -518,6 +608,99 @@ func (b *Hand) pollOrders(ctx context.Context) {
 			}
 		}
 	}
+}
+
+// handleLimitTimeout cancels a stale limit order and, depending on LimitFallback,
+// either records a cancel-only event or re-places the remaining qty as a market order.
+func (b *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polled *exchange.OrderResult) {
+	age := time.Since(o.SubmitTime).Truncate(time.Second)
+	if cancelErr := b.rt.Exchange.CancelOrder(ctx, b.rt.Creds, o.ID); cancelErr != nil {
+		slog.Warn("bot: limit timeout cancel failed", "order_id", o.ID, "err", cancelErr)
+		return
+	}
+
+	alreadyFilledQty := polled.FilledQty
+	if alreadyFilledQty.IsPositive() {
+		// Apply partial fill before re-placing remainder.
+		side := "buy"
+		if polled.Side == exchange.Sell {
+			side = "sell"
+		}
+		b.mu.RLock()
+		_, alreadySeen := b.seenFills[o.ID]
+		b.mu.RUnlock()
+		if !alreadySeen {
+			b.applyFill(ctx, o.ID, polled.Symbol, side, alreadyFilledQty, polled.FilledAvg, "limit_timeout_partial", false)
+		}
+	}
+
+	remainingQty := o.Qty.Sub(alreadyFilledQty)
+	slog.Info("bot: limit order timed out", "order_id", o.ID, "age", age,
+		"filled", alreadyFilledQty, "remaining", remainingQty, "fallback", b.LimitFallback)
+
+	b.recordActivity(ActivityEntry{
+		At:      time.Now(),
+		Code:    CodeOrderLimitTimeout,
+		Symbol:  o.Symbol,
+		OrderID: o.ID,
+		Qty:     remainingQty,
+		Reason:  fmt.Sprintf("limit unfilled after %s (filled %s / %s)", age, alreadyFilledQty, o.Qty),
+	})
+
+	if b.LimitFallback == "market" && remainingQty.IsPositive() {
+		result, err := b.rt.Exchange.PlaceOrder(ctx, b.rt.Creds, exchange.OrderRequest{
+			Symbol: o.Symbol,
+			Side:   exchange.OrderSide(o.Side),
+			Type:   exchange.Market,
+			Qty:    remainingQty,
+		})
+		if err != nil {
+			slog.Error("bot: limit fallback market order failed", "order_id", o.ID, "err", err)
+			return
+		}
+		slog.Info("bot: limit fallback market placed", "new_order_id", result.ID, "qty", remainingQty)
+		b.recordActivity(ActivityEntry{
+			At:      time.Now(),
+			Code:    CodeOrderLimitFallback,
+			Symbol:  o.Symbol,
+			OrderID: result.ID,
+			Side:    string(o.Side),
+			Qty:     remainingQty,
+			Reason:  fmt.Sprintf("fallback from timed-out limit %s", o.ID),
+		})
+		b.trackOrder(orderbook.PendingOrder{
+			OrderID:        result.ID,
+			BotID:          b.id.String(),
+			OrchestratorID: b.helmID.String(),
+			Symbol:         o.Symbol,
+			Side:           orderbook.OrderSide(o.Side),
+			Qty:            remainingQty,
+		})
+		if result.Status == "filled" {
+			b.applyFill(ctx, result.ID, o.Symbol, string(o.Side), result.FilledQty, result.FilledAvg, "limit_fallback", false)
+		}
+	}
+}
+
+// isLotSizeError returns true when the error is a persistent sizing constraint —
+// lot size, min notional, or filter validation — that will recur on every entry
+// at the current configured quantity, regardless of market conditions.
+func isLotSizeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, kw := range []string{
+		"lot_size", "min_notional", "notional", "price_filter",
+		"lot size", "min notional", "minimum quantity", "minimum amount",
+		"filter failure", "below minimum", "invalid quantity",
+		"order size", "qty too small", "quantity too small",
+	} {
+		if strings.Contains(msg, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // PlaceOrder submits an order via the full pipeline. Manual/legacy interface.

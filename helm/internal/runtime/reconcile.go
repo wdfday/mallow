@@ -280,7 +280,10 @@ func (r *DefaultReconciler) emitExternalClose(
 		Source:      "external",
 	})
 	return r.log.Publish(ctx, poslog.Event{
-		ID:         hand.id.String() + "_ext_" + leg.PositionID + "_" + fmt.Sprintf("%d", time.Now().UnixMilli()),
+		// Deterministic ID: reconciler may run multiple times for the same leg
+		// (e.g. crash during reconcile itself). Same position_id → same dedup key
+		// → JetStream discards the duplicate, replay stays correct.
+		ID:         hand.id.String() + "_ext_" + leg.PositionID,
 		HandID:     hand.id.String(),
 		HelmID:     hand.helmID.String(),
 		PositionID: leg.PositionID,

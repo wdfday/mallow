@@ -367,7 +367,7 @@ func (h *HandPositions) Apply(e poslog.Event) error {
 		if p.IsPyramidAdd || p.IsClose {
 			return fmt.Errorf("no active leg for position_id %q but got %s with pyramid_add/close", e.PositionID, e.Kind)
 		}
-		leg = &LegState{PositionID: e.PositionID}
+		leg = &LegState{PositionID: e.PositionID, Phase: PhaseIdle}
 		h.legs[e.PositionID] = leg
 	}
 

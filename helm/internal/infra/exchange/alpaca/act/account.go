@@ -90,9 +90,9 @@ func (c *Client) GetAssets(req alpacasdk.GetAssetsRequest) ([]AssetInfo, error) 
 	return result, nil
 }
 
-// GetClock returns the current market clock (public endpoint).
-func (c *Client) GetClock() (*ClockInfo, error) {
-	clock, err := c.newSDK(exchange.Credentials{}).GetClock()
+// GetClock returns the current market clock.
+func (c *Client) GetClock(creds exchange.Credentials) (*ClockInfo, error) {
+	clock, err := c.newSDK(creds).GetClock()
 	if err != nil {
 		return nil, fmt.Errorf("alpaca get clock: %w", err)
 	}

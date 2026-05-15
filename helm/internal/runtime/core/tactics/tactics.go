@@ -23,8 +23,10 @@ type ExecutionPlan struct {
 	Action       strategy.Action `json:"action"`
 	Symbol       string          `json:"symbol"`
 	Side         string          `json:"side"`                  // "buy" or "sell"
-	Qty          decimal.Decimal `json:"qty"`                   // quantity to trade
+	Qty          decimal.Decimal `json:"qty"`                   // base asset quantity; zero when QuoteQty is set
+	QuoteQty     decimal.Decimal `json:"quote_qty,omitempty"`   // quote asset quantity (e.g. 1000 USDT); mutually exclusive with Qty
 	EntryType    EntryType       `json:"entry_type"`            // how to enter
+	TIF          TimeInForce     `json:"tif,omitempty"`         // time-in-force for entry order
 	LimitPrice   decimal.Decimal `json:"limit_price,omitempty"` // for limit orders
 	StopLoss     decimal.Decimal `json:"stop_loss,omitempty"`   // fixed stop price (0 when trailing is set)
 	TakeProfit   decimal.Decimal `json:"take_profit,omitempty"`
@@ -41,6 +43,18 @@ const (
 	EntryTWAP   EntryType = "twap"   // time-weighted average: split into slices
 )
 
+// TimeInForce controls how long an order stays active.
+// Mirrors exchange.TimeInForce — kept local to avoid import cycle.
+type TimeInForce string
+
+const (
+	TIFDefault TimeInForce = ""    // use exchange default
+	TIFDay     TimeInForce = "day" // cancel at end of session
+	TIFGTC     TimeInForce = "gtc" // good till cancelled
+	TIFIOC     TimeInForce = "ioc" // immediate-or-cancel
+	TIFFOK     TimeInForce = "fok" // fill-or-kill
+)
+
 // ── Sizing ─────────────────────────────────────────────────────────────────
 
 // SizingMode defines how to calculate position size.
@@ -48,7 +62,8 @@ type SizingMode string
 
 const (
 	SizingFixedFractional SizingMode = "fixed_fractional" // % of equity per trade
-	SizingFixedQty        SizingMode = "fixed_qty"        // fixed quantity
+	SizingFixedQty        SizingMode = "fixed_qty"        // fixed base quantity
+	SizingQuoteQty        SizingMode = "quote_qty"        // fixed quote quantity (e.g. spend 1000 USDT per trade)
 	SizingVolatility      SizingMode = "volatility"       // ATR-based sizing (risk parity)
 	SizingPercentEquity   SizingMode = "percent_equity"   // fixed % of equity regardless of confidence
 )
@@ -75,6 +90,13 @@ type SizingConfig struct {
 	RiskPerTradePct float64         `json:"risk_per_trade_pct"` // for volatility mode (e.g. 0.01 = 1% of unit capital at risk)
 	MaxPositionPct  float64         `json:"max_position_pct"`   // legacy fallback unit size (% of allocated equity)
 	FixedQty        decimal.Decimal `json:"fixed_qty"`          // for fixed_qty mode
+	FixedQuoteQty   decimal.Decimal `json:"fixed_quote_qty"`    // for quote_qty mode (e.g. 1000 USDT per trade)
+
+	// Limit order lifecycle. Applies to EntryLimit orders only.
+	// LimitTimeoutSec: cancel the order if not filled within N seconds (0 = no timeout).
+	// LimitFallback: action after timeout — "cancel" (default) | "market" (re-place as market).
+	LimitTimeoutSec int    `json:"limit_timeout_sec,omitempty"`
+	LimitFallback   string `json:"limit_fallback,omitempty"` // "cancel" | "market"
 }
 
 // DefaultSizingConfig returns sensible defaults.
@@ -158,17 +180,25 @@ func (t *Tactician) Plan(intent strategy.Intent, ctx MarketContext) ExecutionPla
 	}
 
 	// Size the position.
-	plan.Qty = t.size(intent, ctx)
+	if t.sizing.Mode == SizingQuoteQty && t.sizing.FixedQuoteQty.IsPositive() &&
+		(intent.Action == strategy.ActionEnterLong || intent.Action == strategy.ActionEnterShort || intent.Action == strategy.ActionScaleIn) {
+		plan.QuoteQty = t.sizing.FixedQuoteQty
+	} else {
+		plan.Qty = t.size(intent, ctx)
+	}
 
-	// Entry type based on urgency.
+	// Entry type and TIF based on urgency.
 	switch intent.Urgency {
 	case strategy.UrgencyImmediate:
 		plan.EntryType = EntryMarket
+		plan.TIF = TIFDefault // exchange default; IOC/FOK for futures is set by adapter
 	case strategy.UrgencyNormal:
 		plan.EntryType = EntryLimit
+		plan.TIF = TIFGTC
 		plan.LimitPrice = t.limitPrice(plan.Side, ctx)
 	case strategy.UrgencyPatient:
 		plan.EntryType = EntryTWAP
+		plan.TIF = TIFGTC
 		plan.Slices = 5 // split into 5 orders
 		plan.Qty = plan.Qty.Div(decimal.NewFromInt(5))
 	}
@@ -197,7 +227,8 @@ func (t *Tactician) size(intent strategy.Intent, ctx MarketContext) decimal.Deci
 
 	switch t.sizing.Mode {
 	case SizingFixedQty:
-		qty = t.sizing.FixedQty
+		// Fixed qty is authoritative — skip capital-based clamp and floor.
+		return t.sizing.FixedQty
 
 	case SizingVolatility:
 		// Risk-parity: risk $ = RiskPerTradePct * unit; stop_distance = 1× ATR.
@@ -223,8 +254,8 @@ func (t *Tactician) size(intent strategy.Intent, ctx MarketContext) decimal.Deci
 		qty = maxQty
 	}
 
-	// For stocks, round to whole shares.
-	if ctx.Price.GreaterThan(decimal.NewFromInt(1)) {
+	// For stocks, round to whole shares (only when qty ≥ 1 — crypto lots < 1 must not be floored).
+	if qty.GreaterThanOrEqual(decimal.NewFromInt(1)) {
 		qty = qty.Floor()
 	}
 

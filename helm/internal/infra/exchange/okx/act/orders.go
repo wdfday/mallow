@@ -17,7 +17,7 @@ func (c *Client) PlaceOrder(ctx context.Context, creds exchange.Credentials, req
 	}
 	ordType := "market"
 	if req.Type == exchange.Limit {
-		ordType = "limit"
+		ordType = okxOrdType(req.TIF) // "limit" | "ioc" | "fok" | "post_only"
 	}
 
 	tdMode := "cash"
@@ -38,7 +38,8 @@ func (c *Client) PlaceOrder(ctx context.Context, creds exchange.Credentials, req
 	if req.Market != exchange.MarketFutures && ordType == "market" {
 		body.TgtCcy = "base_ccy"
 	}
-	if ordType == "limit" && req.Price.IsPositive() {
+	isLimitVariant := ordType == "limit" || ordType == "ioc" || ordType == "fok" || ordType == "post_only"
+	if isLimitVariant && req.Price.IsPositive() {
 		body.Px = req.Price.String()
 	}
 
@@ -198,4 +199,19 @@ func (c *Client) PlaceExitOrders(ctx context.Context, creds exchange.Credentials
 	return &exchange.ExitOrderResult{
 		OrderIDs: []string{req.Symbol + ":" + resp.Data[0].AlgoID},
 	}, nil
+}
+
+// okxOrdType maps canonical TIF to OKX ordType for limit orders.
+// OKX embeds TIF in the order type field rather than a separate parameter.
+func okxOrdType(tif exchange.TimeInForce) string {
+	switch tif {
+	case exchange.TIFIOC:
+		return "ioc"
+	case exchange.TIFFOK:
+		return "fok"
+	case exchange.TIFDay:
+		return "post_only" // maker-only; closest to session-scoped on OKX
+	default:
+		return "limit" // GTC is the default for limit orders
+	}
 }

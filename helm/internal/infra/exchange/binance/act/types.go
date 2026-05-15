@@ -10,6 +10,7 @@ package act
 
 import (
 	"strconv"
+	"strings"
 
 	gobinance "github.com/adshao/go-binance/v2"
 	"github.com/adshao/go-binance/v2/futures"
@@ -56,7 +57,7 @@ func spotCreateToResult(side exchange.OrderSide, r *gobinance.CreateOrderRespons
 		ID:        r.Symbol + ":" + strconv.FormatInt(r.OrderID, 10),
 		Symbol:    r.Symbol,
 		Side:      side,
-		Status:    string(r.Status),
+		Status:    strings.ToLower(string(r.Status)),
 		Qty:       parseDecimal(r.OrigQuantity),
 		FilledQty: filledQty,
 		FilledAvg: filledAvg,
@@ -75,7 +76,7 @@ func spotGetToResult(orderID string, r *gobinance.Order) *exchange.OrderResult {
 		ID:        orderID,
 		Symbol:    r.Symbol,
 		Side:      binanceSide(r.Side),
-		Status:    string(r.Status),
+		Status:    strings.ToLower(string(r.Status)),
 		Qty:       parseDecimal(r.OrigQuantity),
 		FilledQty: filledQty,
 		FilledAvg: filledAvg,
@@ -90,7 +91,7 @@ func futuresCreateToResult(side exchange.OrderSide, r *futures.CreateOrderRespon
 		ID:        strconv.FormatInt(r.OrderID, 10),
 		Symbol:    r.Symbol,
 		Side:      side,
-		Status:    string(r.Status),
+		Status:    strings.ToLower(string(r.Status)),
 		Qty:       parseDecimal(r.OrigQuantity),
 		FilledQty: parseDecimal(r.ExecutedQuantity),
 	}

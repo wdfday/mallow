@@ -168,4 +168,6 @@ func setMeta(hand *runtime.Hand, b *domain.Hand) {
 	}
 	hand.StrategyName = "rhai"
 	hand.CapitalPct = b.Position.MaxPositionPct
+	hand.LimitTimeoutSec = b.Position.LimitTimeoutSec
+	hand.LimitFallback = b.Position.LimitFallback
 }

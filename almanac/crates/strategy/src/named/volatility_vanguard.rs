@@ -49,7 +49,7 @@ impl Strategy for VolatilityVanguard {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if bar.close < bb.middle {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }

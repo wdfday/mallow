@@ -1,6 +1,20 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::{Ema, Roc};
 
+const RHAI_ROC: &str = r#"
+let roc10 = ind.roc(10, 1);
+let ema50  = ind.ema(50, 1);
+if roc10[0] > 2.0 && close[0] > ema50[0] { entry = true; }
+if roc10[0] < 0.0 || close[0] < ema50[0] { exit  = true; }
+"#;
+
+const RHAI_DUAL: &str = r#"
+let roc10 = ind.roc(10, 1);
+let roc30 = ind.roc(30, 1);
+if roc10[0] > 0.0 && roc30[0] > 0.0 { entry = true; }
+if roc10[0] < 0.0 || roc30[0] < 0.0 { exit  = true; }
+"#;
+
 /// Momentum ROC — pure price momentum with trend filter.
 ///
 /// Long  when ROC > `entry_threshold` (strong upward momentum) AND price above EMA.
@@ -46,7 +60,7 @@ impl Strategy for MomentumRoc {
         }
 
         if r < self.exit_threshold || !above_trend {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
 
         vec![]
@@ -55,6 +69,12 @@ impl Strategy for MomentumRoc {
     fn name(&self) -> &str {
         "momentum_roc"
     }
+
+    fn description(&self) -> &'static str {
+        "Long when ROC > entry threshold and price is above EMA. Exit when momentum fades or price drops below EMA."
+    }
+
+    fn script(&self) -> Option<&'static str> { Some(RHAI_ROC) }
 
     fn reset(&mut self) {
         self.roc = Roc::new(self.roc_p);
@@ -97,7 +117,7 @@ impl Strategy for DualMomentum {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if f < 0.0 || s < 0.0 {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }
@@ -106,8 +126,59 @@ impl Strategy for DualMomentum {
         "dual_momentum"
     }
 
+    fn description(&self) -> &'static str {
+        "Long when both fast and slow ROC are positive. Exit when either turns negative."
+    }
+
+    fn script(&self) -> Option<&'static str> { Some(RHAI_DUAL) }
+
     fn reset(&mut self) {
         self.fast = Roc::new(self.fast_p);
         self.slow = Roc::new(self.slow_p);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alm_core::signal::Direction;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    fn run(s: &mut dyn Strategy, bars: &[Bar]) -> Vec<(i64, Direction)> {
+        bars.iter().flat_map(|b| s.on_bar(b)).map(|s| (s.timestamp, s.direction)).collect()
+    }
+
+    #[test]
+    fn momentum_roc_script_parity() {
+        // Fires every bar where ROC > 2.0 AND close > EMA(50); exit when either fails.
+        let bars = trending_bars(300);
+
+        let mut named = MomentumRoc::new(10, 50, 2.0, 0.0);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = MomentumRoc::new(10, 50, 2.0, 0.0).script().unwrap();
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "momentum_roc: must produce signals");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
+    }
+
+    #[test]
+    fn dual_momentum_script_parity() {
+        // Fires every bar when both ROC(10) > 0 AND ROC(30) > 0.
+        let bars = trending_bars(300);
+
+        let mut named = DualMomentum::new(10, 30);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = DualMomentum::new(10, 30).script().unwrap();
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "dual_momentum: must produce signals");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
     }
 }

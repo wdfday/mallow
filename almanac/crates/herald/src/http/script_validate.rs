@@ -1,9 +1,9 @@
-//! `POST /api/rhai/validate` — syntax + semantic lint for Rhai strategy scripts.
+//! `POST /api/script/validate` — syntax + semantic lint for strategy scripts.
 //!
 //! Designed to power the Monaco editor's real-time red-underline feedback:
 //!
 //! ```text
-//! POST /api/rhai/validate
+//! POST /api/script/validate
 //! { "script": "let ema9 = indi.ema(9);\nif close[0] > ema9[0] { entry = true; }" }
 //!
 //! → 200 OK
@@ -27,65 +27,65 @@
 //! 1. **Wrong prefix** — `indi.ema`, `indicators.rsi`, etc. (must be `ind.TYPE`)
 //! 2. **Unknown type** — `ind.mma(9)` flags `mma` as unknown with a fuzzy
 //!    "did you mean `ema`?" suggestion (Levenshtein ≤ 2).
-//! 3. **Rhai syntax errors** — indicator declarations are stripped before the
+//! 3. **Script syntax errors** — indicator declarations are stripped before the
 //!    cleaned script is compiled; errors are mapped back to original line numbers.
 
 use axum::{
     extract::State,
-    http::StatusCode,
-    response::{IntoResponse, Response},
+    response::Response,
     Json, Router,
 };
 use axum::routing::post;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use alm_strategy::{rhai_lint, LintDiagnostic, RhaiLintScope};
+use alm_strategy::{script_lint, LintDiagnostic, ScriptLintScope};
 
+use super::types::ok;
 use super::HttpState;
 
 // ── Request / response types ──────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct RhaiValidateReq {
-    /// Full Rhai strategy script to lint.
+pub struct ScriptValidateReq {
+    /// Full strategy script to lint.
     pub script: String,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
-pub struct RhaiValidateResp {
+pub struct ScriptValidateResp {
     /// List of diagnostics. Empty → script is clean.
     pub errors: Vec<LintDiagnostic>,
     /// Scope information for Monaco autocomplete / hover providers.
-    pub scope: RhaiLintScope,
+    pub scope: ScriptLintScope,
 }
 
 // ── Route ─────────────────────────────────────────────────────────────────────
 
 pub fn routes() -> Router<HttpState> {
-    Router::new().route("/api/v1/rhai/validate", post(validate_rhai))
+    Router::new().route("/api/v1/script/validate", post(validate_script))
 }
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
 #[utoipa::path(
     post,
-    path = "/api/v1/rhai/validate",
-    request_body = RhaiValidateReq,
+    path = "/api/v1/script/validate",
+    request_body = ScriptValidateReq,
     responses(
         (status = 200, description = "Lint result — empty errors means clean script",
-         body = RhaiValidateResp),
+         body = ScriptValidateResp),
         (status = 400, description = "Request body malformed")
     ),
     tag = "backtest"
 )]
-pub async fn validate_rhai(
+pub async fn validate_script(
     State(_state): State<HttpState>,
-    Json(req): Json<RhaiValidateReq>,
+    Json(req): Json<ScriptValidateReq>,
 ) -> Response {
     // Run lint synchronously — it's pure CPU with no I/O, typically < 1 ms.
-    // Scripts that are very large could theoretically block, but Rhai compile
+    // Scripts that are very large could theoretically block, but script compile
     // is fast and lint scripts are tiny; no need for spawn_blocking here.
-    let (errors, scope) = rhai_lint(&req.script);
-    (StatusCode::OK, Json(RhaiValidateResp { errors, scope })).into_response()
+    let (errors, scope) = script_lint(&req.script);
+    ok(ScriptValidateResp { errors, scope })
 }

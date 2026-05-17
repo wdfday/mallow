@@ -51,6 +51,10 @@ impl Alligator {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Williams Alligator — three smoothed MAs (Jaw 13, Teeth 8, Lips 5) offset into the future. Lips > Teeth > Jaw = alligator eating upward (bullish); lines intertwined = sleeping."
+    }
+
     pub fn update(&mut self, high: f64, low: f64) -> Option<AlligatorValue> {
         let median = (high + low) / 2.0;
         let jaw = self.jaw.update(median)?;

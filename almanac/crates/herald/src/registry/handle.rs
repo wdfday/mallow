@@ -17,6 +17,8 @@ pub struct Handle {
     pub helm_id: String,
     pub symbol: String,
     pub script: String,
+    /// The timeframe this hand evaluates at (may differ from registry base TF).
+    pub target_tf: Timeframe,
     pub(super) strategy: Box<dyn Strategy>,
     /// Live indicator handles keep each declared dependency warm in the ledger
     /// for the lifetime of the hand. On drop the handles decrement the refcount;
@@ -40,23 +42,55 @@ impl Handle {
         target_tf: Timeframe,
     ) -> Result<Self> {
         let mut value = serde_json::json!({ "script": script, "_live": true });
-        let (strategy, deps) = build_strategy_with_deps("rhai", &mut value)
+        let (mut strategy, deps) = build_strategy_with_deps("script", &mut value)
             .map_err(|e| anyhow!("{e}"))?;
         let handles = acquire_dep_handles(ledger, &symbol, base_tf, &deps, &hand_id);
-        let resampler = if target_tf != base_tf {
-            Some(TimeBarResampler::new(target_tf.duration_ms()))
+
+        // Warm strategy state from ledger history so any internal accumulators
+        // (VWAP, consecutive-bar counters, etc.) reflect current market state.
+        // Signals emitted during replay are discarded — only state matters.
+        let (resampler, htf_window) = if target_tf != base_tf {
+            // HTF strategy: replay completed target-TF bars directly from ledger.
+            // The resampler is left fresh; it will pick up the current partial bar
+            // naturally from the live feed.
+            let htf_bars: Vec<Bar> = ledger
+                .with_state(&symbol, target_tf, |s| s.bar_window.iter().cloned().collect())
+                .unwrap_or_default();
+            for bar in &htf_bars {
+                let _ = strategy.on_bar(bar);
+            }
+            let mut window = htf_bars;
+            if window.len() > HTF_WINDOW_SIZE {
+                window.drain(..window.len() - HTF_WINDOW_SIZE);
+            }
+            (Some(TimeBarResampler::new(target_tf.duration_ms())), window)
         } else {
-            None
+            // Base-TF strategy: replay base-TF bar window.
+            let base_bars: Vec<Bar> = ledger
+                .with_state(&symbol, base_tf, |s| s.bar_window.iter().cloned().collect())
+                .unwrap_or_default();
+            for bar in &base_bars {
+                let _ = strategy.on_bar(bar);
+            }
+            (None, Vec::new())
         };
+
+        debug!(
+            %hand_id, %symbol,
+            base_tf = %base_tf, target_tf = %target_tf,
+            "strategy warmed up from ledger history"
+        );
+
         Ok(Self {
             hand_id,
             helm_id,
             symbol,
             script,
+            target_tf,
             strategy,
             _indicator_handles: handles,
             resampler,
-            htf_window: Vec::new(),
+            htf_window,
         })
     }
 
@@ -115,6 +149,10 @@ impl SymbolGroup {
 
     pub fn is_empty(&self) -> bool {
         self.hands.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.hands.len()
     }
 
     /// Run every hand on `bar`. Returns one entry per hand that emitted a signal.

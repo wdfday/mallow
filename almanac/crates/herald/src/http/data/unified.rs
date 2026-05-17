@@ -10,7 +10,7 @@ use alm_ledger::{IndicatorHandle, IndicatorSpec};
 use axum::{
     extract::{Path as AxumPath, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::Response,
     Json,
 };
 use serde_json::Value;
@@ -18,7 +18,7 @@ use tracing::warn;
 
 use super::super::duckdb_helpers as duck;
 use super::super::types::{
-    BarRecord, CandlesResult, IndicatorConfig, IndicatorPoint, UnifiedDataRequest,
+    ok, BarRecord, CandlesResult, IndicatorConfig, IndicatorPoint, UnifiedDataRequest,
     UnifiedDataResponse,
 };
 use super::super::HttpState;
@@ -162,17 +162,13 @@ pub async fn unified_data(
             next_after,
             truncated_below: false,
         });
-        return (
-            StatusCode::OK,
-            Json(UnifiedDataResponse {
-                symbol,
-                tf: tf.to_string(),
-                candles: candles_out,
-                indicators: Some(hist_inds),
-                missing,
-            }),
-        )
-            .into_response();
+        return ok(UnifiedDataResponse {
+            symbol,
+            tf: tf.to_string(),
+            candles: candles_out,
+            indicators: Some(hist_inds),
+            missing,
+        });
     }
 
     let (mut candles_out, indicators_out) = match result {
@@ -219,17 +215,13 @@ pub async fn unified_data(
         }
     }
 
-    (
-        StatusCode::OK,
-        Json(UnifiedDataResponse {
-            symbol,
-            tf: tf.to_string(),
-            candles: if want_candles { candles_out } else { None },
-            indicators: indicators_out,
-            missing,
-        }),
-    )
-        .into_response()
+    ok(UnifiedDataResponse {
+        symbol,
+        tf: tf.to_string(),
+        candles: if want_candles { candles_out } else { None },
+        indicators: indicators_out,
+        missing,
+    })
 }
 
 /// Read the ledger cell's columnar series and zip each row against the

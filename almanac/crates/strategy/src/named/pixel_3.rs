@@ -95,7 +95,7 @@ impl Strategy for Pixel3 {
         }
 
         if all_red {
-            return vec![Signal::close(bar.timestamp, &self.symbol)];
+            return vec![Signal::exit(bar.timestamp, &self.symbol)];
         }
 
         vec![]

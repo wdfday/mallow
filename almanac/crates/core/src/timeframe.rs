@@ -16,7 +16,6 @@ pub enum Timeframe {
     H2,
     H4,
     H6,
-    H8,
     H12,
     D1,
     W1,
@@ -37,7 +36,6 @@ impl Timeframe {
             Timeframe::H2  =>       7_200_000,
             Timeframe::H4  =>      14_400_000,
             Timeframe::H6  =>      21_600_000,
-            Timeframe::H8  =>      28_800_000,
             Timeframe::H12 =>      43_200_000,
             Timeframe::D1  =>      86_400_000,
             Timeframe::W1  =>     604_800_000,
@@ -79,11 +77,11 @@ impl Timeframe {
 
     /// Snap a raw interval (ms) to the nearest standard timeframe.
     fn snap(ms: i64) -> Self {
-        const ALL: [Timeframe; 15] = [
+        const ALL: [Timeframe; 14] = [
             Timeframe::M1, Timeframe::M3, Timeframe::M5, Timeframe::M10,
             Timeframe::M15, Timeframe::M30,
             Timeframe::H1, Timeframe::H2, Timeframe::H4, Timeframe::H6,
-            Timeframe::H8, Timeframe::H12,
+            Timeframe::H12,
             Timeframe::D1, Timeframe::W1, Timeframe::MN,
         ];
         ALL.iter()
@@ -106,7 +104,6 @@ impl fmt::Display for Timeframe {
             Timeframe::H2  => "H2",
             Timeframe::H4  => "H4",
             Timeframe::H6  => "H6",
-            Timeframe::H8  => "H8",
             Timeframe::H12 => "H12",
             Timeframe::D1  => "D1",
             Timeframe::W1  => "W1",

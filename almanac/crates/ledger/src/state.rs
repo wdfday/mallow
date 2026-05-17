@@ -59,7 +59,7 @@ pub struct SymbolSnapshot {
     pub symbol: String,
     pub timeframe: Timeframe,
     /// Confirmed closed bars. `bars.last()` (= `bars[bars.len()-1]`) is the
-    /// most recent **closed** bar — same semantics as `[0]` in Rhai scripts.
+    /// most recent **closed** bar — same semantics as `[0]` in scripts.
     pub bars: Vec<Bar>,
     pub indicators: HashMap<IndicatorSpec, IndicatorSeriesSlice>,
     /// Currently-forming (not yet confirmed) bar for this timeframe.

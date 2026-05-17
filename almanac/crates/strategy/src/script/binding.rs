@@ -2,25 +2,57 @@ use std::collections::{HashMap, VecDeque};
 
 use alm_core::{bar::Bar, Timeframe};
 use alm_indicator::IndicatorBox;
-use rhai::{Array, Dynamic, Map as RhaiMap};
+use rhai::{Array, Dynamic};
 
 use super::htf::HtfAggregator;
 use super::parse::IndicatorKind;
 
+// ── MEntry — custom script type for multi-field indicator values ────────────────
+
+/// One bar's worth of multi-field indicator output (e.g. `supertrend`, `macd`).
+///
+/// Registered in the script engine so that:
+/// - `macd[0].histogram`  → property getter (exact field name)
+/// - `macd[0] > 0`        → comparison uses the semantic primary field (`.macd`)
+/// - `rising(supertrend)` → uses the primary field (`"value"`) for each element
+#[derive(Debug, Clone)]
+pub(crate) struct MEntry {
+    pub(crate) fields:  HashMap<String, f64>,
+    /// The field that acts as the implicit numeric value for direct comparisons.
+    pub(crate) primary: String,
+}
+
+impl MEntry {
+    pub(crate) fn new(fields: HashMap<String, f64>, primary: String) -> Self {
+        Self { fields, primary }
+    }
+
+    /// Returns the primary field value, or `0.0` if absent.
+    pub(crate) fn primary_value(&self) -> f64 {
+        self.fields.get(self.primary.as_str()).copied().unwrap_or(0.0)
+    }
+
+    pub(crate) fn field(&self, name: &str) -> f64 {
+        self.fields.get(name).copied().unwrap_or(0.0)
+    }
+}
+
 // ── History ───────────────────────────────────────────────────────────────────
 
 enum History {
-    /// Single-field extract → Rhai `Array<f64>`.
+    /// Single-field extract → `Array<f64>`.
     Single { field: String, data: VecDeque<f64> },
-    /// Full field map → Rhai `Array<Map>`, e.g. `macd[0].histogram`.
-    Multi(VecDeque<HashMap<String, f64>>),
+    /// Full field map → `Array<MEntry>`, e.g. `macd[0].histogram`.
+    Multi { primary: String, data: VecDeque<HashMap<String, f64>> },
 }
 
 impl History {
     fn new(kind: IndicatorKind, capacity: usize) -> Self {
         match kind {
-            IndicatorKind::Single(field) => Self::Single { field, data: VecDeque::with_capacity(capacity) },
-            IndicatorKind::Multi         => Self::Multi(VecDeque::with_capacity(capacity)),
+            IndicatorKind::Single(field) =>
+                Self::Single { field, data: VecDeque::with_capacity(capacity) },
+            IndicatorKind::Multi(primary) =>
+                Self::Multi { primary, data: VecDeque::with_capacity(capacity) },
         }
     }
 
@@ -32,7 +64,7 @@ impl History {
                     if data.len() > cap { data.pop_front(); }
                 }
             }
-            Self::Multi(data) => {
+            Self::Multi { data, .. } => {
                 data.push_back(fields.clone());
                 if data.len() > cap { data.pop_front(); }
             }
@@ -40,27 +72,35 @@ impl History {
     }
 
     fn len(&self) -> usize {
-        match self { Self::Single { data, .. } => data.len(), Self::Multi(data) => data.len() }
-    }
-
-    fn to_rhai_array(&self) -> Array {
         match self {
-            Self::Single { data, .. } =>
-                data.iter().rev().map(|&v| Dynamic::from_float(v)).collect(),
-            Self::Multi(data) =>
-                data.iter().rev().map(|fields| Dynamic::from_map(fields_to_rhai(fields))).collect(),
+            Self::Single { data, .. } => data.len(),
+            Self::Multi  { data, .. } => data.len(),
         }
     }
 
-    fn is_multi(&self) -> bool { matches!(self, Self::Multi(_)) }
+    fn to_script_array(&self) -> Array {
+        match self {
+            Self::Single { data, .. } =>
+                data.iter().rev().map(|&v| Dynamic::from_float(v)).collect(),
+            Self::Multi { primary, data } =>
+                data.iter().rev()
+                    .map(|fields| Dynamic::from(MEntry::new(fields.clone(), primary.clone())))
+                    .collect(),
+        }
+    }
+
+    fn is_multi(&self) -> bool { matches!(self, Self::Multi { .. }) }
+
+    fn primary(&self) -> Option<&str> {
+        match self { Self::Multi { primary, .. } => Some(primary.as_str()), _ => None }
+    }
 
     fn clear(&mut self) {
-        match self { Self::Single { data, .. } => data.clear(), Self::Multi(data) => data.clear() }
+        match self {
+            Self::Single { data, .. } => data.clear(),
+            Self::Multi  { data, .. } => data.clear(),
+        }
     }
-}
-
-fn fields_to_rhai(fields: &HashMap<String, f64>) -> RhaiMap {
-    fields.iter().map(|(k, &v)| (k.clone().into(), Dynamic::from_float(v))).collect()
 }
 
 // ── VarBinding ────────────────────────────────────────────────────────────────
@@ -149,19 +189,20 @@ impl VarBinding {
             History::Single { field, .. } => {
                 if let Some(&v) = fields.get(field.as_str()) { self.live_val = v; }
             }
-            History::Multi(_) => { self.live_map = fields.clone(); }
+            History::Multi { .. } => { self.live_map = fields.clone(); }
         }
     }
 
-    /// Rhai array of confirmed values, newest at index 0.
+    /// Script array of confirmed values, newest at index 0.
     /// Single → `Array<f64>`, Multi → `Array<Map>`.
-    pub(super) fn to_rhai_array(&self) -> Array {
-        self.history.to_rhai_array()
+    pub(super) fn to_script_array(&self) -> Array {
+        self.history.to_script_array()
     }
 
-    /// For live multi-output: expose `{name}_live` as a Rhai Map.
-    pub(super) fn live_map_as_rhai(&self) -> RhaiMap {
-        fields_to_rhai(&self.live_map)
+    /// For live multi-output: expose `{name}_live` as an `MEntry` Dynamic.
+    pub(super) fn live_entry_as_dynamic(&self) -> Dynamic {
+        let primary = self.history.primary().unwrap_or("value").to_string();
+        Dynamic::from(MEntry::new(self.live_map.clone(), primary))
     }
 
     pub(super) fn reset(&mut self) {

@@ -12,19 +12,27 @@ pub struct FixedFractional {
     /// `1.0` → whole shares (US stocks).
     /// `100.0` → VN stocks (HOSE lot = 100 shares).
     pub lot_size: f64,
+    /// When `true` (default), position size is scaled by `signal.strength`.
+    /// Set to `false` to treat every signal as strength = 1.0 (full allocation).
+    pub strength_sizing: bool,
 }
 
 impl FixedFractional {
     pub fn new(pct: f64, max_positions: usize) -> Self {
-        Self { pct, max_positions, lot_size: 1.0 }
+        Self { pct, max_positions, lot_size: 1.0, strength_sizing: true }
     }
 
     pub fn fractional(pct: f64, max_positions: usize) -> Self {
-        Self { pct, max_positions, lot_size: 0.0 }
+        Self { pct, max_positions, lot_size: 0.0, strength_sizing: true }
     }
 
     pub fn with_lot_size(mut self, lot_size: f64) -> Self {
         self.lot_size = lot_size;
+        self
+    }
+
+    pub fn with_strength_sizing(mut self, enabled: bool) -> Self {
+        self.strength_sizing = enabled;
         self
     }
 }
@@ -32,7 +40,7 @@ impl FixedFractional {
 impl RiskManager for FixedFractional {
     fn validate(&self, signal: &Signal, portfolio: &Portfolio) -> bool {
         // Close always allowed — never block an exit.
-        if signal.direction == Direction::Close { return true; }
+        if signal.direction == Direction::Exit { return true; }
         // Block same-direction re-entry for this symbol (prevents unintended pyramiding).
         if let Some(pos) = portfolio.positions.get(&signal.symbol) {
             let same_dir = matches!(
@@ -46,7 +54,8 @@ impl RiskManager for FixedFractional {
 
     fn size(&self, signal: &Signal, portfolio: &Portfolio, price: f64) -> f64 {
         if price <= f64::EPSILON { return 0.0; }
-        let raw = portfolio.cash * self.pct * signal.strength / price;
+        let strength = if self.strength_sizing { signal.strength } else { 1.0 };
+        let raw = portfolio.cash * self.pct * strength / price;
         if self.lot_size > f64::EPSILON {
             (raw / self.lot_size).floor() * self.lot_size
         } else {
@@ -99,7 +108,7 @@ impl AtrSizing {
 
 impl RiskManager for AtrSizing {
     fn validate(&self, signal: &Signal, portfolio: &Portfolio) -> bool {
-        if signal.direction == Direction::Close { return true; }
+        if signal.direction == Direction::Exit { return true; }
         if let Some(pos) = portfolio.positions.get(&signal.symbol) {
             let same_dir = matches!(
                 (signal.direction, pos.is_long()),
@@ -166,7 +175,7 @@ impl EqualWeight {
 
 impl RiskManager for EqualWeight {
     fn validate(&self, signal: &Signal, portfolio: &Portfolio) -> bool {
-        if signal.direction == Direction::Close { return true; }
+        if signal.direction == Direction::Exit { return true; }
         if let Some(pos) = portfolio.positions.get(&signal.symbol) {
             let same_dir = matches!(
                 (signal.direction, pos.is_long()),
@@ -217,7 +226,7 @@ impl FixedUsd {
 
 impl RiskManager for FixedUsd {
     fn validate(&self, signal: &Signal, portfolio: &Portfolio) -> bool {
-        if signal.direction == Direction::Close { return true; }
+        if signal.direction == Direction::Exit { return true; }
         if let Some(pos) = portfolio.positions.get(&signal.symbol) {
             let same_dir = matches!(
                 (signal.direction, pos.is_long()),
@@ -260,7 +269,7 @@ impl FixedQuantity {
 
 impl RiskManager for FixedQuantity {
     fn validate(&self, signal: &Signal, portfolio: &Portfolio) -> bool {
-        if signal.direction == Direction::Close { return true; }
+        if signal.direction == Direction::Exit { return true; }
         if let Some(pos) = portfolio.positions.get(&signal.symbol) {
             let same_dir = matches!(
                 (signal.direction, pos.is_long()),
@@ -359,7 +368,7 @@ impl KellySizing {
 
 impl RiskManager for KellySizing {
     fn validate(&self, signal: &Signal, portfolio: &Portfolio) -> bool {
-        if signal.direction == Direction::Close { return true; }
+        if signal.direction == Direction::Exit { return true; }
         if let Some(pos) = portfolio.positions.get(&signal.symbol) {
             let same_dir = matches!(
                 (signal.direction, pos.is_long()),

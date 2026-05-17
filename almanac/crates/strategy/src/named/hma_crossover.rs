@@ -53,7 +53,7 @@ impl Strategy for HmaCrossover {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if crossed_below {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }
@@ -126,7 +126,7 @@ mod tests {
     }
 
     #[test]
-    fn rhai_parity() {
+    fn script_parity() {
         use crate::factory::build_strategy;
         use serde_json::json;
         use crate::test_utils::trending_bars as tb;
@@ -142,10 +142,10 @@ let hma49 = ind.hma(49);
 if cross_above(hma16, hma49) { entry = true; }
 if cross_below(hma16, hma49) { exit  = true; }
 "#;
-        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
-        let rhai_sigs = run(rhai.as_mut(), &bars);
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
 
         assert!(!named_sigs.is_empty(), "hma_crossover: must produce signals");
-        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
     }
 }

@@ -40,6 +40,10 @@ impl Dema {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Double EMA — applies EMA twice to reduce lag further than a single EMA. Useful for fast-trending systems where lag is costly."
+    }
+
     pub fn update(&mut self, value: f64) -> Option<f64> {
         let e1 = self.ema1.update(value)?;
         let e2 = self.ema2.update(e1)?;

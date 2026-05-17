@@ -62,6 +62,10 @@ impl Rwi {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Random Walk Index — tests whether price movement exceeds the range expected for a random walk. RWI High > 1 = non-random uptrend; RWI Low > 1 = non-random downtrend."
+    }
+
     pub fn update(&mut self, high: f64, low: f64, close: f64) -> Option<RwiValue> {
         // True range
         let tr = match self.prev_close {

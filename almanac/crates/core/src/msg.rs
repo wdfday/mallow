@@ -34,7 +34,7 @@ impl From<&crate::signal::Signal> for SignalMsg {
         let dir = match sig.direction {
             crate::signal::Direction::Long => "long",
             crate::signal::Direction::Short => "short",
-            crate::signal::Direction::Close => "close",
+            crate::signal::Direction::Exit => "exit",
         };
         let (target_price, stop_price, pattern_kind, confidence) =
             if let Some(ref p) = sig.pattern {
@@ -60,6 +60,7 @@ impl From<&crate::signal::Signal> for SignalMsg {
             confidence,
             is_offset: if sig.is_offset { Some(true) } else { None },
             reason: sig.reason.clone(),
+            atr: sig.atr,
         }
     }
 }

@@ -47,7 +47,7 @@ impl Strategy for VolatilitySqueezer {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if bar.close < ma {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }

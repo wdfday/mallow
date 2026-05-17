@@ -38,7 +38,7 @@ impl Strategy for AroonTrend {
 
         // Exit when aroon up drops below down (trend lost)
         if v.up < v.down {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
 
         vec![]
@@ -101,7 +101,7 @@ mod tests {
     }
 
     #[test]
-    fn rhai_parity() {
+    fn script_parity() {
         use crate::factory::build_strategy;
         use serde_json::json;
 
@@ -118,14 +118,14 @@ let ar = ind.aroon(25, 1);
 if ar[0].up > 70.0 && ar[0].down < 30.0 { entry = true; }
 if ar[0].up < ar[0].down { exit = true; }
 "#;
-        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
-        let rhai_sigs: Vec<(i64, Direction)> = bars.iter()
-            .flat_map(|b| rhai.on_bar(b))
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| script_strat.on_bar(b))
             .map(|s| (s.timestamp, s.direction))
             .collect();
 
         assert!(!named_sigs.is_empty(), "aroon_strategy: must produce signals");
-        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
     }
 
 }

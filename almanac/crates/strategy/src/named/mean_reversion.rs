@@ -48,7 +48,7 @@ impl Strategy for MeanReversion {
             if bar.close >= bb.upper || rsi > self.rsi_overbought {
                 self.in_position = false;
                 self.below_band_count = 0;
-                return vec![Signal::close(bar.timestamp, &bar.symbol)];
+                return vec![Signal::exit(bar.timestamp, &bar.symbol)];
             }
             return vec![];
         }

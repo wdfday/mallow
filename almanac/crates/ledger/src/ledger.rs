@@ -54,17 +54,10 @@ pub struct LedgerConfig {
 
 impl Default for LedgerConfig {
     fn default() -> Self {
-        let mut default_window = HashMap::new();
-        default_window.insert(Timeframe::M1,  1000);
-        default_window.insert(Timeframe::M5,  1000);
-        default_window.insert(Timeframe::M15, 1000);
-        default_window.insert(Timeframe::M30,  500);
-        default_window.insert(Timeframe::H1,   500);
-        default_window.insert(Timeframe::H4,   500);
-        default_window.insert(Timeframe::D1,   252);
-        default_window.insert(Timeframe::W1,   260);
+        // Uniform 1000-bar window for every TF. Each TF self-sources its own
+        // bar history via direct WebSocket + REST, so no per-TF tuning needed.
         Self {
-            default_window,
+            default_window: HashMap::new(),
             fallback_window: 1000,
             window_multiplier: 5,
             display_tail: 100,
@@ -93,6 +86,28 @@ impl LedgerConfig {
 /// Observer of `Ledger::advance` events. The registry subscribes to this
 /// trait so that strategies get notified exactly once per ingested bar
 /// without polling.
+///
+/// # Version 1 — single-TF fan-out (current)
+///
+/// `on_advance` fires once per `(symbol, tf)` advance. The registry only
+/// listens to the base TF (M1 by default). Strategies that need HTF context
+/// maintain their own internal resampler (`TimeBarResampler`) and accumulate
+/// base-TF bars to build forming HTF bars — true MTF is approximated, not
+/// native. Confirmed HTF indicator values are similarly computed per-strategy
+/// rather than read from the shared ledger.
+///
+/// # Version 2 — `on_batch_bar` / native MTF (planned)
+///
+/// Each subscribed TF (M1, M5, M15 … D1) self-sources its own bars via
+/// WebSocket and REST. When multiple TFs advance atomically (e.g. an H1
+/// boundary closes an H1 bar, which also closes H4 and H12 if aligned),
+/// a future `on_batch_bar(symbol, &[(tf, outcome)])` callback will deliver
+/// the full cross-TF snapshot in one call.
+///
+/// Strategies will declare MTF indicator dependencies with `source_tf: Some(Tf)`
+/// and read confirmed indicator values directly from the ledger's HTF windows —
+/// eliminating the per-strategy resampler and warming MTF state correctly at
+/// registration time (replay from the ledger's pre-filled HTF bar window).
 pub trait LedgerObserver: Send + Sync {
     /// Called after a successful advance. `outcome.skipped` is always false
     /// for this callback — skipped bars do not fan out.
@@ -414,16 +429,19 @@ mod tests {
     #[test]
     fn default_config_has_sane_windows() {
         let cfg = LedgerConfig::default();
+        // All TFs fall back to the uniform 1000-bar window.
         assert_eq!(cfg.default_window_for(Timeframe::M1), 1000);
-        assert_eq!(cfg.default_window_for(Timeframe::D1), 252);
+        assert_eq!(cfg.default_window_for(Timeframe::D1), 1000);
+        assert_eq!(cfg.default_window_for(Timeframe::M3), 1000);
+        assert_eq!(cfg.default_window_for(Timeframe::H12), 1000);
     }
 
     #[test]
     fn required_capacity_scales_with_period() {
         let cfg = LedgerConfig::default();
-        // longest_period 200 on D1 (default 252) — 5*200 + 100 = 1100 > 252
+        // longest_period 200 on D1 (fallback 1000) — 5*200 + 100 = 1100 > 1000
         assert_eq!(cfg.required_capacity(Timeframe::D1, 200), 1100);
-        // small period on M1 (default 1000) — still defaults
+        // small period on M1 (fallback 1000) — still defaults
         assert_eq!(cfg.required_capacity(Timeframe::M1, 14), 1000);
     }
 

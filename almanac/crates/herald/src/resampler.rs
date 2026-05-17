@@ -26,7 +26,7 @@ use alm_strategy::bar_resampler::TimeBarResampler;
 /// All standard resampling targets, from the smallest to the largest.
 /// At construction time, only those **strictly above** the base TF are kept.
 ///
-/// H2, H6, H8, H12, MN are included so that strategies and watch entries
+/// H2, H6, H12, MN are included so that strategies and watch entries
 /// using those timeframes get live ledger state without extra config.
 const ALL_LEVELS: &[Timeframe] = &[
     Timeframe::M3,
@@ -38,7 +38,6 @@ const ALL_LEVELS: &[Timeframe] = &[
     Timeframe::H2,
     Timeframe::H4,
     Timeframe::H6,
-    Timeframe::H8,
     Timeframe::H12,
     Timeframe::D1,
     Timeframe::W1,
@@ -50,7 +49,7 @@ const ALL_LEVELS: &[Timeframe] = &[
 /// Per-symbol resampler pool for all timeframes above the configured base TF.
 ///
 /// When the base TF is M1, this tracks M3 / M5 / M10 / M15 / M30 / H1 / H2
-/// / H4 / H6 / H8 / H12 / D1 / W1 / MN.
+/// / H4 / H6 / H12 / D1 / W1 / MN.
 /// When the base TF is H1, only H2 / H4 / H6 / … are tracked.
 pub struct SymbolResamplers {
     /// TF values kept, ordered ascending. Parallel to `intervals`.

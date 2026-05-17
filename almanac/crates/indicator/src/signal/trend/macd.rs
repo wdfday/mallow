@@ -56,6 +56,10 @@ impl Macd {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Moving Average Convergence Divergence — difference between fast and slow EMAs, plus a signal line and histogram. Measures momentum and trend direction changes."
+    }
+
     /// MACD(12, 26, 9) — tham số Gerald Appel gốc, phổ biến nhất.
     pub fn standard() -> Self {
         Self::new(12, 26, 9)

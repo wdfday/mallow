@@ -46,6 +46,10 @@ impl Tema {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Triple EMA — three EMA passes for minimal lag. Aggressive smoothing that stays very close to current price in trending markets."
+    }
+
     pub fn update(&mut self, close: f64) -> Option<f64> {
         let e1 = self.ema1.update(close)?;
         let e2 = self.ema2.update(e1)?;

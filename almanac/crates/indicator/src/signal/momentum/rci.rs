@@ -46,6 +46,10 @@ impl Rci {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Rank Correlation Index — Spearman rank correlation between time rank and price rank over N bars. +100 = perfect uptrend; -100 = perfect downtrend."
+    }
+
     pub fn update(&mut self, price: f64) -> Option<f64> {
         if self.buf.len() == self.period {
             self.buf.pop_front();

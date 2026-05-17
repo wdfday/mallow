@@ -16,7 +16,7 @@ use alm_core::strategy::Strategy;
 use serde_json::Value;
 
 use crate::{
-    script::rhai_strategy::RhaiStrategy,
+    script::strategy::ScriptStrategy,
     AdxEmaCross, AlmaCross, AlligatorStrategy, AroonTrend, AtrTrailingStop, BbKeltnerSqueeze,
     BbRsiReversal, BbSqueeze, BollingerMacd, CciReversal, ChandelierExit, ChopFilterStrategy,
     CmfEmaTrend, CmoZeroCross, ConnorsRsiStrategy, DemaCrossover, DmiAdx, DonchianBreakout,
@@ -545,12 +545,9 @@ pub fn build_strategy(name: &str, params: &Value) -> Result<Box<dyn Strategy>> {
             pu(p, "signal", 9),
         )),
 
-        // ── Rhai scripting strategy ───────────────────────────────────────────
-        // params: { "script": "<rhai script>" }
-        "rhai" => Box::new(RhaiStrategy::from_params(p)?),
-
-        // ── Dynamic (declarative JSON conditions) — DEPRECATED ────────────────
-        // "dynamic" => Box::new(DynamicStrategy::from_params(p)?),
+        // ── Scripting strategy ────────────────────────────────────────────────
+        // params: { "script": "<strategy script>" }
+        "script" => Box::new(ScriptStrategy::from_params(p)?),
 
         // ── Multi-timeframe midpoint ──────────────────────────────────────────
         "pixel_3" => Box::new(Pixel3::with_periods(
@@ -592,11 +589,15 @@ pub struct IndicatorDep {
     /// JSON config accepted by `alm_indicator::IndicatorBox::from_config`.
     /// Example: `{"type":"ema","period":9}` or `{"type":"macd","fast":12,"slow":26,"signal":9}`.
     pub config: Value,
-    /// MTF source timeframe. Phase A: always `None`.
+    /// MTF source timeframe. Currently always `None` (v1).
     ///
-    /// Reserved for when the ledger grows MTF resampling — at that point Rhai's
-    /// MTF indicators would emit `source_tf = Some(Timeframe::H1)` and read from
-    /// the ledger instead of the strategy's internal resampler.
+    /// **v2 / native MTF**: when `LedgerObserver::on_batch_bar` lands, this
+    /// field will carry `Some(tf)` for HTF indicator declarations
+    /// (e.g. `ind.rsi(5, "H1")` → `source_tf = Some(H1)`).  The registry
+    /// will call `ledger.acquire_indicator(symbol, H1, spec)` instead of
+    /// instantiating an internal resampler, and warmup will replay directly
+    /// from the ledger's pre-filled H1 window — giving correct MTF state
+    /// immediately on registration.
     pub source_tf: Option<alm_core::Timeframe>,
 }
 
@@ -607,8 +608,7 @@ pub struct IndicatorDep {
 /// indicators internally).
 pub fn indicator_deps(name: &str, params: &Value) -> Vec<IndicatorDep> {
     match name {
-        "rhai" => crate::script::rhai_strategy::rhai_indicator_deps(params),
-        // "dynamic" => crate::dynamic::dynamic_indicator_deps(params),  // deprecated
+        "script" => crate::script::strategy::script_indicator_deps(params),
         _ => Vec::new(),
     }
 }

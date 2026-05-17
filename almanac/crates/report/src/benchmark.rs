@@ -1,16 +1,26 @@
 use crate::metrics;
 use serde::{Deserialize, Serialize};
 
-/// Buy-and-hold benchmark: buy at first bar's open, hold until last bar's close.
-/// Computed directly from the close-price series — no portfolio/commission needed.
+/// Buy-and-hold benchmark: buy at the first bar's close price and hold to the last.
+///
+/// Computed directly from a close-price series — no commission, no position sizing.
+/// Compare strategy metrics against this to gauge whether the strategy adds value
+/// over passive exposure to the underlying asset.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuyHoldBenchmark {
+    /// Simple total return `(last_close - first_close) / first_close × 100`.
     pub total_return_pct: f64,
+    /// Compound Annual Growth Rate of the buy-and-hold position.
     pub cagr_pct: f64,
+    /// Annualised standard deviation of bar returns × 100.
     pub annualized_volatility_pct: f64,
+    /// Sharpe ratio of the buy-and-hold position (using the same risk-free rate as the strategy).
     pub sharpe_ratio: f64,
+    /// Sortino ratio of the buy-and-hold position.
     pub sortino_ratio: f64,
+    /// Largest peak-to-trough decline in the buy-and-hold equity curve (percentage points).
     pub max_drawdown_pct: f64,
+    /// Bars from the equity peak to the trough of the worst buy-and-hold drawdown.
     pub max_dd_duration_bars: usize,
 }
 

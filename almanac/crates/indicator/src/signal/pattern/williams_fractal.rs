@@ -64,6 +64,10 @@ impl WilliamsFractal {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Williams Fractal — identifies swing high/low turning points (5-bar patterns). Bullish fractal = potential support; bearish fractal = potential resistance."
+    }
+
     /// Feed một bar mới (high, low).
     ///
     /// Trả về `Some(FractalValue)` sau 5 bar. Kết quả mô tả **bar thứ 3 trong

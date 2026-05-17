@@ -25,15 +25,20 @@ pub type BarRx = mpsc::UnboundedReceiver<BarEvent>;
 
 /// Timeframes subscribed on every live WebSocket connection.
 ///
-/// Both Binance and OKX support all of these. M10 / H8 are excluded because
-/// they are not available on both exchanges.
+/// All of these are natively supported by both Binance and OKX.
+/// M10 and H8 are excluded — no native kline on either exchange.
 pub const SUBSCRIBE_TFS: &[Timeframe] = &[
     Timeframe::M1,
+    Timeframe::M3,
     Timeframe::M5,
     Timeframe::M15,
     Timeframe::M30,
     Timeframe::H1,
+    Timeframe::H2,
     Timeframe::H4,
+    Timeframe::H6,
+    Timeframe::H12,
     Timeframe::D1,
     Timeframe::W1,
+    Timeframe::MN,
 ];

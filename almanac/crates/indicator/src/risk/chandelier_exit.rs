@@ -59,6 +59,10 @@ impl ChandelierExit {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Chandelier Exit — long stop = highest high - ATR × multiplier; short stop = lowest low + ATR × multiplier. Prevents premature exits while locking in profits."
+    }
+
     /// Chandelier Exit(22, 3.0) — cấu hình LeBeau gốc.
     pub fn standard() -> Self {
         Self::new(22, 3.0)

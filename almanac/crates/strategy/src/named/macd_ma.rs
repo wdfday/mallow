@@ -51,7 +51,7 @@ impl Strategy for MacdMa {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if hist_crossed_down || bar.close < ma {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }
@@ -76,7 +76,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn rhai_parity() {
+    fn script_parity() {
         let bars = slow_trend_bars();
 
         let mut named = MacdMa::new(12, 26, 9, 50);
@@ -91,13 +91,13 @@ let sma50 = ind.sma(50, 1);
 if mh[1].histogram <= 0.0 && mh[0].histogram > 0.0 && close[0] > sma50[0] { entry = true; }
 if (mh[1].histogram >= 0.0 && mh[0].histogram < 0.0) || close[0] < sma50[0] { exit = true; }
 "#;
-        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
-        let rhai_sigs: Vec<(i64, Direction)> = bars.iter()
-            .flat_map(|b| rhai.on_bar(b))
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| script_strat.on_bar(b))
             .map(|s| (s.timestamp, s.direction))
             .collect();
 
-        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
     }
 }
 

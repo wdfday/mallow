@@ -802,6 +802,7 @@ mod tests {
             mfe_pct: 0.0,
             bars_held: 0,
             exit_reason: alm_core::exit::ExitReason::Signal,
+            regime_at_entry: None,
         }
     }
 

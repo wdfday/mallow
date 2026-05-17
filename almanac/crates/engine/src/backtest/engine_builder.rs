@@ -39,7 +39,7 @@ impl Strategy for StrengthFilter {
             return sigs;
         }
         sigs.into_iter()
-            .filter(|s| s.direction == Direction::Close || s.strength >= self.min)
+            .filter(|s| s.direction == Direction::Exit || s.strength >= self.min)
             .collect()
     }
 
@@ -49,7 +49,7 @@ impl Strategy for StrengthFilter {
             return sigs;
         }
         sigs.into_iter()
-            .filter(|s| s.direction == Direction::Close || s.strength >= self.min)
+            .filter(|s| s.direction == Direction::Exit || s.strength >= self.min)
             .collect()
     }
 
@@ -71,6 +71,18 @@ impl Strategy for StrengthFilter {
 
     fn take_indicator_series(&mut self) -> HashMap<String, Vec<(i64, f64)>> {
         self.inner.take_indicator_series()
+    }
+
+    fn current_regime(&self) -> Option<&RegimeState> {
+        self.inner.current_regime()
+    }
+
+    fn script_candle_spec(&self) -> Option<(String, Option<usize>)> {
+        self.inner.script_candle_spec()
+    }
+
+    fn handles_candle_internally(&self) -> bool {
+        self.inner.handles_candle_internally()
     }
 }
 
@@ -109,12 +121,13 @@ pub fn build(
         ..Default::default()
     };
 
-    let smooth = req.smooth_period.unwrap_or(3);
-    let candle_type = CandleType::from_str(req.candle_type.as_deref().unwrap_or("raw"), smooth);
-
+    // Engine-level candle transform: always Raw. Script strategies apply their
+    // own `candle.transform(...)` directive internally inside on_bar (so they
+    // work the same in backtest and live registry); named strategies operate
+    // on raw bars by design.
     Ok(Engine::sync(capital, strategy, risk, commission, slippage)
         .with_exit_rules(exit_rules)
-        .with_candle_transform(CandleTransform::new(candle_type)))
+        .with_candle_transform(CandleTransform::new(CandleType::Raw)))
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────

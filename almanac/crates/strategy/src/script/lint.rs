@@ -1,7 +1,9 @@
 use std::sync::{Arc, Mutex};
 
 use super::engine::{build_engine, PlotBuf};
-use super::parse::{try_parse_indicator_line, IndicatorKind};
+use super::parse::{
+    extract_candle_directives, extract_regime_block, try_parse_indicator_line, IndicatorKind,
+};
 
 // ── Known types ───────────────────────────────────────────────────────────────
 
@@ -81,9 +83,9 @@ pub struct DeclaredIndicator {
 }
 
 /// Scope information for Monaco autocomplete / hover.
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone, Default, serde::Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct RhaiLintScope {
+pub struct ScriptLintScope {
     pub indicators:  Vec<DeclaredIndicator>,
     pub bar_fields:  Vec<&'static str>,
     pub output_vars: Vec<&'static str>,
@@ -92,19 +94,66 @@ pub struct RhaiLintScope {
 
 // ── Lint implementation ───────────────────────────────────────────────────────
 
-/// Lint a Rhai strategy script. Returns `(diagnostics, scope)`.
+/// Lint a strategy script. Returns `(diagnostics, scope)`.
 ///
 /// Checks:
 /// 1. Wrong indicator prefix (e.g. `indi.ema` instead of `ind.ema`).
 /// 2. Unknown indicator type against [`KNOWN_INDICATOR_TYPES`].
-/// 3. Rhai syntax errors in the logic section (indicator decls stripped first).
-pub fn rhai_lint(script: &str) -> (Vec<LintDiagnostic>, RhaiLintScope) {
+/// 3. Script syntax errors in the logic section (indicator decls stripped first).
+pub fn script_lint(script: &str) -> (Vec<LintDiagnostic>, ScriptLintScope) {
     let mut diags: Vec<LintDiagnostic>          = Vec::new();
     let mut cleaned_lines: Vec<&str>            = Vec::new();
     let mut line_map: Vec<usize>                = Vec::new();
     let mut scope_inds: Vec<DeclaredIndicator>  = Vec::new();
 
-    for (idx, line) in script.lines().enumerate() {
+    // ── Strip setup directives + regime block first ──────────────────────────
+    //
+    // The Rhai parser doesn't know `candle.transform(...)` or `regime { … }`.
+    // They are handled by `RhaiStrategy::build()` pre-parse extraction, so the
+    // linter must do the same — otherwise a valid script would surface a
+    // bogus "Expecting ';' to terminate this statement" at `regime {`.
+    //
+    // Both extractors blank out their span with whitespace so line numbers
+    // stay aligned with the original script.
+    let after_candle = match extract_candle_directives(script) {
+        Ok((_dirs, cleaned)) => cleaned,
+        Err(e) => {
+            diags.push(LintDiagnostic {
+                line: 1, col: 1, message: e.to_string(), severity: "error",
+            });
+            return (diags, ScriptLintScope::default());
+        }
+    };
+    let (regime_body_opt, main_source) = match extract_regime_block(&after_candle) {
+        Ok(parts) => parts,
+        Err(e) => {
+            diags.push(LintDiagnostic {
+                line: 1, col: 1, message: e.to_string(), severity: "error",
+            });
+            return (diags, ScriptLintScope::default());
+        }
+    };
+
+    // Collect indicator decls from inside the regime block so the autocomplete
+    // scope is complete even if the user declared them only there.
+    if let Some(body) = regime_body_opt.as_deref() {
+        for line in body.lines() {
+            if let Some(decl) = try_parse_indicator_line(line.trim()) {
+                let multi = matches!(decl.kind, IndicatorKind::Multi(_));
+                let raw_type = decl.ind_type.clone();
+                scope_inds.push(DeclaredIndicator {
+                    name:      decl.var_name,
+                    ind_type:  raw_type,
+                    period:    decl.period,
+                    timeframe: decl.timeframe.map(|tf| tf.to_string()),
+                    live:      decl.live,
+                    multi,
+                });
+            }
+        }
+    }
+
+    for (idx, line) in main_source.lines().enumerate() {
         let lineno  = idx + 1;
         let trimmed = line.trim();
 
@@ -133,7 +182,7 @@ pub fn rhai_lint(script: &str) -> (Vec<LintDiagnostic>, RhaiLintScope) {
                     });
                 }
                 if let Some(decl) = try_parse_indicator_line(trimmed) {
-                    let multi = matches!(decl.kind, IndicatorKind::Multi);
+                    let multi = matches!(decl.kind, IndicatorKind::Multi(_));
                     scope_inds.push(DeclaredIndicator {
                         name:      decl.var_name,
                         ind_type:  raw_type,
@@ -171,7 +220,7 @@ pub fn rhai_lint(script: &str) -> (Vec<LintDiagnostic>, RhaiLintScope) {
         });
     }
 
-    let scope = RhaiLintScope {
+    let scope = ScriptLintScope {
         indicators:  scope_inds,
         bar_fields:  super::engine::BAR_FIELDS.to_vec(),
         output_vars: vec!["long", "short", "exit", "tp", "sl", "strength", "is_offset", "reason"],
@@ -246,7 +295,7 @@ let rsi14 = ind.rsi(14);
 if cross_above(ema9, ema9) && rsi14[0] < 70.0 { entry = true; }
 if cross_below(ema9, ema9) { exit = true; }
 "#;
-        let (errors, scope) = rhai_lint(script);
+        let (errors, scope) = script_lint(script);
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(scope.indicators.len(), 2);
         assert!(!scope.indicators[0].multi);
@@ -260,7 +309,7 @@ let macd  = ind.macd(12);
 let bb    = ind.bbands(20);
 if macd[0].histogram > 0.0 && bb[0].upper > 0.0 { entry = true; }
 "#;
-        let (errors, scope) = rhai_lint(script);
+        let (errors, scope) = script_lint(script);
         assert!(errors.is_empty(), "{errors:?}");
         assert_eq!(scope.indicators.len(), 2);
         assert!(scope.indicators[0].multi);
@@ -269,7 +318,7 @@ if macd[0].histogram > 0.0 && bb[0].upper > 0.0 { entry = true; }
 
     #[test]
     fn lint_wrong_prefix() {
-        let (errors, _) = rhai_lint("let ema9 = indi.ema(9);\nif ema9[0] > 0.0 { entry = true; }");
+        let (errors, _) = script_lint("let ema9 = indi.ema(9);\nif ema9[0] > 0.0 { entry = true; }");
         assert!(!errors.is_empty());
         assert!(errors[0].message.contains("indi"));
         assert_eq!(errors[0].line, 1);
@@ -277,20 +326,64 @@ if macd[0].histogram > 0.0 && bb[0].upper > 0.0 { entry = true; }
 
     #[test]
     fn lint_unknown_type_suggestion() {
-        let (errors, _) = rhai_lint("let x = ind.mma(9);");
+        let (errors, _) = script_lint("let x = ind.mma(9);");
         assert!(!errors.is_empty());
         assert!(errors[0].message.contains("mma") && errors[0].message.contains("ema"));
     }
 
     #[test]
     fn lint_syntax_error_mapped() {
-        let (errors, _) = rhai_lint("let ema9 = ind.ema(9);\nif ema9[0] > { entry = true; }");
+        let (errors, _) = script_lint("let ema9 = ind.ema(9);\nif ema9[0] > { entry = true; }");
         assert!(errors.iter().any(|e| e.severity == "error"));
     }
 
     #[test]
     fn lint_scope_bar_fields() {
-        let (_, scope) = rhai_lint("if close[0] > 0.0 { entry = true; }");
+        let (_, scope) = script_lint("if close[0] > 0.0 { entry = true; }");
         assert!(scope.bar_fields.contains(&"close") && scope.bar_fields.contains(&"open"));
+    }
+
+    #[test]
+    fn lint_regime_block_does_not_trip_parser() {
+        // Without pre-extraction, the Rhai parser would emit
+        // "Expecting ';' to terminate this statement" at `regime {`.
+        let script = r#"
+regime {
+    let adx14 = ind.adx(14);
+    if adx14[0].adx > 25.0 { trend = "trending"; }
+    else                   { trend = "ranging";  }
+}
+
+let ema9 = ind.ema(9);
+if cross_above(ema9, ema9) && trend == "trending" { entry = true; }
+"#;
+        let (errors, scope) = script_lint(script);
+        assert!(errors.is_empty(), "false-positive lint on regime block: {errors:?}");
+        // Indicators from both regime + main blocks should appear in scope.
+        let names: Vec<&str> = scope.indicators.iter().map(|i| i.name.as_str()).collect();
+        assert!(names.contains(&"adx14"), "adx14 from regime block missing: {names:?}");
+        assert!(names.contains(&"ema9"),  "ema9 from main missing: {names:?}");
+    }
+
+    #[test]
+    fn lint_candle_directive_does_not_trip_parser() {
+        let script = r#"candle.transform("heiken_ashi");
+let ema9 = ind.ema(9);
+if cross_above(ema9, ema9) { entry = true; }
+"#;
+        let (errors, _) = script_lint(script);
+        assert!(errors.is_empty(), "false-positive lint on candle directive: {errors:?}");
+    }
+
+    #[test]
+    fn lint_misplaced_candle_directive_surfaces_error() {
+        let script = r#"let ema9 = ind.ema(9);
+candle.transform("heiken_ashi");
+"#;
+        let (errors, _) = script_lint(script);
+        // Directive after a let → extract_candle_directives bails; we expect the
+        // error to surface as a lint diagnostic (not a panic / silent skip).
+        assert!(!errors.is_empty(), "misplaced directive should produce a diagnostic");
+        assert!(errors[0].message.contains("must appear at the top"));
     }
 }

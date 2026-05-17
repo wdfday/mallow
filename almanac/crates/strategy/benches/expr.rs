@@ -1,6 +1,6 @@
 mod bench_utils;
 
-/// Benchmark: RhaiStrategy vs hardcoded struct.
+/// Benchmark: ScriptStrategy vs hardcoded struct.
 ///
 /// Tách rõ 2 phần:
 /// - construct - thời gian tạo strategy (1 lần)
@@ -15,8 +15,9 @@ use alm_strategy::{
     factory::build_strategy,
     named::{rsi_mean_rev::RsiMeanRev, kitchen_sink::KitchenSinkStrategy},
 };
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
 use serde_json::json;
+use std::hint::black_box;
 
 // ── Synthetic data ────────────────────────────────────────────────────────────
 
@@ -35,8 +36,8 @@ fn bench_rsi_construct(c: &mut Criterion) {
         RsiMeanRev::new(14, 35.0, 65.0)
     }));
 
-    group.bench_function("rhai", |b| b.iter(|| {
-        build_strategy("rhai", &json!({
+    group.bench_function("script", |b| b.iter(|| {
+        build_strategy("script", &json!({
             "script": "\
                 let rsi14 = ind.rsi(14);\
                 if rsi14[0] < 35.0 { entry = true; }\
@@ -57,8 +58,8 @@ fn bench_rsi_run(c: &mut Criterion) {
         b.iter(|| { s.reset(); run_all(&mut s, bars) })
     });
 
-    group.bench_with_input(BenchmarkId::from_parameter("rhai"), &bars, |b, bars| {
-        let mut s = build_strategy("rhai", &json!({
+    group.bench_with_input(BenchmarkId::from_parameter("script"), &bars, |b, bars| {
+        let mut s = build_strategy("script", &json!({
             "script": "\
                 let rsi14 = ind.rsi(14);\
                 if rsi14[0] < 35.0 { entry = true; }\
@@ -77,8 +78,8 @@ fn bench_ema_run(c: &mut Criterion) {
     let bars = make_bars(1_000);
     let mut group = c.benchmark_group("ema_cross_run/1000bars");
 
-    group.bench_with_input(BenchmarkId::from_parameter("rhai"), &bars, |b, bars| {
-        let mut s = build_strategy("rhai", &json!({
+    group.bench_with_input(BenchmarkId::from_parameter("script"), &bars, |b, bars| {
+        let mut s = build_strategy("script", &json!({
             "script": "\
                 let ema20 = ind.ema(20);\
                 let ema50 = ind.ema(50);\
@@ -98,8 +99,8 @@ fn bench_multi_run(c: &mut Criterion) {
     let bars = make_bars(1_000);
     let mut group = c.benchmark_group("multi_run/1000bars");
 
-    group.bench_with_input(BenchmarkId::from_parameter("rhai"), &bars, |b, bars| {
-        let mut s = build_strategy("rhai", &json!({
+    group.bench_with_input(BenchmarkId::from_parameter("script"), &bars, |b, bars| {
+        let mut s = build_strategy("script", &json!({
             "script": "\
                 let rsi14 = ind.rsi(14);\
                 let ema20 = ind.ema(20);\
@@ -117,49 +118,28 @@ fn bench_multi_run(c: &mut Criterion) {
 
 // ── Kitchen Sink ──────────────────────────────────────────────────────────────
 //
-// Compares hardcoded vs Rhai on a compute-heavy 10-indicator + MTF strategy:
+// Compares hardcoded vs script on a compute-heavy 10-indicator + MTF strategy:
 //   hardcoded  — pure Rust struct, zero interpreter overhead
-//   rhai       — 100% faithful to the spec script, runs full Rhai VM
+//   script     — 100% faithful to the spec script, runs the full script engine
 
 fn bench_kitchen_sink_run(c: &mut Criterion) {
     let bars = make_bars(1_000);
     let mut group = c.benchmark_group("kitchen_sink_run/1000bars");
+
+    // Use the canonical RHAI_SCRIPT exposed by KitchenSinkStrategy so both
+    // implementations execute the exact same logic — otherwise this comparison
+    // measures different strategies instead of interpreter overhead.
+    let script = KitchenSinkStrategy::new()
+        .script()
+        .expect("KitchenSinkStrategy::script() must return canonical RHAI_SCRIPT");
 
     group.bench_with_input(BenchmarkId::from_parameter("hardcoded"), &bars, |b, bars| {
         let mut s = KitchenSinkStrategy::new();
         b.iter(|| { s.reset(); run_all(&mut s, bars) })
     });
 
-    group.bench_with_input(BenchmarkId::from_parameter("rhai_full"), &bars, |b, bars| {
-        let mut s = build_strategy("rhai", &json!({ "script":
-r#"let ema9   = ind.ema(9,    4);
-let ema21  = ind.ema(21,   4);
-let ema50  = ind.ema(50,   4);
-let rsi14  = ind.rsi(14,   4);
-let adx14  = ind.adx(14,   5);
-let atr14  = ind.atr(14,   3);
-let macd   = ind.macd(12,  3);
-let bb_u   = ind.bb_upper(20, 3);
-let bb_l   = ind.bb_lower(20, 3);
-let h1_ema = ind.ema(20, "H1", 3);
-
-let trend   = adx14[0] > 25.0 && rising_n(adx14, 3);
-let mom     = momentum(rsi14, 3) > 0.0;
-let squeeze = (bb_u[0] - bb_l[0]) < atr14[0] * 1.5;
-let h_break = highest(close, 20) == close[0];
-
-if cross_above(ema9, ema21) && above(ema21, ema50)
-   && rsi14[0] > 50.0 && rsi14[0] < 70.0
-   && trend && mom && squeeze && h_break
-   && above(h1_ema, ema50) {
-    entry = true;
-    tp    = close[0] + atr14[0] * 2.5;
-    sl    = close[0] - atr14[0] * 1.5;
-}
-if cross_below(ema9, ema21) || rsi14[0] > 80.0 || falling_n(adx14, 2) {
-    exit = true;
-}"#
-        })).unwrap();
+    group.bench_with_input(BenchmarkId::from_parameter("script_full"), &bars, |b, bars| {
+        let mut s = build_strategy("script", &json!({ "script": script })).unwrap();
         b.iter(|| { s.reset(); run_all(s.as_mut(), bars) })
     });
 
@@ -182,39 +162,17 @@ fn bench_btc_m1_real(c: &mut Criterion) {
     let mut group = c.benchmark_group("btc_m1_real");
     group.sample_size(10);
 
+    let script = KitchenSinkStrategy::new()
+        .script()
+        .expect("KitchenSinkStrategy::script() must return canonical RHAI_SCRIPT");
+
     group.bench_with_input(BenchmarkId::from_parameter("hardcoded"), &bars, |b, bars| {
         let mut s = KitchenSinkStrategy::new();
         b.iter(|| { s.reset(); run_all(&mut s, bars) })
     });
 
-    group.bench_with_input(BenchmarkId::from_parameter("rhai_full"), &bars, |b, bars| {
-        let mut s = build_strategy("rhai", &json!({ "script":
-r#"let ema9   = ind.ema(9,    4);
-let ema21  = ind.ema(21,   4);
-let ema50  = ind.ema(50,   4);
-let rsi14  = ind.rsi(14,   4);
-let adx14  = ind.adx(14,   5);
-let atr14  = ind.atr(14,   3);
-let bb_u   = ind.bb_upper(20, 3);
-let bb_l   = ind.bb_lower(20, 3);
-let h1_ema = ind.ema(20, "H1", 3);
-
-let trend   = adx14[0] > 25.0 && rising_n(adx14, 3);
-let squeeze = (bb_u[0] - bb_l[0]) < atr14[0] * 1.5;
-let h_break = highest(close, 20) == close[0];
-
-if cross_above(ema9, ema21) && above(ema21, ema50)
-   && rsi14[0] > 50.0 && rsi14[0] < 70.0
-   && trend && squeeze && h_break
-   && above(h1_ema, ema50) {
-    entry = true;
-    tp    = close[0] + atr14[0] * 2.5;
-    sl    = close[0] - atr14[0] * 1.5;
-}
-if cross_below(ema9, ema21) || rsi14[0] > 80.0 || falling_n(adx14, 2) {
-    exit = true;
-}"#
-        })).unwrap();
+    group.bench_with_input(BenchmarkId::from_parameter("script_full"), &bars, |b, bars| {
+        let mut s = build_strategy("script", &json!({ "script": script })).unwrap();
         b.iter(|| { s.reset(); run_all(s.as_mut(), bars) })
     });
 

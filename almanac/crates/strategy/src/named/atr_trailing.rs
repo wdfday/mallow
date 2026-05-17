@@ -60,7 +60,7 @@ impl Strategy for AtrTrailingStop {
                 self.in_position = false;
                 self.trailing_stop = 0.0;
                 self.highest_since_entry = 0.0;
-                return vec![Signal::close(bar.timestamp, &bar.symbol)];
+                return vec![Signal::exit(bar.timestamp, &bar.symbol)];
             }
         } else {
             // Enter long when price above EMA (uptrend)

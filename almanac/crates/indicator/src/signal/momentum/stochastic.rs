@@ -54,6 +54,10 @@ impl Stochastic {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Stochastic Oscillator — %K line measures where the close sits within the N-bar high-low range; %D is a moving average of %K. Crossovers in extreme zones signal reversals."
+    }
+
     /// Standard Stochastic(14, 3)
     pub fn standard() -> Self {
         Self::new(14, 3)

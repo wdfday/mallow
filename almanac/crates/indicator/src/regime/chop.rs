@@ -50,6 +50,10 @@ impl Chop {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Choppiness Index — measures whether the market is trending (low value) or chopping sideways (high value, near 100). Values below 61.8 suggest a trending environment."
+    }
+
     /// Default parameters: period=14
     pub fn default() -> Self {
         Self::new(14)

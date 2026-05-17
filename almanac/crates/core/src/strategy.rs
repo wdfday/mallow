@@ -23,6 +23,15 @@ pub trait Strategy: Send {
 
     fn name(&self) -> &str;
 
+    /// One-line description of this strategy's entry/exit logic.
+    /// Defaults to an empty string; named strategies should override.
+    fn description(&self) -> &'static str { "" }
+
+    /// The canonical script equivalent for this named strategy.
+    /// Used by tooling and the catalog endpoint to expose the script.
+    /// Returns `None` for strategies that have no script equivalent.
+    fn script(&self) -> Option<&'static str> { None }
+
     /// Reset all indicator state (used between batch backtest runs).
     fn reset(&mut self);
 
@@ -66,12 +75,46 @@ pub trait Strategy: Send {
 
     /// Drain and return all collected indicator series since the last call (or since construction).
     ///
-    /// Keys: `"ema_9"`, `"rsi_14"` for CEL; `"rsi14.value"`, `"macd.histogram"` for Dynamic.
+    /// Keys: e.g. `"rsi14.value"`, `"macd.histogram"`.
     /// Values: chronological `(timestamp_ms, value)` pairs — one per bar after warmup.
     ///
-    /// Default returns empty — only CEL and Dynamic strategies populate this.
+    /// Default returns empty — only script strategies populate this.
     fn take_indicator_series(&mut self) -> HashMap<String, Vec<(i64, f64)>> {
         HashMap::new()
+    }
+
+    /// Latest regime state computed by the strategy (e.g. from a `regime { ... }`
+    /// block in a script). The engine reads this after each `on_bar` to
+    /// track regime transitions and tag trades.
+    ///
+    /// Default returns `None` — strategies without an internal regime detector
+    /// leave this unset and the engine produces no regime summary.
+    fn current_regime(&self) -> Option<&RegimeState> {
+        None
+    }
+
+    /// Candle-transform spec declared inside the strategy source (e.g. via a
+    /// `candle.transform("heiken_ashi")` directive at the top of a script
+    /// script). Returns `(kind, optional smooth_period)`.
+    ///
+    /// The engine builder reads this and lets the script-level setting
+    /// override the request-level `candle_type` field — strategy definition
+    /// wins over execution config.
+    ///
+    /// Default returns `None` — most strategies have no script-level directive.
+    fn script_candle_spec(&self) -> Option<(String, Option<usize>)> {
+        None
+    }
+
+    /// Whether this strategy applies its own candle transform inside `on_bar`.
+    ///
+    /// When `true`, the engine MUST pass raw bars and skip its own
+    /// `candle_transform` step — otherwise the bars would be transformed twice
+    /// (once by engine, once by strategy). ScriptStrategy returns `true` because
+    /// it owns its `candle.transform(...)` directive internally, so the same
+    /// transform applies in both backtest and live (registry) paths.
+    fn handles_candle_internally(&self) -> bool {
+        false
     }
 }
 
@@ -85,6 +128,12 @@ impl Strategy for Box<dyn Strategy> {
     }
     fn name(&self) -> &str {
         (**self).name()
+    }
+    fn description(&self) -> &'static str {
+        (**self).description()
+    }
+    fn script(&self) -> Option<&'static str> {
+        (**self).script()
     }
     fn reset(&mut self) {
         (**self).reset()
@@ -103,6 +152,15 @@ impl Strategy for Box<dyn Strategy> {
     }
     fn take_indicator_series(&mut self) -> HashMap<String, Vec<(i64, f64)>> {
         (**self).take_indicator_series()
+    }
+    fn current_regime(&self) -> Option<&RegimeState> {
+        (**self).current_regime()
+    }
+    fn script_candle_spec(&self) -> Option<(String, Option<usize>)> {
+        (**self).script_candle_spec()
+    }
+    fn handles_candle_internally(&self) -> bool {
+        (**self).handles_candle_internally()
     }
 }
 

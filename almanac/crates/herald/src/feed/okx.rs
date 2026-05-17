@@ -119,7 +119,7 @@ async fn handle_push(
         let ts: i64 = row[0].parse().unwrap_or(0);
         let bar = alm_core::Bar::new(
             ts,
-            &push.arg.inst_id,
+            &format!("okx:{}", push.arg.inst_id),
             parse_f64(&row[1]),
             parse_f64(&row[2]),
             parse_f64(&row[3]),
@@ -154,7 +154,6 @@ fn tf_to_channel(tf: Timeframe) -> Option<&'static str> {
         Timeframe::H2  => Some("candle2H"),
         Timeframe::H4  => Some("candle4H"),
         Timeframe::H6  => Some("candle6H"),
-        Timeframe::H8  => Some("candle8H"),
         Timeframe::H12 => Some("candle12H"),
         Timeframe::D1  => Some("candle1D"),
         Timeframe::W1  => Some("candle1W"),
@@ -174,7 +173,6 @@ fn channel_to_tf(ch: &str) -> Option<Timeframe> {
         "candle2H"  => Some(Timeframe::H2),
         "candle4H"  => Some(Timeframe::H4),
         "candle6H"  => Some(Timeframe::H6),
-        "candle8H"  => Some(Timeframe::H8),
         "candle12H" => Some(Timeframe::H12),
         "candle1D"  => Some(Timeframe::D1),
         "candle1W"  => Some(Timeframe::W1),

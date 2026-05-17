@@ -6,21 +6,56 @@
 use std::collections::HashMap;
 
 use alm_core::Bar;
+use axum::{
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    Json,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
 
-// ── Error envelope ────────────────────────────────────────────────────────────
+// ── Standard response envelopes ───────────────────────────────────────────────
 
-#[derive(Debug, Serialize, ToSchema)]
-pub struct ErrorResponse {
-    pub error: String,
+/// Success envelope matching the Go `shared.SuccessResponse[T]` shape:
+/// `{ "status": 200, "message": "OK", "data": T }`.
+#[derive(Debug, Serialize)]
+pub struct ApiResponse<T: Serialize> {
+    pub status: u16,
+    pub message: &'static str,
+    pub data: T,
 }
 
-impl ErrorResponse {
-    pub fn new(msg: impl Into<String>) -> Self {
-        Self { error: msg.into() }
-    }
+/// Error envelope matching the Go `shared.ErrorResponse` shape:
+/// `{ "status": 400, "code": "BAD_REQUEST", "message": "..." }`.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ErrorResponse {
+    pub status: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub code: Option<&'static str>,
+    pub message: String,
+}
+
+// ── Response helpers (return axum::Response so handlers can use them in match) ─
+
+pub fn ok<T: Serialize + 'static>(data: T) -> Response {
+    (StatusCode::OK, Json(ApiResponse { status: 200, message: "OK", data })).into_response()
+}
+
+pub fn created<T: Serialize + 'static>(data: T) -> Response {
+    (StatusCode::CREATED, Json(ApiResponse { status: 201, message: "Created", data })).into_response()
+}
+
+pub fn no_content() -> Response {
+    StatusCode::NO_CONTENT.into_response()
+}
+
+pub fn err(sc: StatusCode, message: impl Into<String>) -> Response {
+    (sc, Json(ErrorResponse { status: sc.as_u16(), code: None, message: message.into() })).into_response()
+}
+
+pub fn err_code(sc: StatusCode, code: &'static str, message: impl Into<String>) -> Response {
+    (sc, Json(ErrorResponse { status: sc.as_u16(), code: Some(code), message: message.into() })).into_response()
 }
 
 // ── Bar / candle payloads ─────────────────────────────────────────────────────
@@ -134,13 +169,13 @@ pub struct UnifiedDataResponse {
 ///
 /// Exactly one of `indicators` or `script` should be provided:
 /// - `indicators`: structured list of indicator configs (no computation)
-/// - `script`: Rhai script using `ind.TYPE(period)` + `plot("name", value)`
+/// - `script`: Script using `ind.TYPE(period)` + `plot("name", value)`
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct StreamRequest {
     pub tf: Option<String>,
     /// Structured indicator mode — returns raw cell values per bar.
     pub indicators: Option<Vec<IndicatorConfig>>,
-    /// Rhai script mode — script runs per bar, returns whatever was `plot()`-ed.
+    /// Script mode — script runs per bar, returns whatever was `plot()`-ed.
     pub script: Option<String>,
 }
 

@@ -47,7 +47,7 @@ impl Strategy for DemaCrossover {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if pf >= ps && f < s {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }
@@ -119,7 +119,7 @@ mod tests {
     }
 
     #[test]
-    fn rhai_parity() {
+    fn script_parity() {
         use crate::factory::build_strategy;
         use serde_json::json;
         use crate::test_utils::trending_bars as tb;
@@ -135,10 +135,10 @@ let dema26 = ind.dema(26);
 if cross_above(dema12, dema26) { entry = true; }
 if cross_below(dema12, dema26) { exit  = true; }
 "#;
-        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
-        let rhai_sigs = run(rhai.as_mut(), &bars);
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
 
         assert!(!named_sigs.is_empty(), "dema_crossover: must produce signals");
-        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
     }
 }

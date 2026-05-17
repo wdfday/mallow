@@ -64,7 +64,7 @@ impl Strategy for ChandelierExit {
         // Exit: close drops below chandelier stop
         if self.in_position && bar.close < self.chandelier_stop {
             self.in_position = false;
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
 
         // Track highest high even when not in position

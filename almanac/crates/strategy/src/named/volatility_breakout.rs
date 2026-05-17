@@ -38,7 +38,7 @@ impl Strategy for VolatilityRatioBreakout {
             return vec![Signal::long(bar.timestamp, &bar.symbol, v.min(1.0))];
         }
         if v <= self.threshold {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }
@@ -114,7 +114,7 @@ impl Strategy for BbKeltnerSqueeze {
         }
         if bar.close < bb.middle && self.in_position {
             self.in_position = false;
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }
@@ -163,13 +163,25 @@ impl Strategy for KeltnerBreakout {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if bar.close < v.middle {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }
 
     fn name(&self) -> &str {
         "keltner_breakout"
+    }
+
+    fn description(&self) -> &'static str {
+        "Long when close breaks above upper Keltner band. Exit when close drops below the middle EMA line."
+    }
+
+    fn script(&self) -> Option<&'static str> {
+        Some(r#"
+let kc20 = ind.keltner(20, 1);
+if close[0] > kc20[0].upper  { entry = true; }
+if close[0] < kc20[0].middle { exit  = true; }
+"#)
     }
 
     fn reset(&mut self) {
@@ -179,5 +191,29 @@ impl Strategy for KeltnerBreakout {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use alm_core::signal::Direction;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
 
+    fn run(s: &mut dyn Strategy, bars: &[Bar]) -> Vec<(i64, Direction)> {
+        bars.iter().flat_map(|b| s.on_bar(b)).map(|s| (s.timestamp, s.direction)).collect()
+    }
+
+    #[test]
+    fn keltner_breakout_script_parity() {
+        // KeltnerBreakout fires every bar when close > upper or close < middle
+        let bars = trending_bars(300);
+
+        let mut named = KeltnerBreakout::new(20, 10, 2.0);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = KeltnerBreakout::new(20, 10, 2.0).script().unwrap();
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "keltner_breakout: must produce signals");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
+    }
 }

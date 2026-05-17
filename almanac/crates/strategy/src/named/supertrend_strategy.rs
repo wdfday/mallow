@@ -1,6 +1,19 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::{Macd, SuperTrend};
 
+const RHAI_ST: &str = r#"
+let st = ind.supertrend(10);
+if st[1].bullish < 0.5 && st[0].bullish >= 0.5 { entry = true; }
+if st[1].bullish >= 0.5 && st[0].bullish < 0.5 { exit  = true; }
+"#;
+
+const RHAI_ST_MACD: &str = r#"
+let st10 = ind.supertrend(10, 1);
+let m    = ind.macd(12, 1);
+if st10[0].bullish >= 0.5 && m[0].histogram > 0.0 { entry = true; }
+if st10[0].bullish < 0.5  { exit  = true; }
+"#;
+
 /// Bot — SuperTrend Trend Follower.
 ///
 /// Long when SuperTrend is bullish (price above the band).
@@ -40,7 +53,7 @@ impl Strategy for SupertrendStrategy {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if !v.is_bullish && was_bullish {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }
@@ -48,6 +61,12 @@ impl Strategy for SupertrendStrategy {
     fn name(&self) -> &str {
         "supertrend"
     }
+
+    fn description(&self) -> &'static str {
+        "Long when SuperTrend flips bullish (price above band). Exit when SuperTrend flips bearish."
+    }
+
+    fn script(&self) -> Option<&'static str> { Some(RHAI_ST) }
 
     fn reset(&mut self) {
         self.st = SuperTrend::new(self.period, self.multiplier);
@@ -102,7 +121,7 @@ impl Strategy for SupertrendMacd {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if !st.is_bullish {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }
@@ -110,6 +129,12 @@ impl Strategy for SupertrendMacd {
     fn name(&self) -> &str {
         "supertrend_macd"
     }
+
+    fn description(&self) -> &'static str {
+        "Long when SuperTrend is bullish and MACD histogram is positive. Exit when SuperTrend flips bearish."
+    }
+
+    fn script(&self) -> Option<&'static str> { Some(RHAI_ST_MACD) }
 
     fn reset(&mut self) {
         self.st = SuperTrend::new(self.st_period, self.multiplier);
@@ -130,22 +155,35 @@ mod tests {
     }
 
     #[test]
-    fn rhai_parity() {
+    fn script_parity() {
         let bars = sar_bars();
 
         let mut named = SupertrendStrategy::new(10, 3.0);
         let named_sigs = run(&mut named, &bars);
 
         // st_bull returns 1.0 when bullish, 0.0 when bearish
-        let script = r#"
-let st = ind.supertrend(10);
-if st[1].bullish < 0.5 && st[0].bullish >= 0.5 { entry = true; }
-if st[1].bullish >= 0.5 && st[0].bullish < 0.5 { exit  = true; }
-"#;
-        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
-        let rhai_sigs = run(rhai.as_mut(), &bars);
+        let script = SupertrendStrategy::new(10, 3.0).script().unwrap();
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
 
         assert!(!named_sigs.is_empty(), "supertrend: must produce signals");
-        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
+    }
+
+    #[test]
+    fn supertrend_macd_script_parity() {
+        // SupertrendMacd fires every bar where ST bullish AND MACD hist > 0;
+        // exits every bar when ST bearish.
+        let bars = sar_bars();
+
+        let mut named = SupertrendMacd::new(10, 3.0, 12, 26, 9);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = SupertrendMacd::new(10, 3.0, 12, 26, 9).script().unwrap();
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "supertrend_macd: must produce signals");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
     }
 }

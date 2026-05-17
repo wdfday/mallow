@@ -9,13 +9,9 @@ pub use candle_type::{CandleTransform, CandleType};
 // ── Expression / template strategies ─────────────────────────────────────────
 pub mod script;
 pub use script::{
-    RhaiStrategy, RhaiStreamEval, StreamDecl, IndicatorSnapshot, PlotResult,
-    rhai_lint, LintDiagnostic, RhaiLintScope, DeclaredIndicator, KNOWN_INDICATOR_TYPES,
+    ScriptStrategy, ScriptStreamEval, StreamDecl, IndicatorSnapshot, PlotResult,
+    script_lint, LintDiagnostic, ScriptLintScope, DeclaredIndicator, KNOWN_INDICATOR_TYPES,
 };
-
-// // ── Declarative JSON strategy ─────────────────────────────────────────────────
-// pub mod dynamic;  // deprecated
-// pub use dynamic::DynamicStrategy;
 
 // ── Bar resampler (MTF helper) ────────────────────────────────────────────────
 pub mod bar_resampler;
@@ -42,4 +38,6 @@ pub mod test_utils;
 #[cfg(test)]
 mod mtf_parity_tests;
 #[cfg(test)]
-mod rhai_parity_tests;
+mod script_parity_tests;
+#[cfg(test)]
+mod named_real_data_parity_tests;

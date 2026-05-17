@@ -71,6 +71,10 @@ impl ChandeKrollStop {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Chande Kroll Stop — two-pass ATR stop that generates a band of safe stops. Price crossing above the stop band = long signal; below = short."
+    }
+
     /// Chande Kroll Stop(10, 1.5, 9) — tham số gốc.
     pub fn standard() -> Self {
         Self::new(10, 1.5, 9)

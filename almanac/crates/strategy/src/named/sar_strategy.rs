@@ -38,7 +38,7 @@ impl Strategy for SarStrategy {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if !v.is_bullish && was_bullish {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }
@@ -66,7 +66,7 @@ mod tests {
     }
 
     #[test]
-    fn rhai_parity() {
+    fn script_parity() {
         let bars = sar_bars();
 
         let mut named = SarStrategy::new(0.02, 0.2);
@@ -80,10 +80,10 @@ let now_bull = ps[0].bullish >= 0.5;
 if !was_bull && now_bull  { entry = true; }
 if  was_bull && !now_bull { exit  = true; }
 "#;
-        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
-        let rhai_sigs = run(rhai.as_mut(), &bars);
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
 
         assert!(!named_sigs.is_empty(), "sar: must produce signals");
-        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
     }
 }

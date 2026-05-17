@@ -67,7 +67,7 @@ impl Strategy for ChopFilterStrategy {
                     Some(Signal::long(bar.timestamp, &bar.symbol, strength))
                 } else if pf >= ps && fast < slow {
                     // Fast crosses below slow → Close (regardless of CHOP)
-                    Some(Signal::close(bar.timestamp, &bar.symbol))
+                    Some(Signal::exit(bar.timestamp, &bar.symbol))
                 } else {
                     None
                 }
@@ -146,7 +146,7 @@ mod tests {
     }
 
     #[test]
-    fn rhai_parity() {
+    fn script_parity() {
         use alm_core::signal::Direction;
 
         let bars = trending_bars(300);
@@ -164,13 +164,13 @@ let chop14 = ind.chop(14, 1);
 if ema8[1] <= ema21[1] && ema8[0] > ema21[0] && chop14[0] < 61.8 { entry = true; }
 if ema8[1] >= ema21[1] && ema8[0] < ema21[0] { exit = true; }
 "#;
-        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
-        let rhai_sigs: Vec<(i64, Direction)> = bars.iter()
-            .flat_map(|b| rhai.on_bar(b))
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| script_strat.on_bar(b))
             .map(|s| (s.timestamp, s.direction))
             .collect();
 
         assert!(!named_sigs.is_empty(), "chop_filter: must produce signals");
-        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
     }
 }

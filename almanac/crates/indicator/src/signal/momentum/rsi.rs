@@ -60,6 +60,10 @@ impl Rsi {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Relative Strength Index — oscillator (0–100) comparing average gains to average losses over N bars. Above 70 = overbought; below 30 = oversold."
+    }
+
     /// Feed một giá đóng cửa. Trả về `Some(rsi)` sau `period + 1` bar.
     pub fn update(&mut self, close: f64) -> Option<f64> {
         let Some(prev) = self.prev_close else {

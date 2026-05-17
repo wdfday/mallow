@@ -121,7 +121,7 @@ impl Strategy for PatternBreakoutStrategy {
         }
 
         if is_bearish(&sig.kind) {
-            return vec![Signal::close(ts, symbol)];
+            return vec![Signal::exit(ts, symbol)];
         }
 
         vec![]

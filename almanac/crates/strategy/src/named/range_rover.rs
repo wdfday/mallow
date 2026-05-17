@@ -42,7 +42,7 @@ impl Strategy for RangeRover {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if st.k > self.overbought {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }

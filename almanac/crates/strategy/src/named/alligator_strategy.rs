@@ -1,6 +1,12 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::Alligator;
 
+const RHAI: &str = r#"
+let al = ind.alligator(13);
+if al[1].bullish < 0.5 && al[0].bullish >= 0.5 { entry = true; }
+if al[1].bullish >= 0.5 && al[0].bullish < 0.5 { exit  = true; }
+"#;
+
 /// Williams Alligator.
 ///
 /// Long when Alligator is bullish: Lips > Teeth > Jaw (alligator eating upward).
@@ -34,13 +40,21 @@ impl Strategy for AlligatorStrategy {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if !v.bullish && was_bullish {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }
 
     fn name(&self) -> &str {
         "alligator"
+    }
+
+    fn description(&self) -> &'static str {
+        "Long when Alligator is bullish: Lips > Teeth > Jaw. Exit when alignment breaks."
+    }
+
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI)
     }
 
     fn reset(&mut self) {
@@ -51,4 +65,30 @@ impl Strategy for AlligatorStrategy {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use alm_core::signal::Direction;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    fn run(s: &mut dyn Strategy, bars: &[Bar]) -> Vec<(i64, Direction)> {
+        bars.iter().flat_map(|b| s.on_bar(b)).map(|s| (s.timestamp, s.direction)).collect()
+    }
+
+    #[test]
+    fn script_parity() {
+        // AlligatorStrategy fires on bullish-flag transitions; use default jaw=13 teeth=8 lips=5.
+        let bars = trending_bars(400);
+
+        let mut named = AlligatorStrategy::new(13, 8, 5);
+        let named_sigs = run(&mut named, &bars);
+
+        // alligator Multi: .bullish is 1.0 when lips > teeth > jaw
+        let script = AlligatorStrategy::new(13, 8, 5).script().unwrap();
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "alligator: must produce signals");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
+    }
 }

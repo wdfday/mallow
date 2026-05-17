@@ -63,7 +63,7 @@ impl Strategy for WaddahAttar {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if explosion < dead_zone || m.histogram < 0.0 {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }

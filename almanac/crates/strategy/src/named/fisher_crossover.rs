@@ -45,7 +45,7 @@ impl Strategy for FisherCrossover {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if crossed_below {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }
@@ -70,7 +70,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn rhai_parity() {
+    fn script_parity() {
         let bars = trending_bars(300);
 
         let mut named = FisherCrossover::new(10);
@@ -84,13 +84,13 @@ let fi = ind.fisher(10);
 if fi[1].fisher <= fi[1].signal && fi[0].fisher > fi[0].signal { entry = true; }
 if fi[1].fisher >= fi[1].signal && fi[0].fisher < fi[0].signal { exit  = true; }
 "#;
-        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
-        let rhai_sigs: Vec<(i64, Direction)> = bars.iter()
-            .flat_map(|b| rhai.on_bar(b))
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| script_strat.on_bar(b))
             .map(|s| (s.timestamp, s.direction))
             .collect();
 
         assert!(!named_sigs.is_empty(), "fisher_crossover: must produce signals");
-        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
     }
 }

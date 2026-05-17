@@ -86,7 +86,7 @@ fn delete(uri: &str) -> Request<Body> {
         .unwrap()
 }
 
-fn rhai_spec() -> serde_json::Value {
+fn script_spec() -> serde_json::Value {
     serde_json::json!({ "script": "if true { entry = true; }" })
 }
 
@@ -95,14 +95,14 @@ async fn seed_strategy(state: &HttpState) -> String {
     let body = serde_json::json!({
         "name": "seed_strategy",
         "label": "Seed",
-        "strategy_spec": rhai_spec()
+        "strategy_spec": script_spec()
     });
     let resp = router(state.clone())
         .oneshot(post_json("/api/v1/store/strategies", body))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED, "seed_strategy: create failed");
-    json_body(resp).await["id"].as_str().unwrap().to_owned()
+    json_body(resp).await["data"]["id"].as_str().unwrap().to_owned()
 }
 
 /// Create a backtest case in `state` and return its UUID.
@@ -117,14 +117,14 @@ async fn seed_case(state: &HttpState, strategy_id: &str) -> String {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED, "seed_case: create failed");
-    json_body(resp).await["id"].as_str().unwrap().to_owned()
+    json_body(resp).await["data"]["id"].as_str().unwrap().to_owned()
 }
 
 /// Create a watch entry in `state` and return its UUID.
 async fn seed_watch(state: &HttpState) -> String {
     let body = serde_json::json!({
         "symbols": ["BTCUSDT"],
-        "strategy_spec": rhai_spec(),
+        "strategy_spec": script_spec(),
         "webhook_url": "http://localhost:9999/hook"
     });
     let resp = router(state.clone())
@@ -132,7 +132,7 @@ async fn seed_watch(state: &HttpState) -> String {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED, "seed_watch: create failed");
-    json_body(resp).await["id"].as_str().unwrap().to_owned()
+    json_body(resp).await["data"]["id"].as_str().unwrap().to_owned()
 }
 
 // ── /health ───────────────────────────────────────────────────────────────────
@@ -149,10 +149,11 @@ async fn health_ok() {
 // ── /api/symbols ──────────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn symbols_empty_ledger_returns_empty_array() {
+async fn symbols_empty_ledger_returns_empty_map() {
     let resp = test_app().oneshot(get("/api/v1/symbols")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(json_body(resp).await, serde_json::json!([]));
+    // Response shape is `data: { <exchange>: [...] }`. Empty ledger → empty object.
+    assert_eq!(json_body(resp).await["data"], serde_json::json!({}));
 }
 
 #[tokio::test]
@@ -160,14 +161,16 @@ async fn symbols_after_advance_lists_symbol() {
     let state = test_state();
     state
         .ledger
-        .advance(Timeframe::M1, Bar::new(1_000_000, "BTCUSDT", 100.0, 101.0, 99.0, 100.5, 10.0))
+        .advance(Timeframe::M1, Bar::new(1_000_000, "binance:BTCUSDT", 100.0, 101.0, 99.0, 100.5, 10.0))
         .unwrap();
 
     let resp = router(state).oneshot(get("/api/v1/symbols")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
-    let arr = body.as_array().unwrap();
+    let group = &body["data"]["binance"];
+    let arr = group.as_array().unwrap();
     assert_eq!(arr.len(), 1);
+    // Prefix is stripped — only the raw ticker reaches the wire.
     assert_eq!(arr[0]["symbol"], "BTCUSDT");
     assert_eq!(arr[0]["tf"], "M1");
     assert_eq!(arr[0]["bars"], 1);
@@ -178,7 +181,7 @@ async fn symbols_without_indicators_flag_omits_field() {
     let state = test_state();
     state
         .ledger
-        .advance(Timeframe::M1, Bar::new(1_000_000, "ETHUSDT", 50.0, 51.0, 49.0, 50.5, 5.0))
+        .advance(Timeframe::M1, Bar::new(1_000_000, "binance:ETHUSDT", 50.0, 51.0, 49.0, 50.5, 5.0))
         .unwrap();
 
     let resp = router(state)
@@ -187,7 +190,7 @@ async fn symbols_without_indicators_flag_omits_field() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
-    let item = &body.as_array().unwrap()[0];
+    let item = &body["data"]["binance"].as_array().unwrap()[0];
     assert!(!item.as_object().unwrap().contains_key("indicators"));
 }
 
@@ -196,7 +199,7 @@ async fn symbols_with_indicators_flag_includes_array() {
     let state = test_state();
     state
         .ledger
-        .advance(Timeframe::M1, Bar::new(1_000_000, "ETHUSDT", 50.0, 51.0, 49.0, 50.5, 5.0))
+        .advance(Timeframe::M1, Bar::new(1_000_000, "binance:ETHUSDT", 50.0, 51.0, 49.0, 50.5, 5.0))
         .unwrap();
 
     let resp = router(state)
@@ -205,7 +208,7 @@ async fn symbols_with_indicators_flag_includes_array() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
-    let item = &body.as_array().unwrap()[0];
+    let item = &body["data"]["binance"].as_array().unwrap()[0];
     assert!(item["indicators"].is_array());
 }
 
@@ -216,7 +219,7 @@ async fn indicators_catalogue_non_empty_with_name_field() {
     let resp = test_app().oneshot(get("/api/v1/indicators")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
-    let arr = body.as_array().unwrap();
+    let arr = body["data"].as_array().unwrap();
     assert!(!arr.is_empty());
     assert!(arr[0].as_object().unwrap().contains_key("name"));
 }
@@ -228,7 +231,7 @@ async fn create_strategy_returns_201_with_id() {
     let body = serde_json::json!({
         "name": "my_strat",
         "label": "My Strategy",
-        "strategy_spec": rhai_spec()
+        "strategy_spec": script_spec()
     });
     let resp = test_app()
         .oneshot(post_json("/api/v1/store/strategies", body))
@@ -236,8 +239,8 @@ async fn create_strategy_returns_201_with_id() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     let created = json_body(resp).await;
-    assert!(created["id"].is_string());
-    assert_eq!(created["name"], "my_strat");
+    assert!(created["data"]["id"].is_string());
+    assert_eq!(created["data"]["name"], "my_strat");
 }
 
 #[tokio::test]
@@ -248,7 +251,7 @@ async fn list_strategies_contains_created() {
     let resp = router(state).oneshot(get("/api/v1/store/strategies")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let list = json_body(resp).await;
-    assert!(list.as_array().unwrap().iter().any(|s| s["id"] == id));
+    assert!(list["data"].as_array().unwrap().iter().any(|s| s["id"] == id));
 }
 
 #[tokio::test]
@@ -261,7 +264,7 @@ async fn get_strategy_by_id_returns_200() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(json_body(resp).await["id"], id);
+    assert_eq!(json_body(resp).await["data"]["id"], id);
 }
 
 #[tokio::test]
@@ -286,7 +289,7 @@ async fn update_strategy_label_returns_200() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(json_body(resp).await["label"], "Renamed");
+    assert_eq!(json_body(resp).await["data"]["label"], "Renamed");
 }
 
 #[tokio::test]
@@ -325,8 +328,8 @@ async fn create_case_valid_strategy_id_returns_201() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
     let created = json_body(resp).await;
-    assert!(created["id"].is_string());
-    assert_eq!(created["symbol"], "BTCUSDT");
+    assert!(created["data"]["id"].is_string());
+    assert_eq!(created["data"]["symbol"], "BTCUSDT");
 }
 
 #[tokio::test]
@@ -354,7 +357,7 @@ async fn get_case_by_id_returns_200() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(json_body(resp).await["id"], case_id);
+    assert_eq!(json_body(resp).await["data"]["id"], case_id);
 }
 
 #[tokio::test]
@@ -380,7 +383,7 @@ async fn run_case_no_data_returns_error_not_panic() {
         resp.status()
     );
     let body = json_body(resp).await;
-    assert!(body["error"].is_string(), "response should contain error field");
+    assert!(body["message"].is_string(), "response should contain message field");
 }
 
 #[tokio::test]
@@ -413,7 +416,7 @@ async fn list_watches_contains_created() {
     let resp = router(state).oneshot(get("/api/v1/watch")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let list = json_body(resp).await;
-    assert!(list.as_array().unwrap().iter().any(|w| w["id"] == id));
+    assert!(list["data"].as_array().unwrap().iter().any(|w| w["id"] == id));
 }
 
 #[tokio::test]
@@ -426,7 +429,7 @@ async fn get_watch_by_id_returns_200() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(json_body(resp).await["id"], id);
+    assert_eq!(json_body(resp).await["data"]["id"], id);
 }
 
 #[tokio::test]
@@ -463,7 +466,7 @@ async fn data_symbol_empty_body_returns_empty_response() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let b = json_body(resp).await;
-    assert_eq!(b["symbol"], "BTCUSDT");
+    assert_eq!(b["data"]["symbol"], "BTCUSDT");
 }
 
 #[tokio::test]
@@ -492,7 +495,7 @@ async fn data_too_many_indicators_rejected() {
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    assert!(json_body(resp).await["error"].is_string());
+    assert!(json_body(resp).await["message"].is_string());
 }
 
 // ── SSE smoke tests ───────────────────────────────────────────────────────────
@@ -500,7 +503,7 @@ async fn data_too_many_indicators_rejected() {
 #[tokio::test]
 async fn sse_bar_stream_content_type_is_event_stream() {
     let resp = test_app()
-        .oneshot(get("/api/v1/stream/BTCUSDT"))
+        .oneshot(post_json("/api/v1/stream/BTCUSDT", serde_json::json!({})))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);

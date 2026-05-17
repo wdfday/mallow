@@ -44,6 +44,10 @@ impl Obv {
         }
     }
 
+    pub fn description() -> &'static str {
+        "On-Balance Volume — cumulative total adding or subtracting volume based on whether the close is higher or lower than the prior close. Divergence from price signals trend weakness."
+    }
+
     pub fn update(&mut self, close: f64, volume: f64) -> f64 {
         if let Some(pc) = self.prev_close {
             if close > pc {

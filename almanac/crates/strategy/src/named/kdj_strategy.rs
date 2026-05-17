@@ -46,7 +46,7 @@ impl Strategy for KdjStrategy {
             // Exit: K above overbought or J exceeds 100 (exhaustion)
             if v.k > self.overbought || v.j > 100.0 {
                 self.in_position = false;
-                signals.push(Signal::close(bar.timestamp, &bar.symbol));
+                signals.push(Signal::exit(bar.timestamp, &bar.symbol));
             }
         }
 

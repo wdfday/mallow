@@ -56,7 +56,7 @@ impl Strategy for OscillatorOverlord {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if ob_count >= 2 {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }

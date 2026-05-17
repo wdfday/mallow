@@ -7,12 +7,12 @@ use utoipa_swagger_ui::SwaggerUi;
 
 use alm_engine::types::{
     BacktestRequest, MonteCarloConfig,
-    RhaiBacktestRequest, WalkForwardConfig,
+    ScriptBacktestRequest, WalkForwardConfig,
 };
 
-use alm_strategy::{LintDiagnostic, RhaiLintScope, DeclaredIndicator};
+use alm_strategy::{LintDiagnostic, ScriptLintScope, DeclaredIndicator};
 
-use super::{backtest, data, rhai_validate, sse, store, symbols, types, watch, HttpState};
+use super::{backtest, data, script_validate, sse, store, symbols, types, watch, HttpState};
 
 // ── Security modifier ─────────────────────────────────────────────────────────
 
@@ -60,8 +60,8 @@ impl Modify for BearerAuthAddon {
         data::unified::unified_data,
         backtest::list_strategies,
         backtest::run_backtest,
-        backtest::run_backtest_rhai,
-        rhai_validate::validate_rhai,
+        backtest::run_backtest_script,
+        script_validate::validate_script,
         sse::stream_bars,
         sse::stream_signals,
         store::list_strategies,
@@ -102,7 +102,7 @@ impl Modify for BearerAuthAddon {
         types::BarStreamEvent,
         // Backtest
         BacktestRequest,
-        RhaiBacktestRequest,
+        ScriptBacktestRequest,
         MonteCarloConfig,
         WalkForwardConfig,
         // Store
@@ -120,11 +120,11 @@ impl Modify for BearerAuthAddon {
         // Watch
         watch::WatchEntry,
         watch::CreateWatchReq,
-        // Rhai validate
-        rhai_validate::RhaiValidateReq,
-        rhai_validate::RhaiValidateResp,
+        // Script validate
+        script_validate::ScriptValidateReq,
+        script_validate::ScriptValidateResp,
         LintDiagnostic,
-        RhaiLintScope,
+        ScriptLintScope,
         DeclaredIndicator,
     )),
     tags(

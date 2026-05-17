@@ -322,7 +322,7 @@ impl<S: MultiStrategy, R: RiskManager> MultiEngine<S, R> {
             Event::Signal(ref sig_event) => {
                 let signal = &sig_event.signal;
                 match signal.direction {
-                    Direction::Close => {
+                    Direction::Exit => {
                         if let Some(pos) = self.portfolio.positions.get(&signal.symbol) {
                             let qty = pos.qty.abs();
                             if qty > f64::EPSILON {
@@ -340,7 +340,7 @@ impl<S: MultiStrategy, R: RiskManager> MultiEngine<S, R> {
                                 .map_or(false, |p| match signal.direction {
                                     Direction::Long  => p.qty > 0.0,
                                     Direction::Short => p.qty < 0.0,
-                                    Direction::Close => false,
+                                    Direction::Exit => false,
                                 });
                             if blocked { return; }
                         }
@@ -359,7 +359,7 @@ impl<S: MultiStrategy, R: RiskManager> MultiEngine<S, R> {
                                 let side = match signal.direction {
                                     Direction::Long => Side::Buy,
                                     Direction::Short => Side::Sell,
-                                    Direction::Close => unreachable!(),
+                                    Direction::Exit => unreachable!(),
                                 };
                                 let order = OrderRequest::market(
                                     signal.timestamp, &signal.symbol, side, qty,

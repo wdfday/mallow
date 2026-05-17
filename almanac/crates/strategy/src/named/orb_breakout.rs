@@ -93,7 +93,7 @@ impl Strategy for OrbBreakout {
 
         // Stop-out: close falls below opening range low while in position
         if bar.close < self.or_low {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
 
         vec![]
@@ -158,7 +158,7 @@ mod tests {
         let sigs = s.on_bar(&bar(4*MIN, 100.0, 101.0, 95.0, 96.0));
         assert_eq!(sigs.len(), 1);
         use alm_core::signal::Direction;
-        assert_eq!(sigs[0].direction, Direction::Close);
+        assert_eq!(sigs[0].direction, Direction::Exit);
     }
 
     #[test]

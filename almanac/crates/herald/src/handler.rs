@@ -22,18 +22,21 @@
 //! ```
 
 use std::sync::Arc;
+use std::time::Instant;
 
+use alm_strategy::build_strategy;
 use alm_core::msg::{
-    BarMsg, HandInfo, HandListResponse, DeregisterMsg, RegisterMsg, ResetMsg, SignalMsg,
-    SignalResponse,
+    BarMsg, HandInfo, HandListResponse, DeregisterMsg, HeartbeatRequest, HeartbeatResponse,
+    PingResponse, ReadyEvent, RegisterMsg, ResetMsg, SignalMsg, SignalResponse,
 };
 use alm_core::{Bar, Timeframe};
 use alm_ledger::Ledger;
-use async_nats::Client;
+use async_nats::{Client, jetstream};
 use futures::StreamExt;
 use prost::Message as _;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{debug, error, info, warn};
+use uuid::Uuid;
 
 use crate::feed::{BarEvent, BarRx};
 use crate::registry::{HandSignal, Registry};
@@ -45,6 +48,9 @@ pub const SUBJ_RESET: &str = "engine.reset";
 pub const SUBJ_REGISTER: &str = "engine.register";
 pub const SUBJ_DEREGISTER: &str = "engine.deregister";
 pub const SUBJ_LIST: &str = "engine.list";
+pub const SUBJ_PING: &str = "engine.ping";
+pub const SUBJ_HEARTBEAT: &str = "engine.heartbeat";
+pub const SUBJ_READY: &str = "engine.ready";
 pub const SUBJ_SIGNALS: &str = "signals";
 pub const SUBJ_BARS: &str = "bars";
 
@@ -62,6 +68,10 @@ pub struct Handler {
     signal_rx: Option<mpsc::UnboundedReceiver<HandSignal>>,
     bar_bcast: broadcast::Sender<Bar>,
     sig_bcast: broadcast::Sender<Arc<HandSignal>>,
+    /// Stable per-instance identifier — changes on every restart so consumers
+    /// can detect herald restart and re-register their hands.
+    herald_id: String,
+    start_time: Instant,
 }
 
 impl Handler {
@@ -86,6 +96,8 @@ impl Handler {
             signal_rx: Some(signal_rx),
             bar_bcast,
             sig_bcast,
+            herald_id: Uuid::now_v7().to_string(),
+            start_time: Instant::now(),
         }
     }
 
@@ -97,23 +109,52 @@ impl Handler {
         let mut register_sub   = self.client.subscribe(SUBJ_REGISTER).await?;
         let mut deregister_sub = self.client.subscribe(SUBJ_DEREGISTER).await?;
         let mut list_sub       = self.client.subscribe(SUBJ_LIST).await?;
+        let mut ping_sub       = self.client.subscribe(SUBJ_PING).await?;
+        let mut heartbeat_sub  = self.client.subscribe(SUBJ_HEARTBEAT).await?;
+
+        // Announce availability — consumers subscribe to engine.ready and re-register
+        // all running hands when they see a new herald_id (i.e. after a restart).
+        self.publish_ready().await;
 
         info!(
+            herald_id = %self.herald_id,
             tf = ?self.tf,
             "herald ready (WebSocket ingestion mode)"
         );
 
         loop {
             tokio::select! {
-                Some(event) = self.bar_rx.recv() => self.handle_bar_event(event).await,
-                Some(msg) = reset_sub.next()       => self.handle_reset(msg).await,
-                Some(msg) = register_sub.next()    => self.handle_register(msg).await,
-                Some(msg) = deregister_sub.next()  => self.handle_deregister(msg).await,
-                Some(msg) = list_sub.next()        => self.handle_list(msg).await,
+                Some(event) = self.bar_rx.recv()        => self.handle_bar_event(event).await,
+                Some(msg) = reset_sub.next()            => self.handle_reset(msg).await,
+                Some(msg) = register_sub.next()         => self.handle_register(msg).await,
+                Some(msg) = deregister_sub.next()       => self.handle_deregister(msg).await,
+                Some(msg) = list_sub.next()             => self.handle_list(msg).await,
+                Some(msg) = ping_sub.next()             => self.handle_ping(msg).await,
+                Some(msg) = heartbeat_sub.next()        => self.handle_heartbeat(msg).await,
                 else => break,
             }
         }
         Ok(())
+    }
+
+    async fn publish_ready(&self) {
+        let mut symbols: Vec<String> = self.registry.list_hands()
+            .into_iter()
+            .map(|(_, _, sym, _, _)| sym)
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        symbols.sort();
+        let ev = ReadyEvent {
+            herald_id: self.herald_id.clone(),
+            ts: chrono::Utc::now().timestamp_millis(),
+            tf: self.tf.to_string(),
+            symbols,
+        };
+        let payload = ev.encode_to_vec();
+        if let Err(e) = self.client.publish(SUBJ_READY, payload.into()).await {
+            warn!(err = %e, "failed to publish engine.ready");
+        }
     }
 
     // ── bar event ─────────────────────────────────────────────────────────────
@@ -186,26 +227,68 @@ impl Handler {
             Err(e) => { error!(err = %e, "failed to decode RegisterMsg"); return; }
         };
         info!(hand_id = %req.hand_id, symbol = %req.symbol, "registering hand");
-        let target_tf = req.timeframe.as_deref()
-            .and_then(parse_timeframe_str)
-            .unwrap_or(self.tf);
+        // Timeframe is required — strategies are TF-specific so silent fallback
+        // to herald's base TF would run a script designed for H1 on M1 bars.
+        let target_tf = match req.timeframe.as_str() {
+            "" => {
+                let err = "timeframe is required (e.g. \"M1\", \"M15\", \"H1\")";
+                warn!(hand_id = %req.hand_id, "register rejected: {err}");
+                if let Some(reply) = msg.reply {
+                    let ack = serde_json::json!({"ok": false, "error": err}).to_string();
+                    let _ = self.client.publish(reply, ack.into_bytes().into()).await;
+                }
+                return;
+            }
+            s => match parse_timeframe_str(s) {
+                Some(tf) => tf,
+                None => {
+                    let err = format!(
+                        "invalid timeframe `{s}` (supported: M1, M3, M5, M10, M15, M30, H1, H2, H4, H6, H12, D1, W1)"
+                    );
+                    warn!(hand_id = %req.hand_id, "register rejected: {err}");
+                    if let Some(reply) = msg.reply {
+                        let ack = serde_json::json!({"ok": false, "error": err}).to_string();
+                        let _ = self.client.publish(reply, ack.into_bytes().into()).await;
+                    }
+                    return;
+                }
+            },
+        };
+        // Validate the script BEFORE touching the registry — try a dry-run
+        // build. This catches: script syntax errors, indicator typos
+        // (`ind.mma` etc.), invalid `candle.transform(...)` directives,
+        // misplaced directives, unbalanced `regime { ... }` block, duplicate
+        // indicator names. Doing this here avoids the side-effect leak from
+        // `registry.register()` calling `ledger.ensure_symbol(...)` before
+        // build fails — and gives the caller the error in the ack instead of
+        // a generic registry error.
+        let probe = serde_json::json!({ "script": req.script, "_live": true });
+        if let Err(e) = build_strategy("script", &probe) {
+            let err = format!("script validation failed: {e}");
+            warn!(hand_id = %req.hand_id, "register rejected: {err}");
+            if let Some(reply) = msg.reply {
+                let ack = serde_json::json!({"ok": false, "error": err}).to_string();
+                let _ = self.client.publish(reply, ack.into_bytes().into()).await;
+            }
+            return;
+        }
+
         let result = self.registry.register(
             req.hand_id.clone(), req.helm_id.clone(), req.symbol.clone(),
             req.script.clone(), target_tf,
         );
-        match result {
-            Ok(()) => {
-                info!(hand_id = %req.hand_id, symbol = %req.symbol, "hand registered");
-                if let Some(reply) = msg.reply {
-                    let _ = self.client.publish(reply, b"ok".as_ref().into()).await;
+        if let Some(reply) = msg.reply {
+            let ack = match result {
+                Ok(()) => {
+                    info!(hand_id = %req.hand_id, symbol = %req.symbol, "hand registered");
+                    serde_json::json!({"ok": true}).to_string()
                 }
-            }
-            Err(e) => {
-                warn!(hand_id = %req.hand_id, err = %e, "failed to register hand");
-                if let Some(reply) = msg.reply {
-                    let _ = self.client.publish(reply, format!("error: {e}").into()).await;
+                Err(e) => {
+                    warn!(hand_id = %req.hand_id, err = %e, "failed to register hand");
+                    serde_json::json!({"ok": false, "error": e.to_string()}).to_string()
                 }
-            }
+            };
+            let _ = self.client.publish(reply, ack.into_bytes().into()).await;
         }
     }
 
@@ -221,7 +304,8 @@ impl Handler {
         else                  { info!(%hand_id, "deregistering hand"); }
         self.registry.deregister(hand_id);
         if let Some(reply) = msg.reply {
-            let _ = self.client.publish(reply, b"ok".as_ref().into()).await;
+            let ack = serde_json::json!({"ok": true}).to_string();
+            let _ = self.client.publish(reply, ack.into_bytes().into()).await;
         }
     }
 
@@ -232,13 +316,56 @@ impl Handler {
             warn!("engine.list without reply subject — ignoring");
             return;
         };
-        let bots = self.registry.list_hands().into_iter()
-            .map(|(hand_id, helm_id, symbol, script)| {
-                HandInfo { hand_id, symbol, script, timeframe: String::new(), helm_id }
+        let hands = self.registry.list_hands().into_iter()
+            .map(|(hand_id, helm_id, symbol, script, timeframe)| {
+                HandInfo { hand_id, symbol, script, timeframe, helm_id }
             })
             .collect();
-        let payload = HandListResponse { hands: bots }.encode_to_vec();
+        let payload = HandListResponse { hands }.encode_to_vec();
         let _ = self.client.publish(reply, payload.into()).await;
+    }
+
+    // ── engine.ping ───────────────────────────────────────────────────────────
+
+    async fn handle_ping(&self, msg: async_nats::Message) {
+        let Some(reply) = msg.reply else { return; };
+        let resp = PingResponse {
+            ok: true,
+            hands: self.registry.hand_count() as i32,
+            uptime_ms: self.start_time.elapsed().as_millis() as i64,
+            herald_id: self.herald_id.clone(),
+        };
+        let _ = self.client.publish(reply, resp.encode_to_vec().into()).await;
+    }
+
+    // ── engine.heartbeat ─────────────────────────────────────────────────────
+
+    async fn handle_heartbeat(&self, msg: async_nats::Message) {
+        let Some(reply) = msg.reply else { return; };
+        let req = match HeartbeatRequest::decode(msg.payload.as_ref()) {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(err = %e, "failed to decode HeartbeatRequest");
+                return;
+            }
+        };
+        let all_hands = self.registry.list_hands();
+        let registered_set: std::collections::HashSet<&str> =
+            all_hands.iter().map(|(id, ..)| id.as_str()).collect();
+        let mut missing = Vec::new();
+        let mut registered = Vec::new();
+        for hand_id in &req.hands {
+            if registered_set.contains(hand_id.as_str()) {
+                registered.push(hand_id.clone());
+            } else {
+                missing.push(hand_id.clone());
+            }
+        }
+        if !missing.is_empty() {
+            warn!(helm_id = %req.helm_id, missing = ?missing, "heartbeat: hands missing from registry");
+        }
+        let resp = HeartbeatResponse { ok: missing.is_empty(), missing, registered };
+        let _ = self.client.publish(reply, resp.encode_to_vec().into()).await;
     }
 }
 
@@ -249,10 +376,25 @@ async fn signal_publisher(
     mut rx: mpsc::UnboundedReceiver<HandSignal>,
     bcast: broadcast::Sender<Arc<HandSignal>>,
 ) {
+    let js = jetstream::new(client);
+
+    // Ensure the SIGNALS stream exists before publishing.
+    // Helm creates it on startup, but herald may start before helm is ready.
+    let stream_cfg = jetstream::stream::Config {
+        name: "SIGNALS".to_string(),
+        subjects: vec![SUBJ_SIGNALS.to_string()],
+        storage: jetstream::stream::StorageType::Memory,
+        max_age: std::time::Duration::from_secs(60),
+        max_messages: 10_000,
+        ..Default::default()
+    };
+    match js.get_or_create_stream(stream_cfg).await {
+        Ok(_) => info!("SIGNALS JetStream stream ready"),
+        Err(e) => warn!(err = %e, "SIGNALS stream ensure failed — helm may not be up yet; will retry on each publish"),
+    }
+
     while let Some(batch) = rx.recv().await {
         let batch = Arc::new(batch);
-
-        // Broadcast to SSE subscribers before consuming the batch.
         let _ = bcast.send(Arc::clone(&batch));
 
         let response = SignalResponse {
@@ -261,16 +403,21 @@ async fn signal_publisher(
             hand_id: batch.hand_id.clone(),
         };
         let payload = response.encode_to_vec();
-        debug!(hand_id = %batch.hand_id, symbol = %batch.signal.symbol, "publishing signal to NATS");
-        if let Err(e) = client.publish(SUBJ_SIGNALS, payload.into()).await {
-            error!(subject = SUBJ_SIGNALS, err = %e, "failed to publish signal");
-            continue;
+        debug!(hand_id = %batch.hand_id, symbol = %batch.signal.symbol, "publishing signal to JetStream");
+        match js.publish(SUBJ_SIGNALS, payload.into()).await {
+            Ok(ack_future) => {
+                if let Err(e) = ack_future.await {
+                    error!(subject = SUBJ_SIGNALS, err = %e, "JetStream signal ack failed");
+                } else {
+                    info!(
+                        hand_id = %batch.hand_id, symbol = %batch.signal.symbol,
+                        direction = ?batch.signal.direction, strength = batch.signal.strength,
+                        bar_ts = batch.bar_ts, "signal emitted to JetStream"
+                    );
+                }
+            }
+            Err(e) => error!(subject = SUBJ_SIGNALS, err = %e, "JetStream signal publish failed"),
         }
-        info!(
-            hand_id = %batch.hand_id, symbol = %batch.signal.symbol,
-            direction = ?batch.signal.direction, strength = batch.signal.strength,
-            bar_ts = batch.bar_ts, "signal emitted"
-        );
     }
     info!("signal publisher channel closed");
 }

@@ -53,12 +53,12 @@ impl Strategy for VwapBounce {
 
         // Cross below VWAP → close
         if was_above && !above_vwap {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
 
         // RSI overbought → close
         if rsi > self.overbought {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
 
         vec![]
@@ -116,7 +116,7 @@ impl Strategy for VwapTrend {
 
         if !above_vwap && self.in_position {
             self.in_position = false;
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
 
         vec![]

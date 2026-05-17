@@ -6,10 +6,10 @@ use utoipa::ToSchema;
 
 // ── StrategySpec ──────────────────────────────────────────────────────────────
 
-/// A Rhai script strategy specification.
+/// A script strategy specification.
 ///
 /// JSON shape: `{ "script": "let rsi = ind.rsi(14); ..." }` — no `kind` discriminant needed.
-/// Legacy records that include `"kind": "rhai"` are deserialized correctly (unknown fields
+/// Legacy records that include `"kind": "script"` are deserialized correctly (unknown fields
 /// are ignored by serde).
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct StrategySpec {
@@ -18,11 +18,11 @@ pub struct StrategySpec {
 
 impl StrategySpec {
     pub fn to_factory_args(&self) -> (String, Value) {
-        ("rhai".into(), serde_json::json!({ "script": self.script }))
+        ("script".into(), serde_json::json!({ "script": self.script }))
     }
 
-    /// Always `"rhai"` — kept for logging / DB writes.
-    pub fn kind_str(&self) -> &'static str { "rhai" }
+    /// Always `"script"` — kept for logging / DB writes.
+    pub fn kind_str(&self) -> &'static str { "script" }
 }
 
 // ── Capital / execution sub-configs ──────────────────────────────────────────
@@ -146,17 +146,17 @@ pub struct BacktestResult {
 pub struct SignalPoint {
     /// Unix milliseconds of the bar that triggered this signal.
     pub ts: i64,
-    /// `"long"`, `"short"`, or `"close"`.
+    /// `"long"`, `"short"`, or `"exit"`.
     pub direction: String,
     /// Bar close price at signal time.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub price: Option<f64>,
     /// Signal strength \[0, 1\].
     pub strength: f64,
-    /// Take-profit price (from Rhai `let tp = …`).
+    /// Take-profit price (from script `let tp = …`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_price: Option<f64>,
-    /// Stop-loss price (from Rhai `let sl = …`).
+    /// Stop-loss price (from script `let sl = …`).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stop_price: Option<f64>,
     /// True when `tp`/`sl` are offsets from fill price, not absolute prices.

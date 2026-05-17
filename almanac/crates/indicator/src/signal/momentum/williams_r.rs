@@ -48,6 +48,10 @@ impl WilliamsR {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Williams %R — momentum oscillator (0 to -100) showing the close relative to the N-period high-low range. -80 = oversold; -20 = overbought."
+    }
+
     /// Standard Williams %R(14)
     pub fn standard() -> Self {
         Self::new(14)

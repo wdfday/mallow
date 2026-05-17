@@ -80,6 +80,10 @@ impl Smi {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Stochastic Momentum Index — measures distance from the close to the midpoint of the high-low range (not just the low). Produces cleaner signals than classic Stochastic."
+    }
+
     /// SMI(13, 25, 2, 9) — tham số Blau gốc.
     pub fn standard() -> Self {
         Self::new(13, 25, 2, 9)

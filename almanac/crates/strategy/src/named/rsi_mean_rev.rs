@@ -37,7 +37,7 @@ impl Strategy for RsiMeanRev {
         }
 
         if rsi > self.overbought {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
 
         vec![]
@@ -101,13 +101,13 @@ mod tests {
         }
         use alm_core::signal::Direction;
         assert!(
-            signals.iter().any(|s| s.direction == Direction::Close),
+            signals.iter().any(|s| s.direction == Direction::Exit),
             "should emit Close when RSI overbought"
         );
     }
 
     #[test]
-    fn rhai_parity() {
+    fn script_parity() {
         use crate::factory::build_strategy;
         use serde_json::json;
 
@@ -121,10 +121,10 @@ let rsi14 = ind.rsi(14, 1);
 if rsi14[0] < 30.0 { entry = true; }
 if rsi14[0] > 70.0 { exit  = true; }
 "#;
-        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
-        let rhai_sigs = run(rhai.as_mut(), &bars);
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
 
         assert!(!named_sigs.is_empty(), "rsi_mean_rev: must produce signals");
-        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
     }
 }

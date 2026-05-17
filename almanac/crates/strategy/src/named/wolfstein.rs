@@ -1,6 +1,12 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::Adx;
 
+const RHAI: &str = r#"
+let adx14 = ind.adx(14, 1);
+if adx14[0].adx > 27.5 && adx14[0].plus_di > adx14[0].minus_di { entry = true; }
+if adx14[0].adx < 20.5 { exit  = true; }
+"#;
+
 /// Bot #46 — Wolfstein Trending.
 ///
 /// Enters long when ADX > `long_threshold` AND +DI > -DI (strong bullish trend).
@@ -33,7 +39,7 @@ impl Strategy for Wolfstein {
             return vec![Signal::long(bar.timestamp, &bar.symbol, v.adx / 100.0)];
         }
         if v.adx < self.short_threshold {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }
@@ -42,7 +48,42 @@ impl Strategy for Wolfstein {
         "wolfstein"
     }
 
+    fn description(&self) -> &'static str {
+        "Long when ADX > long_threshold and +DI > -DI (strong bullish trend). Exit when ADX falls below short_threshold."
+    }
+
+    fn script(&self) -> Option<&'static str> { Some(RHAI) }
+
     fn reset(&mut self) {
         self.adx = Adx::new(self.period);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alm_core::signal::Direction;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    fn run(s: &mut dyn Strategy, bars: &[Bar]) -> Vec<(i64, Direction)> {
+        bars.iter().flat_map(|b| s.on_bar(b)).map(|s| (s.timestamp, s.direction)).collect()
+    }
+
+    #[test]
+    fn script_parity() {
+        // Wolfstein fires every bar when conditions hold (no crossover gate).
+        let bars = trending_bars(300);
+
+        let mut named = Wolfstein::new(14, 27.5, 20.5);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = Wolfstein::new(14, 27.5, 20.5).script().unwrap();
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "wolfstein: must produce signals");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
     }
 }

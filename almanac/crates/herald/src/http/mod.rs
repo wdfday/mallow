@@ -20,7 +20,7 @@
 //! |----------------------------------------|-------------------------------------------------|
 //! | `GET  /api/strategies`                 | Registered named-strategy keys                  |
 //! | `POST /api/backtest`                   | Run a named strategy                            |
-//! | `POST /api/backtest/rhai`              | Run a Rhai-script strategy                      |
+//! | `POST /api/backtest/script`              | Run a script strategy                      |
 //!
 //! ## Store — CRUD for saved strategies and backtest cases
 //!
@@ -62,7 +62,7 @@
 //! `POST /api/stream/:symbol` body (`StreamRequest`):
 //! - `tf`: timeframe string, e.g. `"M1"` (default = herald's global TF).
 //! - `indicators`: structured list of indicator configs — raw cell values returned per bar.
-//! - `script`: Rhai script using `ind.TYPE(period)` declarations + `plot("name", value)` calls.
+//! - `script`: Script using `ind.TYPE(period)` declarations + `plot("name", value)` calls.
 //!   Exactly one of `indicators` or `script` should be set.
 //!
 //! **MTF note:** `tf` is a single timeframe that applies to both the bar feed and all
@@ -107,7 +107,7 @@ pub mod data;
 mod duckdb_helpers;
 mod openapi;
 mod sse;
-mod rhai_validate;
+mod script_validate;
 mod symbols;
 mod types;
 pub mod store;
@@ -174,7 +174,7 @@ pub fn router(state: HttpState) -> Router {
         .merge(symbols::routes())
         .merge(data::routes())
         .merge(backtest::routes())
-        .merge(rhai_validate::routes())
+        .merge(script_validate::routes())
         .merge(store::routes())
         .merge(watch::routes())
         .merge(sse::routes())

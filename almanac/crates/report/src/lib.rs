@@ -405,8 +405,7 @@
 //! ### Exit Reason Breakdown
 //!
 //! [`ExitReasonBreakdown`] counts how many trades were closed by each mechanism:
-//! `signal`, `stop_loss`, `take_profit`, `trailing_stop`, `atr_stop`, `atr_target`,
-//! `max_bars`, `end_of_data`.
+//! `signal`, `stop_loss`, `take_profit`, `trailing_stop`, `max_bars`, `end_of_data`.
 //!
 //! A high `end_of_data` count indicates trades that were force-closed at backtest
 //! end — their PnL may be unrealised and should be discounted.
@@ -488,4 +487,4 @@ pub use benchmark::BuyHoldBenchmark;
 pub use metrics::{DirectionStats, dsr, psr, normal_cdf, probit, skewness, excess_kurtosis};
 pub use monte_carlo::{run as monte_carlo, MonteCarloConfig, MonteCarloResult};
 pub use portfolio_analytics::{analyze as portfolio_analyze, PortfolioAnalytics};
-pub use report::BacktestReport;
+pub use report::{BacktestReport, MetricMeta};

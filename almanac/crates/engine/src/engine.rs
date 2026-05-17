@@ -8,6 +8,7 @@ use alm_core::{
     exit::{ExitReason, ExitRules, PositionTracker},
     order::{Fill, OrderRequest, Side},
     portfolio::Portfolio,
+    regime::{RegimeState, RegimeSummary, RegimeTradeStats},
     signal::{Direction, Signal},
     strategy::{RiskManager, Strategy},
 };
@@ -65,6 +66,15 @@ pub struct Engine<S: Strategy, R: RiskManager, B: EventBus> {
     /// Sliding window of transformed bars for on_window() — mirrors bar_window but
     /// contains post-transform bars so strategy sees consistent candle type.
     strategy_bar_window: VecDeque<Bar>,
+    /// Full regime snapshot active when each currently-open position was entered.
+    /// Cleared when the position closes (after the snapshot is copied into the Trade).
+    regime_at_entry:     HashMap<String, RegimeState>,
+    /// Most recent regime state observed from `strategy.current_regime()`.
+    /// Used to detect transitions (only on-change is pushed to `regime_changes`)
+    /// and to tag newly-opened positions.
+    last_regime:         Option<RegimeState>,
+    /// Timestamped regime transitions over the run: `(timestamp_ms, label)`.
+    regime_changes:      Vec<(i64, String)>,
 }
 
 // ── Constructors ─────────────────────────────────────────────────────────────
@@ -95,6 +105,9 @@ impl<S: Strategy, R: RiskManager> Engine<S, R, SyncBus> {
             pending_signal_levels: HashMap::new(),
             candle_transform: None,
             strategy_bar_window: VecDeque::new(),
+            regime_at_entry: HashMap::new(),
+            last_regime: None,
+            regime_changes: Vec::new(),
         }
     }
 }
@@ -190,6 +203,7 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                 // Long position → sell to close; short position → buy to cover.
                 let side = if qty > 0.0 { Side::Sell } else { Side::Buy };
                 let tracker = self.position_trackers.remove(&sym);
+                let regime_state = self.regime_at_entry.remove(&sym);
                 let fill =
                     self.broker.force_close(&sym, qty.abs(), side, bar.timestamp, bar.close);
                 self.portfolio.apply_fill(&fill);
@@ -199,17 +213,21 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                         trade.mfe_pct = tr.mfe;
                         trade.bars_held = tr.bars_held;
                         trade.exit_reason = ExitReason::EndOfData;
+                        if let Some(state) = regime_state {
+                            trade.regime_at_entry = Some(state);
+                        }
                     }
                 }
             }
         }
 
-        let report = BacktestReport::generate(
+        let mut report = BacktestReport::generate(
             self.strategy.name(),
             &symbol,
             &self.portfolio,
             risk_free_annual,
         );
+        report.regime_summary = self.build_regime_summary();
         info!(
             symbol = %symbol,
             strategy = %strategy_name,
@@ -227,7 +245,7 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
     /// Execute a buffered signal directly at bar.open (used when `next_bar = true`).
     fn execute_signal_at_open(&mut self, signal: &Signal, bar: &Bar) {
         match signal.direction {
-            Direction::Close => {
+            Direction::Exit => {
                 if let Some(pos) = self.portfolio.positions.get(&signal.symbol) {
                     let qty = pos.qty.abs();
                     if qty > f64::EPSILON {
@@ -235,11 +253,15 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                         let fill =
                             self.broker.force_close(&signal.symbol, qty, side, bar.timestamp, bar.open);
                         self.portfolio.apply_fill(&fill);
+                        let regime_state = self.regime_at_entry.remove(&signal.symbol);
                         if let Some(tr) = self.position_trackers.remove(&signal.symbol) {
                             if let Some(trade) = self.portfolio.trades.last_mut() {
                                 trade.mae_pct = tr.mae;
                                 trade.mfe_pct = tr.mfe;
                                 trade.bars_held = tr.bars_held;
+                                if let Some(state) = regime_state {
+                                    trade.regime_at_entry = Some(state);
+                                }
                             }
                         }
                         debug!(symbol = %signal.symbol, qty, ?side, "next-bar close fill at open");
@@ -264,9 +286,15 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                             commission,
                         };
                         self.portfolio.apply_fill(&fill);
+                        let was_new = !self.position_trackers.contains_key(&signal.symbol);
                         self.position_trackers.entry(signal.symbol.clone()).or_insert_with(|| {
                             PositionTracker::with_levels(fill_price, signal.stop_price, signal.target_price, true)
                         });
+                        if was_new {
+                            if let Some(state) = &self.last_regime {
+                                self.regime_at_entry.insert(signal.symbol.clone(), state.clone());
+                            }
+                        }
                         debug!(symbol = %signal.symbol, qty, "next-bar long fill at open");
                     }
                 }
@@ -289,9 +317,15 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                             commission,
                         };
                         self.portfolio.apply_fill(&fill);
+                        let was_new = !self.position_trackers.contains_key(&signal.symbol);
                         self.position_trackers.entry(signal.symbol.clone()).or_insert_with(|| {
                             PositionTracker::with_levels(fill_price, signal.stop_price, signal.target_price, false)
                         });
+                        if was_new {
+                            if let Some(state) = &self.last_regime {
+                                self.regime_at_entry.insert(signal.symbol.clone(), state.clone());
+                            }
+                        }
                         debug!(symbol = %signal.symbol, qty, "next-bar short fill at open");
                     }
                 }
@@ -360,6 +394,7 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
 
                     for (sym, fill_price, reason) in to_close {
                         let tracker = self.position_trackers.remove(&sym);
+                        let regime_state = self.regime_at_entry.remove(&sym);
                         if let Some(pos) = self.portfolio.positions.get(&sym) {
                             let qty  = pos.qty.abs();
                             let side = if pos.is_long() { Side::Sell } else { Side::Buy };
@@ -372,6 +407,9 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                                     trade.mfe_pct = tr.mfe;
                                     trade.bars_held = tr.bars_held;
                                     trade.exit_reason = reason.clone();
+                                    if let Some(state) = regime_state.clone() {
+                                        trade.regime_at_entry = Some(state);
+                                    }
                                 }
                             }
                         }
@@ -388,6 +426,20 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
 
                 // ── Indicator-based signals (bar-by-bar) ──────────────────────
                 let signals = self.strategy.on_bar(strategy_bar);
+
+                // Snapshot the regime state produced by the strategy on this bar
+                // (e.g. from a `regime { ... }` block). Record transitions on label
+                // change; store the full state so position opens can tag the trade
+                // with all three dimensions (status + value) at entry time.
+                if let Some(state) = self.strategy.current_regime() {
+                    let prev_label = self.last_regime.as_ref().map(|s| s.label());
+                    let new_label  = state.label();
+                    if prev_label.as_deref() != Some(new_label.as_str()) {
+                        self.regime_changes.push((bar.timestamp, new_label));
+                    }
+                    self.last_regime = Some(state.clone());
+                }
+
                 for signal in signals {
                     self.bus
                         .send(Event::Signal(alm_core::event::SignalEvent { signal }));
@@ -417,7 +469,7 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                 }
                 let signal = &sig_event.signal;
                 match signal.direction {
-                    Direction::Close => {
+                    Direction::Exit => {
                         if let Some(pos) = self.portfolio.positions.get(&signal.symbol) {
                             let qty = pos.qty.abs();
                             if qty > f64::EPSILON {
@@ -517,20 +569,32 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
 
                 if still_open {
                     let sig_levels = self.pending_signal_levels.remove(&fill.symbol);
+                    let was_new = !self.position_trackers.contains_key(&fill.symbol);
                     self.position_trackers.entry(fill.symbol.clone()).or_insert_with(|| {
                         let is_long = self.portfolio.positions.get(&fill.symbol)
                             .map_or(true, |p| p.qty > 0.0);
                         let (sig_tp, sig_sl) = sig_levels.unwrap_or((None, None));
                         PositionTracker::with_levels(fill.price, sig_sl, sig_tp, is_long)
                     });
+                    // Record the regime active when this position was opened, so
+                    // we can tag the Trade on close.
+                    if was_new {
+                        if let Some(state) = &self.last_regime {
+                            self.regime_at_entry.insert(fill.symbol.clone(), state.clone());
+                        }
+                    }
                 } else {
                     // Position closed — propagate MAE/MFE/bars_held, then remove tracker.
                     self.pending_signal_levels.remove(&fill.symbol);
+                    let regime_state = self.regime_at_entry.remove(&fill.symbol);
                     if let Some(tr) = self.position_trackers.remove(&fill.symbol) {
                         if let Some(trade) = self.portfolio.trades.last_mut() {
                             trade.mae_pct = tr.mae;
                             trade.mfe_pct = tr.mfe;
                             trade.bars_held = tr.bars_held;
+                            if let Some(state) = regime_state {
+                                trade.regime_at_entry = Some(state);
+                            }
                         }
                     }
                 }
@@ -549,6 +613,172 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
         self.position_trackers.clear();
         self.pending_signals.clear();
         self.pending_signal_levels.clear();
+        self.regime_at_entry.clear();
+        self.last_regime = None;
+        self.regime_changes.clear();
         self.strategy.reset();
+    }
+
+    /// Build a `RegimeSummary` from collected regime transitions and per-trade
+    /// regime labels. Returns `None` when the strategy never produced a regime
+    /// (no `regime { … }` block).
+    fn build_regime_summary(&self) -> Option<RegimeSummary> {
+        if self.regime_changes.is_empty() {
+            return None;
+        }
+        // Group trades by regime label and compute win-rate / avg-return / profit-factor.
+        let mut buckets: HashMap<String, (usize, usize, f64, f64, f64)> = HashMap::new();
+        // tuple: (trades, wins, sum_pnl_pct, sum_gain, sum_loss_abs)
+        for t in &self.portfolio.trades {
+            let key = match &t.regime_at_entry {
+                Some(state) => state.label(),
+                None        => continue,
+            };
+            let entry = buckets.entry(key).or_insert((0, 0, 0.0, 0.0, 0.0));
+            entry.0 += 1;
+            if t.pnl > 0.0 {
+                entry.1 += 1;
+                entry.3 += t.pnl;
+            } else {
+                entry.4 += -t.pnl;
+            }
+            entry.2 += t.pnl_pct;
+        }
+        let mut trade_breakdown: Vec<RegimeTradeStats> = buckets
+            .into_iter()
+            .map(|(label, (trades, wins, sum_pct, gain, loss))| {
+                let win_rate_pct = if trades > 0 { 100.0 * wins as f64 / trades as f64 } else { 0.0 };
+                let avg_return_pct = if trades > 0 { 100.0 * sum_pct / trades as f64 } else { 0.0 };
+                let profit_factor = if loss > f64::EPSILON { gain / loss } else if gain > 0.0 { f64::INFINITY } else { 0.0 };
+                RegimeTradeStats { label, trades, win_rate_pct, avg_return_pct, profit_factor }
+            })
+            .collect();
+        trade_breakdown.sort_by(|a, b| b.trades.cmp(&a.trades));
+        Some(RegimeSummary {
+            changes: self.regime_changes.clone(),
+            trade_breakdown,
+        })
+    }
+}
+
+// ── Tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alm_core::regime::{RegimeDimension, RegimeState};
+    use alm_data::BarVecFeed;
+    use alm_strategy::FixedFractional;
+
+    /// A Strategy that fires Long → Exit on alternating bars and exposes a
+    /// regime label that flips at bar 50. Used to exercise engine regime
+    /// tracking and trade tagging without depending on script-level details.
+    struct FakeRegimeStrategy {
+        i:       usize,
+        symbol:  String,
+        regime:  RegimeState,
+    }
+
+    impl FakeRegimeStrategy {
+        fn new(symbol: &str) -> Self {
+            Self {
+                i:      0,
+                symbol: symbol.into(),
+                regime: RegimeState::new(
+                    RegimeDimension::new(20.0, "ranging"),
+                    RegimeDimension::new(1.0,  "normal"),
+                    RegimeDimension::new(1.0,  "normal"),
+                ),
+            }
+        }
+    }
+
+    impl Strategy for FakeRegimeStrategy {
+        fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
+            // Flip regime once at bar index 50.
+            if self.i == 50 {
+                self.regime = RegimeState::new(
+                    RegimeDimension::new(35.0, "trending"),
+                    RegimeDimension::new(1.4,  "high"),
+                    RegimeDimension::new(1.0,  "normal"),
+                );
+            }
+            self.i += 1;
+            // Open at bar 20, close at bar 60 (in trending regime), then open
+            // again at bar 70 and close at bar 80 (still in trending).
+            match self.i {
+                21 | 71 => vec![Signal::long(bar.timestamp, &self.symbol, 1.0)],
+                61 | 81 => vec![Signal::exit(bar.timestamp, &self.symbol)],
+                _       => vec![],
+            }
+        }
+        fn name(&self) -> &str { "fake_regime" }
+        fn reset(&mut self) {}
+        fn current_regime(&self) -> Option<&RegimeState> { Some(&self.regime) }
+    }
+
+    fn synth_bars(n: usize, symbol: &str) -> Vec<Bar> {
+        (0..n).map(|i| {
+            let c = 100.0 + (i as f64) * 0.5;
+            Bar::new(i as i64 * 60_000, symbol, c, c * 1.01, c * 0.99, c, 1000.0)
+        }).collect()
+    }
+
+    #[test]
+    fn engine_tracks_regime_changes_and_tags_trades() {
+        let bars = synth_bars(100, "TEST");
+        let strategy = FakeRegimeStrategy::new("TEST");
+        let risk = FixedFractional::fractional(0.95, 1);
+        let mut engine = Engine::sync(10_000.0, strategy, risk, 0.0, 0.0);
+        let mut feed = BarVecFeed::new(bars, "TEST".into());
+        let report = engine.run(&mut feed, 0.0);
+
+        let summary = report.regime_summary.as_ref().expect("regime summary present");
+        // Initial "ranging/normal/normal" + transition to "trending/high/normal" → 2 entries.
+        assert_eq!(summary.changes.len(), 2);
+        assert_eq!(summary.changes[0].1, "ranging/normal/normal");
+        assert_eq!(summary.changes[1].1, "trending/high/normal");
+
+        // Closed trades should carry the full regime snapshot at entry, not just a label.
+        let trades = &engine.portfolio.trades;
+        assert!(!trades.is_empty(), "expected at least one closed trade");
+        for t in trades {
+            assert!(t.regime_at_entry.is_some(), "trade missing regime snapshot");
+        }
+        // First trade opens at bar 21 (ranging). Verify all three dimensions
+        // (status + raw value) are snapshotted, not just the joined label.
+        let r0 = trades[0].regime_at_entry.as_ref().unwrap();
+        assert_eq!(r0.trend.status,      "ranging");
+        assert!((r0.trend.value      - 20.0).abs() < f64::EPSILON);
+        assert_eq!(r0.volatility.status, "normal");
+        assert!((r0.volatility.value -  1.0).abs() < f64::EPSILON);
+        assert_eq!(r0.liquidity.status,  "normal");
+        assert!((r0.liquidity.value  -  1.0).abs() < f64::EPSILON);
+
+        // Second trade opens at bar 71 (after the regime flipped at bar 50).
+        if trades.len() >= 2 {
+            let r1 = trades[1].regime_at_entry.as_ref().unwrap();
+            assert_eq!(r1.trend.status,      "trending");
+            assert!((r1.trend.value      - 35.0).abs() < f64::EPSILON);
+            assert_eq!(r1.volatility.status, "high");
+            assert!((r1.volatility.value -  1.4).abs() < f64::EPSILON);
+            assert_eq!(r1.liquidity.status,  "normal");
+        }
+    }
+
+    #[test]
+    fn engine_no_regime_summary_when_strategy_has_none() {
+        struct PlainStrategy;
+        impl Strategy for PlainStrategy {
+            fn on_bar(&mut self, _bar: &Bar) -> Vec<Signal> { vec![] }
+            fn name(&self) -> &str { "plain" }
+            fn reset(&mut self) {}
+        }
+        let bars = synth_bars(30, "TEST");
+        let risk = FixedFractional::fractional(0.95, 1);
+        let mut engine = Engine::sync(10_000.0, PlainStrategy, risk, 0.0, 0.0);
+        let mut feed = BarVecFeed::new(bars, "TEST".into());
+        let report = engine.run(&mut feed, 0.0);
+        assert!(report.regime_summary.is_none());
     }
 }

@@ -195,15 +195,15 @@ mod tests {
     #[test]
     fn bootstrap_respects_capacity_trim() {
         let led = Ledger::new(LedgerConfig::default());
-        // D1 default cap = 252. Feed 1000 bars → only last 252 kept.
-        let bars = (1..=1000)
+        // Uniform fallback cap = 1000. Feed 2000 bars → only last 1000 kept.
+        let bars = (1..=2000)
             .map(|i| Bar::new(i as i64 * 86_400_000, "AAPL", 100.0, 100.0, 100.0, 100.0, 1.0))
             .collect::<Vec<_>>();
         let rep = led.bootstrap_symbol("AAPL", Timeframe::D1, bars).unwrap();
-        assert_eq!(rep.fed, 1000);
+        assert_eq!(rep.fed, 2000);
         let snap = led.snapshot("AAPL", Timeframe::D1).unwrap();
-        assert_eq!(snap.bars.len(), 252);
-        assert_eq!(snap.bars.first().unwrap().timestamp, (1000 - 252 + 1) as i64 * 86_400_000);
+        assert_eq!(snap.bars.len(), 1000);
+        assert_eq!(snap.bars.first().unwrap().timestamp, (2000 - 1000 + 1) as i64 * 86_400_000);
     }
 
     #[test]

@@ -64,6 +64,10 @@ impl BBands {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Bollinger Bands — upper/lower bands are N standard deviations above/below a central SMA. Contraction (squeeze) precedes breakouts; expansion signals trending moves."
+    }
+
     /// BBands(20, 2.0) — tham số John Bollinger khuyến nghị.
     pub fn standard() -> Self {
         Self::new(20, 2.0)

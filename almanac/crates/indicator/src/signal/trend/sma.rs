@@ -40,6 +40,10 @@ impl Sma {
         Self { period, buffer: VecDeque::with_capacity(period + 1), sum: 0.0 }
     }
 
+    pub fn description() -> &'static str {
+        "Simple Moving Average — unweighted mean of the last N closes. Baseline smoothing filter used in crossover and trend-detection systems."
+    }
+
     /// Feed một giá mới. Trả về `Some(sma)` sau khi đủ `period` bar.
     pub fn update(&mut self, value: f64) -> Option<f64> {
         self.buffer.push_back(value);

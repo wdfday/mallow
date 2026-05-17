@@ -25,7 +25,7 @@
 //!
 //! [`TimeBarResampler`] stamps the HTF bar with the **bucket floor** timestamp
 //! (e.g. `08:00:00` for an H4 bucket starting at 08:00). Compare with
-//! [`HtfAggregator`][crate::script] inside `RhaiStrategy`, which stamps with
+//! [`HtfAggregator`][crate::script] inside `ScriptStrategy`, which stamps with
 //! the **last M1 bar's timestamp** inside that bucket.
 //!
 //! # Partial-bucket drop
@@ -41,12 +41,12 @@
 //! the pre-market open of one session from merging with the close of the
 //! previous session.
 //!
-//! # Rhai scripts
+//! # Scripts
 //!
-//! Rhai strategies do **not** use [`TimeBarResampler`] directly. Instead each
+//! Script strategies do **not** use [`TimeBarResampler`] directly. Instead each
 //! HTF indicator binding contains an inline [`HtfAggregator`] — same bucket
 //! logic but with additional `live_` support. See
-//! [`crate::script::rhai_strategy`] for details.
+//! [`crate::script::strategy`] for details.
 
 use alm_core::Bar;
 
@@ -59,10 +59,10 @@ use alm_core::Bar;
 /// ~2.5 h "stub" bar at the open of every session, making indicators computed on
 /// it unreliable.  Use D1 as the higher timeframe instead.
 ///
-/// Valid: `M1 M5 M15 M30 H1 H2 H3 D1 W1`
+/// Valid: `M1 M5 M15 M30 H1 H2 D1 W1`
 pub const SUPPORTED_MTF_STOCK: &[&str] = &[
     "M1", "M5", "M15", "M30",
-    "H1", "H2", "H3",
+    "H1", "H2",
     "D1", "W1",
 ];
 
@@ -71,10 +71,10 @@ pub const SUPPORTED_MTF_STOCK: &[&str] = &[
 /// Crypto trades 24/7 so all hourly multiples align cleanly. H4 is included
 /// (6 full bars per day, 0 h / 4 h / 8 h / 12 h / 16 h / 20 h UTC).
 ///
-/// Valid: `M1 M5 M15 M30 H1 H2 H3 H4 D1 W1`
+/// Valid: `M1 M5 M15 M30 H1 H2 H4 D1 W1`
 pub const SUPPORTED_MTF_CRYPTO: &[&str] = &[
     "M1", "M5", "M15", "M30",
-    "H1", "H2", "H3", "H4",
+    "H1", "H2", "H4",
     "D1", "W1",
 ];
 
@@ -132,7 +132,6 @@ pub fn parse_timeframe_ms(tf: &str) -> Option<i64> {
 /// |-----|---------|--------------------|
 /// | H1  | 60 min  | ~30 min (9:30–10:00) |
 /// | H2  | 120 min | ~30 min (9:30–10:00) |
-/// | H3  | 180 min | ~30 min (9:30–10:00) |
 ///
 /// For smooth indicators (EMA, RSI) this is an acceptable imperfection.
 /// It would matter more for ATR-based dynamic sizing (slightly underestimated

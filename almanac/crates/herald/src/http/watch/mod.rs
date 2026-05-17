@@ -31,7 +31,7 @@ use utoipa::ToSchema;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::Response,
     routing::get,
     Json, Router,
 };
@@ -102,6 +102,7 @@ pub struct UpdateWatchReq {
     pub nats_subject: Option<String>,
 }
 
+use super::types::{ok, created, no_content, err};
 use super::HttpState;
 
 // ── WatchSlot ─────────────────────────────────────────────────────────────────
@@ -134,11 +135,11 @@ pub fn routes() -> Router<HttpState> {
 // ── Error helpers ─────────────────────────────────────────────────────────────
 
 fn not_found() -> Response {
-    (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "not found"}))).into_response()
+    err(StatusCode::NOT_FOUND, "not found")
 }
 
 fn bad_req(msg: &str) -> Response {
-    (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": msg}))).into_response()
+    err(StatusCode::BAD_REQUEST, msg.to_owned())
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -151,9 +152,9 @@ fn bad_req(msg: &str) -> Response {
 )]
 pub async fn list_watches(State(state): State<HttpState>) -> Response {
     let store = state.watches.read().await;
-    let mut items: Vec<&WatchEntry> = store.values().map(|s| &s.entry).collect();
+    let mut items: Vec<WatchEntry> = store.values().map(|s| s.entry.clone()).collect();
     items.sort_by_key(|e| e.created_at);
-    Json(items).into_response()
+    ok(items)
 }
 
 #[utoipa::path(
@@ -235,7 +236,7 @@ pub async fn create_watch(
         indicators = entry.pinned_indicators,
         "watch created"
     );
-    (StatusCode::CREATED, Json(entry)).into_response()
+    created(entry)
 }
 
 #[utoipa::path(
@@ -250,7 +251,7 @@ pub async fn create_watch(
 )]
 pub async fn get_watch(State(state): State<HttpState>, Path(id): Path<String>) -> Response {
     match state.watches.read().await.get(&id) {
-        Some(s) => Json(s.entry.clone()).into_response(),
+        Some(s) => ok(s.entry.clone()),
         None    => not_found(),
     }
 }
@@ -337,7 +338,7 @@ pub async fn update_watch(
         indicators = entry.pinned_indicators,
         "watch updated"
     );
-    Json(entry).into_response()
+    ok(entry)
 }
 
 #[utoipa::path(
@@ -360,7 +361,7 @@ pub async fn delete_watch(State(state): State<HttpState>, Path(id): Path<String>
                 warn!(%id, err=%e, "watch: failed to delete persisted entry");
             }
             info!(%id, "watch deleted");
-            StatusCode::NO_CONTENT.into_response()
+            no_content()
         }
         None => not_found(),
     }

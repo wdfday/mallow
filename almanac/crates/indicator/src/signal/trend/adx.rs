@@ -65,6 +65,10 @@ impl Adx {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Average Directional Index — measures trend strength (0–100) regardless of direction. Combined with +DI/-DI to identify both trend strength and direction."
+    }
+
     /// ADX(14) — period Wilder khuyến nghị.
     pub fn standard() -> Self {
         Self::new(14)

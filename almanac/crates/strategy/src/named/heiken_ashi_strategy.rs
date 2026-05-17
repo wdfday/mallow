@@ -37,7 +37,7 @@ impl Strategy for HaColor {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if !v.is_bullish && was_bullish {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }
@@ -94,7 +94,7 @@ impl Strategy for HaBreakout {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if self.bear_count >= self.consecutive_bars {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }
@@ -148,7 +148,7 @@ impl Strategy for HaHarmonizer {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if !ha.is_bullish || bar.close < ema {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }

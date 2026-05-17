@@ -25,21 +25,21 @@ paths:
           description: Bad request
         '429':
           description: Too many concurrent backtests
-  /api/v1/backtest/rhai:
+  /api/v1/backtest/script:
     post:
       tags:
       - backtest
-      operationId: run_backtest_rhai
+      operationId: run_backtest_script
       requestBody:
         description: ''
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RhaiBacktestRequest'
+              $ref: '#/components/schemas/ScriptBacktestRequest'
         required: true
       responses:
         '200':
-          description: Rhai backtest report with saved IDs
+          description: Script backtest report with saved IDs
         '400':
           description: Bad request
         '429':
@@ -83,16 +83,16 @@ paths:
       responses:
         '200':
           description: Indicator catalogue (static)
-  /api/v1/rhai/validate:
+  /api/v1/script/validate:
     post:
       tags:
       - backtest
-      operationId: validate_rhai
+      operationId: validate_script
       requestBody:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/RhaiValidateReq'
+              $ref: '#/components/schemas/ScriptValidateReq'
         required: true
       responses:
         '200':
@@ -100,7 +100,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/RhaiValidateResp'
+                $ref: '#/components/schemas/ScriptValidateResp'
         '400':
           description: Request body malformed
   /api/v1/store/cases:
@@ -540,25 +540,11 @@ components:
             Asset class — controls lot sizing.
             `"crypto"` → fractional qty; `"stock"` → whole shares; `"vn_stock"` → lots of 100.
           nullable: true
-        candle_type:
-          type: string
-          description: |-
-            Candle type fed into strategy indicators.
-            `"raw"` (default) | `"heiken_ashi"` | `"smooth_ha"`.
-            Broker fills always use raw OHLCV prices regardless of this setting.
-          nullable: true
         commission_pct:
           type: number
           format: double
           description: 'Commission per trade as a fraction of trade value (default: 0.001).'
           nullable: true
-        curve_points:
-          type: integer
-          description: |-
-            Max number of points in equity/drawdown/rolling curves (default: 2000).
-            Set to 0 to disable downsampling.
-          nullable: true
-          minimum: 0
         data_source:
           type: string
           description: |-
@@ -635,11 +621,6 @@ components:
           format: double
           description: 'Slippage per trade as a fraction of trade value (default: 0.0005).'
           nullable: true
-        smooth_period:
-          type: integer
-          description: 'EMA smoothing period for `"smooth_ha"` (default: 3, minimum: 2).'
-          nullable: true
-          minimum: 0
         strategy:
           type: string
           description: Strategy key, e.g. `"rsi_mean_rev"`. See `alm-strategy::catalog::STRATEGY_KEYS`.
@@ -1067,11 +1048,11 @@ components:
           type: number
           format: double
           nullable: true
-    RhaiBacktestRequest:
+    ScriptBacktestRequest:
       type: object
       description: |-
-        Dedicated request for Rhai-script backtests.
-        Takes a `script` field containing the full Rhai strategy.
+        Dedicated request for script backtests.
+        Takes a `script` field containing the full strategy script.
 
         Any `plot("name", value)` calls inside the script populate
         `indicator_series` in the response.
@@ -1088,9 +1069,6 @@ components:
         asset_type:
           type: string
           nullable: true
-        candle_type:
-          type: string
-          nullable: true
         case_id:
           type: string
           description: Existing case ID to update and re-run. Omit to create a new case.
@@ -1099,10 +1077,6 @@ components:
           type: number
           format: double
           nullable: true
-        curve_points:
-          type: integer
-          nullable: true
-          minimum: 0
         data_source:
           type: string
           nullable: true
@@ -1156,15 +1130,11 @@ components:
           nullable: true
         script:
           type: string
-          description: Full Rhai strategy script.
+          description: Full strategy script.
         slippage_pct:
           type: number
           format: double
           nullable: true
-        smooth_period:
-          type: integer
-          nullable: true
-          minimum: 0
         strategy_id:
           type: string
           description: |-
@@ -1189,7 +1159,7 @@ components:
           allOf:
           - $ref: '#/components/schemas/WalkForwardConfig'
           nullable: true
-    RhaiLintScope:
+    ScriptLintScope:
       type: object
       description: Scope information for Monaco autocomplete / hover.
       required:
@@ -1214,15 +1184,15 @@ components:
           type: array
           items:
             type: string
-    RhaiValidateReq:
+    ScriptValidateReq:
       type: object
       required:
       - script
       properties:
         script:
           type: string
-          description: Full Rhai strategy script to lint.
-    RhaiValidateResp:
+          description: Full strategy script to lint.
+    ScriptValidateResp:
       type: object
       required:
       - errors
@@ -1234,7 +1204,7 @@ components:
             $ref: '#/components/schemas/LintDiagnostic'
           description: List of diagnostics. Empty → script is clean.
         scope:
-          $ref: '#/components/schemas/RhaiLintScope'
+          $ref: '#/components/schemas/ScriptLintScope'
     SignalPoint:
       type: object
       description: One signal emitted during a signal-replay run.
@@ -1261,7 +1231,7 @@ components:
         stop_price:
           type: number
           format: double
-          description: Stop-loss price (from Rhai `let sl = …`).
+          description: Stop-loss price (from script `let sl = …`).
           nullable: true
         strength:
           type: number
@@ -1270,7 +1240,7 @@ components:
         target_price:
           type: number
           format: double
-          description: Take-profit price (from Rhai `let tp = …`).
+          description: Take-profit price (from script `let tp = …`).
           nullable: true
         ts:
           type: integer
@@ -1318,10 +1288,10 @@ components:
     StrategySpec:
       type: object
       description: |-
-        A Rhai script strategy specification.
+        A script strategy specification.
 
         JSON shape: `{ "script": "let rsi = ind.rsi(14); ..." }` — no `kind` discriminant needed.
-        Legacy records that include `"kind": "rhai"` are deserialized correctly (unknown fields
+        Legacy records that include `"kind": "script"` are deserialized correctly (unknown fields
         are ignored by serde).
       required:
       - script
@@ -1335,7 +1305,7 @@ components:
 
         Exactly one of `indicators` or `script` should be provided:
         - `indicators`: structured list of indicator configs (no computation)
-        - `script`: Rhai script using `ind.TYPE(period)` + `plot("name", value)`
+        - `script`: script using `ind.TYPE(period)` + `plot("name", value)`
       properties:
         indicators:
           type: array
@@ -1345,7 +1315,7 @@ components:
           nullable: true
         script:
           type: string
-          description: Rhai script mode — script runs per bar, returns whatever was `plot()`-ed.
+          description: Script mode — script runs per bar, returns whatever was `plot()`-ed.
           nullable: true
         tf:
           type: string

@@ -85,6 +85,10 @@ impl Kdj {
         }
     }
 
+    pub fn description() -> &'static str {
+        "KDJ — extension of Stochastic with a J line (3D - 2K) that leads K and D. Popular in Asian markets; J > 100 or < 0 flags extremes."
+    }
+
     pub fn update(&mut self, high: f64, low: f64, close: f64) -> Option<KdjValue> {
         let highest = self.max_high.push(high);
         let lowest = self.min_low.push(low);

@@ -1,7 +1,7 @@
 //! Shared test utilities for strategy parity tests.
 #![cfg(test)]
 
-use alm_core::{bar::Bar, signal::Direction, strategy::Strategy};
+use alm_core::{bar::Bar, signal::{Direction, Signal}, strategy::Strategy};
 
 pub fn bar(ts: i64, close: f64) -> Bar {
     Bar::new(ts, "TEST", close, close * 1.005, close * 0.995, close, 1000.0)
@@ -14,11 +14,30 @@ pub fn run(s: &mut dyn Strategy, bars: &[Bar]) -> Vec<(i64, Direction)> {
         .collect()
 }
 
+/// Like `run`, but returns full Signal objects so tp/sl/price can be compared.
+pub fn run_signals(s: &mut dyn Strategy, bars: &[Bar]) -> Vec<Signal> {
+    bars.iter().flat_map(|b| s.on_bar(b)).collect()
+}
+
 pub fn assert_parity(label: &str, a: &[(i64, Direction)], b: &[(i64, Direction)]) {
     assert_eq!(
         a, b,
         "{label}: signal mismatch\n  left : {a:?}\n  right: {b:?}"
     );
+}
+
+/// Full signal parity: compares timestamp, direction, price, target_price, stop_price.
+pub fn assert_signals_parity(label: &str, a: &[Signal], b: &[Signal]) {
+    assert_eq!(a.len(), b.len(),
+        "{label}: signal count mismatch — left {}, right {}",
+        a.len(), b.len());
+    for (i, (sa, sb)) in a.iter().zip(b.iter()).enumerate() {
+        assert_eq!(sa.timestamp,    sb.timestamp,    "{label}[{i}]: timestamp mismatch");
+        assert_eq!(sa.direction,    sb.direction,    "{label}[{i}]: direction mismatch");
+        assert_eq!(sa.price,        sb.price,        "{label}[{i}]: price mismatch");
+        assert_eq!(sa.target_price, sb.target_price, "{label}[{i}]: target_price mismatch");
+        assert_eq!(sa.stop_price,   sb.stop_price,   "{label}[{i}]: stop_price mismatch");
+    }
 }
 
 /// down → up → down to force two crossovers (entry + exit)

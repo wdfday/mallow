@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 pub enum Direction {
     Long,
     Short,
-    /// Close existing position (no new side)
-    Close,
+    /// Exit existing position (no new side)
+    Exit,
 }
 
 /// Optional pattern metadata attached to a signal.
@@ -39,19 +39,27 @@ pub struct Signal {
     /// Human-readable reason for this signal — logged by helm for auditability.
     /// E.g. `"ema cross above H4, rsi < 60"`. Not used for execution logic.
     pub reason: Option<String>,
+    /// ATR (Average True Range) at bar close — forwarded to helm for stop/TP sizing.
+    /// Set by the strategy or computed from the ledger ATR(14) at signal time.
+    pub atr: Option<f64>,
 }
 
 impl Signal {
     pub fn long(timestamp: i64, symbol: impl Into<String>, strength: f64) -> Self {
-        Self { timestamp, symbol: symbol.into(), direction: Direction::Long, strength, pattern: None, price: None, target_price: None, stop_price: None, is_offset: false, reason: None }
+        Self { timestamp, symbol: symbol.into(), direction: Direction::Long, strength, pattern: None, price: None, target_price: None, stop_price: None, is_offset: false, reason: None, atr: None }
     }
 
     pub fn short(timestamp: i64, symbol: impl Into<String>, strength: f64) -> Self {
-        Self { timestamp, symbol: symbol.into(), direction: Direction::Short, strength, pattern: None, price: None, target_price: None, stop_price: None, is_offset: false, reason: None }
+        Self { timestamp, symbol: symbol.into(), direction: Direction::Short, strength, pattern: None, price: None, target_price: None, stop_price: None, is_offset: false, reason: None, atr: None }
     }
 
-    pub fn close(timestamp: i64, symbol: impl Into<String>) -> Self {
-        Self { timestamp, symbol: symbol.into(), direction: Direction::Close, strength: 1.0, pattern: None, price: None, target_price: None, stop_price: None, is_offset: false, reason: None }
+    pub fn exit(timestamp: i64, symbol: impl Into<String>) -> Self {
+        Self { timestamp, symbol: symbol.into(), direction: Direction::Exit, strength: 1.0, pattern: None, price: None, target_price: None, stop_price: None, is_offset: false, reason: None, atr: None }
+    }
+
+    pub fn with_atr(mut self, atr: f64) -> Self {
+        self.atr = Some(atr);
+        self
     }
 
     pub fn with_pattern(mut self, meta: PatternMeta) -> Self {

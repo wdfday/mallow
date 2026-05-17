@@ -1,4 +1,4 @@
-use crate::{exit::ExitReason, order::Side};
+use crate::{exit::ExitReason, order::Side, regime::RegimeState};
 use serde::{Deserialize, Serialize};
 
 /// A completed round-trip trade (entry + exit).
@@ -25,6 +25,12 @@ pub struct Trade {
     pub bars_held: usize,
     /// Why this trade was closed.
     pub exit_reason: ExitReason,
+    /// Full three-dimensional regime snapshot at the moment this trade was opened
+    /// — `trend` / `volatility` / `liquidity`, each with both a status label and a
+    /// raw value. `None` when the strategy does not produce a regime state.
+    /// Populated by the engine when the strategy exposes `current_regime()`.
+    #[serde(default)]
+    pub regime_at_entry: Option<RegimeState>,
 }
 
 impl Trade {

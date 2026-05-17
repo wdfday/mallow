@@ -28,21 +28,3 @@ pub fn load_btc_m1_bars() -> Vec<Bar> {
     while let Some(b) = feed.next() { bars.push(b); }
     bars
 }
-
-/// Trending bars: down→up→down.
-pub fn trending_bars(n: usize) -> Vec<Bar> {
-    let third = n / 3;
-    (0..n)
-        .map(|i| {
-            let price = if i < third {
-                200.0 - i as f64 * 0.5
-            } else if i < third * 2 {
-                200.0 - third as f64 * 0.5 + (i - third) as f64 * 1.5
-            } else {
-                200.0 - third as f64 * 0.5 + third as f64 * 1.5
-                    - (i - third * 2) as f64 * 2.0
-            };
-            Bar::new(i as i64 * 60_000, "TEST", price.max(1.0), price.max(1.0)*1.005, price.max(1.0)*0.995, price.max(1.0), 1000.0)
-        })
-        .collect()
-}

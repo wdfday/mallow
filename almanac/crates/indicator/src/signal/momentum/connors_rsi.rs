@@ -76,6 +76,10 @@ impl ConnorsRsi {
         }
     }
 
+    pub fn description() -> &'static str {
+        "ConnorsRSI — composite of short-term RSI(3), streak RSI, and percentile rank of daily returns. Optimised for short-term mean-reversion entries."
+    }
+
     /// Default parameters: rsi_period=3, streak_rsi_period=2, percent_rank_period=100
     pub fn default() -> Self {
         Self::new(3, 2, 100)

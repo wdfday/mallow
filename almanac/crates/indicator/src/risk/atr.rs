@@ -54,6 +54,10 @@ impl Atr {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Average True Range — Wilder-smoothed average of the true range (high-low, high-prev_close, low-prev_close). Measures volatility; used for stop sizing and position management."
+    }
+
     /// Standard ATR(14)
     pub fn standard() -> Self {
         Self::new(14)

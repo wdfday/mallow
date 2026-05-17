@@ -99,6 +99,10 @@ impl KalmanFilter {
         Self::new(0.001, 0.001, 1.0)
     }
 
+    pub fn description() -> &'static str {
+        "Kalman Filter — Bayesian state estimator that tracks price (position) and velocity, adapting in real time to measurement noise. Produces a smooth price estimate and a velocity (trend direction/speed) output."
+    }
+
     /// Feed next price observation. Returns filtered `(value, velocity)` immediately.
     ///
     /// On the very first bar the filter bootstraps: `value = price`, `velocity = 0`.

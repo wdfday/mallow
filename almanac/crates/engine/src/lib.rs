@@ -82,7 +82,7 @@
 //!
 //! ### Signal-level TP/SL
 //!
-//! A Rhai strategy can set absolute prices in script:
+//! A script strategy can set absolute prices in script:
 //! ```rhai
 //! let atr = atr14[0].atr;
 //! tp = close + 3.0 * atr;   // written to signal.target_price

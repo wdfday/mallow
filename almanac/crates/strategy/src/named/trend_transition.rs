@@ -1,6 +1,14 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::{Adx, Ema};
 
+const RHAI: &str = r#"
+let e50  = ind.ema(50);
+let e200 = ind.ema(200);
+let adx14 = ind.adx(14, 1);
+if cross_above(e50, e200) && adx14[0].adx > 25.0 { entry = true; }
+if cross_below(e50, e200) { exit = true; }
+"#;
+
 /// Bot #34 — Trend Transition Tracker.
 ///
 /// Long when fast EMA crosses above slow EMA AND ADX > threshold (trend is strong).
@@ -59,7 +67,7 @@ impl Strategy for TrendTransition {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if crossed_below {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }
@@ -67,6 +75,12 @@ impl Strategy for TrendTransition {
     fn name(&self) -> &str {
         "trend_transition"
     }
+
+    fn description(&self) -> &'static str {
+        "Long when fast EMA crosses above slow EMA with ADX confirming a strong trend. Exit on EMA cross-down."
+    }
+
+    fn script(&self) -> Option<&'static str> { Some(RHAI) }
 
     fn reset(&mut self) {
         self.fast_ema = Ema::new(self.fast_period);
@@ -79,5 +93,29 @@ impl Strategy for TrendTransition {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use alm_core::signal::Direction;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
 
+    fn run(s: &mut dyn Strategy, bars: &[Bar]) -> Vec<(i64, Direction)> {
+        bars.iter().flat_map(|b| s.on_bar(b)).map(|s| (s.timestamp, s.direction)).collect()
+    }
+
+    #[test]
+    fn script_parity() {
+        // Uses slow_trend_bars to force EMA(50) cross above EMA(200).
+        let bars = slow_trend_bars();
+
+        let mut named = TrendTransition::new(50, 200, 14, 25.0);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = TrendTransition::new(50, 200, 14, 25.0).script().unwrap();
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "trend_transition: must produce signals");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
+    }
 }

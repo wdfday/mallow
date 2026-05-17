@@ -71,6 +71,10 @@ impl ChopZone {
         }
     }
 
+    pub fn description() -> &'static str {
+        "ChopZone — classifies the EMA angle into a coloured zone (trending up/down vs sideways). Combines price structure and indicator angle to filter trade conditions."
+    }
+
     /// ChopZone với EMA(34) và threshold ±5° — cấu hình TradingView mặc định.
     pub fn standard() -> Self {
         Self::new(34, 5.0)

@@ -173,13 +173,12 @@ fn bench_strategy(c: &mut Criterion) {
     group.finish();
 }
 
-// ── strategy_expr: CEL vs Rhai vs named (expression overhead) ────────────────
+// ── strategy_expr: script vs named (expression overhead) ───────────────────────
 //
-// Answers: "how much does the expression runtime add over a hardcoded struct?"
-// Uses the same EMA-crossover logic in three forms:
+// Answers: "how much does the script expression runtime add over a hardcoded struct?"
+// Uses the same EMA-crossover logic in two forms:
 //   named/MaCrossover  — hardcoded Rust struct (SMA-based, not EMA, but same O(1) cost)
-//   cel/EmaCross       — CEL expression evaluated per bar
-//   rhai/EmaScript     — Rhai script interpreted per bar
+//   script/EmaScript   — script interpreted per bar
 
 fn bench_strategy_expr(c: &mut Criterion) {
     let path = btc_m1_path();
@@ -206,12 +205,12 @@ fn bench_strategy_expr(c: &mut Criterion) {
         });
     });
 
-    // Rhai: same logic via Rhai script interpreter
+    // Script: same logic via the script interpreter
     group.bench_function("rhai/EmaXover", |b| {
         b.iter(|| {
             let mut f = BarVecFeed::new(bars.clone(), sym.into());
             let strategy = build_strategy(
-                "rhai",
+                "script",
                 &json!({
                     "script": "\
                         let ema20 = ind.ema(20);\
@@ -233,12 +232,12 @@ fn bench_strategy_expr(c: &mut Criterion) {
         });
     });
 
-    // Rhai: multi-indicator script
+    // Script: multi-indicator script
     group.bench_function("rhai/MultiIndicator", |b| {
         b.iter(|| {
             let mut f = BarVecFeed::new(bars.clone(), sym.into());
             let strategy = build_strategy(
-                "rhai",
+                "script",
                 &json!({
                     "script": "\
                         let rsi14 = ind.rsi(14);\

@@ -6,9 +6,9 @@
 //! - Serialising the request / response envelopes.
 //! - Enforcing a concurrency cap via [`HttpState::backtest_semaphore`].
 //! - Dispatching the CPU-bound engine run onto `spawn_blocking`.
-//! - Persisting strategy + case + result on every `POST /api/v1/backtest/rhai`.
+//! - Persisting strategy + case + result on every `POST /api/v1/backtest/script`.
 //!
-//! # Always-persist flow (`POST /api/v1/backtest/rhai`)
+//! # Always-persist flow (`POST /api/v1/backtest/script`)
 //!
 //! Requests that reach this endpoint are "deep backtests" — too large for the
 //! in-browser WASM runner. Every such request is worth keeping:
@@ -31,14 +31,15 @@ use std::sync::Arc;
 use axum::{
     extract::State,
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::Response,
     Json, Router,
 };
 use axum::routing::{get, post};
 use alm_engine::{
     backtest,
-    types::{BacktestRequest, BacktestResponse, ErrorResponse, RhaiBacktestRequest},
+    types::{BacktestRequest, BacktestResponse, ScriptBacktestRequest},
 };
+use super::types::{ok, err, err_code};
 use alm_strategy::catalog::STRATEGY_KEYS;
 use chrono::{NaiveDate, TimeZone, Utc};
 use serde::Serialize;
@@ -52,7 +53,7 @@ pub fn routes() -> Router<HttpState> {
         .route("/api/v1/strategies", get(list_strategies))
         .route("/api/v1/backtest", post(run_backtest))
         .route("/api/v1/backtest/estimate", post(estimate_backtest))
-        .route("/api/v1/backtest/rhai", post(run_backtest_rhai))
+        .route("/api/v1/backtest/script", post(run_backtest_script))
 }
 
 // ── Estimate response ─────────────────────────────────────────────────────────
@@ -75,8 +76,8 @@ pub struct EstimateResponse {
     ),
     tag = "backtest"
 )]
-pub async fn list_strategies() -> Json<&'static [&'static str]> {
-    Json(STRATEGY_KEYS)
+pub async fn list_strategies() -> Response {
+    ok(STRATEGY_KEYS)
 }
 
 // ── POST /api/backtest/estimate ──────────────────────────────────────────────
@@ -98,20 +99,20 @@ pub async fn estimate_backtest(
     let data_dir = Arc::clone(&state.data_dir);
     match tokio::task::spawn_blocking(move || backtest::estimate(&req, &data_dir)).await {
         Ok(Ok((bar_count, estimated_seconds))) => {
-            (StatusCode::OK, Json(EstimateResponse {
+            ok(EstimateResponse {
                 bar_count,
                 estimated_seconds,
                 within_limit: bar_count <= MAX_BARS,
                 limit: MAX_BARS,
-            })).into_response()
+            })
         }
         Ok(Err(e)) => {
             warn!(error = %e, "estimate failed");
-            (StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e.to_string() })).into_response()
+            err(StatusCode::BAD_REQUEST, e.to_string())
         }
         Err(e) => {
             error!(error = %e, "estimate spawn_blocking panicked");
-            (StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "internal error".into() })).into_response()
+            err(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
         }
     }
 }
@@ -137,26 +138,26 @@ pub async fn run_backtest(
     };
     info!(strategy = %req.strategy, symbol = %req.symbol, "HTTP backtest request");
     match run_blocking(Arc::clone(&state.data_dir), req).await {
-        Ok(report) => (StatusCode::OK, Json(report)).into_response(),
+        Ok(report) => ok(report),
         Err(r) => r,
     }
 }
 
-// ── POST /api/backtest/rhai ──────────────────────────────────────────────────
+// ── POST /api/backtest/script ──────────────────────────────────────────────────
 
 #[utoipa::path(
     post,
-    path = "/api/v1/backtest/rhai",
+    path = "/api/v1/backtest/script",
     responses(
-        (status = 200, description = "Rhai backtest report with saved IDs"),
+        (status = 200, description = "Script backtest report with saved IDs"),
         (status = 400, description = "Bad request"),
         (status = 429, description = "Too many concurrent backtests")
     ),
     tag = "backtest"
 )]
-pub async fn run_backtest_rhai(
+pub async fn run_backtest_script(
     State(state): State<HttpState>,
-    Json(req): Json<RhaiBacktestRequest>,
+    Json(req): Json<ScriptBacktestRequest>,
 ) -> Response {
     let Some(_permit) = try_acquire(&state) else {
         return too_many_requests();
@@ -170,12 +171,12 @@ pub async fn run_backtest_rhai(
     let case_id   = req.case_id.clone();
     let from      = req.from.clone();
     let to        = req.to.clone();
-    let capital   = capital_from_rhai(&req);
-    let execution = execution_from_rhai(&req);
+    let capital   = capital_from_script(&req);
+    let execution = execution_from_script(&req);
     let data_source = req.data_source.clone();
     let notes     = req.notes.clone();
 
-    info!(symbol = %symbol, name = %name, ?case_id, "Rhai backtest request");
+    info!(symbol = %symbol, name = %name, ?case_id, "Script backtest request");
 
     // 1. Upsert strategy (dedup by spec_hash or compare against strategy_id).
     let strategy_id_hint = req.strategy_id.clone();
@@ -183,8 +184,7 @@ pub async fn run_backtest_rhai(
         Ok(s)  => s,
         Err(e) => {
             warn!(error = %e, "strategy upsert failed");
-            return (StatusCode::INTERNAL_SERVER_ERROR,
-                Json(ErrorResponse { error: format!("strategy upsert: {e}") })).into_response();
+            return err(StatusCode::INTERNAL_SERVER_ERROR, format!("strategy upsert: {e}"));
         }
     };
 
@@ -199,8 +199,7 @@ pub async fn run_backtest_rhai(
         Ok(c)  => c,
         Err(e) => {
             warn!(error = %e, "case upsert failed");
-            return (StatusCode::BAD_REQUEST,
-                Json(ErrorResponse { error: format!("case upsert: {e}") })).into_response();
+            return err(StatusCode::BAD_REQUEST, format!("case upsert: {e}"));
         }
     };
 
@@ -227,7 +226,7 @@ pub async fn run_backtest_rhai(
             // Return report anyway; log the save failure.
             let mut body = serde_json::to_value(&report).unwrap_or_default();
             body["saved_error"] = serde_json::Value::String(e.to_string());
-            return (StatusCode::OK, Json(body)).into_response();
+            return ok(body);
         }
     };
 
@@ -248,7 +247,7 @@ pub async fn run_backtest_rhai(
         "case_id":     case.id,
         "result_id":   result.id,
     });
-    (StatusCode::OK, Json(body)).into_response()
+    ok(body)
 }
 
 // ── Core helpers ─────────────────────────────────────────────────────────────
@@ -266,16 +265,16 @@ pub(super) async fn run_blocking(
         Ok(Ok(resp)) => Ok(resp),
         Ok(Err(e)) => {
             warn!(error = %e, "backtest failed");
-            Err((StatusCode::BAD_REQUEST, Json(ErrorResponse { error: e.to_string() })).into_response())
+            Err(err(StatusCode::BAD_REQUEST, e.to_string()))
         }
         Err(e) => {
             error!(error = %e, "backtest spawn_blocking panicked");
-            Err((StatusCode::INTERNAL_SERVER_ERROR, Json(ErrorResponse { error: "internal engine error".into() })).into_response())
+            Err(err(StatusCode::INTERNAL_SERVER_ERROR, "internal engine error"))
         }
     }
 }
 
-fn capital_from_rhai(req: &RhaiBacktestRequest) -> PositionConfig {
+fn capital_from_script(req: &ScriptBacktestRequest) -> PositionConfig {
     PositionConfig {
         initial:       req.initial_capital,
         position_pct:  req.position_size_pct,
@@ -284,7 +283,7 @@ fn capital_from_rhai(req: &RhaiBacktestRequest) -> PositionConfig {
     }
 }
 
-fn execution_from_rhai(req: &RhaiBacktestRequest) -> ExecutionConfig {
+fn execution_from_script(req: &ScriptBacktestRequest) -> ExecutionConfig {
     ExecutionConfig {
         commission_pct:   req.commission_pct,
         slippage_pct:     req.slippage_pct,
@@ -300,13 +299,11 @@ fn date_to_ms(s: &str) -> Option<i64> {
 }
 
 fn too_many_requests() -> Response {
-    (
+    err_code(
         StatusCode::TOO_MANY_REQUESTS,
-        Json(ErrorResponse {
-            error: "too many concurrent backtests — retry shortly".into(),
-        }),
+        "TOO_MANY_REQUESTS",
+        "too many concurrent backtests — retry shortly",
     )
-        .into_response()
 }
 
 // Workaround: BacktestResponse is only referenced through `Json<>`. Silence

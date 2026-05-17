@@ -12,7 +12,7 @@
 //! **Structured** (`indicators` field): specify indicator configs in JSON.
 //! The server reads the latest cell values from the ledger each bar.
 //!
-//! **Rhai** (`script` field): write a Rhai script using `ind.TYPE(period)`
+//! **Script** (`script` field): write a script using `ind.TYPE(period)`
 //! declarations and `plot("name", value)` calls. The server runs the script
 //! per bar and returns exactly the plotted values.
 //!
@@ -34,7 +34,7 @@ use std::time::Duration;
 
 use alm_core::Bar;
 use alm_ledger::{IndicatorCell, IndicatorHandle, IndicatorSpec};
-use alm_strategy::{IndicatorSnapshot, RhaiStreamEval};
+use alm_strategy::{IndicatorSnapshot, ScriptStreamEval};
 use axum::{
     extract::{Path, State},
     response::sse::{Event, KeepAlive, Sse},
@@ -81,9 +81,9 @@ pub async fn stream_bars(
     // (var_name/label, IndicatorSpec, field (None = multi-output), buf_depth)
     type DeclEntry = (String, IndicatorSpec, Option<String>, usize);
 
-    let (evaluator, decl_entries): (Option<RhaiStreamEval>, Vec<DeclEntry>) =
+    let (evaluator, decl_entries): (Option<ScriptStreamEval>, Vec<DeclEntry>) =
         if let Some(script) = &req.script {
-            match RhaiStreamEval::from_script(script) {
+            match ScriptStreamEval::from_script(script) {
                 Ok(ev) => {
                     let entries = ev.decls().iter().filter_map(|d| {
                         let spec = IndicatorSpec::from_config(
@@ -94,7 +94,7 @@ pub async fn stream_bars(
                     (Some(ev), entries)
                 }
                 Err(e) => {
-                    tracing::warn!(error = %e, "RhaiStreamEval compile failed");
+                    tracing::warn!(error = %e, "ScriptStreamEval compile failed");
                     (None, vec![])
                 }
             }
@@ -138,7 +138,7 @@ pub async fn stream_bars(
 
                 let indicators: HashMap<String, HashMap<String, f64>> =
                     if let Some(ev) = &evaluator {
-                        // Rhai mode: read arrays from ledger, run script, collect plot().
+                        // Script mode: read arrays from ledger, run script, collect plot().
                         let snapshots = ledger.with_state(&sym, tf, |s| {
                             let mut map: HashMap<String, IndicatorSnapshot> = HashMap::new();
                             for (var_name, spec, field_opt, buf) in &decl_entries {

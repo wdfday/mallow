@@ -55,6 +55,10 @@ impl Ppo {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Percentage Price Oscillator — MACD expressed as a percentage of the slow EMA. Makes histogram values comparable across different price scales."
+    }
+
     /// PPO(12, 26, 9) — cấu hình chuẩn, tương đương MACD mặc định.
     pub fn standard() -> Self {
         Self::new(12, 26, 9)

@@ -40,6 +40,10 @@ impl Mom {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Momentum — raw price difference between current close and the close N bars ago. Simplest momentum measure; positive = bullish pressure."
+    }
+
     /// Feed một giá mới. Trả về `Some(mom)` sau khi đủ `period + 1` bar.
     pub fn update(&mut self, price: f64) -> Option<f64> {
         if self.buf.len() == self.period + 1 {

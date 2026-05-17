@@ -67,7 +67,7 @@ impl Strategy for EquilibriumExplorer {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if overbought || hist_negative {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }

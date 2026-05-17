@@ -1,11 +1,9 @@
 mod feed;
 mod handler;
-mod resampler;
 mod ring;
 mod symbols;
 use alm_herald::{http, registry, watch_evaluator};
 use feed::rest::{gap_fill_symbol, Exchange};
-use resampler::SymbolResamplers;
 
 use std::sync::Arc;
 
@@ -13,7 +11,7 @@ use anyhow::Result;
 use alm_core::Timeframe;
 use alm_data::feed::BarFeed;
 use alm_engine::data::{find_parquet_files, load_bars};
-use alm_ledger::{default_warm_set, Ledger, LedgerConfig, LedgerObserver};
+use alm_ledger::{Ledger, LedgerConfig, LedgerObserver};
 use handler::Handler;
 use registry::Registry;
 use ring::BarRing;
@@ -78,40 +76,12 @@ async fn main() -> Result<()> {
     // ── Ledger + Registry ─────────────────────────────────────────────────────
     let ledger = Arc::new(Ledger::new(LedgerConfig::default()));
 
-    // ── HTF resamplers (created early — shared across bootstrap, gap-fill, Handler)
-    let mut resamplers = SymbolResamplers::new(tf);
-    let htf_tfs: Vec<alm_core::Timeframe> = resamplers.active_tfs().collect();
-    info!(base_tf = ?tf, htf_levels = ?htf_tfs, "multi-TF resampler initialised");
-
-    // `HERALD_SYMBOLS` can pin a custom subset for warm-set + bootstrap.
-    // When unset, fall back to every symbol that will be ingested live so
-    // indicators are always warmed before the first WebSocket bar arrives.
+    // Each subscribed TF self-sources its own bar history (REST + WebSocket).
+    // No resampler, no warm-set — indicators are computed lazily on demand.
     let startup_symbols: Vec<String> = match std::env::var("HERALD_SYMBOLS") {
         Ok(v) => v.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect(),
-        Err(_) => sym_cfg.all_symbols(),
+        Err(_) => sym_cfg.all_prefixed(),
     };
-
-    if !startup_symbols.is_empty() {
-        let warm = default_warm_set();
-        // Apply warm-set for base TF + every HTF so all ledger slices start warm.
-        let all_tfs: Vec<alm_core::Timeframe> = std::iter::once(tf)
-            .chain(htf_tfs.iter().copied())
-            .collect();
-        info!(
-            symbols = startup_symbols.len(),
-            indicators = warm.len(),
-            timeframes = all_tfs.len(),
-            "applying warm-set across all TFs"
-        );
-        for sym in &startup_symbols {
-            for &apply_tf in &all_tfs {
-                let (ok, skipped) = ledger.apply_warm_set(sym, apply_tf, warm.iter().cloned());
-                if skipped > 0 {
-                    warn!(symbol = %sym, ?apply_tf, registered = ok, skipped, "warm-set partially applied");
-                }
-            }
-        }
-    }
 
     // ── Data directory ────────────────────────────────────────────────────────
     let data_dir = Arc::new(std::path::PathBuf::from(
@@ -131,20 +101,17 @@ async fn main() -> Result<()> {
             .unwrap_or(5000);
 
         if warm_bars > 0 && data_dir.exists() {
-            info!(symbols = startup_symbols.len(), warm_bars, "bootstrapping from parquet");
+            info!(symbols = startup_symbols.len(), warm_bars, "bootstrapping M1 from parquet");
 
             for sym in &startup_symbols {
-                // OKX symbols use dashes (e.g. "BTC-USDT"); parquet files are stored
-                // under the Binance-style name ("BTCUSDT"). Map for the file lookup,
-                // then rewrite bar.symbol back so the Ledger entry matches the live feed.
-                let parquet_sym = sym.replace('-', "");
+                let (_, raw_sym) = crate::symbols::SymbolConfig::split_prefix(sym);
+                let parquet_sym = raw_sym.replace('-', "");
                 let files = find_parquet_files(&data_dir, &parquet_sym, Some("M1"), None);
                 if files.is_empty() {
                     warn!(symbol = %sym, "no M1 parquet files — skipping bootstrap");
                     continue;
                 }
 
-                // Derive from_ms from bar count: warm_bars M1 bars × 60 s each.
                 let now_ms = chrono::Utc::now().timestamp_millis();
                 let from_ms = now_ms - warm_bars * 60_000;
 
@@ -153,10 +120,7 @@ async fn main() -> Result<()> {
                         let mut count = 0usize;
                         while let Some(mut bar) = feed.next() {
                             bar.symbol = sym.clone();
-                            let _ = ledger.advance(tf, bar.clone());
-                            for (htf, htf_bar) in resamplers.push(&bar) {
-                                let _ = ledger.advance(htf, htf_bar);
-                            }
+                            let _ = ledger.advance(tf, bar);
                             count += 1;
                         }
                         info!(symbol = %sym, bars = count, "parquet bootstrap done");
@@ -172,31 +136,19 @@ async fn main() -> Result<()> {
     }
 
     // ── REST gap-fill ─────────────────────────────────────────────────────────
-    // Fill the gap between the last parquet bar and now (intraday), so
-    // indicators are current before the live WebSocket feed takes over.
+    // For the base TF (M1): close the gap from the last parquet bar to now.
+    // For every other subscribed TF: fetch the last WINDOW_BARS bars directly.
     // Observers are NOT yet subscribed — no signals fire during gap-fill.
     if !startup_symbols.is_empty() {
         info!("starting REST gap-fill for {} symbol(s)", startup_symbols.len());
         for sym in &startup_symbols {
-            // Determine last_ts from what was loaded during parquet bootstrap.
             let last_ts = ledger.with_state(sym, tf, |s| s.last_ts).flatten();
-            let Some(from_ms) = last_ts else {
-                // No parquet data at all — skip gap-fill for this symbol.
-                continue;
-            };
-            // from_ms is the open-time of the last loaded bar; the next bar
-            // starts one minute later.
-            let gap_start = from_ms + 60_000;
+            // base_from_ms: one bar after the last parquet bar, or None if no parquet.
+            let base_from_ms = last_ts.map(|ts| ts + tf.duration_ms());
 
-            // Determine which exchange handles this symbol.
-            // OKX symbols contain a dash (e.g. "BTC-USDT"); Binance do not.
-            if sym.contains('-') {
-                // OKX — live symbol already has dashes; REST uses same format.
-                gap_fill_symbol(&ledger, &mut resamplers, tf, sym, sym, Exchange::Okx, gap_start).await;
-            } else {
-                // Binance — symbol is already in "BTCUSDT" form.
-                gap_fill_symbol(&ledger, &mut resamplers, tf, sym, sym, Exchange::Binance, gap_start).await;
-            }
+            let (exchange_str, raw_sym) = crate::symbols::SymbolConfig::split_prefix(sym);
+            let exchange = if exchange_str == "okx" { Exchange::Okx } else { Exchange::Binance };
+            gap_fill_symbol(&ledger, tf, sym, raw_sym, exchange, base_from_ms, feed::SUBSCRIBE_TFS).await;
         }
     }
 

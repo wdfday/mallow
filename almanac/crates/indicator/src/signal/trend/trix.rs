@@ -67,6 +67,10 @@ impl Trix {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Triple-smoothed EMA oscillator — rate of change of a triple EMA. Filters short-term cycles; histogram crossovers signal momentum shifts."
+    }
+
     pub fn update(&mut self, close: f64) -> Option<TrixValue> {
         let e1 = self.ema1.update(close)?;
         let e2 = self.ema2.update(e1)?;

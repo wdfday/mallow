@@ -44,7 +44,7 @@ impl Strategy for MacdCrossover {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if crossed_down {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }
@@ -72,7 +72,7 @@ mod tests {
     }
 
     #[test]
-    fn rhai_parity() {
+    fn script_parity() {
         let bars = slow_trend_bars();
 
         let mut named = MacdCrossover::new(12, 26, 9);
@@ -83,10 +83,10 @@ let mh = ind.macd(12);
 if mh[1].histogram <= 0.0 && mh[0].histogram > 0.0 { entry = true; }
 if mh[1].histogram >= 0.0 && mh[0].histogram < 0.0 { exit  = true; }
 "#;
-        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
-        let rhai_sigs = run(rhai.as_mut(), &bars);
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
 
         assert!(!named_sigs.is_empty(), "macd_crossover: must produce signals");
-        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
     }
 }

@@ -1,6 +1,14 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::{Macd, Sma};
 
+const RHAI: &str = r#"
+let s50  = ind.sma(50);
+let s200 = ind.sma(200);
+let m    = ind.macd(12);
+if cross_above(s50, s200) && m[0].histogram > 0.0  { entry = true; }
+if cross_below(s50, s200) || m[0].histogram < 0.0  { exit  = true; }
+"#;
+
 /// Bot #33 — Trend Follower.
 ///
 /// Long when fast SMA crosses above slow SMA AND MACD histogram confirms
@@ -67,7 +75,7 @@ impl Strategy for TrendFollower {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if crossed_below || m.histogram < 0.0 {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }
@@ -76,11 +84,46 @@ impl Strategy for TrendFollower {
         "trend_follower"
     }
 
+    fn description(&self) -> &'static str {
+        "Long when fast SMA crosses above slow SMA with positive MACD histogram. Exit on SMA cross-down or negative histogram."
+    }
+
+    fn script(&self) -> Option<&'static str> { Some(RHAI) }
+
     fn reset(&mut self) {
         self.fast_ma = Sma::new(self.fast_period);
         self.slow_ma = Sma::new(self.slow_period);
         self.macd = Macd::new(self.macd_fast, self.macd_slow, self.macd_signal);
         self.prev_fast = None;
         self.prev_slow = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alm_core::signal::Direction;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    fn run(s: &mut dyn Strategy, bars: &[Bar]) -> Vec<(i64, Direction)> {
+        bars.iter().flat_map(|b| s.on_bar(b)).map(|s| (s.timestamp, s.direction)).collect()
+    }
+
+    #[test]
+    fn script_parity() {
+        let bars = slow_trend_bars();
+
+        let mut named = TrendFollower::new(50, 200, 12, 26, 9);
+        let named_sigs = run(&mut named, &bars);
+
+        // SMA(50) / SMA(200) cross with MACD histogram confirmation/exit
+        let script = TrendFollower::new(50, 200, 12, 26, 9).script().unwrap();
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "trend_follower: must produce signals");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
     }
 }

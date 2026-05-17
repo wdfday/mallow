@@ -43,7 +43,7 @@ impl Strategy for ConnorsRsiStrategy {
         }
 
         if crsi_val > self.overbought {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
 
         vec![]
@@ -111,7 +111,7 @@ mod tests {
             signals.extend(strat.on_bar(&bar(i, 80.0 + (i - 25) as f64 * 3.0)));
         }
         assert!(
-            signals.iter().any(|s| s.direction == Direction::Close),
+            signals.iter().any(|s| s.direction == Direction::Exit),
             "should emit Close when CRSI overbought"
         );
     }
@@ -126,7 +126,7 @@ mod tests {
     }
 
     #[test]
-    fn rhai_parity() {
+    fn script_parity() {
         use alm_core::signal::Direction;
 
         let bars = connors_rsi_bars();
@@ -143,13 +143,13 @@ let crsi = ind.connors_rsi(3, 1);
 if crsi[0] < 10.0 { entry = true; }
 if crsi[0] > 70.0 { exit  = true; }
 "#;
-        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
-        let rhai_sigs: Vec<(i64, Direction)> = bars.iter()
-            .flat_map(|b| rhai.on_bar(b))
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| script_strat.on_bar(b))
             .map(|s| (s.timestamp, s.direction))
             .collect();
 
         assert!(!named_sigs.is_empty(), "connors_rsi: must produce signals");
-        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
     }
 }

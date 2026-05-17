@@ -69,6 +69,10 @@ impl Tsi {
         }
     }
 
+    pub fn description() -> &'static str {
+        "True Strength Index — double-smoothed momentum oscillator normalised to ±100. Zero-line crossovers indicate trend changes."
+    }
+
     /// Default parameters: first=25, second=13
     pub fn default() -> Self {
         Self::new(25, 13)

@@ -54,6 +54,10 @@ impl Gmma {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Guppy Multiple MA — two groups of EMAs (short-term 3-15 and long-term 30-60). Spread between groups signals trend strength; compression signals potential reversal."
+    }
+
     /// Custom periods. `short` and `long` must each have exactly 6 elements.
     pub fn with_periods(short: [usize; 6], long: [usize; 6]) -> Self {
         Self {

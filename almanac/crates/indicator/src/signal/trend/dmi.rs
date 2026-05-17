@@ -70,6 +70,10 @@ impl Dmi {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Directional Movement Index — raw +DI and -DI lines before ADX smoothing. Crossovers of +DI/-DI indicate directional shifts."
+    }
+
     /// DMI(14) — period chuẩn của Wilder.
     pub fn standard() -> Self {
         Self::new(14)

@@ -59,6 +59,10 @@ impl Fisher {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Fisher Transform — normalises price into a Gaussian distribution to produce sharper turning points. Signal line crossovers mark reversals."
+    }
+
     /// Fisher(9) — period phổ biến nhất.
     pub fn standard() -> Self {
         Self::new(9)

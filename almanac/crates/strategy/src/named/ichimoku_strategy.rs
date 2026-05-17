@@ -33,7 +33,7 @@ impl Strategy for IchimokuCloud {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if !v.above_cloud {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }
@@ -95,7 +95,7 @@ impl Strategy for IchimokuCross {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if bearish_cross {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }

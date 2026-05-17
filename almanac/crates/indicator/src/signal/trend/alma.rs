@@ -64,6 +64,10 @@ impl Alma {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Arnaud Legoux MA — Gaussian-weighted MA centred near the most recent bar. Combines low lag with minimal ripple; configurable via offset and sigma."
+    }
+
     /// ALMA(9) với tham số mặc định được Legoux khuyến nghị.
     pub fn default_fast() -> Self {
         Self::new(9, 0.85, 6.0)

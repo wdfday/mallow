@@ -1,8 +1,7 @@
 //! Expression / template strategies — define entry/exit logic as text.
 //!
-//! | Module  | Engine         | Syntax           | Status  |
-//! |---------|----------------|------------------|---------|
-//! | `rhai`  | Rhai scripting | `ind.ema(9)[0]`  | Active  |
+//! User-facing surface: script-based strategies authored as text and compiled
+//! at runtime. The underlying execution engine is intentionally not exposed.
 
 mod htf;
 mod binding;
@@ -10,11 +9,11 @@ mod parse;
 mod engine;
 mod lint;
 
-pub mod rhai_strategy;
-pub use rhai_strategy::{
-    RhaiStrategy,
-    rhai_lint, LintDiagnostic, RhaiLintScope, DeclaredIndicator, KNOWN_INDICATOR_TYPES,
+pub mod strategy;
+pub use strategy::{
+    ScriptStrategy,
+    script_lint, LintDiagnostic, ScriptLintScope, DeclaredIndicator, KNOWN_INDICATOR_TYPES,
 };
 
-pub mod rhai_stream;
-pub use rhai_stream::{RhaiStreamEval, StreamDecl, IndicatorSnapshot, PlotResult};
+pub mod stream;
+pub use stream::{ScriptStreamEval, StreamDecl, IndicatorSnapshot, PlotResult};

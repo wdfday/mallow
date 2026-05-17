@@ -46,7 +46,7 @@ impl Strategy for ObvEmaTrend {
         }
         if self.in_position && (!obv_bullish || !price_bullish) {
             self.in_position = false;
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }

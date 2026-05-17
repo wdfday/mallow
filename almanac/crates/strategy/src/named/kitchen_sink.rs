@@ -5,13 +5,13 @@ use alm_indicator::{Adx, Atr, BBands, Ema, Macd, Rsi};
 
 use crate::bar_resampler::TimeBarResampler;
 
-/// Kitchen Sink — demonstrator strategy that exercises every Rhai helper added
+/// Kitchen Sink — demonstrator strategy that exercises every script DSL helper added
 /// in v2: `cross_above/below`, `above/below`, `rising_n/falling_n`, `momentum`,
 /// `highest`, H1 MTF indicator, and ATR-based `tp/sl`.
 ///
-/// Logic mirrors the canonical Rhai script verbatim so the two can be parity-tested:
+/// Logic mirrors the canonical script verbatim so the two can be parity-tested:
 ///
-/// ```rhai
+/// ```text
 /// let ema9    = ind.ema(9, 4);
 /// let ema21   = ind.ema(21, 4);
 /// let ema50   = ind.ema(50, 4);
@@ -20,22 +20,21 @@ use crate::bar_resampler::TimeBarResampler;
 /// let atr14   = ind.atr(14, 3);
 /// let macd    = ind.macd(12, 3);  // not used in signals
 /// let bb      = ind.bbands(20, 3);
-/// let h1_ema  = ind.ema(20, "H1", 3);
+/// let h1_ema  = ind.ema(20, "live_H1", 3);
 ///
 /// let trend   = adx14[0].adx > 25.0 && rising_n(adx14.adx, 3);
 /// let mom     = momentum(rsi14, 3) > 0.0;
-/// let squeeze = (bb[0].upper - bb[0].lower) < atr14[0].atr * 1.5;
+/// let squeeze = (bb[0].upper - bb[0].lower) < atr14[0] * 1.5;
 /// let h_break = highest(close, 20) == close[0];
 ///
-/// let entry = cross_above(ema9, ema21)
-///          && above(ema21, ema50)
-///          && rsi14[0] > 50.0 && rsi14[0] < 70.0
-///          && trend && mom && squeeze && h_break
-///          && above(h1_ema, ema50);
-///
-/// let exit  = cross_below(ema9, ema21) || rsi14[0] > 80.0 || falling_n(adx14.adx, 2);
-/// let tp    = close[0] + atr14[0].atr * 2.5;
-/// let sl    = close[0] - atr14[0].atr * 1.5;
+/// if cross_above(ema9, ema21) && above(ema21, ema50)
+///     && rsi14[0] > 50.0 && rsi14[0] < 70.0
+///     && trend && mom && squeeze && h_break && above(h1_ema, ema50) {
+///   entry = true; tp = close[0] + atr14[0] * 2.5; sl = close[0] - atr14[0] * 1.5;
+/// }
+/// if cross_below(ema9, ema21) || rsi14[0] > 80.0 || falling_n(adx14.adx, 2) {
+///   exit = true;
+/// }
 /// ```
 pub struct KitchenSinkStrategy {
     // ── M1 indicators ──────────────────────────────────────────────────────────
@@ -69,8 +68,6 @@ pub struct KitchenSinkStrategy {
     h1_ema:     Ema,
     h1_ema_hist: VecDeque<f64>, // depth 3
 
-    // ── State ───────────────────────────────────────────────────────────────────
-    in_position: bool,
 }
 
 const H1_MS: i64 = 3_600_000;
@@ -100,8 +97,6 @@ impl KitchenSinkStrategy {
             h1_rs:       TimeBarResampler::new(H1_MS),
             h1_ema:      Ema::new(20),
             h1_ema_hist: VecDeque::with_capacity(3),
-
-            in_position: false,
         }
     }
 }
@@ -199,50 +194,55 @@ impl Strategy for KitchenSinkStrategy {
         push(&mut self.bb_upper_hist, bb.upper,  3);
         push(&mut self.bb_lower_hist, bb.lower,  3);
 
+        // Wait for H1 EMA to have 3 confirmed values (mirrors script all_ready check).
+        if self.h1_ema_hist.len() < 3 { return vec![]; }
+
         // ── Entry ──────────────────────────────────────────────────────────────
-        if !self.in_position {
-            let trend   = !self.adx14_hist.is_empty() && self.adx14_hist[0] > 25.0
-                          && rising_n(&self.adx14_hist, 3);
-            let mom     = momentum(&self.rsi14_hist, 3) > 0.0;
-            let squeeze = !self.bb_upper_hist.is_empty() && !self.bb_lower_hist.is_empty()
-                          && !self.atr14_hist.is_empty()
-                          && (self.bb_upper_hist[0] - self.bb_lower_hist[0])
-                             < self.atr14_hist[0] * 1.5;
-            let h_break = !self.close_buf.is_empty()
-                          && highest(&self.close_buf, 20) == self.close_buf[0];
-            let entry = cross_above(&self.ema9_hist, &self.ema21_hist)
-                        && above(&self.ema21_hist, &self.ema50_hist)
-                        && !self.rsi14_hist.is_empty()
-                        && self.rsi14_hist[0] > 50.0 && self.rsi14_hist[0] < 70.0
-                        && trend && mom && squeeze && h_break
-                        && above(&self.h1_ema_hist, &self.ema50_hist);
+        let trend   = !self.adx14_hist.is_empty() && self.adx14_hist[0] > 25.0
+                      && rising_n(&self.adx14_hist, 3);
+        let mom     = momentum(&self.rsi14_hist, 3) > 0.0;
+        let squeeze = !self.bb_upper_hist.is_empty() && !self.bb_lower_hist.is_empty()
+                      && !self.atr14_hist.is_empty()
+                      && (self.bb_upper_hist[0] - self.bb_lower_hist[0])
+                         < self.atr14_hist[0] * 1.5;
+        let h_break = !self.close_buf.is_empty()
+                      && highest(&self.close_buf, 20) == self.close_buf[0];
+        let entry = cross_above(&self.ema9_hist, &self.ema21_hist)
+                    && above(&self.ema21_hist, &self.ema50_hist)
+                    && !self.rsi14_hist.is_empty()
+                    && self.rsi14_hist[0] > 50.0 && self.rsi14_hist[0] < 70.0
+                    && trend && mom && squeeze && h_break
+                    && above(&self.h1_ema_hist, &self.ema50_hist);
 
-            if entry {
-                self.in_position = true;
-                let tp = bar.close + atr.atr * 2.5;
-                let sl = bar.close - atr.atr * 1.5;
-                let mut sig = Signal::long(bar.timestamp, &bar.symbol, 1.0);
-                sig.price        = Some(bar.close);
-                sig.target_price = Some(tp);
-                sig.stop_price   = Some(sl);
-                return vec![sig];
-            }
-        } else {
-            // ── Exit ──────────────────────────────────────────────────────────
-            let exit = cross_below(&self.ema9_hist, &self.ema21_hist)
-                       || (!self.rsi14_hist.is_empty() && self.rsi14_hist[0] > 80.0)
-                       || falling_n(&self.adx14_hist, 2);
+        if entry {
+            let tp = bar.close + atr.atr * 2.5;
+            let sl = bar.close - atr.atr * 1.5;
+            let mut sig = Signal::long(bar.timestamp, &bar.symbol, 1.0);
+            sig.price        = Some(bar.close);
+            sig.target_price = Some(tp);
+            sig.stop_price   = Some(sl);
+            return vec![sig];
+        }
 
-            if exit {
-                self.in_position = false;
-                return vec![Signal::close(bar.timestamp, &bar.symbol)];
-            }
+        // ── Exit ────────────────────────────────────────────────────────────────
+        let exit = cross_below(&self.ema9_hist, &self.ema21_hist)
+                   || (!self.rsi14_hist.is_empty() && self.rsi14_hist[0] > 80.0)
+                   || falling_n(&self.adx14_hist, 2);
+
+        if exit {
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
 
         vec![]
     }
 
     fn name(&self) -> &str { "kitchen_sink" }
+
+    fn description(&self) -> &'static str {
+        "Multi-condition trend strategy: EMA cross + ADX trend + RSI momentum + BB squeeze + new-high + MTF EMA filter."
+    }
+
+    fn script(&self) -> Option<&'static str> { Some(RHAI_SCRIPT) }
 
     fn reset(&mut self) {
         self.ema9  = Ema::new(9);
@@ -267,10 +267,41 @@ impl Strategy for KitchenSinkStrategy {
         self.h1_rs.reset();
         self.h1_ema = Ema::new(20);
         self.h1_ema_hist.clear();
-
-        self.in_position = false;
     }
 }
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let ema9    = ind.ema(9, 4);
+let ema21   = ind.ema(21, 4);
+let ema50   = ind.ema(50, 4);
+let rsi14   = ind.rsi(14, 4);
+let adx14   = ind.adx(14, 5);
+let atr14   = ind.atr(14, 3);
+let macd    = ind.macd(12, 3);
+let bb      = ind.bbands(20, 3);
+let h1_ema  = ind.ema(20, "live_H1", 3);
+
+let trend   = adx14[0].adx > 25.0 && rising_n(adx14.adx, 3);
+let mom     = momentum(rsi14, 3) > 0.0;
+let squeeze = (bb[0].upper - bb[0].lower) < atr14[0] * 1.5;
+let h_break = highest(close, 20) == close[0];
+
+if cross_above(ema9, ema21)
+    && above(ema21, ema50)
+    && rsi14[0] > 50.0 && rsi14[0] < 70.0
+    && trend && mom && squeeze && h_break
+    && above(h1_ema, ema50)
+{
+    entry = true;
+    tp = close[0] + atr14[0] * 2.5;
+    sl = close[0] - atr14[0] * 1.5;
+}
+
+if cross_below(ema9, ema21) || rsi14[0] > 80.0 || falling_n(adx14.adx, 2) {
+    exit = true;
+}
+
+"#;
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
 
@@ -278,7 +309,7 @@ impl Strategy for KitchenSinkStrategy {
 mod tests {
     use super::*;
     use crate::factory::build_strategy;
-    use crate::test_utils::{bar, run, assert_parity};
+    use crate::test_utils::{bar, run, run_signals, assert_parity, assert_signals_parity};
     use serde_json::json;
 
     /// Four-phase bar sequence used for parity and reset tests.
@@ -296,7 +327,7 @@ mod tests {
     /// - `h_break` (new 20-bar high) is only true every N bars at cycle peaks, rarely
     ///   coinciding with a `cross_above` event.
     ///
-    /// The parity test is still valid: both named and Rhai implementations must agree
+    /// The parity test is still valid: both named and script implementations must agree
     /// (both produce empty signal lists). Run on real M1 tick data for actual fills.
     fn kitchen_sink_bars() -> Vec<Bar> {
         let mut ts = 0i64;
@@ -333,47 +364,21 @@ mod tests {
         bars
     }
 
-    const RHAI_SCRIPT: &str = r#"
-let ema9    = ind.ema(9, 4);
-let ema21   = ind.ema(21, 4);
-let ema50   = ind.ema(50, 4);
-let rsi14   = ind.rsi(14, 4);
-let adx14   = ind.adx(14, 5);
-let atr14   = ind.atr(14, 3);
-let macd    = ind.macd(12, 3);
-let bb      = ind.bbands(20, 3);
-let h1_ema  = ind.ema(20, "H1", 3);
-
-let trend   = adx14[0].adx > 25.0 && rising_n(adx14.adx, 3);
-let mom     = momentum(rsi14, 3) > 0.0;
-let squeeze = (bb[0].upper - bb[0].lower) < atr14[0].atr * 1.5;
-let h_break = highest(close, 20) == close[0];
-
-let entry = cross_above(ema9, ema21)
-         && above(ema21, ema50)
-         && rsi14[0] > 50.0 && rsi14[0] < 70.0
-         && trend && mom && squeeze && h_break
-         && above(h1_ema, ema50);
-
-let exit  = cross_below(ema9, ema21) || rsi14[0] > 80.0 || falling_n(adx14.adx, 2);
-let tp    = close[0] + atr14[0].atr * 2.5;
-let sl    = close[0] - atr14[0].atr * 1.5;
-"#;
 
     #[test]
-    fn kitchen_sink_parity_named_vs_rhai() {
+    fn kitchen_sink_parity_named_vs_script() {
         let bars = kitchen_sink_bars();
 
         let mut named = KitchenSinkStrategy::new();
-        let named_sigs = run(&mut named, &bars);
+        let named_sigs = run_signals(&mut named, &bars);
 
-        let mut rhai = build_strategy("rhai", &json!({ "script": RHAI_SCRIPT })).unwrap();
-        let rhai_sigs = run(rhai.as_mut(), &bars);
+        let mut script_strat = build_strategy("script", &json!({ "script": RHAI_SCRIPT })).unwrap();
+        let script_sigs = run_signals(script_strat.as_mut(), &bars);
 
-        // Both must agree — even if no signals fire on this synthetic data.
-        // All 8 entry conditions must be simultaneously true, which is rare on synthetic bars.
-        // Run on real M1 tick data to observe actual fills.
-        assert_parity("kitchen_sink named vs rhai", &named_sigs, &rhai_sigs);
+        // Both must agree on direction, timestamp, price, tp, and sl.
+        // All 8 entry conditions are rarely satisfied simultaneously on synthetic bars —
+        // use the #[ignore] real-data tests below to verify signals actually fire.
+        assert_signals_parity("kitchen_sink named vs script", &named_sigs, &script_sigs);
     }
 
     #[test]
@@ -383,23 +388,23 @@ let sl    = close[0] - atr14[0].atr * 1.5;
         let r1 = run(&mut s, &bars);
         s.reset();
         let r2 = run(&mut s, &bars);
-        assert_parity("kitchen_sink reset: run1 vs run2", &r1, &r2);
+        assert_parity("kitchen_sink named reset: run1 vs run2", &r1, &r2);
     }
 
     #[test]
-    fn kitchen_sink_rhai_reset_reproducible() {
+    fn kitchen_sink_script_reset_reproducible() {
         let bars = kitchen_sink_bars();
-        let mut s = build_strategy("rhai", &json!({ "script": RHAI_SCRIPT })).unwrap();
+        let mut s = build_strategy("script", &json!({ "script": RHAI_SCRIPT })).unwrap();
         let r1 = run(s.as_mut(), &bars);
         s.reset();
         let r2 = run(s.as_mut(), &bars);
-        assert_parity("kitchen_sink rhai reset: run1 vs run2", &r1, &r2);
+        assert_parity("kitchen_sink script reset: run1 vs run2", &r1, &r2);
     }
 
     // ── Real M1 data integration tests ────────────────────────────────────────
     //
     // Load actual BTCUSDT M1 bars from testdata and verify:
-    //   1. Named and Rhai strategies produce identical signals (parity on real data).
+    //   1. Named and script strategies produce identical signals (parity on real data).
     //   2. Signals actually fire on real market conditions.
     //
     // Run with:
@@ -422,20 +427,18 @@ let sl    = close[0] - atr14[0].atr * 1.5;
         let bars: Vec<_> = std::iter::from_fn(|| feed.next()).collect();
         eprintln!("Loaded {} M1 bars from recent testdata", bars.len());
 
-        // Named strategy
         let mut named = KitchenSinkStrategy::new();
-        let named_sigs = run(&mut named, &bars);
+        let named_sigs = run_signals(&mut named, &bars);
 
-        // Rhai strategy
-        let mut rhai = build_strategy("rhai", &json!({ "script": RHAI_SCRIPT })).unwrap();
-        let rhai_sigs = run(rhai.as_mut(), &bars);
+        let mut script_strat = build_strategy("script", &json!({ "script": RHAI_SCRIPT })).unwrap();
+        let script_sigs = run_signals(script_strat.as_mut(), &bars);
 
-        eprintln!("Signals — named: {}, rhai: {}", named_sigs.len(), rhai_sigs.len());
-        for (ts, dir) in &named_sigs {
-            eprintln!("  named [{ts}] {dir:?}");
+        eprintln!("Signals — named: {}, script: {}", named_sigs.len(), script_sigs.len());
+        for s in &named_sigs {
+            eprintln!("  named [{}] {:?}  tp={:?}  sl={:?}", s.timestamp, s.direction, s.target_price, s.stop_price);
         }
 
-        assert_parity("kitchen_sink real M1 named vs rhai", &named_sigs, &rhai_sigs);
+        assert_signals_parity("kitchen_sink real M1 named vs script", &named_sigs, &script_sigs);
         assert!(!named_sigs.is_empty(), "no signals fired on real data — check strategy logic");
     }
 
@@ -456,15 +459,16 @@ let sl    = close[0] - atr14[0].atr * 1.5;
         eprintln!("Loaded {} M1 bars (4-year)", bars.len());
 
         let mut named = KitchenSinkStrategy::new();
-        let named_sigs = run(&mut named, &bars);
+        let named_sigs = run_signals(&mut named, &bars);
 
-        let mut rhai = build_strategy("rhai", &json!({ "script": RHAI_SCRIPT })).unwrap();
-        let rhai_sigs = run(rhai.as_mut(), &bars);
+        let mut script_strat = build_strategy("script", &json!({ "script": RHAI_SCRIPT })).unwrap();
+        let script_sigs = run_signals(script_strat.as_mut(), &bars);
 
-        eprintln!("Signals — named: {}, rhai: {} over {} bars",
-            named_sigs.len(), rhai_sigs.len(), bars.len());
+        eprintln!("Signals — named: {}, script: {} over {} bars",
+            named_sigs.len(), script_sigs.len(), bars.len());
 
-        assert_parity("kitchen_sink 4yr named vs rhai", &named_sigs, &rhai_sigs);
+        assert_signals_parity("kitchen_sink 4yr named vs script", &named_sigs, &script_sigs);
         assert!(!named_sigs.is_empty(), "no signals over 4 years — check strategy logic");
     }
+
 }

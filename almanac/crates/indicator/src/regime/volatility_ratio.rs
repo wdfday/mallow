@@ -46,6 +46,10 @@ impl VolatilityRatio {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Volatility Ratio — compares the current true range to the N-bar ATR. Values > 1 indicate a volatility expansion (potential breakout); < 1 = compression."
+    }
+
     pub fn update(&mut self, high: f64, low: f64, close: f64) -> Option<f64> {
         let tr = match self.prev_close {
             Some(pc) => (high - low).max((high - pc).abs()).max((low - pc).abs()),

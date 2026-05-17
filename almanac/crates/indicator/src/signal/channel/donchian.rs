@@ -56,6 +56,10 @@ impl Donchian {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Donchian Channel — highest high and lowest low over N bars with a midline. Breakout above upper or below lower band signals trend entries."
+    }
+
     pub fn update(&mut self, high: f64, low: f64) -> Option<DonchianValue> {
         // Gọi cả hai push độc lập — không dùng `?` để tránh min_low bị bỏ qua
         // khi max_high chưa ready (cùng bug cascade như GMMA).

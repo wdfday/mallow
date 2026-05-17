@@ -60,7 +60,7 @@ impl Strategy for TripleEma {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if fast_crossed_below_mid {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }
@@ -87,7 +87,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn rhai_parity() {
+    fn script_parity() {
         let bars = trending_bars(400);
 
         let mut named = TripleEma::new(10, 20, 50);
@@ -103,13 +103,13 @@ let e50 = ind.ema(50);
 if cross_above(e10, e20) && e20[0] > e50[0] { entry = true; }
 if cross_below(e10, e20) { exit = true; }
 "#;
-        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
-        let rhai_sigs: Vec<(i64, Direction)> = bars.iter()
-            .flat_map(|b| rhai.on_bar(b))
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| script_strat.on_bar(b))
             .map(|s| (s.timestamp, s.direction))
             .collect();
 
         assert!(!named_sigs.is_empty(), "triple_ema: must produce signals");
-        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
     }
 }

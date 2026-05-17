@@ -78,7 +78,7 @@ fn mini_backtest(strategy: &mut dyn Strategy, bars: &[Bar], capital: f64) -> (us
                     in_position = true;
                     entry_price = bar.close;
                 }
-                Direction::Close | Direction::Short if in_position => {
+                Direction::Exit | Direction::Short if in_position => {
                     in_position = false;
                     let ret = (bar.close - entry_price) / entry_price;
                     equity *= 1.0 + ret;

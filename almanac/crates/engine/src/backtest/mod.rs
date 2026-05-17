@@ -1,4 +1,4 @@
-//! Backtest runner — executes a named / Rhai strategy over historical bars.
+//! Backtest runner — executes a named / script strategy over historical bars.
 //!
 //! # Modules
 //! - [`loader`]         — Parquet file discovery + bar hydration
@@ -27,9 +27,27 @@ pub(crate) const DEFAULT_COMMISSION: f64 = 0.001;
 pub(crate) const DEFAULT_SLIPPAGE: f64 = 0.0005;
 pub(crate) const DEFAULT_CAPITAL: f64 = 10_000.0;
 pub(crate) const DEFAULT_POSITION_PCT: f64 = 0.95;
-pub(crate) const DEFAULT_CURVE_POINTS: usize = 2_000;
+/// Max LTTB target — chart widths rarely exceed ~2k px, so more points
+/// would only waste bandwidth without visible benefit.
+pub(crate) const CURVE_TARGET_MAX: usize = 2_000;
+
+/// Floor for LTTB target — even tiny backtests get a reasonable curve.
+pub(crate) const CURVE_TARGET_FLOOR: usize = 400;
 
 const MAX_BARS: usize = 100_000;
+
+/// Auto-derive a curve compression target from input size.
+/// - Small backtests (< floor bars): keep everything; compression is a no-op.
+/// - Mid-range: linear in `bar_count` so detail scales with data size.
+/// - Large (> max bars): cap at `CURVE_TARGET_MAX`.
+///
+/// The downstream `compress` pipeline also runs `dedup_flat` first, so
+/// idle periods are stripped regardless of this target.
+pub(crate) fn estimate_curve_target(bar_count: usize) -> usize {
+    bar_count
+        .max(CURVE_TARGET_FLOOR)
+        .min(CURVE_TARGET_MAX)
+}
 
 // ── Public entry points ───────────────────────────────────────────────────────
 
@@ -49,7 +67,7 @@ pub fn estimate(req: &BacktestRequest, data_dir: &Path) -> Result<(usize, f64)> 
         .map_err(|e| anyhow::anyhow!("loading data for '{}': {}", symbol, e))?;
     let bar_count = feed.len();
     let bars_per_sec = match req.strategy.as_str() {
-        "rhai" => 200_000.0,
+        "script" => 200_000.0,
         _ => 500_000.0,
     };
     Ok((bar_count, bar_count as f64 / bars_per_sec))
@@ -60,15 +78,17 @@ pub fn run(req: BacktestRequest, data_dir: &Path) -> Result<BacktestResponse> {
     let symbol = loader::effective_symbol(&req.symbol).to_string();
     let capital = req.initial_capital.unwrap_or(DEFAULT_CAPITAL);
     let risk_free = req.risk_free_annual.unwrap_or(DEFAULT_RISK_FREE);
-    let curve_max = match req.curve_points {
-        Some(0) => usize::MAX,
-        Some(n) => n,
-        None => DEFAULT_CURVE_POINTS,
-    };
     let params = req.params.clone().unwrap_or(Value::Object(Default::default()));
 
     let all_bars = loader::load_bars_for_request(&req, data_dir)?;
     let bar_count = all_bars.len();
+
+    // Auto-estimate curve compression target. Frontend charts are typically
+    // 800-2000 px wide — more points = wasted bandwidth without visible benefit.
+    // `compress` will further dedup flat segments, so this is the LTTB cap only.
+    // Strategies with few trades naturally produce few interesting points and
+    // skip LTTB entirely (handled inside `compress`).
+    let curve_max = estimate_curve_target(bar_count);
 
     if bar_count > MAX_BARS {
         let tf = req.timeframe.as_deref().unwrap_or("M1").to_uppercase();

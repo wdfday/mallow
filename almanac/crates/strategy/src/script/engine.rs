@@ -2,6 +2,8 @@ use std::sync::{Arc, Mutex};
 
 use rhai::{Array, Dynamic, Engine};
 
+use super::binding::MEntry;
+
 // ── Shared types / constants ──────────────────────────────────────────────────
 
 pub(crate) type PlotBuf = Arc<Mutex<Vec<(String, f64)>>>;
@@ -11,17 +13,26 @@ pub(crate) const BAR_FIELDS: &[&str] = &["open", "high", "low", "close", "volume
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+/// Extract a float from a Dynamic. For `MEntry` uses the semantic primary field
+/// (e.g. `"macd"` for macd, `"middle"` for bbands) so `rising(macd)` tracks
+/// the MACD line and `rising(bbands)` tracks the middle band.
 fn get_f(v: Option<&Dynamic>) -> f64 {
-    v.and_then(|d| d.as_float().ok()).unwrap_or(0.0)
+    v.and_then(|d| {
+        d.as_float().ok().or_else(|| {
+            d.read_lock::<MEntry>().map(|e| e.primary_value())
+        })
+    }).unwrap_or(0.0)
 }
 
-/// Extract a named field from each element of an `Array<Map>` → `Array<f64>`.
-/// Used by the field-extractor registrations below so scripts can write
-/// `rising(macd.histogram)` or `cross_above(vx.plus_vi, vx.minus_vi)`.
+/// Extract a named field from each element of an indicator history array → `Array<f64>`.
 fn extract_field(arr: &Array, name: &str) -> Array {
     arr.iter().map(|d| {
-        let v = d.read_lock::<rhai::Map>()
-            .and_then(|m| m.get(name).and_then(|v| v.as_float().ok()));
+        let v = d.read_lock::<MEntry>()
+            .map(|e| e.field(name))
+            .or_else(|| {
+                d.read_lock::<rhai::Map>()
+                    .and_then(|m| m.get(name).and_then(|v| v.as_float().ok()))
+            });
         Dynamic::from_float(v.unwrap_or(0.0))
     }).collect()
 }
@@ -66,10 +77,48 @@ const MULTI_FIELDS: &[&str] = &[
     "ema", "atr",
 ];
 
-// ── Rhai engine with built-in functions ───────────────────────────────────────
+// ── Script engine with built-in functions ────────────────────────────────────
 
 pub(crate) fn build_engine(plot_buf: PlotBuf) -> Engine {
     let mut engine = Engine::new();
+
+    // ── MEntry — multi-output indicator element ──────────────────────────────
+    // Allows `supertrend[0] > close` (uses "value" field) AND `supertrend[0].value`.
+    engine.register_type_with_name::<MEntry>("IndicatorEntry");
+
+    // Comparison: MEntry op f64  and  f64 op MEntry  (fall back to "value" field)
+    engine.register_fn(">",  |a: MEntry, b: f64| a.primary_value() > b);
+    engine.register_fn(">",  |a: f64, b: MEntry| a > b.primary_value());
+    engine.register_fn(">=", |a: MEntry, b: f64| a.primary_value() >= b);
+    engine.register_fn(">=", |a: f64, b: MEntry| a >= b.primary_value());
+    engine.register_fn("<",  |a: MEntry, b: f64| a.primary_value() < b);
+    engine.register_fn("<",  |a: f64, b: MEntry| a < b.primary_value());
+    engine.register_fn("<=", |a: MEntry, b: f64| a.primary_value() <= b);
+    engine.register_fn("<=", |a: f64, b: MEntry| a <= b.primary_value());
+    engine.register_fn("==", |a: MEntry, b: f64| a.primary_value() == b);
+    engine.register_fn("==", |a: f64, b: MEntry| a == b.primary_value());
+    engine.register_fn("!=", |a: MEntry, b: f64| a.primary_value() != b);
+    engine.register_fn("!=", |a: f64, b: MEntry| a != b.primary_value());
+
+    // Arithmetic: MEntry op f64  and  f64 op MEntry  → f64
+    engine.register_fn("-", |a: MEntry, b: f64| -> f64 { a.primary_value() - b });
+    engine.register_fn("-", |a: f64, b: MEntry| -> f64 { a - b.primary_value() });
+    engine.register_fn("+", |a: MEntry, b: f64| -> f64 { a.primary_value() + b });
+    engine.register_fn("+", |a: f64, b: MEntry| -> f64 { a + b.primary_value() });
+    engine.register_fn("*", |a: MEntry, b: f64| -> f64 { a.primary_value() * b });
+    engine.register_fn("*", |a: f64, b: MEntry| -> f64 { a * b.primary_value() });
+    engine.register_fn("/", |a: MEntry, b: f64| -> f64 {
+        let b = b; if b == 0.0 { 0.0 } else { a.primary_value() / b }
+    });
+    engine.register_fn("/", |a: f64, b: MEntry| -> f64 {
+        let b = b.primary_value(); if b == 0.0 { 0.0 } else { a / b }
+    });
+
+    // Property getters: `entry[0].field_name` → f64
+    // Each field name from MULTI_FIELDS is registered as a property on MEntry.
+    for &field in MULTI_FIELDS {
+        engine.register_get(field, move |e: &mut MEntry| -> f64 { e.field(field) });
+    }
 
     // ── Crossover / direction ────────────────────────────────────────────────
     engine.register_fn("cross_above", |a: Array, b: Array| -> bool {
@@ -164,12 +213,17 @@ pub(crate) fn build_engine(plot_buf: PlotBuf) -> Engine {
     });
 
     // ── Multi-output field extractors ────────────────────────────────────────
-    // Register every known field name as a function so `arr.field` (method syntax)
-    // extracts that field from each element of an Array<Map> → Array<f64>.
-    // Enables: rising(macd.histogram), cross_above(vx.plus_vi, vx.minus_vi), etc.
+    // Register as BOTH a free function AND an Array property getter so that
+    // `arr.field()` (method), `arr.field` (property), and `field(arr)` all work.
+    // Enables: `rising(macd.histogram)`, `cross_above(adx14.adx, ema50)`,
+    //          `rising_n(adx14.adx, 3)` — all without parentheses on the field accessor.
     for &field in MULTI_FIELDS {
         engine.register_fn(field, move |arr: Array| -> Array {
             extract_field(&arr, field)
+        });
+        // Property getter on Array: `array.field` (without parentheses).
+        engine.register_get(field, move |arr: &mut Array| -> Array {
+            extract_field(arr, field)
         });
     }
 

@@ -10,8 +10,17 @@ use crate::data::{find_parquet_files, load_bars, market_region_from_data_source,
 use crate::types::BacktestRequest;
 
 /// Returns `"BTCUSD"` when the symbol field is empty.
+///
+/// Accepts both raw (`"BTCUSDT"`) and exchange-prefixed (`"binance:BTCUSDT"`)
+/// forms — herald's live endpoints use prefixed keys for ledger routing, but
+/// parquet files on disk are organised by raw ticker. The prefix is stripped
+/// here so backtest loading works regardless of which form the caller sends.
 pub fn effective_symbol(s: &str) -> &str {
-    if s.is_empty() { "BTCUSD" } else { s }
+    let s = if s.is_empty() { "BTCUSD" } else { s };
+    match s.find(':') {
+        Some(pos) => &s[pos + 1..],
+        None      => s,
+    }
 }
 
 /// Discover Parquet files, load bars, and drain the feed into a `Vec<Bar>`.

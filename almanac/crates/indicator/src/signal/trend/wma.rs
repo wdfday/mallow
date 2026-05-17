@@ -48,6 +48,10 @@ impl Wma {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Weighted Moving Average — linearly increasing weights so the most recent bar has the highest weight. Smoother reaction than EMA with less lag than SMA."
+    }
+
     pub fn update(&mut self, value: f64) -> Option<f64> {
         self.buffer.push_back(value);
         if self.buffer.len() > self.period {

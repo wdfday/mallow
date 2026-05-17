@@ -33,7 +33,7 @@ CREATE TABLE IF NOT EXISTS backtest_cases (
     created_at  BIGINT  NOT NULL,
     updated_at  BIGINT  NOT NULL
 );
--- exit_config intentionally absent: exit logic lives in the Rhai script spec
+-- exit_config intentionally absent: exit logic lives in the script spec
 
 CREATE TABLE IF NOT EXISTS backtest_results (
     id               TEXT    PRIMARY KEY,

@@ -184,6 +184,7 @@ impl Portfolio {
                             mfe_pct: 0.0,
                             bars_held: 0,
                             exit_reason: ExitReason::Signal,
+                            regime_at_entry: None,
                         });
                     }
 
@@ -243,6 +244,7 @@ impl Portfolio {
                             mfe_pct: 0.0,
                             bars_held: 0,
                             exit_reason: ExitReason::Signal,
+                            regime_at_entry: None,
                         });
                     }
 

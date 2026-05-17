@@ -69,6 +69,10 @@ impl ParabolicSar {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Parabolic SAR — trailing stop that accelerates as the trend matures. Dot above price = bearish; dot below = bullish. Flip signals trend reversal entries."
+    }
+
     pub fn update(&mut self, high: f64, low: f64, _close: f64) -> Option<SarValue> {
         let (Some(prev_high), Some(prev_low)) = (self.prev_high, self.prev_low) else {
             self.prev_high = Some(high);

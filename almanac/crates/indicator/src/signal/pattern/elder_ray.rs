@@ -48,6 +48,10 @@ impl ElderRay {
         Self { ema: Ema::new(period), period }
     }
 
+    pub fn description() -> &'static str {
+        "Elder Ray — separates price into bull power (high - EMA) and bear power (low - EMA). Used with a trend filter to confirm entries in Elder's Triple Screen system."
+    }
+
     pub fn update(&mut self, high: f64, low: f64, close: f64) -> Option<ElderRayValue> {
         let ema = self.ema.update(close)?;
         Some(ElderRayValue {

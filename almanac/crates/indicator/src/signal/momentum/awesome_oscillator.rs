@@ -81,6 +81,10 @@ impl AwesomeOscillator {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Awesome Oscillator — difference between 34-bar and 5-bar simple MAs of the midpoint price (high+low)/2. Positive = bullish momentum; saucer and twin-peaks setups."
+    }
+
     pub fn update(&mut self, high: f64, low: f64) -> Option<f64> {
         let median = (high + low) / 2.0;
         let fast_val = self.fast.update(median);

@@ -56,6 +56,10 @@ impl Cmf {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Chaikin Money Flow — sum of money flow volume over N bars divided by total volume. Positive = buying pressure; negative = selling pressure."
+    }
+
     pub fn update(&mut self, high: f64, low: f64, close: f64, volume: f64) -> Option<f64> {
         let range = high - low;
         let mfv = if range > f64::EPSILON {

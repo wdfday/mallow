@@ -9,7 +9,7 @@
 //! | **MTF live** | live_H1 fires mid-bar, live vs confirmed differ, reset parity, coexistence |
 //! | **Heiken Ashi** | HaColor named reset parity |
 //! | **TP / SL** | fixed-% TP, fixed-% SL, TP fires before RSI exit, ATR-based TP/SL |
-//! | **Layered (real strategies)** | Rhai filter gates Rhai signal, reset parity |
+//! | **Layered (real strategies)** | script filter gates script signal, reset parity |
 
 #![cfg(test)]
 
@@ -94,8 +94,8 @@ let h1_rsi = ind.rsi(5, "H1");
 if h1_rsi[0] < 35.0 { entry = true; }
 if h1_rsi[0] > 65.0 { exit  = true; }
 "#;
-    let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
-    let sigs = run(rhai.as_mut(), &bars);
+    let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+    let sigs = run(script_strat.as_mut(), &bars);
 
     assert!(!sigs.is_empty(), "mtf_confirmed_boundary: expected at least one signal");
     for (ts, _) in &sigs {
@@ -109,10 +109,10 @@ if h1_rsi[0] > 65.0 { exit  = true; }
 }
 
 
-/// Rhai MTF strategy: `reset()` must reproduce the exact same signals when
+/// Script MTF strategy: `reset()` must reproduce the exact same signals when
 /// fed the same bars a second time.
 #[test]
-fn mtf_reset_parity_rhai() {
+fn mtf_reset_parity_script() {
     let bars = m1_hours(30);
 
     let script = r#"
@@ -120,14 +120,14 @@ let h1_rsi = ind.rsi(5, "H1");
 if h1_rsi[0] < 35.0 { entry = true; }
 if h1_rsi[0] > 65.0 { exit  = true; }
 "#;
-    let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+    let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
 
-    let r1 = run(rhai.as_mut(), &bars);
-    rhai.reset();
-    let r2 = run(rhai.as_mut(), &bars);
+    let r1 = run(script_strat.as_mut(), &bars);
+    script_strat.reset();
+    let r2 = run(script_strat.as_mut(), &bars);
 
-    assert!(!r1.is_empty(), "mtf_reset_rhai: expected signals");
-    assert_parity("mtf Rhai reset: run1 vs run2", &r1, &r2);
+    assert!(!r1.is_empty(), "mtf_reset_script: expected signals");
+    assert_parity("mtf script reset: run1 vs run2", &r1, &r2);
 }
 
 
@@ -148,7 +148,7 @@ let h1_rsi = ind.rsi(5, "live_H1");
 if h1_rsi_live < 35.0 && h1_rsi_fill > 0.0 { entry = true; }
 if h1_rsi_live > 65.0 && h1_rsi_fill > 0.0 { exit  = true; }
 "#;
-    let mut live = build_strategy("rhai", &json!({ "script": script })).unwrap();
+    let mut live = build_strategy("script", &json!({ "script": script })).unwrap();
     let live_sigs = run(live.as_mut(), &bars);
 
     assert!(!live_sigs.is_empty(), "mtf_live_h1: expected at least one signal");
@@ -174,8 +174,8 @@ let rsi = ind.rsi(5, "live_H1");
 if rsi_live < 35.0 && rsi_fill > 0.0 { entry = true; }
 if rsi_live > 65.0 && rsi_fill > 0.0 { exit  = true; }
 "#;
-    let mut confirmed = build_strategy("rhai", &json!({ "script": confirmed_script })).unwrap();
-    let mut live      = build_strategy("rhai", &json!({ "script": live_script })).unwrap();
+    let mut confirmed = build_strategy("script", &json!({ "script": confirmed_script })).unwrap();
+    let mut live      = build_strategy("script", &json!({ "script": live_script })).unwrap();
 
     let conf_sigs = run(confirmed.as_mut(), &bars);
     let live_sigs = run(live.as_mut(), &bars);
@@ -199,11 +199,11 @@ let h1_rsi = ind.rsi(5, "live_H1");
 if h1_rsi_live < 35.0 && h1_rsi_fill > 0.0 { entry = true; }
 if h1_rsi_live > 65.0 && h1_rsi_fill > 0.0 { exit  = true; }
 "#;
-    let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+    let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
 
-    let r1 = run(rhai.as_mut(), &bars);
-    rhai.reset();
-    let r2 = run(rhai.as_mut(), &bars);
+    let r1 = run(script_strat.as_mut(), &bars);
+    script_strat.reset();
+    let r2 = run(script_strat.as_mut(), &bars);
 
     assert!(!r1.is_empty(), "mtf_live_h1_reset: expected signals");
     assert_parity("mtf live_H1 reset: run1 vs run2", &r1, &r2);
@@ -221,16 +221,16 @@ let h1_rsi = ind.rsi(5, "live_H1");
 if h1_rsi_live < 35.0 && h1_rsi_fill > 0.0 { entry = true; }
 if h1_rsi[0]   > 65.0                       { exit  = true; }
 "#;
-    let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
-    let sigs = run(rhai.as_mut(), &bars);
+    let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+    let sigs = run(script_strat.as_mut(), &bars);
 
     // Script must compile and produce some signal (no panic, no error)
     // Live entry signals can fire at any M1 bar, confirmed exits only at H1 close.
     assert!(!sigs.is_empty(), "mtf_live_and_confirmed: expected signals");
 
     // Reset must be deterministic
-    rhai.reset();
-    let sigs2 = run(rhai.as_mut(), &bars);
+    script_strat.reset();
+    let sigs2 = run(script_strat.as_mut(), &bars);
     assert_parity("mtf live+confirmed coexist reset", &sigs, &sigs2);
 }
 
@@ -246,11 +246,11 @@ let m1_rsi = ind.rsi(5);
 if h1_rsi[0] > 50.0 && m1_rsi[0] < 35.0 { entry = true; }
 if h1_rsi[0] < 50.0 || m1_rsi[0] > 65.0 { exit  = true; }
 "#;
-    let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
+    let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
 
-    let r1 = run(rhai.as_mut(), &bars);
-    rhai.reset();
-    let r2 = run(rhai.as_mut(), &bars);
+    let r1 = run(script_strat.as_mut(), &bars);
+    script_strat.reset();
+    let r2 = run(script_strat.as_mut(), &bars);
 
     assert_parity("mtf mixed TF reset: run1 vs run2", &r1, &r2);
 }

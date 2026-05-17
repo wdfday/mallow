@@ -65,6 +65,10 @@ impl Keltner {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Keltner Channel — EMA ± ATR multiplier. Wider and smoother than Bollinger Bands; often used together to identify BB squeezes inside the Keltner."
+    }
+
     pub fn update(&mut self, high: f64, low: f64, close: f64) -> Option<KeltnerValue> {
         let mid = self.ema.update(close)?;
         let atr = self.atr.update(high, low, close)?;

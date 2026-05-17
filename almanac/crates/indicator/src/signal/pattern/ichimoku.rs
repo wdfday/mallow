@@ -79,6 +79,10 @@ impl Ichimoku {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Ichimoku Cloud — five lines (Tenkan, Kijun, Senkou A/B, Chikou) forming a complete trend system. Price above the cloud = bullish; inside = neutral; below = bearish."
+    }
+
     pub fn update(&mut self, high: f64, low: f64, close: f64) -> Option<IchimokuValue> {
         self.highs.push_back(high);
         self.lows.push_back(low);

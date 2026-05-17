@@ -54,6 +54,10 @@ impl Kama {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Kaufman Adaptive MA — adjusts its smoothing constant based on the Efficiency Ratio (trending vs choppy). Stays flat in noise and tracks closely in trends."
+    }
+
     /// Default parameters: er_period=10, fast=2, slow=30
     pub fn default() -> Self {
         Self::new(10, 2, 30)

@@ -39,7 +39,7 @@ impl Strategy for MaPullback {
             if bar.close < ma {
                 self.in_position = false;
                 self.near_ma = false;
-                return vec![Signal::close(bar.timestamp, &bar.symbol)];
+                return vec![Signal::exit(bar.timestamp, &bar.symbol)];
             }
             return vec![];
         }

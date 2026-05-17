@@ -58,6 +58,10 @@ impl Uo {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Ultimate Oscillator — combines three timeframes of buying pressure / true range into one oscillator. Reduces false divergence signals."
+    }
+
     /// UO(7, 14, 28) — cấu hình gốc của Williams.
     pub fn standard() -> Self {
         Self::new(7, 14, 28)

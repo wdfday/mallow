@@ -39,7 +39,7 @@ impl Strategy for StochRsiStrategy {
                     Some(Signal::long(bar.timestamp, &bar.symbol, strength))
                 } else if prev <= self.overbought && v.k > self.overbought {
                     // K rises above overbought → Close
-                    Some(Signal::close(bar.timestamp, &bar.symbol))
+                    Some(Signal::exit(bar.timestamp, &bar.symbol))
                 } else {
                     None
                 }
@@ -129,7 +129,7 @@ mod tests {
             signals.extend(strat.on_bar(&bar(offset + 15 + i, 50.0 + i as f64 * 5.0)));
         }
         assert!(
-            signals.iter().any(|s| s.direction == Direction::Close),
+            signals.iter().any(|s| s.direction == Direction::Exit),
             "should emit Close in overbought condition"
         );
     }
@@ -145,7 +145,7 @@ mod tests {
     }
 
     #[test]
-    fn rhai_parity() {
+    fn script_parity() {
         use alm_core::signal::Direction;
 
         let bars = stoch_rsi_bars();
@@ -161,13 +161,13 @@ let sk = ind.stoch_rsi(14);
 if sk[1].k >= 0.2 && sk[0].k < 0.2 { entry = true; }
 if sk[1].k <= 0.8 && sk[0].k > 0.8 { exit  = true; }
 "#;
-        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
-        let rhai_sigs: Vec<(i64, Direction)> = bars.iter()
-            .flat_map(|b| rhai.on_bar(b))
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| script_strat.on_bar(b))
             .map(|s| (s.timestamp, s.direction))
             .collect();
 
         assert!(!named_sigs.is_empty(), "stoch_rsi: must produce signals");
-        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
     }
 }

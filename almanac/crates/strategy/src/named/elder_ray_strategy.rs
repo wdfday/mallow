@@ -50,7 +50,7 @@ impl Strategy for ElderRayStrategy {
 
         // Close: bull power turns negative (bulls exhausted)
         if v.bull_power < 0.0 && pbl >= 0.0 {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
 
         vec![]

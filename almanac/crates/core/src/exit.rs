@@ -2,7 +2,7 @@
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExitReason {
-    /// Closed by strategy signal (`Direction::Close`).
+    /// Closed by strategy signal (`Direction::Exit`).
     Signal,
     /// Stop-loss level hit (fixed % or signal-level absolute price).
     StopLoss,

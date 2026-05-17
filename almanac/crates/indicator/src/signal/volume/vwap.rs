@@ -49,6 +49,10 @@ impl Vwap {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Volume-Weighted Average Price — cumulative (price × volume) / cumulative volume, resetting each session. Institutional benchmark; price above VWAP = bullish intraday bias."
+    }
+
     pub fn update(&mut self, ts_ms: i64, high: f64, low: f64, close: f64, volume: f64) -> f64 {
         // Reset on new session
         if let Some(prev) = self.last_ts {

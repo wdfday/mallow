@@ -74,27 +74,15 @@ pub struct BacktestRequest {
     /// When present, run rolling walk-forward validation.
     pub walk_forward: Option<WalkForwardConfig>,
 
-    /// Max number of points in equity/drawdown/rolling curves (default: 2000).
-    /// Set to 0 to disable downsampling.
-    pub curve_points: Option<usize>,
-
     /// Intra-bar stop detection mode.
     /// `"close_only"` (default) | `"pessimistic"` | `"ohlc_heuristic"`.
     pub intra_bar_mode: Option<String>,
-
-    /// Candle type fed into strategy indicators.
-    /// `"raw"` (default) | `"heiken_ashi"` | `"smooth_ha"`.
-    /// Broker fills always use raw OHLCV prices regardless of this setting.
-    pub candle_type: Option<String>,
-
-    /// EMA smoothing period for `"smooth_ha"` (default: 3, minimum: 2).
-    pub smooth_period: Option<usize>,
 }
 
-// ── RhaiBacktestRequest ───────────────────────────────────────────────────────
+// ── ScriptBacktestRequest ───────────────────────────────────────────────────────
 
-/// Dedicated request for Rhai-script backtests.
-/// Takes a `script` field containing the full Rhai strategy.
+/// Dedicated request for script backtests.
+/// Takes a `script` field containing the full strategy script.
 ///
 /// Any `plot("name", value)` calls inside the script populate
 /// `indicator_series` in the response.
@@ -104,10 +92,10 @@ pub struct BacktestRequest {
 /// Use `case_id` to re-run an existing case (params may differ — the case row
 /// is updated in place). Omit `case_id` to open a new case.
 #[derive(Debug, Deserialize, ToSchema)]
-pub struct RhaiBacktestRequest {
+pub struct ScriptBacktestRequest {
     /// Symbol to backtest, e.g. `"BTCUSDT"`.
     pub symbol: String,
-    /// Full Rhai strategy script.
+    /// Full strategy script.
     pub script: String,
 
     // ── Persistence identity ─────────────────────────────────────────────────
@@ -151,17 +139,14 @@ pub struct RhaiBacktestRequest {
     pub timeframe: Option<String>,
 
     // ── Engine options ───────────────────────────────────────────────────────
-    pub candle_type: Option<String>,
-    pub smooth_period: Option<usize>,
-    pub curve_points: Option<usize>,
     pub monte_carlo: Option<MonteCarloConfig>,
     pub walk_forward: Option<WalkForwardConfig>,
 }
 
-impl From<RhaiBacktestRequest> for BacktestRequest {
-    fn from(req: RhaiBacktestRequest) -> Self {
+impl From<ScriptBacktestRequest> for BacktestRequest {
+    fn from(req: ScriptBacktestRequest) -> Self {
         BacktestRequest {
-            strategy: "rhai".into(),
+            strategy: "script".into(),
             symbol: req.symbol,
             params: Some(serde_json::json!({ "script": req.script })),
             from: req.from,
@@ -180,10 +165,7 @@ impl From<RhaiBacktestRequest> for BacktestRequest {
             min_strength: None,
             monte_carlo: req.monte_carlo,
             walk_forward: req.walk_forward,
-            curve_points: req.curve_points,
             intra_bar_mode: req.intra_bar_mode,
-            candle_type: req.candle_type,
-            smooth_period: req.smooth_period,
         }
     }
 }

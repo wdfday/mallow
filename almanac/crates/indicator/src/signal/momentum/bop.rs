@@ -32,6 +32,10 @@ impl Bop {
         Self
     }
 
+    pub fn description() -> &'static str {
+        "Balance of Power — measures the strength of buyers vs sellers as (close - open) / (high - low). Positive = buying pressure; negative = selling pressure."
+    }
+
     /// Tính BOP cho một bar. Không cần warmup — kết quả ngay lập tức.
     /// Trả về `None` khi high == low (không có biên độ).
     pub fn update(&self, open: f64, high: f64, low: f64, close: f64) -> Option<f64> {

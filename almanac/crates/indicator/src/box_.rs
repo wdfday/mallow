@@ -6,7 +6,7 @@
 //!
 //! - `alm-ledger`  — the realtime state machine caches one `IndicatorBox`
 //!                   per `(symbol, tf, spec)` and advances it on every bar.
-//! - `alm-strategy::script::RhaiStrategy` — per-binding confirmed + live indicators.
+//! - `alm-strategy::script::ScriptStrategy` — per-binding confirmed + live indicators.
 //! - `alm-engine::backtest` / `alm-py` — batch compute on historical bars.
 //!
 //! Originally lived in `alm-strategy/src/dynamic/indicator_box.rs`; moved here
@@ -715,6 +715,158 @@ impl IndicatorBox {
         }
     }
 
+    /// Human-readable description of what this indicator measures.
+    /// Delegates to the concrete indicator's associated `description()` function.
+    pub fn description(&self) -> &'static str {
+        match self {
+            Self::Sma(_)             => Sma::description(),
+            Self::Ema(_)             => Ema::description(),
+            Self::Wma(_)             => Wma::description(),
+            Self::Hma(_)             => Hma::description(),
+            Self::Dema(_)            => Dema::description(),
+            Self::Tema(_)            => Tema::description(),
+            Self::Smma(_)            => Smma::description(),
+            Self::Alma(_)            => Alma::description(),
+            Self::McGinley(_)        => McGinleyDynamic::description(),
+            Self::Lsma(_)            => Lsma::description(),
+            Self::Vwma(_)            => Vwma::description(),
+            Self::Kama(_)            => Kama::description(),
+            Self::Macd(_)            => Macd::description(),
+            Self::Trix(_)            => Trix::description(),
+            Self::Adx(_)             => Adx::description(),
+            Self::Dmi(_)             => Dmi::description(),
+            Self::Aroon(_)           => Aroon::description(),
+            Self::Vortex(_)          => Vortex::description(),
+            Self::Alligator(_)       => Alligator::description(),
+            Self::Gmma(_)            => Gmma::description(),
+            Self::Kdj(_)             => Kdj::description(),
+            Self::Kalman(_)          => KalmanFilter::description(),
+            Self::Rsi(_)             => Rsi::description(),
+            Self::Cci(_)             => Cci::description(),
+            Self::Roc(_)             => Roc::description(),
+            Self::Mom(_)             => Mom::description(),
+            Self::Cmo(_)             => Cmo::description(),
+            Self::Dpo(_)             => Dpo::description(),
+            Self::Mfi(_)             => Mfi::description(),
+            Self::Bop(_)             => Bop::description(),
+            Self::WilliamsR(_)       => WilliamsR::description(),
+            Self::Stochastic(_)      => Stochastic::description(),
+            Self::StochRsi(_)        => StochasticRsi::description(),
+            Self::Tsi(_)             => Tsi::description(),
+            Self::Rci(_)             => Rci::description(),
+            Self::BullBear(_)        => BullBearPower::description(),
+            Self::Fisher(_)          => Fisher::description(),
+            Self::Kst(_)             => Kst::description(),
+            Self::Pmo(_)             => Pmo::description(),
+            Self::Ppo(_)             => Ppo::description(),
+            Self::Rvi(_)             => Rvi::description(),
+            Self::Smi(_)             => Smi::description(),
+            Self::Uo(_)              => Uo::description(),
+            Self::ConnorsRsi(_)      => ConnorsRsi::description(),
+            Self::Ao(_)              => AwesomeOscillator::description(),
+            Self::Coppock(_)         => Coppock::description(),
+            Self::Atr(_)             => Atr::description(),
+            Self::BBands(_)          => BBands::description(),
+            Self::Keltner(_)         => Keltner::description(),
+            Self::SuperTrend(_)      => SuperTrend::description(),
+            Self::Donchian(_)        => Donchian::description(),
+            Self::Chop(_)            => Chop::description(),
+            Self::ChopZone(_)        => ChopZone::description(),
+            Self::ChandelierExit(_)  => ChandelierExit::description(),
+            Self::ChandeKroll(_)     => ChandeKrollStop::description(),
+            Self::VolatilityRatio(_) => VolatilityRatio::description(),
+            Self::Obv(_)             => Obv::description(),
+            Self::Cmf(_)             => Cmf::description(),
+            Self::Vwap(_)            => Vwap::description(),
+            Self::Ichimoku(_)        => Ichimoku::description(),
+            Self::ParabolicSar(_)    => ParabolicSar::description(),
+            Self::Rwi(_)             => Rwi::description(),
+            Self::WilliamsFractal(_) => WilliamsFractal::description(),
+        }
+    }
+
+    /// Script usage example showing the `ind.TYPE(params)[0]` syntax and available output fields.
+    ///
+    /// For scalar indicators the output is a plain number accessed as `ind.TYPE(params)[0]`.
+    /// For multi-field indicators each field is a named property on the returned object.
+    /// All examples use default parameter values from [`Self::from_config`].
+    pub fn script_usage(&self) -> &'static str {
+        match self {
+            // ── Trend / MA ────────────────────────────────────────────────────
+            Self::Sma(_)       => "ind.sma(20)[0]  → scalar value",
+            Self::Ema(_)       => "ind.ema(20)[0]  → scalar value",
+            Self::Wma(_)       => "ind.wma(20)[0]  → scalar value",
+            Self::Hma(_)       => "ind.hma(20)[0]  → scalar value",
+            Self::Dema(_)      => "ind.dema(20)[0]  → scalar value",
+            Self::Tema(_)      => "ind.tema(20)[0]  → scalar value",
+            Self::Smma(_)      => "ind.smma(20)[0]  → scalar value",
+            Self::Alma(_)      => "ind.alma(9, 0.85, 6.0)[0]  → scalar value",
+            Self::McGinley(_)  => "ind.mcginley(14)[0]  → scalar value",
+            Self::Lsma(_)      => "ind.lsma(25)[0]  → scalar value",
+            Self::Vwma(_)      => "ind.vwma(20)[0]  → scalar value",
+            Self::Kama(_)      => "ind.kama(10, 2, 30)[0]  → scalar value",
+            Self::Macd(_)      => "ind.macd(12, 26, 9)[0] → .macd (default)  ·  .signal  ·  .histogram",
+            Self::Trix(_)      => "ind.trix(18, 9)[0] → .trix (default)  ·  .signal  ·  .histogram",
+            Self::Adx(_)       => "ind.adx(14)[0] → .adx (default)  ·  .plus_di  ·  .minus_di",
+            Self::Dmi(_)       => "ind.dmi(14)[0] → .plus_di (default)  ·  .minus_di  ·  .dx",
+            Self::Aroon(_)     => "ind.aroon(25)[0] → .oscillator (default)  ·  .up  ·  .down",
+            Self::Vortex(_)    => "ind.vortex(14)[0] → .plus_vi (default)  ·  .minus_vi",
+            Self::Alligator(_) => "ind.alligator(13, 8, 5)[0] → .teeth (default)  ·  .jaw  ·  .lips  ·  .bullish",
+            Self::Gmma(_)      => "ind.gmma()[0] → .long_avg (default)  ·  .short_avg  ·  .bullish",
+            Self::Kdj(_)       => "ind.kdj(9, 3, 3)[0] → .k (default)  ·  .d  ·  .j",
+            Self::Kalman(_)    => "ind.kalman(0.001, 0.001, 1.0)[0] → .value (default)  ·  .slope",
+            // ── Momentum / Oscillator ─────────────────────────────────────────
+            Self::Rsi(_)        => "ind.rsi(14)[0]  → scalar 0–100",
+            Self::Cci(_)        => "ind.cci(20)[0]  → scalar (centered ~0)",
+            Self::Roc(_)        => "ind.roc(10)[0]  → scalar % change",
+            Self::Mom(_)        => "ind.mom(10)[0]  → scalar price difference",
+            Self::Cmo(_)        => "ind.cmo(14)[0]  → scalar -100–100",
+            Self::Dpo(_)        => "ind.dpo(20)[0]  → scalar (detrended)",
+            Self::Mfi(_)        => "ind.mfi(14)[0]  → scalar 0–100",
+            Self::Bop(_)        => "ind.bop()[0]  → scalar -1–1",
+            Self::WilliamsR(_)  => "ind.williams_r(14)[0]  → scalar -100–0",
+            Self::Stochastic(_) => "ind.stochastic(14, 3)[0] → .k (default)  ·  .d",
+            Self::StochRsi(_)   => "ind.stoch_rsi(14, 3)[0] → .k (default)  ·  .d",
+            Self::Tsi(_)        => "ind.tsi(25, 13)[0]  → scalar -100–100",
+            Self::Rci(_)        => "ind.rci(9)[0]  → scalar -100–100",
+            Self::BullBear(_)   => "ind.bull_bear(13)[0] → .bull (default)  ·  .bear  ·  .ema",
+            Self::Fisher(_)     => "ind.fisher(9)[0] → .fisher (default)  ·  .signal",
+            Self::Kst(_)        => "ind.kst()[0] → .kst (default)  ·  .signal  ·  .histogram",
+            Self::Pmo(_)        => "ind.pmo()[0] → .pmo (default)  ·  .signal",
+            Self::Ppo(_)        => "ind.ppo(12, 26, 9)[0] → .ppo (default)  ·  .signal  ·  .histogram",
+            Self::Rvi(_)        => "ind.rvi(10)[0] → .rvi (default)  ·  .signal",
+            Self::Smi(_)        => "ind.smi()[0] → .smi (default)  ·  .signal",
+            Self::Uo(_)         => "ind.uo(7, 14, 28)[0]  → scalar 0–100",
+            Self::ConnorsRsi(_) => "ind.connors_rsi(3, 2, 100)[0]  → scalar 0–100",
+            Self::Ao(_)         => "ind.ao(5, 34)[0]  → scalar (oscillator)",
+            Self::Coppock(_)    => "ind.coppock()[0]  → scalar (oscillator)",
+            // ── Volatility ────────────────────────────────────────────────────
+            Self::Atr(_)             => "ind.atr(14)[0].atr",
+            Self::BBands(_)     => "ind.bbands(20, 2.0)[0] → .middle (default)  ·  .upper  ·  .lower  ·  .bandwidth  ·  .percent_b",
+            Self::Keltner(_)    => "ind.keltner(20, 10, 2.0)[0] → .middle (default)  ·  .upper  ·  .lower",
+            Self::SuperTrend(_) => "ind.supertrend(10, 3.0)[0] → .value (default)  ·  .bullish  (1.0 = bullish, 0.0 = bearish)",
+            Self::Donchian(_)   => "ind.donchian(20)[0] → .middle (default)  ·  .upper  ·  .lower",
+            Self::Chop(_)            => "ind.chop(14)[0]  → scalar 0–100  (>61.8 = choppy, <38.2 = trending)",
+            Self::ChopZone(_)       => "ind.chop_zone(34, 5.0)[0] → .zone (default)  ·  .angle  (1=trending up, 0=choppy, -1=trending down)",
+            Self::ChandelierExit(_) => "ind.chandelier_exit(22, 3.0)[0] → .long_stop (default)  ·  .short_stop  ·  .atr",
+            Self::ChandeKroll(_)    => "ind.chande_kroll(10, 1.5, 9)[0] → .stop_long (default)  ·  .stop_short",
+            Self::VolatilityRatio(_) => "ind.volatility_ratio(10)[0]  → scalar (>1 = expanding volatility)",
+            // ── Volume ────────────────────────────────────────────────────────
+            Self::Obv(_)  => "ind.obv()[0]  → scalar cumulative volume",
+            Self::Cmf(_)  => "ind.cmf(20)[0]  → scalar -1–1",
+            Self::Vwap(_) => "ind.vwap()[0]  → scalar price level",
+            // ── Pattern ───────────────────────────────────────────────────────
+            Self::Ichimoku(_) =>
+                "ind.ichimoku(9, 26, 52)[0] → .tenkan (default)  ·  .kijun  ·  .senkou_a  ·  .senkou_b  ·  .chikou  ·  .above_cloud",
+            Self::ParabolicSar(_) =>
+                "ind.parabolic_sar(0.02, 0.2)[0] → .sar (default)  ·  .bullish  (1.0 = bullish, 0.0 = bearish)",
+            Self::Rwi(_) =>
+                "ind.rwi(14)[0] → .rwi_high (default)  ·  .rwi_low  (>1 = directional move)",
+            Self::WilliamsFractal(_) =>
+                "ind.fractal()[0] → .bullish (default)  ·  .bearish  ·  .fractal_high  ·  .fractal_low",
+        }
+    }
+
     pub fn reset(&mut self) {
         match self {
             Self::Sma(i)            => i.reset(),
@@ -798,6 +950,39 @@ mod tests {
 
     fn mk_bar(t: i64, c: f64) -> Bar {
         Bar::new(t, "TEST", c, c, c, c, 1.0)
+    }
+
+    const ALL_TYPES: &[&str] = &[
+        "sma", "ema", "wma", "hma", "dema", "tema", "smma", "alma",
+        "mcginley", "lsma", "vwma", "kama", "macd", "trix", "adx",
+        "dmi", "aroon", "vortex", "alligator", "gmma", "kdj", "kalman",
+        "rsi", "cci", "roc", "mom", "cmo", "dpo", "mfi", "bop",
+        "williams_r", "stochastic", "stoch_rsi", "tsi", "rci",
+        "bull_bear", "fisher", "kst", "pmo", "ppo", "rvi", "smi",
+        "uo", "connors_rsi", "ao", "coppock",
+        "atr", "bbands", "keltner", "supertrend", "donchian",
+        "chop", "chop_zone", "chandelier_exit", "chande_kroll",
+        "volatility_ratio",
+        "obv", "cmf", "vwap",
+        "ichimoku", "parabolic_sar", "rwi", "fractal",
+    ];
+
+    #[test]
+    fn description_is_non_empty_for_all_variants() {
+        for name in ALL_TYPES {
+            let ind = IndicatorBox::from_config(&json!({ "type": name })).unwrap();
+            assert!(!ind.description().is_empty(), "{name}: description must not be empty");
+        }
+    }
+
+    #[test]
+    fn script_usage_is_non_empty_and_contains_ind_for_all_variants() {
+        for name in ALL_TYPES {
+            let ind = IndicatorBox::from_config(&json!({ "type": name })).unwrap();
+            let usage = ind.script_usage();
+            assert!(!usage.is_empty(), "{name}: script_usage must not be empty");
+            assert!(usage.contains("ind."), "{name}: script_usage must contain 'ind.'");
+        }
     }
 
     #[test]

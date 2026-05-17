@@ -1,6 +1,6 @@
-//! Rhai-powered stream evaluator for herald SSE.
+//! Script-driven stream evaluator for herald SSE.
 //!
-//! Unlike [`RhaiStrategy`] which manages its own indicator state, `RhaiStreamEval`
+//! Unlike [`ScriptStrategy`] which manages its own indicator state, `ScriptStreamEval`
 //! reads indicator values from an already-warmed external source (the ledger).
 //! This eliminates cold-start: a new SSE connection gets correct indicator values
 //! from the first bar because the ledger has been running continuously.
@@ -31,13 +31,17 @@ pub struct StreamDecl {
     /// Output field to read from the cell, e.g. `"value"`, `"histogram"`.
     /// `None` = multi-output indicator — herald must supply all fields as a Map.
     pub field:       Option<String>,
+    /// For multi-output indicators: the semantic primary field used when the
+    /// element is compared directly as a number (e.g. `"macd"` for macd,
+    /// `"middle"` for bbands). `None` for single-output indicators.
+    pub primary:     Option<String>,
     /// Number of historical values the script needs (default 2 for crossover).
     pub buf_depth:   usize,
 }
 
 // ── IndicatorSnapshot ─────────────────────────────────────────────────────────
 
-/// Per-variable indicator data supplied to [`RhaiStreamEval::run`].
+/// Per-variable indicator data supplied to [`ScriptStreamEval::run`].
 ///
 /// Herald reads values from the ledger cell and packages them here.
 pub enum IndicatorSnapshot {
@@ -49,13 +53,13 @@ pub enum IndicatorSnapshot {
 
 pub type PlotResult = HashMap<String, f64>;
 
-// ── RhaiStreamEval ────────────────────────────────────────────────────────────
+// ── ScriptStreamEval ────────────────────────────────────────────────────────────
 
-/// Stateless Rhai evaluator backed by ledger-provided indicator snapshots.
+/// Stateless script evaluator backed by ledger-provided indicator snapshots.
 ///
-/// Call [`RhaiStreamEval::run`] once per bar with fresh indicator values; it
+/// Call [`ScriptStreamEval::run`] once per bar with fresh indicator values; it
 /// returns the `plot()` outputs from the script for that bar.
-pub struct RhaiStreamEval {
+pub struct ScriptStreamEval {
     engine:        Engine,
     ast:           AST,
     plot_buf:      PlotBuf,
@@ -63,7 +67,7 @@ pub struct RhaiStreamEval {
     bar_buf_depth: usize,
 }
 
-impl RhaiStreamEval {
+impl ScriptStreamEval {
     pub fn from_script(script: &str) -> Result<Self> {
         let mut raw_decls    = Vec::new();
         let mut cleaned_lines: Vec<&str> = Vec::new();
@@ -80,7 +84,7 @@ impl RhaiStreamEval {
         let engine    = build_engine(Arc::clone(&plot_buf));
         let ast       = engine
             .compile(&cleaned)
-            .map_err(|e| anyhow::anyhow!("Rhai compile error: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("script compile error: {e}"))?;
 
         let lookback = extract_max_lookback(&cleaned);
         let bar_buf_depth = raw_decls.iter()
@@ -91,15 +95,16 @@ impl RhaiStreamEval {
             .max(DEFAULT_BUF_DEPTH);
 
         let decls = raw_decls.into_iter().map(|d| {
-            let field = match d.kind {
-                IndicatorKind::Single(f) => Some(f),
-                IndicatorKind::Multi     => None,
+            let (field, primary) = match d.kind {
+                IndicatorKind::Single(f)  => (Some(f), None),
+                IndicatorKind::Multi(p)   => (None, Some(p)),
             };
             StreamDecl {
                 spec_config: indicator_json_config(&d.ind_type, d.period),
                 var_name:    d.var_name,
                 source_tf:   d.timeframe,
                 field,
+                primary,
                 buf_depth:   d.buf_depth,
             }
         }).collect();
@@ -133,13 +138,15 @@ impl RhaiStreamEval {
             let dyn_arr: Array = match indicators.get(&decl.var_name) {
                 Some(IndicatorSnapshot::Single(vals)) =>
                     vals.iter().map(|&v| Dynamic::from_float(v)).collect(),
-                Some(IndicatorSnapshot::Multi(snapshots)) =>
+                Some(IndicatorSnapshot::Multi(snapshots)) => {
+                    let primary = decl.primary.clone().unwrap_or_else(|| "value".to_string());
                     snapshots.iter().map(|fields| {
-                        let map: rhai::Map = fields.iter()
-                            .map(|(k, &v)| (k.clone().into(), Dynamic::from_float(v)))
-                            .collect();
-                        Dynamic::from_map(map)
-                    }).collect(),
+                        Dynamic::from(super::binding::MEntry::new(
+                            fields.iter().map(|(k, &v)| (k.clone(), v)).collect(),
+                            primary.clone(),
+                        ))
+                    }).collect()
+                }
                 None => Array::new(),
             };
             scope.push_dynamic(decl.var_name.as_str(), Dynamic::from_array(dyn_arr));

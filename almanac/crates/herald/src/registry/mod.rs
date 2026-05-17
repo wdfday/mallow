@@ -64,7 +64,7 @@ impl Registry {
         }
     }
 
-    /// Convenience constructor that installs a Rhai fallback strategy for
+    /// Convenience constructor that installs a script fallback strategy for
     /// symbols that have no explicit hand registered (legacy `engine.configure` compat).
     pub fn with_default_fallback(
         ledger: Arc<Ledger>,
@@ -134,13 +134,26 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
         if symbol.is_empty() { w.groups.clear(); } else { w.groups.remove(symbol); }
     }
 
-    pub fn list_hands(&self) -> Vec<(String, String, String, String)> {
+    /// Returns (hand_id, helm_id, symbol, script, timeframe_str) for every registered hand.
+    pub fn list_hands(&self) -> Vec<(String, String, String, String, String)> {
         let r = self.inner.lock();
         r.groups
             .values()
             .flat_map(|g| g.hand_infos())
-            .map(|h| (h.hand_id.clone(), h.helm_id.clone(), h.symbol.clone(), h.script.clone()))
+            .map(|h| (
+                h.hand_id.clone(),
+                h.helm_id.clone(),
+                h.symbol.clone(),
+                h.script.clone(),
+                h.target_tf.to_string(),
+            ))
             .collect()
+    }
+
+    /// Returns the number of currently registered hands.
+    pub fn hand_count(&self) -> usize {
+        let r = self.inner.lock();
+        r.groups.values().map(|g| g.len()).sum()
     }
 
     fn evaluate_and_publish(&self, symbol: &str, tf: Timeframe, outcome: &AdvanceOutcome) {
@@ -307,7 +320,7 @@ mod tests {
     }
 
     #[test]
-    fn rhai_register_acquires_indicator_handles() {
+    fn script_register_acquires_indicator_handles() {
         let (led, reg, _rx) = make_registry();
         reg.register(
             "hand1".into(), "helm1".into(), "BTCUSDT".into(),
@@ -318,7 +331,7 @@ mod tests {
     }
 
     #[test]
-    fn rhai_multi_indicator_acquires_all_handles() {
+    fn script_multi_indicator_acquires_all_handles() {
         let (led, reg, _rx) = make_registry();
         reg.register(
             "hand1".into(), "helm1".into(), "BTCUSDT".into(),

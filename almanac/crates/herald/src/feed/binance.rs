@@ -96,7 +96,7 @@ async fn run_once(url: &str, tx: &BarTx) -> anyhow::Result<()> {
 
         let bar = alm_core::Bar::new(
             k.open_time,
-            &env.data.symbol.to_uppercase(),
+            &format!("binance:{}", env.data.symbol.to_uppercase()),
             k.open,
             k.high,
             k.low,
@@ -128,7 +128,6 @@ fn tf_to_interval(tf: Timeframe) -> Option<&'static str> {
         Timeframe::H2  => Some("2h"),
         Timeframe::H4  => Some("4h"),
         Timeframe::H6  => Some("6h"),
-        Timeframe::H8  => Some("8h"),
         Timeframe::H12 => Some("12h"),
         Timeframe::D1  => Some("1d"),
         Timeframe::W1  => Some("1w"),
@@ -148,7 +147,6 @@ fn interval_to_tf(iv: &str) -> Option<Timeframe> {
         "2h"  => Some(Timeframe::H2),
         "4h"  => Some(Timeframe::H4),
         "6h"  => Some(Timeframe::H6),
-        "8h"  => Some(Timeframe::H8),
         "12h" => Some(Timeframe::H12),
         "1d"  => Some(Timeframe::D1),
         "1w"  => Some(Timeframe::W1),

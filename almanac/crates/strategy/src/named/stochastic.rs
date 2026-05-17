@@ -55,7 +55,7 @@ impl Strategy for StochasticCrossover {
             if k_crossed_above && in_oversold {
                 vec![Signal::long(bar.timestamp, &bar.symbol, curr.k / 100.0)]
             } else if k_crossed_below && in_overbought {
-                vec![Signal::close(bar.timestamp, &bar.symbol)]
+                vec![Signal::exit(bar.timestamp, &bar.symbol)]
             } else {
                 vec![]
             }
@@ -128,7 +128,7 @@ mod tests {
     }
 
     #[test]
-    fn rhai_parity() {
+    fn script_parity() {
         use crate::factory::build_strategy;
         use serde_json::json;
 
@@ -142,48 +142,11 @@ let st = ind.stochastic(14);
 if st[1].k <= st[1].d && st[0].k > st[0].d && st[0].d < 20.0 { entry = true; }
 if st[1].k >= st[1].d && st[0].k < st[0].d && st[0].d > 80.0 { exit  = true; }
 "#;
-        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
-        let rhai_sigs = run(rhai.as_mut(), &bars);
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
 
         assert!(!named_sigs.is_empty(), "stochastic: must produce signals");
-        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
     }
 
-    /* // deprecated — DynamicStrategy removed
-    #[test]
-    fn stochastic_crossover_parity() {
-        let bars = rsi_bars(150);
-
-        // 1. hardcoded (k=14, d=3, oversold=20, overbought=80)
-        let mut hc = StochasticCrossover::new(14, 3, 20.0, 80.0);
-        let hc_sigs = run(&mut hc, &bars);
-
-        // 2. dynamic JSON — K cross_above D while D<20; exit K cross_below D while D>80
-        let mut dyn_s = build_strategy("dynamic", &json!({
-            "indicators": { "stoch": { "type": "stochastic", "k_period": 14, "d_period": 3 } },
-            "entry": {
-                "logic": "and",
-                "rules": [
-                    { "source": "stoch", "field": "k", "op": "cross_above",
-                      "compare": "stoch", "compare_field": "d" },
-                    { "source": "stoch", "field": "d", "op": "lt", "value": 20.0 }
-                ]
-            },
-            "exit": {
-                "logic": "and",
-                "rules": [
-                    { "source": "stoch", "field": "k", "op": "cross_below",
-                      "compare": "stoch", "compare_field": "d" },
-                    { "source": "stoch", "field": "d", "op": "gt", "value": 80.0 }
-                ]
-            }
-        })).unwrap();
-        let dyn_sigs = run(dyn_s.as_mut(), &bars);
-
-        // 3. CEL
-
-        assert!(!hc_sigs.is_empty(), "stochastic_crossover: hardcoded produced no signals");
-        assert_parity("stoch hardcoded vs dynamic", &hc_sigs, &dyn_sigs);
-    }
-    */
 }

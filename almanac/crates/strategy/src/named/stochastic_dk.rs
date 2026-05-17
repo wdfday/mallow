@@ -1,6 +1,12 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::Stochastic;
 
+const RHAI: &str = r#"
+let st = ind.stochastic(14);
+if st[1].k <= st[1].d && st[0].k > st[0].d { entry = true; }
+if st[1].k >= st[1].d && st[0].k < st[0].d { exit  = true; }
+"#;
+
 /// Bot #48 — Stochastic %D/%K crossover.
 ///
 /// Pure crossover — no overbought/oversold zone restriction.
@@ -47,7 +53,7 @@ impl Strategy for StochasticDk {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if crossed_down {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }
@@ -56,9 +62,43 @@ impl Strategy for StochasticDk {
         "stochastic_dk"
     }
 
+    fn description(&self) -> &'static str {
+        "Long when Stochastic %K crosses above %D. Exit when %K crosses back below %D."
+    }
+
+    fn script(&self) -> Option<&'static str> { Some(RHAI) }
+
     fn reset(&mut self) {
         self.stoch = Stochastic::new(self.k_period, self.d_period);
         self.prev_k = None;
         self.prev_d = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alm_core::signal::Direction;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    fn run(s: &mut dyn Strategy, bars: &[Bar]) -> Vec<(i64, Direction)> {
+        bars.iter().flat_map(|b| s.on_bar(b)).map(|s| (s.timestamp, s.direction)).collect()
+    }
+
+    #[test]
+    fn script_parity() {
+        let bars = trending_bars(300);
+
+        let mut named = StochasticDk::new(14, 3);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = StochasticDk::new(14, 3).script().unwrap();
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "stochastic_dk: must produce signals");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
     }
 }

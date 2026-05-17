@@ -5,9 +5,10 @@ use std::sync::Arc;
 use axum::{
     extract::{Path, State},
     http::StatusCode,
-    response::{IntoResponse, Response},
+    response::Response,
     Json,
 };
+use super::super::types::{ok, created, no_content, err, err_code};
 
 use alm_core::signal::Direction;
 use alm_data::BarFeed;
@@ -24,20 +25,20 @@ use super::super::HttpState;
 // ── Error helpers ─────────────────────────────────────────────────────────────
 
 pub fn not_found() -> Response {
-    (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "not found"}))).into_response()
+    err(StatusCode::NOT_FOUND, "not found")
 }
 
 pub fn bad_req(msg: &str) -> Response {
-    (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": msg}))).into_response()
+    err(StatusCode::BAD_REQUEST, msg.to_owned())
 }
 
 pub fn conflict(msg: &str) -> Response {
-    (StatusCode::CONFLICT, Json(serde_json::json!({"error": msg}))).into_response()
+    err_code(StatusCode::CONFLICT, "CONFLICT", msg.to_owned())
 }
 
 pub fn server_err(e: anyhow::Error) -> Response {
     tracing::error!(error = %e, "store error");
-    (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": "internal error"}))).into_response()
+    err(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
 }
 
 // ── Strategy CRUD ─────────────────────────────────────────────────────────────
@@ -50,7 +51,7 @@ pub fn server_err(e: anyhow::Error) -> Response {
 )]
 pub async fn list_strategies(State(state): State<HttpState>) -> Response {
     match state.store.list_strategies().await {
-        Ok(items) => Json(items).into_response(),
+        Ok(items) => ok(items),
         Err(e)    => server_err(e),
     }
 }
@@ -71,7 +72,7 @@ pub async fn create_strategy(
     match state.store.create_strategy(req.name, req.version, req.previous_id, req.label, req.spec, req.notes).await {
         Ok(s)  => {
             tracing::info!(id = %s.id, name = %s.name, version = s.version, "strategy saved");
-            (StatusCode::CREATED, Json(s)).into_response()
+            created(s)
         }
         Err(e) if e.to_string().contains("already exists") => conflict(&e.to_string()),
         Err(e) => server_err(e),
@@ -90,7 +91,7 @@ pub async fn create_strategy(
 )]
 pub async fn get_strategy(State(state): State<HttpState>, Path(id): Path<String>) -> Response {
     match state.store.get_strategy(&id).await {
-        Ok(Some(s)) => Json(s).into_response(),
+        Ok(Some(s)) => ok(s),
         Ok(None)    => not_found(),
         Err(e)      => server_err(e),
     }
@@ -108,7 +109,7 @@ pub async fn list_strategy_versions(
     Path(name): Path<String>,
 ) -> Response {
     match state.store.list_strategy_versions(&name).await {
-        Ok(items) => Json(items).into_response(),
+        Ok(items) => ok(items),
         Err(e)    => server_err(e),
     }
 }
@@ -129,7 +130,7 @@ pub async fn update_strategy(
     Json(req): Json<UpdateStrategyReq>,
 ) -> Response {
     match state.store.update_strategy(&id, req).await {
-        Ok(Some(s)) => Json(s).into_response(),
+        Ok(Some(s)) => ok(s),
         Ok(None)    => not_found(),
         Err(e)      => server_err(e),
     }
@@ -148,7 +149,7 @@ pub async fn update_strategy(
 )]
 pub async fn delete_strategy(State(state): State<HttpState>, Path(id): Path<String>) -> Response {
     match state.store.delete_strategy(&id).await {
-        Ok(true)  => StatusCode::NO_CONTENT.into_response(),
+        Ok(true)  => no_content(),
         Ok(false) => not_found(),
         Err(e) if e.to_string().contains("referenced") => conflict(&e.to_string()),
         Err(e)    => server_err(e),
@@ -165,7 +166,7 @@ pub async fn delete_strategy(State(state): State<HttpState>, Path(id): Path<Stri
 )]
 pub async fn list_cases(State(state): State<HttpState>) -> Response {
     match state.store.list_cases().await {
-        Ok(items) => Json(items).into_response(),
+        Ok(items) => ok(items),
         Err(e)    => server_err(e),
     }
 }
@@ -197,7 +198,7 @@ pub async fn create_case(
     ).await {
         Ok(c)  => {
             tracing::info!(id = %c.id, symbol = %c.symbol, strategy_id = %c.strategy_id, "case created");
-            (StatusCode::CREATED, Json(c)).into_response()
+            created(c)
         }
         Err(e) => server_err(e),
     }
@@ -215,7 +216,7 @@ pub async fn create_case(
 )]
 pub async fn get_case(State(state): State<HttpState>, Path(id): Path<String>) -> Response {
     match state.store.get_case(&id).await {
-        Ok(Some(c)) => Json(c).into_response(),
+        Ok(Some(c)) => ok(c),
         Ok(None)    => not_found(),
         Err(e)      => server_err(e),
     }
@@ -244,7 +245,7 @@ pub async fn update_case(
         }
     }
     match state.store.update_case(&id, req).await {
-        Ok(Some(c)) => Json(c).into_response(),
+        Ok(Some(c)) => ok(c),
         Ok(None)    => not_found(),
         Err(e)      => server_err(e),
     }
@@ -262,7 +263,7 @@ pub async fn update_case(
 )]
 pub async fn delete_case(State(state): State<HttpState>, Path(id): Path<String>) -> Response {
     match state.store.delete_case(&id).await {
-        Ok(true)  => StatusCode::NO_CONTENT.into_response(),
+        Ok(true)  => no_content(),
         Ok(false) => not_found(),
         Err(e)    => server_err(e),
     }
@@ -290,10 +291,11 @@ pub async fn run_case(State(state): State<HttpState>, Path(id): Path<String>) ->
     };
 
     let Some(_permit) = Arc::clone(&state.backtest_semaphore).try_acquire_owned().ok() else {
-        return (
+        return err_code(
             StatusCode::TOO_MANY_REQUESTS,
-            Json(serde_json::json!({"error": "too many concurrent backtests — retry shortly"})),
-        ).into_response();
+            "TOO_MANY_REQUESTS",
+            "too many concurrent backtests — retry shortly",
+        );
     };
 
     let (strategy_key, params) = strategy.spec.to_factory_args();
@@ -318,9 +320,6 @@ pub async fn run_case(State(state): State<HttpState>, Path(id): Path<String>) ->
         min_strength:           None,
         monte_carlo:            None,
         walk_forward:           None,
-        curve_points:           None,
-        candle_type:            None,
-        smooth_period:          None,
     };
 
     tracing::info!(id = %id, symbol = %case.symbol, strategy_id = %case.strategy_id, "running backtest case");
@@ -332,10 +331,7 @@ pub async fn run_case(State(state): State<HttpState>, Path(id): Path<String>) ->
         Ok(Ok(resp)) => resp,
         Ok(Err(e)) => {
             tracing::warn!(error = %e, "backtest failed");
-            return (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Json(serde_json::json!({"error": e.to_string()})),
-            ).into_response();
+            return err(StatusCode::UNPROCESSABLE_ENTITY, e.to_string());
         }
         Err(e) => {
             tracing::error!(error = %e, "backtest task panicked");
@@ -364,7 +360,7 @@ pub async fn run_case(State(state): State<HttpState>, Path(id): Path<String>) ->
         trades = report.trade_stats.total,
         "backtest done"
     );
-    Json(report).into_response()
+    ok(report)
 }
 
 // ── Signal replay ─────────────────────────────────────────────────────────────
@@ -394,10 +390,11 @@ pub async fn run_case_signals(
     };
 
     let Some(_permit) = Arc::clone(&state.backtest_semaphore).try_acquire_owned().ok() else {
-        return (
+        return err_code(
             StatusCode::TOO_MANY_REQUESTS,
-            Json(serde_json::json!({"error": "too many concurrent backtests — retry shortly"})),
-        ).into_response();
+            "TOO_MANY_REQUESTS",
+            "too many concurrent backtests — retry shortly",
+        );
     };
 
     let (strategy_key, params) = strategy.spec.to_factory_args();
@@ -409,16 +406,13 @@ pub async fn run_case_signals(
         Ok(Ok(sigs))  => sigs,
         Ok(Err(e)) => {
             tracing::warn!(error = %e, "signal replay failed");
-            return (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Json(serde_json::json!({"error": e.to_string()})),
-            ).into_response();
+            return err(StatusCode::UNPROCESSABLE_ENTITY, e.to_string());
         }
         Err(e) => return server_err(anyhow::anyhow!("replay task panicked: {e}")),
     };
 
     tracing::info!(id = %id, signals = signals.len(), "signal replay done");
-    Json(signals).into_response()
+    ok(signals)
 }
 
 fn signal_replay(
@@ -460,7 +454,7 @@ fn signal_replay(
                 direction:    match sig.direction {
                     Direction::Long  => "long".into(),
                     Direction::Short => "short".into(),
-                    Direction::Close => "close".into(),
+                    Direction::Exit => "exit".into(),
                 },
                 price:        sig.price,
                 strength:     sig.strength,
@@ -486,7 +480,7 @@ fn signal_replay(
 )]
 pub async fn list_results(State(state): State<HttpState>, Path(case_id): Path<String>) -> Response {
     match state.store.list_results(&case_id).await {
-        Ok(items) => Json(items).into_response(),
+        Ok(items) => ok(items),
         Err(e)    => server_err(e),
     }
 }
@@ -503,7 +497,7 @@ pub async fn list_results(State(state): State<HttpState>, Path(case_id): Path<St
 )]
 pub async fn get_result(State(state): State<HttpState>, Path(id): Path<String>) -> Response {
     match state.store.get_result(&id).await {
-        Ok(Some(r)) => Json(r).into_response(),
+        Ok(Some(r)) => ok(r),
         Ok(None)    => not_found(),
         Err(e)      => server_err(e),
     }
@@ -521,7 +515,7 @@ pub async fn get_result(State(state): State<HttpState>, Path(id): Path<String>) 
 )]
 pub async fn delete_result(State(state): State<HttpState>, Path(id): Path<String>) -> Response {
     match state.store.delete_result(&id).await {
-        Ok(true)  => StatusCode::NO_CONTENT.into_response(),
+        Ok(true)  => no_content(),
         Ok(false) => not_found(),
         Err(e)    => server_err(e),
     }

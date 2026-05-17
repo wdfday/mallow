@@ -1,6 +1,13 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::{Adx, Cci};
 
+const RHAI: &str = r#"
+let cci20 = ind.cci(20);
+let adx14 = ind.adx(14, 1);
+if cci20[1] <= 100.0 && cci20[0] > 100.0 && adx14[0].adx > 25.0 { entry = true; }
+if cci20[1] >= -100.0 && cci20[0] < -100.0 { exit  = true; }
+"#;
+
 /// Bot #32 — Swing Trader.
 ///
 /// Long when CCI breaks above +100 (strong upside momentum) AND ADX > threshold
@@ -51,7 +58,7 @@ impl Strategy for SwingTrader {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
         if cci_crossed_below_minus100 {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }
@@ -60,9 +67,44 @@ impl Strategy for SwingTrader {
         "swing_trader"
     }
 
+    fn description(&self) -> &'static str {
+        "Long when CCI breaks above +100 with ADX confirming a trend. Exit when CCI drops below -100."
+    }
+
+    fn script(&self) -> Option<&'static str> { Some(RHAI) }
+
     fn reset(&mut self) {
         self.cci = Cci::new(self.cci_period);
         self.adx = Adx::new(self.adx_period);
         self.prev_cci = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alm_core::signal::Direction;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    fn run(s: &mut dyn Strategy, bars: &[Bar]) -> Vec<(i64, Direction)> {
+        bars.iter().flat_map(|b| s.on_bar(b)).map(|s| (s.timestamp, s.direction)).collect()
+    }
+
+    #[test]
+    fn script_parity() {
+        let bars = trending_bars(400);
+
+        let mut named = SwingTrader::new(20, 14, 25.0);
+        let named_sigs = run(&mut named, &bars);
+
+        // CCI is Single, ADX is Multi
+        let script = SwingTrader::new(20, 14, 25.0).script().unwrap();
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "swing_trader: must produce signals");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
     }
 }

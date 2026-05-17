@@ -106,5 +106,5 @@ pub fn parse_tf(s: &str) -> Option<Timeframe> {
 }
 
 pub fn err(status: StatusCode, msg: impl Into<String>) -> Response {
-    (status, Json(ErrorResponse::new(msg))).into_response()
+    (status, Json(ErrorResponse { status: status.as_u16(), code: None, message: msg.into() })).into_response()
 }

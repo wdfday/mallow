@@ -68,7 +68,7 @@ impl Strategy for ScalpingEma {
 
         // Bearish cross: fast crosses below slow
         if pf >= ps && f < s {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
 
         vec![]

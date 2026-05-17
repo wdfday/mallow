@@ -126,7 +126,7 @@ fn run_strategy(strategy: &mut dyn Strategy, bars: &[Bar]) -> (Vec<(usize, Direc
                     entry_bar = i;
                     entry_px  = bar.close;
                 }
-                Direction::Close | Direction::Short if in_pos => {
+                Direction::Exit | Direction::Short if in_pos => {
                     in_pos = false;
                     let pnl = (bar.close - entry_px) / entry_px;
                     equity *= 1.0 + pnl;
@@ -166,7 +166,7 @@ fn dir_str(d: Direction) -> &'static str {
     match d {
         Direction::Long  => "▲ Long",
         Direction::Short => "▼ Short",
-        Direction::Close => "✕ Close",
+        Direction::Exit => "✕ Close",
     }
 }
 

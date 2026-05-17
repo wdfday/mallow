@@ -119,7 +119,7 @@ impl Strategy for PriceActionSwing {
             // Exit: close below stop level
             if bar.close < self.stop_level {
                 self.in_position = false;
-                return vec![Signal::close(bar.timestamp, &bar.symbol)];
+                return vec![Signal::exit(bar.timestamp, &bar.symbol)];
             }
             // Trail stop to latest swing low
             if self.swing_low > self.stop_level {

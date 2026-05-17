@@ -42,7 +42,7 @@ impl Strategy for CciReversal {
         }
         // Cross above exit_level (e.g. +100 → overbought)
         if p <= self.exit_level && v > self.exit_level {
-            return vec![Signal::close(bar.timestamp, &bar.symbol)];
+            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
     }
@@ -66,7 +66,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn rhai_parity() {
+    fn script_parity() {
         let bars = trending_bars(300);
 
         let mut named = CciReversal::new(20, -100.0, 100.0);
@@ -80,13 +80,13 @@ let cci20 = ind.cci(20);
 if cci20[1] <= -100.0 && cci20[0] > -100.0 { entry = true; }
 if cci20[1] <= 100.0 && cci20[0] > 100.0 { exit = true; }
 "#;
-        let mut rhai = build_strategy("rhai", &json!({ "script": script })).unwrap();
-        let rhai_sigs: Vec<(i64, Direction)> = bars.iter()
-            .flat_map(|b| rhai.on_bar(b))
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs: Vec<(i64, Direction)> = bars.iter()
+            .flat_map(|b| script_strat.on_bar(b))
             .map(|s| (s.timestamp, s.direction))
             .collect();
 
         assert!(!named_sigs.is_empty(), "cci_reversal: must produce signals");
-        assert_eq!(named_sigs, rhai_sigs, "rhai parity failed");
+        assert_eq!(named_sigs, script_sigs, "script parity failed");
     }
 }

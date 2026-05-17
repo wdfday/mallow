@@ -47,6 +47,10 @@ impl Vwma {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Volume-Weighted MA — averages price weighted by volume, so high-volume bars pull the average more. Useful as a volume-adjusted trend baseline."
+    }
+
     /// Feed một bar mới với close và volume.
     /// Trả về `Some(vwma)` sau khi đủ `period` bar.
     pub fn update(&mut self, close: f64, volume: f64) -> Option<f64> {

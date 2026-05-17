@@ -46,6 +46,10 @@ impl Dpo {
         }
     }
 
+    pub fn description() -> &'static str {
+        "Detrended Price Oscillator — removes the longer-term trend to expose shorter cycles in price. Useful for identifying cycle lengths."
+    }
+
     /// Feed một giá mới. Trả về `Some(dpo)` sau khi đủ `period + displacement` bar.
     pub fn update(&mut self, price: f64) -> Option<f64> {
         let max_len = self.period + self.displacement;

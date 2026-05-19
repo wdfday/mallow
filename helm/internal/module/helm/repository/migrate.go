@@ -24,6 +24,7 @@ func Migrate(db *gorm.DB) error {
 		`ALTER TABLE helms ADD COLUMN IF NOT EXISTS last_synced_at    TIMESTAMPTZ`,
 		`ALTER TABLE helms ADD COLUMN IF NOT EXISTS portfolio_config  JSONB NOT NULL DEFAULT '{}'`,
 		`ALTER TABLE helms ADD COLUMN IF NOT EXISTS broker_type       TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE helms ADD COLUMN IF NOT EXISTS account_type TEXT NOT NULL DEFAULT ''`,
 		// Move sizing fields from risk_config → portfolio_config (idempotent).
 		`UPDATE helms
 			SET

@@ -2,6 +2,7 @@ package dto
 
 import (
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/module/hand/domain"
 )
@@ -15,21 +16,35 @@ type CreateHandReq struct {
 	AccountID uuid.UUID         `json:"account_id"`
 	Symbols   []string          `json:"symbols" binding:"required,min=1"`
 	Strategy  StrategyDTO       `json:"strategy" binding:"required"`
-	Position  PositionDTO       `json:"position"`
-	Risk      HandRiskConfigDTO `json:"risk"`
-	Futures   *FuturesDTO       `json:"futures"`
+	// AllocatedCapital is the hand's fixed capital budget (quote currency, e.g. USDT).
+	// Zero means the hand draws from full helm equity without isolation.
+	AllocatedCapital float64 `json:"allocated_capital,omitempty" binding:"omitempty,gte=0"`
+	// SignalTTLSec: max age of a signal before discard. 0 = default (10s), -1 = disable.
+	SignalTTLSec int `json:"signal_ttl_sec,omitempty" binding:"omitempty,min=-1,max=3600"`
+	// OrderType: default entry order type. "market" (default) or "limit".
+	OrderType       domain.OrderType     `json:"order_type,omitempty" binding:"omitempty,oneof=market limit"`
+	LimitTimeoutSec int                  `json:"limit_timeout_sec,omitempty" binding:"omitempty,min=5,max=3600"`
+	LimitFallback   domain.LimitFallback `json:"limit_fallback,omitempty" binding:"omitempty,oneof=cancel market"`
+	Position        PositionDTO          `json:"position"`
+	Risk            HandRiskConfigDTO    `json:"risk"`
+	Futures         *FuturesDTO          `json:"futures"`
 }
 
 func (r CreateHandReq) ToDomain() domain.HandConfig {
 	cfg := domain.HandConfig{
-		Name:     r.Name,
-		Type:     r.Type,
-		Market:   r.Market,
-		HelmID:   r.HelmID,
-		Symbols:  r.Symbols,
-		Strategy: strategyToDomain(r.Strategy),
-		Position: positionToDomain(r.Position),
-		Risk:     riskToDomain(r.Risk),
+		Name:             r.Name,
+		Type:             r.Type,
+		Market:           r.Market,
+		HelmID:           r.HelmID,
+		Symbols:          r.Symbols,
+		Strategy:         strategyToDomain(r.Strategy),
+		Position:         positionToDomain(r.Position),
+		Risk:             riskToDomain(r.Risk),
+		AllocatedCapital: decimal.NewFromFloat(r.AllocatedCapital),
+		SignalTTLSec:     r.SignalTTLSec,
+		OrderType:        r.OrderType,
+		LimitTimeoutSec:  r.LimitTimeoutSec,
+		LimitFallback:    r.LimitFallback,
 	}
 	if r.Futures != nil {
 		cfg.Futures = &domain.FuturesConfig{
@@ -40,16 +55,22 @@ func (r CreateHandReq) ToDomain() domain.HandConfig {
 	return cfg
 }
 
-// UpdateHandReq allows patching Name, Position sizing, and Risk exit rules only.
+// UpdateHandReq allows patching Name, AllocatedCapital, SignalTTLSec, Position sizing, and Risk.
 // Symbols, Strategy, Type, and Market are immutable after creation.
 type UpdateHandReq struct {
-	Name     string             `json:"name" binding:"omitempty,min=1,max=128"`
-	Position *PositionDTO       `json:"position"`
-	Risk     *HandRiskConfigDTO `json:"risk"`
+	Name             string             `json:"name" binding:"omitempty,min=1,max=128"`
+	AllocatedCapital float64            `json:"allocated_capital,omitempty" binding:"omitempty,gte=0"`
+	SignalTTLSec     int                `json:"signal_ttl_sec,omitempty" binding:"omitempty,min=-1,max=3600"`
+	Position         *PositionDTO       `json:"position"`
+	Risk             *HandRiskConfigDTO `json:"risk"`
 }
 
 func (r UpdateHandReq) ToDomain() domain.HandConfig {
-	cfg := domain.HandConfig{Name: r.Name}
+	cfg := domain.HandConfig{
+		Name:             r.Name,
+		AllocatedCapital: decimal.NewFromFloat(r.AllocatedCapital),
+		SignalTTLSec:     r.SignalTTLSec,
+	}
 	if r.Position != nil {
 		cfg.Position = positionToDomain(*r.Position)
 	}

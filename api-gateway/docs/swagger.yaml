@@ -1,0 +1,1425 @@
+basePath: /
+definitions:
+  handler.BacktestEstimateRequest:
+    properties:
+      from_time:
+        example: "2024-01-01T00:00:00Z"
+        type: string
+      strategy:
+        example: RSIStrategy
+        type: string
+      symbol:
+        example: BTCUSDT
+        type: string
+      timeframe:
+        example: M1
+        type: string
+      to_time:
+        example: "2024-12-31T23:59:59Z"
+        type: string
+    type: object
+  handler.BacktestRequest:
+    properties:
+      commission_pct:
+        example: 0.001
+        type: number
+      from_time:
+        example: "2024-01-01T00:00:00Z"
+        type: string
+      initial_capital:
+        example: 10000
+        type: number
+      lot_size:
+        example: 0
+        type: number
+      params:
+        additionalProperties: true
+        type: object
+      script:
+        example: // strategy script
+        type: string
+      slippage_pct:
+        example: 0
+        type: number
+      strategy:
+        example: RSIStrategy
+        type: string
+      symbol:
+        example: BTCUSDT
+        type: string
+      timeframe:
+        example: M1
+        type: string
+      to_time:
+        example: "2024-12-31T23:59:59Z"
+        type: string
+    type: object
+  handler.DataQueryRequest:
+    properties:
+      from:
+        example: "2024-01-01T00:00:00Z"
+        type: string
+      indicators:
+        items:
+          additionalProperties: true
+          type: object
+        type: array
+      limit:
+        example: 500
+        type: integer
+      to:
+        example: "2024-12-31T23:59:59Z"
+        type: string
+    type: object
+  handler.StreamRequest:
+    properties:
+      indicators:
+        items:
+          additionalProperties: true
+          type: object
+        type: array
+      script:
+        type: string
+      timeframe:
+        example: M1
+        type: string
+    type: object
+info:
+  contact: {}
+  description: |-
+    Gateway for Mallow algorithmic trading system.
+
+    All protected routes require a Bearer JWT token obtained from the Identity service (`/api/v1/auth/login`).
+  title: Mallow API Gateway
+  version: "1.0"
+paths:
+  /api/v1/auth/login:
+    post:
+      consumes:
+      - application/json
+      description: Authenticate with email + password. Returns access and refresh
+        tokens.
+      parameters:
+      - description: '{ \'
+        in: body
+        name: body
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Login (get JWT)
+      tags:
+      - Identity
+  /api/v1/auth/refresh:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: '{ \'
+        in: body
+        name: body
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Refresh access token
+      tags:
+      - Identity
+  /api/v1/auth/register:
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Registration payload
+        in: body
+        name: body
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Register a new user
+      tags:
+      - Identity
+  /api/v1/backtest:
+    post:
+      consumes:
+      - application/json
+      description: Executes a named strategy backtest over a historical date range.
+        Returns a BacktestReport with Sharpe, Sortino, Calmar, max drawdown, win rate,
+        profit factor, and trade list.
+      parameters:
+      - description: Backtest parameters
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handler.BacktestRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Run a backtest
+      tags:
+      - Herald
+  /api/v1/backtest/estimate:
+    post:
+      consumes:
+      - application/json
+      description: Returns estimated bar count and time without running the full engine.
+      parameters:
+      - description: Estimate parameters
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handler.BacktestEstimateRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Estimate backtest cost
+      tags:
+      - Herald
+  /api/v1/backtest/script:
+    post:
+      consumes:
+      - application/json
+      description: Executes a script strategy. Always saves the script version and
+        result to the store. Pass strategy_id to link to an existing version chain.
+      parameters:
+      - description: Script backtest parameters (use 'script' field)
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handler.BacktestRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+        "400":
+          description: Bad Request
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Run a script backtest
+      tags:
+      - Herald
+  /api/v1/data/{symbol}:
+    get:
+      description: Returns the most recent bar and live indicator snapshot for a symbol.
+      parameters:
+      - description: Symbol, e.g. BTCUSDT
+        in: path
+        name: symbol
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Latest OHLCV bar
+      tags:
+      - Herald
+    post:
+      consumes:
+      - application/json
+      description: Returns historical bars with optional indicator overlay. Falls
+        back to DuckDB Parquet when the requested range predates the live ledger window.
+      parameters:
+      - description: Symbol, e.g. BTCUSDT
+        in: path
+        name: symbol
+        required: true
+        type: string
+      - description: Query parameters
+        in: body
+        name: body
+        schema:
+          $ref: '#/definitions/handler.DataQueryRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Query OHLCV bars + indicators
+      tags:
+      - Herald
+  /api/v1/data/{symbol}/latest:
+    get:
+      description: Alias for GET /api/v1/data/:symbol.
+      parameters:
+      - description: Symbol
+        in: path
+        name: symbol
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Latest OHLCV bar (alias)
+      tags:
+      - Herald
+  /api/v1/data/duckdb:
+    post:
+      consumes:
+      - application/json
+      description: Run a raw Parquet query via DuckDB on historical data.
+      parameters:
+      - description: DuckDB query payload
+        in: body
+        name: body
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: DuckDB Parquet query
+      tags:
+      - Herald
+  /api/v1/hands:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              additionalProperties: true
+              type: object
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List hands
+      tags:
+      - Helm
+    post:
+      consumes:
+      - application/json
+      description: Creates a new signal-following bot under a helm. The hand starts
+        stopped; call /start to activate.
+      parameters:
+      - description: Hand config
+        in: body
+        name: body
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a hand (autonomous bot)
+      tags:
+      - Helm
+  /api/v1/hands/{id}:
+    delete:
+      parameters:
+      - description: Hand ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+      security:
+      - BearerAuth: []
+      summary: Delete a hand
+      tags:
+      - Helm
+    get:
+      parameters:
+      - description: Hand ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get a hand
+      tags:
+      - Helm
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Hand ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Updated config
+        in: body
+        name: body
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update hand config
+      tags:
+      - Helm
+  /api/v1/hands/{id}/kill:
+    post:
+      description: Stops the hand and flattens its positions at the exchange.
+      parameters:
+      - description: Hand ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Kill a hand (flatten positions)
+      tags:
+      - Helm
+  /api/v1/hands/{id}/pause:
+    post:
+      parameters:
+      - description: Hand ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Pause a hand
+      tags:
+      - Helm
+  /api/v1/hands/{id}/release:
+    post:
+      description: Stops the hand without flattening positions. Emits position_orphaned
+        poslog events.
+      parameters:
+      - description: Hand ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Release a hand (leave positions live)
+      tags:
+      - Helm
+  /api/v1/hands/{id}/restart:
+    post:
+      parameters:
+      - description: Hand ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Restart a hand
+      tags:
+      - Helm
+  /api/v1/hands/{id}/resume:
+    post:
+      parameters:
+      - description: Hand ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Resume a paused hand
+      tags:
+      - Helm
+  /api/v1/hands/{id}/start:
+    post:
+      parameters:
+      - description: Hand ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Start a hand
+      tags:
+      - Helm
+  /api/v1/hands/{id}/stop:
+    post:
+      parameters:
+      - description: Hand ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Stop a hand
+      tags:
+      - Helm
+  /api/v1/helms:
+    get:
+      description: Returns all Helm accounts accessible to the authenticated user.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              additionalProperties: true
+              type: object
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List helms
+      tags:
+      - Helm
+  /api/v1/helms/{id}:
+    get:
+      parameters:
+      - description: Helm ID (UUID)
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get a helm
+      tags:
+      - Helm
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Helm ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Updated config
+        in: body
+        name: body
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update helm config
+      tags:
+      - Helm
+  /api/v1/helms/{id}/disable:
+    post:
+      parameters:
+      - description: Helm ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Disable a helm
+      tags:
+      - Helm
+  /api/v1/helms/{id}/enable:
+    post:
+      parameters:
+      - description: Helm ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Enable a helm
+      tags:
+      - Helm
+  /api/v1/helms/{id}/halt/reset:
+    post:
+      description: Clears the halted state so the helm can be re-enabled.
+      parameters:
+      - description: Helm ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Reset a halted helm
+      tags:
+      - Helm
+  /api/v1/helms/{id}/kill:
+    post:
+      description: Stops all hands and flattens their positions at the exchange. Sets
+        helm state to halted.
+      parameters:
+      - description: Helm ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Kill a helm (flatten all positions)
+      tags:
+      - Helm
+  /api/v1/helms/{id}/orders:
+    get:
+      parameters:
+      - description: Helm ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              additionalProperties: true
+              type: object
+            type: array
+      security:
+      - BearerAuth: []
+      summary: Helm open orders
+      tags:
+      - Helm
+  /api/v1/helms/{id}/pause:
+    post:
+      parameters:
+      - description: Helm ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Pause a helm (cascade-stops all hands)
+      tags:
+      - Helm
+  /api/v1/helms/{id}/portfolio:
+    get:
+      parameters:
+      - description: Helm ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Helm portfolio snapshot
+      tags:
+      - Helm
+  /api/v1/helms/{id}/positions:
+    get:
+      parameters:
+      - description: Helm ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              additionalProperties: true
+              type: object
+            type: array
+      security:
+      - BearerAuth: []
+      summary: Helm open positions
+      tags:
+      - Helm
+  /api/v1/helms/{id}/resume:
+    post:
+      parameters:
+      - description: Helm ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Resume a paused helm
+      tags:
+      - Helm
+  /api/v1/helms/{id}/trades:
+    get:
+      parameters:
+      - description: Helm ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              additionalProperties: true
+              type: object
+            type: array
+      security:
+      - BearerAuth: []
+      summary: Helm trade history
+      tags:
+      - Helm
+  /api/v1/indicators:
+    get:
+      description: Returns all ~66 indicator names that herald supports.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              type: string
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List available indicators
+      tags:
+      - Herald
+  /api/v1/script/validate:
+    post:
+      consumes:
+      - application/json
+      description: Lints a strategy script without running a backtest. Used by the
+        Monaco editor.
+      parameters:
+      - description: '{ \'
+        in: body
+        name: body
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Validate a script
+      tags:
+      - Herald
+  /api/v1/store/cases:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              additionalProperties: true
+              type: object
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List backtest cases
+      tags:
+      - Herald Store
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Case payload
+        in: body
+        name: body
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a backtest case
+      tags:
+      - Herald Store
+  /api/v1/store/cases/{id}:
+    get:
+      parameters:
+      - description: Case ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get a backtest case
+      tags:
+      - Herald Store
+  /api/v1/store/cases/{id}/results:
+    get:
+      parameters:
+      - description: Case ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              additionalProperties: true
+              type: object
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List results for a case
+      tags:
+      - Herald Store
+  /api/v1/store/cases/{id}/run:
+    post:
+      description: Executes the stored case and saves the result.
+      parameters:
+      - description: Case ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Run a backtest case
+      tags:
+      - Herald Store
+  /api/v1/store/results/{id}:
+    delete:
+      parameters:
+      - description: Result ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+      security:
+      - BearerAuth: []
+      summary: Delete a backtest result
+      tags:
+      - Herald Store
+    get:
+      parameters:
+      - description: Result ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get a backtest result
+      tags:
+      - Herald Store
+  /api/v1/store/strategies:
+    get:
+      description: Returns all strategy versions in the persistent store.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              additionalProperties: true
+              type: object
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List stored strategies
+      tags:
+      - Herald Store
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Strategy payload
+        in: body
+        name: body
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a stored strategy
+      tags:
+      - Herald Store
+  /api/v1/store/strategies/{id}:
+    delete:
+      parameters:
+      - description: Strategy ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+      security:
+      - BearerAuth: []
+      summary: Delete a stored strategy
+      tags:
+      - Herald Store
+    get:
+      parameters:
+      - description: Strategy ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get a stored strategy
+      tags:
+      - Herald Store
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Strategy ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Updated strategy
+        in: body
+        name: body
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Update a stored strategy
+      tags:
+      - Herald Store
+  /api/v1/strategies:
+    get:
+      description: Returns all ~80 named strategy IDs that herald supports.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              type: string
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List available strategies
+      tags:
+      - Herald
+  /api/v1/strategist/ui/:
+    get:
+      description: Serves the Google ADK development UI for the trading assistant
+        agent.
+      produces:
+      - text/html
+      responses:
+        "200":
+          description: OK
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: Strategist ADK Web UI
+      tags:
+      - Strategist
+  /api/v1/stream/{symbol}:
+    get:
+      description: EventSource-compatible SSE stream of raw OHLCV bars for a symbol.
+        Emits a `status` event first, then `bar` events per incoming candle. Use `?tf=M1`
+        to select timeframe.
+      parameters:
+      - description: Symbol, e.g. BTCUSDT
+        in: path
+        name: symbol
+        required: true
+        type: string
+      - description: Timeframe (M1, M5, H1, …)
+        in: query
+        name: tf
+        type: string
+      produces:
+      - text/event-stream
+      responses:
+        "200":
+          description: 'event: bar\ndata: {...}'
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: SSE bar stream (GET — raw OHLCV)
+      tags:
+      - Herald Stream
+    post:
+      consumes:
+      - application/json
+      description: SSE stream carrying bars enriched with indicator values or a script
+        output. Requires a `fetch()` + `ReadableStream` client (not plain EventSource).
+        Body specifies indicator configs or a script.
+      parameters:
+      - description: Symbol
+        in: path
+        name: symbol
+        required: true
+        type: string
+      - description: Stream config
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/handler.StreamRequest'
+      produces:
+      - text/event-stream
+      responses:
+        "200":
+          description: 'event: bar\ndata: {...}'
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: SSE bar stream (POST — with indicators / script)
+      tags:
+      - Herald Stream
+  /api/v1/stream/signals:
+    get:
+      description: Server-Sent Events stream of live signal batches from all registered
+        hands. Each event carries a `SignalResponse` protobuf payload encoded as JSON.
+      produces:
+      - text/event-stream
+      responses:
+        "200":
+          description: 'event: bar\ndata: {...}'
+          schema:
+            type: string
+      security:
+      - BearerAuth: []
+      summary: SSE signal stream
+      tags:
+      - Herald Stream
+  /api/v1/symbols:
+    get:
+      description: Returns all symbols currently ingested by herald.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              type: string
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List live symbols
+      tags:
+      - Herald
+  /api/v1/watch:
+    get:
+      description: Returns admin warm-set configs (indicator bootstrapping on startup).
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              additionalProperties: true
+              type: object
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List watch configs
+      tags:
+      - Herald Admin
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Watch config
+        in: body
+        name: body
+        required: true
+        schema:
+          additionalProperties: true
+          type: object
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Create a watch config
+      tags:
+      - Herald Admin
+  /api/v1/watch/{id}:
+    delete:
+      parameters:
+      - description: Watch ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "204":
+          description: No Content
+      security:
+      - BearerAuth: []
+      summary: Delete a watch config
+      tags:
+      - Herald Admin
+    get:
+      parameters:
+      - description: Watch ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Get a watch config
+      tags:
+      - Herald Admin
+  /health:
+    get:
+      description: Returns gateway status and NATS connectivity.
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      summary: Health check
+      tags:
+      - System
+schemes:
+- http
+- https
+securityDefinitions:
+  BearerAuth:
+    description: JWT token — prefix with "Bearer "
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

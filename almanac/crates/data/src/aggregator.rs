@@ -132,9 +132,10 @@ impl<F: BarFeed> BarFeed for BarAggregator<F> {
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /// Round `ts` down to the start of its `period_ms` bucket (UTC-aligned).
+/// Uses `div_euclid` so negative timestamps (pre-1970) still floor toward −∞.
 #[inline]
 fn period_start(ts: i64, period_ms: i64) -> i64 {
-    (ts / period_ms) * period_ms
+    ts.div_euclid(period_ms) * period_ms
 }
 
 struct PartialBar {

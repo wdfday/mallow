@@ -95,17 +95,19 @@ message ResetMsg {
 }
 
 // ── Hand Registry ─────────────────────────────────────────────────────────────
-// Hands run Rhai scripts only. The script is the full source, not a named strategy key.
+// Hands run scripts only. The script is the full source, not a named strategy key.
 
 message RegisterMsg {
   string hand_id   = 1;  // unique hand identifier (e.g. "hand_ema_btc_001")
   string symbol    = 2;  // e.g. "BTCUSDT"
-  string script    = 3;  // full Rhai script source
+  string script    = 3;  // full strategy script source
 
-  // Timeframe the hand operates at (e.g. "M1", "H1", "D1").
+  // Timeframe the hand operates at (e.g. "M1", "H1", "D1") — REQUIRED.
+  // Strategies are calibrated to a specific TF (a 14-period EMA on M1 vs H1
+  // means completely different things), so register must declare it explicitly.
   // Herald resamples incoming base-TF bars to this TF before running the script.
-  // Empty = use herald's base TF (default M1).
-  optional string timeframe = 4;
+  // Empty string is rejected by herald with a clear error.
+  string timeframe = 4;
 
   string helm_id = 5;  // owning helm — used for routing in SignalResponse
 

@@ -106,14 +106,14 @@ paths:
   /api/v1/store/cases:
     get:
       tags:
-      - store
+      - strategy
       operationId: list_cases
       responses:
         '200':
           description: List of backtest cases
     post:
       tags:
-      - store
+      - strategy
       operationId: create_case
       requestBody:
         description: ''
@@ -130,7 +130,7 @@ paths:
   /api/v1/store/cases/{id}:
     get:
       tags:
-      - store
+      - strategy
       operationId: get_case
       parameters:
       - name: id
@@ -146,7 +146,7 @@ paths:
           description: Not found
     put:
       tags:
-      - store
+      - strategy
       operationId: update_case
       parameters:
       - name: id
@@ -169,7 +169,7 @@ paths:
           description: Not found
     delete:
       tags:
-      - store
+      - strategy
       operationId: delete_case
       parameters:
       - name: id
@@ -186,7 +186,7 @@ paths:
   /api/v1/store/cases/{id}/results:
     get:
       tags:
-      - store
+      - strategy
       operationId: list_results
       parameters:
       - name: id
@@ -201,7 +201,7 @@ paths:
   /api/v1/store/cases/{id}/run:
     post:
       tags:
-      - store
+      - strategy
       operationId: run_case
       parameters:
       - name: id
@@ -220,7 +220,7 @@ paths:
   /api/v1/store/cases/{id}/signals:
     post:
       tags:
-      - store
+      - strategy
       summary: Replay historical bars through the case's strategy and return the raw
       description: signal stream — no SimBroker, no position tracking, no report.
       operationId: run_case_signals
@@ -241,7 +241,7 @@ paths:
   /api/v1/store/results/{id}:
     get:
       tags:
-      - store
+      - strategy
       operationId: get_result
       parameters:
       - name: id
@@ -257,7 +257,7 @@ paths:
           description: Not found
     delete:
       tags:
-      - store
+      - strategy
       operationId: delete_result
       parameters:
       - name: id
@@ -274,14 +274,14 @@ paths:
   /api/v1/store/strategies:
     get:
       tags:
-      - store
+      - strategy
       operationId: list_strategies
       responses:
         '200':
           description: List of saved strategies
     post:
       tags:
-      - store
+      - strategy
       operationId: create_strategy
       requestBody:
         description: ''
@@ -298,7 +298,7 @@ paths:
   /api/v1/store/strategies/{id}:
     get:
       tags:
-      - store
+      - strategy
       operationId: get_strategy
       parameters:
       - name: id
@@ -314,7 +314,7 @@ paths:
           description: Not found
     put:
       tags:
-      - store
+      - strategy
       operationId: update_strategy
       parameters:
       - name: id
@@ -337,7 +337,7 @@ paths:
           description: Not found
     delete:
       tags:
-      - store
+      - strategy
       operationId: delete_strategy
       parameters:
       - name: id
@@ -356,7 +356,7 @@ paths:
   /api/v1/store/strategies/{name}/versions:
     get:
       tags:
-      - store
+      - strategy
       operationId: list_strategy_versions
       parameters:
       - name: name
@@ -1509,7 +1509,7 @@ tags:
   description: Live ledger data
 - name: backtest
   description: Backtest execution
-- name: store
+- name: strategy
   description: Saved strategies, cases, results
 - name: watch
   description: Watchlist / warm-set management

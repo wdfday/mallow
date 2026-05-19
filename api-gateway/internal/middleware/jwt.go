@@ -95,7 +95,7 @@ func JWTAuth(cfg JWTAuthConfig, rdb *redis.Client, fallback BlacklistFallback) g
 				"reason", "missing_or_invalid_authorization_header",
 				"auth_prefix", authPrefix(auth),
 			)
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing or invalid Authorization header"})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, errResp(http.StatusUnauthorized, "UNAUTHORIZED", "missing or invalid Authorization header"))
 			return
 		}
 
@@ -115,7 +115,7 @@ func JWTAuth(cfg JWTAuthConfig, rdb *redis.Client, fallback BlacklistFallback) g
 				attrs = append(attrs, "detail", err.Error())
 			}
 			slog.Warn("gateway auth rejected request", attrs...)
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, errResp(http.StatusUnauthorized, "UNAUTHORIZED", "invalid token"))
 			return
 		}
 
@@ -127,7 +127,7 @@ func JWTAuth(cfg JWTAuthConfig, rdb *redis.Client, fallback BlacklistFallback) g
 				"alg", tokenMeta.Alg,
 				"kid", tokenMeta.Kid,
 			)
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid claims"})
+			c.AbortWithStatusJSON(http.StatusUnauthorized, errResp(http.StatusUnauthorized, "UNAUTHORIZED", "invalid claims"))
 			return
 		}
 
@@ -142,7 +142,7 @@ func JWTAuth(cfg JWTAuthConfig, rdb *redis.Client, fallback BlacklistFallback) g
 					"kid", tokenMeta.Kid,
 					"sub", claims["sub"],
 				)
-				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "invalid issuer"})
+				c.AbortWithStatusJSON(http.StatusUnauthorized, errResp(http.StatusUnauthorized, "UNAUTHORIZED", "invalid issuer"))
 				return
 			}
 		}
@@ -177,7 +177,7 @@ func JWTAuth(cfg JWTAuthConfig, rdb *redis.Client, fallback BlacklistFallback) g
 					"sub", sub,
 					"sid", sid,
 				)
-				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token revoked"})
+				c.AbortWithStatusJSON(http.StatusUnauthorized, errResp(http.StatusUnauthorized, "TOKEN_REVOKED", "token revoked"))
 				return
 			}
 		}
@@ -189,7 +189,7 @@ func JWTAuth(cfg JWTAuthConfig, rdb *redis.Client, fallback BlacklistFallback) g
 					"reason", "email_not_verified",
 					"sub", claims["sub"],
 				)
-				c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "email not verified"})
+				c.AbortWithStatusJSON(http.StatusForbidden, errResp(http.StatusForbidden, "FORBIDDEN", "email not verified"))
 				return
 			}
 		}
@@ -377,4 +377,9 @@ func isBlacklisted(ctx context.Context, rdb *redis.Client, sid, sub string) (boo
 		return false, err
 	}
 	return n > 0, nil
+}
+
+// errResp builds a standard error envelope matching the shared.ErrorResponse shape.
+func errResp(status int, code, message string) gin.H {
+	return gin.H{"status": status, "code": code, "message": message}
 }

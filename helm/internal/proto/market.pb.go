@@ -481,12 +481,14 @@ type RegisterMsg struct {
 	state  protoimpl.MessageState `protogen:"open.v1"`
 	HandId string                 `protobuf:"bytes,1,opt,name=hand_id,json=handId,proto3" json:"hand_id,omitempty"` // unique hand identifier (e.g. "hand_ema_btc_001")
 	Symbol string                 `protobuf:"bytes,2,opt,name=symbol,proto3" json:"symbol,omitempty"`               // e.g. "BTCUSDT"
-	Script string                 `protobuf:"bytes,3,opt,name=script,proto3" json:"script,omitempty"`               // full Rhai script source
-	// Timeframe the hand operates at (e.g. "M1", "H1", "D1").
+	Script string                 `protobuf:"bytes,3,opt,name=script,proto3" json:"script,omitempty"`               // full strategy script source
+	// Timeframe the hand operates at (e.g. "M1", "H1", "D1") — REQUIRED.
+	// Strategies are calibrated to a specific TF (a 14-period EMA on M1 vs H1
+	// means completely different things), so register must declare it explicitly.
 	// Herald resamples incoming base-TF bars to this TF before running the script.
-	// Empty = use herald's base TF (default M1).
-	Timeframe *string `protobuf:"bytes,4,opt,name=timeframe,proto3,oneof" json:"timeframe,omitempty"`
-	HelmId    string  `protobuf:"bytes,5,opt,name=helm_id,json=helmId,proto3" json:"helm_id,omitempty"` // owning helm — used for routing in SignalResponse
+	// Empty string is rejected by herald with a clear error.
+	Timeframe string `protobuf:"bytes,4,opt,name=timeframe,proto3" json:"timeframe,omitempty"`
+	HelmId    string `protobuf:"bytes,5,opt,name=helm_id,json=helmId,proto3" json:"helm_id,omitempty"` // owning helm — used for routing in SignalResponse
 	// Auto-expiry rules (optional — omit for permanent hands).
 	ExpiresAtMs   *int64 `protobuf:"varint,6,opt,name=expires_at_ms,json=expiresAtMs,proto3,oneof" json:"expires_at_ms,omitempty"` // Unix ms TTL; auto-deregister after
 	MaxBars       *int32 `protobuf:"varint,7,opt,name=max_bars,json=maxBars,proto3,oneof" json:"max_bars,omitempty"`               // auto-expire after N bars
@@ -546,8 +548,8 @@ func (x *RegisterMsg) GetScript() string {
 }
 
 func (x *RegisterMsg) GetTimeframe() string {
-	if x != nil && x.Timeframe != nil {
-		return *x.Timeframe
+	if x != nil {
+		return x.Timeframe
 	}
 	return ""
 }
@@ -1041,17 +1043,15 @@ const file_market_proto_rawDesc = "" +
 	"\ahelm_id\x18\x02 \x01(\tR\x06helmId\x12\x17\n" +
 	"\ahand_id\x18\x03 \x01(\tR\x06handId\"\"\n" +
 	"\bResetMsg\x12\x16\n" +
-	"\x06symbol\x18\x01 \x01(\tR\x06symbol\"\x88\x02\n" +
+	"\x06symbol\x18\x01 \x01(\tR\x06symbol\"\xf5\x01\n" +
 	"\vRegisterMsg\x12\x17\n" +
 	"\ahand_id\x18\x01 \x01(\tR\x06handId\x12\x16\n" +
 	"\x06symbol\x18\x02 \x01(\tR\x06symbol\x12\x16\n" +
-	"\x06script\x18\x03 \x01(\tR\x06script\x12!\n" +
-	"\ttimeframe\x18\x04 \x01(\tH\x00R\ttimeframe\x88\x01\x01\x12\x17\n" +
+	"\x06script\x18\x03 \x01(\tR\x06script\x12\x1c\n" +
+	"\ttimeframe\x18\x04 \x01(\tR\ttimeframe\x12\x17\n" +
 	"\ahelm_id\x18\x05 \x01(\tR\x06helmId\x12'\n" +
-	"\rexpires_at_ms\x18\x06 \x01(\x03H\x01R\vexpiresAtMs\x88\x01\x01\x12\x1e\n" +
-	"\bmax_bars\x18\a \x01(\x05H\x02R\amaxBars\x88\x01\x01B\f\n" +
-	"\n" +
-	"_timeframeB\x10\n" +
+	"\rexpires_at_ms\x18\x06 \x01(\x03H\x00R\vexpiresAtMs\x88\x01\x01\x12\x1e\n" +
+	"\bmax_bars\x18\a \x01(\x05H\x01R\amaxBars\x88\x01\x01B\x10\n" +
 	"\x0e_expires_at_msB\v\n" +
 	"\t_max_bars\"(\n" +
 	"\rDeregisterMsg\x12\x17\n" +

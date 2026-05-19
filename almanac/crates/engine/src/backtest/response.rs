@@ -19,11 +19,10 @@ use alm_report::BacktestReport;
 
 use alm_core::strategy::Strategy;
 use alm_strategy::AnySizer;
-use super::engine_builder::StrengthFilter;
 use crate::Engine;
 
 pub fn build(
-    mut engine: Engine<StrengthFilter, AnySizer, SyncBus>,
+    mut engine: Engine<Box<dyn Strategy>, AnySizer, SyncBus>,
     report: BacktestReport,
     req: BacktestRequest,
     symbol: String,

@@ -6,10 +6,19 @@
 //! - Every other subscribed TF: independently fetch the last `WINDOW_BARS`
 //!   closed bars so each ledger slice starts warm without a resampler.
 
+use std::time::Duration;
+
 use alm_core::{Bar, Timeframe};
 use anyhow::{Context, Result};
 use serde::Deserialize;
+use tokio::time::sleep;
 use tracing::{debug, info, warn};
+
+/// Minimum gap between OKX REST pages (history-candles limit: 20 req/2s).
+/// 250 ms → max 4 req/s, well under the quota.
+const OKX_PAGE_DELAY: Duration = Duration::from_millis(250);
+/// Back-off on 429.
+const OKX_RETRY_DELAY: Duration = Duration::from_secs(2);
 
 /// Bars per Binance REST page (max 1 000).
 const BINANCE_PAGE: i64 = 1_000;
@@ -77,10 +86,24 @@ pub async fn fetch_binance(symbol: &str, tf: Timeframe, from_ms: i64, to_ms: i64
         let fetched = rows.len();
         debug!(symbol, ?tf, page_start = cursor, bars = fetched, "binance REST page");
 
+        let mut last_page_ts: Option<i64> = bars.last().map(|b: &Bar| b.timestamp);
         for row in rows {
             if row.len() < 6 { continue; }
             let ts = row[0].as_i64().unwrap_or(0);
             if ts >= to_ms { break; }
+            if let Some(prev) = last_page_ts {
+                let gap = ts - prev;
+                if gap > tf_ms * 2 {
+                    warn!(
+                        symbol, ?tf,
+                        prev_ts = prev, bar_ts = ts,
+                        gap_ms = gap,
+                        expected_ms = tf_ms,
+                        "binance REST: gap inside page response",
+                    );
+                }
+            }
+            last_page_ts = Some(ts);
             bars.push(Bar::new(
                 ts, symbol,
                 val_f64(&row[1]), val_f64(&row[2]),
@@ -136,7 +159,7 @@ pub async fn fetch_okx(symbol: &str, tf: Timeframe, from_ms: i64, to_ms: i64) ->
     let mut cursor = to_ms;
 
     loop {
-        let resp: OkxResp = client
+        let http_resp = client
             .get(OKX_CANDLES)
             .query(&[
                 ("instId", symbol),
@@ -146,9 +169,21 @@ pub async fn fetch_okx(symbol: &str, tf: Timeframe, from_ms: i64, to_ms: i64) ->
             ])
             .send()
             .await
-            .with_context(|| format!("okx REST request failed for {symbol}"))?
-            .error_for_status()
-            .with_context(|| format!("okx REST error status for {symbol}"))?
+            .with_context(|| format!("okx REST request failed for {symbol}"))?;
+
+        let status = http_resp.status();
+        if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let body = http_resp.text().await.unwrap_or_default();
+            warn!(symbol, ?tf, %bar_param, %body, "okx REST 429 — backing off");
+            sleep(OKX_RETRY_DELAY).await;
+            continue; // retry same cursor
+        }
+        if !status.is_success() {
+            let body = http_resp.text().await.unwrap_or_default();
+            anyhow::bail!("okx REST {status} for {symbol} bar={bar_param}: {body}");
+        }
+
+        let resp: OkxResp = http_resp
             .json()
             .await
             .with_context(|| format!("okx REST JSON parse failed for {symbol}"))?;
@@ -175,6 +210,9 @@ pub async fn fetch_okx(symbol: &str, tf: Timeframe, from_ms: i64, to_ms: i64) ->
 
         if fetched < OKX_PAGE as usize || oldest_ts <= from_ms || oldest_ts >= cursor { break; }
         cursor = oldest_ts;
+
+        // Throttle between pages to stay under OKX rate limit (20 req/2s).
+        sleep(OKX_PAGE_DELAY).await;
     }
 
     bars.sort_unstable_by_key(|b| b.timestamp);
@@ -267,6 +305,29 @@ fn advance_bars(
     match result {
         Ok(bars) => {
             let count = bars.len();
+            let tf_ms = tf.duration_ms();
+            let mut gap_count = 0usize;
+            for w in bars.windows(2) {
+                let gap_ms = w[1].timestamp - w[0].timestamp;
+                if gap_ms > tf_ms * 2 {
+                    gap_count += 1;
+                    warn!(
+                        symbol = live_sym, ?tf, label,
+                        bar0_ts = w[0].timestamp,
+                        bar1_ts = w[1].timestamp,
+                        gap_ms,
+                        expected_ms = tf_ms,
+                        "REST fetch: gap between consecutive bars",
+                    );
+                }
+            }
+            if gap_count > 0 {
+                warn!(
+                    symbol = live_sym, ?tf, label,
+                    gap_count, total_bars = count,
+                    "REST fetch: gaps found in fetched bars",
+                );
+            }
             for mut bar in bars {
                 bar.symbol = live_sym.to_string();
                 let _ = ledger.advance(tf, bar);

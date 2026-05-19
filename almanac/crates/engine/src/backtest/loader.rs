@@ -23,6 +23,33 @@ pub fn effective_symbol(s: &str) -> &str {
     }
 }
 
+/// Low-level bar loader: load a specific symbol + TF combination.
+///
+/// Used by MTF backtest to load each timeframe's feed independently.
+pub fn load_bars_for_tf(
+    symbol: &str,
+    tf: Option<&str>,
+    data_source: Option<&str>,
+    from_ms: Option<i64>,
+    to_ms: Option<i64>,
+    data_dir: &std::path::Path,
+) -> anyhow::Result<Vec<alm_core::Bar>> {
+    let market_region = data_source
+        .map(market_region_from_data_source)
+        .unwrap_or("");
+    let market_hours_only = !market_region.is_empty();
+    let files = find_parquet_files(data_dir, symbol, tf, data_source);
+    let mut feed = load_bars(&files, symbol, from_ms, to_ms, market_hours_only, market_region)
+        .with_context(|| {
+            format!(
+                "loading bars for '{}' tf={}",
+                symbol,
+                tf.unwrap_or("auto")
+            )
+        })?;
+    Ok(std::iter::from_fn(|| feed.next()).collect())
+}
+
 /// Discover Parquet files, load bars, and drain the feed into a `Vec<Bar>`.
 pub fn load_bars_for_request(req: &BacktestRequest, data_dir: &Path) -> Result<Vec<Bar>> {
     let symbol = effective_symbol(&req.symbol);
@@ -31,11 +58,13 @@ pub fn load_bars_for_request(req: &BacktestRequest, data_dir: &Path) -> Result<V
         .to
         .as_deref()
         .and_then(|s| parse_date_ms(s).map(|ms| ms + 86_400_000 - 1));
+    // Default to 24/7 (no filter) when data_source is omitted; the previous
+    // "us" default silently dropped weekend / off-hours bars for crypto.
     let market_region = req
         .data_source
         .as_deref()
         .map(market_region_from_data_source)
-        .unwrap_or("us");
+        .unwrap_or("");
     let market_hours_only = !market_region.is_empty();
     let files = find_parquet_files(
         data_dir,

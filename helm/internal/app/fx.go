@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/gin-gonic/gin"
@@ -12,8 +13,16 @@ import (
 	"mallow/helm/internal/config"
 	"mallow/helm/internal/infra"
 	"mallow/helm/internal/infra/engine"
-	"mallow/helm/internal/infra/natsapi"
+	"mallow/helm/internal/infra/perflog"
 	"mallow/helm/internal/infra/poslog"
+	accountmodule "mallow/helm/internal/module/account"
+	accountHandler "mallow/helm/internal/module/account/handler"
+	accountrepo "mallow/helm/internal/module/account/repository"
+	accountservice "mallow/helm/internal/module/account/service"
+	brokermodule "mallow/helm/internal/module/broker"
+	brokerHandler "mallow/helm/internal/module/broker/handler"
+	brokerepo "mallow/helm/internal/module/broker/repository"
+	brokerservice "mallow/helm/internal/module/broker/service"
 	"mallow/helm/internal/module/hand/domain"
 	handhandler "mallow/helm/internal/module/hand/handler"
 	handrepo "mallow/helm/internal/module/hand/repository"
@@ -23,12 +32,15 @@ import (
 	helmrepo "mallow/helm/internal/module/helm/repository"
 	orchservice "mallow/helm/internal/module/helm/service"
 	"mallow/helm/internal/runtime"
+	"mallow/helm/internal/runtime/perf"
 )
 
 // Module declares all orchestrator components and lifecycle.
 var Module = fx.Options(
 	config.Module,
 	infra.Module,
+	accountmodule.Module,
+	brokermodule.Module,
 
 	// Exchange factories
 	fx.Provide(newExchangeFactory),
@@ -60,6 +72,7 @@ var Module = fx.Options(
 	// Handlers — Gin (HTTP)
 	fx.Provide(newOrchHandler),
 	fx.Provide(newHandHandler),
+	fx.Provide(newAccountHandler),
 	fx.Provide(newServer),
 
 	// Handlers — NATS (request/reply)
@@ -87,6 +100,12 @@ func asRuntimeFactory(f *exchangeFactory) runtime.ExchangeFactory { return f }
 func asStreamerFactory(f *marketStreamerFactory) runtime.MarketStreamerFactory { return f }
 
 func runMigrations(db *gorm.DB) error {
+	if err := accountrepo.Migrate(db); err != nil {
+		return err
+	}
+	if err := brokerepo.Migrate(db); err != nil {
+		return err
+	}
 	if err := helmrepo.Migrate(db); err != nil {
 		return err
 	}
@@ -109,20 +128,44 @@ func newBotService(r domain.HandRepo, reg *runtime.Registry, sc *engine.SignalCl
 	return service.NewService(r, reg, sc)
 }
 
-func newOrchHandler(svc *orchservice.Service, handMgr *service.Service, reg *runtime.Registry) *orchhandler.Handler {
-	return orchhandler.New(svc, handMgr, reg)
+func newOrchHandler(
+	svc *orchservice.Service,
+	handMgr *service.Service,
+	reg *runtime.Registry,
+	nc *nats.Conn,
+	fillLog *perflog.FillLog,
+	equityLog perf.EquityLog,
+	portfolioLog perf.PortfolioLog,
+	posLog poslog.Log,
+) *orchhandler.Handler {
+	return orchhandler.New(svc, handMgr, reg, nc, fillLog, equityLog, portfolioLog, posLog)
 }
 
 func newHandHandler(handMgr *service.Service, helmSvc *orchservice.Service, reg *runtime.Registry) *handhandler.Handler {
 	return handhandler.New(handMgr, helmSvc, reg)
 }
 
-func newServer(orchH *orchhandler.Handler, handH *handhandler.Handler) *gin.Engine {
-	return NewServer(orchH, handH)
+func newAccountHandler(
+	svc accountservice.Service,
+	helmSvc *orchservice.Service,
+	handMgr *service.Service,
+	reg *runtime.Registry,
+	nc *nats.Conn,
+	fillLog *perflog.FillLog,
+	equityLog perf.EquityLog,
+	portfolioLog perf.PortfolioLog,
+	posLog poslog.Log,
+	logger *slog.Logger,
+) *accountHandler.Handler {
+	return accountHandler.NewHandler(svc, helmSvc, handMgr, reg, nc, fillLog, equityLog, portfolioLog, posLog, logger)
 }
 
-func newOrchNATSHandler(svc *orchservice.Service, handMgr *service.Service, reg *runtime.Registry, js nats.JetStreamContext) *orchhandler.NATSHandler {
-	return orchhandler.NewNATSHandler(svc, handMgr, reg, js)
+func newServer(orchH *orchhandler.Handler, handH *handhandler.Handler, accountH *accountHandler.Handler, brokerH *brokerHandler.BrokerConnectionHandler) *gin.Engine {
+	return NewServer(orchH, handH, accountH, brokerH)
+}
+
+func newOrchNATSHandler(svc *orchservice.Service, handMgr *service.Service, reg *runtime.Registry) *orchhandler.NATSHandler {
+	return orchhandler.NewNATSHandler(svc, handMgr, reg)
 }
 
 func newHandNATSHandler(handMgr *service.Service, helmSvc *orchservice.Service, reg *runtime.Registry) *handhandler.NATSHandler {
@@ -158,9 +201,9 @@ func wireSyncStore(repo orchdomain.HelmRepo, reg *runtime.Registry) {
 }
 
 // hydrateRuntimes loads all active helm configs from DB and spawns their runtimes.
-// Exchange credentials and metadata are fetched transiently from investment service via NATS.
+// Exchange credentials and metadata are fetched directly from the broker service (DB), never via NATS.
 // Initial capital starts at zero and is updated on the first portfolio sync.
-func hydrateRuntimes(repo orchdomain.HelmRepo, reg *runtime.Registry, nc *nats.Conn) error {
+func hydrateRuntimes(repo orchdomain.HelmRepo, reg *runtime.Registry, brokerSvc brokerservice.BrokerConnectionService) error {
 	cfgs, err := repo.All()
 	if err != nil {
 		return err
@@ -170,7 +213,7 @@ func hydrateRuntimes(repo orchdomain.HelmRepo, reg *runtime.Registry, nc *nats.C
 		if cfg.Status == "halted" {
 			continue
 		}
-		creds, err := natsapi.FetchCredentials(nc, cfg.AccountID.String())
+		creds, err := brokerSvc.GetCredentialsByAccountID(context.Background(), cfg.AccountID.String())
 		if err != nil {
 			slog.Error("runtimes hydrate: fetch credentials failed", "helm_id", cfg.ID, "account_id", cfg.AccountID, "err", err)
 			continue

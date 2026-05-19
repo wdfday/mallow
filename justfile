@@ -8,7 +8,7 @@ default:
 
 # Start infra only (nats + postgres + redis + nats-ui + cloudflared)
 infra:
-    {{dc}} --profile monitoring up -d nats postgres redis nats-ui cloudflared identity
+    {{dc}} --profile monitoring up -d nats postgres redis cloudflared identity
 
 # Start infra + monitoring stack (Grafana :3000, nats-ui :3001)
 infra-mon:
@@ -59,3 +59,10 @@ restart service:
 # Open a shell in a running container
 sh service:
     {{dc}} exec {{service}} sh
+
+# ── Specs ─────────────────────────────────────────────────────────────────────
+
+# Generate OpenAPI/Swagger specs for all (or specific) services → specs/
+# Examples: just gen-specs   |   just gen-specs herald   |   just gen-specs identity helm
+gen-specs *services:
+    @bash gen-specs.sh {{services}}

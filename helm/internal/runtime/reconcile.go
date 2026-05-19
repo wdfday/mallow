@@ -22,7 +22,7 @@ const (
 	ReconcileRestored ReconcileAction = "restored"
 	// ReconcileFillApplied : pending order was filled while app was down; fill event emitted.
 	ReconcileFillApplied ReconcileAction = "fill_applied"
-	// ReconcileCancelled : pending order was cancelled or rejected at exchange.
+	// ReconcileCancelled : pending order was canceled or rejected at exchange.
 	ReconcileCancelled ReconcileAction = "order_cancelled"
 	// ReconcileExternalClose : position was closed externally (liquidation, manual).
 	ReconcileExternalClose ReconcileAction = "external_close"
@@ -61,8 +61,8 @@ func NewReconciler(log poslog.Log) *DefaultReconciler {
 
 func (r *DefaultReconciler) Reconcile(ctx context.Context, orch *HelmRuntime) []HandReconcileResult {
 	orch.mu.RLock()
-	hands := make([]*Hand, 0, len(orch.bots))
-	for _, h := range orch.bots {
+	hands := make([]*Hand, 0, len(orch.hands))
+	for _, h := range orch.hands {
 		hands = append(hands, h)
 	}
 	orch.mu.RUnlock()

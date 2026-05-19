@@ -10,7 +10,7 @@ pub trait BarFeed: Send {
         self.len() == 0
     }
     fn reset(&mut self);
-    /// Base timeframe of this feed.  Implementations should detect or store
+    /// Base timeframe of this feed.  Implementations should detect or strategy
     /// the actual bar period; the default falls back to `M1`.
     fn timeframe(&self) -> Timeframe {
         Timeframe::M1

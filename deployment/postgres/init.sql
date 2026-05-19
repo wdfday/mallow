@@ -6,9 +6,6 @@
 SELECT 'CREATE DATABASE strategist'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'strategist')\gexec
 
-SELECT 'CREATE DATABASE investment'
-WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'investment')\gexec
-
 SELECT 'CREATE DATABASE helm'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'helm')\gexec
 
@@ -17,17 +14,12 @@ WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'herald')\gexec
 
 GRANT ALL PRIVILEGES ON DATABASE identity     TO mallow;
 GRANT ALL PRIVILEGES ON DATABASE strategist   TO mallow;
-GRANT ALL PRIVILEGES ON DATABASE investment   TO mallow;
 GRANT ALL PRIVILEGES ON DATABASE helm         TO mallow;
 GRANT ALL PRIVILEGES ON DATABASE herald       TO mallow;
 
 \connect identity
 GRANT ALL ON SCHEMA public TO mallow;
 \i /schemas/identity_schema.sql
-
-\connect investment
-GRANT ALL ON SCHEMA public TO mallow;
-\i /schemas/investment_schema.sql
 
 \connect helm
 GRANT ALL ON SCHEMA public TO mallow;

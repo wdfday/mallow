@@ -2,6 +2,10 @@
 pub mod factory;
 pub use factory::build_strategy;
 
+// ── MTF Factory ───────────────────────────────────────────────────────────────
+pub mod mtf_factory;
+pub use mtf_factory::{build_mtf_strategy, MTF_STRATEGY_KEYS};
+
 // ── Candle transform ──────────────────────────────────────────────────────────
 pub mod candle_type;
 pub use candle_type::{CandleTransform, CandleType};
@@ -11,6 +15,7 @@ pub mod script;
 pub use script::{
     ScriptStrategy, ScriptStreamEval, StreamDecl, IndicatorSnapshot, PlotResult,
     script_lint, LintDiagnostic, ScriptLintScope, DeclaredIndicator, KNOWN_INDICATOR_TYPES,
+    MtfScriptStrategy, probe_script_htfs,
 };
 
 // ── Bar resampler (MTF helper) ────────────────────────────────────────────────

@@ -18,17 +18,21 @@ run:
 dev:
     ~/.go/bin/air
 
-# Run unit tests (no credentials, no exchange I/O, max 2 packages in parallel)
+# Run unit tests — one package at a time, sequential within each package, 512 MiB heap cap.
+# -p 1        : only one package compiled+tested at a time (biggest lever against OOM)
+# -parallel 1 : no concurrent t.Parallel() within a package
+# -short      : skip tests that call t.Skip() under testing.Short()
+# GOMEMLIMIT  : hard GC target; Go will GC aggressively before hitting this limit
 test:
-    go test -p 2 -count=1 -short ./...
+    GOMEMLIMIT=512MiB go test -p 1 -parallel 1 -count=1 -short ./...
 
-# Run only fast unit tests (excludes runtime integration package)
+# Fast module-only tests (excludes the heavier runtime integration package)
 test-unit:
-    go test -p 2 -count=1 -short \
+    GOMEMLIMIT=512MiB go test -p 1 -parallel 1 -count=1 -short \
         ./internal/runtime/core/... \
         ./internal/module/...
 
-# Run runtime integration tests (requires live credentials + market hours)
+# Runtime integration tests (requires live credentials + market hours)
 # Usage: just test-int TestBinance_
 test-int filter="TestBinance_":
     go test -v -count=1 -run "{{filter}}" \

@@ -5,10 +5,10 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 
 	"mallow/helm/internal/infra/exchange"
-	"mallow/helm/internal/runtime/core/orderbook"
 )
 
 // persistSyncTime writes the runtime's lastSyncAt to the store (best-effort, logs on error).
@@ -25,7 +25,7 @@ func (r *Registry) persistSyncTime(rt *HelmRuntime) {
 }
 
 // StartPollingSync starts a background goroutine that periodically syncs all runtimes
-// whose exchange implements AccountSyncer. Used as fallback for disabled orchestrators
+// whose exchange implements AccountSyncer. Used as fallback for disabled helms
 // (no WebSocket streaming) and as a catch-up for enabled ones.
 // An immediate catch-up pass fires first (covers the gap since last_synced_at on respawn),
 // then the periodic ticker takes over.
@@ -86,7 +86,7 @@ func (r *Registry) ReconcileAllOrders(ctx context.Context) {
 
 // RecoverGapFills fetches filled order history from each exchange that implements
 // HistoryFetcher, covering the window [lastSyncAt, now). Fills that were missed
-// while helm was offline are applied to the portfolio and published to investment
+// while helm was offline are applied to the portfolio and published to TRADE_FILLS
 // JetStream. Call this after ReconcileAllOrders but before starting WS streaming
 // so the fill processor is ready to receive.
 func (r *Registry) RecoverGapFills(ctx context.Context, nc *nats.Conn) {
@@ -112,16 +112,9 @@ func (r *Registry) RecoverGapFills(ctx context.Context, nc *nats.Conn) {
 			continue // restarted too recently, nothing to recover
 		}
 
-		// Collect symbols from the orderbook as a hint for per-symbol exchanges (Binance).
-		orchID := rt.HelmID.String()
-		symbolSet := make(map[string]struct{})
-		for _, p := range rt.OrderBook.PendingOrders(orchID) {
-			symbolSet[p.Symbol] = struct{}{}
-		}
-		symbols := make([]string, 0, len(symbolSet))
-		for s := range symbolSet {
-			symbols = append(symbols, s)
-		}
+		// Pass nil symbols — fetch all instruments. Symbol hints are no longer available
+		// from the tracking map (orderID→handID only) without a separate symbol index.
+		var symbols []string
 
 		slog.Info("gap recovery: fetching fill history",
 			"helm_id", rt.HelmID, "from", lastSync, "to", now, "symbols", len(symbols))
@@ -160,6 +153,29 @@ func (r *Registry) RecoverGapFills(ctx context.Context, nc *nats.Conn) {
 	}
 }
 
+// SyncOne satisfies RuntimeSpawner — triggers an async one-shot sync for the given helm.
+func (r *Registry) SyncOne(id uuid.UUID) {
+	r.mu.RLock()
+	ctx := r.runCtx
+	nc := r.nc
+	js := r.js
+	r.mu.RUnlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	rt, err := r.Get(id)
+	if err != nil {
+		return
+	}
+	go func() {
+		if err := rt.Sync(ctx, nc, js); err != nil {
+			slog.Warn("registry: sync failed", "helm_id", id, "err", err)
+			return
+		}
+		r.persistSyncTime(rt)
+	}()
+}
+
 func (r *Registry) reconcileOrders(ctx context.Context, rt *HelmRuntime) {
 	reconciler, ok := rt.Exchange.(exchange.OrderReconciler)
 	if !ok {
@@ -176,25 +192,14 @@ func (r *Registry) reconcileOrders(ctx context.Context, rt *HelmRuntime) {
 		return
 	}
 
-	orchID := rt.HelmID.String()
-	// Build set of already-tracked order IDs so we don't double-track.
-	tracked := make(map[string]struct{})
-	for _, p := range rt.OrderBook.PendingOrders(orchID) {
-		tracked[p.OrderID] = struct{}{}
-	}
-
 	recovered := 0
 	for _, o := range orders {
-		if _, exists := tracked[o.ID]; exists {
+		// Skip orders already tracked (hand placed them before reconcile ran).
+		if rt.HasOrderTracking(o.ID) {
 			continue
 		}
-		rt.OrderBook.TrackOrder(orderbook.PendingOrder{
-			OrchestratorID: orchID,
-			OrderID:        o.ID,
-			BotID:          "", // unknown after crash
-			Symbol:         o.Symbol,
-			Side:           orderbook.OrderSide(o.Side),
-		})
+		// handID unknown after crash — fill routing will fall back to REST poll.
+		rt.TrackOrder(o.ID, "")
 		recovered++
 	}
 	if recovered > 0 {

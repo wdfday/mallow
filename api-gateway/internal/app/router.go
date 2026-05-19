@@ -23,11 +23,10 @@ func buildRouter(cfg config.Config, h *handler.Handler, rdb *redis.Client, ident
 	r.Use(gin.Recovery())
 	r.Use(pkgtelemetry.GinMiddleware("gateway"))
 	r.Use(middleware.CORS(cfg.CORSOrigins))
-	r.Use(middleware.RateLimiter(200)) // 200 req/min per IP
+	r.Use(middleware.RateLimiter(cfg.RateLimitPerMinute))
 
 	// ── Proxies ─────────────────────────────────────────────────────────
 	identityProxy := handler.IdentityProxy(cfg.IdentityURL)
-	investmentProxy := handler.InvestmentProxy(cfg.InvestmentURL)
 	helmProxy := handler.HelmProxy(cfg.HelmURL)
 	strategistProxy := handler.StrategistProxy(cfg.StrategistURL)
 	heraldProxy := handler.HeraldProxy(cfg.HeraldURL)
@@ -66,47 +65,43 @@ func buildRouter(cfg config.Config, h *handler.Handler, rdb *redis.Client, ident
 	r.Any("/api/v1/auth/*path", identityProxy)
 	r.Any("/api/v1/swagger/*path", identityProxy)
 
-	// Service swagger UIs — public, kept outside /api/v1/* to avoid Gin catch-all conflicts
-	r.Any("/swagger/investment/*path", investmentProxy)
-	r.Any("/swagger/orchestrator/*path", helmProxy)
+	// Service swagger UI — public
+	r.Any("/swagger/helm/*path", helmProxy)
 
 	// ── Protected routes ─────────────────────────────────────────────────
-	r.Any("/api/v1/investment/*path", jwtAuth, injectHeaders, investmentProxy)
 	r.Any("/api/v1/helms", jwtAuth, injectHeaders, helmProxy)
 	r.Any("/api/v1/helms/*path", jwtAuth, injectHeaders, helmProxy)
 	r.Any("/api/v1/hands", jwtAuth, injectHeaders, helmProxy)
 	r.Any("/api/v1/hands/*path", jwtAuth, injectHeaders, helmProxy)
+	r.Any("/api/v1/accounts", jwtAuth, injectHeaders, helmProxy)
+	r.Any("/api/v1/accounts/*path", jwtAuth, injectHeaders, helmProxy)
+	r.Any("/api/v1/broker-connections", jwtAuth, injectHeaders, helmProxy)
+	r.Any("/api/v1/broker-connections/*path", jwtAuth, injectHeaders, helmProxy)
 	r.Any("/api/v1/strategist/*path", jwtAuth, injectHeaders, strategistProxy)
 
 	// Protected endpoints
 	api := r.Group("/api/v1", jwtAuth, injectHeaders)
 	{
-		// Chat (gateway-native: injects user_id into strategist session)
-		api.POST("/chat", h.Chat)
-		api.POST("/chat/stream", h.ChatStream)
-
 		// Herald — data
 		api.GET("/symbols", heraldProxy)
 		api.GET("/indicators", heraldProxy)
-		api.GET("/data/:symbol", heraldProxy)
-		api.GET("/data/:symbol/latest", heraldProxy)
-		api.POST("/data/:symbol", heraldProxy)
+		api.POST("/data/:source/:symbol", heraldProxy)
 		api.POST("/data/duckdb", heraldProxy)
 
 		// Herald — backtest
 		api.GET("/strategies", heraldProxy)
 		api.POST("/backtest", heraldProxy)
 		api.POST("/backtest/estimate", heraldProxy)
-		api.POST("/backtest/rhai", heraldProxy)
-		api.POST("/rhai/validate", heraldProxy)
+		api.POST("/backtest/script", heraldProxy)
+		api.POST("/script/validate", heraldProxy)
 
 		// Herald — SSE streams
 		api.GET("/stream/signals", heraldProxy)
 		api.GET("/stream/:symbol", heraldProxy)
 		api.POST("/stream/:symbol", heraldProxy)
 
-		// Herald — store + watch (admin)
-		api.Any("/store/*path", heraldProxy)
+		// Herald — strategy + watch
+		api.Any("/strategy/*path", heraldProxy)
 		api.Any("/watch", heraldProxy)
 		api.Any("/watch/:id", heraldProxy)
 	}

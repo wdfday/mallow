@@ -12,7 +12,7 @@ use alm_engine::types::{
 
 use alm_strategy::{LintDiagnostic, ScriptLintScope, DeclaredIndicator};
 
-use super::{backtest, data, script_validate, sse, store, symbols, types, watch, HttpState};
+use super::{backtest, data, script_validate, sse, strategy, symbols, types, watch, HttpState};
 
 // ── Security modifier ─────────────────────────────────────────────────────────
 
@@ -64,22 +64,13 @@ impl Modify for BearerAuthAddon {
         script_validate::validate_script,
         sse::stream_bars,
         sse::stream_signals,
-        store::list_strategies,
-        store::create_strategy,
-        store::get_strategy,
-        store::list_strategy_versions,
-        store::update_strategy,
-        store::delete_strategy,
-        store::list_cases,
-        store::create_case,
-        store::get_case,
-        store::update_case,
-        store::delete_case,
-        store::run_case,
-        store::run_case_signals,
-        store::list_results,
-        store::get_result,
-        store::delete_result,
+        strategy::list_strategies,
+        strategy::list_my_strategies,
+        strategy::create_strategy,
+        strategy::get_strategy,
+        strategy::list_strategy_chain,
+        strategy::update_strategy,
+        strategy::delete_strategy,
         watch::list_watches,
         watch::create_watch,
         watch::get_watch,
@@ -105,18 +96,11 @@ impl Modify for BearerAuthAddon {
         ScriptBacktestRequest,
         MonteCarloConfig,
         WalkForwardConfig,
-        // Store
-        store::types::StrategySpec,
-        store::types::PositionConfig,
-        store::types::ExecutionConfig,
-        store::types::Strategy,
-        store::types::BacktestCase,
-        store::types::BacktestResult,
-        store::types::SignalPoint,
-        store::types::CreateStrategyReq,
-        store::types::UpdateStrategyReq,
-        store::types::CreateCaseReq,
-        store::types::UpdateCaseReq,
+        // Strategy store
+        strategy::types::StrategySpec,
+        strategy::types::Strategy,
+        strategy::types::CreateStrategyReq,
+        strategy::types::UpdateStrategyReq,
         // Watch
         watch::WatchEntry,
         watch::CreateWatchReq,
@@ -130,7 +114,7 @@ impl Modify for BearerAuthAddon {
     tags(
         (name = "live",     description = "Live ledger data"),
         (name = "backtest", description = "Backtest execution"),
-        (name = "store",    description = "Saved strategies, cases, results"),
+        (name = "strategy", description = "Saved strategy versions"),
         (name = "watch",    description = "Watchlist / warm-set management"),
         (name = "stream",   description = "SSE real-time push"),
     )

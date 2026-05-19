@@ -29,6 +29,14 @@ impl SimBroker {
         self.pending.push(order);
     }
 
+    /// Cancel all pending orders for the given symbol.
+    /// Called when exit rules force-close a position so the pending close order
+    /// (from a script `exit = true` signal on the previous bar) does not execute
+    /// a second time and accidentally open an unintended short position.
+    pub fn cancel_for_symbol(&mut self, symbol: &str) {
+        self.pending.retain(|o| o.symbol != symbol);
+    }
+
     /// Process pending orders using `bar` prices. Called at the START of each bar.
     /// Returns fills that were executed.
     pub fn process_pending(&mut self, bar: &Bar) -> Vec<Fill> {

@@ -6,19 +6,14 @@
 //! - Serialising the request / response envelopes.
 //! - Enforcing a concurrency cap via [`HttpState::backtest_semaphore`].
 //! - Dispatching the CPU-bound engine run onto `spawn_blocking`.
-//! - Persisting strategy + case + result on every `POST /api/v1/backtest/script`.
+//! - Persisting strategy version on every `POST /api/v1/backtest/script`.
 //!
 //! # Always-persist flow (`POST /api/v1/backtest/script`)
 //!
-//! Requests that reach this endpoint are "deep backtests" — too large for the
-//! in-browser WASM runner. Every such request is worth keeping:
-//!
 //! 1. Validate → acquire semaphore.
 //! 2. Upsert strategy by `spec_hash` (same script → existing version returned).
-//! 3. Upsert case: `case_id` present → UPDATE that row; absent → CREATE new row.
-//! 4. Run engine on `spawn_blocking`.
-//! 5. Save `BacktestResult` row.
-//! 6. Return merged response: `{ ...report, saved: { strategy_id, case_id, result_id } }`.
+//! 3. Run engine on `spawn_blocking`.
+//! 4. Return merged response: `{ ...report, saved: { strategy_id } }`.
 //!
 //! # Concurrency
 //!
@@ -37,15 +32,15 @@ use axum::{
 use axum::routing::{get, post};
 use alm_engine::{
     backtest,
-    types::{BacktestRequest, BacktestResponse, ScriptBacktestRequest},
+    types::{BacktestRequest, BacktestResponse, MtfBacktestRequest, ScriptBacktestRequest},
 };
 use super::types::{ok, err, err_code};
 use alm_strategy::catalog::STRATEGY_KEYS;
-use chrono::{NaiveDate, TimeZone, Utc};
+use alm_strategy::MTF_STRATEGY_KEYS;
 use serde::Serialize;
 use tracing::{error, info, warn};
 
-use super::store::types::{PositionConfig, ExecutionConfig, StrategySpec};
+use super::strategy::types::StrategySpec;
 use super::HttpState;
 
 pub fn routes() -> Router<HttpState> {
@@ -54,6 +49,7 @@ pub fn routes() -> Router<HttpState> {
         .route("/api/v1/backtest", post(run_backtest))
         .route("/api/v1/backtest/estimate", post(estimate_backtest))
         .route("/api/v1/backtest/script", post(run_backtest_script))
+        .route("/api/v1/backtest/mtf", post(run_backtest_mtf))
 }
 
 // ── Estimate response ─────────────────────────────────────────────────────────
@@ -68,16 +64,22 @@ pub struct EstimateResponse {
 
 // ── GET /api/strategies ──────────────────────────────────────────────────────
 
+#[derive(Debug, serde::Serialize)]
+struct StrategyListResponse {
+    named: &'static [&'static str],
+    mtf: &'static [&'static str],
+}
+
 #[utoipa::path(
     get,
     path = "/api/v1/strategies",
     responses(
-        (status = 200, description = "List of registered named strategy keys")
+        (status = 200, description = "Named and MTF strategy keys")
     ),
     tag = "backtest"
 )]
 pub async fn list_strategies() -> Response {
-    ok(STRATEGY_KEYS)
+    ok(StrategyListResponse { named: STRATEGY_KEYS, mtf: MTF_STRATEGY_KEYS })
 }
 
 // ── POST /api/backtest/estimate ──────────────────────────────────────────────
@@ -157,30 +159,23 @@ pub async fn run_backtest(
 )]
 pub async fn run_backtest_script(
     State(state): State<HttpState>,
+    headers: axum::http::HeaderMap,
     Json(req): Json<ScriptBacktestRequest>,
 ) -> Response {
     let Some(_permit) = try_acquire(&state) else {
         return too_many_requests();
     };
 
-    let name      = req.name.clone();
-    let spec      = StrategySpec { script: req.script.clone() };
-    let symbol    = req.symbol.clone();
-    let timeframe = Some(req.timeframe.clone().unwrap_or_else(|| state.tf.to_string()));
-    let label     = req.label.clone().unwrap_or_else(|| format!("{name} on {symbol}"));
-    let case_id   = req.case_id.clone();
-    let from      = req.from.clone();
-    let to        = req.to.clone();
-    let capital   = capital_from_script(&req);
-    let execution = execution_from_script(&req);
-    let data_source = req.data_source.clone();
-    let notes     = req.notes.clone();
+    let name  = req.name.clone();
+    let spec  = StrategySpec { script: req.script.clone() };
+    let label = req.label.clone().unwrap_or_else(|| format!("{name} on {}", req.symbol));
+    let notes = req.notes.clone();
+    let user_id = headers.get("x-user-id").and_then(|v| v.to_str().ok()).map(|s| s.to_owned());
 
-    info!(symbol = %symbol, name = %name, ?case_id, "Script backtest request");
+    info!(symbol = %req.symbol, name = %name, "Script backtest request");
 
-    // 1. Upsert strategy (dedup by spec_hash or compare against strategy_id).
-    let strategy_id_hint = req.strategy_id.clone();
-    let strategy = match state.store.upsert_strategy(name, label.clone(), spec, notes, strategy_id_hint).await {
+    // 1. Upsert strategy (dedup by spec_hash globally across all versions of name).
+    let strategy = match state.store.upsert_strategy(name, label, spec, notes, None, user_id).await {
         Ok(s)  => s,
         Err(e) => {
             warn!(error = %e, "strategy upsert failed");
@@ -188,66 +183,69 @@ pub async fn run_backtest_script(
         }
     };
 
-    // 2. Upsert case (C if no case_id; U if case_id provided).
-    let case = match state.store.upsert_case(
-        case_id, strategy.id.clone(), label,
-        symbol.clone(), timeframe.clone(),
-        from.as_deref().and_then(date_to_ms),
-        to.as_deref().and_then(date_to_ms),
-        data_source, capital, execution,
-    ).await {
-        Ok(c)  => c,
-        Err(e) => {
-            warn!(error = %e, "case upsert failed");
-            return err(StatusCode::BAD_REQUEST, format!("case upsert: {e}"));
-        }
-    };
-
-    // 3. Run engine.
+    // 2. Run engine.
+    let started_at = std::time::Instant::now();
     let base: BacktestRequest = req.into();
     let report = match run_blocking(Arc::clone(&state.data_dir), base).await {
         Ok(r)  => r,
         Err(r) => return r,
     };
-
-    // 4. Save result.
-    let ran_at = Utc::now().timestamp_millis();
-    let result = match state.store.save_result(
-        case.id.clone(), ran_at, None,
-        report.returns.total_pct,
-        report.risk_adjusted.sharpe,
-        report.drawdown.max_pct,
-        report.trade_stats.win_rate_pct,
-        report.trade_stats.total as i64,
-    ).await {
-        Ok(r)  => r,
-        Err(e) => {
-            warn!(error = %e, case_id = %case.id, "failed to save result row — report still returned");
-            // Return report anyway; log the save failure.
-            let mut body = serde_json::to_value(&report).unwrap_or_default();
-            body["saved_error"] = serde_json::Value::String(e.to_string());
-            return ok(body);
-        }
-    };
+    let elapsed_ms = started_at.elapsed().as_millis() as u64;
 
     info!(
-        strategy_id = %strategy.id,
-        case_id      = %case.id,
-        result_id    = %result.id,
+        strategy_id  = %strategy.id,
+        elapsed_ms,
         total_return = report.returns.total_pct,
         sharpe       = report.risk_adjusted.sharpe,
         trades       = report.trade_stats.total,
         "backtest done"
     );
 
-    // 5. Merge `saved` into response JSON.
+    // 3. Merge `saved` + timing into response JSON.
     let mut body = serde_json::to_value(&report).unwrap_or_default();
-    body["saved"] = serde_json::json!({
-        "strategy_id": strategy.id,
-        "case_id":     case.id,
-        "result_id":   result.id,
-    });
+    body["saved"] = serde_json::json!({ "strategy_id": strategy.id });
+    body["elapsed_ms"] = serde_json::json!(elapsed_ms);
     ok(body)
+}
+
+// ── POST /api/backtest/mtf ───────────────────────────────────────────────────
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/backtest/mtf",
+    responses(
+        (status = 200, description = "MTF backtest report"),
+        (status = 400, description = "Bad request"),
+        (status = 429, description = "Too many concurrent backtests")
+    ),
+    tag = "backtest"
+)]
+pub async fn run_backtest_mtf(
+    State(state): State<HttpState>,
+    Json(req): Json<MtfBacktestRequest>,
+) -> Response {
+    let Some(_permit) = try_acquire(&state) else {
+        return too_many_requests();
+    };
+    info!(
+        strategy = %req.strategy,
+        symbol   = %req.symbol,
+        base_tf  = req.base_tf.as_deref().unwrap_or("M1"),
+        htf      = ?req.htf_timeframes,
+        "HTTP MTF backtest request",
+    );
+    let data_dir = Arc::clone(&state.data_dir);
+    match tokio::task::spawn_blocking(move || backtest::run_mtf(req, &data_dir)).await {
+        Ok(Ok(report)) => ok(report),
+        Ok(Err(e)) => {
+            warn!(error = %e, "MTF backtest failed");
+            err(StatusCode::BAD_REQUEST, e.to_string())
+        }
+        Err(e) => {
+            error!(error = %e, "MTF backtest spawn_blocking panicked");
+            err(StatusCode::INTERNAL_SERVER_ERROR, "internal engine error")
+        }
+    }
 }
 
 // ── Core helpers ─────────────────────────────────────────────────────────────
@@ -272,30 +270,6 @@ pub(super) async fn run_blocking(
             Err(err(StatusCode::INTERNAL_SERVER_ERROR, "internal engine error"))
         }
     }
-}
-
-fn capital_from_script(req: &ScriptBacktestRequest) -> PositionConfig {
-    PositionConfig {
-        initial:       req.initial_capital,
-        position_pct:  req.position_size_pct,
-        position_usd:  req.position_size_usd,
-        max_positions: req.max_positions,
-    }
-}
-
-fn execution_from_script(req: &ScriptBacktestRequest) -> ExecutionConfig {
-    ExecutionConfig {
-        commission_pct:   req.commission_pct,
-        slippage_pct:     req.slippage_pct,
-        risk_free_annual: req.risk_free_annual,
-        intra_bar_mode:   req.intra_bar_mode.clone(),
-    }
-}
-
-fn date_to_ms(s: &str) -> Option<i64> {
-    NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()
-        .and_then(|d| d.and_hms_opt(0, 0, 0))
-        .map(|dt| Utc.from_utc_datetime(&dt).timestamp_millis())
 }
 
 fn too_many_requests() -> Response {

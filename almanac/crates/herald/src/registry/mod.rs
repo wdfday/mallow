@@ -38,7 +38,7 @@ struct RegistryInner {
 }
 
 struct GlobalConfig {
-    script: String,
+    scripts: Vec<String>,
 }
 
 pub struct Registry {
@@ -64,20 +64,33 @@ impl Registry {
         }
     }
 
-    /// Convenience constructor that installs a script fallback strategy for
-    /// symbols that have no explicit hand registered (legacy `engine.configure` compat).
+    /// Constructor with multiple default fallback scripts run on every symbol
+    /// that has no explicit hands registered. `scripts` is evaluated in order;
+    /// each gets a unique `hand_id = "default.{i}.{symbol}"`.
+    pub fn with_default_scripts(
+        ledger: Arc<Ledger>,
+        tf: Timeframe,
+        signal_tx: mpsc::UnboundedSender<HandSignal>,
+        scripts: Vec<String>,
+    ) -> Self {
+        let r = Self::new(ledger, tf, signal_tx);
+        if !scripts.is_empty() {
+            r.inner.lock().global_config = Some(GlobalConfig { scripts });
+        }
+        r
+    }
+
+    /// Convenience constructor — single EMA-cross fallback (legacy compat).
     pub fn with_default_fallback(
         ledger: Arc<Ledger>,
         tf: Timeframe,
         signal_tx: mpsc::UnboundedSender<HandSignal>,
     ) -> Self {
-        let r = Self::new(ledger, tf, signal_tx);
-        r.set_global_config(
+        Self::with_default_scripts(ledger, tf, signal_tx, vec![
             r#"let fast = ind.ema(20); let slow = ind.ema(50);
 let long = fast[1] <= slow[1] && fast[0] > slow[0];
 let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
-        );
-        r
+        ])
     }
 
     /// Register (or re-register) a hand on a symbol.
@@ -87,12 +100,11 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
         helm_id: String,
         symbol: String,
         script: String,
-        target_tf: Timeframe,
     ) -> Result<()> {
         self.ledger.ensure_symbol(&symbol, self.tf, None);
         let hand = Handle::new(
             hand_id, helm_id, symbol.clone(), script,
-            &self.ledger, self.tf, target_tf,
+            &self.ledger, self.tf,
         )?;
         debug!(
             hand_id = %hand.hand_id, symbol = %hand.symbol,
@@ -120,12 +132,12 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
         w.groups.retain(|_, g| !g.is_empty());
     }
 
-    /// Set global fallback script (legacy `engine.configure` compat).
-    /// Clears all existing hands.
+    /// Set global fallback scripts (legacy `engine.configure` compat).
+    /// Replaces all existing scripts and clears registered groups.
     pub fn set_global_config(&self, script: String) {
         let mut w = self.inner.lock();
         w.groups.clear();
-        w.global_config = Some(GlobalConfig { script });
+        w.global_config = Some(GlobalConfig { scripts: vec![script] });
     }
 
     /// Reset state for one symbol (or all if `symbol` is empty).
@@ -220,22 +232,24 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
     }
 
     fn ensure_fallback_hand(&self, symbol: &str) {
-        let script = {
+        let scripts: Vec<String> = {
             let r = self.inner.lock();
-            r.global_config.as_ref().map(|g| g.script.clone())
+            r.global_config.as_ref().map(|g| g.scripts.clone()).unwrap_or_default()
         };
-        let script = match script { Some(v) => v, None => return };
-        let hand_id = format!("global.{}", symbol);
+        if scripts.is_empty() { return; }
         self.ledger.ensure_symbol(symbol, self.tf, None);
-        match Handle::new(hand_id, String::new(), symbol.to_string(), script, &self.ledger, self.tf, self.tf) {
-            Ok(h) => {
-                let mut w = self.inner.lock();
-                w.groups
-                    .entry(symbol.to_string())
-                    .or_insert_with(|| SymbolGroup::new(symbol.to_string()))
-                    .add(h);
+        for (i, script) in scripts.iter().enumerate() {
+            let hand_id = format!("default.{}.{}", i, symbol);
+            match Handle::new(hand_id.clone(), String::new(), symbol.to_string(), script.clone(), &self.ledger, self.tf) {
+                Ok(h) => {
+                    let mut w = self.inner.lock();
+                    w.groups
+                        .entry(symbol.to_string())
+                        .or_insert_with(|| SymbolGroup::new(symbol.to_string()))
+                        .add(h);
+                }
+                Err(e) => warn!(%symbol, hand_id, err = %e, "failed to build fallback strategy"),
             }
-            Err(e) => warn!(%symbol, err = %e, "failed to build fallback strategy"),
         }
     }
 }
@@ -274,7 +288,6 @@ mod tests {
         reg.register(
             "hand1".into(), "helm1".into(), "BTCUSDT".into(),
             "let r = ind.rsi(14);\nif r[0] < 30.0 { long = true; }\nif r[0] > 70.0 { exit = true; }".into(),
-            Timeframe::M1,
         ).unwrap();
         let hands = reg.list_hands();
         assert_eq!(hands.len(), 1);
@@ -287,7 +300,6 @@ mod tests {
         reg.register(
             "hand1".into(), "helm1".into(), "BTCUSDT".into(),
             "let e2 = ind.ema(2); let e3 = ind.ema(3);\nif e2[0] > e3[0] { long = true; }\nif e2[0] < e3[0] { exit = true; }".into(),
-            Timeframe::M1,
         ).unwrap();
         for i in 1..10 {
             led.advance(Timeframe::M1, mk_bar("BTCUSDT", 946_684_800_000 + i * 60_000, 100.0 + i as f64)).unwrap();
@@ -302,7 +314,6 @@ mod tests {
         reg.register(
             "hand1".into(), "helm1".into(), "TEST".into(),
             "let e2 = ind.ema(2, 2); let e3 = ind.ema(3, 2);\nif cross_above(e2, e3) { long = true; }\nif cross_below(e2, e3) { exit = true; }".into(),
-            Timeframe::M1,
         ).unwrap();
         let now = chrono::Utc::now().timestamp_millis();
         let prices = [100.0, 101.0, 102.0, 103.0, 102.0, 101.0, 100.0, 99.0, 98.0, 97.0];
@@ -325,7 +336,6 @@ mod tests {
         reg.register(
             "hand1".into(), "helm1".into(), "BTCUSDT".into(),
             "let r = ind.rsi(14);\nif r[0] < 30.0 { long = true; }\nif r[0] > 70.0 { exit = true; }".into(),
-            Timeframe::M1,
         ).unwrap();
         assert_eq!(peek_refcount(&led, "BTCUSDT", serde_json::json!({"type":"rsi","period":14})), Some(1));
     }
@@ -336,7 +346,6 @@ mod tests {
         reg.register(
             "hand1".into(), "helm1".into(), "BTCUSDT".into(),
 "let r = ind.rsi(14);\nlet e50 = ind.ema(50);\nlet e200 = ind.ema(200);\nif r[0] < 30.0 && e50[0] > e200[0] { long = true; }\nif r[0] > 70.0 { exit = true; }".into(),
-            Timeframe::M1,
         ).unwrap();
         assert_eq!(peek_refcount(&led, "BTCUSDT", serde_json::json!({"type":"rsi","period":14})), Some(1));
         assert_eq!(peek_refcount(&led, "BTCUSDT", serde_json::json!({"type":"ema","period":50})), Some(1));
@@ -349,7 +358,6 @@ mod tests {
         reg.register(
             "hand1".into(), "helm1".into(), "BTCUSDT".into(),
             "let r = ind.rsi(14);\nif r[0] < 30.0 { long = true; }\nif r[0] > 70.0 { exit = true; }".into(),
-            Timeframe::M1,
         ).unwrap();
         assert_eq!(peek_refcount(&led, "BTCUSDT", serde_json::json!({"type":"rsi","period":14})), Some(1));
         reg.deregister("hand1");
@@ -360,8 +368,8 @@ mod tests {
     fn two_hands_share_one_indicator_cell() {
         let (led, reg, _rx) = make_registry();
         let script = "let r = ind.rsi(14);\nif r[0] < 30.0 { long = true; }\nif r[0] > 70.0 { exit = true; }";
-        reg.register("hand1".into(), "h".into(), "BTCUSDT".into(), script.into(), Timeframe::M1).unwrap();
-        reg.register("hand2".into(), "h".into(), "BTCUSDT".into(), script.into(), Timeframe::M1).unwrap();
+        reg.register("hand1".into(), "h".into(), "BTCUSDT".into(), script.into()).unwrap();
+        reg.register("hand2".into(), "h".into(), "BTCUSDT".into(), script.into()).unwrap();
         assert_eq!(peek_refcount(&led, "BTCUSDT", serde_json::json!({"type":"rsi","period":14})), Some(2));
         reg.deregister("hand1");
         assert_eq!(peek_refcount(&led, "BTCUSDT", serde_json::json!({"type":"rsi","period":14})), Some(1));
@@ -371,8 +379,8 @@ mod tests {
     fn reregister_same_hand_keeps_single_handle() {
         let (led, reg, _rx) = make_registry();
         let script = "let r = ind.rsi(14);\nif r[0] < 30.0 { long = true; }\nif r[0] > 70.0 { exit = true; }";
-        reg.register("hand1".into(), "h".into(), "BTCUSDT".into(), script.into(), Timeframe::M1).unwrap();
-        reg.register("hand1".into(), "h".into(), "BTCUSDT".into(), script.into(), Timeframe::M1).unwrap();
+        reg.register("hand1".into(), "h".into(), "BTCUSDT".into(), script.into()).unwrap();
+        reg.register("hand1".into(), "h".into(), "BTCUSDT".into(), script.into()).unwrap();
         assert_eq!(peek_refcount(&led, "BTCUSDT", serde_json::json!({"type":"rsi","period":14})), Some(1));
     }
 
@@ -380,8 +388,8 @@ mod tests {
     async fn deregister_all_clears() {
         let (_led, reg, _rx) = make_registry();
         let script = "let e5 = ind.ema(5); let e20 = ind.ema(20);\nif e5[0] > e20[0] { long = true; }\nif e5[0] < e20[0] { exit = true; }";
-        reg.register("hand1".into(), "helm1".into(), "BTCUSDT".into(), script.into(), Timeframe::M1).unwrap();
-        reg.register("hand2".into(), "helm2".into(), "ETHUSDT".into(), script.into(), Timeframe::M1).unwrap();
+        reg.register("hand1".into(), "helm1".into(), "BTCUSDT".into(), script.into()).unwrap();
+        reg.register("hand2".into(), "helm2".into(), "ETHUSDT".into(), script.into()).unwrap();
         reg.deregister("");
         assert_eq!(reg.list_hands().len(), 0);
     }

@@ -9,6 +9,15 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// HandStatus is the persisted lifecycle state of a hand.
+type HandStatus string
+
+const (
+	HandStatusStopped HandStatus = "stopped"
+	HandStatusRunning HandStatus = "running"
+	HandStatusPaused  HandStatus = "paused"
+)
+
 // HandType defines the operation mode of a hand.
 type HandType string
 
@@ -30,25 +39,16 @@ const (
 // ── StrategySpec ──────────────────────────────────────────────────────────────
 
 // StrategySpec is the signal-generation spec sent to herald.
-// Script is the full Rhai source sent as params["script"] to herald's
-// rhai_strategy; indicators declared via ind.TYPE(period) syntax.
+// Script is the full script source sent as params["script"] to herald's
+// script_strategy; indicators declared via ind.TYPE(period) syntax.
 type StrategySpec struct {
-	// Rhai script — full Rhai source code (required)
+	// Script — full source code (required)
 	Script string `json:"script" binding:"required"`
 
-	// Timeframe the script operates on (e.g. "M1", "M5", "H1", "D1").
-	// Defaults to "M1" via HandConfig.Defaults().
-	Timeframe string `json:"timeframe,omitempty" binding:"omitempty,oneof=M1 M5 M15 M30 H1 H4 D1 W1"`
-
-	// CandleType controls the bar transform applied before indicators:
-	//   ""              / "raw"         — standard OHLCV (default)
-	//   "heiken_ashi"   / "ha"          — Heikin Ashi
-	//   "smooth_ha"                     — EMA-smoothed Heikin Ashi (see SmoothPeriod)
-	CandleType string `json:"candle_type,omitempty" binding:"omitempty,oneof=raw heiken_ashi ha smooth_ha"`
-
-	// SmoothPeriod is the EMA period for "smooth_ha" mode (default 3, min 2).
-	// Ignored for other candle types.
-	SmoothPeriod int `json:"smooth_period,omitempty" binding:"omitempty,min=2,max=100"`
+	// Timeframe the script operates on (e.g. "M1", "M5", "H1", "D1") — REQUIRED.
+	// Strategies are calibrated to a specific TF, so we never silently default;
+	// missing TF is a validation error. herald rejects empty TF too.
+	Timeframe string `json:"timeframe" binding:"required,oneof=M1 M5 M15 M30 H1 H4 D1 W1"`
 
 	// Signal strength filter [0–1]
 	MinStrength float64 `json:"min_strength,omitempty" binding:"omitempty,gte=0,lte=1"`
@@ -60,11 +60,6 @@ var validTimeframes = map[string]bool{
 	"H1": true, "H4": true, "D1": true, "W1": true,
 }
 
-// validCandleTypes is the set of candle_type strings accepted by rhai_strategy.
-var validCandleTypes = map[string]bool{
-	"": true, "raw": true, "heiken_ashi": true, "ha": true, "smooth_ha": true,
-}
-
 // Validate checks that Script is non-empty and optional fields are valid.
 func (s StrategySpec) Validate() error {
 	if s.Script == "" {
@@ -73,57 +68,105 @@ func (s StrategySpec) Validate() error {
 	if s.Timeframe != "" && !validTimeframes[s.Timeframe] {
 		return fmt.Errorf("strategy: invalid timeframe %q (valid: M1 M5 M15 M30 H1 H4 D1 W1)", s.Timeframe)
 	}
-	if !validCandleTypes[s.CandleType] {
-		return fmt.Errorf("strategy: invalid candle_type %q (valid: raw heiken_ashi ha smooth_ha)", s.CandleType)
-	}
 	return nil
 }
 
 func (s StrategySpec) Value() (driver.Value, error) { return jsonValue(s) }
 func (s *StrategySpec) Scan(src any) error          { return jsonScan(src, s) }
 
+// ── Enums ─────────────────────────────────────────────────────────────────────
+
+// SizeMode defines the position-sizing algorithm.
+type SizeMode string
+
+const (
+	SizeModeFixedFractional SizeMode = "fixed_fractional" // scale unit by signal confidence
+	SizeModeFixedQty        SizeMode = "fixed_qty"        // fixed base quantity
+	SizeModeQuoteQty        SizeMode = "quote_qty"        // fixed quote spend per trade
+	SizeModePercentEquity   SizeMode = "percent_equity"   // fixed % of equity
+	SizeModeVolatility      SizeMode = "volatility"       // ATR-based risk parity
+)
+
+// OrderType is the default entry order type for a hand.
+type OrderType string
+
+const (
+	OrderTypeMarket OrderType = "market"
+	OrderTypeLimit  OrderType = "limit"
+)
+
+// LimitFallback defines what happens when a limit order times out unfilled.
+type LimitFallback string
+
+const (
+	LimitFallbackCancel LimitFallback = "cancel" // cancel and do nothing
+	LimitFallbackMarket LimitFallback = "market" // re-place as market order
+)
+
+// MarginType defines the futures margin mode.
+type MarginType string
+
+const (
+	MarginTypeIsolated MarginType = "isolated"
+	MarginTypeCross    MarginType = "cross"
+)
+
 // ── PositionConfig ────────────────────────────────────────────────────────────
 
-// PositionConfig controls capital allocation, per-trade sizing, and scaling behaviour.
-// Maps directly to BacktestRequest sizing fields.
+// PositionConfig controls per-trade sizing and scaling behaviour.
+// Capital allocation (AllocatedCapital) and operational timing (SignalTTLSec) live
+// as first-class columns on Hand, not inside this JSONB blob.
+//
+// Exactly one sizing param is active per SizeMode:
+//
+//	fixed_fractional → RiskPerTradePct
+//	volatility       → RiskPerTradePct  (ATR-scaled)
+//	percent_equity   → UnitCapital  (if set, USDT)  or  UnitPct  (fraction of allocated)
+//	fixed_qty        → FixedQty
+//	quote_qty        → FixedQuoteQty
 type PositionConfig struct {
-	// Capital slice for this hand.
-	// AllocatedCapital (fixed USDT) takes priority over AllocatedPct.
-	AllocatedCapital decimal.Decimal `json:"allocated_capital,omitempty"`
-	AllocatedPct     float64         `json:"allocated_pct,omitempty"` // 0.20 = 20%
+	// SizeMode selects the sizing algorithm. Defaults to fixed_fractional.
+	SizeMode SizeMode `json:"size_mode,omitempty"`
 
-	// Per-trade unit.
-	// UnitCapital (fixed USDT) takes priority over UnitPct.
+	// ── Sizing params — only the one matching SizeMode is read ──────────────
+
+	// RiskPerTradePct: fraction of allocated capital risked per trade.
+	// Used by: fixed_fractional, volatility.  e.g. 0.01 = 1%.
+	RiskPerTradePct float64 `json:"risk_per_trade_pct,omitempty"`
+
+	// UnitCapital: fixed USDT amount per entry unit.
+	// Used by: percent_equity (takes priority over UnitPct when non-zero).
 	UnitCapital decimal.Decimal `json:"unit_capital,omitempty"`
-	UnitPct     float64         `json:"unit_pct,omitempty"` // 0.10 = 10% of allocated
 
-	// Fixed qty mode — overrides USD/pct sizing.
+	// UnitPct: fraction of allocated capital per entry unit.
+	// Used by: percent_equity (fallback when UnitCapital is zero).  e.g. 0.10 = 10%.
+	UnitPct float64 `json:"unit_pct,omitempty"`
+
+	// FixedQty: fixed base-asset quantity per trade.
+	// Used by: fixed_qty.
 	FixedQty decimal.Decimal `json:"fixed_qty,omitempty"`
-	// Fixed quote qty mode — spend exactly this many quote units (e.g. 1000 USDT) per trade.
-	// Only for market buy orders on spot; exchange fills as much base qty as possible.
+
+	// FixedQuoteQty: fixed quote spend per trade (e.g. 1000 USDT).
+	// Used by: quote_qty. Only for market-buy on spot; exchange fills max base qty.
 	FixedQuoteQty decimal.Decimal `json:"fixed_quote_qty,omitempty"`
 
-	// MaxUnits is the maximum number of concurrent entry legs.
-	// 1 = no scaling (default). Each new entry signal while at max is rejected.
+	// ── Scaling ─────────────────────────────────────────────────────────────
+
+	// MaxUnits: max concurrent entry legs. 1 = no scaling (default).
+	// Each signal while at max is rejected.
 	// Overridden downward by helm-level RiskConfig.MaxUnitsPerHand if set.
 	MaxUnits int `json:"max_units,omitempty"`
 
-	// Pyramid controls how additional entry signals are handled while a position is open.
-	// true  → merge into the existing leg: qty accumulates, avg_entry recalculated,
-	//         SL/TP replaced with values from the latest signal.
-	// false → open a new independent leg with its own SL/TP (up to MaxUnits).
+	// Pyramid: how additional entry signals are handled while a position is open.
+	// true  → merge into the existing leg (qty accumulates, avg_entry recalculated).
+	// false → open a new independent leg up to MaxUnits.
 	Pyramid bool `json:"pyramid,omitempty"`
 
-	// Sizing algorithm.
-	SizeMode        string  `json:"size_mode,omitempty"`          // fixed_fractional|fixed_qty|quote_qty|percent_equity|volatility
-	RiskPerTradePct float64 `json:"risk_per_trade_pct,omitempty"` // for volatility mode
-	MaxPositionPct  float64 `json:"max_position_pct,omitempty"`   // legacy fallback
+	// ── Caps ────────────────────────────────────────────────────────────────
 
-	// Limit order lifecycle.
-	// LimitTimeoutSec: cancel the unfilled limit order after N seconds (0 = no timeout).
-	// LimitFallback: action after timeout — "cancel" (default) | "market" (re-place as market).
-	LimitTimeoutSec int    `json:"limit_timeout_sec,omitempty"`
-	LimitFallback   string `json:"limit_fallback,omitempty"` // "cancel" | "market"
+	// MaxPositionPct: hard cap on total open exposure as a fraction of equity.
+	// Legacy fallback — prefer AllocatedCapital for isolation.
+	MaxPositionPct float64 `json:"max_position_pct,omitempty"`
 }
 
 func (p PositionConfig) Value() (driver.Value, error) { return jsonValue(p) }
@@ -133,11 +176,30 @@ func (p *PositionConfig) Scan(src any) error          { return jsonScan(src, p) 
 
 // HandRiskConfig holds per-hand risk settings.
 // Sizing lives in PositionConfig; portfolio-level risk lives in HelmConfig.
+//
+// Edge-degradation guard: tracks a sliding window of the last WindowTrades closed
+// trades and auto-pauses the hand when any enabled threshold is breached.
+// All threshold fields are optional — zero means disabled.
 type HandRiskConfig struct {
-	// SignalTTLSec is the maximum age (in seconds) of a signal before it is
-	// discarded without execution. Age is measured from NATS ingestion time.
-	// 0 = use default (10s). Set to a negative value to disable the check.
-	SignalTTLSec int `json:"signal_ttl_sec,omitempty"`
+	// WindowTrades is the number of most-recent closed trades to evaluate.
+	// 0 disables all edge-degradation checks below.
+	WindowTrades int `json:"window_trades,omitempty"`
+
+	// MaxTotalLossPct pauses the hand when sum(PnL over window) / AllocatedCapital
+	// drops below -X. e.g. 0.05 = pause when the window's cumulative loss exceeds 5%.
+	MaxTotalLossPct float64 `json:"max_total_loss_pct,omitempty"`
+
+	// MaxAvgLossPct pauses the hand when avg(PnL over window) / AllocatedCapital
+	// drops below -X. Catches consistent small losses even if the total is modest.
+	MaxAvgLossPct float64 `json:"max_avg_loss_pct,omitempty"`
+
+	// MaxSingleLossPct pauses the hand when any single trade in the window
+	// lost more than X of AllocatedCapital. Guards against blow-up trades.
+	MaxSingleLossPct float64 `json:"max_single_loss_pct,omitempty"`
+
+	// MaxConsecLoss pauses the hand after N consecutive losing trades.
+	// Resets to 0 on any winning trade.
+	MaxConsecLoss int `json:"max_consec_loss,omitempty"`
 }
 
 func (r HandRiskConfig) Value() (driver.Value, error) { return jsonValue(r) }
@@ -148,8 +210,8 @@ func (r *HandRiskConfig) Scan(src any) error          { return jsonScan(src, r) 
 // FuturesConfig holds futures-specific parameters.
 // Only meaningful when Hand.Market == MarketTypeFutures.
 type FuturesConfig struct {
-	Leverage   int    `json:"leverage"`    // e.g. 10 for 10x; 1 = no leverage
-	MarginType string `json:"margin_type"` // "isolated" | "cross"
+	Leverage   int        `json:"leverage"`    // e.g. 10 for 10x; 1 = no leverage
+	MarginType MarginType `json:"margin_type"` // "isolated" | "cross"
 }
 
 func (f FuturesConfig) Value() (driver.Value, error) { return jsonValue(f) }
@@ -177,6 +239,13 @@ type HandConfig struct {
 	Position PositionConfig
 	Risk     HandRiskConfig
 	Futures  *FuturesConfig
+
+	// Top-level fields — mirror the dedicated columns on Hand.
+	AllocatedCapital decimal.Decimal
+	SignalTTLSec     int
+	OrderType        OrderType
+	LimitTimeoutSec  int
+	LimitFallback    LimitFallback
 }
 
 // Defaults fills zero-value fields with sensible values.
@@ -188,10 +257,10 @@ func (c *HandConfig) Defaults() {
 		c.Market = MarketTypeSpot
 	}
 	if c.Market == MarketTypeFutures && c.Futures == nil {
-		c.Futures = &FuturesConfig{Leverage: 1, MarginType: "isolated"}
+		c.Futures = &FuturesConfig{Leverage: 1, MarginType: MarginTypeIsolated}
 	}
 	if c.Position.SizeMode == "" {
-		c.Position.SizeMode = "fixed_fractional"
+		c.Position.SizeMode = SizeModeFixedFractional
 	}
 	if c.Position.RiskPerTradePct == 0 {
 		c.Position.RiskPerTradePct = 0.01
@@ -211,8 +280,11 @@ func (c *HandConfig) Defaults() {
 	if c.Strategy.MinStrength == 0 {
 		c.Strategy.MinStrength = 0.3
 	}
-	if c.Position.LimitTimeoutSec > 0 && c.Position.LimitFallback == "" {
-		c.Position.LimitFallback = "cancel"
+	if c.OrderType == "" {
+		c.OrderType = OrderTypeMarket
+	}
+	if c.OrderType == OrderTypeLimit && c.LimitTimeoutSec > 0 && c.LimitFallback == "" {
+		c.LimitFallback = LimitFallbackCancel
 	}
 }
 

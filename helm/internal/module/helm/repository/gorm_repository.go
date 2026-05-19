@@ -33,6 +33,7 @@ func (r *GORMHelmRepo) Save(o *domain.Helm) error {
 		AccountID:       o.AccountID.String(),
 		Name:            o.Name,
 		BrokerType:      o.BrokerType,
+		AccountType:     o.AccountType,
 		PortfolioConfig: pfJSON,
 		RiskConfig:      riskJSON,
 		Enabled:         o.Enabled,
@@ -122,6 +123,7 @@ type helmModel struct {
 	AccountID       string     `gorm:"column:account_id;type:uuid;not null;uniqueIndex"`
 	Name            string     `gorm:"column:name;not null"`
 	BrokerType      string     `gorm:"column:broker_type;not null;default:''"`
+	AccountType     string     `gorm:"column:account_type;not null;default:''"`
 	PortfolioConfig []byte     `gorm:"column:portfolio_config;type:jsonb;not null;default:'{}'"`
 	RiskConfig      []byte     `gorm:"column:risk_config;type:jsonb;not null;default:'{}'"`
 	Enabled         bool       `gorm:"column:enabled;not null;default:false"`
@@ -154,6 +156,7 @@ func modelToDomain(m *helmModel) (*domain.Helm, error) {
 		AccountID:    accountID,
 		Name:         m.Name,
 		BrokerType:   m.BrokerType,
+		AccountType:  m.AccountType,
 		Enabled:      m.Enabled,
 		Status:       m.Status,
 		LastSyncedAt: m.LastSyncedAt,

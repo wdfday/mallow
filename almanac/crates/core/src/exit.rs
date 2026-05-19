@@ -199,12 +199,25 @@ impl PositionTracker {
         };
 
         // Whether to check TP before stop this bar (OhlcHeuristic only).
-        // Up-bar (close > open): price went low-first → stop is more likely first → stop before TP.
-        // Down-bar: price went high-first → TP is more likely first → TP before stop.
+        //
+        // OHLC heuristic: within an up-bar (close > open), price likely went down
+        // first (touched low) then up (touched high); inside a down-bar the order
+        // reverses. From that we infer which extreme is hit FIRST and therefore
+        // which exit rule fires:
+        //
+        // | Direction | Bar      | First touched | Fires first |
+        // |-----------|----------|---------------|-------------|
+        // | LONG      | up-bar   | low           | SL (below)  |
+        // | LONG      | down-bar | high          | TP (above)  |
+        // | SHORT     | up-bar   | low           | TP (below)  |
+        // | SHORT     | down-bar | high          | SL (above)  |
+        //
+        // → `tp_first` = (LONG ∧ down-bar) ∨ (SHORT ∧ up-bar)
         let tp_first = matches!(rules.intra_bar_mode, IntraBarMode::OhlcHeuristic)
-            && !self.is_long && close < open  // short + down-bar: target (lower) first
-            || matches!(rules.intra_bar_mode, IntraBarMode::OhlcHeuristic)
-            && self.is_long && close > open;  // long + up-bar: TP fires after stop... no, TP first only for favorable direction
+            && (
+                (self.is_long  && close < open)   // long  + down-bar → TP first
+                || (!self.is_long && close > open) // short + up-bar   → TP first
+            );
 
         // Helper: check one side then the other based on tp_first.
         // We inline the checks below for clarity.
@@ -272,5 +285,66 @@ impl PositionTracker {
         }
 
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn rules_ohlc(sl: f64, tp: f64) -> ExitRules {
+        ExitRules {
+            stop_loss_pct:   Some(sl),
+            take_profit_pct: Some(tp),
+            intra_bar_mode:  IntraBarMode::OhlcHeuristic,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn ohlc_heuristic_long_upbar_fires_sl_first() {
+        // LONG entry at 100. Up-bar (close > open) → low first → SL should fire,
+        // even though both 95 (SL) and 110 (TP) are reachable in the bar.
+        let mut tr = PositionTracker::new(100.0, true);
+        // SL @ 5% = 95 ; TP @ 10% = 110
+        // Bar: open=99 (already below entry), high=112, low=94, close=108 → up-bar
+        let res = tr.update_and_check(99.0, 112.0, 94.0, 108.0, &rules_ohlc(0.05, 0.10));
+        let (price, reason) = res.expect("an exit must fire");
+        assert_eq!(reason, ExitReason::StopLoss);
+        assert!((price - 95.0).abs() < 1e-9, "fill at SL level, got {price}");
+    }
+
+    #[test]
+    fn ohlc_heuristic_long_downbar_fires_tp_first() {
+        // LONG entry at 100. Down-bar → high first → TP fires before SL.
+        let mut tr = PositionTracker::new(100.0, true);
+        // Bar: open=109, high=112, low=94, close=98 → down-bar
+        let res = tr.update_and_check(109.0, 112.0, 94.0, 98.0, &rules_ohlc(0.05, 0.10));
+        let (price, reason) = res.expect("an exit must fire");
+        assert_eq!(reason, ExitReason::TakeProfit);
+        assert!((price - 110.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ohlc_heuristic_short_upbar_fires_tp_first() {
+        // SHORT entry at 100. Up-bar → low first → TP (lower) fires first.
+        let mut tr = PositionTracker::new(100.0, false);
+        // SL for short @ 5% = 105 ; TP @ 10% = 90
+        // Bar: open=101, high=107, low=88, close=104 → up-bar
+        let res = tr.update_and_check(101.0, 107.0, 88.0, 104.0, &rules_ohlc(0.05, 0.10));
+        let (price, reason) = res.expect("an exit must fire");
+        assert_eq!(reason, ExitReason::TakeProfit);
+        assert!((price - 90.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ohlc_heuristic_short_downbar_fires_sl_first() {
+        // SHORT entry at 100. Down-bar → high first → SL (higher) fires first.
+        let mut tr = PositionTracker::new(100.0, false);
+        // Bar: open=102, high=107, low=88, close=96 → down-bar
+        let res = tr.update_and_check(102.0, 107.0, 88.0, 96.0, &rules_ohlc(0.05, 0.10));
+        let (price, reason) = res.expect("an exit must fire");
+        assert_eq!(reason, ExitReason::StopLoss);
+        assert!((price - 105.0).abs() < 1e-9);
     }
 }

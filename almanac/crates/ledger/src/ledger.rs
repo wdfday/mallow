@@ -54,10 +54,21 @@ pub struct LedgerConfig {
 
 impl Default for LedgerConfig {
     fn default() -> Self {
-        // Uniform 1000-bar window for every TF. Each TF self-sources its own
-        // bar history via direct WebSocket + REST, so no per-TF tuning needed.
+        // Per-TF windows sized so the live ledger always overlaps with the
+        // most-recent parquet bar, even when parquet generation lags up to
+        // 24h. The seam ledger↔DuckDB falls inside the parquet horizon so
+        // pagination never produces a "phantom gap" at the boundary.
+        //
+        // Math: M1 needs ≥ 24h × 60 = 1440 bars just to cover one parquet
+        // write cycle; we use 2000 to absorb extra lag and weekend stalls.
+        let mut default_window = HashMap::new();
+        default_window.insert(Timeframe::M1, 2000);   // ~33h
+        default_window.insert(Timeframe::M3, 1500);   // ~75h
+        default_window.insert(Timeframe::M5, 1500);   // ~125h
+        default_window.insert(Timeframe::M15, 1000);  // ~10d
+        default_window.insert(Timeframe::M30, 1000);  // ~20d
         Self {
-            default_window: HashMap::new(),
+            default_window,
             fallback_window: 1000,
             window_multiplier: 5,
             display_tail: 100,
@@ -429,11 +440,14 @@ mod tests {
     #[test]
     fn default_config_has_sane_windows() {
         let cfg = LedgerConfig::default();
-        // All TFs fall back to the uniform 1000-bar window.
-        assert_eq!(cfg.default_window_for(Timeframe::M1), 1000);
-        assert_eq!(cfg.default_window_for(Timeframe::D1), 1000);
-        assert_eq!(cfg.default_window_for(Timeframe::M3), 1000);
+        // M1 needs >= 24h*60 = 1440 to overlap parquet daily-write lag.
+        assert_eq!(cfg.default_window_for(Timeframe::M1), 2000);
+        assert_eq!(cfg.default_window_for(Timeframe::M3), 1500);
+        assert_eq!(cfg.default_window_for(Timeframe::M5), 1500);
+        // M15/M30 explicit defaults; HTF falls back.
+        assert_eq!(cfg.default_window_for(Timeframe::M15), 1000);
         assert_eq!(cfg.default_window_for(Timeframe::H12), 1000);
+        assert_eq!(cfg.default_window_for(Timeframe::D1), 1000);
     }
 
     #[test]
@@ -441,8 +455,8 @@ mod tests {
         let cfg = LedgerConfig::default();
         // longest_period 200 on D1 (fallback 1000) — 5*200 + 100 = 1100 > 1000
         assert_eq!(cfg.required_capacity(Timeframe::D1, 200), 1100);
-        // small period on M1 (fallback 1000) — still defaults
-        assert_eq!(cfg.required_capacity(Timeframe::M1, 14), 1000);
+        // small period on M1 (M1 default 2000) — still defaults
+        assert_eq!(cfg.required_capacity(Timeframe::M1, 14), 2000);
     }
 
     #[test]

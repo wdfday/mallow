@@ -15,14 +15,9 @@ const docTemplate = `{
     "host": "{{.Host}}",
     "basePath": "{{.BasePath}}",
     "paths": {
-        "/api/backtest": {
+        "/api/v1/auth/login": {
             "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Runs a named strategy backtest via the Rust engine over NATS.",
+                "description": "Authenticate with email + password. Returns access and refresh tokens.",
                 "consumes": [
                     "application/json"
                 ],
@@ -30,13 +25,124 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "Backtest"
+                    "Identity"
                 ],
-                "summary": "Run a backtest (named strategy)",
+                "summary": "Login (get JWT)",
+                "parameters": [
+                    {
+                        "description": "{ \\",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/refresh": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Identity"
+                ],
+                "summary": "Refresh access token",
+                "parameters": [
+                    {
+                        "description": "{ \\",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/register": {
+            "post": {
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Identity"
+                ],
+                "summary": "Register a new user",
+                "parameters": [
+                    {
+                        "description": "Registration payload",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/backtest": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Executes a named strategy backtest over a historical date range. Returns a BacktestReport with Sharpe, Sortino, Calmar, max drawdown, win rate, profit factor, and trade list.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald"
+                ],
+                "summary": "Run a backtest",
                 "parameters": [
                     {
                         "description": "Backtest parameters",
-                        "name": "request",
+                        "name": "body",
                         "in": "body",
                         "required": true,
                         "schema": {
@@ -48,38 +154,28 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/handler.BacktestReport"
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     },
                     "400": {
-                        "description": "validation error",
+                        "description": "Bad Request",
                         "schema": {
                             "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
-                        }
-                    },
-                    "504": {
-                        "description": "engine unavailable (NATS timeout)",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
+                            "additionalProperties": true
                         }
                     }
                 }
             }
         },
-        "/api/chat": {
+        "/api/v1/backtest/estimate": {
             "post": {
                 "security": [
                     {
                         "BearerAuth": []
                     }
                 ],
-                "description": "Sends a message to the ADK-powered trading assistant and waits for a full reply.",
+                "description": "Returns estimated bar count and time without running the full engine.",
                 "consumes": [
                     "application/json"
                 ],
@@ -87,17 +183,17 @@ const docTemplate = `{
                     "application/json"
                 ],
                 "tags": [
-                    "AI Strategist"
+                    "Herald"
                 ],
-                "summary": "Chat with AI strategist (sync)",
+                "summary": "Estimate backtest cost",
                 "parameters": [
                     {
-                        "description": "User message",
-                        "name": "request",
+                        "description": "Estimate parameters",
+                        "name": "body",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/handler.ChatRequest"
+                            "$ref": "#/definitions/handler.BacktestEstimateRequest"
                         }
                     }
                 ],
@@ -105,23 +201,1109 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/handler.ChatResponse"
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/backtest/script": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Executes a script strategy. Always saves the script version and result to the store. Pass strategy_id to link to an existing version chain.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald"
+                ],
+                "summary": "Run a script backtest",
+                "parameters": [
+                    {
+                        "description": "Script backtest parameters (use 'script' field)",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/handler.BacktestRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
                         }
                     },
                     "400": {
                         "description": "Bad Request",
                         "schema": {
                             "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
+                            "additionalProperties": true
                         }
-                    },
-                    "502": {
-                        "description": "strategist unavailable",
+                    }
+                }
+            }
+        },
+        "/api/v1/data/duckdb": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Run a raw Parquet query via DuckDB on historical data.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald"
+                ],
+                "summary": "DuckDB Parquet query",
+                "parameters": [
+                    {
+                        "description": "DuckDB query payload",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
                         "schema": {
                             "type": "object",
-                            "additionalProperties": {
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/data/{symbol}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns the most recent bar and live indicator snapshot for a symbol.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald"
+                ],
+                "summary": "Latest OHLCV bar",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Symbol, e.g. BTCUSDT",
+                        "name": "symbol",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns historical bars with optional indicator overlay. Falls back to DuckDB Parquet when the requested range predates the live ledger window.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald"
+                ],
+                "summary": "Query OHLCV bars + indicators",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Symbol, e.g. BTCUSDT",
+                        "name": "symbol",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Query parameters",
+                        "name": "body",
+                        "in": "body",
+                        "schema": {
+                            "$ref": "#/definitions/handler.DataQueryRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/data/{symbol}/latest": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Alias for GET /api/v1/data/:symbol.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald"
+                ],
+                "summary": "Latest OHLCV bar (alias)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Symbol",
+                        "name": "symbol",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/hands": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "List hands",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": true
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Creates a new signal-following bot under a helm. The hand starts stopped; call /start to activate.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "Create a hand (autonomous bot)",
+                "parameters": [
+                    {
+                        "description": "Hand config",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/hands/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "Get a hand",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Hand ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "Update hand config",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Hand ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Updated config",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "Delete a hand",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Hand ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                }
+            }
+        },
+        "/api/v1/hands/{id}/kill": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Stops the hand and flattens its positions at the exchange.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "Kill a hand (flatten positions)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Hand ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/hands/{id}/pause": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "Pause a hand",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Hand ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/hands/{id}/release": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Stops the hand without flattening positions. Emits position_orphaned poslog events.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "Release a hand (leave positions live)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Hand ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/hands/{id}/restart": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "Restart a hand",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Hand ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/hands/{id}/resume": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "Resume a paused hand",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Hand ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/hands/{id}/start": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "Start a hand",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Hand ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/hands/{id}/stop": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "Stop a hand",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Hand ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/helms": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns all Helm accounts accessible to the authenticated user.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "List helms",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": true
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/helms/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "Get a helm",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Helm ID (UUID)",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "Update helm config",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Updated config",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/helms/{id}/disable": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "Disable a helm",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/helms/{id}/enable": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "Enable a helm",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/helms/{id}/halt/reset": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Clears the halted state so the helm can be re-enabled.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "Reset a halted helm",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/helms/{id}/kill": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Stops all hands and flattens their positions at the exchange. Sets helm state to halted.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "Kill a helm (flatten all positions)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/helms/{id}/orders": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "Helm open orders",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": true
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/helms/{id}/pause": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "Pause a helm (cascade-stops all hands)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/helms/{id}/portfolio": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "Helm portfolio snapshot",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/helms/{id}/positions": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "Helm open positions",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": true
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/helms/{id}/resume": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "Resume a paused helm",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/helms/{id}/trades": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Helm"
+                ],
+                "summary": "Helm trade history",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": true
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/indicators": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns all ~66 indicator names that herald supports.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald"
+                ],
+                "summary": "List available indicators",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
                                 "type": "string"
                             }
                         }
@@ -129,14 +1311,579 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/chat/stream": {
+        "/api/v1/script/validate": {
             "post": {
                 "security": [
                     {
                         "BearerAuth": []
                     }
                 ],
-                "description": "Same as /api/chat but streams the reply as Server-Sent Events. Each ` + "`" + `data:` + "`" + ` line is a partial token.",
+                "description": "Lints a strategy script without running a backtest. Used by the Monaco editor.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald"
+                ],
+                "summary": "Validate a script",
+                "parameters": [
+                    {
+                        "description": "{ \\",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/store/cases": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald Store"
+                ],
+                "summary": "List backtest cases",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": true
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald Store"
+                ],
+                "summary": "Create a backtest case",
+                "parameters": [
+                    {
+                        "description": "Case payload",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/store/cases/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald Store"
+                ],
+                "summary": "Get a backtest case",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Case ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/store/cases/{id}/results": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald Store"
+                ],
+                "summary": "List results for a case",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Case ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": true
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/store/cases/{id}/run": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Executes the stored case and saves the result.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald Store"
+                ],
+                "summary": "Run a backtest case",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Case ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/store/results/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald Store"
+                ],
+                "summary": "Get a backtest result",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Result ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald Store"
+                ],
+                "summary": "Delete a backtest result",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Result ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                }
+            }
+        },
+        "/api/v1/store/strategies": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns all strategy versions in the persistent store.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald Store"
+                ],
+                "summary": "List stored strategies",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": true
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald Store"
+                ],
+                "summary": "Create a stored strategy",
+                "parameters": [
+                    {
+                        "description": "Strategy payload",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/store/strategies/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald Store"
+                ],
+                "summary": "Get a stored strategy",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Strategy ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "put": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald Store"
+                ],
+                "summary": "Update a stored strategy",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Strategy ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Updated strategy",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald Store"
+                ],
+                "summary": "Delete a stored strategy",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Strategy ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
+                    }
+                }
+            }
+        },
+        "/api/v1/strategies": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns all ~80 named strategy IDs that herald supports.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald"
+                ],
+                "summary": "List available strategies",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "type": "string"
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/strategist/ui/": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Serves the Google ADK development UI for the trading assistant agent.",
+                "produces": [
+                    "text/html"
+                ],
+                "tags": [
+                    "Strategist"
+                ],
+                "summary": "Strategist ADK Web UI",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/stream/signals": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Server-Sent Events stream of live signal batches from all registered hands. Each event carries a ` + "`" + `SignalResponse` + "`" + ` protobuf payload encoded as JSON.",
+                "produces": [
+                    "text/event-stream"
+                ],
+                "tags": [
+                    "Herald Stream"
+                ],
+                "summary": "SSE signal stream",
+                "responses": {
+                    "200": {
+                        "description": "event: bar\\ndata: {...}",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/stream/{symbol}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "EventSource-compatible SSE stream of raw OHLCV bars for a symbol. Emits a ` + "`" + `status` + "`" + ` event first, then ` + "`" + `bar` + "`" + ` events per incoming candle. Use ` + "`" + `?tf=M1` + "`" + ` to select timeframe.",
+                "produces": [
+                    "text/event-stream"
+                ],
+                "tags": [
+                    "Herald Stream"
+                ],
+                "summary": "SSE bar stream (GET — raw OHLCV)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Symbol, e.g. BTCUSDT",
+                        "name": "symbol",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Timeframe (M1, M5, H1, …)",
+                        "name": "tf",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "event: bar\\ndata: {...}",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "SSE stream carrying bars enriched with indicator values or a script output. Requires a ` + "`" + `fetch()` + "`" + ` + ` + "`" + `ReadableStream` + "`" + ` client (not plain EventSource). Body specifies indicator configs or a script.",
                 "consumes": [
                     "application/json"
                 ],
@@ -144,41 +1891,58 @@ const docTemplate = `{
                     "text/event-stream"
                 ],
                 "tags": [
-                    "AI Strategist"
+                    "Herald Stream"
                 ],
-                "summary": "Chat with AI strategist (SSE stream)",
+                "summary": "SSE bar stream (POST — with indicators / script)",
                 "parameters": [
                     {
-                        "description": "User message",
-                        "name": "request",
+                        "type": "string",
+                        "description": "Symbol",
+                        "name": "symbol",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Stream config",
+                        "name": "body",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/handler.ChatRequest"
+                            "$ref": "#/definitions/handler.StreamRequest"
                         }
                     }
                 ],
                 "responses": {
                     "200": {
-                        "description": "SSE stream — data: \u003ctoken\u003e\\\\n\\\\n",
+                        "description": "event: bar\\ndata: {...}",
                         "schema": {
                             "type": "string"
                         }
-                    },
-                    "400": {
-                        "description": "Bad Request",
+                    }
+                }
+            }
+        },
+        "/api/v1/symbols": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns all symbols currently ingested by herald.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald"
+                ],
+                "summary": "List live symbols",
+                "responses": {
+                    "200": {
+                        "description": "OK",
                         "schema": {
-                            "type": "object",
-                            "additionalProperties": {
-                                "type": "string"
-                            }
-                        }
-                    },
-                    "502": {
-                        "description": "strategist unavailable",
-                        "schema": {
-                            "type": "object",
-                            "additionalProperties": {
+                            "type": "array",
+                            "items": {
                                 "type": "string"
                             }
                         }
@@ -186,36 +1950,131 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/strategies": {
+        "/api/v1/watch": {
             "get": {
                 "security": [
                     {
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns all 57+ backtest strategies. Use ?category= to filter.",
+                "description": "Returns admin warm-set configs (indicator bootstrapping on startup).",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
-                    "Backtest"
+                    "Herald Admin"
                 ],
-                "summary": "List available strategies",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "trend | momentum | volatility | reversal | composite | session | expression",
-                        "name": "category",
-                        "in": "query"
-                    }
-                ],
+                "summary": "List watch configs",
                 "responses": {
                     "200": {
-                        "description": "strategies array + total count",
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": true
+                            }
+                        }
+                    }
+                }
+            },
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald Admin"
+                ],
+                "summary": "Create a watch config",
+                "parameters": [
+                    {
+                        "description": "Watch config",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
                         "schema": {
                             "type": "object",
                             "additionalProperties": true
                         }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "Created",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/watch/{id}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald Admin"
+                ],
+                "summary": "Get a watch config",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Watch ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "Herald Admin"
+                ],
+                "summary": "Delete a watch config",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Watch ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "204": {
+                        "description": "No Content"
                     }
                 }
             }
@@ -243,174 +2102,120 @@ const docTemplate = `{
         }
     },
     "definitions": {
-        "handler.BacktestReport": {
+        "handler.BacktestEstimateRequest": {
             "type": "object",
             "properties": {
-                "annualized_volatility_pct": {
-                    "type": "number"
-                },
-                "avg_drawdown_pct": {
-                    "type": "number"
-                },
-                "avg_loss_pct": {
-                    "type": "number"
-                },
-                "avg_trade_duration_hours": {
-                    "type": "number"
-                },
-                "avg_win_pct": {
-                    "type": "number"
-                },
-                "cagr_pct": {
-                    "type": "number"
-                },
-                "calmar_ratio": {
-                    "type": "number"
-                },
-                "expectancy": {
-                    "type": "number"
-                },
-                "final_equity": {
-                    "type": "number"
-                },
-                "initial_capital": {
-                    "description": "Capital",
-                    "type": "number"
-                },
-                "max_consecutive_losses": {
-                    "type": "integer"
-                },
-                "max_dd_duration_bars": {
-                    "type": "integer"
-                },
-                "max_drawdown_pct": {
-                    "description": "Drawdown",
-                    "type": "number"
-                },
-                "profit_factor": {
-                    "type": "number"
-                },
-                "sharpe_ratio": {
-                    "description": "Risk-adjusted",
-                    "type": "number"
-                },
-                "sortino_ratio": {
-                    "type": "number"
+                "from_time": {
+                    "type": "string",
+                    "example": "2024-01-01T00:00:00Z"
                 },
                 "strategy": {
-                    "type": "string"
+                    "type": "string",
+                    "example": "RSIStrategy"
                 },
                 "symbol": {
-                    "type": "string"
+                    "type": "string",
+                    "example": "BTCUSDT"
                 },
-                "total_return_pct": {
-                    "description": "Return metrics",
-                    "type": "number"
+                "timeframe": {
+                    "type": "string",
+                    "example": "M1"
                 },
-                "total_trades": {
-                    "description": "Trade stats",
-                    "type": "integer"
-                },
-                "win_rate_pct": {
-                    "type": "number"
+                "to_time": {
+                    "type": "string",
+                    "example": "2024-12-31T23:59:59Z"
                 }
             }
         },
         "handler.BacktestRequest": {
             "type": "object",
-            "required": [
-                "strategy",
-                "symbol"
-            ],
             "properties": {
                 "commission_pct": {
-                    "description": "fraction, e.g. 0.0003",
-                    "type": "number"
+                    "type": "number",
+                    "example": 0.001
                 },
-                "exchange": {
-                    "description": "\"vn\" | \"us\" | \"crypto\"",
-                    "type": "string"
-                },
-                "exit": {
-                    "description": "Optional exit overrides",
-                    "allOf": [
-                        {
-                            "$ref": "#/definitions/handler.ExitConfig"
-                        }
-                    ]
-                },
-                "from": {
-                    "description": "Date range (\"YYYY-MM-DD\")",
-                    "type": "string"
+                "from_time": {
+                    "type": "string",
+                    "example": "2024-01-01T00:00:00Z"
                 },
                 "initial_capital": {
-                    "description": "Capital \u0026 costs",
-                    "type": "number"
+                    "type": "number",
+                    "example": 10000
                 },
-                "market_hours_only": {
-                    "description": "Market hours filter",
-                    "type": "boolean"
+                "lot_size": {
+                    "type": "number",
+                    "example": 0
                 },
                 "params": {
-                    "description": "Strategy params — flat JSON object",
                     "type": "object",
-                    "additionalProperties": {}
+                    "additionalProperties": true
+                },
+                "script": {
+                    "type": "string",
+                    "example": "// strategy script"
                 },
                 "slippage_pct": {
-                    "description": "fraction, e.g. 0.001",
-                    "type": "number"
+                    "type": "number",
+                    "example": 0
                 },
                 "strategy": {
-                    "description": "Required",
-                    "type": "string"
+                    "type": "string",
+                    "example": "RSIStrategy"
                 },
                 "symbol": {
-                    "type": "string"
+                    "type": "string",
+                    "example": "BTCUSDT"
+                },
+                "timeframe": {
+                    "type": "string",
+                    "example": "M1"
+                },
+                "to_time": {
+                    "type": "string",
+                    "example": "2024-12-31T23:59:59Z"
+                }
+            }
+        },
+        "handler.DataQueryRequest": {
+            "type": "object",
+            "properties": {
+                "from": {
+                    "type": "string",
+                    "example": "2024-01-01T00:00:00Z"
+                },
+                "indicators": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": true
+                    }
+                },
+                "limit": {
+                    "type": "integer",
+                    "example": 500
                 },
                 "to": {
-                    "type": "string"
+                    "type": "string",
+                    "example": "2024-12-31T23:59:59Z"
                 }
             }
         },
-        "handler.ChatRequest": {
-            "type": "object",
-            "required": [
-                "message"
-            ],
-            "properties": {
-                "message": {
-                    "type": "string"
-                }
-            }
-        },
-        "handler.ChatResponse": {
+        "handler.StreamRequest": {
             "type": "object",
             "properties": {
-                "reply": {
+                "indicators": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": true
+                    }
+                },
+                "script": {
                     "type": "string"
                 },
-                "session_id": {
-                    "type": "string"
-                }
-            }
-        },
-        "handler.ExitConfig": {
-            "type": "object",
-            "properties": {
-                "max_bars_held": {
-                    "type": "integer"
-                },
-                "stop_loss_pct": {
-                    "type": "number"
-                },
-                "take_profit_pct": {
-                    "type": "number"
-                },
-                "trailing_stop_pct": {
-                    "type": "number"
-                },
-                "use_pattern_target": {
-                    "type": "boolean"
+                "timeframe": {
+                    "type": "string",
+                    "example": "M1"
                 }
             }
         }

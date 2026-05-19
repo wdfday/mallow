@@ -2,8 +2,6 @@ package runtime
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -11,8 +9,7 @@ import (
 
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/natsapi"
-	orchdomain "mallow/helm/internal/module/helm/domain"
-	"mallow/helm/internal/runtime/core/orderbook"
+	helmdomain "mallow/helm/internal/module/helm/domain"
 )
 
 // StartFillStreaming starts account fill listeners for all runtimes whose exchange
@@ -56,21 +53,13 @@ func (r *Registry) runOrderProcessor(ctx context.Context, nc *nats.Conn, rt *Hel
 			r.mu.RLock()
 			js := r.js
 			r.mu.RUnlock()
-			orchID := rt.HelmID.String()
 			switch ev.Type {
 			case exchange.OrderEventLive:
 				// Dedup: hand orders are already tracked via PlaceOrder REST response.
 				// Only track if missing — indicates a manual order placed outside the bot.
-				if !rt.OrderBook.Has(orchID, ev.OrderID) {
-					rt.OrderBook.TrackOrder(orderbook.PendingOrder{
-						OrchestratorID: orchID,
-						OrderID:        ev.OrderID,
-						BotID:          "manual",
-						Symbol:         ev.Symbol,
-						Side:           orderbook.OrderSide(ev.Side),
-						Qty:            ev.Qty,
-					})
-					slog.Info("order book: manual order tracked via WS",
+				if !rt.HasOrderTracking(ev.OrderID) {
+					rt.TrackOrder(ev.OrderID, "manual")
+					slog.Info("order tracking: manual order tracked via WS",
 						"helm_id", rt.HelmID,
 						"order_id", ev.OrderID,
 						"symbol", ev.Symbol,
@@ -80,8 +69,8 @@ func (r *Registry) runOrderProcessor(ctx context.Context, nc *nats.Conn, rt *Hel
 			case exchange.OrderEventPartialFill, exchange.OrderEventFilled:
 				r.applyFill(nc, js, rt, ev)
 			case exchange.OrderEventCanceled:
-				rt.OrderBook.RemoveOrder(orchID, ev.OrderID)
-				slog.Info("order book: canceled order removed",
+				rt.RemoveOrderTracking(ev.OrderID)
+				slog.Info("order tracking: canceled order removed",
 					"helm_id", rt.HelmID,
 					"order_id", ev.OrderID,
 				)
@@ -93,16 +82,10 @@ func (r *Registry) runOrderProcessor(ctx context.Context, nc *nats.Conn, rt *Hel
 }
 
 func (r *Registry) applyFill(nc *nats.Conn, js nats.JetStreamContext, rt *HelmRuntime, ev exchange.OrderEvent) {
-	orchID := rt.HelmID.String()
+	helmID := rt.HelmID.String()
 
-	// Resolve botID from pending orders before the fill removes the record.
-	botID := ""
-	for _, p := range rt.OrderBook.PendingOrders(orchID) {
-		if p.OrderID == ev.OrderID {
-			botID = p.BotID
-			break
-		}
-	}
+	// Resolve botID from the order tracking map before the fill removes the record.
+	botID := rt.PendingOrderHandID(ev.OrderID)
 
 	slog.Info("exchange: fill processing",
 		"helm_id", rt.HelmID,
@@ -119,61 +102,72 @@ func (r *Registry) applyFill(nc *nats.Conn, js nats.JetStreamContext, rt *HelmRu
 	)
 
 	rt.MarkTradeProcessed(ev.TradeID)
-	rt.ReportFill(orchdomain.FillReport{
-		BotID:          botID,
-		OrchestratorID: orchID,
-		OrderID:        ev.OrderID,
-		Symbol:         ev.Symbol,
-		Side:           string(ev.Side),
-		Qty:            ev.FilledQty,
-		Price:          ev.FilledAvg,
-		Timestamp:      ev.Timestamp,
-	})
 
-	// For a full fill, forward the event to the owning hand's run-loop so that
-	// hand-level state (exit levels, poslog, metrics) is updated immediately
-	// instead of waiting for the 5s REST poll cycle.
-	// Partial fills are intentionally excluded: the poll path handles them
-	// once fully filled to avoid partial-state complexity.
+	// For a full fill on a tracked order: route to the owning hand.
+	// The hand's applyFill owns the complete fill lifecycle — portfolio update,
+	// exit-level management, metrics, and poslog — so we do NOT call ReportFill here.
+	//
+	// For partial fills or orders with no owning hand (manual orders placed outside
+	// the bot), update the portfolio directly from the registry since there is no
+	// hand run-loop to process the fill.
 	if ev.Type == exchange.OrderEventFilled && botID != "" {
 		rt.mu.RLock()
-		hand, ok := rt.bots[botID]
+		hand, ok := rt.hands[botID]
 		rt.mu.RUnlock()
 		if ok {
 			hand.EnqueueFill(ev)
+		} else {
+			// Hand was removed between order placement and fill — update portfolio directly.
+			rt.ReportFill(helmdomain.FillReport{
+				HandID:    botID,
+				HelmID:    helmID,
+				OrderID:   ev.OrderID,
+				Symbol:    ev.Symbol,
+				Side:      string(ev.Side),
+				Qty:       ev.FilledQty,
+				Price:     ev.FilledAvg,
+				Timestamp: ev.Timestamp,
+			})
 		}
+	} else {
+		// Partial fill or manual order: update portfolio from registry.
+		// For partial fills with a known owning hand, mark the orderID as seen so
+		// pollOrders does not double-apply the same fill via the dust-cancel path.
+		if botID != "" && ev.Type == exchange.OrderEventPartialFill {
+			rt.mu.RLock()
+			hand, ok := rt.hands[botID]
+			rt.mu.RUnlock()
+			if ok {
+				hand.MarkFillSeen(ev.OrderID)
+			}
+		}
+		rt.ReportFill(helmdomain.FillReport{
+			HandID:    botID,
+			HelmID:    helmID,
+			OrderID:   ev.OrderID,
+			Symbol:    ev.Symbol,
+			Side:      string(ev.Side),
+			Qty:       ev.FilledQty,
+			Price:     ev.FilledAvg,
+			Timestamp: ev.Timestamp,
+		})
 	}
 
-	if nc == nil {
+	if js == nil {
 		return
 	}
-	subj := fmt.Sprintf(natsapi.SubjTradeFilled, rt.HelmID)
-	data, _ := json.Marshal(natsapi.FillNotification{
-		OrchestratorID: orchID,
-		BotID:          botID,
-		OrderID:        ev.OrderID,
-		Symbol:         ev.Symbol,
-		Side:           string(ev.Side),
-		FilledQty:      ev.FilledQty,
-		FilledAvg:      ev.FilledAvg,
-		Timestamp:      ev.Timestamp,
+	natsapi.PublishTradeFill(js, natsapi.TransactionMsg{
+		HelmID:    rt.HelmID.String(),
+		AccountID: rt.AccountID.String(),
+		UserID:    rt.UserID.String(),
+		HandID:    botID,
+		TradeID:   ev.TradeID,
+		OrderID:   ev.OrderID,
+		Kind:      "fill",
+		Symbol:    ev.Symbol,
+		Side:      string(ev.Side),
+		Qty:       ev.FilledQty,
+		AvgPrice:  ev.FilledAvg,
+		FilledAt:  ev.Timestamp,
 	})
-	if err := nc.Publish(subj, data); err != nil {
-		slog.Warn("fill: nats publish failed", "subject", subj, "err", err)
-	}
-
-	// Publish to investment JetStream for event sourcing. Dedup via Nats-Msg-Id = TradeID.
-	if js != nil {
-		txn := natsapi.TransactionMsg{
-			TradeID:  ev.TradeID,
-			OrderID:  ev.OrderID,
-			Kind:     "fill",
-			Symbol:   ev.Symbol,
-			Side:     string(ev.Side),
-			Qty:      ev.FilledQty,
-			AvgPrice: ev.FilledAvg,
-			FilledAt: ev.Timestamp,
-		}
-		natsapi.PublishInvestmentTransaction(js, rt.HelmID.String(), rt.AccountID.String(), rt.UserID.String(), botID, rt.BrokerType, txn)
-	}
 }

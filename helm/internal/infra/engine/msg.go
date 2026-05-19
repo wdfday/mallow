@@ -20,16 +20,3 @@ type (
 	HeartbeatResponse = market.HeartbeatResponse
 	ReadyEvent        = market.ReadyEvent
 )
-
-// AggregatedSignal is the in-process result of collapsing N hand signals for the
-// same symbol and bar timestamp. Never serialized; consumed within helm.
-type AggregatedSignal struct {
-	Symbol    string
-	Timestamp int64
-	// Direction: "long" | "short" | "exit" | "none"
-	Direction string
-	// Strength [0,1] — weighted net of contributing signals.
-	Strength float64
-	// Sources: hand_ids that contributed to this aggregate.
-	Sources []string
-}

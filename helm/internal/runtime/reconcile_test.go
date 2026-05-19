@@ -25,10 +25,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
+	"mallow/helm/internal/module/hand/domain"
+
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/poslog"
 	"mallow/helm/internal/runtime"
-	"mallow/helm/internal/runtime/core/orderbook"
 	"mallow/helm/internal/runtime/core/portfolio"
 	"mallow/helm/internal/runtime/core/risk"
 	"mallow/helm/internal/runtime/core/strategy"
@@ -61,6 +62,10 @@ func (f *fakePosLog) ReplayHand(_ context.Context, _, _ string) ([]poslog.Event,
 
 func (f *fakePosLog) ReplayLeg(_ context.Context, _, _, _ string) ([]poslog.Event, error) {
 	return nil, nil
+}
+
+func (f *fakePosLog) TradesPaged(_ context.Context, _, _ string, _ uint64, _ int) (poslog.TradesPage, error) {
+	return poslog.TradesPage{}, nil
 }
 
 func (f *fakePosLog) publishedIDs() []string {
@@ -127,8 +132,7 @@ func buildRuntime(ex exchange.Exchange, log poslog.Log) *runtime.HelmRuntime {
 	userID := uuid.New()
 	pf := portfolio.New(decimal.Zero)
 	rm := risk.New(risk.DefaultConfig(), pf)
-	ob := orderbook.NewOrderBook("fake")
-	rt := runtime.NewHelmRuntime(helmID, accountID, userID, "fake", pf, rm, ob, ex, exchange.Credentials{}, nil)
+	rt := runtime.NewHelmRuntime(helmID, accountID, userID, "fake", pf, rm, ex, exchange.Credentials{}, nil)
 	rt.PosLog = log
 	return rt
 }
@@ -137,7 +141,7 @@ func addHand(rt *runtime.HelmRuntime, pyramid bool, maxUnits int) *runtime.Hand 
 	handID := uuid.New()
 	strat := strategy.NewSignalFollower(0.3)
 	tact := tactics.New(tactics.DefaultSizingConfig())
-	h := runtime.NewHand(handID, rt.HelmID, rt, strat, tact, pyramid, maxUnits, 10*time.Second, nil)
+	h := runtime.NewHand(handID, rt.HelmID, rt, strat, tact, pyramid, maxUnits, 10*time.Second, nil, domain.OrderTypeMarket, 0, "", domain.HandRiskConfig{}, decimal.Zero)
 	rt.AddHand(h)
 	return h
 }

@@ -20,8 +20,9 @@ tracing         = { workspace = true }
 utoipa          = { version = "4", features = ["axum_extras"], optional = true }
 
 [dev-dependencies]
-alm-data  = { path = "../data" }
-criterion = { workspace = true }
+alm-data   = { path = "../data" }
+alm-engine = { path = "../engine" }
+criterion  = { workspace = true }
 
 [[bench]]
 name = "expr"

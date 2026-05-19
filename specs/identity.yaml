@@ -1,0 +1,1195 @@
+basePath: /
+definitions:
+  mallow_identity_internal_module_auth_dto.AuthResponse:
+    properties:
+      token:
+        $ref: '#/definitions/mallow_identity_internal_module_auth_dto.TokenInfo'
+      user:
+        $ref: '#/definitions/mallow_identity_internal_module_auth_dto.UserAuthInfo'
+    type: object
+  mallow_identity_internal_module_auth_dto.ChangePasswordRequest:
+    properties:
+      current_password:
+        type: string
+      new_password:
+        maxLength: 128
+        minLength: 8
+        type: string
+    required:
+    - current_password
+    - new_password
+    type: object
+  mallow_identity_internal_module_auth_dto.ConfirmTelegramLinkRequest:
+    properties:
+      otp:
+        type: string
+    required:
+    - otp
+    type: object
+  mallow_identity_internal_module_auth_dto.ForgotPasswordRequest:
+    properties:
+      email:
+        type: string
+    required:
+    - email
+    type: object
+  mallow_identity_internal_module_auth_dto.GoogleAuthRequest:
+    properties:
+      token:
+        type: string
+    required:
+    - token
+    type: object
+  mallow_identity_internal_module_auth_dto.LoginRequest:
+    properties:
+      email:
+        example: admin@example.com
+        maxLength: 255
+        type: string
+      password:
+        example: Admin@123456
+        maxLength: 128
+        minLength: 8
+        type: string
+    required:
+    - email
+    - password
+    type: object
+  mallow_identity_internal_module_auth_dto.RegisterRequest:
+    properties:
+      email:
+        maxLength: 255
+        type: string
+      full_name:
+        maxLength: 255
+        minLength: 1
+        type: string
+      password:
+        maxLength: 128
+        minLength: 8
+        type: string
+      phone:
+        maxLength: 20
+        type: string
+    required:
+    - email
+    - full_name
+    - password
+    type: object
+  mallow_identity_internal_module_auth_dto.ResendVerificationRequest:
+    properties:
+      email:
+        type: string
+    required:
+    - email
+    type: object
+  mallow_identity_internal_module_auth_dto.ResetPasswordRequest:
+    properties:
+      new_password:
+        maxLength: 128
+        minLength: 8
+        type: string
+      token:
+        type: string
+    required:
+    - new_password
+    - token
+    type: object
+  mallow_identity_internal_module_auth_dto.TelegramBotInfoResponse:
+    properties:
+      bot_username:
+        type: string
+      link:
+        type: string
+    type: object
+  mallow_identity_internal_module_auth_dto.TelegramUserLookupResponse:
+    properties:
+      email:
+        type: string
+      full_name:
+        type: string
+      id:
+        type: string
+      telegram:
+        $ref: '#/definitions/mallow_identity_internal_module_user_dto.LinkedAccountResponse'
+    type: object
+  mallow_identity_internal_module_auth_dto.TokenInfo:
+    properties:
+      access_token:
+        type: string
+      expires_at:
+        description: unix timestamp
+        type: integer
+      expires_in:
+        description: seconds until expiration
+        type: integer
+      token_type:
+        type: string
+    type: object
+  mallow_identity_internal_module_auth_dto.TokenResponse:
+    properties:
+      access_token:
+        type: string
+      expires_in:
+        type: integer
+      token_type:
+        type: string
+    type: object
+  mallow_identity_internal_module_auth_dto.UnlinkTelegramRequest:
+    properties:
+      provider_id:
+        type: string
+    required:
+    - provider_id
+    type: object
+  mallow_identity_internal_module_auth_dto.UserAuthInfo:
+    properties:
+      avatar_url:
+        type: string
+      created_at:
+        type: string
+      display_name:
+        type: string
+      email:
+        type: string
+      email_verified:
+        type: boolean
+      full_name:
+        type: string
+      id:
+        type: string
+      last_login_at:
+        type: string
+      mfa_enabled:
+        type: boolean
+      role:
+        type: string
+      status:
+        type: string
+    type: object
+  mallow_identity_internal_module_auth_dto.VerifyEmailRequest:
+    properties:
+      token:
+        type: string
+    required:
+    - token
+    type: object
+  mallow_identity_internal_module_profile_dto.ProfileResponse:
+    properties:
+      alert_threshold_budget:
+        type: number
+      budget_method:
+        type: string
+      created_at:
+        type: string
+      credit_score:
+        type: integer
+      currency_primary:
+        type: string
+      currency_secondary:
+        type: string
+      debt_to_income_ratio:
+        type: number
+      dependents_count:
+        type: integer
+      emergency_fund_months:
+        type: number
+      employer:
+        type: string
+      income_stability:
+        type: string
+      industry:
+        type: string
+      investment_experience:
+        type: string
+      investment_horizon:
+        type: string
+      marital_status:
+        type: string
+      monthly_income_avg:
+        type: number
+      notification_channels:
+        items:
+          type: string
+        type: array
+      occupation:
+        type: string
+      onboarding_completed:
+        type: boolean
+      onboarding_completed_at:
+        type: string
+      preferred_report_day_of_month:
+        type: integer
+      primary_goal:
+        type: string
+      report_frequency:
+        type: string
+      risk_tolerance:
+        type: string
+      updated_at:
+        type: string
+      user_id:
+        type: string
+    type: object
+  mallow_identity_internal_module_profile_dto.UpdateProfileRequest:
+    properties:
+      alert_threshold_budget:
+        type: number
+      budget_method:
+        enum:
+        - custom
+        - zero_based
+        - envelope
+        - "50_30_20"
+        type: string
+      credit_score:
+        type: integer
+      currency_primary:
+        type: string
+      currency_secondary:
+        type: string
+      debt_to_income_ratio:
+        type: number
+      dependents_count:
+        minimum: 0
+        type: integer
+      emergency_fund_months:
+        type: number
+      employer:
+        maxLength: 255
+        type: string
+      income_stability:
+        enum:
+        - stable
+        - variable
+        - freelance
+        type: string
+      industry:
+        maxLength: 100
+        type: string
+      investment_experience:
+        enum:
+        - beginner
+        - intermediate
+        - expert
+        type: string
+      investment_horizon:
+        enum:
+        - short
+        - medium
+        - long
+        type: string
+      marital_status:
+        enum:
+        - single
+        - married
+        - divorced
+        - widowed
+        type: string
+      monthly_income_avg:
+        type: number
+      notification_channels:
+        items:
+          type: string
+        type: array
+      occupation:
+        maxLength: 100
+        type: string
+      onboarding_completed:
+        type: boolean
+      onboarding_completed_at:
+        type: string
+      preferred_report_day_of_month:
+        maximum: 31
+        minimum: 1
+        type: integer
+      primary_goal:
+        maxLength: 500
+        type: string
+      report_frequency:
+        enum:
+        - weekly
+        - monthly
+        - quarterly
+        type: string
+      risk_tolerance:
+        enum:
+        - conservative
+        - moderate
+        - aggressive
+        type: string
+    type: object
+  mallow_identity_internal_module_user_dto.ChangeUserRoleRequest:
+    properties:
+      role:
+        enum:
+        - admin
+        - user
+        type: string
+    required:
+    - role
+    type: object
+  mallow_identity_internal_module_user_dto.LinkedAccountResponse:
+    properties:
+      linked_at:
+        type: string
+      provider:
+        type: string
+      provider_id:
+        type: string
+      username:
+        type: string
+    type: object
+  mallow_identity_internal_module_user_dto.UpdateUserProfileRequest:
+    properties:
+      display_name:
+        maxLength: 255
+        type: string
+      full_name:
+        maxLength: 255
+        minLength: 1
+        type: string
+      phone_number:
+        maxLength: 20
+        type: string
+    type: object
+  mallow_identity_internal_module_user_dto.UserListResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/mallow_identity_internal_module_user_dto.UserResponse'
+        type: array
+      page:
+        type: integer
+      per_page:
+        type: integer
+      total:
+        type: integer
+      total_pages:
+        type: integer
+    type: object
+  mallow_identity_internal_module_user_dto.UserProfileResponse:
+    properties:
+      avatar_url:
+        type: string
+      created_at:
+        type: string
+      date_of_birth:
+        type: string
+      display_name:
+        type: string
+      email:
+        type: string
+      email_verified:
+        type: boolean
+      email_verified_at:
+        type: string
+      full_name:
+        type: string
+      id:
+        type: string
+      last_active_at:
+        type: string
+      last_login_at:
+        type: string
+      linked_accounts:
+        items:
+          $ref: '#/definitions/mallow_identity_internal_module_user_dto.LinkedAccountResponse'
+        type: array
+      phone_number:
+        type: string
+      role:
+        type: string
+      status:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  mallow_identity_internal_module_user_dto.UserResponse:
+    properties:
+      avatar_url:
+        type: string
+      created_at:
+        type: string
+      display_name:
+        type: string
+      email:
+        type: string
+      email_verified:
+        type: boolean
+      email_verified_at:
+        type: string
+      full_name:
+        type: string
+      id:
+        type: string
+      last_active_at:
+        type: string
+      last_login_at:
+        type: string
+      phone_number:
+        type: string
+      role:
+        type: string
+      status:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  mallow_identity_internal_shared.ErrorResponse:
+    properties:
+      code:
+        type: string
+      details:
+        additionalProperties: {}
+        type: object
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+  mallow_identity_internal_shared.Success:
+    properties:
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+info:
+  contact: {}
+  description: Identity service APIs for auth, user, and profile modules.
+  title: Identity Service API
+  version: "1.0"
+paths:
+  /api/v1/auth/change-password:
+    post:
+      consumes:
+      - application/json
+      description: Change the password of the currently authenticated user
+      parameters:
+      - description: Password change data
+        in: body
+        name: password
+        required: true
+        schema:
+          $ref: '#/definitions/mallow_identity_internal_module_auth_dto.ChangePasswordRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.Success'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Change password
+      tags:
+      - auth
+  /api/v1/auth/forgot-password:
+    post:
+      consumes:
+      - application/json
+      description: Request a password reset link to be sent to email
+      parameters:
+      - description: Email address
+        in: body
+        name: forgot
+        required: true
+        schema:
+          $ref: '#/definitions/mallow_identity_internal_module_auth_dto.ForgotPasswordRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.Success'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+      summary: Request password reset
+      tags:
+      - auth
+  /api/v1/auth/google:
+    post:
+      consumes:
+      - application/json
+      description: Authenticate user with Google OAuth token
+      parameters:
+      - description: Google OAuth token
+        in: body
+        name: googleAuth
+        required: true
+        schema:
+          $ref: '#/definitions/mallow_identity_internal_module_auth_dto.GoogleAuthRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_module_auth_dto.AuthResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+      summary: Google OAuth authentication
+      tags:
+      - auth
+  /api/v1/auth/login:
+    post:
+      consumes:
+      - application/json
+      description: Authenticate user with email and password
+      parameters:
+      - description: Login credentials
+        in: body
+        name: credentials
+        required: true
+        schema:
+          $ref: '#/definitions/mallow_identity_internal_module_auth_dto.LoginRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_module_auth_dto.AuthResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+      summary: User login
+      tags:
+      - auth
+  /api/v1/auth/logout:
+    post:
+      consumes:
+      - application/json
+      description: Logout user by blacklisting their refresh token
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.Success'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: User logout
+      tags:
+      - auth
+  /api/v1/auth/refresh:
+    post:
+      consumes:
+      - application/json
+      description: Generate a new access token using refresh token from HTTP-only
+        cookie
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_module_auth_dto.TokenResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+      summary: Refresh access token
+      tags:
+      - auth
+  /api/v1/auth/register:
+    post:
+      consumes:
+      - application/json
+      description: Register a new user account
+      parameters:
+      - description: User registration data
+        in: body
+        name: user
+        required: true
+        schema:
+          $ref: '#/definitions/mallow_identity_internal_module_auth_dto.RegisterRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_module_auth_dto.AuthResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+      summary: Register a new user
+      tags:
+      - auth
+  /api/v1/auth/resend-verification:
+    post:
+      consumes:
+      - application/json
+      description: Resend verification email to a user email address
+      parameters:
+      - description: Email address
+        in: body
+        name: email
+        required: true
+        schema:
+          $ref: '#/definitions/mallow_identity_internal_module_auth_dto.ResendVerificationRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.Success'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+      summary: Resend verification email
+      tags:
+      - auth
+  /api/v1/auth/reset-password:
+    post:
+      consumes:
+      - application/json
+      description: Reset password with reset token
+      parameters:
+      - description: Reset token and new password
+        in: body
+        name: reset
+        required: true
+        schema:
+          $ref: '#/definitions/mallow_identity_internal_module_auth_dto.ResetPasswordRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.Success'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+      summary: Reset password
+      tags:
+      - auth
+  /api/v1/auth/send-verification:
+    post:
+      consumes:
+      - application/json
+      description: Send verification email to current user
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.Success'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Send verification email
+      tags:
+      - auth
+  /api/v1/auth/telegram/bot:
+    get:
+      description: Returns the bot username and deep link for the frontend "Connect
+        Telegram" button
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_module_auth_dto.TelegramBotInfoResponse'
+      summary: Get Telegram bot connection info
+      tags:
+      - auth
+  /api/v1/auth/telegram/confirm-link:
+    post:
+      consumes:
+      - application/json
+      description: Confirm Telegram account linking with OTP generated by the identity
+        Telegram bot
+      parameters:
+      - description: Telegram OTP payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/mallow_identity_internal_module_auth_dto.ConfirmTelegramLinkRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.Success'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Confirm Telegram account linking
+      tags:
+      - auth
+  /api/v1/auth/telegram/link:
+    delete:
+      consumes:
+      - application/json
+      description: Unlink Telegram account from current authenticated user
+      parameters:
+      - description: Telegram unlink payload
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/mallow_identity_internal_module_auth_dto.UnlinkTelegramRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.Success'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Unlink Telegram account
+      tags:
+      - auth
+  /api/v1/auth/verify-email:
+    post:
+      consumes:
+      - application/json
+      description: Verify user email with verification token
+      parameters:
+      - description: Verification token
+        in: body
+        name: verification
+        required: true
+        schema:
+          $ref: '#/definitions/mallow_identity_internal_module_auth_dto.VerifyEmailRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.Success'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+      summary: Verify email address
+      tags:
+      - auth
+  /api/v1/internal/telegram/user/{telegram_id}:
+    get:
+      description: Internal service endpoint to resolve platform user by telegram_id
+      parameters:
+      - description: Telegram ID
+        in: path
+        name: telegram_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_module_auth_dto.TelegramUserLookupResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+      summary: Resolve user by Telegram ID (internal)
+      tags:
+      - internal
+  /api/v1/profile/me:
+    get:
+      consumes:
+      - application/json
+      description: Retrieve the authenticated user's profile
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_module_profile_dto.ProfileResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get my profile
+      tags:
+      - profile
+    put:
+      consumes:
+      - application/json
+      description: Update profile details of the authenticated user
+      parameters:
+      - description: Profile data
+        in: body
+        name: profile
+        required: true
+        schema:
+          $ref: '#/definitions/mallow_identity_internal_module_profile_dto.UpdateProfileRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_module_profile_dto.ProfileResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update my profile
+      tags:
+      - profile
+  /api/v1/user/manage:
+    get:
+      consumes:
+      - application/json
+      description: Get a paginated list of user
+      parameters:
+      - default: 1
+        description: Page number
+        in: query
+        name: page
+        type: integer
+      - default: 20
+        description: Items per page
+        in: query
+        name: per_page
+        type: integer
+      - description: Search query (email, name)
+        in: query
+        name: query
+        type: string
+      - description: Filter by role
+        in: query
+        name: role
+        type: string
+      - description: Filter by status
+        in: query
+        name: status
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_module_user_dto.UserListResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List user
+      tags:
+      - user
+  /api/v1/user/manage/{id}/reinstate:
+    patch:
+      consumes:
+      - application/json
+      description: Reinstate a suspended user by ID
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.Success'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Reinstate a suspended user
+      tags:
+      - user
+  /api/v1/user/manage/{id}/role:
+    patch:
+      consumes:
+      - application/json
+      description: Change the role of a user by ID
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: New Role
+        in: body
+        name: role
+        required: true
+        schema:
+          $ref: '#/definitions/mallow_identity_internal_module_user_dto.ChangeUserRoleRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.Success'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Change a user's role
+      tags:
+      - user
+  /api/v1/user/manage/{id}/suspend:
+    patch:
+      consumes:
+      - application/json
+      description: Suspend a user by ID
+      parameters:
+      - description: User ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.Success'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Suspend a user
+      tags:
+      - user
+  /api/v1/user/me:
+    get:
+      consumes:
+      - application/json
+      description: Get details of the currently authenticated user
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_module_user_dto.UserProfileResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get current user
+      tags:
+      - user
+    put:
+      consumes:
+      - application/json
+      description: Update details of the currently authenticated user
+      parameters:
+      - description: User data
+        in: body
+        name: user
+        required: true
+        schema:
+          $ref: '#/definitions/mallow_identity_internal_module_user_dto.UpdateUserProfileRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_module_user_dto.UserProfileResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update current user
+      tags:
+      - user
+schemes:
+- http
+- https
+securityDefinitions:
+  BearerAuth:
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

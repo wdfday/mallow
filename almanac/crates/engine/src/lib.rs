@@ -154,6 +154,7 @@ pub mod broker;
 pub mod bus_sync;
 pub mod clock;
 pub mod engine;
+pub mod mtf_engine;
 pub mod multi_engine;
 pub mod runner;
 pub mod walk_forward;
@@ -170,6 +171,7 @@ pub mod types;
 
 pub use bus_sync::SyncBus;
 pub use engine::Engine;
+pub use mtf_engine::{MtfEngine, MtfSnapshot, MtfStrategy, TfBarEvent, TfView};
 pub use multi_engine::{MultiEngine, MultiStrategy};
 pub use runner::{run_batch, run_portfolio, PortfolioReport, SymbolBars};
 pub use walk_forward::{walk_forward, walk_forward_sync, WalkForwardConfig, WalkForwardMode, WalkForwardResult, WalkForwardWindow};

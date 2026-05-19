@@ -3,6 +3,7 @@ package handler
 import (
 	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -10,6 +11,7 @@ import (
 
 	"mallow/helm/internal/module/hand/domain"
 	dto "mallow/helm/internal/module/hand/dto"
+	helmDto "mallow/helm/internal/module/helm/dto"
 	"mallow/helm/internal/runtime"
 	"mallow/helm/internal/shared"
 	pkgmw "mallow/pkg/middleware"
@@ -79,6 +81,7 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 		b.PUT("/:id", h.update)
 		b.DELETE("/:id", h.delete)
 		b.GET("/:id/activity", h.activity)
+		b.GET("/:id/trades", h.trades)
 		b.POST("/:id/start", h.start)
 		b.POST("/:id/stop", h.stop)
 		b.POST("/:id/restart", h.restart)
@@ -122,20 +125,20 @@ type CapitalOverflow struct {
 func checkCapitalAllocation(
 	totalCapital float64,
 	existing []domain.HandSummary,
-	newPos domain.PositionConfig,
+	allocatedCapital decimal.Decimal,
 	excludeHandID string,
 ) (*CapitalOverflow, error) {
 	// ── Fixed-USD allocation check ──────────────────────────────────────────
-	if newPos.AllocatedCapital.IsPositive() {
+	if allocatedCapital.IsPositive() {
 		var used float64
 		for _, b := range existing {
 			if b.ID.String() == excludeHandID {
 				continue
 			}
-			used += b.Position.AllocatedCapital.InexactFloat64()
+			used += b.AllocatedCapital.InexactFloat64()
 		}
 		available := totalCapital - used
-		requesting := newPos.AllocatedCapital.InexactFloat64()
+		requesting := allocatedCapital.InexactFloat64()
 		if requesting > available {
 			shortage := requesting - available
 			return buildOverflow(
@@ -145,28 +148,6 @@ func checkCapitalAllocation(
 		}
 	}
 
-	// ── Percentage allocation check ─────────────────────────────────────────
-	if newPos.AllocatedPct > 0 {
-		var usedPct float64
-		for _, b := range existing {
-			if b.ID.String() == excludeHandID {
-				continue
-			}
-			usedPct += b.Position.AllocatedPct
-		}
-		available := 1.0 - usedPct
-		if newPos.AllocatedPct > available {
-			// Convert pct to absolute for suggestions.
-			usedAbs := usedPct * totalCapital
-			availAbs := available * totalCapital
-			requestingAbs := newPos.AllocatedPct * totalCapital
-			shortage := requestingAbs - availAbs
-			return buildOverflow(
-				fmt.Sprintf("insufficient capital: requesting %.1f%% but only %.1f%% available", newPos.AllocatedPct*100, available*100),
-				totalCapital, usedAbs, requestingAbs, availAbs, shortage, existing, excludeHandID,
-			), nil
-		}
-	}
 	return nil, nil
 }
 
@@ -184,10 +165,7 @@ func buildOverflow(
 		if b.ID.String() == excludeHandID {
 			continue
 		}
-		alloc := b.Position.AllocatedCapital
-		if alloc.IsZero() && b.Position.AllocatedPct > 0 {
-			alloc = decimal.NewFromFloat(b.Position.AllocatedPct * helmEquity)
-		}
+		alloc := b.AllocatedCapital
 		if !alloc.IsPositive() {
 			continue
 		}
@@ -268,16 +246,12 @@ func (h *Handler) create(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusNotFound, "helm not found")
 		return
 	}
-	if !helm.Enabled {
-		shared.RespondWithError(c, http.StatusForbidden, "helm is disabled")
-		return
-	}
 	rt, err := h.reg.Get(helmID)
 	if err != nil {
 		shared.RespondWithError(c, http.StatusBadRequest, "helm runtime not available")
 		return
 	}
-	if overflow, _ := checkCapitalAllocation(rt.Portfolio.Summary().Equity.InexactFloat64(), h.handMgr.ListByHelm(helmID), cfg.Position, ""); overflow != nil {
+	if overflow, _ := checkCapitalAllocation(rt.Portfolio.Summary().Equity.InexactFloat64(), h.handMgr.ListByHelm(helmID), cfg.AllocatedCapital, ""); overflow != nil {
 		c.JSON(http.StatusUnprocessableEntity, overflow)
 		return
 	}
@@ -411,13 +385,13 @@ func (h *Handler) update(c *gin.Context) {
 	patch := req.ToDomain()
 
 	// Validate capital allocation when sizing changes.
-	if req.Position != nil && (req.Position.AllocatedCapital > 0 || req.Position.AllocatedPct > 0) {
+	if req.AllocatedCapital > 0 {
 		rt, err := h.reg.Get(helmID)
 		if err != nil {
 			shared.RespondWithError(c, http.StatusBadRequest, "helm runtime not available")
 			return
 		}
-		if overflow, _ := checkCapitalAllocation(rt.Portfolio.Summary().Equity.InexactFloat64(), h.handMgr.ListByHelm(helmID), patch.Position, id.String()); overflow != nil {
+		if overflow, _ := checkCapitalAllocation(rt.Portfolio.Summary().Equity.InexactFloat64(), h.handMgr.ListByHelm(helmID), patch.AllocatedCapital, id.String()); overflow != nil {
 			c.JSON(http.StatusUnprocessableEntity, overflow)
 			return
 		}
@@ -453,9 +427,8 @@ func (h *Handler) delete(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusNotFound, "not found")
 		return
 	}
-	helm, err := h.helmSvc.Get(helmID)
-	if err != nil || !helm.Enabled {
-		shared.RespondWithError(c, http.StatusForbidden, "helm is disabled")
+	if _, err := h.helmSvc.Get(helmID); err != nil {
+		shared.RespondWithError(c, http.StatusNotFound, "helm not found")
 		return
 	}
 	if err := h.handMgr.Delete(id); err != nil {
@@ -698,6 +671,57 @@ func (h *Handler) activity(c *gin.Context) {
 		entries = []runtime.ActivityEntry{}
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Activity retrieved", entries)
+}
+
+// trades godoc
+// @Summary List closed trades for a hand (poslog-backed, cursor paging)
+// @Tags hands
+// @Security BearerAuth
+// @Produce json
+// @Param id path string true "Hand ID"
+// @Param cursor query int false "Cursor from previous page (0 = start)" default(0)
+// @Param limit query int false "Page size" default(100)
+// @Success 200 {object} shared.SuccessResponse[helmDto.TradesPageResp]
+// @Failure 400 {object} shared.ErrorResponse
+// @Failure 404 {object} shared.ErrorResponse
+// @Router /api/v1/hands/{id}/trades [get]
+func (h *Handler) trades(c *gin.Context) {
+	userID, ok := callerUserID(c)
+	if !ok {
+		return
+	}
+	id, _, err := h.checkHandOwner(c.Param("id"), userID)
+	if err != nil {
+		shared.RespondWithError(c, http.StatusNotFound, "not found")
+		return
+	}
+	bi, err := h.handMgr.Get(id)
+	if err != nil {
+		shared.RespondWithError(c, http.StatusNotFound, err.Error())
+		return
+	}
+	rt, err := h.reg.Get(bi.Data.HelmID)
+	if err != nil {
+		shared.RespondWithError(c, http.StatusNotFound, "helm runtime not active")
+		return
+	}
+
+	cursor, _ := strconv.ParseUint(c.DefaultQuery("cursor", "0"), 10, 64)
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	if limit < 1 || limit > 500 {
+		limit = 100
+	}
+
+	if rt.PosLog == nil {
+		shared.RespondWithError(c, http.StatusServiceUnavailable, "poslog unavailable")
+		return
+	}
+	page, posErr := rt.PosLog.TradesPaged(c.Request.Context(), bi.Data.HelmID.String(), id.String(), cursor, limit)
+	if posErr != nil {
+		shared.RespondWithError(c, http.StatusInternalServerError, posErr.Error())
+		return
+	}
+	shared.RespondWithSuccess(c, http.StatusOK, "Trades retrieved", helmDto.PoslogPageToResp(page, limit))
 }
 
 func (h *Handler) Metrics(c *gin.Context) {

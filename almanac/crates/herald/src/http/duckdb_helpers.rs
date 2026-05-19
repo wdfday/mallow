@@ -2,10 +2,12 @@
 //!
 //! These functions are called from:
 //! - `data/unified.rs` (transparent parquet fallback)
+//!
+//! Parquet column layout (written by hist-data / alm-data): t, o, h, l, c, v
 
 use std::path::Path;
 
-use tracing::debug;
+use tracing::{debug, warn};
 
 use alm_core::Bar;
 use alm_engine::data::find_parquet_files;
@@ -14,8 +16,11 @@ use super::types::BarRecord;
 
 // ── Parquet fallback helpers ──────────────────────────────────────────────────
 
-/// Query bars with `timestamp < before_ms` from Parquet files, newest `limit`
-/// bars. Returns oldest-first (same order as ring buffer pages).
+/// Query bars with `t < before_ms` from Parquet files, newest `limit` bars.
+/// Returns oldest-first (same order as ring buffer pages).
+///
+/// If no parquet files exist for the requested timeframe and it is not M1,
+/// falls back to M1 files and resamples via DuckDB GROUP BY bucket.
 pub fn query_bars_before(
     data_dir: &Path,
     symbol: &str,
@@ -25,27 +30,162 @@ pub fn query_bars_before(
 ) -> anyhow::Result<Vec<BarRecord>> {
     let files = find_parquet_files(data_dir, symbol, Some(timeframe), None);
     if files.is_empty() {
-        debug!(symbol, timeframe, "duckdb fallback: no parquet files found");
+        if timeframe.to_uppercase() != "M1" {
+            return query_bars_before_resampled(data_dir, symbol, timeframe, before_ms, limit);
+        }
+        warn!(
+            symbol, timeframe,
+            data_dir = %data_dir.display(),
+            "duckdb fallback: no parquet files found"
+        );
         return Ok(vec![]);
     }
     let parquet_expr = build_parquet_expr(&files);
     let sql = format!(
-        "SELECT timestamp, open, high, low, close, volume \
+        "SELECT t, o, h, l, c, v \
          FROM {parquet_expr} \
-         WHERE timestamp < {before_ms} \
-         ORDER BY timestamp DESC \
+         WHERE t < {before_ms} \
+         ORDER BY t DESC \
          LIMIT {limit}"
     );
     let mut bars = run_bar_query(&sql)?;
     bars.reverse(); // DESC → oldest-first
-    debug!(symbol, timeframe, count = bars.len(), "duckdb fallback: before query done");
+    detect_bar_gaps(&bars, timeframe, symbol, "duckdb before");
+    debug!(symbol, timeframe, count = bars.len(), file_count = files.len(), "duckdb fallback: before query done");
     Ok(bars)
+}
+
+/// Detect timestamp gaps between consecutive bars and log a `warn!` for each.
+/// `interval_ms` is derived from the timeframe label; if unknown we skip.
+fn detect_bar_gaps(bars: &[BarRecord], timeframe: &str, symbol: &str, source: &str) {
+    let interval_ms = timeframe_to_ms(timeframe);
+    if interval_ms == 0 || bars.len() < 2 {
+        return;
+    }
+    let mut gap_count = 0usize;
+    for w in bars.windows(2) {
+        let gap_ms = w[1].t - w[0].t;
+        if gap_ms > interval_ms * 2 {
+            gap_count += 1;
+            warn!(
+                symbol, timeframe, source,
+                bar0_ts = w[0].t,
+                bar1_ts = w[1].t,
+                gap_ms,
+                expected_ms = interval_ms,
+                "duckdb result: gap between consecutive bars",
+            );
+        }
+    }
+    if gap_count > 0 {
+        warn!(
+            symbol, timeframe, source,
+            gap_count, total_bars = bars.len(),
+            "duckdb result: gaps found in returned bars",
+        );
+    }
+}
+
+/// Same as [`detect_bar_gaps`] but for `alm_core::Bar` slices (compute path).
+fn detect_core_bar_gaps(bars: &[Bar], timeframe: &str, symbol: &str, source: &str) {
+    let interval_ms = timeframe_to_ms(timeframe);
+    if interval_ms == 0 || bars.len() < 2 {
+        return;
+    }
+    let mut gap_count = 0usize;
+    for w in bars.windows(2) {
+        let gap_ms = w[1].timestamp - w[0].timestamp;
+        if gap_ms > interval_ms * 2 {
+            gap_count += 1;
+            warn!(
+                symbol, timeframe, source,
+                bar0_ts = w[0].timestamp,
+                bar1_ts = w[1].timestamp,
+                gap_ms,
+                expected_ms = interval_ms,
+                "duckdb compute result: gap between consecutive bars",
+            );
+        }
+    }
+    if gap_count > 0 {
+        warn!(
+            symbol, timeframe, source,
+            gap_count, total_bars = bars.len(),
+            "duckdb compute result: gaps found in returned bars",
+        );
+    }
+}
+
+/// Resample M1 parquet files to the requested timeframe when no dedicated
+/// parquet files exist for that timeframe.
+fn query_bars_before_resampled(
+    data_dir: &Path,
+    symbol: &str,
+    timeframe: &str,
+    before_ms: i64,
+    limit: usize,
+) -> anyhow::Result<Vec<BarRecord>> {
+    let m1_files = find_parquet_files(data_dir, symbol, Some("M1"), None);
+    if m1_files.is_empty() {
+        warn!(
+            symbol, timeframe,
+            data_dir = %data_dir.display(),
+            "duckdb resample: no M1 files found either"
+        );
+        return Ok(vec![]);
+    }
+    let interval_ms = timeframe_to_ms(timeframe);
+    if interval_ms == 0 {
+        warn!(symbol, timeframe, "duckdb resample: unknown timeframe");
+        return Ok(vec![]);
+    }
+    // Fetch enough M1 history to fill `limit` buckets
+    let from_ms = before_ms - (limit as i64 + 1) * interval_ms;
+    let parquet_expr = build_parquet_expr(&m1_files);
+    // min_by(o, t) → open of the first M1 bar in the bucket
+    // max_by(c, t) → close of the last M1 bar in the bucket
+    let sql = format!(
+        "SELECT \
+          (t / {interval_ms}) * {interval_ms} AS t, \
+          min_by(o, t) AS o, \
+          max(h)       AS h, \
+          min(l)       AS l, \
+          max_by(c, t) AS c, \
+          sum(v)       AS v \
+         FROM {parquet_expr} \
+         WHERE t >= {from_ms} AND t < {before_ms} \
+         GROUP BY (t / {interval_ms}) * {interval_ms} \
+         ORDER BY 1 DESC \
+         LIMIT {limit}"
+    );
+    let mut bars = run_bar_query(&sql)?;
+    bars.reverse(); // DESC → oldest-first
+    detect_bar_gaps(&bars, timeframe, symbol, "duckdb resample");
+    debug!(symbol, timeframe, count = bars.len(), "duckdb resample: done");
+    Ok(bars)
+}
+
+fn timeframe_to_ms(tf: &str) -> i64 {
+    match tf.to_uppercase().as_str() {
+        "M1"  =>        60_000,
+        "M5"  =>       300_000,
+        "M15" =>       900_000,
+        "M30" =>     1_800_000,
+        "H1"  =>     3_600_000,
+        "H4"  =>    14_400_000,
+        "D1"  =>    86_400_000,
+        "W1"  =>   604_800_000,
+        _     => 0,
+    }
 }
 
 /// Query bars in `[from_ms, to_ms)` from Parquet files, oldest-first.
 ///
 /// Used by the historical indicator compute path — returns `alm_core::Bar`
 /// so callers can feed bars directly through `IndicatorBox::update`.
+///
+/// Falls back to M1 files + DuckDB GROUP BY resampling when no dedicated
+/// parquet files exist for the requested timeframe.
 pub fn query_bars_for_compute(
     data_dir: &Path,
     parquet_symbol: &str,
@@ -56,17 +196,42 @@ pub fn query_bars_for_compute(
     limit: usize,
 ) -> anyhow::Result<Vec<Bar>> {
     let files = find_parquet_files(data_dir, parquet_symbol, Some(timeframe), None);
+    let (files, resample) = if files.is_empty() && timeframe.to_uppercase() != "M1" {
+        let m1 = find_parquet_files(data_dir, parquet_symbol, Some("M1"), None);
+        (m1, true)
+    } else {
+        (files, false)
+    };
     if files.is_empty() {
         return Ok(vec![]);
     }
     let parquet_expr = build_parquet_expr(&files);
-    let sql = format!(
-        "SELECT timestamp, open, high, low, close, volume \
-         FROM {parquet_expr} \
-         WHERE timestamp >= {from_ms} AND timestamp < {to_ms} \
-         ORDER BY timestamp ASC \
-         LIMIT {limit}"
-    );
+    let sql = if resample {
+        let interval_ms = timeframe_to_ms(timeframe);
+        if interval_ms == 0 { return Ok(vec![]); }
+        format!(
+            "SELECT \
+              (t / {interval_ms}) * {interval_ms} AS t, \
+              min_by(o, t) AS o, \
+              max(h)       AS h, \
+              min(l)       AS l, \
+              max_by(c, t) AS c, \
+              sum(v)       AS v \
+             FROM {parquet_expr} \
+             WHERE t >= {from_ms} AND t < {to_ms} \
+             GROUP BY (t / {interval_ms}) * {interval_ms} \
+             ORDER BY 1 ASC \
+             LIMIT {limit}"
+        )
+    } else {
+        format!(
+            "SELECT t, o, h, l, c, v \
+             FROM {parquet_expr} \
+             WHERE t >= {from_ms} AND t < {to_ms} \
+             ORDER BY t ASC \
+             LIMIT {limit}"
+        )
+    };
     let conn = duckdb::Connection::open_in_memory()
         .map_err(|e| anyhow::anyhow!("duckdb open: {e}"))?;
     let mut stmt = conn.prepare(&sql)
@@ -88,7 +253,8 @@ pub fn query_bars_for_compute(
         })
         .map_err(|e| anyhow::anyhow!("duckdb query: {e}"))?
         .map(|r| r.map_err(|e| anyhow::anyhow!("{e}")))
-        .collect::<anyhow::Result<_>>()?;
+        .collect::<anyhow::Result<Vec<Bar>>>()?;
+    detect_core_bar_gaps(&bars, timeframe, parquet_symbol, "duckdb compute");
     Ok(bars)
 }
 

@@ -28,22 +28,12 @@ func IdentityProxy(identityURL string) gin.HandlerFunc {
 	return newProxy(identityURL)
 }
 
-// InvestmentProxy returns a gin handler that reverse-proxies to the investment service.
-// All routes behind this proxy require a valid JWT (enforced by the calling route group).
-func InvestmentProxy(investmentURL string) gin.HandlerFunc {
-	return newProxy(investmentURL, func(path string) string {
-		if rest, ok := strings.CutPrefix(path, "/swagger/investment/"); ok {
-			return "/swagger/" + rest
-		}
-		return path
-	})
-}
-
 // HelmProxy returns a gin handler that reverse-proxies to the helm service.
-// Gateway paths /api/v1/helms/* and /api/v1/hands/* are rewritten to the upstream /api/* surface.
+// /api/v1/helms/* and /api/v1/hands/* are rewritten to /api/* (helm's internal prefix).
+// /api/v1/accounts/* and /api/v1/broker-connections/* are forwarded unchanged.
 func HelmProxy(orchestratorURL string) gin.HandlerFunc {
 	return newProxy(orchestratorURL, func(path string) string {
-		if rest, ok := strings.CutPrefix(path, "/swagger/orchestrator/"); ok {
+		if rest, ok := strings.CutPrefix(path, "/swagger/helm/"); ok {
 			return "/swagger/" + rest
 		}
 		if rest, ok := strings.CutPrefix(path, "/api/v1/helms"); ok {

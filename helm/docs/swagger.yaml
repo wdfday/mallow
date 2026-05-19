@@ -1,0 +1,2807 @@
+basePath: /
+definitions:
+  mallow_helm_internal_module_account_dto.AccountResponse:
+    properties:
+      account_name:
+        type: string
+      account_type:
+        type: string
+      broker_connection_id:
+        type: string
+      created_at:
+        type: string
+      currency:
+        type: string
+      id:
+        type: string
+      include_in_net_worth:
+        type: boolean
+      institution_name:
+        type: string
+      is_active:
+        type: boolean
+      is_auto_sync:
+        type: boolean
+      last_synced_at:
+        type: string
+      sync_error_message:
+        type: string
+      sync_status:
+        type: string
+      updated_at:
+        type: string
+      user_id:
+        type: string
+    type: object
+  mallow_helm_internal_module_account_dto.AccountsListResponse:
+    properties:
+      items:
+        items:
+          $ref: '#/definitions/mallow_helm_internal_module_account_dto.AccountResponse'
+        type: array
+      total:
+        type: integer
+    type: object
+  mallow_helm_internal_module_hand_domain.FuturesConfig:
+    properties:
+      leverage:
+        description: e.g. 10 for 10x; 1 = no leverage
+        type: integer
+      margin_type:
+        allOf:
+        - $ref: '#/definitions/mallow_helm_internal_module_hand_domain.MarginType'
+        description: '"isolated" | "cross"'
+    type: object
+  mallow_helm_internal_module_hand_domain.HandHealthView:
+    properties:
+      last_error:
+        type: string
+      last_error_at:
+        type: string
+      last_order_at:
+        type: string
+      last_signal_at:
+        type: string
+      started_at:
+        type: string
+      status:
+        type: string
+      uptime:
+        type: string
+    type: object
+  mallow_helm_internal_module_hand_domain.HandMetricsView:
+    properties:
+      loss_count:
+        type: integer
+      orders_failed:
+        type: integer
+      orders_filled:
+        type: integer
+      orders_placed:
+        type: integer
+      signals_filtered:
+        type: integer
+      signals_received:
+        type: integer
+      total_pnl:
+        type: number
+      trades_approved:
+        type: integer
+      win_count:
+        type: integer
+    type: object
+  mallow_helm_internal_module_hand_domain.HandRiskConfig:
+    properties:
+      max_avg_loss_pct:
+        description: |-
+          MaxAvgLossPct pauses the hand when avg(PnL over window) / AllocatedCapital
+          drops below -X. Catches consistent small losses even if the total is modest.
+        type: number
+      max_consec_loss:
+        description: |-
+          MaxConsecLoss pauses the hand after N consecutive losing trades.
+          Resets to 0 on any winning trade.
+        type: integer
+      max_single_loss_pct:
+        description: |-
+          MaxSingleLossPct pauses the hand when any single trade in the window
+          lost more than X of AllocatedCapital. Guards against blow-up trades.
+        type: number
+      max_total_loss_pct:
+        description: |-
+          MaxTotalLossPct pauses the hand when sum(PnL over window) / AllocatedCapital
+          drops below -X. e.g. 0.05 = pause when the window's cumulative loss exceeds 5%.
+        type: number
+      window_trades:
+        description: |-
+          WindowTrades is the number of most-recent closed trades to evaluate.
+          0 disables all edge-degradation checks below.
+        type: integer
+    type: object
+  mallow_helm_internal_module_hand_domain.HandStatus:
+    enum:
+    - stopped
+    - running
+    - paused
+    type: string
+    x-enum-varnames:
+    - HandStatusStopped
+    - HandStatusRunning
+    - HandStatusPaused
+  mallow_helm_internal_module_hand_domain.HandSummary:
+    properties:
+      allocated_capital:
+        type: number
+      created_at:
+        type: string
+      deployed_capital:
+        type: number
+      futures:
+        $ref: '#/definitions/mallow_helm_internal_module_hand_domain.FuturesConfig'
+      health:
+        $ref: '#/definitions/mallow_helm_internal_module_hand_domain.HandHealthView'
+      helm_id:
+        type: string
+      id:
+        type: string
+      market:
+        $ref: '#/definitions/mallow_helm_internal_module_hand_domain.MarketType'
+      metrics:
+        $ref: '#/definitions/mallow_helm_internal_module_hand_domain.HandMetricsView'
+      name:
+        type: string
+      order_count:
+        type: integer
+      position:
+        $ref: '#/definitions/mallow_helm_internal_module_hand_domain.PositionConfig'
+      risk:
+        $ref: '#/definitions/mallow_helm_internal_module_hand_domain.HandRiskConfig'
+      running:
+        type: boolean
+      signal_ttl_sec:
+        type: integer
+      status:
+        $ref: '#/definitions/mallow_helm_internal_module_hand_domain.HandStatus'
+      strategy:
+        $ref: '#/definitions/mallow_helm_internal_module_hand_domain.StrategySpec'
+      symbols:
+        items:
+          type: string
+        type: array
+      type:
+        $ref: '#/definitions/mallow_helm_internal_module_hand_domain.HandType'
+    type: object
+  mallow_helm_internal_module_hand_domain.HandType:
+    enum:
+    - signal_follower
+    - manual
+    - dca
+    - grid
+    type: string
+    x-enum-varnames:
+    - HandTypeSignalFollower
+    - HandTypeManual
+    - HandTypeDCA
+    - HandTypeGrid
+  mallow_helm_internal_module_hand_domain.LimitFallback:
+    enum:
+    - cancel
+    - market
+    type: string
+    x-enum-comments:
+      LimitFallbackCancel: cancel and do nothing
+      LimitFallbackMarket: re-place as market order
+    x-enum-varnames:
+    - LimitFallbackCancel
+    - LimitFallbackMarket
+  mallow_helm_internal_module_hand_domain.MarginType:
+    enum:
+    - isolated
+    - cross
+    type: string
+    x-enum-varnames:
+    - MarginTypeIsolated
+    - MarginTypeCross
+  mallow_helm_internal_module_hand_domain.MarketType:
+    enum:
+    - spot
+    - futures
+    type: string
+    x-enum-varnames:
+    - MarketTypeSpot
+    - MarketTypeFutures
+  mallow_helm_internal_module_hand_domain.OrderType:
+    enum:
+    - market
+    - limit
+    type: string
+    x-enum-varnames:
+    - OrderTypeMarket
+    - OrderTypeLimit
+  mallow_helm_internal_module_hand_domain.PositionConfig:
+    properties:
+      fixed_qty:
+        description: |-
+          FixedQty: fixed base-asset quantity per trade.
+          Used by: fixed_qty.
+        type: number
+      fixed_quote_qty:
+        description: |-
+          FixedQuoteQty: fixed quote spend per trade (e.g. 1000 USDT).
+          Used by: quote_qty. Only for market-buy on spot; exchange fills max base qty.
+        type: number
+      max_position_pct:
+        description: |-
+          MaxPositionPct: hard cap on total open exposure as a fraction of equity.
+          Legacy fallback — prefer AllocatedCapital for isolation.
+        type: number
+      max_units:
+        description: |-
+          MaxUnits: max concurrent entry legs. 1 = no scaling (default).
+          Each signal while at max is rejected.
+          Overridden downward by helm-level RiskConfig.MaxUnitsPerHand if set.
+        type: integer
+      pyramid:
+        description: |-
+          Pyramid: how additional entry signals are handled while a position is open.
+          true  → merge into the existing leg (qty accumulates, avg_entry recalculated).
+          false → open a new independent leg up to MaxUnits.
+        type: boolean
+      risk_per_trade_pct:
+        description: |-
+          RiskPerTradePct: fraction of allocated capital risked per trade.
+          Used by: fixed_fractional, volatility.  e.g. 0.01 = 1%.
+        type: number
+      size_mode:
+        allOf:
+        - $ref: '#/definitions/mallow_helm_internal_module_hand_domain.SizeMode'
+        description: SizeMode selects the sizing algorithm. Defaults to fixed_fractional.
+      unit_capital:
+        description: |-
+          UnitCapital: fixed USDT amount per entry unit.
+          Used by: percent_equity (takes priority over UnitPct when non-zero).
+        type: number
+      unit_pct:
+        description: |-
+          UnitPct: fraction of allocated capital per entry unit.
+          Used by: percent_equity (fallback when UnitCapital is zero).  e.g. 0.10 = 10%.
+        type: number
+    type: object
+  mallow_helm_internal_module_hand_domain.SizeMode:
+    enum:
+    - fixed_fractional
+    - fixed_qty
+    - quote_qty
+    - percent_equity
+    - volatility
+    type: string
+    x-enum-comments:
+      SizeModeFixedFractional: scale unit by signal confidence
+      SizeModeFixedQty: fixed base quantity
+      SizeModePercentEquity: fixed % of equity
+      SizeModeQuoteQty: fixed quote spend per trade
+      SizeModeVolatility: ATR-based risk parity
+    x-enum-varnames:
+    - SizeModeFixedFractional
+    - SizeModeFixedQty
+    - SizeModeQuoteQty
+    - SizeModePercentEquity
+    - SizeModeVolatility
+  mallow_helm_internal_module_hand_domain.StrategySpec:
+    properties:
+      min_strength:
+        description: Signal strength filter [0–1]
+        maximum: 1
+        minimum: 0
+        type: number
+      script:
+        description: Script — full source code (required)
+        type: string
+      timeframe:
+        description: |-
+          Timeframe the script operates on (e.g. "M1", "M5", "H1", "D1") — REQUIRED.
+          Strategies are calibrated to a specific TF, so we never silently default;
+          missing TF is a validation error. herald rejects empty TF too.
+        enum:
+        - M1
+        - M5
+        - M15
+        - M30
+        - H1
+        - H4
+        - D1
+        - W1
+        type: string
+    required:
+    - script
+    - timeframe
+    type: object
+  mallow_helm_internal_module_hand_dto.CreateHandReq:
+    properties:
+      account_id:
+        type: string
+      allocated_capital:
+        description: |-
+          AllocatedCapital is the hand's fixed capital budget (quote currency, e.g. USDT).
+          Zero means the hand draws from full helm equity without isolation.
+        minimum: 0
+        type: number
+      futures:
+        $ref: '#/definitions/mallow_helm_internal_module_hand_dto.FuturesDTO'
+      helm_id:
+        type: string
+      limit_fallback:
+        allOf:
+        - $ref: '#/definitions/mallow_helm_internal_module_hand_domain.LimitFallback'
+        enum:
+        - cancel
+        - market
+      limit_timeout_sec:
+        maximum: 3600
+        minimum: 5
+        type: integer
+      market:
+        allOf:
+        - $ref: '#/definitions/mallow_helm_internal_module_hand_domain.MarketType'
+        enum:
+        - spot
+        - futures
+      name:
+        maxLength: 128
+        minLength: 1
+        type: string
+      order_type:
+        allOf:
+        - $ref: '#/definitions/mallow_helm_internal_module_hand_domain.OrderType'
+        description: 'OrderType: default entry order type. "market" (default) or "limit".'
+        enum:
+        - market
+        - limit
+      position:
+        $ref: '#/definitions/mallow_helm_internal_module_hand_dto.PositionDTO'
+      risk:
+        $ref: '#/definitions/mallow_helm_internal_module_hand_dto.HandRiskConfigDTO'
+      signal_ttl_sec:
+        description: 'SignalTTLSec: max age of a signal before discard. 0 = default
+          (10s), -1 = disable.'
+        maximum: 3600
+        minimum: -1
+        type: integer
+      strategy:
+        $ref: '#/definitions/mallow_helm_internal_module_hand_dto.StrategyDTO'
+      symbols:
+        items:
+          type: string
+        minItems: 1
+        type: array
+      type:
+        allOf:
+        - $ref: '#/definitions/mallow_helm_internal_module_hand_domain.HandType'
+        enum:
+        - signal_follower
+    required:
+    - name
+    - strategy
+    - symbols
+    type: object
+  mallow_helm_internal_module_hand_dto.FuturesDTO:
+    properties:
+      leverage:
+        maximum: 125
+        minimum: 1
+        type: integer
+      margin_type:
+        allOf:
+        - $ref: '#/definitions/mallow_helm_internal_module_hand_domain.MarginType'
+        enum:
+        - isolated
+        - cross
+    type: object
+  mallow_helm_internal_module_hand_dto.HandActionResp:
+    properties:
+      id:
+        type: string
+      status:
+        type: string
+    type: object
+  mallow_helm_internal_module_hand_dto.HandRiskConfigDTO:
+    properties:
+      max_avg_loss_pct:
+        maximum: 1
+        type: number
+      max_consec_loss:
+        maximum: 100
+        minimum: 1
+        type: integer
+      max_single_loss_pct:
+        maximum: 1
+        type: number
+      max_total_loss_pct:
+        maximum: 1
+        type: number
+      window_trades:
+        maximum: 1000
+        minimum: 1
+        type: integer
+    type: object
+  mallow_helm_internal_module_hand_dto.PositionDTO:
+    properties:
+      fixed_qty:
+        type: number
+      fixed_quote_qty:
+        type: number
+      max_position_pct:
+        maximum: 1
+        type: number
+      max_units:
+        minimum: 1
+        type: integer
+      pyramid:
+        type: boolean
+      risk_per_trade_pct:
+        maximum: 1
+        type: number
+      size_mode:
+        allOf:
+        - $ref: '#/definitions/mallow_helm_internal_module_hand_domain.SizeMode'
+        enum:
+        - fixed_fractional
+        - fixed_qty
+        - quote_qty
+        - percent_equity
+        - volatility
+      unit_capital:
+        minimum: 0
+        type: number
+      unit_pct:
+        maximum: 1
+        type: number
+    type: object
+  mallow_helm_internal_module_hand_dto.StrategyDTO:
+    properties:
+      min_strength:
+        description: Signal strength filter [0–1]
+        maximum: 1
+        minimum: 0
+        type: number
+      script:
+        description: Script — full source code (required)
+        type: string
+      timeframe:
+        description: |-
+          Timeframe the script operates on (e.g. "M1", "M5", "H1", "D1") — REQUIRED.
+          Strategies are calibrated to a specific TF, so we never silently default;
+          missing TF is a validation error. herald rejects empty TF too.
+        enum:
+        - M1
+        - M5
+        - M15
+        - M30
+        - H1
+        - H4
+        - D1
+        - W1
+        type: string
+    required:
+    - script
+    - timeframe
+    type: object
+  mallow_helm_internal_module_hand_dto.UpdateHandReq:
+    properties:
+      allocated_capital:
+        minimum: 0
+        type: number
+      name:
+        maxLength: 128
+        minLength: 1
+        type: string
+      position:
+        $ref: '#/definitions/mallow_helm_internal_module_hand_dto.PositionDTO'
+      risk:
+        $ref: '#/definitions/mallow_helm_internal_module_hand_dto.HandRiskConfigDTO'
+      signal_ttl_sec:
+        maximum: 3600
+        minimum: -1
+        type: integer
+    type: object
+  mallow_helm_internal_module_helm_dto.ActionResp:
+    properties:
+      id:
+        type: string
+      status:
+        type: string
+    type: object
+  mallow_helm_internal_module_helm_dto.EquityPageResp:
+    properties:
+      has_more:
+        type: boolean
+      limit:
+        type: integer
+      next:
+        type: string
+      points:
+        items:
+          $ref: '#/definitions/mallow_helm_internal_module_helm_dto.EquityPointResp'
+        type: array
+    type: object
+  mallow_helm_internal_module_helm_dto.EquityPointResp:
+    properties:
+      equity:
+        type: number
+      hand_id:
+        type: string
+      ts:
+        type: string
+    type: object
+  mallow_helm_internal_module_helm_dto.ExchangeAccountResp:
+    properties:
+      cash:
+        type: number
+      equity:
+        type: number
+      positions:
+        items:
+          $ref: '#/definitions/mallow_helm_internal_module_helm_dto.ExchangePositionResp'
+        type: array
+    type: object
+  mallow_helm_internal_module_helm_dto.ExchangeOrderResp:
+    properties:
+      filled_avg_price:
+        type: number
+      filled_qty:
+        type: number
+      id:
+        type: string
+      qty:
+        type: number
+      side:
+        type: string
+      status:
+        type: string
+      symbol:
+        type: string
+    type: object
+  mallow_helm_internal_module_helm_dto.ExchangePositionResp:
+    properties:
+      avg_price:
+        type: number
+      cur_price:
+        type: number
+      qty:
+        type: number
+      symbol:
+        type: string
+    type: object
+  mallow_helm_internal_module_helm_dto.ExchangePriceResp:
+    properties:
+      price:
+        type: number
+      symbol:
+        type: string
+    type: object
+  mallow_helm_internal_module_helm_dto.FillPageResp:
+    properties:
+      fills:
+        items:
+          $ref: '#/definitions/mallow_helm_internal_module_helm_dto.FillResp'
+        type: array
+      has_more:
+        type: boolean
+      limit:
+        type: integer
+      next:
+        description: RFC3339 cursor; empty = end
+        type: string
+    type: object
+  mallow_helm_internal_module_helm_dto.FillResp:
+    properties:
+      avg_price:
+        type: number
+      fee:
+        type: number
+      filled_at:
+        type: string
+      hand_id:
+        type: string
+      kind:
+        type: string
+      order_id:
+        type: string
+      qty:
+        type: number
+      side:
+        type: string
+      symbol:
+        type: string
+      trade_id:
+        type: string
+    type: object
+  mallow_helm_internal_module_helm_dto.HelmDetailResp:
+    properties:
+      account_id:
+        type: string
+      account_type:
+        type: string
+      broker_type:
+        type: string
+      created_at:
+        type: string
+      enabled:
+        type: boolean
+      hands:
+        items:
+          $ref: '#/definitions/mallow_helm_internal_module_hand_domain.HandSummary'
+        type: array
+      id:
+        type: string
+      last_sync_at:
+        type: string
+      name:
+        type: string
+      paused:
+        type: boolean
+      portfolio:
+        $ref: '#/definitions/mallow_helm_internal_module_helm_dto.PortfolioConfigDTO'
+      risk:
+        $ref: '#/definitions/mallow_helm_internal_module_helm_dto.RiskConfigDTO'
+      running:
+        type: boolean
+      status:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  mallow_helm_internal_module_helm_dto.HelmResp:
+    properties:
+      account_id:
+        type: string
+      account_type:
+        type: string
+      broker_type:
+        type: string
+      created_at:
+        type: string
+      enabled:
+        type: boolean
+      id:
+        type: string
+      name:
+        type: string
+      portfolio:
+        $ref: '#/definitions/mallow_helm_internal_module_helm_dto.PortfolioConfigDTO'
+      risk:
+        $ref: '#/definitions/mallow_helm_internal_module_helm_dto.RiskConfigDTO'
+      status:
+        type: string
+      updated_at:
+        type: string
+    type: object
+  mallow_helm_internal_module_helm_dto.OrderResp:
+    properties:
+      filled_avg_price:
+        type: number
+      filled_qty:
+        type: number
+      hand_id:
+        type: string
+      helm_id:
+        type: string
+      id:
+        type: string
+      qty:
+        type: number
+      side:
+        type: string
+      status:
+        type: string
+      submitted_at:
+        type: string
+      symbol:
+        type: string
+      type:
+        type: string
+    type: object
+  mallow_helm_internal_module_helm_dto.PlaceExchangeOrderReq:
+    properties:
+      price:
+        type: number
+      qty:
+        type: number
+      side:
+        enum:
+        - buy
+        - sell
+        type: string
+      symbol:
+        type: string
+      type:
+        enum:
+        - market
+        - limit
+        type: string
+    required:
+    - qty
+    - side
+    - symbol
+    - type
+    type: object
+  mallow_helm_internal_module_helm_dto.PortfolioConfigDTO:
+    properties:
+      max_position_pct:
+        maximum: 1
+        type: number
+      max_positions:
+        minimum: 1
+        type: integer
+      reserve_ratio:
+        minimum: 0
+        type: number
+    type: object
+  mallow_helm_internal_module_helm_dto.PortfolioResp:
+    properties:
+      cash:
+        type: number
+      current_drawdown_pct:
+        type: number
+      daily_pnl:
+        type: number
+      equity:
+        type: number
+      initial_capital:
+        type: number
+      max_drawdown_pct:
+        type: number
+      open_positions:
+        type: integer
+      positions:
+        items:
+          $ref: '#/definitions/mallow_helm_internal_module_helm_dto.PositionResp'
+        type: array
+      total_return_pct:
+        type: number
+      total_trades:
+        type: integer
+      win_rate_pct:
+        type: number
+    type: object
+  mallow_helm_internal_module_helm_dto.PositionResp:
+    properties:
+      avg_price:
+        type: number
+      current_price:
+        type: number
+      entry_time:
+        type: string
+      market_value:
+        type: number
+      qty:
+        type: number
+      symbol:
+        type: string
+      unrealized_pnl:
+        type: number
+    type: object
+  mallow_helm_internal_module_helm_dto.RiskConfigDTO:
+    properties:
+      daily_loss_limit_pct:
+        maximum: 1
+        type: number
+      max_drawdown_pct:
+        maximum: 1
+        type: number
+    type: object
+  mallow_helm_internal_module_helm_dto.SnapshotPageResp:
+    properties:
+      has_more:
+        type: boolean
+      limit:
+        type: integer
+      next:
+        type: string
+      snapshots:
+        items:
+          $ref: '#/definitions/mallow_helm_internal_module_helm_dto.SnapshotResp'
+        type: array
+    type: object
+  mallow_helm_internal_module_helm_dto.SnapshotPositionResp:
+    properties:
+      avg_price:
+        type: number
+      qty:
+        type: number
+      side:
+        type: string
+      symbol:
+        type: string
+    type: object
+  mallow_helm_internal_module_helm_dto.SnapshotResp:
+    properties:
+      cash:
+        type: number
+      hand_id:
+        type: string
+      helm_id:
+        type: string
+      positions:
+        items:
+          $ref: '#/definitions/mallow_helm_internal_module_helm_dto.SnapshotPositionResp'
+        type: array
+      ts:
+        type: string
+    type: object
+  mallow_helm_internal_module_helm_dto.TradeResp:
+    properties:
+      entry_price:
+        type: number
+      entry_time:
+        type: string
+      exit_price:
+        type: number
+      exit_time:
+        type: string
+      hand_id:
+        type: string
+      pnl:
+        type: number
+      pnl_pct:
+        type: number
+      qty:
+        type: number
+      side:
+        type: string
+      symbol:
+        type: string
+    type: object
+  mallow_helm_internal_module_helm_dto.TradesPageResp:
+    properties:
+      has_more:
+        type: boolean
+      limit:
+        type: integer
+      next:
+        type: integer
+      trades:
+        items:
+          $ref: '#/definitions/mallow_helm_internal_module_helm_dto.TradeResp'
+        type: array
+    type: object
+  mallow_helm_internal_module_helm_dto.UpdateHelmReq:
+    properties:
+      name:
+        maxLength: 128
+        minLength: 1
+        type: string
+      portfolio:
+        $ref: '#/definitions/mallow_helm_internal_module_helm_dto.PortfolioConfigDTO'
+      risk:
+        $ref: '#/definitions/mallow_helm_internal_module_helm_dto.RiskConfigDTO'
+    type: object
+  mallow_helm_internal_runtime.ActivityEntry:
+    properties:
+      at:
+        type: string
+      code:
+        type: integer
+      direction:
+        description: signal direction (long/short/close/…)
+        type: string
+      order_id:
+        type: string
+      price:
+        type: number
+      qty:
+        type: number
+      reason:
+        description: human-readable detail (filter cause, rejection message, error)
+        type: string
+      side:
+        type: string
+      strength:
+        type: number
+      symbol:
+        type: string
+    type: object
+  mallow_helm_internal_shared.ErrorResponse:
+    properties:
+      code:
+        type: string
+      details:
+        additionalProperties: {}
+        type: object
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+  mallow_helm_internal_shared.SuccessResponse-any:
+    properties:
+      data: {}
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+  mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_module_hand_domain_HandSummary:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/mallow_helm_internal_module_hand_domain.HandSummary'
+        type: array
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+  mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_module_helm_dto_HelmResp:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/mallow_helm_internal_module_helm_dto.HelmResp'
+        type: array
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+  mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_module_helm_dto_OrderResp:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/mallow_helm_internal_module_helm_dto.OrderResp'
+        type: array
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+  mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_module_helm_dto_PositionResp:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/mallow_helm_internal_module_helm_dto.PositionResp'
+        type: array
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+  mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_runtime_ActivityEntry:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/mallow_helm_internal_runtime.ActivityEntry'
+        type: array
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+  mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_account_dto_AccountResponse:
+    properties:
+      data:
+        $ref: '#/definitions/mallow_helm_internal_module_account_dto.AccountResponse'
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+  mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_account_dto_AccountsListResponse:
+    properties:
+      data:
+        $ref: '#/definitions/mallow_helm_internal_module_account_dto.AccountsListResponse'
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+  mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_hand_domain_HandSummary:
+    properties:
+      data:
+        $ref: '#/definitions/mallow_helm_internal_module_hand_domain.HandSummary'
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+  mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_hand_dto_HandActionResp:
+    properties:
+      data:
+        $ref: '#/definitions/mallow_helm_internal_module_hand_dto.HandActionResp'
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+  mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ActionResp:
+    properties:
+      data:
+        $ref: '#/definitions/mallow_helm_internal_module_helm_dto.ActionResp'
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+  mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_EquityPageResp:
+    properties:
+      data:
+        $ref: '#/definitions/mallow_helm_internal_module_helm_dto.EquityPageResp'
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+  mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ExchangeAccountResp:
+    properties:
+      data:
+        $ref: '#/definitions/mallow_helm_internal_module_helm_dto.ExchangeAccountResp'
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+  mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ExchangeOrderResp:
+    properties:
+      data:
+        $ref: '#/definitions/mallow_helm_internal_module_helm_dto.ExchangeOrderResp'
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+  mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ExchangePriceResp:
+    properties:
+      data:
+        $ref: '#/definitions/mallow_helm_internal_module_helm_dto.ExchangePriceResp'
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+  mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_FillPageResp:
+    properties:
+      data:
+        $ref: '#/definitions/mallow_helm_internal_module_helm_dto.FillPageResp'
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+  mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_HelmDetailResp:
+    properties:
+      data:
+        $ref: '#/definitions/mallow_helm_internal_module_helm_dto.HelmDetailResp'
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+  mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_HelmResp:
+    properties:
+      data:
+        $ref: '#/definitions/mallow_helm_internal_module_helm_dto.HelmResp'
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+  mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_PortfolioResp:
+    properties:
+      data:
+        $ref: '#/definitions/mallow_helm_internal_module_helm_dto.PortfolioResp'
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+  mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_SnapshotPageResp:
+    properties:
+      data:
+        $ref: '#/definitions/mallow_helm_internal_module_helm_dto.SnapshotPageResp'
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+  mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_TradesPageResp:
+    properties:
+      data:
+        $ref: '#/definitions/mallow_helm_internal_module_helm_dto.TradesPageResp'
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+info:
+  contact: {}
+  description: Helm service APIs for helms, hands, and signal engine control.
+  title: Helm Service API
+  version: "1.0"
+paths:
+  /api/v1/accounts:
+    get:
+      parameters:
+      - description: Filter by account type
+        in: query
+        name: account_type
+        type: string
+      - description: Filter by active status
+        in: query
+        name: is_active
+        type: boolean
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_account_dto_AccountsListResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List my accounts
+      tags:
+      - accounts
+  /api/v1/accounts/{id}:
+    get:
+      parameters:
+      - description: Account ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_account_dto_AccountResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get account by ID
+      tags:
+      - accounts
+  /api/v1/accounts/{id}/equity:
+    get:
+      description: Time-cursor pagination over HELM_EQUITY JetStream stream, fan-out
+        across all hands under the account's helm.
+      parameters:
+      - description: Account ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: RFC3339 cursor (exclusive); omit for all
+        in: query
+        name: after
+        type: string
+      - default: 200
+        description: Page size
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_EquityPageResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Equity curve for an account
+      tags:
+      - accounts
+  /api/v1/accounts/{id}/events:
+    get:
+      description: Subscribes to helm.events.{helmID} and streams behavioral events
+        (signals, orders, fills, lifecycle).
+      parameters:
+      - description: Account ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - text/event-stream
+      responses:
+        "200":
+          description: SSE stream
+          schema:
+            type: string
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Stream real-time helm events for an account via SSE
+      tags:
+      - accounts
+  /api/v1/accounts/{id}/fills:
+    get:
+      description: Time-cursor pagination over TRADE_FILLS JetStream stream. Pass
+        `after` (RFC3339) from previous response to page forward.
+      parameters:
+      - description: Account ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: RFC3339 cursor (exclusive); omit for all
+        in: query
+        name: after
+        type: string
+      - default: 200
+        description: Page size
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_FillPageResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List order fills for an account
+      tags:
+      - accounts
+  /api/v1/accounts/{id}/portfolio:
+    get:
+      description: Returns real-time portfolio summary from the helm runtime (cash,
+        equity, positions, drawdown, win rate).
+      parameters:
+      - description: Account ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_PortfolioResp'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get live portfolio for an account
+      tags:
+      - accounts
+  /api/v1/accounts/{id}/positions:
+    get:
+      description: Returns live open positions from the helm runtime.
+      parameters:
+      - description: Account ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_module_helm_dto_PositionResp'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List open positions for an account
+      tags:
+      - accounts
+  /api/v1/accounts/{id}/snapshots:
+    get:
+      description: Time-cursor pagination over PORTFOLIO_SNAPSHOTS JetStream stream.
+      parameters:
+      - description: Account ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: RFC3339 cursor (exclusive); omit for all
+        in: query
+        name: after
+        type: string
+      - default: 100
+        description: Page size
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_SnapshotPageResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List portfolio snapshots for an account
+      tags:
+      - accounts
+  /api/v1/accounts/{id}/stream/fills:
+    get:
+      description: Each SSE data frame is a JSON-encoded TransactionMsg published
+        to trade.filled.{accountID}.
+      parameters:
+      - description: Account ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - text/event-stream
+      responses:
+        "200":
+          description: SSE stream
+          schema:
+            type: string
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Stream real-time order fills for an account via SSE
+      tags:
+      - accounts
+  /api/v1/accounts/{id}/stream/portfolio:
+    get:
+      description: Each SSE data frame is a JSON-encoded PortfolioSyncEvent published
+        to portfolio.synced.{accountID}.
+      parameters:
+      - description: Account ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - text/event-stream
+      responses:
+        "200":
+          description: SSE stream
+          schema:
+            type: string
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Stream real-time portfolio sync events for an account via SSE
+      tags:
+      - accounts
+  /api/v1/accounts/{id}/trades:
+    get:
+      description: Cursor-based pagination over HELM_TRADES JetStream stream (fan-out
+        across all hands).
+      parameters:
+      - description: Account ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: JetStream sequence cursor (0 = from start)
+        in: query
+        name: cursor
+        type: integer
+      - default: 100
+        description: Page size
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_TradesPageResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List closed trades for an account
+      tags:
+      - accounts
+  /api/v1/hands:
+    get:
+      parameters:
+      - description: Filter by helm ID
+        in: query
+        name: helm_id
+        type: string
+      - description: Filter by account ID
+        in: query
+        name: account_id
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_module_hand_domain_HandSummary'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List hands
+      tags:
+      - hands
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Hand create request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/mallow_helm_internal_module_hand_dto.CreateHandReq'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_hand_domain_HandSummary'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Create hand
+      tags:
+      - hands
+  /api/v1/hands/{id}:
+    delete:
+      parameters:
+      - description: Hand ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_hand_dto_HandActionResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Delete hand
+      tags:
+      - hands
+    get:
+      parameters:
+      - description: Hand ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_hand_domain_HandSummary'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get hand
+      tags:
+      - hands
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Hand ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Hand update request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/mallow_helm_internal_module_hand_dto.UpdateHandReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_hand_domain_HandSummary'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update hand
+      tags:
+      - hands
+  /api/v1/hands/{id}/activity:
+    get:
+      description: Returns the last 200 signal/order events for a hand in chronological
+        order
+      parameters:
+      - description: Hand ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - text/plain
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_runtime_ActivityEntry'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get hand activity log
+      tags:
+      - system
+      - hands
+  /api/v1/hands/{id}/kill:
+    post:
+      parameters:
+      - description: Hand ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_hand_dto_HandActionResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Kill hand — stop and flatten all positions
+      tags:
+      - hands
+  /api/v1/hands/{id}/pause:
+    post:
+      parameters:
+      - description: Hand ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_hand_dto_HandActionResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Pause hand
+      tags:
+      - hands
+  /api/v1/hands/{id}/release:
+    post:
+      description: Stop the hand without closing positions. Open legs are marked orphaned
+        in the poslog; the hand will not reclaim them on restart.
+      parameters:
+      - description: Hand ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_hand_dto_HandActionResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      summary: Release a hand (orphan open positions)
+      tags:
+      - hands
+  /api/v1/hands/{id}/restart:
+    post:
+      parameters:
+      - description: Hand ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_hand_dto_HandActionResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Restart hand — stop then start (re-registers with signal herald)
+      tags:
+      - hands
+  /api/v1/hands/{id}/resume:
+    post:
+      parameters:
+      - description: Hand ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_hand_dto_HandActionResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Resume hand
+      tags:
+      - hands
+  /api/v1/hands/{id}/start:
+    post:
+      parameters:
+      - description: Hand ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_hand_dto_HandActionResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Start hand
+      tags:
+      - hands
+  /api/v1/hands/{id}/stop:
+    post:
+      parameters:
+      - description: Hand ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_hand_dto_HandActionResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Stop hand
+      tags:
+      - hands
+  /api/v1/hands/{id}/trades:
+    get:
+      parameters:
+      - description: Hand ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - default: 0
+        description: Cursor from previous page (0 = start)
+        in: query
+        name: cursor
+        type: integer
+      - default: 100
+        description: Page size
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_TradesPageResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List closed trades for a hand (poslog-backed, cursor paging)
+      tags:
+      - hands
+  /api/v1/helms:
+    get:
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_module_helm_dto_HelmResp'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List helms
+      tags:
+      - helms
+  /api/v1/helms/{id}:
+    get:
+      parameters:
+      - description: Orchestrator ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_HelmDetailResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get helm
+      tags:
+      - helms
+    put:
+      consumes:
+      - application/json
+      parameters:
+      - description: Orchestrator ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Orchestrator update
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/mallow_helm_internal_module_helm_dto.UpdateHelmReq'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_HelmResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Update orchestrator
+      tags:
+      - helms
+  /api/v1/helms/{id}/disable:
+    post:
+      parameters:
+      - description: Orchestrator ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ActionResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Disable helm
+      tags:
+      - helms
+  /api/v1/helms/{id}/enable:
+    post:
+      parameters:
+      - description: Orchestrator ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ActionResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Enable helm
+      tags:
+      - helms
+  /api/v1/helms/{id}/equity:
+    get:
+      parameters:
+      - description: Helm ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: RFC3339 cursor (exclusive); omit for all
+        in: query
+        name: after
+        type: string
+      - default: 200
+        description: Page size
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_EquityPageResp'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Equity curve for a helm (fan-out across all hands, from HELM_EQUITY
+        stream)
+      tags:
+      - helms
+  /api/v1/helms/{id}/events:
+    get:
+      parameters:
+      - description: Helm ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - text/event-stream
+      responses:
+        "200":
+          description: SSE stream
+          schema:
+            type: string
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Stream real-time helm behavioral events via SSE
+      tags:
+      - helms
+  /api/v1/helms/{id}/exchange/account:
+    get:
+      parameters:
+      - description: Orchestrator ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ExchangeAccountResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "502":
+          description: Bad Gateway
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get live exchange account snapshot
+      tags:
+      - exchange
+  /api/v1/helms/{id}/exchange/orders:
+    delete:
+      parameters:
+      - description: Orchestrator ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 'Order ID (format: SYMBOL:numeric_id for Binance)'
+        in: query
+        name: order_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-any'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "502":
+          description: Bad Gateway
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Cancel an open order on the exchange
+      tags:
+      - exchange
+    get:
+      parameters:
+      - description: Orchestrator ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: 'Order ID (format: SYMBOL:numeric_id for Binance)'
+        in: query
+        name: order_id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ExchangeOrderResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "502":
+          description: Bad Gateway
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get order status from the exchange
+      tags:
+      - exchange
+    post:
+      consumes:
+      - application/json
+      parameters:
+      - description: Orchestrator ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Order request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/mallow_helm_internal_module_helm_dto.PlaceExchangeOrderReq'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ExchangeOrderResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "502":
+          description: Bad Gateway
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Place a spot order directly on the exchange
+      tags:
+      - exchange
+  /api/v1/helms/{id}/exchange/price:
+    get:
+      parameters:
+      - description: Orchestrator ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Symbol (e.g. BTCUSDT)
+        in: query
+        name: symbol
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ExchangePriceResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "502":
+          description: Bad Gateway
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get live price for a symbol
+      tags:
+      - exchange
+  /api/v1/helms/{id}/fills:
+    get:
+      parameters:
+      - description: Helm ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: RFC3339 cursor (exclusive); omit for all
+        in: query
+        name: after
+        type: string
+      - default: 200
+        description: Page size
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_FillPageResp'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List fills for a helm account (from TRADE_FILLS JetStream stream)
+      tags:
+      - helms
+  /api/v1/helms/{id}/halt/reset:
+    post:
+      parameters:
+      - description: Orchestrator ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ActionResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Reset orchestrator halt flag and restore to active
+      tags:
+      - helms
+  /api/v1/helms/{id}/kill:
+    post:
+      parameters:
+      - description: Orchestrator ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ActionResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Kill orchestrator — flatten all hand positions and halt
+      tags:
+      - helms
+  /api/v1/helms/{id}/orders:
+    get:
+      parameters:
+      - description: Orchestrator ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_module_helm_dto_OrderResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List orchestrator orders
+      tags:
+      - helms
+  /api/v1/helms/{id}/pause:
+    post:
+      parameters:
+      - description: Orchestrator ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ActionResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Pause orchestrator
+      tags:
+      - helms
+  /api/v1/helms/{id}/portfolio:
+    get:
+      parameters:
+      - description: Orchestrator ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_PortfolioResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get helm portfolio summary
+      tags:
+      - helms
+  /api/v1/helms/{id}/positions:
+    get:
+      parameters:
+      - description: Orchestrator ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_module_helm_dto_PositionResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List orchestrator positions
+      tags:
+      - helms
+  /api/v1/helms/{id}/resume:
+    post:
+      parameters:
+      - description: Orchestrator ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ActionResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Resume orchestrator
+      tags:
+      - helms
+  /api/v1/helms/{id}/snapshots:
+    get:
+      parameters:
+      - description: Helm ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: RFC3339 cursor (exclusive); omit for all
+        in: query
+        name: after
+        type: string
+      - default: 100
+        description: Page size
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_SnapshotPageResp'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List portfolio snapshots for a helm (from PORTFOLIO_SNAPSHOTS stream)
+      tags:
+      - helms
+  /api/v1/helms/{id}/trades:
+    get:
+      parameters:
+      - description: Helm ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: JetStream sequence cursor (0 = from start)
+        in: query
+        name: cursor
+        type: integer
+      - default: 100
+        description: Page size
+        in: query
+        name: limit
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_TradesPageResp'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List closed trades for a helm (all hands, JetStream-backed)
+      tags:
+      - helms
+  /metrics:
+    get:
+      description: Returns the last 200 signal/order events for a hand in chronological
+        order
+      produces:
+      - text/plain
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_runtime_ActivityEntry'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: Get hand activity log
+      tags:
+      - system
+      - hands
+schemes:
+- http
+- https
+securityDefinitions:
+  BearerAuth:
+    in: header
+    name: Authorization
+    type: apiKey
+swagger: "2.0"

@@ -17,6 +17,7 @@ type Helm struct {
 	AccountID    uuid.UUID       `json:"account_id"` // → investment.accounts.id
 	Name         string          `json:"name"`
 	BrokerType   string          `json:"broker_type"`    // alpaca | binance | okx | bybit — persisted for routing
+	AccountType  string          `json:"account_type"`   // spot | futures_usdm | futures_coinm | unified
 	Portfolio    PortfolioConfig `json:"portfolio"`      // capital allocation at account level
 	Risk         RiskConfig      `json:"risk"`           // circuit-breakers / drawdown guards
 	Enabled      bool            `json:"enabled"`        // user toggle — gates hand create/delete

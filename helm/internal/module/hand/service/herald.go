@@ -20,13 +20,11 @@ func (s *Service) heraldRegister(handID uuid.UUID, b *domain.Hand) {
 	defer cancel()
 	for _, sym := range b.Symbols {
 		req := &engine.RegisterMsg{
-			HandId: handID.String(),
-			Symbol: sym,
-			Script: b.Strategy.Script,
-			HelmId: b.HelmID.String(),
-		}
-		if b.Strategy.Timeframe != "" {
-			req.Timeframe = &b.Strategy.Timeframe
+			HandId:    handID.String(),
+			Symbol:    sym,
+			Script:    b.Strategy.Script,
+			HelmId:    b.HelmID.String(),
+			Timeframe: b.Strategy.Timeframe, // required end-to-end
 		}
 		if ack, err := s.herald.Register(ctx, req); err != nil {
 			slog.Warn("herald register failed", "hand_id", handID, "symbol", sym, "err", err)
@@ -88,7 +86,7 @@ func (s *Service) ReregisterAll() {
 
 	count := 0
 	for _, ref := range snapshot {
-		if ref.Data.Status != "running" {
+		if ref.Data.Status != domain.HandStatusRunning {
 			continue
 		}
 		s.heraldRegister(ref.Data.ID, ref.Data)

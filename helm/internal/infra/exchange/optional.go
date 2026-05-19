@@ -17,6 +17,12 @@ type ExchangePosition struct {
 	CurPrice decimal.Decimal
 }
 
+// AssetBalance is a single asset's free balance as returned by the exchange.
+type AssetBalance struct {
+	Asset string
+	Free  decimal.Decimal
+}
+
 // AccountTransaction is a single filled order as returned by the exchange REST API.
 type AccountTransaction struct {
 	TradeID  string // exchange fill/trade ID — dedup key; empty if exchange doesn't provide one
@@ -35,6 +41,7 @@ type AccountSnapshot struct {
 	Equity       decimal.Decimal
 	Positions    []ExchangePosition
 	Transactions []AccountTransaction // recent filled orders since last sync
+	Balances     []AssetBalance       // per-asset free balances
 }
 
 // AccountSyncer is optionally implemented by exchanges that support polling

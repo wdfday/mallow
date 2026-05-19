@@ -18,10 +18,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
+	"mallow/helm/internal/module/hand/domain"
+
 	"mallow/helm/internal/infra/exchange"
 	binanceact "mallow/helm/internal/infra/exchange/binance/act"
 	"mallow/helm/internal/runtime"
-	"mallow/helm/internal/runtime/core/orderbook"
 	"mallow/helm/internal/runtime/core/portfolio"
 	"mallow/helm/internal/runtime/core/risk"
 	"mallow/helm/internal/runtime/core/strategy"
@@ -65,10 +66,9 @@ func newBinanceEnv(t *testing.T) *binanceTestEnv {
 
 	pf := portfolio.New(capital)
 	rm := risk.New(risk.DefaultConfig(), pf)
-	ob := orderbook.NewOrderBook(ex.Name())
 	rt := runtime.NewHelmRuntime(
 		uuid.New(), uuid.New(), uuid.New(),
-		ex.Name(), pf, rm, ob, ex, creds, nil,
+		ex.Name(), pf, rm, ex, creds, nil,
 	)
 
 	// Seed live price for sizing.
@@ -133,7 +133,7 @@ func newBinanceHand(env *binanceTestEnv) *runtime.Hand {
 		Mode:     tactics.SizingFixedQty,
 		FixedQty: decimal.NewFromFloat(0.001),
 	})
-	hand := runtime.NewHand(uuid.New(), env.rt.HelmID, env.rt, strat, tact, false, 1, 0, nil)
+	hand := runtime.NewHand(uuid.New(), env.rt.HelmID, env.rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandRiskConfig{}, decimal.Zero)
 	hand.Symbol = "BTCUSDT"
 	hand.StrategyName = "signal_follower"
 	return hand
@@ -206,6 +206,9 @@ func TestBinance_AbsoluteSLTP(t *testing.T) {
 	case e := <-placed:
 		t.Logf("placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
 		if e.Code == runtime.CodeOrderFailed {
+			if isBalanceError(e.Reason) {
+				t.Skipf("sandbox needs top-up: %s", e.Reason)
+			}
 			t.Fatalf("entry order failed: %s", e.Reason)
 		}
 	case <-time.After(20 * time.Second):
@@ -263,6 +266,9 @@ func TestBinance_OffsetSLTP(t *testing.T) {
 	case e := <-placed:
 		t.Logf("placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
 		if e.Code == runtime.CodeOrderFailed {
+			if isBalanceError(e.Reason) {
+				t.Skipf("sandbox needs top-up: %s", e.Reason)
+			}
 			t.Fatalf("entry order failed: %s", e.Reason)
 		}
 	case <-time.After(20 * time.Second):

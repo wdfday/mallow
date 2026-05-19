@@ -20,16 +20,17 @@ type UpdateHelmReq struct {
 // ── Response DTOs ──────────────────────────────────────────────────────────
 
 type HelmResp struct {
-	ID         uuid.UUID          `json:"id"`
-	AccountID  uuid.UUID          `json:"account_id"`
-	Name       string             `json:"name"`
-	BrokerType string             `json:"broker_type"`
-	Portfolio  PortfolioConfigDTO `json:"portfolio"`
-	Risk       RiskConfigDTO      `json:"risk"`
-	Enabled    bool               `json:"enabled"`
-	Status     string             `json:"status"`
-	CreatedAt  time.Time          `json:"created_at"`
-	UpdatedAt  time.Time          `json:"updated_at"`
+	ID          uuid.UUID          `json:"id"`
+	AccountID   uuid.UUID          `json:"account_id"`
+	Name        string             `json:"name"`
+	BrokerType  string             `json:"broker_type"`
+	AccountType string             `json:"account_type"`
+	Portfolio   PortfolioConfigDTO `json:"portfolio"`
+	Risk        RiskConfigDTO      `json:"risk"`
+	Enabled     bool               `json:"enabled"`
+	Status      string             `json:"status"`
+	CreatedAt   time.Time          `json:"created_at"`
+	UpdatedAt   time.Time          `json:"updated_at"`
 }
 
 // HelmDetailResp is the full helm view including live hand summaries.
@@ -50,16 +51,17 @@ type ActionResp struct {
 
 func HelmToResp(cfg *domain.Helm) HelmResp {
 	return HelmResp{
-		ID:         cfg.ID,
-		AccountID:  cfg.AccountID,
-		Name:       cfg.Name,
-		BrokerType: cfg.BrokerType,
-		Portfolio:  portfolioToDTO(cfg.Portfolio),
-		Risk:       riskToDTO(cfg.Risk),
-		Enabled:    cfg.Enabled,
-		Status:     cfg.Status,
-		CreatedAt:  cfg.CreatedAt,
-		UpdatedAt:  cfg.UpdatedAt,
+		ID:          cfg.ID,
+		AccountID:   cfg.AccountID,
+		Name:        cfg.Name,
+		BrokerType:  cfg.BrokerType,
+		AccountType: cfg.AccountType,
+		Portfolio:   portfolioToDTO(cfg.Portfolio),
+		Risk:        riskToDTO(cfg.Risk),
+		Enabled:     cfg.Enabled,
+		Status:      cfg.Status,
+		CreatedAt:   cfg.CreatedAt,
+		UpdatedAt:   cfg.UpdatedAt,
 	}
 }
 

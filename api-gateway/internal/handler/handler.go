@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"io"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -140,15 +139,7 @@ func (h *Handler) SwaggerIndex(c *gin.Context) {
           <a class="link" href="/api/v1/swagger/doc.json">Open spec JSON</a>
         </div>
       </article>
-      <article class="card">
-        <p class="eyebrow">Investment</p>
-        <h2>Portfolio and broker APIs</h2>
-        <p>Swagger UI is proxied publicly, while protected API calls still run through gateway auth at <code>/api/v1/investment</code>.</p>
-        <div class="actions">
-          <a class="button" href="/swagger/investment/index.html">Open Swagger UI</a>
-          <a class="link" href="/swagger/investment/doc.json">Open spec JSON</a>
-        </div>
-      </article>
+
       <article class="card">
         <p class="eyebrow">Helm</p>
         <h2>Helms and hands APIs</h2>
@@ -188,107 +179,6 @@ func (h *Handler) SwaggerIndex(c *gin.Context) {
   </main>
 </body>
 </html>`))
-}
-
-// ── Chat (Strategist AI) ────────────────────────────────────────────
-
-// ChatRequest is the body for chat endpoints.
-type ChatRequest struct {
-	Message string `json:"message" binding:"required"`
-}
-
-// ChatResponse is returned by the synchronous chat endpoint.
-type ChatResponse struct {
-	Reply     string `json:"reply"`
-	SessionID string `json:"session_id"`
-}
-
-// Chat godoc
-//
-// @Summary      Chat with AI strategist (sync)
-// @Description  Sends a message to the ADK-powered trading assistant and waits for a full reply.
-// @Tags         AI Strategist
-// @Security     BearerAuth
-// @Accept       json
-// @Produce      json
-// @Param        request  body      ChatRequest   true  "User message"
-// @Success      200      {object}  ChatResponse
-// @Failure      400      {object}  map[string]string
-// @Failure      502      {object}  map[string]string  "strategist unavailable"
-// @Router       /api/chat [post]
-func (h *Handler) Chat(c *gin.Context) {
-	var req ChatRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	userID, _ := c.Get("user_id")
-	uid, _ := userID.(string)
-	if uid == "" {
-		uid = "anonymous"
-	}
-
-	reply, sessionID, err := h.Strategist.Chat(uid, req.Message)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
-		return
-	}
-
-	c.JSON(http.StatusOK, ChatResponse{
-		Reply:     reply,
-		SessionID: sessionID,
-	})
-}
-
-// ChatStream godoc
-//
-// @Summary      Chat with AI strategist (SSE stream)
-// @Description  Same as /api/chat but streams the reply as Server-Sent Events. Each `data:` line is a partial token.
-// @Tags         AI Strategist
-// @Security     BearerAuth
-// @Accept       json
-// @Produce      text/event-stream
-// @Param        request  body      ChatRequest  true  "User message"
-// @Success      200      {string}  string        "SSE stream — data: <token>\\n\\n"
-// @Failure      400      {object}  map[string]string
-// @Failure      502      {object}  map[string]string  "strategist unavailable"
-// @Router       /api/chat/stream [post]
-func (h *Handler) ChatStream(c *gin.Context) {
-	var req ChatRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-		return
-	}
-
-	userID, _ := c.Get("user_id")
-	uid, _ := userID.(string)
-	if uid == "" {
-		uid = "anonymous"
-	}
-
-	sseBody, _, err := h.Strategist.ChatStream(uid, req.Message)
-	if err != nil {
-		c.JSON(http.StatusBadGateway, gin.H{"error": err.Error()})
-		return
-	}
-	defer sseBody.Close()
-
-	// Stream SSE to client
-	c.Header("Content-Type", "text/event-stream")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Status(http.StatusOK)
-
-	// Pipe strategist SSE → client
-	c.Stream(func(w io.Writer) bool {
-		buf := make([]byte, 4096)
-		n, err := sseBody.Read(buf)
-		if n > 0 {
-			_, _ = w.Write(buf[:n])
-		}
-		return err == nil
-	})
 }
 
 // ── Health ──────────────────────────────────────────────────────────

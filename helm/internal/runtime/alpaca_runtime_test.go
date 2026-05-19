@@ -24,10 +24,11 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
+	"mallow/helm/internal/module/hand/domain"
+
 	"mallow/helm/internal/infra/exchange"
 	alpacaact "mallow/helm/internal/infra/exchange/alpaca/act"
 	"mallow/helm/internal/runtime"
-	"mallow/helm/internal/runtime/core/orderbook"
 	"mallow/helm/internal/runtime/core/portfolio"
 	"mallow/helm/internal/runtime/core/risk"
 	"mallow/helm/internal/runtime/core/strategy"
@@ -89,10 +90,9 @@ func newAlpacaEnv(t *testing.T) *alpacaTestEnv {
 
 	pf := portfolio.New(capital)
 	rm := risk.New(risk.DefaultConfig(), pf)
-	ob := orderbook.NewOrderBook(ex.Name())
 	rt := runtime.NewHelmRuntime(
 		uuid.New(), uuid.New(), uuid.New(),
-		ex.Name(), pf, rm, ob, ex, creds, nil,
+		ex.Name(), pf, rm, ex, creds, nil,
 	)
 
 	var price decimal.Decimal
@@ -120,7 +120,7 @@ func newAlpacaHand(env *alpacaTestEnv) *runtime.Hand {
 		Mode:     tactics.SizingFixedQty,
 		FixedQty: decimal.NewFromFloat(1), // 1 share minimum for Alpaca
 	})
-	hand := runtime.NewHand(uuid.New(), env.rt.HelmID, env.rt, strat, tact, false, 1, 0, nil)
+	hand := runtime.NewHand(uuid.New(), env.rt.HelmID, env.rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandRiskConfig{}, decimal.Zero)
 	hand.Symbol = "AAPL"
 	hand.StrategyName = "signal_follower"
 	return hand

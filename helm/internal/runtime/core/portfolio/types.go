@@ -1,0 +1,81 @@
+package portfolio
+
+import (
+	"time"
+
+	"github.com/shopspring/decimal"
+)
+
+// Side represents the direction of a trade.
+type Side string
+
+const (
+	SideBuy  Side = "buy"
+	SideSell Side = "sell"
+)
+
+// Position represents an open position for one symbol.
+// Qty is positive for a long position, negative for a short position.
+type Position struct {
+	Symbol         string          `json:"symbol"`
+	Qty            decimal.Decimal `json:"qty"`
+	AvgPrice       decimal.Decimal `json:"avg_price"`
+	CurrentPrice   decimal.Decimal `json:"current_price"`
+	UnrealizedPnL  decimal.Decimal `json:"unrealized_pnl"`
+	MarketValue    decimal.Decimal `json:"market_value"`
+	EntryTimestamp time.Time       `json:"entry_timestamp"`
+}
+
+// Fill represents a confirmed order execution.
+type Fill struct {
+	Timestamp  time.Time       `json:"timestamp"`
+	HandID     string          `json:"hand_id"`
+	Symbol     string          `json:"symbol"`
+	Side       Side            `json:"side"`
+	Qty        decimal.Decimal `json:"qty"`
+	Price      decimal.Decimal `json:"price"`
+	Commission decimal.Decimal `json:"commission"`
+}
+
+// Trade represents a completed round-trip trade (entry + exit).
+type Trade struct {
+	HandID         string          `json:"hand_id"`
+	Symbol         string          `json:"symbol"`
+	Side           Side            `json:"side"`
+	Qty            decimal.Decimal `json:"qty"`
+	EntryPrice     decimal.Decimal `json:"entry_price"`
+	ExitPrice      decimal.Decimal `json:"exit_price"`
+	EntryTimestamp time.Time       `json:"entry_timestamp"`
+	ExitTimestamp  time.Time       `json:"exit_timestamp"`
+	PnL            decimal.Decimal `json:"pnl"`
+	PnLPct         decimal.Decimal `json:"pnl_pct"`
+}
+
+// EquityPoint is a snapshot of total equity at a point in time.
+type EquityPoint struct {
+	Timestamp time.Time       `json:"timestamp"`
+	Equity    decimal.Decimal `json:"equity"`
+}
+
+// SyncedPosition is a position as received from an external sync source (exchange REST API).
+type SyncedPosition struct {
+	Symbol   string
+	Qty      decimal.Decimal
+	AvgPrice decimal.Decimal
+	CurPrice decimal.Decimal
+}
+
+// Summary is a one-call snapshot of key portfolio metrics for API responses.
+type Summary struct {
+	InitialCapital decimal.Decimal `json:"initial_capital"`
+	Cash           decimal.Decimal `json:"cash"`
+	Equity         decimal.Decimal `json:"equity"`
+	TotalReturn    float64         `json:"total_return_pct"`
+	CurrentDD      float64         `json:"current_drawdown_pct"`
+	MaxDD          float64         `json:"max_drawdown_pct"`
+	WinRate        float64         `json:"win_rate_pct"`
+	TotalTrades    int             `json:"total_trades"`
+	OpenPositions  int             `json:"open_positions"`
+	DailyPnL       decimal.Decimal `json:"daily_pnl"`
+	Positions      []Position      `json:"positions"`
+}

@@ -5,7 +5,7 @@
 pub mod request;
 pub mod response;
 
-pub use request::{BacktestRequest, MonteCarloConfig, ScriptBacktestRequest, WalkForwardConfig};
+pub use request::{BacktestRequest, MtfBacktestRequest, MonteCarloConfig, ScriptBacktestRequest, WalkForwardConfig};
 pub use response::{
     ActivityStats, BacktestResponse, BuyHoldBenchmarkResponse, CalendarStats, CapitalStats,
     CurvePoint, CurveStats, DistributionStats, DrawdownStats, ErrorResponse, ExcursionStats,

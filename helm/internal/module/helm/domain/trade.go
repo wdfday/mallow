@@ -23,12 +23,12 @@ type TradeReply struct {
 
 // FillReport is a bot's fill notification to the orchestrator.
 type FillReport struct {
-	BotID          string          `json:"hand_id"`
-	OrchestratorID string          `json:"helm_id"`
-	OrderID        string          `json:"order_id"`
-	Symbol         string          `json:"symbol"`
-	Side           string          `json:"side"` // "buy" | "sell"
-	Qty            decimal.Decimal `json:"qty"`
-	Price          decimal.Decimal `json:"price"`
-	Timestamp      time.Time       `json:"timestamp"`
+	HandID    string          `json:"hand_id"`
+	HelmID    string          `json:"helm_id"`
+	OrderID   string          `json:"order_id"`
+	Symbol    string          `json:"symbol"`
+	Side      string          `json:"side"` // "buy" | "sell"
+	Qty       decimal.Decimal `json:"qty"`
+	Price     decimal.Decimal `json:"price"`
+	Timestamp time.Time       `json:"timestamp"`
 }

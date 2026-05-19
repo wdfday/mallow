@@ -1,21 +1,77 @@
 -- Helm database schema.
 -- Source of truth for dev: docker volume reset + docker compose up recreates from here.
--- Production uses autoMigrate in helm/internal/infra/postgres/postgres.go.
+-- Production: GORM AutoMigrate runs on every service start.
 --
--- Two databases share this schema namespace:
---   helm   — helm/hand config, portfolio config, equity log
+-- Tables owned by helm:
+--   broker_connections — encrypted exchange credentials per user
+--   accounts           — broker sub-accounts (spot / futures / unified); 1 account → 1 helm
+--   helms              — runtime container per account
+--   hands              — autonomous signal-following bots within a helm
+--   hand_equity_log    — append-only MTM snapshots
+--   hand_trade_log     — append-only closed round-trip trades
 --
 -- Design:
---   - Exchange credentials NOT stored here — copied from investment on account.linked
 --   - Positions NOT stored here — live state built from poslog (NATS JetStream)
 --   - hand_equity_log is append-only, dedup via PRIMARY KEY (hand_id, ts)
+
+-- ── broker_connections ────────────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS broker_connections (
+    id                      UUID         PRIMARY KEY DEFAULT uuidv7(),
+    user_id                 UUID         NOT NULL,
+    broker_type             VARCHAR(20)  NOT NULL,                       -- okx | binance | alpaca | bybit
+    broker_name             VARCHAR(100) NOT NULL,
+    status                  VARCHAR(20)  NOT NULL DEFAULT 'pending',    -- pending | active | disconnected | error
+    api_key                 TEXT,                                        -- encrypted
+    api_secret              TEXT,                                        -- encrypted
+    passphrase              TEXT,                                        -- OKX only; encrypted
+    is_paper                BOOL         NOT NULL DEFAULT false,
+    external_account_id     VARCHAR(100),
+    external_account_number VARCHAR(100),
+    external_account_name   VARCHAR(255),
+    notes                   TEXT,
+    created_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    deleted_at              TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_broker_connections_user_id ON broker_connections(user_id);
+CREATE INDEX IF NOT EXISTS idx_broker_connections_type    ON broker_connections(broker_type);
+CREATE INDEX IF NOT EXISTS idx_broker_connections_deleted ON broker_connections(deleted_at);
+
+-- ── accounts ──────────────────────────────────────────────────────────────────
+-- Broker sub-accounts only: spot | futures_usdm | futures_coinm | unified | options
+-- One account → one helm (enforced by helms.account_id UNIQUE).
+
+CREATE TABLE IF NOT EXISTS accounts (
+    id                   UUID          PRIMARY KEY DEFAULT uuidv7(),
+    user_id              UUID          NOT NULL,
+    account_name         VARCHAR(255)  NOT NULL,
+    account_type         VARCHAR(50)   NOT NULL,                        -- spot | futures_usdm | futures_coinm | unified | options
+    institution_name     VARCHAR(255),
+    currency             VARCHAR(3)    NOT NULL DEFAULT 'USD',
+    is_active            BOOL          NOT NULL DEFAULT true,
+    include_in_net_worth BOOL          NOT NULL DEFAULT true,
+    is_auto_sync         BOOL          NOT NULL DEFAULT false,
+    last_synced_at       TIMESTAMPTZ,
+    sync_status          VARCHAR(20),
+    sync_error_message   TEXT,
+    broker_connection_id UUID          REFERENCES broker_connections(id) ON DELETE SET NULL,
+    created_at           TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at           TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    deleted_at           TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_accounts_user_id_created ON accounts(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_accounts_broker          ON accounts(broker_connection_id);
+CREATE INDEX IF NOT EXISTS idx_accounts_deleted         ON accounts(deleted_at);
 
 -- ── helms ─────────────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS helms (
     id              UUID            PRIMARY KEY,
     user_id         UUID            NOT NULL,                -- → identity.users.id
-    account_id      UUID            NOT NULL UNIQUE,         -- → investment.accounts.id
+    account_id      UUID            NOT NULL UNIQUE REFERENCES accounts(id),
     name            TEXT            NOT NULL,
     portfolio       JSONB           NOT NULL DEFAULT '{}',   -- PortfolioConfig: allocation rules
     risk_config     JSONB           NOT NULL DEFAULT '{}',   -- RiskConfig: circuit-breakers
@@ -42,9 +98,21 @@ CREATE TABLE IF NOT EXISTS hands (
              CHECK (market IN ('spot', 'futures')),
     symbols  JSONB   NOT NULL DEFAULT '[]',  -- []string
     strategy JSONB   NOT NULL DEFAULT '{}',  -- StrategySpec
-    position JSONB   NOT NULL DEFAULT '{}',  -- PositionConfig: sizing + allocation
-    risk     JSONB   NOT NULL DEFAULT '{}',  -- HandRiskConfig: exit rules
+    position JSONB   NOT NULL DEFAULT '{}',  -- PositionConfig: per-trade sizing only
+    risk     JSONB   NOT NULL DEFAULT '{}',  -- HandRiskConfig: edge-degradation guard
     futures  JSONB,                          -- FuturesConfig; NULL when market = 'spot'
+    -- Capital budget: first-class column so it is queryable and aggregatable.
+    -- Zero = hand draws from full helm equity without isolation.
+    allocated_capital  NUMERIC(20,8) NOT NULL DEFAULT 0,
+    -- Signal staleness gate: max age in seconds before a signal is discarded.
+    -- 0 = default (10 s); negative = disable check.
+    signal_ttl_sec     INTEGER       NOT NULL DEFAULT 0,
+    -- Entry order type and limit-order lifecycle fields.
+    order_type         TEXT          NOT NULL DEFAULT 'market'
+                       CHECK (order_type IN ('market', 'limit')),
+    limit_timeout_sec  INTEGER       NOT NULL DEFAULT 0,
+    limit_fallback     TEXT          NOT NULL DEFAULT 'cancel'
+                       CHECK (limit_fallback IN ('cancel', 'market')),
     status   TEXT    NOT NULL DEFAULT 'stopped'
              CHECK (status IN ('running', 'stopped', 'paused')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

@@ -215,14 +215,24 @@ impl<S: MultiStrategy, R: RiskManager> MultiEngine<S, R> {
             last_bars.insert(symbol, bar);
         }
 
-        // Force-close all open positions at last known price.
-        for (sym, bar) in &last_bars {
-            if let Some(pos) = self.portfolio.positions.get(sym) {
-                if pos.qty.abs() > f64::EPSILON {
-                    let side = if pos.qty > 0.0 { Side::Sell } else { Side::Buy };
-                    let qty = pos.qty.abs();
-                    let fill = self.broker.force_close(sym, qty, side, bar.timestamp, bar.close);
-                    self.portfolio.apply_fill(&fill);
+        // Force-close all open positions at last known price, propagating
+        // tracker state (MAE/MFE/bars_held) and tagging exit_reason=EndOfData.
+        let open: Vec<(String, f64)> = self.portfolio.positions.values()
+            .filter(|p| p.qty.abs() > f64::EPSILON)
+            .map(|p| (p.symbol.clone(), p.qty))
+            .collect();
+        for (sym, qty) in open {
+            let Some(bar) = last_bars.get(&sym) else { continue; };
+            let side = if qty > 0.0 { Side::Sell } else { Side::Buy };
+            let tracker = self.position_trackers.remove(&sym);
+            let fill = self.broker.force_close(&sym, qty.abs(), side, bar.timestamp, bar.close);
+            self.portfolio.apply_fill(&fill);
+            if let Some(tr) = tracker {
+                if let Some(trade) = self.portfolio.trades.last_mut() {
+                    trade.mae_pct     = tr.mae;
+                    trade.mfe_pct     = tr.mfe;
+                    trade.bars_held   = tr.bars_held;
+                    trade.exit_reason = alm_core::ExitReason::EndOfData;
                 }
             }
         }
@@ -248,20 +258,29 @@ impl<S: MultiStrategy, R: RiskManager> MultiEngine<S, R> {
 
                 // Fill pending orders at this bar's open.
                 let fills = self.broker.process_pending(bar);
+                let fill_count = fills.len();
                 for fill in fills {
                     self.bus.send(Event::Fill(FillEvent { fill }));
                 }
 
-                // Record equity.
-                self.portfolio.record_equity(bar.timestamp, &self.last_prices);
-                let eq = self.portfolio.equity(&self.last_prices);
-                self.bus.send(Event::Equity(EquityEvent {
-                    timestamp: bar.timestamp,
-                    equity: eq,
-                    cash: self.portfolio.cash,
-                }));
+                // Drain Fills only (same invariant as Engine — bus holds only
+                // the Fills just enqueued at this point).
+                let mut guard_iters = fill_count + 2;
+                while let Some(early_ev) = self.bus.try_recv() {
+                    if guard_iters == 0 {
+                        tracing::error!("multi-engine early-drain guard tripped");
+                        self.bus.send(early_ev);
+                        break;
+                    }
+                    guard_iters -= 1;
+                    match early_ev {
+                        Event::Fill(_) | Event::Equity(_) => self.dispatch(early_ev),
+                        other => { self.bus.send(other); break; }
+                    }
+                }
 
-                // Exit rules — always run to track MAE/MFE/bars_held even without active rules.
+                // Exit rules BEFORE recording equity so SL/TP fills land in this
+                // bar's equity point. Always runs to track MAE/MFE/bars_held.
                 {
                     let to_close: Vec<(String, f64, alm_core::ExitReason)> = self
                         .position_trackers
@@ -275,6 +294,10 @@ impl<S: MultiStrategy, R: RiskManager> MultiEngine<S, R> {
 
                     for (sym, fill_price, reason) in to_close {
                         let tracker = self.position_trackers.remove(&sym);
+                        // Cancel any still-pending order for the symbol so it
+                        // doesn't fire on the next bar and unintentionally open
+                        // a position in the opposite direction.
+                        self.broker.cancel_for_symbol(&sym);
                         if let Some(pos) = self.portfolio.positions.get(&sym) {
                             let qty  = pos.qty.abs();
                             let side = if pos.qty > 0.0 { Side::Sell } else { Side::Buy };
@@ -291,6 +314,15 @@ impl<S: MultiStrategy, R: RiskManager> MultiEngine<S, R> {
                         }
                     }
                 }
+
+                // Record equity AFTER exit rules — see Engine for rationale.
+                self.portfolio.record_equity(bar.timestamp, &self.last_prices);
+                let eq = self.portfolio.equity(&self.last_prices);
+                self.bus.send(Event::Equity(EquityEvent {
+                    timestamp: bar.timestamp,
+                    equity: eq,
+                    cash: self.portfolio.cash,
+                }));
 
                 // Portfolio snapshot → strategy.
                 let snapshot = self.portfolio.snapshot(&self.last_prices);

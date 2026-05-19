@@ -105,6 +105,32 @@ func Migrate(db *gorm.DB) error {
 				risk ? 'allocated_capital' OR risk ? 'unit_capital'
 				OR risk ? 'max_positions'  OR risk ? 'size_mode'
 				OR risk ? 'fixed_qty'`,
+		// Promote allocated_capital and signal_ttl_sec: position JSONB → dedicated columns.
+		`ALTER TABLE hands ADD COLUMN IF NOT EXISTS allocated_capital NUMERIC(20,8) NOT NULL DEFAULT 0`,
+		`ALTER TABLE hands ADD COLUMN IF NOT EXISTS signal_ttl_sec    INTEGER       NOT NULL DEFAULT 0`,
+		`UPDATE hands
+			SET
+				allocated_capital = COALESCE((position->>'allocated_capital')::numeric, 0),
+				signal_ttl_sec    = COALESCE((position->>'signal_ttl_sec')::int, 0)
+			WHERE
+				position ? 'allocated_capital' OR position ? 'signal_ttl_sec'`,
+		`UPDATE hands
+			SET position = position - 'allocated_capital' - 'signal_ttl_sec'
+			WHERE position ? 'allocated_capital' OR position ? 'signal_ttl_sec'`,
+		// Promote limit-order fields: position JSONB → dedicated columns.
+		`ALTER TABLE hands ADD COLUMN IF NOT EXISTS order_type        TEXT NOT NULL DEFAULT 'market'`,
+		`ALTER TABLE hands ADD COLUMN IF NOT EXISTS limit_timeout_sec INTEGER      NOT NULL DEFAULT 0`,
+		`ALTER TABLE hands ADD COLUMN IF NOT EXISTS limit_fallback    TEXT         NOT NULL DEFAULT 'cancel'`,
+		`UPDATE hands
+			SET
+				order_type        = COALESCE(position->>'order_type',        'market'),
+				limit_timeout_sec = COALESCE((position->>'limit_timeout_sec')::int, 0),
+				limit_fallback    = COALESCE(position->>'limit_fallback',    'cancel')
+			WHERE
+				position ? 'order_type' OR position ? 'limit_timeout_sec' OR position ? 'limit_fallback'`,
+		`UPDATE hands
+			SET position = position - 'order_type' - 'limit_timeout_sec' - 'limit_fallback'
+			WHERE position ? 'order_type' OR position ? 'limit_timeout_sec' OR position ? 'limit_fallback'`,
 	}
 	for _, s := range stmts {
 		if err := db.Exec(s).Error; err != nil {

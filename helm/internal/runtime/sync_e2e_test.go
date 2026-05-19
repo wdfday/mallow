@@ -30,7 +30,6 @@ import (
 	binanceaction "mallow/helm/internal/infra/exchange/binance/act"
 	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/runtime"
-	"mallow/helm/internal/runtime/core/orderbook"
 	"mallow/helm/internal/runtime/core/portfolio"
 	"mallow/helm/internal/runtime/core/risk"
 )
@@ -84,12 +83,11 @@ func TestSync_E2E(t *testing.T) {
 
 	pf := portfolio.New(decimal.Zero) // capital updated by SyncAccount
 	rm := risk.New(risk.DefaultConfig(), pf)
-	ob := orderbook.NewOrderBook("binance")
 
 	rt := runtime.NewHelmRuntime(
 		orchID, accountID, userID,
 		"binance",
-		pf, rm, ob, ex, creds,
+		pf, rm, ex, creds,
 		nil, // no prior sync time → full sync
 	)
 

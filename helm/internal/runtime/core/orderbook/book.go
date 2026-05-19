@@ -1,3 +1,20 @@
+// Package orderbook provides two independent utilities:
+//
+//  1. Exchange constraint validation (OrderBook interface + orderBook impl):
+//     Validates a proposed order against per-symbol exchange rules — minimum qty,
+//     max qty, step size, minimum notional value, and active/halted status.
+//     Symbol constraints are registered once at startup from exchange metadata.
+//
+//  2. Market-data history (BookUpdate ring buffer):
+//     Each registered symbol maintains a fixed-cap circular buffer of recent
+//     bid/ask/last snapshots. Callers can retrieve the latest update or a
+//     chronological window via LatestUpdate / RecentUpdates.
+//
+//  3. SpreadTracker (spread.go):
+//     A lightweight rolling average of bid-ask spreads, embeddable in any struct.
+//     Used by the Tactician for stable limit-price calculation.
+//
+// Order tracking (orderID → handID routing) lives in HelmRuntime, not here.
 package orderbook
 
 import (
@@ -8,90 +25,33 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+const defaultSymbolHistoryCapacity = 32
+
 // OrderBook is the interface for exchange-level order constraint validation
-// and pending order tracking. Shared per broker type across all runtimes.
+// and per-symbol market-data history. Shared per broker type across all runtimes.
 type OrderBook interface {
+	// RegisterSymbol registers or updates exchange constraints for a symbol.
 	RegisterSymbol(info SymbolInfo)
+	// RegisterSymbols bulk-registers exchange constraints.
 	RegisterSymbols(infos []SymbolInfo)
+	// Validate checks a proposed order against exchange constraints.
+	// Returns AdjustedQty rounded to the symbol's step size on success.
 	Validate(order ProposedOrder) ValidationResult
-	TrackOrder(order PendingOrder)
-	RemoveOrder(accountID, orderID string)
-	Has(accountID, orderID string) bool
-	PendingOrders(accountID string) []PendingOrder
+	// SupportedSymbols returns all registered symbols in sorted order.
 	SupportedSymbols() []string
+	// RecordUpdate appends a market-data observation to the symbol's history buffer.
 	RecordUpdate(update BookUpdate) error
+	// LatestUpdate returns the most recent observation for symbol.
 	LatestUpdate(symbol string) (BookUpdate, bool)
+	// RecentUpdates returns up to limit observations in chronological order.
 	RecentUpdates(symbol string, limit int) []BookUpdate
 }
 
-// orderBook is the default in-memory implementation of OrderBook.
+// orderBook is the default in-memory implementation.
 type orderBook struct {
-	broker  string // exchange this book belongs to, e.g. "binance", "alpaca"
+	broker  string // e.g. "binance", "alpaca"
 	mu      sync.RWMutex
-	symbols map[string]*symbolState             // symbol → exchange constraints + history
-	pending map[string]map[string]*PendingOrder // accountID → orderID → pending
-}
-
-const defaultSymbolHistoryCapacity = 32
-
-type symbolState struct {
-	info    SymbolInfo
-	history bookUpdateRing
-}
-
-type bookUpdateRing struct {
-	buf  []BookUpdate
-	head int
-	size int
-}
-
-func newBookUpdateRing(capacity int) bookUpdateRing {
-	if capacity <= 0 {
-		capacity = defaultSymbolHistoryCapacity
-	}
-	return bookUpdateRing{
-		buf: make([]BookUpdate, capacity),
-	}
-}
-
-func (r *bookUpdateRing) push(update BookUpdate) {
-	if len(r.buf) == 0 {
-		return
-	}
-	r.buf[r.head] = update
-	r.head = (r.head + 1) % len(r.buf)
-	if r.size < len(r.buf) {
-		r.size++
-	}
-}
-
-func (r *bookUpdateRing) latest() (BookUpdate, bool) {
-	if r.size == 0 {
-		return BookUpdate{}, false
-	}
-	idx := (r.head - 1 + len(r.buf)) % len(r.buf)
-	return r.buf[idx], true
-}
-
-func (r *bookUpdateRing) snapshot(limit int) []BookUpdate {
-	if r.size == 0 {
-		return nil
-	}
-	if limit <= 0 || limit > r.size {
-		limit = r.size
-	}
-
-	out := make([]BookUpdate, 0, limit)
-	start := (r.head - r.size + len(r.buf)) % len(r.buf)
-	skip := r.size - limit
-	for i := 0; i < r.size; i++ {
-		idx := (start + i) % len(r.buf)
-		if i < skip {
-			continue
-		}
-		out = append(out, r.buf[idx])
-	}
-	return out
+	symbols map[string]*symbolState
 }
 
 // NewOrderBook creates an empty in-memory OrderBook for the given broker.
@@ -99,7 +59,6 @@ func NewOrderBook(broker string) OrderBook {
 	return &orderBook{
 		broker:  broker,
 		symbols: make(map[string]*symbolState),
-		pending: make(map[string]map[string]*PendingOrder),
 	}
 }
 
@@ -115,7 +74,7 @@ func (ob *orderBook) RegisterSymbol(info SymbolInfo) {
 	state.info = info
 }
 
-// RegisterSymbols registers or updates exchange constraints for a symbol set.
+// RegisterSymbols bulk-registers exchange constraints.
 func (ob *orderBook) RegisterSymbols(infos []SymbolInfo) {
 	ob.mu.Lock()
 	defer ob.mu.Unlock()
@@ -129,7 +88,8 @@ func (ob *orderBook) RegisterSymbols(infos []SymbolInfo) {
 	}
 }
 
-// Validate checks a proposed order against exchange constraints.
+// Validate checks a proposed order against registered exchange constraints.
+// Returns ValidationResult.AdjustedQty rounded to the symbol's step size on success.
 func (ob *orderBook) Validate(order ProposedOrder) ValidationResult {
 	ob.mu.RLock()
 	defer ob.mu.RUnlock()
@@ -164,65 +124,13 @@ func (ob *orderBook) Validate(order ProposedOrder) ValidationResult {
 		}
 	}
 
-	if acctPending, ok := ob.pending[order.OrchestratorID]; ok {
-		for _, p := range acctPending {
-			if p.Symbol == order.Symbol && p.Side == order.Side {
-				return ValidationResult{Valid: false, Reason: fmt.Sprintf("duplicate: pending %s %s order %s", p.Side, p.Symbol, p.OrderID)}
-			}
-		}
-	}
-
 	return ValidationResult{Valid: true, AdjustedQty: adjustedQty}
 }
 
-// TrackOrder records a newly placed order as pending.
-func (ob *orderBook) TrackOrder(order PendingOrder) {
-	ob.mu.Lock()
-	defer ob.mu.Unlock()
-	if ob.pending[order.OrchestratorID] == nil {
-		ob.pending[order.OrchestratorID] = make(map[string]*PendingOrder)
-	}
-	ob.pending[order.OrchestratorID][order.OrderID] = &order
-}
-
-// RemoveOrder removes a completed/cancelled order from pending tracking.
-func (ob *orderBook) RemoveOrder(accountID, orderID string) {
-	ob.mu.Lock()
-	defer ob.mu.Unlock()
-	if acct, ok := ob.pending[accountID]; ok {
-		delete(acct, orderID)
-	}
-}
-
-// Has reports whether an order is currently tracked as pending.
-func (ob *orderBook) Has(accountID, orderID string) bool {
-	ob.mu.RLock()
-	defer ob.mu.RUnlock()
-	acct, ok := ob.pending[accountID]
-	if !ok {
-		return false
-	}
-	_, exists := acct[orderID]
-	return exists
-}
-
-// PendingOrders returns all pending orders for an account.
-func (ob *orderBook) PendingOrders(accountID string) []PendingOrder {
-	ob.mu.RLock()
-	defer ob.mu.RUnlock()
-	acct := ob.pending[accountID]
-	out := make([]PendingOrder, 0, len(acct))
-	for _, p := range acct {
-		out = append(out, *p)
-	}
-	return out
-}
-
-// SupportedSymbols returns the configured symbol universe for this broker.
+// SupportedSymbols returns all registered symbols in sorted order.
 func (ob *orderBook) SupportedSymbols() []string {
 	ob.mu.RLock()
 	defer ob.mu.RUnlock()
-
 	out := make([]string, 0, len(ob.symbols))
 	for symbol := range ob.symbols {
 		out = append(out, symbol)
@@ -231,15 +139,14 @@ func (ob *orderBook) SupportedSymbols() []string {
 	return out
 }
 
-// RecordUpdate appends a market-data update into the symbol's fixed-cap history buffer.
+// RecordUpdate appends a market-data snapshot to the symbol's history buffer.
+// Returns an error if the symbol is not registered.
 func (ob *orderBook) RecordUpdate(update BookUpdate) error {
 	if update.Symbol == "" {
 		return fmt.Errorf("symbol is required")
 	}
-
 	ob.mu.Lock()
 	defer ob.mu.Unlock()
-
 	state, ok := ob.symbols[update.Symbol]
 	if !ok {
 		return fmt.Errorf("symbol %q not supported", update.Symbol)
@@ -248,11 +155,10 @@ func (ob *orderBook) RecordUpdate(update BookUpdate) error {
 	return nil
 }
 
-// LatestUpdate returns the most recent market-data update for symbol.
+// LatestUpdate returns the most recent market-data snapshot for symbol.
 func (ob *orderBook) LatestUpdate(symbol string) (BookUpdate, bool) {
 	ob.mu.RLock()
 	defer ob.mu.RUnlock()
-
 	state, ok := ob.symbols[symbol]
 	if !ok {
 		return BookUpdate{}, false
@@ -260,11 +166,10 @@ func (ob *orderBook) LatestUpdate(symbol string) (BookUpdate, bool) {
 	return state.history.latest()
 }
 
-// RecentUpdates returns up to limit updates in chronological order.
+// RecentUpdates returns up to limit snapshots in chronological order (oldest first).
 func (ob *orderBook) RecentUpdates(symbol string, limit int) []BookUpdate {
 	ob.mu.RLock()
 	defer ob.mu.RUnlock()
-
 	state, ok := ob.symbols[symbol]
 	if !ok {
 		return nil
@@ -272,58 +177,10 @@ func (ob *orderBook) RecentUpdates(symbol string, limit int) []BookUpdate {
 	return state.history.snapshot(limit)
 }
 
-// ── SpreadTracker ─────────────────────────────────────────────────────────────
-
-const spreadWindow = 20
-
-// SpreadTracker maintains a fixed-size ring buffer of recent bid-ask spreads.
-// Useful for stable limit-order pricing and spread anomaly detection.
-// Zero heap allocation after init — embed directly in structs.
-type SpreadTracker struct {
-	buf   [spreadWindow]decimal.Decimal
-	head  int
-	count int
-}
-
-// Push records a new bid/ask observation.
-func (s *SpreadTracker) Push(bid, ask decimal.Decimal) {
-	s.buf[s.head] = ask.Sub(bid)
-	s.head = (s.head + 1) % spreadWindow
-	if s.count < spreadWindow {
-		s.count++
-	}
-}
-
-// Avg returns the mean spread across all recorded samples.
-// Returns zero if no samples yet.
-func (s *SpreadTracker) Avg() decimal.Decimal {
-	if s.count == 0 {
-		return decimal.Zero
-	}
-	sum := decimal.Zero
-	for i := range s.count {
-		sum = sum.Add(s.buf[i])
-	}
-	return sum.Div(decimal.NewFromInt(int64(s.count)))
-}
-
-// Current returns the most recently recorded spread.
-func (s *SpreadTracker) Current() decimal.Decimal {
-	if s.count == 0 {
-		return decimal.Zero
-	}
-	return s.buf[(s.head-1+spreadWindow)%spreadWindow]
-}
-
-// IsAnomalous reports whether the current spread exceeds threshold × average.
-// Returns false until the buffer has at least one sample.
-func (s *SpreadTracker) IsAnomalous(threshold float64) bool {
-	avg := s.Avg()
-	return avg.IsPositive() && s.Current().GreaterThan(avg.Mul(decimal.NewFromFloat(threshold)))
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 
+// roundToStep rounds qty down to the nearest multiple of step.
+// Returns qty unchanged if step is zero or negative.
 func roundToStep(qty, step decimal.Decimal) decimal.Decimal {
 	if !step.IsPositive() {
 		return qty

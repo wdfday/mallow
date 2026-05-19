@@ -2,9 +2,12 @@
 //! `GET /api/indicators` — static indicator catalogue.
 //!
 //! ```text
-//! GET /api/symbols                  → [{symbol, tf, bars}, ...]
-//! GET /api/symbols?indicators=true  → [{symbol, tf, bars, indicators:[...]}, ...]
-//! GET /api/indicators               → [{name, params, ...}, ...]
+//! GET /api/symbols
+//!   → { "Binance": [{ symbol, timeframes: [{tf, bars}] }], ... }
+//! GET /api/symbols?indicators=true
+//!   → { "Binance": [{ symbol, timeframes: [{tf, bars, indicators:[...]}] }], ... }
+//! GET /api/indicators
+//!   → [{name, params, ...}, ...]
 //! ```
 
 use std::collections::BTreeMap;
@@ -26,6 +29,15 @@ fn split_prefix(key: &str) -> (&str, &str) {
     }
 }
 
+fn display_source(src: &str) -> &str {
+    match src {
+        "binance" => "Binance",
+        "okx"     => "OKX",
+        "bybit"   => "Bybit",
+        other     => other,
+    }
+}
+
 pub fn routes() -> Router<HttpState> {
     Router::new()
         .route("/api/v1/symbols", get(list_symbols))
@@ -40,13 +52,17 @@ pub struct SymbolsQuery {
 }
 
 #[derive(Debug, Serialize)]
-pub struct SymbolInfo {
-    pub symbol: String,
+pub struct TfInfo {
     pub tf: String,
-    /// Number of bars currently in the ledger ring window.
     pub bars: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub indicators: Option<Vec<LiveIndicator>>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SymbolInfo {
+    pub symbol: String,
+    pub timeframes: Vec<TfInfo>,
 }
 
 #[derive(Debug, Serialize)]
@@ -68,7 +84,7 @@ pub struct LiveIndicator {
         ("indicators" = Option<bool>, Query, description = "Include live indicator cells in the response")
     ),
     responses(
-        (status = 200, description = "List of tracked symbols")
+        (status = 200, description = "List of tracked symbols grouped by exchange")
     ),
     tag = "live"
 )]
@@ -76,16 +92,15 @@ pub async fn list_symbols(
     State(state): State<HttpState>,
     Query(q): Query<SymbolsQuery>,
 ) -> Response {
-    // Build flat list first, then group by exchange. Ledger stores keys as
-    // `"binance:BTCUSDT"` / `"okx:BTC-USDT"` — we split the prefix off so the
-    // wire format groups by exchange and `symbol` is the raw ticker only.
-    let mut grouped: BTreeMap<String, Vec<SymbolInfo>> = BTreeMap::new();
+    // Group by exchange → symbol → timeframes. Ledger keys are `"binance:BTCUSDT"`.
+    // Result shape: { "Binance": [{ symbol, timeframes: [{tf, bars, indicators?}] }] }
+    let mut grouped: BTreeMap<String, BTreeMap<String, Vec<TfInfo>>> = BTreeMap::new();
 
     for (key, tf) in state.ledger.keys().into_iter() {
         let (exchange, raw_symbol) = split_prefix(&key);
-        let exchange = if exchange.is_empty() { "unknown" } else { exchange }.to_string();
+        let exchange = display_source(if exchange.is_empty() { "unknown" } else { exchange }).to_string();
 
-        if let Some(info) = state.ledger.with_state(&key, tf, |s| {
+        if let Some(tf_info) = state.ledger.with_state(&key, tf, |s| {
             let bars = s.bar_window.len();
             let indicators = if q.indicators {
                 Some(
@@ -105,22 +120,34 @@ pub async fn list_symbols(
             } else {
                 None
             };
-            SymbolInfo {
-                symbol: raw_symbol.to_string(),
-                tf: tf.to_string(),
-                bars,
-                indicators,
-            }
+            TfInfo { tf: tf.to_string(), bars, indicators }
         }) {
-            grouped.entry(exchange).or_default().push(info);
+            grouped
+                .entry(exchange)
+                .or_default()
+                .entry(raw_symbol.to_string())
+                .or_default()
+                .push(tf_info);
         }
     }
 
-    for list in grouped.values_mut() {
-        list.sort_by(|a, b| a.symbol.cmp(&b.symbol).then_with(|| a.tf.cmp(&b.tf)));
-    }
+    // Flatten inner BTreeMap into sorted Vec<SymbolInfo> with sorted timeframes.
+    let result: BTreeMap<String, Vec<SymbolInfo>> = grouped
+        .into_iter()
+        .map(|(exchange, symbols)| {
+            let mut sym_list: Vec<SymbolInfo> = symbols
+                .into_iter()
+                .map(|(symbol, mut tfs)| {
+                    tfs.sort_by(|a, b| a.tf.cmp(&b.tf));
+                    SymbolInfo { symbol, timeframes: tfs }
+                })
+                .collect();
+            sym_list.sort_by(|a, b| a.symbol.cmp(&b.symbol));
+            (exchange, sym_list)
+        })
+        .collect();
 
-    ok(grouped)
+    ok(result)
 }
 
 // ── GET /api/indicators ───────────────────────────────────────────────────────

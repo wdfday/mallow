@@ -22,7 +22,7 @@
 //! | `POST /api/backtest`                   | Run a named strategy                            |
 //! | `POST /api/backtest/script`              | Run a script strategy                      |
 //!
-//! ## Store — CRUD for saved strategies and backtest cases
+//! ## Store — CRUD for saved strategy versions
 //!
 //! | Route                                  | Purpose                                         |
 //! |----------------------------------------|-------------------------------------------------|
@@ -32,16 +32,6 @@
 //! | `PUT  /api/store/strategies/:id`       | Update label / notes                            |
 //! | `DELETE /api/store/strategies/:id`     | Delete                                          |
 //! | `GET  /api/store/strategies/:name/versions` | All versions for a name                   |
-//! | `GET  /api/store/cases`                | List all backtest cases                         |
-//! | `POST /api/store/cases`                | Create a backtest case (strategy_id required)   |
-//! | `GET  /api/store/cases/:id`            | Get one by id                                   |
-//! | `PUT  /api/store/cases/:id`            | Update fields                                   |
-//! | `DELETE /api/store/cases/:id`          | Delete                                          |
-//! | `POST /api/store/cases/:id/run`        | Resolve strategy + run backtest                 |
-//! | `POST /api/store/cases/:id/signals`    | Replay signals (no SimBroker)                   |
-//! | `GET  /api/store/cases/:id/results`    | List results for case                           |
-//! | `GET  /api/store/results/:id`          | Get one result                                  |
-//! | `DELETE /api/store/results/:id`        | Delete result                                   |
 //!
 //! ## Watch — signal dispatch without trade execution (noop storage)
 //!
@@ -108,9 +98,10 @@ mod duckdb_helpers;
 mod openapi;
 mod sse;
 mod script_validate;
+pub mod store;
 mod symbols;
 mod types;
-pub mod store;
+pub mod strategy;
 pub mod watch;
 
 pub use openapi::ApiDoc;
@@ -130,7 +121,7 @@ pub struct HttpState {
     pub data_dir: Arc<PathBuf>,
     /// Caps concurrent backtest runs across NATS + HTTP to protect RAM/CPU.
     pub backtest_semaphore: Arc<Semaphore>,
-    /// CRUD store for saved strategies + backtest cases.
+    /// CRUD store for saved strategy versions.
     pub store: StoreBackend,
     /// In-memory watchlist store (noop — not yet wired to live bar pipeline).
     pub watches: WatchStore,
@@ -175,7 +166,7 @@ pub fn router(state: HttpState) -> Router {
         .merge(data::routes())
         .merge(backtest::routes())
         .merge(script_validate::routes())
-        .merge(store::routes())
+        .merge(strategy::routes())
         .merge(watch::routes())
         .merge(sse::routes())
         .merge(openapi::routes())

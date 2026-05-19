@@ -6,69 +6,121 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A polyglot algorithmic trading system. Evaluates technical-analysis-based buy/sell strategies using event-driven backtesting and live signal generation.
 
-**Stack:** Rust (backtesting/signal engine — `almanac` workspace), Go (api-gateway, identity, investment, helm, hist-data, strategist), NATS (message broker), PostgreSQL + Redis, Docker Compose (orchestration).
+**Stack:** Rust (backtesting/signal engine — `almanac` workspace), Go (api-gateway, identity, helm, hist-data, strategist), Next.js (mallow-client), NATS (message broker), PostgreSQL + Redis, Docker Compose (orchestration).
 
-**Workspace:** Go services share a `go.work` file at the root — all modules can reference `mallow/pkg` locally without publishing.
+**Workspace:** Go services in `go.work` are `api-gateway`, `hist-data`, `identity`, `helm`, `pkg`. The `thstrategist/` module has its own `go.mod` and is not in the workspace — it is deployed/built independently. The `mallow-client/` is a separate Next.js project (`pnpm`/`npm`).
 
 ```
-go.work uses: api-gateway, hist-data, identity, investment, helm, pkg
+go.work uses: api-gateway, hist-data, identity, helm, pkg
 ```
+
+## Deployment Model — Hosted Hub + Self-Hosted Tenancy
+
+The system is designed to run in two complementary modes that share **one identity provider** and the same NATS protocol. A user can stay fully managed, or take execution into their own infrastructure without forking the codebase.
+
+### Hosted Hub (managed)
+
+A central deployment we operate. It supplies:
+
+- **identity** — auth (OAuth2, password, Telegram), JWT signing, JWKS endpoint, the source of truth for users.
+- **api-gateway** — single public HTTP/WS edge, JWT enforcement, reverse proxy to all backends.
+- **strategist** — Google ADK agentic UI (chat / canvas / Telegram bot).
+- **mallow-client** — Next.js web UI (strategies, backtests, dashboards).
+- **herald (shared)** — public market data + the backtest engine. Free-tier users run their backtests here.
+- **NATS hub** — central message broker. Leaf nodes from self-hosted tenants connect to it for fan-out.
+
+A managed user never runs anything locally — sign in, build strategies, backtest, optionally trade through a managed `helm` instance.
+
+### Self-Hosted Tenancy
+
+A user can run **their own herald + helm pair** in their own infrastructure (home, VPS, colo) while still authenticating through the hosted identity and reaching the UI through the hosted gateway. Typical reasons: keep exchange API keys on-prem, get closer to a specific exchange (lower latency), or use private data feeds.
+
+What lives in a tenancy:
+
+- **herald (tenant)** — own websocket ingestion + ledger + signal engine. Optionally registered to ingest a private symbol list.
+- **helm (tenant)** — own broker credentials, account/portfolio state, position log. Receives signals from its herald and executes against the broker.
+- **NATS leaf** — connects up to the hosted NATS hub with the user's leaf credentials. Subjects in the user's tenancy stream up to the hub for the UI / strategist to consume.
+
+The boundary is the NATS protocol — see [Service Map](#service-map) below. As long as `helm.helms.*`, `helm.hands.*`, `signals`, `bars.*`, `trade.filled.*`, `helm.events.*` flow with the right `caller_user_id`, both modes are indistinguishable to the UI.
+
+**Identity is always central.** Self-hosted tenants do not run their own identity service — they validate JWTs issued by the hosted identity service via JWKS. The user logs into the hosted gateway, and the tenant's gateway/helm proxies trust the same JWKS.
+
+### Auth Flow (both modes)
+
+```
+user → mallow-client (hosted) → api-gateway (hosted)
+                                    │
+                                    ├─ /api/v1/auth/* → identity (hosted, signs JWT)
+                                    │
+                                    └─ /api/v1/* (JWT) → backend (hosted OR tenant)
+                                                          │
+                                                          └─ validates via identity JWKS
+```
+
+JWT contains `sub` (user id) and is propagated to all downstream services as `X-User-ID` etc. by the gateway's `InjectUserHeaders` middleware. NATS req/rep payloads carry the same identity as `CallerMeta { caller_user_id, caller_svc }`.
 
 ## Service Map
 
 ```mermaid
 graph LR
-  subgraph NYC3["NYC3 leaf"]
-    HER1[herald]
-    HER1 -->|bars.*| HLM1[helm-alpaca]
-    HER1 -->|signals| HLM1
-    HLM1 --> ALP[Alpaca]
-  end
-
-  subgraph Tokyo["Tokyo leaf"]
-    HER2[herald]
-    HER2 -->|bars.*| HLM2[helm-binance]
-    HER2 -->|bars.*| HLM3[helm-okx]
-    HER2 -->|signals| HLM2
-    HER2 -->|signals| HLM3
-    HLM2 --> BIN[Binance]
-    HLM3 --> OKX[OKX]
-  end
-
-  subgraph Hub["Hub (VN)"]
-    INV[investment]
-    IDN[identity]
+  subgraph Hub["Hosted Hub (cloud)"]
     AGW[api-gateway]
+    IDN[identity]
     STR[strategist]
+    UI[mallow-client]
+    HER0[herald — public/shared]
+    NATS0[(NATS hub)]
   end
 
-  HLM1 -->|trade.filled| INV
-  HLM2 -->|trade.filled| INV
-  HLM3 -->|trade.filled| INV
-  IDN -->|JWT/JWKS| AGW
-  INV -->|proxy| AGW
-  AGW -->|REST/WS| Client
-  AGW -->|HTTP| HER1
-  AGW -->|HTTP| HLM1
-  STR -->|Telegram| Client
-  NYC3 -.->|NATS leaf| Hub
-  Tokyo -.->|NATS leaf| Hub
+  subgraph T1["Tenancy A (self-hosted)"]
+    HER1[herald]
+    HLM1[helm]
+    NL1[NATS leaf]
+    HLM1 --> BRK1[Broker A]
+  end
+
+  subgraph T2["Tenancy B (self-hosted)"]
+    HER2[herald]
+    HLM2[helm]
+    NL2[NATS leaf]
+    HLM2 --> BRK2[Broker B]
+  end
+
+  UI --> AGW
+  AGW -->|auth proxy| IDN
+  AGW -->|JWKS| IDN
+  AGW -->|HTTP proxy| STR
+  AGW -->|HTTP proxy| HER0
+  AGW -->|HTTP proxy| HLM1
+  AGW -->|HTTP proxy| HLM2
+
+  HER1 -->|"bars + signals"| HLM1
+  HER2 -->|"bars + signals"| HLM2
+
+  NL1 -. "NATS leaf" .-> NATS0
+  NL2 -. "NATS leaf" .-> NATS0
+  STR -. "helm req/rep" .-> NATS0
+  HLM1 -. "helm.events / trade.filled" .-> NATS0
+  HLM2 -. "helm.events / trade.filled" .-> NATS0
+  HER0 -. "signals / bars.query" .-> NATS0
 ```
+
+Helm ↔ herald communication (bars + signals + register / deregister) stays the same as before — purely NATS, payloads defined in `proto/market.proto`. The only thing that changes between hosted and self-hosted is **where the NATS connection terminates**: directly in the hub, or via a leaf node back to the hub.
 
 ### Services
 
-| Service | Dir | Module | Role |
-| --- | --- | --- | --- |
-| **api-gateway** | `api-gateway/` | `gateway` | Gin HTTP/WS gateway; JWT auth (JWKS), CORS, rate-limit (Redis), reverse proxy to all backends |
-| **identity** | `identity/` | `mallow/identity` | Auth (JWT/OAuth2), user management, JWKS endpoint, Telegram bot, email notifications, internal blacklist check |
-| **investment** | `investment/` | `mallow/investment` | Portfolio tracking, positions, transactions, watchlists, broker abstraction (Binance/Alpaca) |
-| **helm** | `helm/` | `mallow/helm` | Trade execution: Helm (account container) + Hand (autonomous bot); signal routing, poslog, portfolio, exchange adapters |
-| **hist-data** | `hist-data/` | `hist-data` | Historical data crawler (US stocks + crypto) → Parquet files; Wire DI |
-| **strategist** | `thstrategist/` | `strategist` | Google ADK multi-agent AI; Telegram bot; realtime canvas; Gemini/Claude/OpenAI |
-| **herald** | `almanac/crates/herald/` | (Rust binary `alm-herald`) | WebSocket ingestion (Binance, OKX) → Ledger + Registry → NATS; HTTP API for live data + backtests |
-| **pkg** | `pkg/` | `mallow/pkg` | Shared Go utilities (errors, response helpers, telemetry, validation) |
+| Service | Dir | Module | Where it runs | Role |
+| --- | --- | --- | --- | --- |
+| **api-gateway** | `api-gateway/` | `gateway` | Hub | Gin HTTP/WS gateway. JWT auth (JWKS), CORS, rate-limit (Redis), reverse proxy to identity / helm / herald / strategist. |
+| **identity** | `identity/` | `mallow/identity` | Hub only | Auth (JWT/OAuth2/Telegram), user management, JWKS endpoint, internal blacklist check, broker-sync scheduling, email/Telegram notifications. |
+| **helm** | `helm/` | `mallow/helm` | Hub **or** tenant | Trade execution + account ownership. Owns broker connections, accounts, helms (account container), hands (signal-following bots), portfolio + position log, exchange adapters. Replaced the old `investment/` service — broker creds, accounts, transactions, watchlists are now all here. |
+| **hist-data** | `hist-data/` | `hist-data` | Hub | Historical data crawler (US stocks + crypto) → Parquet files; Wire DI. |
+| **strategist** | `thstrategist/` | `strategist` | Hub | Google ADK multi-agent AI; chat / WebSocket / Telegram; realtime canvas; Gemini/Claude/OpenAI providers. |
+| **herald** | `almanac/crates/herald/` | (Rust binary `alm-herald`) | Hub **and** tenant | WebSocket ingestion (Binance, OKX) → Ledger + Registry → NATS; HTTP API (`/api/v1/...`) for live data, backtests, strategies, watch, SSE streams. |
+| **pkg** | `pkg/` | `mallow/pkg` | (lib) | Shared Go utilities (errors, response helpers, telemetry, validation). |
+| **mallow-client** | `mallow-client/` | (Next.js + Tailwind + Copilotkit) | Hub | Web UI. Authenticates against the hosted gateway; serves auth/, dashboard/. |
 
-> **Note:** `orchestrator/` (old Go service) has been fully replaced by `helm/`. `stream-data` (Go) has also been removed — herald ingests WebSocket feeds directly.
+> **Historical changes from earlier revisions:** `orchestrator/` (Go) was replaced by `helm/`; `stream-data` (Go) was removed (herald ingests WebSocket feeds directly); `investment/` was folded into `helm/` (account, broker-connection, transaction, portfolio, watchlist are all owned by helm now).
 
 ## Protobuf / Message Schema
 
@@ -78,43 +130,53 @@ Single source of truth: `proto/market.proto`. Generated Go code in `helm/interna
 
 | Message | Purpose |
 | --- | --- |
-| `TickMsg` | Raw trade event: t (Unix ms), s (symbol), class, src, p (price), v (volume), bid, ask |
-| `BarMsg` | OHLCV candle: t, s, o, h, l, c, v |
-| `SignalMsg` | Strategy output: t, s, dir (long/short/close), strength [0–1], optional: price, target_price, stop_price, pattern_kind, confidence |
-| `SignalResponse` | Herald→helm envelope: repeated SignalMsg + orch_id (helm_id) + bot_id (hand_id) |
-| `RegisterMsg` | Hand registration: bot_id, symbol, strategy, params_json, orch_id, optional expiry/targets/timeframe |
-| `DeregisterMsg` | Hand removal: bot_id (empty = remove all) |
+| `TickMsg` | Raw trade event: `t` (Unix ms), `s` (symbol), `class`, `src`, `p` (price), `v` (volume), `bid`, `ask` |
+| `BarMsg` | OHLCV candle: `t`, `s`, `o`, `h`, `l`, `c`, `v` |
+| `SignalMsg` | Strategy output: `t`, `s`, `dir` (long/short/exit), `strength` [0–1], optional: `price`, `target_price`, `stop_price`, `is_offset`, `reason`, `atr`, `pattern_kind`, `confidence` |
+| `SignalResponse` | Herald → helm envelope: repeated `SignalMsg` + `orch_id` (helm_id) + `bot_id` (hand_id) |
+| `RegisterMsg` | Hand registration into herald registry: `bot_id`, `symbol`, `strategy`, `params_json`, `orch_id`, optional expiry/targets/timeframe |
+| `DeregisterMsg` | Hand removal: `bot_id` (empty = remove all) |
 
 ### NATS Subjects
 
 | Subject | Direction | Purpose |
 | --- | --- | --- |
 | `bars.{symbol}` | publish | OHLCV bars from herald → helm (BarAggregator → tick router) |
-| `signals` | publish | SignalResponse from herald → helm (orch_id + bot_id in protobuf payload) |
-| `engine.register` / `engine.deregister` / `engine.list` | req/rep | Hand registration in herald registry |
+| `signals` | publish | `SignalResponse` from herald → helm (orch_id + bot_id in protobuf payload) |
+| `engine.register` / `engine.deregister` / `engine.list` / `engine.ping` / `engine.heartbeat` | req/rep | Hand registration / control against herald registry |
+| `engine.ready` | JetStream publish | Herald announces readiness on startup |
 | `helm.helms.*` | req/rep | Helm CRUD + control: `list` `get` `update` `enable` `disable` `pause` `resume` `kill` `halt.reset` `portfolio` `positions` `trades` `orders` |
 | `helm.hands.*` | req/rep | Hand CRUD + control: `list` `get` `create` `update` `delete` `start` `stop` `restart` `pause` `resume` `kill` |
 | `helm.accounts.linked` | publish | Broker account linked → helm auto-creates disabled Helm |
 | `helm.accounts.unlinked` | publish | Broker account unlinked → helm auto-deletes Helm |
-| `trade.filled.{helm_id}` | publish | Fill audit from helm → investment |
+| `helm.events.{helm_id}` | publish | Helm lifecycle / runtime events (status transitions, errors) |
+| `helm.pos.>` | JetStream | Position event log (replayable on restart) |
+| `helm.trades.>` | JetStream | Per-trade audit |
+| `helm.equity.>` | JetStream | Equity curve snapshots |
+| `trade.filled.{account_id}` | JetStream | Fill audit from helm → consumers (UI, strategist) |
 | `portfolio.synced.{account_id}` | publish | Portfolio sync notification after equity update |
-| `investment.transactions.{account_id}` | JetStream | Transaction events (helm → investment) |
+| `portfolio.>` | JetStream | Portfolio snapshot history (helm-level + hand-level) |
 | `user.telegram.linked` / `user.telegram.unlinked` | JetStream durable | Identity binding sync → strategist |
 | `signals.query.{symbol}` / `.history` / `.active` | req/rep | Signal queries from strategist |
 | `bars.query.{symbol}` / `.latest` / `bars.query.symbols` | req/rep | Bar queries from strategist |
+| `mail.send` | publish | Identity → SMTP worker (notification fan-out) |
+
+**Envelopes:** Protobuf (binary) for high-volume pub/sub (`bars.*`, `signals`). JSON `{ok, data, error}` envelopes for req/rep. User-scoped requests carry `CallerMeta { caller_user_id, caller_svc }` injected from the validated JWT — the NATS internal network treats this as trusted.
 
 ## Building and Running
 
-### Full system (Docker)
+### Hub stack (Docker)
 
 ```bash
-docker compose up -d nats                   # NATS only (dev)
-docker compose up -d                        # all services
-docker compose --profile storage up -d      # + PostgreSQL + Redis
-docker compose --profile monitoring up -d   # + Grafana + Prometheus + Surveyor
-docker compose logs -f herald
-docker compose logs -f helm
+just infra              # nats + postgres + redis + identity (+ cloudflared)
+just up                 # full stack: gateway, identity, herald, helm, strategist
+just up-mon             # full stack + monitoring (Grafana, Prometheus, Loki, Tempo, Pyroscope)
+just logs herald
+just down               # stop
+just down-v             # stop + drop volumes
 ```
+
+`deployment/docker-compose.yml` is the source of truth. The root `justfile` wraps it with `docker compose -f deployment/docker-compose.yml`.
 
 ### Rust workspace — run from `almanac/`
 
@@ -122,48 +184,57 @@ docker compose logs -f helm
 cargo build
 cargo test
 cargo test -p alm-strategy
-cargo run -p alm-herald                         # live signal engine + HTTP API
-RUST_LOG=herald=debug cargo run -p alm-herald   # with debug logging
-cargo watch -x 'run -p alm-herald'              # hot-reload (requires cargo-watch)
-cargo run -p alm-engine                         # backtest example (main.rs)
-cargo run --bin benchmark                       # quick backtest CLI
-cargo run --bin compare                         # bar-by-bar strategy comparison
-cargo run --bin tournament                      # strategy tournament on synthetic data
+cargo run -p alm-herald                          # live signal engine + HTTP API
+RUST_LOG=herald=debug cargo run -p alm-herald    # with debug logging
+cargo watch -x 'run -p alm-herald'               # hot-reload (requires cargo-watch)
+cargo run -p alm-engine                          # backtest example (main.rs)
+cargo run --bin benchmark                        # quick backtest CLI
+cargo run --bin compare                          # bar-by-bar strategy comparison
+cargo run --bin tournament                       # strategy tournament on synthetic data
 ```
 
-Herald HTTP API listens at `0.0.0.0:8090` (configurable via `HERALD_HTTP_ADDR`).
+Herald HTTP listens at `0.0.0.0:8090` (configurable via `HERALD_HTTP_ADDR`).
 
 ### Go services — each has a justfile
 
 ```bash
-just run        # go run ./cmd/<service>/
-just dev        # air (hot reload)
-just test       # go test ./...
-just up         # docker compose up -d --build
-just down       # docker compose down
-just logs       # docker compose logs -f <service>
+just run                # go run ./cmd/<service>/
+just dev                # air (hot reload)
+just test               # go test ./...
+just up                 # docker compose up -d --build
+just down               # docker compose down
+just logs               # docker compose logs -f <service>
 ```
 
-### hist-data specific
+### hist-data
 
 ```bash
-just wire       # go generate ./cmd/us-data/  (Wire DI regeneration)
-just build      # go build -o main ./cmd/us-data/
+just wire               # go generate ./cmd/us-data/  (Wire DI regeneration)
+just build              # go build -o main ./cmd/us-data/
 ```
 
 ### alm-py (Python bindings)
 
 ```bash
 cd almanac/crates/alm-py
-maturin develop          # editable install into current venv
-maturin build --release  # build wheel
+maturin develop         # editable install into current venv
+maturin build --release # build wheel
 ```
 
-### swagger (identity / investment / helm)
+### swagger (identity / helm)
 
 ```bash
-just swagger          # swag init (generate docs)
-just swagger-check    # validate docs are committed
+just swagger            # swag init (generate docs)
+just swagger-check      # validate docs are committed
+```
+
+### mallow-client
+
+```bash
+cd mallow-client
+pnpm install            # or npm/yarn
+pnpm dev                # next dev --port 5173
+pnpm build && pnpm start
 ```
 
 ## Architecture: Rust Almanac Workspace
@@ -172,17 +243,17 @@ Crates in `almanac/crates/`:
 
 | Crate | Package | Role |
 | --- | --- | --- |
-| `core` | `alm-core` | Shared types: `Bar`, `Tick`, `Signal`, `Order`, `Portfolio`, `Trade`, `Timeframe`, events, traits (`Strategy`, `RiskManager`, `Component`), `RegimeState`, `ExitRules`. Compiles proto via prost-build. |
-| `data` | `alm-data` | `BarFeed` trait + CSV/Parquet data loaders (Arrow/Parquet), `BarAggregator`, `RowGroupFeed` |
-| `indicator` | `alm-indicator` | **~66 stateful incremental indicators** — Trend/MA (SMA/EMA/WMA/HMA/DEMA/TEMA/SMMA/ALMA/LSMA/KAMA/KDJ/McGinley/KalmanFilter/VWMA/Aroon/ADX/DMI/MACD/TRIX/Vortex), Momentum (RSI/CCI/ROC/MFI/Williams/Stochastic/TSI/ConnorsRsi/CMO/PPO/PMO/KST/DPO/Coppock/AO/BOP/BullBearPower/UO/SMI/RVI/Fisher/RCI), Volume (OBV/CMF/VWAP), Channel (BBands/Keltner/Donchian), Pattern (Ichimoku/ElderRay/RWI/StochRSI/WilliamsFractal), Viewing (Alligator/GMMA/HeikenAshi), Regime (Chop/ChopZone/VolatilityRatio), Risk (ATR/SuperTrend/ParabolicSar/ChandelierExit/ChandeKrollStop) |
-| `ledger` | `alm-ledger` | Live market-state container: `Ledger` (DashMap of per-symbol indicator state), `IndicatorHandle` (refcounted), warm-set bootstrapping from Parquet on startup |
-| `strategy` | `alm-strategy` | **~80 named strategies** + `factory::build_strategy(name, params)` + `RhaiStrategy` (Rhai script) + `bar_resampler` (MTF) + `catalog` — all implement `Strategy` trait with `reset()` |
-| `engine` | `alm-engine` | Event-driven engine (`Engine<S,R,B>`); `SyncBus` (VecDeque, zero atomic overhead); `MultiEngine` (multi-symbol time-merge); `WalkForward` (rolling/anchored); `backtest::run()` library function; binaries: `alm-engine` (example), `benchmark`, `compare`, `tournament`, `try_strategy` |
-| `report` | `alm-report` | `BacktestReport`: Sharpe ratio, Sortino, Calmar, max drawdown, win rate, profit factor, P&L; `BuyHoldBenchmark`; `monte_carlo`; `portfolio_analytics` |
-| `pattern` | `alm-pattern` | Technical pattern detection (bull flag, ascending triangle, etc.) |
-| `herald` | `alm-herald` | **Binary**: WebSocket ingestion (Binance, OKX) → `Ledger` → `Registry` → NATS signals; 24h `BarRing` buffer; HTTP API (Axum, port 8090); optional PostgreSQL store |
-| `alm-py` | `alm_py` | PyO3 Python bindings: `run_backtest`, `kalman`, `monte_carlo`, `list_strategies` |
-| `alm-wasm` | `alm_wasm` | WASM bindings for browser-side backtesting |
+| `core` | `alm-core` | Shared types: `Bar`, `Tick`, `Signal`, `Order`, `Portfolio`, `Trade`, `Timeframe`, events, traits (`Strategy`, `MtfStrategy`, `RiskManager`, `Component`), `RegimeState`, `ExitRules`. Compiles proto via prost-build. |
+| `data` | `alm-data` | `BarFeed` trait + CSV/Parquet data loaders (Arrow/Parquet), `BarAggregator`, `RowGroupFeed`, `BarVecFeed`. |
+| `indicator` | `alm-indicator` | ~66 stateful incremental indicators (Trend/MA, Momentum, Volume, Channel, Pattern, Viewing, Regime, Risk). |
+| `ledger` | `alm-ledger` | Live market-state container: `Ledger` (DashMap of per-symbol indicator state), `IndicatorHandle` (refcounted), warm-set bootstrapping from Parquet on startup. |
+| `strategy` | `alm-strategy` | ~80 named strategies + `factory::build_strategy(name, params)` + V1 `ScriptStrategy` (single-TF Rhai) + V2 `MtfScriptStrategy` (multi-TF Rhai) + `catalog`. See `script/SPEC.md`, `script/v1/SPEC.md`, `script/v2/SPEC.md`, `script/USER_GUIDE.md`. |
+| `engine` | `alm-engine` | Event-driven engine (`Engine<S,R,B>`); `SyncBus`; `MultiEngine` (multi-symbol time-merge); `MtfEngine` (multi-TF feed merge); `WalkForward`; `backtest::run()`; binaries: `alm-engine`, `benchmark`, `compare`, `tournament`, `try_strategy`. |
+| `report` | `alm-report` | `BacktestReport`: Sharpe, Sortino, Calmar, max drawdown, win rate, profit factor, P&L; `BuyHoldBenchmark`; `monte_carlo`; `portfolio_analytics`. |
+| `pattern` | `alm-pattern` | Technical pattern detection (bull flag, ascending triangle, etc.). |
+| `herald` | `alm-herald` | **Binary**: WebSocket ingestion → `Ledger` → `Registry` → NATS signals; 24h `BarRing`; HTTP API (Axum, port 8090); optional PostgreSQL strategy store. |
+| `alm-py` | `alm_py` | PyO3 Python bindings: `run_backtest`, `kalman`, `monte_carlo`, `list_strategies`. |
+| `alm-wasm` | `alm_wasm` | WASM bindings for browser-side backtesting. |
 
 **Engine event flow:** `MarketEvent → Strategy → SignalEvent → RiskManager → OrderEvent → SimBroker → FillEvent`
 
@@ -193,7 +264,7 @@ feed::okx      ─┤  mpsc → Handler::run
                 ▼
          Ledger::advance ──→ NATS publish bars.{symbol}
                 │                   │
-          LedgerObserver(s)    bar_bcast (broadcast) ──→ SSE GET|POST /api/v1/stream/:symbol
+          LedgerObserver(s)    bar_bcast (broadcast) ──→ SSE POST /api/v1/stream/:symbol
                 │
           Registry (evaluate bots)
                 │
@@ -202,23 +273,25 @@ feed::okx      ─┤  mpsc → Handler::run
            sig_bcast (broadcast) ──→ SSE GET /api/v1/stream/signals
 ```
 
-Herald HTTP API routes (all under `/api/v1/`):
+**Herald HTTP API** — all under `/api/v1/`:
 
 | Group | Routes |
 |-------|--------|
-| **Live** | `GET /api/v1/symbols` · `GET /api/v1/indicators` · `GET /api/v1/data/:symbol` (latest bar) · `POST /api/v1/data/:symbol` (OHLCV + indicator snapshot; DuckDB parquet fallback for historical pages) · `POST /api/v1/data/duckdb` |
-| **Backtest** | `GET /api/v1/strategies` · `POST /api/v1/backtest` · `POST /api/v1/backtest/estimate` · `POST /api/v1/backtest/rhai` (always saves strategy + case + result) |
-| **Rhai** | `POST /api/v1/rhai/validate` (lint script for Monaco editor; **not proxied through api-gateway**) |
-| **Store** | `GET\|POST /api/v1/store/strategies` · `GET\|PUT\|DELETE /api/v1/store/strategies/:id` · `GET /api/v1/store/strategies/:name/versions` · `GET\|POST /api/v1/store/cases` · `GET\|PUT\|DELETE /api/v1/store/cases/:id` · `POST /api/v1/store/cases/:id/run` · `POST /api/v1/store/cases/:id/signals` · `GET /api/v1/store/cases/:id/results` · `GET\|DELETE /api/v1/store/results/:id` |
+| **Health / docs** | `GET /health` · OpenAPI at `/api-doc/openapi.json` (utoipa) |
+| **Live** | `GET /api/v1/symbols` · `GET /api/v1/indicators` · `POST /api/v1/data/:source/:symbol` (OHLCV + indicator snapshot; transparent DuckDB Parquet fallback for historical pages) · `POST /api/v1/data/duckdb` |
+| **Backtest** | `GET /api/v1/strategies` · `POST /api/v1/backtest` · `POST /api/v1/backtest/estimate` · `POST /api/v1/backtest/script` · `POST /api/v1/backtest/mtf` (MTF named strategies via `MtfEngine`) |
+| **Script** | `POST /api/v1/script/validate` (Monaco-style lint with diagnostics + autocomplete scope) |
+| **Strategy store** | `GET\|POST /api/v1/strategy/strategies` · `GET\|PUT\|DELETE /api/v1/strategy/strategies/:id` · `GET /api/v1/strategy/strategies/:id/chain` (version chain) · `GET /api/v1/strategy/my` (user's strategies) |
 | **Watch** | `GET\|POST /api/v1/watch` · `GET\|PUT\|DELETE /api/v1/watch/:id` (admin warm-set management) |
-| **Stream** | `GET /api/v1/stream/:symbol?tf=M1` (EventSource-compatible, raw OHLCV) · `POST /api/v1/stream/:symbol` (indicators or Rhai script) · `GET /api/v1/stream/signals` (SSE signal batches) |
-| **Health** | `GET /health` |
+| **Stream (SSE)** | `GET /api/v1/stream/:symbol` (event-source compatible, raw OHLCV) · `POST /api/v1/stream/:symbol` (indicators or script via `StreamRequest`) · `GET /api/v1/stream/signals` (signal batches) |
 
-> **SSE modes:** `GET /stream/:symbol` is native-`EventSource`-compatible — raw bars, no indicator config. `POST /stream/:symbol` carries a `StreamRequest` body (indicator configs or Rhai script) and requires `fetch()` + `ReadableStream`. Both modes emit a `status` event first, then `bar` events per incoming candle.
+> **SSE modes:** `GET /stream/:symbol` is native-`EventSource`-compatible — raw bars, no indicator config. `POST /stream/:symbol` carries a `StreamRequest` body (indicator configs OR a Rhai `script`) and requires `fetch()` + `ReadableStream`. Both modes emit a `status` event first, then `bar` events per incoming candle.
 
-**Strategy versioning (store):** Each strategy version is immutable. `previous_id` parent-pointer links versions like a git commit chain. `POST /backtest/rhai` always creates a new version via `upsert_strategy`: if `strategy_id` is provided it compares scripts (same → reuse, different → new version with `previous_id = strategy_id`); otherwise deduplicates by `spec_hash` globally.
+**Strategy versioning (store):** Each strategy version is immutable. `previous_id` parent-pointer links versions like a git commit chain. `POST /backtest/script` always creates a new version via `upsert_strategy`: if `strategy_id` is provided it compares scripts (same → reuse, different → new version with `previous_id = strategy_id`); otherwise deduplicates by `spec_hash` globally.
 
-**DuckDB parquet fallback (`POST /api/v1/data/:symbol`):** When `candles.before` predates the live ledger window, falls back to DuckDB row-group scan over Parquet files. OKX symbols normalized (`BTC-USDT` → `BTCUSDT`) before lookup.
+**DuckDB Parquet fallback (`POST /api/v1/data/:source/:symbol`):** When `candles.before` predates the live ledger window, the handler runs a historical compute pass via DuckDB row-group zone-map filtering on Parquet files. OKX symbols normalized (`BTC-USDT` → `BTCUSDT`) before lookup.
+
+**Rhai script engine:** Two versions sharing one DSL. V1 (`script::v1::ScriptStrategy`) is single-TF and used wherever an `alm_engine::Engine` runs. V2 (`script::v2::MtfScriptStrategy`) implements `MtfStrategy` for `MtfEngine` and supports real multi-feed evaluation with `name_live` / `name_fill` companion variables. See `almanac/crates/strategy/src/script/{SPEC.md,USER_GUIDE.md,v1/SPEC.md,v2/SPEC.md}`.
 
 ## Architecture: Go Services
 
@@ -227,89 +300,103 @@ Herald HTTP API routes (all under `/api/v1/`):
 ```text
 internal/
 ├── config/         # Viper config (JWT, NATS, Redis, upstream URLs)
-├── handler/        # health, proxy handlers, chat SSE
-├── middleware/      # CORS, JWT (JWKS validation), rate-limit (Redis token bucket)
-└── service/        # StrategistClient (HTTP proxy), IdentityClient (blacklist check)
+├── handler/        # health, reverse-proxy handlers, swagger
+├── middleware/     # CORS, rate-limit (Redis), JWT (JWKS validation + cached blacklist), InjectUserHeaders
+├── service/        # IdentityClient (blacklist check), StrategistClient
+├── ws/             # WebSocket bridge
+└── app/            # Uber FX wiring + router build
 ```
 
-- JWT validated against identity service JWKS endpoint (`JWT_JWKS_URL`)
-- `IdentityClient`: fallback blacklist check via `GET /api/v1/internal/blacklist/check` when Redis is cold
-- **Route table:**
+- JWT validated against identity's JWKS endpoint (`JWT_JWKS_URL`; falls back to `${IDENTITY_URL}/.well-known/jwks.json`). HMAC `JWT_SECRET` is a fallback for local dev.
+- `IdentityClient` does a fallback blacklist check via `GET /api/v1/internal/blacklist/check` (auth: `X-Service-Secret`) when Redis is cold.
+- `InjectUserHeaders` puts `user_id` / `role` from the validated JWT into request headers so downstream services can trust them without re-parsing the token.
+
+**Route table** (`api-gateway/internal/app/app.go`):
 
 | Gateway path | Upstream | Notes |
 |---|---|---|
-| `Any /api/v1/auth/*` | identity | no JWT required |
-| `Any /api/v1/investment/*` | investment | JWT required |
-| `Any /api/v1/helm/*path` | helm | JWT required; `/api/v1/helm/` → `/api/` path rewrite |
-| `Any /api/v1/strategist/*` | strategist | JWT required; path rewrite |
-| `GET /api/v1/symbols` | herald | JWT required |
-| `GET /api/v1/indicators` | herald | JWT required |
-| `GET\|POST /api/v1/data/:symbol` | herald | JWT required |
-| `GET /api/v1/strategies` | herald | JWT required |
-| `POST /api/v1/backtest` | herald | JWT required |
-| `POST /api/v1/backtest/estimate` | herald | JWT required |
-| `POST /api/v1/backtest/rhai` | herald | JWT required |
-| `GET\|POST /api/v1/stream/:symbol` | herald | JWT required; SSE streamed via reverse proxy |
-| `GET /api/v1/stream/signals` | herald | JWT required; SSE |
-| `Any /api/v1/store/*` | herald | JWT required |
-| `Any /api/v1/watch` / `Any /api/v1/watch/:id` | herald | JWT required |
-| `POST /api/v1/chat` / `POST /api/v1/chat/stream` | strategist (internal) | JWT required |
-
-- `POST /api/v1/rhai/validate` is **not** in the gateway route table — call herald directly on port 8090
+| `Any /api/v1/auth/*path`              | identity   | public (no JWT) |
+| `Any /api/v1/swagger/*path`           | identity   | public |
+| `GET /swagger/herald/*any` / `/api-doc/openapi.*` | herald | public |
+| `Any /swagger/helm/*path`             | helm       | public |
+| `Any /api/v1/helms[/*path]`           | helm       | JWT required |
+| `Any /api/v1/hands[/*path]`           | helm       | JWT required |
+| `Any /api/v1/accounts[/*path]`        | helm       | JWT required (account, transactions, watchlist live in helm now) |
+| `Any /api/v1/broker-connections[/*path]` | helm    | JWT required |
+| `Any /api/v1/strategist/*path`        | strategist | JWT required |
+| `GET /api/v1/symbols`                 | herald     | JWT required |
+| `GET /api/v1/indicators`              | herald     | JWT required |
+| `POST /api/v1/data/:source/:symbol`   | herald     | JWT required |
+| `POST /api/v1/data/duckdb`            | herald     | JWT required |
+| `GET /api/v1/strategies`              | herald     | JWT required |
+| `POST /api/v1/backtest` / `/backtest/estimate` / `/backtest/script` | herald | JWT required |
+| `POST /api/v1/script/validate`        | herald     | JWT required |
+| `GET\|POST /api/v1/stream/:symbol`    | herald     | JWT required; SSE streamed via reverse proxy |
+| `GET /api/v1/stream/signals`          | herald     | JWT required; SSE |
+| `Any /api/v1/strategy/*path`          | herald     | JWT required (strategy store) |
+| `Any /api/v1/watch[/:id]`             | herald     | JWT required |
+| (any other `/api/v1/*`)               | identity (NoRoute) | JWT required — catch-all dispatches to identity for endpoints not explicitly mapped |
 
 ### helm
 
-The trade execution service. Replaced the old `orchestrator/` service.
+The trade execution service — also owns account / broker-connection / portfolio data (folded in from the old `investment/` service).
 
 ```text
 helm/
-├── cmd/helm/         # main entry point + swagger annotations
+├── cmd/helm/         # main entry + swagger annotations
 ├── internal/
 │   ├── app/          # Uber FX wiring, lifecycle, exchange factory, server
-│   ├── config/       # Viper config (API_ADDR, POSTGRES_URL, NATS_URL, BAR_INTERVAL, …)
+│   ├── config/       # Viper config (API_ADDR, POSTGRES_URL, NATS_URL, SYNC_INTERVAL, market-data, …)
 │   ├── infra/
 │   │   ├── engine/   # SignalClient (NATS protobuf → bars + signals), BarAggregator
 │   │   ├── exchange/ # Broker adapters: alpaca, binance, bybit, oanda, okx
-│   │   ├── marketdata/ # Market data listeners (alpaca, okx WebSocket)
-│   │   ├── nats/     # NATS + JetStream setup
+│   │   ├── marketdata/ # Market-data listeners (alpaca, okx WebSocket) — optional
+│   │   ├── nats/     # NATS + JetStream setup (streams: user.>, signals, trade.filled.>, helm.pos.>, helm.trades.>, helm.equity.>, portfolio.>)
 │   │   ├── natsapi/  # NATS req/rep protocol (subjects, CallerMeta, envelopes)
-│   │   ├── poslog/   # Position event log: JetStream-backed, crash-resilient
+│   │   ├── perflog/  # Per-helm and per-hand performance log (portfolio + trades)
+│   │   ├── poslog/   # Position event log: JetStream-backed, crash-resilient (`helm.pos.>`)
 │   │   └── postgres/ # PostgreSQL persistence
 │   ├── module/
-│   │   ├── hand/     # Hand CRUD + lifecycle + NATS handler
-│   │   └── helm/     # Helm CRUD + account linking + NATS handler
+│   │   ├── account/  # Account aggregation (replaces investment/account)
+│   │   ├── broker/   # Broker connections — encrypted API key storage, paper flag, status
+│   │   ├── helm/     # Helm CRUD + account linking + NATS handler
+│   │   └── hand/     # Hand CRUD + lifecycle + NATS handler
 │   └── runtime/      # HelmRuntime, Hand goroutine, Registry, SignalDispatcher, reconciler
 ```
 
 **Core concepts:**
-- **Helm**: account-level container. One Helm per broker account. Owns exchange creds, capital budget, portfolio, risk circuit-breakers. Created automatically when `helm.accounts.linked` fires.
-- **Hand** (`runtime.Hand`): autonomous signal-following bot. Owns a Rhai strategy, position sizing config, exit rules, and a JetStream poslog. Multiple hands per helm.
+- **Broker Connection** (`module/broker`): user-scoped encrypted credentials for a single exchange account. Statuses: `pending` / `active` / `disconnected` / `error`. Paper-trading flag.
+- **Account** (`module/account`): aggregated view of a user's positions / cash / transactions per broker. Surfaces SSE `events` endpoint that streams `trade.filled.{account_id}` for the UI.
+- **Helm**: account-level execution container. One Helm per broker account. Owns capital budget, portfolio config, risk circuit-breakers. Auto-created when `helm.accounts.linked` fires.
+- **Hand** (`runtime.Hand`): autonomous signal-following bot. Owns a script/named strategy, position sizing, exit rules, JetStream poslog. Multiple hands per helm.
 - **HelmRuntime**: in-memory execution context shared by all hands under one helm (exchange, portfolio, order book, poslog).
-- **poslog**: JetStream-backed write-ahead log of position events (`order_placed`, `order_filled`, `order_cancelled`, `position_orphaned`). Replayed on restart by the reconciler to restore in-memory state.
+- **poslog**: JetStream-backed write-ahead log of position events (`order_placed`, `order_filled`, `order_cancelled`, `position_orphaned`). Replayed on restart by the reconciler.
 - **SignalDispatcher**: routes incoming `SignalResponse` from herald to the correct Hand channel by `bot_id`.
-- **Registry** (`runtime.Registry`): in-memory map of `helmID → HelmRuntime`. `SpawnAll` on startup; `Get` for dispatch.
+- **Registry** (`runtime.Registry`): in-memory map of `helm_id → HelmRuntime`. `SpawnAll` on startup; `Get` for dispatch.
 
-**Hand lifecycle states:** `stopped → running → paused → stopped` (via start/stop/pause/resume). Also: `kill` (stop + flatten all this hand's positions at exchange) and `release` (stop + emit `position_orphaned` poslog events, leaving positions live at exchange).
+**Hand lifecycle states:** `stopped → running → paused → stopped` via start/stop/pause/resume. Plus: `kill` (stop + flatten this hand's positions at exchange) and `release` (stop + emit `position_orphaned` poslog events, leaving positions live at exchange).
 
-**Helm lifecycle states:** `active` / `paused` (cascade-stops all hands) / `halted` (after kill; reset with `/halt/reset`) / `disabled` (admin soft-lock).
+**Helm lifecycle states:** `active` / `paused` (cascade-stops all hands) / `halted` (after kill; reset with `POST /halt/reset`) / `disabled` (admin soft-lock).
 
-**HTTP API** (Gin, port `API_ADDR` default `localhost:8084`; proxied at `/api/v1/helm/` by gateway):
+**HTTP API** (Gin, port `API_ADDR` default `localhost:8084`; proxied at `/api/v1/...` by the gateway):
 - `GET|PUT /api/v1/helms/:id` · `GET /api/v1/helms`
-- `POST /api/v1/helms/:id/enable|disable|pause|resume|kill` · `POST /api/v1/helms/:id/halt/reset`
-- `GET /api/v1/helms/:id/portfolio|positions|trades|orders`
-- `GET /api/v1/helms/:id/exchange/account|price` · `POST|GET|DELETE /api/v1/helms/:id/exchange/orders`
+- `POST /api/v1/helms/:id/{enable,disable,pause,resume,kill}` · `POST /api/v1/helms/:id/halt/reset`
+- `GET /api/v1/helms/:id/{portfolio,positions,trades,orders}`
+- `GET /api/v1/helms/:id/exchange/{account,price}` · `POST|GET|DELETE /api/v1/helms/:id/exchange/orders`
 - `POST /api/v1/hands` · `GET /api/v1/hands` · `GET|PUT|DELETE /api/v1/hands/:id`
-- `POST /api/v1/hands/:id/start|stop|restart|pause|resume|kill|release`
+- `POST /api/v1/hands/:id/{start,stop,restart,pause,resume,kill,release}`
+- `GET|POST /api/v1/accounts` · `GET|PUT|DELETE /api/v1/accounts/:id` · `GET /api/v1/accounts/:id/events` (SSE)
+- `GET|POST /api/v1/broker-connections` · `GET|PUT|DELETE /api/v1/broker-connections/:id`
 - `GET /metrics` (Prometheus) · `GET /health` · `GET /swagger/*`
 
-**NATS API**: same operations as HTTP, subjects under `helm.helms.*` and `helm.hands.*`. CallerMeta (`caller_user_id`, `caller_svc`) embedded in all user-scoped request payloads. Gateway and strategist populate these from the validated JWT before publishing.
+**NATS API**: same operations exposed via subjects under `helm.helms.*` / `helm.hands.*`. CallerMeta (`caller_user_id`, `caller_svc`) embedded in all user-scoped request payloads.
 
 **Startup sequence (Uber FX lifecycle):**
-1. `hydrateRuntimes` — load all helm configs from DB, spawn `HelmRuntime` for each
-2. `hydrateHands` — load all persisted hands, wire into service (depends on runtimes being ready)
-3. `subscribeSignals` — subscribe NATS `signals` subject via SignalDispatcher
-4. `startNATSAPI` — subscribe all `helm.*` NATS subjects
-5. `runOrchestrator` — start HTTP server + market data listener + bar builder + tick router
+1. `hydrateRuntimes` — load all helm configs from DB, spawn `HelmRuntime` per row.
+2. `hydrateHands` — load persisted hands, wire into service (depends on runtimes being ready).
+3. `subscribeSignals` — subscribe NATS `signals` via SignalDispatcher.
+4. `startNATSAPI` — subscribe all `helm.*` NATS subjects.
+5. `runOrchestrator` — start HTTP server + market-data listener + bar builder + tick router.
 
 ### identity
 
@@ -318,44 +405,24 @@ internal/
 ├── app/            # Uber FX wiring
 ├── config/         # Viper config
 ├── infra/          # GORM (Postgres/SQLite), NATS, Redis, Swagger gen
-├── middleware/      # CORS, logging, JWT, rate-limit, Telegram auth, ServiceAuth
+├── middleware/     # CORS, logging, JWT, rate-limit, Telegram auth, ServiceAuth
 ├── module/
-│   ├── auth/       # OAuth2, JWT generation, password hashing; InternalHandler
-│   ├── notification/ # Email + Telegram notifications
+│   ├── auth/       # OAuth2 (Google), password, Telegram, sessions, JWT issuance, blacklist; InternalHandler
+│   ├── notification/ # Email + Telegram notifications (consumes `mail.send`)
 │   ├── profile/    # User profile
 │   └── user/       # User CRUD
 ├── router/         # Gin routes
 ├── server/         # HTTP server
+├── service/        # Encryption helper (AES-GCM)
+├── seed/           # First-run seeds (admin user, etc.)
 └── telegram/       # Telegram bot
 ```
 
-- Publishes `user.telegram.linked` / `user.telegram.unlinked` to NATS JetStream
-- Exposes `/.well-known/jwks.json` for gateway JWT validation
-- `InternalHandler`: service-to-service endpoint protected by `X-Service-Secret`
-- Swagger docs via swaggo/swag
-
-### investment
-
-```text
-internal/
-├── app/            # Uber FX wiring
-├── config/         # Viper config
-├── infra/          # GORM + Postgres, NATS, Binance/Alpaca SDKs, OpenTelemetry
-├── module/
-│   ├── account/    # Account management
-│   ├── broker/     # Broker account config
-│   ├── cash_flow/  # Cash flow tracking
-│   ├── derivative/ # Derivative positions
-│   ├── portfolio/  # Portfolio aggregation
-│   ├── position/   # Open positions
-│   ├── snapshot/   # Portfolio snapshots
-│   ├── transaction/ # Trade/dividend recording
-│   └── watchlist/  # User watchlists
-└── shared/         # Validator, models, telemetry
-```
-
-- Full OpenTelemetry tracing (gin middleware, context propagation)
-- Swagger docs via swaggo/swag
+- Publishes `user.telegram.linked` / `user.telegram.unlinked` to NATS JetStream.
+- Exposes `/.well-known/jwks.json` for gateway/helm JWT validation.
+- `InternalHandler`: service-to-service endpoint protected by `X-Service-Secret`.
+- Broker-sync scheduler: triggers periodic refresh of broker connections — see `BROKER_SYNC_*` envs.
+- Swagger docs via swaggo/swag.
 
 ### hist-data
 
@@ -374,38 +441,55 @@ internal/
 └── saver/          # Parquet persistence
 ```
 
-- Wire dependency injection; regenerate with `just wire`
-- Symbols config shared with herald via `deployment/symbols.yaml`
-- `binanceflat`: downloads ZIP archives from `data.binance.vision` CDN — no API key
+- Wire DI; regenerate with `just wire`.
+- Symbols config shared with herald via `deployment/symbols.yaml`.
+- `binanceflat`: downloads ZIP archives from `data.binance.vision` CDN — no API key.
 
 ### strategist (`thstrategist/`)
 
 ```text
 thstrategist/internal/
-├── app/                     # FX wiring, lifecycle, NATS identity sync
-├── config/                  # Viper config
+├── app/                # FX wiring, lifecycle, NATS identity sync
+├── config/             # Viper config
 ├── module/
-│   ├── domain/              # Pure types (no internal imports)
-│   ├── service/             # ChatService, AgentGateway, RealtimeService
-│   ├── repo/                # ConversationRepo — postgres/ and noop/ impls
-│   ├── handler/             # Gin handlers: chat.go, telegram.go, realtime.go
+│   ├── domain/         # Pure types (zero internal imports)
+│   ├── service/        # ChatService, AgentGateway, RealtimeService
+│   ├── repo/           # ConversationRepo — postgres/ and noop/ impls
+│   ├── handler/        # Gin handlers: chat.go, telegram.go, realtime.go
 │   └── dto/
 ├── infra/
-│   ├── agent/               # ADK agent: root + analyst + commander sub-agents
-│   ├── agentruntime/        # ADKGateway (Reply, ResetSession, toMessageParts)
-│   ├── llm/                 # LLM abstraction (gemini | claude | openai)
-│   ├── orchestrator/        # HelmClient — NATS req/rep to helm service (subjects: helm.helms.*, helm.hands.*)
-│   ├── signal/              # SignalClient interface (NATS req/rep)
-│   ├── marketdata/          # MarketDataClient interface (NATS req/rep)
-│   ├── simulation/          # BacktestClient — nats | http | grpc | mock transport
-│   └── mock/                # Static mock data for dev mode
-└── telegram/                # Bot, handlers, format, renderer, identity_bindings
+│   ├── agent/          # ADK agent: root + analyst + commander sub-agents
+│   ├── agentruntime/   # ADKGateway (Reply, ResetSession, toMessageParts)
+│   ├── llm/            # LLM abstraction (gemini | claude | openai)
+│   ├── orchestrator/   # HelmClient — NATS req/rep to helm (subjects: helm.helms.*, helm.hands.*)
+│   ├── signal/         # SignalClient interface (NATS req/rep)
+│   ├── marketdata/     # MarketDataClient interface (NATS req/rep)
+│   ├── simulation/     # BacktestClient — nats | http | grpc | mock transport
+│   └── mock/           # Static mock data for dev mode
+└── telegram/           # Bot, handlers, format, renderer, identity_bindings
 ```
 
-- `infra/orchestrator/` is the helm client — NATS subjects match `helm/internal/infra/natsapi`
-- Agent architecture: root → analyst (backtests) or commander (helm/hand/portfolio management)
-- `write_artifact` tool pushes markdown to realtime canvas (WebSocket at `/realtime/ws`)
-- Telegram session ID = `tg_{chatID}`; ADK sessions are in-memory only
+- `infra/orchestrator/` is the helm client — NATS subjects match `helm/internal/infra/natsapi`.
+- Agent architecture: root → analyst (backtests) or commander (helm/hand/portfolio management).
+- `write_artifact` tool pushes markdown to the realtime canvas (WebSocket at `/realtime/ws`).
+- Telegram session id = `tg_{chatID}`; ADK sessions are in-memory only.
+
+### mallow-client (`mallow-client/`)
+
+Next.js 14 + Tailwind + shadcn/ui + Copilotkit + Monaco. App router under `app/`:
+
+```text
+mallow-client/
+├── app/
+│   ├── api/         # Route handlers (server-side bridges)
+│   ├── auth/        # Auth pages (login, oauth callback)
+│   ├── dashboard/   # Strategy builder, backtest UI, helm + hand consoles
+│   ├── layout.tsx
+│   └── page.tsx
+├── components/, hooks/, lib/, service/, styles/, public/
+```
+
+Auth: calls hosted gateway `/api/v1/auth/*` (OAuth2 / password / Telegram). Bearer token stored client-side; `service/` wraps fetch calls and injects the JWT.
 
 ## Environment Variables
 
@@ -413,10 +497,11 @@ thstrategist/internal/
 
 ```env
 NATS_URL                    # default: nats://localhost:4222
-JWT_SECRET
+JWT_SECRET                  # HMAC fallback (dev only)
 POSTGRES_PASSWORD           # only with --profile storage
 REDIS_URL                   # default: redis://localhost:6379
 RUST_LOG                    # e.g. herald=info,alm_ledger=info
+ENCRYPTION_KEY              # required by helm + identity for AES-GCM encrypting broker creds
 ```
 
 ### herald env
@@ -424,13 +509,13 @@ RUST_LOG                    # e.g. herald=info,alm_ledger=info
 ```env
 HERALD_HTTP_ADDR            # default: 0.0.0.0:8090
 HERALD_TF                   # timeframe: M1 (default), M5, M15, M30, H1, H4, D1, W1
-HERALD_SYMBOLS_FILE         # path to symbols.yaml (takes priority over per-exchange vars)
-HERALD_BINANCE_SYMBOLS      # comma-separated (fallback if no HERALD_SYMBOLS_FILE)
+HERALD_SYMBOLS_FILE         # path to symbols.yaml (priority over per-exchange vars)
+HERALD_BINANCE_SYMBOLS      # comma-separated (fallback)
 HERALD_OKX_SYMBOLS          # comma-separated
 HERALD_DATA_DIR             # parquet directory for bootstrap (default: ./data)
 HERALD_WARM_BARS            # M1 bars to load per symbol on startup (default: 5000 ≈ 3.5 days, 0 = skip)
 HERALD_MAX_BACKTESTS        # concurrency cap for backtest API (default: 4)
-HERALD_DATABASE_URL         # postgres://... (empty = in-memory store)
+HERALD_DATABASE_URL         # postgres://... (empty = in-memory strategy store)
 NATS_URL
 NATS_USER / NATS_PASS
 ```
@@ -441,13 +526,13 @@ NATS_USER / NATS_PASS
 API_ADDR                    # default: localhost:8084
 POSTGRES_URL                # postgres://... (required)
 NATS_URL
+ENCRYPTION_KEY              # AES-GCM key for broker credentials
 PYROSCOPE_URL               # empty = profiling disabled
-BAR_INTERVAL                # duration for bar aggregation (default: 5m, min: 1m)
 SYNC_INTERVAL               # portfolio sync interval (default: 5m)
 MARKET_DATA_SOURCE          # none | alpaca | okx (default: none)
-MARKET_DATA_SYMBOLS         # comma-separated symbols for market data listener
+MARKET_DATA_SYMBOLS         # comma-separated symbols for market-data listener
 MARKET_DATA_CRYPTO          # true | false
-ALPACA_MD_API_KEY           # Alpaca market data key
+ALPACA_MD_API_KEY           # Alpaca market-data key
 ALPACA_MD_API_SECRET
 ```
 
@@ -457,35 +542,45 @@ ALPACA_MD_API_SECRET
 PORT                        # default: 8080
 NATS_URL
 REDIS_URL
-JWT_JWKS_URL                # identity JWKS endpoint (empty = JWT_SECRET fallback)
-JWT_SECRET
+JWT_JWKS_URL                # identity JWKS endpoint (empty → ${IDENTITY_URL}/.well-known/jwks.json)
+JWT_SECRET                  # HMAC fallback
+JWT_PUBLIC_KEY              # PEM-encoded public key fallback
+JWT_ISSUER                  # accepted iss
+JWT_JWKS_CACHE_TTL          # default: 5m
 IDENTITY_URL                # http://identity:8082
-INVESTMENT_URL              # http://investment:8083
 HELM_URL                    # http://helm:8084
 HERALD_URL                  # http://herald:8090
 STRATEGIST_URL              # http://strategist:8081
+SERVICE_SECRET              # for identity InternalHandler calls
+RATE_LIMIT_PER_MINUTE       # default: 500
+CORS_ORIGINS                # comma-separated list
 ```
 
 ### identity env
 
 ```env
-PORT                        # default: 8082
-DATABASE_URL                # postgres://...
+SERVER_PORT                 # default: 8080
+POSTGRES_URL                # default: postgres://mallow:mallow-dev@localhost:5432/identity?sslmode=disable
 REDIS_URL
 NATS_URL
-JWT_SECRET
-TELEGRAM_BOT_TOKEN
+JWT_SECRET                  # HMAC fallback
+JWT_PRIVATE_KEY / JWT_PUBLIC_KEY  # EdDSA (Ed25519) key pair
+JWT_KEY_ID                  # default: identity-ed25519-k1
+JWT_ISSUER                  # default: http://localhost:8082
+JWT_ACCESS_TTL              # default: 24h
+JWT_REFRESH_TTL             # default: 168h
+COOKIE_SECURE / COOKIE_SAME_SITE / COOKIE_MAX_AGE
+ENCRYPTION_KEY              # AES-GCM key for sensitive fields
+CORS_ORIGINS                # default: http://localhost:3000
+BROKER_SYNC_ENABLED         # default: true
+BROKER_SYNC_INTERVAL_MIN    # default: 60
+BROKER_SYNC_MAX_CONCURRENT  # default: 5
+BROKER_SYNC_TIMEOUT_MIN     # default: 10
 SERVICE_SECRET              # X-Service-Secret for /api/v1/internal/* endpoints
-```
-
-### investment env
-
-```env
-PORT
-DATABASE_URL
-NATS_URL
-ALPACA_API_KEY / ALPACA_API_SECRET
-BINANCE_API_KEY / BINANCE_API_SECRET
+SMTP_HOST / SMTP_PORT / SMTP_USERNAME / SMTP_PASSWORD / SMTP_FROM / SMTP_FROM_NAME
+MAIL_NATS_SUBJECT           # default: mail.send
+MAIL_WORKER_CONCURRENCY     # default: 3
+TELEGRAM_BOT_TOKEN
 ```
 
 ### strategist env
@@ -500,11 +595,12 @@ ANTHROPIC_API_KEY
 OPENAI_API_KEY
 DATABASE_URL                # postgres://... (empty = no persistence)
 PERSIST_CONVERSATIONS       # true (default) | false
-TELEGRAM_BOT_TOKEN
-TELEGRAM_ALLOWED_CHATS      # comma-separated chat IDs (empty = allow all)
+ORCHESTRATOR_URL            # helm URL — default: http://localhost:8084
 BACKTEST_TRANSPORT          # nats (default) | http | grpc | mock
-BACKTEST_HTTP_URL
+BACKTEST_HTTP_PATH          # default: /api/backtest
 BACKTEST_TIMEOUT_SEC        # default: 30
+TELEGRAM_BOT_TOKEN
+TELEGRAM_ALLOWED_CHATS      # comma-separated (empty = allow all)
 MOCK                        # true = static data, no external calls
 DISABLE_EXTERNAL_SERVICES   # true = MOCK + no Telegram + no DB
 LOG_LEVEL                   # debug | info | warn | error
@@ -512,18 +608,19 @@ LOG_LEVEL                   # debug | info | warn | error
 
 ## Key Conventions
 
-- NATS subjects: `{class}.{symbol}` for data (e.g., `bars.BTCUSDT`), `{service}.{resource}.{action}` for control (e.g., `helm.hands.start`)
-- Protobuf (binary, schema-first) for all pub/sub NATS messages; JSON for req/rep envelopes
-- NATS req/rep envelope: `{ok: bool, data: any, error: string}`. CallerMeta (`caller_user_id`, `caller_svc`) embedded in user-scoped requests — populated from JWT by the caller, trusted on the NATS internal network
-- `alm-core` is the Rust lingua franca — all almanac crates share it
-- Go workspace (`go.work`) at root: all modules can import `mallow/pkg` locally
-- Each Go service has its own `go.mod` (independent deployable modules)
-- Secrets always in env vars, never in config files or committed `.env` files
-- `deployment/symbols.yaml` is the single source of truth for live-ingestion symbol lists — shared by herald and hist-data
-- In strategist: `module/domain` has zero internal imports — everything else may depend on it
-- `shared/` in each Go service delegates to `mallow/pkg/shared` (error codes, response helpers)
-- Herald store (strategies/cases/results) uses PostgreSQL when `HERALD_DATABASE_URL` is set, otherwise in-memory
-- `DynamicStrategy` (declarative JSON) is deprecated — use `RhaiStrategy` instead
-- Herald signals are published to the flat `signals` subject (not `signals.{symbol}`); orch_id + bot_id are in the protobuf `SignalResponse` payload
-- Hand IDs and Helm IDs are `uuid.UUID` throughout the Go runtime; converted to `.String()` only at protobuf/poslog/NATS boundaries
-- Detailed API docs: `docs/herald-api.md` (herald HTTP API), `docs/helm-api.md` (helm HTTP + NATS API)
+- NATS subjects: `{class}.{symbol}` for data (e.g. `bars.BTCUSDT`); `{service}.{resource}.{action}` for control (e.g. `helm.hands.start`); event streams namespaced under `helm.events.*`, `helm.pos.*`, `helm.trades.*`, `helm.equity.*`, `portfolio.*`.
+- Protobuf (binary) for high-volume pub/sub. JSON `{ok, data, error}` for NATS req/rep. `CallerMeta` (`caller_user_id`, `caller_svc`) embedded in user-scoped requests — populated from JWT by the caller, trusted on the NATS internal network.
+- `alm-core` is the Rust lingua franca — all almanac crates share it.
+- Go workspace (`go.work`) at root: in-workspace modules can import `mallow/pkg` locally. `thstrategist/` lives outside the workspace and pulls dependencies on its own.
+- Each Go service has its own `go.mod` (independently deployable).
+- Secrets always in env vars, never in config files or committed `.env` files. Broker API keys are AES-GCM encrypted with `ENCRYPTION_KEY` before being stored.
+- `deployment/symbols.yaml` is the single source of truth for live-ingestion symbol lists — shared by herald and hist-data.
+- In strategist: `module/domain` has zero internal imports — everything else may depend on it.
+- `shared/` in each Go service delegates to `mallow/pkg/shared` (error codes, response helpers).
+- Herald strategy store uses PostgreSQL when `HERALD_DATABASE_URL` is set, otherwise in-memory.
+- Legacy `DynamicStrategy` (declarative JSON) is deprecated — use the Rhai V1 / V2 script engine (`script/SPEC.md`).
+- Herald signals are published to the flat `signals` subject (not `signals.{symbol}`); `orch_id` + `bot_id` are in the protobuf `SignalResponse` payload.
+- Hand IDs and Helm IDs are `uuid.UUID` throughout the Go runtime; converted to `.String()` only at protobuf / poslog / NATS boundaries.
+- Self-hosted tenants share the hosted identity's JWKS — they do not run their own identity service. The boundary between hosted and tenant is **NATS subjects + JWT validation**, not new protocols.
+- Detailed API docs: `docs/herald-api.md` (herald HTTP), `docs/helm-api.md` (helm HTTP + NATS).
+- Script engine docs: `almanac/crates/strategy/src/script/{SPEC.md, USER_GUIDE.md, v1/SPEC.md, v2/SPEC.md}`.

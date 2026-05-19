@@ -107,9 +107,15 @@ impl Portfolio {
     }
 
     /// Total equity = cash + sum of market values at current prices.
+    ///
+    /// When `prices` lacks a quote for a held symbol, the position is valued
+    /// at its `avg_price` (i.e. zero unrealized PnL) rather than zero — this
+    /// keeps multi-symbol equity curves sensible when only one symbol's bar
+    /// is in flight, and avoids cliffs when stale prices momentarily drop.
     pub fn equity(&self, prices: &HashMap<String, f64>) -> f64 {
         let market_value: f64 = self.positions.values().map(|p| {
-            prices.get(&p.symbol).map(|&px| p.market_value(px)).unwrap_or(0.0)
+            let px = prices.get(&p.symbol).copied().unwrap_or(p.avg_price);
+            p.market_value(px)
         }).sum();
         self.cash + market_value
     }
@@ -147,7 +153,10 @@ impl Portfolio {
         match fill.side {
             Side::Buy => {
                 if pos.qty < -f64::EPSILON {
-                    // Covering a short position
+                    // Covering a short position. The fill may exceed the existing
+                    // short — extra qty flips into a long ("reversal"). Cash has
+                    // already been debited for the full fill above; we just need
+                    // to allocate the qty correctly.
                     let existing_qty = pos.qty.abs();
                     let covered_qty = fill.qty.min(existing_qty);
                     let entry_commission = if existing_qty > f64::EPSILON {
@@ -189,11 +198,22 @@ impl Portfolio {
                     }
 
                     pos.entry_commission -= entry_commission;
-                    let new_qty = pos.qty + covered_qty;
-                    if new_qty.abs() < f64::EPSILON {
-                        remove = true;
+                    let reversal_qty = fill.qty - covered_qty;
+                    if reversal_qty > f64::EPSILON {
+                        // Flipped into a long. The reversal qty opens a fresh long
+                        // at fill.price, carrying the unused part of the fill's
+                        // commission as its new entry_commission.
+                        pos.qty = reversal_qty;
+                        pos.avg_price = fill.price;
+                        pos.entry_timestamp = fill.timestamp;
+                        pos.entry_commission = fill.commission - exit_commission;
                     } else {
-                        pos.qty = new_qty;
+                        let new_qty = pos.qty + covered_qty;
+                        if new_qty.abs() < f64::EPSILON {
+                            remove = true;
+                        } else {
+                            pos.qty = new_qty;
+                        }
                     }
                 } else {
                     // Opening or adding to long position
@@ -211,7 +231,8 @@ impl Portfolio {
             }
             Side::Sell => {
                 if pos.qty > f64::EPSILON {
-                    // Closing a long position
+                    // Closing a long position. The fill may exceed the existing
+                    // long — extra qty flips into a short ("reversal").
                     let existing_qty = pos.qty;
                     let closed_qty = fill.qty.min(existing_qty);
                     let entry_commission = if existing_qty > f64::EPSILON {
@@ -238,7 +259,11 @@ impl Portfolio {
                             entry_timestamp: pos.entry_timestamp,
                             exit_timestamp: fill.timestamp,
                             pnl,
-                            pnl_pct: pnl / (pos.avg_price * closed_qty),
+                            pnl_pct: if pos.avg_price.abs() > f64::EPSILON {
+                                pnl / (pos.avg_price * closed_qty)
+                            } else {
+                                0.0
+                            },
                             commission: entry_commission + exit_commission,
                             mae_pct: 0.0,
                             mfe_pct: 0.0,
@@ -250,7 +275,14 @@ impl Portfolio {
 
                     pos.entry_commission -= entry_commission;
                     pos.qty -= closed_qty;
-                    if pos.qty.abs() < f64::EPSILON {
+                    let reversal_qty = fill.qty - closed_qty;
+                    if reversal_qty > f64::EPSILON {
+                        // Flipped into a short.
+                        pos.qty = -reversal_qty;
+                        pos.avg_price = fill.price;
+                        pos.entry_timestamp = fill.timestamp;
+                        pos.entry_commission = fill.commission - exit_commission;
+                    } else if pos.qty.abs() < f64::EPSILON {
                         remove = true;
                     }
                 } else {
@@ -366,6 +398,67 @@ mod tests {
         let position = portfolio.positions.get("BTCUSDT").expect("remaining long");
         assert!((position.qty - 3.0).abs() < 1e-9);
         assert!((position.entry_commission - 3.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn buy_through_short_flips_to_long() {
+        // Open short qty=2 at $100, then a buy qty=5 at $90 should:
+        //  - cover the short (close trade, +20 pnl)
+        //  - open a fresh long with qty=3 at $90
+        //  - cash debited for the full buy (5 * 90 = 450)
+        let mut p = Portfolio::new(1_000.0);
+        p.apply_fill(&Fill {
+            timestamp: 1, symbol: "X".into(), side: Side::Sell,
+            qty: 2.0, price: 100.0, commission: 0.0,
+        });
+        p.apply_fill(&Fill {
+            timestamp: 2, symbol: "X".into(), side: Side::Buy,
+            qty: 5.0, price: 90.0, commission: 0.0,
+        });
+        // Closed trade recorded for the short
+        assert_eq!(p.trades.len(), 1);
+        assert!((p.trades[0].pnl - 20.0).abs() < 1e-9);
+        // Fresh long qty=3 at $90
+        let pos = p.positions.get("X").expect("long must remain after reversal");
+        assert!((pos.qty - 3.0).abs() < 1e-9, "expected qty=3, got {}", pos.qty);
+        assert!((pos.avg_price - 90.0).abs() < 1e-9);
+        // Cash: 1000 + 200 (short open) - 450 (buy 5@90) = 750
+        assert!((p.cash - 750.0).abs() < 1e-9, "cash {}", p.cash);
+    }
+
+    #[test]
+    fn sell_through_long_flips_to_short() {
+        // Open long qty=2 at $100, then a sell qty=5 at $110 should:
+        //  - close the long (+20 pnl)
+        //  - open a fresh short qty=3 at $110
+        let mut p = Portfolio::new(1_000.0);
+        p.apply_fill(&Fill {
+            timestamp: 1, symbol: "X".into(), side: Side::Buy,
+            qty: 2.0, price: 100.0, commission: 0.0,
+        });
+        p.apply_fill(&Fill {
+            timestamp: 2, symbol: "X".into(), side: Side::Sell,
+            qty: 5.0, price: 110.0, commission: 0.0,
+        });
+        assert_eq!(p.trades.len(), 1);
+        assert!((p.trades[0].pnl - 20.0).abs() < 1e-9);
+        let pos = p.positions.get("X").expect("short must remain");
+        assert!((pos.qty + 3.0).abs() < 1e-9, "expected qty=-3, got {}", pos.qty);
+        assert!((pos.avg_price - 110.0).abs() < 1e-9);
+        // Cash: 1000 - 200 (long open) + 550 (sell 5@110) = 1350
+        assert!((p.cash - 1_350.0).abs() < 1e-9, "cash {}", p.cash);
+    }
+
+    #[test]
+    fn equity_falls_back_to_avg_price_when_quote_missing() {
+        let mut p = Portfolio::new(1_000.0);
+        p.apply_fill(&Fill {
+            timestamp: 1, symbol: "X".into(), side: Side::Buy,
+            qty: 2.0, price: 100.0, commission: 0.0,
+        });
+        // No price for X → fallback to avg_price (100). Equity = (1000-200) + 2*100 = 1000.
+        let eq = p.equity(&HashMap::new());
+        assert!((eq - 1_000.0).abs() < 1e-9, "equity {}", eq);
     }
 
     #[test]

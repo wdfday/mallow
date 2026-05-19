@@ -21,28 +21,13 @@ func botID(name string) uuid.UUID {
 
 func botSummaryUSD(id uuid.UUID, allocated float64) domain.HandSummary {
 	return domain.HandSummary{
-		ID: id,
-		Position: domain.PositionConfig{
-			AllocatedCapital: decimal.NewFromFloat(allocated),
-		},
+		ID:               id,
+		AllocatedCapital: decimal.NewFromFloat(allocated),
 	}
 }
 
-func botSummaryPct(id uuid.UUID, allocatedPct float64) domain.HandSummary {
-	return domain.HandSummary{
-		ID: id,
-		Position: domain.PositionConfig{
-			AllocatedPct: allocatedPct,
-		},
-	}
-}
-
-func posUSD(v float64) domain.PositionConfig {
-	return domain.PositionConfig{AllocatedCapital: decimal.NewFromFloat(v)}
-}
-
-func posPct(v float64) domain.PositionConfig {
-	return domain.PositionConfig{AllocatedPct: v}
+func posUSD(v float64) decimal.Decimal {
+	return decimal.NewFromFloat(v)
 }
 
 // ── No allocation requested — always passes ───────────────────────────────────
@@ -51,7 +36,7 @@ func TestCheckCapitalAllocation_NoAllocation_Passes(t *testing.T) {
 	bots := []domain.HandSummary{
 		botSummaryUSD(botID("bot1"), 5_000),
 	}
-	if overflow, _ := checkCapitalAllocation(10_000, bots, domain.PositionConfig{}, ""); overflow != nil {
+	if overflow, _ := checkCapitalAllocation(10_000, bots, decimal.Zero, ""); overflow != nil {
 		t.Fatalf("expected nil, got %v", overflow.Error)
 	}
 }
@@ -147,71 +132,10 @@ func TestCheckCapitalAllocation_USD_ExcludedBot_StillExceedsTotal(t *testing.T) 
 	}
 }
 
-// ── Percentage allocation ─────────────────────────────────────────────────────
+// ── No allocation (zero) ──────────────────────────────────────────────────────
 
-func TestCheckCapitalAllocation_Pct_Within100(t *testing.T) {
-	bots := []domain.HandSummary{
-		botSummaryPct(botID("bot1"), 0.40),
-		botSummaryPct(botID("bot2"), 0.30),
-	}
-	// 70% used, requesting 20% → total 90% → OK.
-	if overflow, _ := checkCapitalAllocation(10_000, bots, posPct(0.20), ""); overflow != nil {
-		t.Fatalf("expected nil, got %v", overflow.Error)
-	}
-}
-
-func TestCheckCapitalAllocation_Pct_Exceeds100(t *testing.T) {
-	bots := []domain.HandSummary{
-		botSummaryPct(botID("bot1"), 0.60),
-		botSummaryPct(botID("bot2"), 0.30),
-	}
-	// 90% used, requesting 20% → 110% → overflow.
-	overflow, _ := checkCapitalAllocation(10_000, bots, posPct(0.20), "")
-	if overflow == nil {
-		t.Fatal("expected overflow for >100%% pct allocation")
-	}
-}
-
-func TestCheckCapitalAllocation_Pct_Exactly100_Passes(t *testing.T) {
-	bots := []domain.HandSummary{
-		botSummaryPct(botID("bot1"), 0.50),
-	}
-	// 50% used, requesting exactly 50% → total 100% → OK.
-	if overflow, _ := checkCapitalAllocation(10_000, bots, posPct(0.50), ""); overflow != nil {
-		t.Fatalf("expected nil at exactly 100%%, got %v", overflow.Error)
-	}
-}
-
-func TestCheckCapitalAllocation_Pct_ExcludesUpdatedBot(t *testing.T) {
-	bots := []domain.HandSummary{
-		botSummaryPct(botID("bot1"), 0.70), // currently 70%
-		botSummaryPct(botID("bot2"), 0.20),
-	}
-	// Updating bot1 from 70% → 75%.
-	// Without exclude: 90% used, available 10%; 75% > 10% → fail.
-	// With exclude bot1: 20% used, available 80%; 75% ≤ 80% → pass.
-	if overflow, _ := checkCapitalAllocation(10_000, bots, posPct(0.75), botID("bot1").String()); overflow != nil {
-		t.Fatalf("expected nil when excluding updated bot, got %v", overflow.Error)
-	}
-}
-
-func TestCheckCapitalAllocation_Pct_ExcludeButStillExceeds(t *testing.T) {
-	bots := []domain.HandSummary{
-		botSummaryPct(botID("bot1"), 0.40),
-		botSummaryPct(botID("bot2"), 0.50),
-	}
-	// Updating bot1 from 40% → 60%.
-	// Exclude bot1: 50% used, available 50%; 60% > 50% → overflow.
-	overflow, _ := checkCapitalAllocation(10_000, bots, posPct(0.60), botID("bot1").String())
-	if overflow == nil {
-		t.Fatal("expected overflow when updated pct still exceeds available")
-	}
-}
-
-// ── Mixed (both dimensions zero on new bot) ───────────────────────────────────
-
-func TestCheckCapitalAllocation_BothZero_NoBots_Passes(t *testing.T) {
-	if overflow, _ := checkCapitalAllocation(10_000, nil, domain.PositionConfig{}, ""); overflow != nil {
+func TestCheckCapitalAllocation_ZeroAlloc_NoBots_Passes(t *testing.T) {
+	if overflow, _ := checkCapitalAllocation(10_000, nil, decimal.Zero, ""); overflow != nil {
 		t.Fatalf("expected nil for empty allocation request, got %v", overflow.Error)
 	}
 }

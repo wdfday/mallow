@@ -64,10 +64,6 @@ pub struct BacktestRequest {
     /// Timeframe subdirectory, e.g. `"H1"`, `"M1"`, `"D1"`.
     pub timeframe: Option<String>,
 
-    /// Minimum signal strength [0.0, 1.0] — signals below this threshold are
-    /// filtered out. Only meaningful for named strategies with variable strength.
-    pub min_strength: Option<f64>,
-
     /// When present, run Monte Carlo bootstrap simulation after the backtest.
     pub monte_carlo: Option<MonteCarloConfig>,
 
@@ -103,16 +99,6 @@ pub struct ScriptBacktestRequest {
     pub name: String,
     /// Human-readable case label. Defaults to `"{name} on {symbol}"` if omitted.
     pub label: Option<String>,
-    /// ID of an existing strategy version to compare against.
-    ///
-    /// - Same script as that version → reuse it, open a new case.
-    /// - Different script → create a new version with `previous_id = strategy_id`.
-    ///
-    /// When omitted, the server deduplicates by `spec_hash` across all versions
-    /// of `name`; a new version is created only if no matching hash exists.
-    pub strategy_id: Option<String>,
-    /// Existing case ID to update and re-run. Omit to create a new case.
-    pub case_id: Option<String>,
     /// Optional change notes attached to the strategy version.
     pub notes: Option<String>,
 
@@ -162,12 +148,59 @@ impl From<ScriptBacktestRequest> for BacktestRequest {
             data_source: req.data_source,
             asset_type: req.asset_type,
             timeframe: req.timeframe,
-            min_strength: None,
             monte_carlo: req.monte_carlo,
             walk_forward: req.walk_forward,
             intra_bar_mode: req.intra_bar_mode,
         }
     }
+}
+
+// ── MtfBacktestRequest ────────────────────────────────────────────────────────
+
+/// Request body for `POST /api/v1/backtest/mtf`.
+///
+/// Runs a named [`MtfStrategy`] over two or more independent bar feeds
+/// (one per timeframe) using [`alm_engine::MtfEngine`].
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct MtfBacktestRequest {
+    /// MTF strategy key (see `alm-strategy::mtf_factory::MTF_STRATEGY_KEYS`).
+    pub strategy: String,
+
+    /// Asset symbol, e.g. `"BTCUSDT"`.
+    pub symbol: String,
+
+    /// Base (highest-frequency) timeframe string, e.g. `"M1"` (default).
+    pub base_tf: Option<String>,
+
+    /// Higher timeframes to load alongside the base feed (e.g. `["H1"]`).
+    /// At least one entry is required. Each must differ from `base_tf`.
+    pub htf_timeframes: Vec<String>,
+
+    /// Strategy-specific parameters (currently unused — all MTF named strategies
+    /// have fixed defaults).
+    pub params: Option<Value>,
+
+    /// Date range start, inclusive (`"YYYY-MM-DD"`).
+    pub from: Option<String>,
+    /// Date range end, inclusive (`"YYYY-MM-DD"`).
+    pub to: Option<String>,
+
+    pub initial_capital: Option<f64>,
+    pub commission_pct: Option<f64>,
+    pub slippage_pct: Option<f64>,
+    pub risk_free_annual: Option<f64>,
+
+    pub position_size_pct: Option<f64>,
+    pub position_size_usd: Option<f64>,
+    pub position_size_quantity: Option<f64>,
+    pub max_positions: Option<usize>,
+
+    /// Data source for bar loading (same as [`BacktestRequest::data_source`]).
+    pub data_source: Option<String>,
+    /// Asset class for lot sizing (same as [`BacktestRequest::asset_type`]).
+    pub asset_type: Option<String>,
+
+    pub monte_carlo: Option<MonteCarloConfig>,
 }
 
 // ── Sub-configs ───────────────────────────────────────────────────────────────

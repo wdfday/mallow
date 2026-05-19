@@ -22,6 +22,7 @@ import (
 	handservice "mallow/helm/internal/module/hand/service"
 	orchhandler "mallow/helm/internal/module/helm/handler"
 	"mallow/helm/internal/runtime"
+	"mallow/helm/internal/runtime/perf"
 )
 
 // startNATSAPI subscribes per-module NATS request/reply handlers on start, drains on stop.
@@ -138,7 +139,7 @@ func runHeraldHeartbeat(ctx context.Context, sc *engine.SignalClient, reg *runti
 
 func doHeraldHeartbeat(ctx context.Context, sc *engine.SignalClient, reg *runtime.Registry, handMgr *handservice.Service) {
 	for _, rt := range reg.All() {
-		runningIDs := rt.RunningBotIDs()
+		runningIDs := rt.RunningHandIDs()
 		if len(runningIDs) == 0 {
 			continue
 		}
@@ -157,14 +158,15 @@ func doHeraldHeartbeat(ctx context.Context, sc *engine.SignalClient, reg *runtim
 	}
 }
 
-// runOrchestrator starts market data listener, equity recorder, API server,
-// and account fill streaming for exchanges that support it.
+// runOrchestrator starts market data listener, API server, and account fill
+// streaming for exchanges that support it.
 func runOrchestrator(
 	lc fx.Lifecycle,
 	cfg *config.Config,
 	ginEngine *gin.Engine,
 	reg *runtime.Registry,
 	nc *nats.Conn,
+	portfolioLog perf.PortfolioLog,
 ) {
 	srv := &http.Server{Addr: cfg.Server.APIAddr, Handler: ginEngine}
 	var cancel context.CancelFunc
@@ -175,6 +177,7 @@ func runOrchestrator(
 			cancel = c
 
 			reg.SetRuntime(runCtx, nc)
+			reg.SetPortfolioLog(portfolioLog)
 			reg.ReconcileAllOrders(ctx)
 			reg.RecoverGapFills(ctx, nc)
 			reg.StartFillStreaming(runCtx, nc)
@@ -198,7 +201,6 @@ func runOrchestrator(
 				}
 			}
 
-			go recordEquity(runCtx, reg, 5*time.Minute)
 			go heartbeat(runCtx, reg, 30*time.Second)
 
 			go func() {
@@ -246,8 +248,8 @@ func heartbeat(ctx context.Context, reg *runtime.Registry, interval time.Duratio
 					"max_drawdown_pct", fmt.Sprintf("%.2f%%", pf.MaxDrawdown()*100),
 					"daily_pnl", pf.DailyPnL(),
 					// hands
-					"hands", len(rt.BotIDs()),
-					"running_hands", len(rt.RunningBotIDs()),
+					"hands", len(rt.HandIDs()),
+					"running_hands", len(rt.RunningHandIDs()),
 				)
 
 				// positions
@@ -287,22 +289,6 @@ func heartbeat(ctx context.Context, reg *runtime.Registry, interval time.Duratio
 						"loss", m.LossCount,
 					)
 				}
-			}
-		case <-ctx.Done():
-			return
-		}
-	}
-}
-
-func recordEquity(ctx context.Context, reg *runtime.Registry, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ticker.C:
-			now := time.Now().UTC()
-			for _, rt := range reg.All() {
-				rt.Portfolio.RecordEquity(now)
 			}
 		case <-ctx.Done():
 			return

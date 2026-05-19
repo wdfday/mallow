@@ -46,20 +46,44 @@ func NewJetStream(nc *nats.Conn) (nats.JetStreamContext, error) {
 			MaxAge:   7 * 24 * time.Hour,
 		},
 		{
-			Name:     "HELM_ACCOUNTS",
-			Subjects: []string{"helm.accounts.*"},
-			Storage:  nats.FileStorage,
-			MaxAge:   7 * 24 * time.Hour,
-		},
-		{
-			// Signals from herald — short-lived, memory only.
-			// Allows helm to consume missed signals after a restart.
-			// Messages older than MaxAge are dropped automatically.
 			Name:     "SIGNALS",
 			Subjects: []string{"signals"},
 			Storage:  nats.MemoryStorage,
 			MaxAge:   60 * time.Second,
 			MaxMsgs:  10_000,
+		},
+		{
+			Name:       "TRADE_FILLS",
+			Subjects:   []string{"trade.filled.>"},
+			Storage:    nats.FileStorage,
+			Duplicates: 24 * time.Hour,
+		},
+		{
+			Name:       "HELM_POSITIONS",
+			Subjects:   []string{"helm.pos.>"},
+			Storage:    nats.FileStorage,
+			MaxAge:     30 * 24 * time.Hour,
+			Duplicates: 2 * time.Minute,
+		},
+		{
+			Name:       "HELM_TRADES",
+			Subjects:   []string{"helm.trades.>"},
+			Storage:    nats.FileStorage,
+			MaxAge:     365 * 24 * time.Hour,
+			Duplicates: 30 * time.Minute,
+		},
+		{
+			Name:       "HELM_EQUITY",
+			Subjects:   []string{"helm.equity.>"},
+			Storage:    nats.FileStorage,
+			MaxAge:     90 * 24 * time.Hour,
+			Duplicates: 5 * time.Minute,
+		},
+		{
+			Name:     "PORTFOLIO_SNAPSHOTS",
+			Subjects: []string{"portfolio.>"},
+			Storage:  nats.FileStorage,
+			MaxAge:   90 * 24 * time.Hour,
 		},
 	}
 	for _, cfg := range streams {

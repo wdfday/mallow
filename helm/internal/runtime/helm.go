@@ -1,19 +1,22 @@
 package runtime
 
 import (
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
+	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/infra/poslog"
-	"mallow/helm/internal/runtime/core/orderbook"
 	"mallow/helm/internal/runtime/core/portfolio"
 	"mallow/helm/internal/runtime/core/risk"
 	"mallow/helm/internal/runtime/core/strategy"
+	"mallow/helm/internal/runtime/perf"
 )
 
 // RiskManager is the interface for account-level risk controls.
@@ -22,10 +25,11 @@ type RiskManager interface {
 	IsHalted() bool
 	ResetHalt()
 	UpdateConfig(cfg risk.Config)
+	SetUnitCounter(fn func() int)
 }
 
 // HelmRuntime is the live in-memory state for one helm instance.
-// Holds account-level shared resources: Exchange, Portfolio, OrderBook, RiskManager.
+// Holds account-level shared resources: Exchange, Portfolio, RiskManager.
 // Per-hand resources (strategy, tactician) live on the Hand itself.
 type HelmRuntime struct {
 	HelmID     uuid.UUID
@@ -35,15 +39,19 @@ type HelmRuntime struct {
 
 	Portfolio *portfolio.Portfolio
 	RiskMgr   RiskManager
-	OrderBook orderbook.OrderBook
 	Exchange  exchange.Exchange
 	Creds     exchange.Credentials // per-account credentials passed to all Exchange calls
 
 	// orderCh decouples the broker WS goroutine from NATS publishing.
 	orderCh chan exchange.OrderEvent
 
+	// orderHandMap maps orderID → handID for WS fill routing.
+	// Populated by TrackOrder when a hand places an order; cleared on fill or cancel.
+	orderHandMap   map[string]string
+	orderHandMapMu sync.RWMutex
+
 	mu     sync.RWMutex
-	bots   map[string]*Hand
+	hands  map[string]*Hand
 	paused bool
 
 	// lastSyncAtNano stores the last successful sync time as UnixNano (0 = never).
@@ -51,9 +59,8 @@ type HelmRuntime struct {
 
 	pricesMu sync.RWMutex
 	prices   map[string]decimal.Decimal // last known price per symbol
-
-	l2Mu    sync.RWMutex
-	l2Books map[string]exchange.L2Snapshot // latest books5 snapshot per symbol
+	l2Mu     sync.RWMutex
+	l2       map[string]exchange.L2Snapshot // latest L2 snapshot per symbol (shared across all hands)
 
 	tradeMu      sync.Mutex
 	requestCount atomic.Int64
@@ -62,6 +69,15 @@ type HelmRuntime struct {
 
 	// PosLog is the durable position event log. nil = NATS unavailable (dev/test).
 	PosLog poslog.Log
+
+	// PortfolioLog records raw portfolio state (cash + positions) after every fill.
+	// nil = NATS unavailable (dev/test). FE uses these snapshots to compute equity
+	// at any timeframe without needing pre-multiplied values.
+	PortfolioLog perf.PortfolioLog
+
+	// nc is used for real-time activity event publishing (helm.events.{helmID}).
+	// nil = NATS unavailable (dev/test) — EmitEvent degrades to slog-only.
+	nc *nats.Conn
 
 	// processedTrades tracks TradeIDs applied in the current session to prevent
 	// double-applying gap recovery fills if RecoverGapFills runs more than once.
@@ -75,7 +91,6 @@ func NewHelmRuntime(
 	brokerType string,
 	pf *portfolio.Portfolio,
 	riskMgr RiskManager,
-	ob orderbook.OrderBook,
 	ex exchange.Exchange,
 	creds exchange.Credentials,
 	lastSyncedAt *time.Time,
@@ -87,14 +102,14 @@ func NewHelmRuntime(
 		BrokerType:      brokerType,
 		Portfolio:       pf,
 		RiskMgr:         riskMgr,
-		OrderBook:       ob,
 		Exchange:        ex,
 		Creds:           creds,
 		orderCh:         make(chan exchange.OrderEvent, 128),
-		bots:            make(map[string]*Hand),
+		orderHandMap:    make(map[string]string),
+		hands:           make(map[string]*Hand),
 		prices:          make(map[string]decimal.Decimal),
+		l2:              make(map[string]exchange.L2Snapshot),
 		processedTrades: make(map[string]struct{}),
-		l2Books:         make(map[string]exchange.L2Snapshot),
 		resetTicker:     time.NewTicker(1 * time.Minute),
 		stopCh:          make(chan struct{}),
 	}
@@ -115,67 +130,40 @@ func NewHelmRuntime(
 	return rt
 }
 
-// TrackOrder records a placed order in the orderbook.
-func (r *HelmRuntime) TrackOrder(order orderbook.PendingOrder) {
-	r.OrderBook.TrackOrder(order)
-}
+// SetEventConn injects the NATS connection used for real-time event publishing.
+// Called after construction from registry_lifecycle.go, same pattern as PosLog.
+// nil = slog-only mode (dev/test).
+func (r *HelmRuntime) SetEventConn(nc *nats.Conn) { r.nc = nc }
 
-// Stop cleans up the circuit-breaker ticker and terminates the reset goroutine.
-func (r *HelmRuntime) Stop() {
-	if r.resetTicker != nil {
-		r.resetTicker.Stop()
+// EmitEvent logs a behavioral event via slog.Info and, when NATS is available,
+// publishes it to helm.events.{helmID} so clients receive a real-time activity stream.
+func (r *HelmRuntime) EmitEvent(ev natsapi.HelmEvent) {
+	ev.HelmID = r.HelmID.String()
+	ev.At = time.Now().UTC()
+
+	args := []any{"helm_id", r.HelmID, "code", ev.Code}
+	if ev.HandID != "" {
+		args = append(args, "hand_id", ev.HandID)
 	}
-	select {
-	case <-r.stopCh: // already closed
-	default:
-		close(r.stopCh)
+	if ev.Symbol != "" {
+		args = append(args, "symbol", ev.Symbol)
 	}
-}
-
-// IsPaused reports whether the runtime is currently paused.
-func (r *HelmRuntime) IsPaused() bool {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return r.paused
-}
-
-// Pause suspends the runtime — all hands will ignore incoming signals.
-// Returns IDs of hands that were running before the pause.
-func (r *HelmRuntime) Pause() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.paused = true
-	var wasRunning []string
-	for id, hand := range r.bots {
-		hand.WasRunning = hand.IsRunning()
-		if hand.WasRunning {
-			wasRunning = append(wasRunning, id)
-		}
+	if ev.OrderID != "" {
+		args = append(args, "order_id", ev.OrderID)
 	}
-	return wasRunning
-}
-
-// Resume unpauses the runtime. Returns IDs of hands that should be restarted.
-func (r *HelmRuntime) Resume() []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.paused = false
-	var toRestart []string
-	for id, hand := range r.bots {
-		if hand.WasRunning {
-			hand.WasRunning = false
-			toRestart = append(toRestart, id)
-		}
+	if ev.Qty.IsPositive() {
+		args = append(args, "qty", ev.Qty)
 	}
-	return toRestart
-}
+	if ev.Price.IsPositive() {
+		args = append(args, "price", ev.Price)
+	}
+	if ev.Reason != "" {
+		args = append(args, "reason", ev.Reason)
+	}
 
-// ResetHalt clears the risk-manager halt flag on this runtime.
-func (r *HelmRuntime) ResetHalt() {
-	r.RiskMgr.ResetHalt()
-}
+	slog.Info(ev.Msg, args...)
 
-// UpdateRiskConfig replaces the live risk parameters.
-func (r *HelmRuntime) UpdateRiskConfig(cfg risk.Config) {
-	r.RiskMgr.UpdateConfig(cfg)
+	if r.nc != nil {
+		natsapi.PublishHelmEvent(r.nc, r.HelmID.String(), ev)
+	}
 }

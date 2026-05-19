@@ -326,11 +326,39 @@ impl RiskManager for AnySizer {
     }
 }
 
+#[cfg(test)]
+mod kelly_tests {
+    use super::*;
+
+    #[test]
+    fn kelly_formula_matches_classical_form() {
+        // W=0.6, avg_win=0.10, avg_loss=0.05 → R=2 → f* = 0.6 - 0.4/2 = 0.4
+        let f = KellySizing::compute_kelly_f(0.6, 0.10, 0.05);
+        assert!((f - 0.4).abs() < 1e-9, "expected 0.40, got {f}");
+    }
+
+    #[test]
+    fn kelly_negative_edge_returns_negative() {
+        // W=0.3, win=0.05, loss=0.10 → R=0.5 → f* = 0.3 - 0.7/0.5 = -1.1
+        // Callers clamp to 0; here we just verify the formula sign.
+        let f = KellySizing::compute_kelly_f(0.3, 0.05, 0.10);
+        assert!(f < 0.0, "negative-edge kelly must be negative, got {f}");
+    }
+
+    #[test]
+    fn kelly_zero_when_avg_is_zero() {
+        assert_eq!(KellySizing::compute_kelly_f(0.5, 0.0, 0.05), 0.0);
+        assert_eq!(KellySizing::compute_kelly_f(0.5, 0.05, 0.0), 0.0);
+    }
+}
+
 /// Kelly criterion position sizing.
 ///
 /// Uses historical trade statistics from the portfolio to compute the Kelly fraction.
 /// `size = fraction × kelly_f × equity / price`
-/// where `kelly_f = win_rate / avg_loss - (1 - win_rate) / avg_win`.
+/// where `kelly_f = W − (1 − W) / R`  and `R = avg_win / avg_loss`
+/// (W = win_rate, R = payoff ratio). All inputs are positive fractions; the
+/// negative branch (edge against you) is clamped to 0 by `size()`.
 ///
 /// The initial `win_rate`, `avg_win`, `avg_loss` are used until enough trades accumulate.
 pub struct KellySizing {
@@ -357,12 +385,14 @@ impl KellySizing {
         Self { win_rate, avg_win, avg_loss, fraction, max_positions }
     }
 
-    /// Compute Kelly fraction from historical trades (or fall back to initial estimates).
+    /// Compute Kelly fraction `f* = W − (1−W)/R` where `R = avg_win/avg_loss`.
+    /// Returns ≤ 0 when the edge is against you (caller clamps to 0).
     fn compute_kelly_f(win_rate: f64, avg_win: f64, avg_loss: f64) -> f64 {
         if avg_win < f64::EPSILON || avg_loss < f64::EPSILON {
             return 0.0;
         }
-        win_rate / avg_loss - (1.0 - win_rate) / avg_win
+        let payoff = avg_win / avg_loss;
+        win_rate - (1.0 - win_rate) / payoff
     }
 }
 

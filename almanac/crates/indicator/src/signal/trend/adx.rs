@@ -1,4 +1,4 @@
-use crate::Ema;
+use crate::Smma;
 
 /// Average Directional Index (ADX) — đo độ mạnh của xu hướng (0–100).
 ///
@@ -6,16 +6,16 @@ use crate::Ema;
 /// mạnh yếu** của trend mà không cho biết hướng. ADX cao = trend mạnh (dù
 /// tăng hay giảm); ADX thấp = sideways/choppy.
 ///
-/// # Công thức (dùng EMA thay vì SMMA gốc của Wilder trong codebase này)
+/// # Công thức (Wilder's SMMA — alpha = 1/n, nhất quán với DMI và spec gốc)
 /// ```text
 /// +DM(t) = max(high - prev_high, 0) nếu > -DM, ngược lại = 0
 /// -DM(t) = max(prev_low - low, 0)   nếu > +DM, ngược lại = 0
 /// TR(t)  = max(H-L, |H-PC|, |L-PC|)
 ///
-/// +DI = EMA(+DM, n) / EMA(TR, n) × 100
-/// -DI = EMA(-DM, n) / EMA(TR, n) × 100
+/// +DI = SMMA(+DM, n) / SMMA(TR, n) × 100
+/// -DI = SMMA(-DM, n) / SMMA(TR, n) × 100
 /// DX  = |+DI − -DI| / (+DI + -DI) × 100
-/// ADX = EMA(DX, n)
+/// ADX = SMMA(DX, n)
 /// ```
 ///
 /// # Ngưỡng thông dụng
@@ -31,14 +31,14 @@ use crate::Ema;
 /// - ADX đang giảm → trend yếu đi / sắp reversal
 ///
 /// # Warmup
-/// Do cascade EMA: cần khoảng `2 × period` bar để ADX EMA warm up đầy đủ.
+/// Do cascade SMMA: cần khoảng `2 × period` bar để ADX SMMA warm up đầy đủ.
 #[derive(Debug, Clone)]
 pub struct Adx {
     _period: usize,
-    plus_dm_ema: Ema,
-    minus_dm_ema: Ema,
-    tr_ema: Ema,
-    adx_ema: Ema,
+    plus_dm_smma: Smma,
+    minus_dm_smma: Smma,
+    tr_smma: Smma,
+    adx_smma: Smma,
     prev_high: Option<f64>,
     prev_low: Option<f64>,
     prev_close: Option<f64>,
@@ -55,10 +55,10 @@ impl Adx {
     pub fn new(period: usize) -> Self {
         Self {
             _period: period,
-            plus_dm_ema: Ema::new(period),
-            minus_dm_ema: Ema::new(period),
-            tr_ema: Ema::new(period),
-            adx_ema: Ema::new(period),
+            plus_dm_smma: Smma::new(period),
+            minus_dm_smma: Smma::new(period),
+            tr_smma: Smma::new(period),
+            adx_smma: Smma::new(period),
             prev_high: None,
             prev_low: None,
             prev_close: None,
@@ -99,9 +99,9 @@ impl Adx {
             let lc = (low - pc).abs();
             let tr = hl.max(hc).max(lc);
 
-            let smoothed_plus = self.plus_dm_ema.update(plus_dm);
-            let smoothed_minus = self.minus_dm_ema.update(minus_dm);
-            let smoothed_tr = self.tr_ema.update(tr);
+            let smoothed_plus = self.plus_dm_smma.update(plus_dm);
+            let smoothed_minus = self.minus_dm_smma.update(minus_dm);
+            let smoothed_tr = self.tr_smma.update(tr);
 
             match (smoothed_plus, smoothed_minus, smoothed_tr) {
                 (Some(sp), Some(sm), Some(st)) if st > f64::EPSILON => {
@@ -114,7 +114,7 @@ impl Adx {
                         0.0
                     };
 
-                    self.adx_ema.update(dx).map(|adx| AdxValue {
+                    self.adx_smma.update(dx).map(|adx| AdxValue {
                         adx,
                         plus_di,
                         minus_di,
@@ -134,14 +134,14 @@ impl Adx {
     }
 
     pub fn is_ready(&self) -> bool {
-        self.adx_ema.is_ready()
+        self.adx_smma.is_ready()
     }
 
     pub fn reset(&mut self) {
-        self.plus_dm_ema.reset();
-        self.minus_dm_ema.reset();
-        self.tr_ema.reset();
-        self.adx_ema.reset();
+        self.plus_dm_smma.reset();
+        self.minus_dm_smma.reset();
+        self.tr_smma.reset();
+        self.adx_smma.reset();
         self.prev_high = None;
         self.prev_low = None;
         self.prev_close = None;

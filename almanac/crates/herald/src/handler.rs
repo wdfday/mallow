@@ -229,7 +229,7 @@ impl Handler {
         info!(hand_id = %req.hand_id, symbol = %req.symbol, "registering hand");
         // Timeframe is required — strategies are TF-specific so silent fallback
         // to herald's base TF would run a script designed for H1 on M1 bars.
-        let target_tf = match req.timeframe.as_str() {
+        let _target_tf = match req.timeframe.as_str() {
             "" => {
                 let err = "timeframe is required (e.g. \"M1\", \"M15\", \"H1\")";
                 warn!(hand_id = %req.hand_id, "register rejected: {err}");
@@ -275,7 +275,7 @@ impl Handler {
 
         let result = self.registry.register(
             req.hand_id.clone(), req.helm_id.clone(), req.symbol.clone(),
-            req.script.clone(), target_tf,
+            req.script.clone(),
         );
         if let Some(reply) = msg.reply {
             let ack = match result {

@@ -27,12 +27,12 @@ type SymbolInfo struct {
 
 // ProposedOrder is the order a hand wants to place, before exchange validation.
 type ProposedOrder struct {
-	BotID          string          `json:"hand_id"`
-	OrchestratorID string          `json:"helm_id"`
-	Symbol         string          `json:"symbol"`
-	Side           OrderSide       `json:"side"`
-	Qty            decimal.Decimal `json:"qty"`
-	Price          decimal.Decimal `json:"price,omitempty"`
+	HandID string          `json:"hand_id"`
+	HelmID string          `json:"helm_id"`
+	Symbol string          `json:"symbol"`
+	Side   OrderSide       `json:"side"`
+	Qty    decimal.Decimal `json:"qty"`
+	Price  decimal.Decimal `json:"price,omitempty"`
 }
 
 // ValidationResult is the outcome of orderbook validation.
@@ -40,16 +40,6 @@ type ValidationResult struct {
 	Valid       bool            `json:"valid"`
 	Reason      string          `json:"reason,omitempty"`
 	AdjustedQty decimal.Decimal `json:"adjusted_qty,omitempty"`
-}
-
-// PendingOrder is an order currently open on the exchange.
-type PendingOrder struct {
-	OrderID        string          `json:"order_id"`
-	BotID          string          `json:"hand_id"`
-	OrchestratorID string          `json:"helm_id"`
-	Symbol         string          `json:"symbol"`
-	Side           OrderSide       `json:"side"`
-	Qty            decimal.Decimal `json:"qty"`
 }
 
 // BookUpdate is one market-data observation stored in the per-symbol history buffer.

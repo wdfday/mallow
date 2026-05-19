@@ -9,23 +9,25 @@ import (
 
 // HandSummary is the JSON-safe public view of a hand instance.
 type HandSummary struct {
-	ID              uuid.UUID       `json:"id"`
-	Name            string          `json:"name"`
-	Type            HandType        `json:"type"`
-	Market          MarketType      `json:"market"`
-	HelmID          uuid.UUID       `json:"helm_id"`
-	Strategy        StrategySpec    `json:"strategy"`
-	Position        PositionConfig  `json:"position"`
-	Risk            HandRiskConfig  `json:"risk"`
-	Symbols         []string        `json:"symbols"`
-	Status          string          `json:"status"`
-	Running         bool            `json:"running"`
-	OrderCount      int             `json:"order_count"`
-	Health          HandHealthView  `json:"health"`
-	Metrics         HandMetricsView `json:"metrics"`
-	Futures         *FuturesConfig  `json:"futures,omitempty"`
-	CreatedAt       time.Time       `json:"created_at"`
-	DeployedCapital decimal.Decimal `json:"deployed_capital"`
+	ID               uuid.UUID       `json:"id"`
+	Name             string          `json:"name"`
+	Type             HandType        `json:"type"`
+	Market           MarketType      `json:"market"`
+	HelmID           uuid.UUID       `json:"helm_id"`
+	Strategy         StrategySpec    `json:"strategy"`
+	Position         PositionConfig  `json:"position"`
+	Risk             HandRiskConfig  `json:"risk"`
+	Symbols          []string        `json:"symbols"`
+	Status           HandStatus      `json:"status"`
+	Running          bool            `json:"running"`
+	OrderCount       int             `json:"order_count"`
+	Health           HandHealthView  `json:"health"`
+	Metrics          HandMetricsView `json:"metrics"`
+	Futures          *FuturesConfig  `json:"futures,omitempty"`
+	CreatedAt        time.Time       `json:"created_at"`
+	DeployedCapital  decimal.Decimal `json:"deployed_capital"`
+	AllocatedCapital decimal.Decimal `json:"allocated_capital"`
+	SignalTTLSec     int             `json:"signal_ttl_sec,omitempty"`
 }
 
 // HandHealthView is the JSON-safe health snapshot.

@@ -34,7 +34,6 @@ services:
     environment:
       NATS_PASS_SIGNAL_ENGINE: ${NATS_PASS_SIGNAL_ENGINE:-signal-engine-dev}
       NATS_PASS_HELM: ${NATS_PASS_HELM:-helm-dev}
-      NATS_PASS_INVESTMENT: ${NATS_PASS_INVESTMENT:-investment-dev}
       NATS_PASS_STRATEGIST: ${NATS_PASS_STRATEGIST:-strategist-dev}
       NATS_PASS_GATEWAY: ${NATS_PASS_GATEWAY:-gateway-dev}
       NATS_PASS_IDENTITY: ${NATS_PASS_IDENTITY:-identity-dev}
@@ -160,8 +159,11 @@ services:
     depends_on:
       nats:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     environment:
       NATS_URL: nats://signal_engine:${NATS_PASS_SIGNAL_ENGINE:-signal-engine-dev}@nats:4222
+      HERALD_DATABASE_URL: "postgres://mallow:mallow-dev@postgres:5432/herald?sslmode=disable"
       HERALD_HTTP_ADDR: "0.0.0.0:8090"
       HERALD_DATA_DIR: /data
       HERALD_MAX_BACKTESTS: ${HERALD_MAX_BACKTESTS:-4}
@@ -198,6 +200,7 @@ services:
       NATS_URL: nats://helm:${NATS_PASS_HELM:-helm-dev}@nats:4222
       POSTGRES_URL: "postgres://mallow:${POSTGRES_PASSWORD:-mallow-dev}@postgres:5432/helm?sslmode=disable"
       API_ADDR: "0.0.0.0:8084"
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-01234567890123456789012345678901}
       SYNC_INTERVAL: ${SYNC_INTERVAL:-5m}
       GIN_MODE: ${GIN_MODE:-release}
       LOG_LEVEL: ${LOG_LEVEL:-info}
@@ -210,40 +213,6 @@ services:
       timeout: 5s
       retries: 3
     restart: unless-stopped
-
-  # ═══════════════════════════════════════════════════════════════════
-  # Investment service
-  # ═══════════════════════════════════════════════════════════════════
-
-  investment:
-    build:
-      context: ..
-      dockerfile: investment/Dockerfile
-    image: investment:latest
-    container_name: investment
-    ports:
-      - "8083:8083"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      nats:
-        condition: service_healthy
-    environment:
-      PORT: "8083"
-      POSTGRES_URL: "postgres://mallow:${POSTGRES_PASSWORD:-mallow-dev}@postgres:5432/investment?sslmode=disable"
-      NATS_URL: "nats://investment:${NATS_PASS_INVESTMENT:-investment-dev}@nats:4222"
-      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000}
-      GIN_MODE: ${GIN_MODE:-release}
-      LOG_LEVEL: ${LOG_LEVEL:-info}
-      LOG_ENV: ${LOG_ENV:-production}
-      LOG_FILE: ${INVESTMENT_LOG_FILE:-}
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8083/health"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
 
   # ═══════════════════════════════════════════════════════════════════
   # API layer
@@ -298,8 +267,6 @@ services:
         condition: service_healthy
 #      identity:
 #        condition: service_healthy
-#      investment:
-#        condition: service_healthy
 #      herald:
 #        condition: service_healthy
       redis:
@@ -309,7 +276,6 @@ services:
       NATS_URL: nats://gateway:${NATS_PASS_GATEWAY:-gateway-dev}@nats:4222
       JWT_SECRET: ${JWT_SECRET:-mallow-dev-secret-change-in-prod}
       IDENTITY_URL: http://identity:8082
-      INVESTMENT_URL: http://investment:8083
       HELM_URL: http://helm:8084
       STRATEGIST_URL: http://strategist:8081
       HERALD_URL: http://herald:8090

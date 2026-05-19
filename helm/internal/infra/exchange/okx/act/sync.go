@@ -33,6 +33,7 @@ func (c *Client) SyncAccount(ctx context.Context, creds exchange.Credentials, _ 
 		qty decimal.Decimal
 	}
 	var nonCash []holding
+	var balances []exchange.AssetBalance
 
 	for _, b := range info.Balances {
 		available := decimal.NewFromFloat(b.Available)
@@ -43,6 +44,9 @@ func (c *Client) SyncAccount(ctx context.Context, creds exchange.Credentials, _ 
 		qty := available
 		if equity.GreaterThan(qty) {
 			qty = equity
+		}
+		if available.IsPositive() {
+			balances = append(balances, exchange.AssetBalance{Asset: b.Currency, Free: available})
 		}
 		if stablecoins[b.Currency] {
 			cash = cash.Add(available)
@@ -109,5 +113,6 @@ func (c *Client) SyncAccount(ctx context.Context, creds exchange.Credentials, _ 
 		Cash:      cash,
 		Equity:    cash.Add(mv),
 		Positions: positions,
+		Balances:  balances,
 	}, nil
 }

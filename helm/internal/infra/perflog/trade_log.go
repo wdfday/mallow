@@ -26,17 +26,8 @@ type jsTradeLog struct {
 // NewTradeLog creates the HELM_TRADES stream (idempotent) and returns a
 // JetStream-backed perf.TradeLog.
 func NewTradeLog(js nats.JetStreamContext) (perf.TradeLog, error) {
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:       tradeStream,
-		Subjects:   []string{tradeSubjBase + ".>"},
-		Storage:    nats.FileStorage,
-		MaxAge:     tradeMaxAge,
-		Duplicates: tradeDedupWin,
-	})
-	if err != nil {
-		if _, infoErr := js.StreamInfo(tradeStream); infoErr != nil {
-			return nil, fmt.Errorf("create stream %s: %w", tradeStream, err)
-		}
+	if _, err := js.StreamInfo(tradeStream); err != nil {
+		return nil, fmt.Errorf("stream %s not found: %w", tradeStream, err)
 	}
 	return &jsTradeLog{js: js}, nil
 }

@@ -4,11 +4,11 @@
 //
 //	Idle ──order_placed──▶ Entering ──order_filled──▶ Open ──order_placed(close)──▶ Exiting ──order_filled──▶ Idle
 //	                            │                       │                                │
-//	                      order_cancelled           order_placed(add)            order_cancelled
+//	                      order_cancelled           order_placed(add)            order_canceled
 //	                            │                   (pyramid only)                       │
 //	                           Idle                    ▼                                Open
 //	                                                Adding ──order_filled──▶ Open
-//	                                                        ──order_cancelled──▶ Open
+//	                                                        ──order_canceled──▶ Open
 //
 // Non-pyramid: each signal opens an independent leg (bounded by MaxUnits).
 // Pyramid:     all adds merge into Legs[0]; avg_entry recalculated; SL/TP from latest signal.
@@ -331,6 +331,40 @@ func (h *HandPositions) LegPhase(positionID string) Phase {
 		return leg.Phase
 	}
 	return PhaseIdle
+}
+
+// LegEntryPrice returns the avg entry price of the leg with the given PositionID.
+// Returns zero if the leg does not exist or has not yet been entered.
+func (h *HandPositions) LegEntryPrice(positionID string) decimal.Decimal {
+	if leg, ok := h.legs[positionID]; ok {
+		return leg.EntryPrice
+	}
+	return decimal.Zero
+}
+
+// LegSnapshot returns a snapshot of a leg's trade-relevant fields.
+// ok=false when the positionID is not tracked.
+func (h *HandPositions) LegSnapshot(positionID string) (LegSnapshot, bool) {
+	leg, ok := h.legs[positionID]
+	if !ok {
+		return LegSnapshot{}, false
+	}
+	return LegSnapshot{
+		Symbol:     leg.Symbol,
+		Side:       leg.Side,
+		Qty:        leg.Qty,
+		EntryPrice: leg.EntryPrice,
+		OpenedAt:   leg.OpenedAt,
+	}, true
+}
+
+// LegSnapshot carries the trade-relevant fields of a leg for poslog enrichment.
+type LegSnapshot struct {
+	Symbol     string
+	Side       string
+	Qty        decimal.Decimal
+	EntryPrice decimal.Decimal
+	OpenedAt   time.Time
 }
 
 // Apply dispatches a poslog event to the appropriate leg, creating it if needed.

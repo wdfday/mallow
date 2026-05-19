@@ -93,12 +93,14 @@ async fn main() -> Result<()> {
     // ── Bootstrap from parquet ────────────────────────────────────────────────
     if !startup_symbols.is_empty() {
         // HERALD_WARM_BARS: max M1 bars to load per symbol (1 bar = 1 min).
-        // Default 5000 ≈ 3.5 days — enough to warm all built-in indicators.
+        // Default 2000 ≈ 33h, sized to match the M1 ledger capacity in
+        // `LedgerConfig::default()`. Higher values are silently capped by the
+        // ledger's sliding window, so the extra disk I/O is wasted.
         // Set to 0 to skip bootstrap entirely.
         let warm_bars: i64 = std::env::var("HERALD_WARM_BARS")
             .ok()
             .and_then(|s| s.parse().ok())
-            .unwrap_or(5000);
+            .unwrap_or(2000);
 
         if warm_bars > 0 && data_dir.exists() {
             info!(symbols = startup_symbols.len(), warm_bars, "bootstrapping M1 from parquet");
@@ -153,13 +155,16 @@ async fn main() -> Result<()> {
     }
 
     let (sig_tx, sig_rx) = mpsc::unbounded_channel();
-    let registry = Arc::new(Registry::with_default_fallback(ledger.clone(), tf, sig_tx));
+    let registry = Arc::new(Registry::with_default_scripts(
+        ledger.clone(), tf, sig_tx,
+        default_live_scripts(),
+    ));
     ledger.subscribe(registry.clone() as Arc<dyn LedgerObserver>);
 
     // ── Watch evaluator ───────────────────────────────────────────────────────
     let (watch_dispatch_tx, watch_dispatch_rx) = mpsc::unbounded_channel();
     // WatchStore is created inside HttpState; we need it before creating HttpState.
-    // Use a temporary store here — HttpState will share the same Arc via watch_store below.
+    // Use a temporary strategy here — HttpState will share the same Arc via watch_store below.
     let watch_store = http::watch::new_store();
     let watch_eval = Arc::new(watch_evaluator::WatchEvaluator::new(
         watch_store.clone(), ledger.clone(), tf, watch_dispatch_tx,
@@ -189,21 +194,15 @@ async fn main() -> Result<()> {
     drop(bar_tx);
 
     // ── Store backend ─────────────────────────────────────────────────────────
-    let store = match std::env::var("HERALD_DATABASE_URL") {
-        Ok(db_url) => {
-            info!("HERALD_DATABASE_URL set — connecting to PostgreSQL");
-            let pool = sqlx::postgres::PgPoolOptions::new()
-                .max_connections(10)
-                .connect(&db_url)
-                .await?;
-            http::store::migrate::run(&pool).await?;
-            http::StoreBackend::postgres(pool)
-        }
-        Err(_) => {
-            info!("HERALD_DATABASE_URL unset — using in-memory store");
-            http::StoreBackend::in_memory()
-        }
-    };
+    let db_url = std::env::var("HERALD_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://mallow:mallow-dev@localhost:5432/herald?sslmode=disable".into());
+    info!("connecting to PostgreSQL: {}", db_url);
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(10)
+        .connect(&db_url)
+        .await?;
+    http::strategy::migrate::run(&pool).await?;
+    let store = http::StoreBackend::postgres(pool);
 
     // ── SSE broadcast channels ────────────────────────────────────────────────
     let (bar_bcast_tx, _) = broadcast::channel::<alm_core::Bar>(256);
@@ -280,4 +279,77 @@ fn parse_tf(s: &str) -> Option<Timeframe> {
         "W1"  => Some(Timeframe::W1),
         _ => None,
     }
+}
+
+/// Default live strategies seeded into every unregistered symbol.
+/// Mix of v1 (base-TF only) and v2 (MTF with H1/H4 context).
+fn default_live_scripts() -> Vec<String> {
+    vec![
+        // ── v1: base-TF only ─────────────────────────────────────────────
+        // 0. EMA cross 20/50
+        r#"let fast = ind.ema(20);
+let slow = ind.ema(50);
+let long = cross_above(fast, slow);
+let exit = cross_below(fast, slow);"#.into(),
+
+        // 1. RSI mean reversion
+        r#"let rsi = ind.rsi(14);
+let long = rsi[0] < 30.0;
+let short = rsi[0] > 70.0;
+let exit = (rsi[1] < 50.0 && rsi[0] >= 50.0) || (rsi[1] > 50.0 && rsi[0] <= 50.0);"#.into(),
+
+        // 2. MACD histogram flip
+        r#"let macd = ind.macd(12, 26, 9);
+let long = macd[1].histogram < 0.0 && macd[0].histogram >= 0.0;
+let exit = macd[1].histogram > 0.0 && macd[0].histogram <= 0.0;"#.into(),
+
+        // 3. Bollinger band mean reversion
+        r#"let bb = ind.bbands(20);
+let rsi = ind.rsi(14);
+let long = close[0] < bb[0].lower && rsi[0] < 35.0;
+let exit = close[0] > bb[0].middle;"#.into(),
+
+        // 4. SuperTrend direction flip
+        r#"let st = ind.supertrend(10, 3.0);
+let long = st[1].direction < 0.0 && st[0].direction >= 0.0;
+let exit = st[0].direction < 0.0;"#.into(),
+
+        // ── v2: MTF (H1 / H4 context + M1 entry) ────────────────────────
+        // 5. H1 EMA trend + M1 EMA cross entry
+        r#"let h1_ema = ind.ema(50, "H1");
+let fast = ind.ema(8);
+let slow = ind.ema(21);
+let trend_up = close[0] > h1_ema[0];
+let long = trend_up && cross_above(fast, slow);
+let exit = cross_below(fast, slow) || close[0] < h1_ema[0];"#.into(),
+
+        // 6. H1 RSI filter + M1 RSI oversold entry
+        r#"let h1_rsi = ind.rsi(14, "H1");
+let rsi = ind.rsi(7);
+let h1_bull = h1_rsi[0] > 50.0;
+let long = h1_bull && rsi[0] < 30.0;
+let exit = rsi[0] > 65.0;"#.into(),
+
+        // 7. H4 ADX trending + M1 EMA cross entry
+        r#"let h4_adx = ind.adx(14, "H4");
+let fast = ind.ema(8);
+let slow = ind.ema(21);
+let trending = h4_adx[0].adx > 25.0 && h4_adx[0].di_plus > h4_adx[0].di_minus;
+let long = trending && cross_above(fast, slow);
+let exit = cross_below(fast, slow);"#.into(),
+
+        // 8. H1 MACD + M1 RSI pullback
+        r#"let h1_macd = ind.macd(12, 26, 9, "H1");
+let rsi = ind.rsi(14);
+let h1_bull = h1_macd[0].histogram > 0.0;
+let long = h1_bull && rsi[0] < 40.0;
+let exit = !h1_bull || rsi[0] > 65.0;"#.into(),
+
+        // 9. H1 BB position + M1 EMA momentum
+        r#"let h1_bb = ind.bbands(20, "H1");
+let ema = ind.ema(21);
+let above_mid = close[0] > h1_bb[0].middle;
+let long = above_mid && close[0] > ema[0] && close[1] <= ema[1];
+let exit = close[0] < h1_bb[0].middle;"#.into(),
+    ]
 }

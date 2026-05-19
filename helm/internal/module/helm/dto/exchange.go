@@ -8,10 +8,16 @@ import (
 
 // ── Exchange probe DTOs ────────────────────────────────────────────────────
 
+type AssetBalanceResp struct {
+	Asset string          `json:"asset"`
+	Free  decimal.Decimal `json:"free"`
+}
+
 type ExchangeAccountResp struct {
 	Cash      decimal.Decimal        `json:"cash"`
 	Equity    decimal.Decimal        `json:"equity"`
 	Positions []ExchangePositionResp `json:"positions"`
+	Balances  []AssetBalanceResp     `json:"balances"`
 }
 
 type ExchangePositionResp struct {

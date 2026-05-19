@@ -51,7 +51,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 # Database
-sqlx = { version = "0.8", features = ["runtime-tokio", "tls-native-tls", "postgres", "json"] }
+sqlx = { version = "0.8", features = ["runtime-tokio", "tls-native-tls", "postgres", "json", "uuid"] }
 
 # Benchmarking
 criterion = { version = "0.8", features = ["html_reports"] }

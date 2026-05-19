@@ -6,7 +6,7 @@ use std::collections::{HashMap, VecDeque};
 use alm_core::{Bar, Timeframe};
 use alm_indicator::IndicatorBox;
 use serde::{Deserialize, Serialize};
-use tracing::{debug, trace};
+use tracing::{debug, trace, warn};
 
 use crate::spec::IndicatorSpec;
 
@@ -407,6 +407,19 @@ impl SymbolState {
                     "skipping out-of-order / duplicate bar",
                 );
                 return AdvanceOutcome { ts, new_values: Vec::new(), skipped: true };
+            }
+            let expected_ms = self.timeframe.duration_ms();
+            let gap_ms = ts - last;
+            if gap_ms > expected_ms * 2 {
+                warn!(
+                    symbol = %self.symbol,
+                    tf = ?self.timeframe,
+                    last_ts = last,
+                    bar_ts = ts,
+                    gap_ms,
+                    expected_ms,
+                    "gap detected in bar stream",
+                );
             }
         }
 

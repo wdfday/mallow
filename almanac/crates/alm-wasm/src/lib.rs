@@ -173,7 +173,7 @@ struct BacktestOut {
     indicator_series:  serde_json::Value,
 }
 
-/// Run a bar-by-bar backtest using a named strategy or Rhai script.
+/// Run a bar-by-bar backtest using a named strategy or script.
 ///
 /// Config (JSON string):
 /// ```json
@@ -217,7 +217,7 @@ fn run_strategy(
                     entry_ts = bar.timestamp;
                     equity -= cost;
                 }
-                Direction::Close | Direction::Short if position > 0.0 => {
+                Direction::Exit | Direction::Short if position > 0.0 => {
                     let fill = bar.close * (1.0 - slippage_pct);
                     let proceeds = position * fill;
                     let cost = proceeds * commission_pct;
@@ -325,20 +325,20 @@ pub fn run_backtest(
     serde_wasm_bindgen::to_value(&out).unwrap_or(JsValue::NULL)
 }
 
-/// Run a Rhai script backtest client-side.
+/// Run a script backtest client-side.
 ///
-/// `script`: Rhai script (same syntax as herald `/api/v1/backtest/rhai`)
+/// `script`: Script (same syntax as herald `/api/v1/backtest/script`)
 /// `config_json`: `{"initial_capital": 10000, "position_size_pct": 1.0, ...}`
 #[wasm_bindgen]
-pub fn run_rhai_backtest(
+pub fn run_script_backtest(
     symbol: &str,
     script: &str,
     t: &[f64], o: &[f64], h: &[f64], l: &[f64], c: &[f64], v: &[f64],
     config_json: &str,
 ) -> JsValue {
-    let mut strategy = match build_strategy("rhai", &json!({ "script": script })) {
+    let mut strategy = match build_strategy("script", &json!({ "script": script })) {
         Ok(s) => s,
-        Err(e) => return js_error(&format!("rhai strategy: {e}")),
+        Err(e) => return js_error(&format!("script strategy: {e}")),
     };
     let bars = build_bars(symbol, t, o, h, l, c, v);
     let (cap, size, comm, slip) = parse_config(config_json);

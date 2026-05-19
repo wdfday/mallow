@@ -25,7 +25,7 @@ use serde::Serialize;
 use tokio::sync::mpsc;
 use tracing::{debug, trace, warn};
 
-use crate::http::store::types::StrategySpec;
+use crate::http::strategy::types::StrategySpec;
 use crate::http::watch::WatchStore;
 use crate::registry::FRESHNESS_GATE_MS;
 

@@ -5,8 +5,11 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"mallow/helm/internal/infra/natsapi"
+	"mallow/helm/internal/infra/poslog"
 	"mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/runtime/core/portfolio"
+	"mallow/helm/internal/runtime/perf"
 )
 
 // ── Config DTOs ────────────────────────────────────────────────────────────
@@ -51,6 +54,7 @@ type PositionResp struct {
 }
 
 type TradeResp struct {
+	HandID     string          `json:"hand_id"`
 	Symbol     string          `json:"symbol"`
 	Side       string          `json:"side"`
 	Qty        decimal.Decimal `json:"qty"`
@@ -60,6 +64,138 @@ type TradeResp struct {
 	ExitTime   time.Time       `json:"exit_time"`
 	PnL        decimal.Decimal `json:"pnl"`
 	PnLPct     decimal.Decimal `json:"pnl_pct"`
+}
+
+// TradesPageResp is the paged response for trade history.
+// cursor-based: pass Next as cursor on the next request; 0 means end of history.
+type TradesPageResp struct {
+	Trades  []TradeResp `json:"trades"`
+	Next    uint64      `json:"next"`
+	HasMore bool        `json:"has_more"`
+	Limit   int         `json:"limit"`
+}
+
+// TradeRecordToResp converts a poslog TradeRecord to the standard TradeResp.
+func TradeRecordToResp(t poslog.TradeRecord) TradeResp {
+	qty, _ := decimal.NewFromString(t.Qty)
+	entry, _ := decimal.NewFromString(t.EntryPrice)
+	exit, _ := decimal.NewFromString(t.ExitPrice)
+	pnl, _ := decimal.NewFromString(t.RealizedPnL)
+	var pnlPct decimal.Decimal
+	cost := entry.Mul(qty)
+	if cost.IsPositive() {
+		pnlPct = pnl.Div(cost)
+	}
+	return TradeResp{
+		HandID:     t.HandID,
+		Symbol:     t.Symbol,
+		Side:       t.Side,
+		Qty:        qty,
+		EntryPrice: entry,
+		ExitPrice:  exit,
+		EntryTime:  t.EntryAt,
+		ExitTime:   t.ExitAt,
+		PnL:        pnl,
+		PnLPct:     pnlPct,
+	}
+}
+
+// PoslogPageToResp converts a poslog.TradesPage to the API response type.
+func PoslogPageToResp(p poslog.TradesPage, limit int) TradesPageResp {
+	out := TradesPageResp{
+		Trades:  make([]TradeResp, 0, len(p.Trades)),
+		Next:    p.Next,
+		HasMore: p.HasMore,
+		Limit:   limit,
+	}
+	for _, t := range p.Trades {
+		out.Trades = append(out.Trades, TradeRecordToResp(t))
+	}
+	return out
+}
+
+// ── Fills ──────────────────────────────────────────────────────────────────
+
+type FillResp struct {
+	TradeID  string          `json:"trade_id"`
+	OrderID  string          `json:"order_id"`
+	HandID   string          `json:"hand_id,omitempty"`
+	Kind     string          `json:"kind"`
+	Symbol   string          `json:"symbol"`
+	Side     string          `json:"side"`
+	Qty      decimal.Decimal `json:"qty"`
+	AvgPrice decimal.Decimal `json:"avg_price"`
+	Fee      decimal.Decimal `json:"fee"`
+	FilledAt time.Time       `json:"filled_at"`
+}
+
+type FillPageResp struct {
+	Fills   []FillResp `json:"fills"`
+	Next    string     `json:"next,omitempty"` // RFC3339 cursor; empty = end
+	HasMore bool       `json:"has_more"`
+	Limit   int        `json:"limit"`
+}
+
+func FillToResp(t natsapi.TransactionMsg) FillResp {
+	return FillResp{
+		TradeID:  t.TradeID,
+		OrderID:  t.OrderID,
+		HandID:   t.HandID,
+		Kind:     t.Kind,
+		Symbol:   t.Symbol,
+		Side:     t.Side,
+		Qty:      t.Qty,
+		AvgPrice: t.AvgPrice,
+		Fee:      t.Fee,
+		FilledAt: t.FilledAt,
+	}
+}
+
+// ── Snapshots ──────────────────────────────────────────────────────────────
+
+type SnapshotPositionResp struct {
+	Symbol   string          `json:"symbol"`
+	Side     string          `json:"side"`
+	Qty      decimal.Decimal `json:"qty"`
+	AvgPrice decimal.Decimal `json:"avg_price"`
+}
+
+type SnapshotResp struct {
+	HelmID    string                 `json:"helm_id"`
+	HandID    string                 `json:"hand_id,omitempty"`
+	TS        time.Time              `json:"ts"`
+	Cash      decimal.Decimal        `json:"cash,omitempty"`
+	Positions []SnapshotPositionResp `json:"positions"`
+}
+
+type SnapshotPageResp struct {
+	Snapshots []SnapshotResp `json:"snapshots"`
+	Next      string         `json:"next,omitempty"`
+	HasMore   bool           `json:"has_more"`
+	Limit     int            `json:"limit"`
+}
+
+func SnapshotToResp(s perf.PortfolioSnapshot) SnapshotResp {
+	pos := make([]SnapshotPositionResp, len(s.Positions))
+	for i, p := range s.Positions {
+		pos[i] = SnapshotPositionResp{Symbol: p.Symbol, Side: p.Side, Qty: p.Qty, AvgPrice: p.AvgPrice}
+	}
+	return SnapshotResp{HelmID: s.HelmID, HandID: s.HandID, TS: s.TS, Cash: s.Cash, Positions: pos}
+}
+
+// ── Equity ─────────────────────────────────────────────────────────────────
+
+type EquityPointResp struct {
+	HandID string    `json:"hand_id"`
+	TS     time.Time `json:"ts"`
+	Equity float64   `json:"equity"`
+}
+
+type EquityPageResp struct {
+	Points  []EquityPointResp `json:"points"`
+	Next    string            `json:"next,omitempty"`
+	HasMore bool              `json:"has_more"`
+	Limit   int               `json:"limit"`
 }
 
 // ── Conversions ────────────────────────────────────────────────────────────
@@ -126,6 +262,7 @@ func TradesToResp(trades []portfolio.Trade) []TradeResp {
 	out := make([]TradeResp, len(trades))
 	for i, t := range trades {
 		out[i] = TradeResp{
+			HandID:     t.HandID,
 			Symbol:     t.Symbol,
 			Side:       string(t.Side),
 			Qty:        t.Qty,

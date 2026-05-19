@@ -54,10 +54,15 @@ func (h *Handler) exchangeAccount(c *gin.Context) {
 			CurPrice: p.CurPrice,
 		}
 	}
+	balances := make([]dto.AssetBalanceResp, len(snap.Balances))
+	for i, b := range snap.Balances {
+		balances[i] = dto.AssetBalanceResp{Asset: b.Asset, Free: b.Free}
+	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Account retrieved successfully", dto.ExchangeAccountResp{
 		Cash:      snap.Cash,
 		Equity:    snap.Equity,
 		Positions: positions,
+		Balances:  balances,
 	})
 }
 

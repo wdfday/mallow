@@ -2,7 +2,7 @@ package runtime
 
 import (
 	"context"
-	"log/slog"
+	"fmt"
 	"time"
 
 	nats "github.com/nats-io/nats.go"
@@ -56,7 +56,7 @@ func (r *HelmRuntime) storeSyncAt(t time.Time) {
 }
 
 // Sync fetches current account state from the exchange REST API, updates the in-memory
-// portfolio, and publishes a portfolio.synced event to NATS for the investment service.
+// portfolio, and publishes a portfolio.synced event to NATS.
 func (r *HelmRuntime) Sync(ctx context.Context, nc *nats.Conn, js nats.JetStreamContext) error {
 	syncer, ok := r.Exchange.(exchange.AccountSyncer)
 	if !ok {
@@ -99,21 +99,27 @@ func (r *HelmRuntime) Sync(ctx context.Context, nc *nats.Conn, js nats.JetStream
 
 	prevSyncAt := r.LastSyncAt()
 
-	natsTxns := make([]natsapi.TransactionMsg, 0, len(snap.Transactions))
+	natsPositionTxns := make([]natsapi.TransactionMsg, 0, len(snap.Transactions))
 	var newTxns []natsapi.TransactionMsg
+	helmID := r.HelmID.String()
+	accountID := r.AccountID.String()
+	userID := r.UserID.String()
 	for _, t := range snap.Transactions {
 		msg := natsapi.TransactionMsg{
-			TradeID:  t.TradeID,
-			OrderID:  t.OrderID,
-			Kind:     "fill",
-			Symbol:   t.Symbol,
-			Side:     t.Side,
-			Qty:      t.Qty,
-			AvgPrice: t.AvgPrice,
-			Fee:      t.Fee,
-			FilledAt: t.FilledAt,
+			HelmID:    helmID,
+			AccountID: accountID,
+			UserID:    userID,
+			TradeID:   t.TradeID,
+			OrderID:   t.OrderID,
+			Kind:      "fill",
+			Symbol:    t.Symbol,
+			Side:      t.Side,
+			Qty:       t.Qty,
+			AvgPrice:  t.AvgPrice,
+			Fee:       t.Fee,
+			FilledAt:  t.FilledAt,
 		}
-		natsTxns = append(natsTxns, msg)
+		natsPositionTxns = append(natsPositionTxns, msg)
 		if prevSyncAt.IsZero() || t.FilledAt.After(prevSyncAt) {
 			newTxns = append(newTxns, msg)
 		}
@@ -122,23 +128,18 @@ func (r *HelmRuntime) Sync(ctx context.Context, nc *nats.Conn, js nats.JetStream
 	now := time.Now().UTC()
 	r.storeSyncAt(now)
 
-	slog.Info("runtime: synced from exchange",
-		"helm_id", r.HelmID,
-		"positions", len(pfPositions),
-		"transactions", len(natsTxns),
-		"new_transactions", len(newTxns),
-	)
+	r.EmitEvent(natsapi.HelmEvent{
+		Code:   CodeHelmSynced,
+		Reason: fmt.Sprintf("positions=%d new_txns=%d", len(pfPositions), len(newTxns)),
+		Msg:    "helm: portfolio synced from exchange",
+	})
 
 	if nc != nil {
-		natsapi.PublishPortfolioSync(nc, r.HelmID.String(), r.AccountID.String(), snap.Cash, snap.Equity, natsPositions, natsTxns, now)
-
-		if js != nil && len(newTxns) > 0 {
-			orchID := r.HelmID.String()
-			accountID := r.AccountID.String()
-			userID := r.UserID.String()
-			for _, t := range newTxns {
-				natsapi.PublishInvestmentTransaction(js, orchID, accountID, userID, "", r.BrokerType, t)
-			}
+		natsapi.PublishPortfolioSync(nc, helmID, accountID, userID, snap.Cash, snap.Equity, natsPositions, natsPositionTxns, now)
+	}
+	if js != nil {
+		for _, t := range newTxns {
+			natsapi.PublishTradeFill(js, t)
 		}
 	}
 	return nil

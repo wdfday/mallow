@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 
 	"mallow/helm/internal/module/hand/domain"
@@ -70,19 +71,24 @@ func (r *GORMHandRepo) Update(id uuid.UUID, fn func(*domain.Hand) error) error {
 // UUID fields are stored as strings to avoid pgx type-coercion friction.
 // JSONB columns use domain types directly — they implement driver.Valuer/sql.Scanner.
 type handModel struct {
-	ID        string                `gorm:"column:id;type:uuid;primaryKey"`
-	HelmID    string                `gorm:"column:helm_id;type:uuid;not null;index:idx_hands_helm_id"`
-	Name      string                `gorm:"column:name;not null"`
-	Type      domain.HandType       `gorm:"column:type;not null;default:signal_follower"`
-	Market    domain.MarketType     `gorm:"column:market;not null;default:spot"`
-	Status    string                `gorm:"column:status;not null;default:stopped"`
-	Symbols   domain.StringSlice    `gorm:"column:symbols;type:jsonb;not null;default:'[]'"`
-	Strategy  domain.StrategySpec   `gorm:"column:strategy;type:jsonb;not null;default:'{}'"`
-	Position  domain.PositionConfig `gorm:"column:position;type:jsonb;not null;default:'{}'"`
-	Risk      domain.HandRiskConfig `gorm:"column:risk;type:jsonb;not null;default:'{}'"`
-	Futures   *domain.FuturesConfig `gorm:"column:futures;type:jsonb"`
-	CreatedAt time.Time             `gorm:"column:created_at;not null;autoCreateTime"`
-	UpdatedAt time.Time             `gorm:"column:updated_at;not null;autoUpdateTime"`
+	ID               string                `gorm:"column:id;type:uuid;primaryKey"`
+	HelmID           string                `gorm:"column:helm_id;type:uuid;not null;index:idx_hands_helm_id"`
+	Name             string                `gorm:"column:name;not null"`
+	Type             domain.HandType       `gorm:"column:type;not null;default:signal_follower"`
+	Market           domain.MarketType     `gorm:"column:market;not null;default:spot"`
+	Status           domain.HandStatus     `gorm:"column:status;not null;default:stopped"`
+	Symbols          domain.StringSlice    `gorm:"column:symbols;type:jsonb;not null;default:'[]'"`
+	Strategy         domain.StrategySpec   `gorm:"column:strategy;type:jsonb;not null;default:'{}'"`
+	Position         domain.PositionConfig `gorm:"column:position;type:jsonb;not null;default:'{}'"`
+	Risk             domain.HandRiskConfig `gorm:"column:risk;type:jsonb;not null;default:'{}'"`
+	Futures          *domain.FuturesConfig `gorm:"column:futures;type:jsonb"`
+	AllocatedCapital decimal.Decimal       `gorm:"column:allocated_capital;type:numeric(20,8);not null;default:0"`
+	SignalTTLSec     int                   `gorm:"column:signal_ttl_sec;not null;default:0"`
+	OrderType        domain.OrderType      `gorm:"column:order_type;not null;default:market"`
+	LimitTimeoutSec  int                   `gorm:"column:limit_timeout_sec;not null;default:0"`
+	LimitFallback    domain.LimitFallback  `gorm:"column:limit_fallback;not null;default:cancel"`
+	CreatedAt        time.Time             `gorm:"column:created_at;not null;autoCreateTime"`
+	UpdatedAt        time.Time             `gorm:"column:updated_at;not null;autoUpdateTime"`
 }
 
 func (handModel) TableName() string { return "hands" }
@@ -91,19 +97,24 @@ func (handModel) TableName() string { return "hands" }
 
 func toModel(h *domain.Hand) *handModel {
 	return &handModel{
-		ID:        h.ID.String(),
-		HelmID:    h.HelmID.String(),
-		Name:      h.Name,
-		Type:      h.Type,
-		Market:    h.Market,
-		Status:    h.Status,
-		Symbols:   h.Symbols,
-		Strategy:  h.Strategy,
-		Position:  h.Position,
-		Risk:      h.Risk,
-		Futures:   h.Futures,
-		CreatedAt: h.CreatedAt,
-		UpdatedAt: h.UpdatedAt,
+		ID:               h.ID.String(),
+		HelmID:           h.HelmID.String(),
+		Name:             h.Name,
+		Type:             h.Type,
+		Market:           h.Market,
+		Status:           h.Status,
+		Symbols:          h.Symbols,
+		Strategy:         h.Strategy,
+		Position:         h.Position,
+		Risk:             h.Risk,
+		Futures:          h.Futures,
+		AllocatedCapital: h.AllocatedCapital,
+		SignalTTLSec:     h.SignalTTLSec,
+		OrderType:        h.OrderType,
+		LimitTimeoutSec:  h.LimitTimeoutSec,
+		LimitFallback:    h.LimitFallback,
+		CreatedAt:        h.CreatedAt,
+		UpdatedAt:        h.UpdatedAt,
 	}
 }
 
@@ -117,19 +128,24 @@ func toDomain(m *handModel) (*domain.Hand, error) {
 		return nil, fmt.Errorf("parse helm_id %q: %w", m.HelmID, err)
 	}
 	return &domain.Hand{
-		ID:        id,
-		HelmID:    helmID,
-		Name:      m.Name,
-		Type:      m.Type,
-		Market:    m.Market,
-		Status:    m.Status,
-		Symbols:   m.Symbols,
-		Strategy:  m.Strategy,
-		Position:  m.Position,
-		Risk:      m.Risk,
-		Futures:   m.Futures,
-		CreatedAt: m.CreatedAt,
-		UpdatedAt: m.UpdatedAt,
+		ID:               id,
+		HelmID:           helmID,
+		Name:             m.Name,
+		Type:             m.Type,
+		Market:           m.Market,
+		Status:           m.Status,
+		Symbols:          m.Symbols,
+		Strategy:         m.Strategy,
+		Position:         m.Position,
+		Risk:             m.Risk,
+		Futures:          m.Futures,
+		AllocatedCapital: m.AllocatedCapital,
+		SignalTTLSec:     m.SignalTTLSec,
+		OrderType:        m.OrderType,
+		LimitTimeoutSec:  m.LimitTimeoutSec,
+		LimitFallback:    m.LimitFallback,
+		CreatedAt:        m.CreatedAt,
+		UpdatedAt:        m.UpdatedAt,
 	}, nil
 }
 

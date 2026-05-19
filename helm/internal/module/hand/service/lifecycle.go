@@ -19,9 +19,9 @@ func (s *Service) Start(id uuid.UUID) error {
 	}
 	s.heraldRegister(id, bi.Data)
 	bi.Runner.Start()
-	bi.Data.Status = "running"
+	bi.Data.Status = domain.HandStatusRunning
 	return s.repo.Update(id, func(d *domain.Hand) error {
-		d.Status = "running"
+		d.Status = domain.HandStatusRunning
 		return nil
 	})
 }
@@ -33,9 +33,9 @@ func (s *Service) Stop(id uuid.UUID) error {
 	}
 	s.heraldDeregister(id)
 	bi.Runner.Stop()
-	bi.Data.Status = "stopped"
+	bi.Data.Status = domain.HandStatusStopped
 	return s.repo.Update(id, func(d *domain.Hand) error {
-		d.Status = "stopped"
+		d.Status = domain.HandStatusStopped
 		return nil
 	})
 }
@@ -50,7 +50,7 @@ func (s *Service) Pause(id uuid.UUID) error {
 	}
 	bi.Runner.Pause()
 	return s.repo.Update(id, func(d *domain.Hand) error {
-		d.Status = "paused"
+		d.Status = domain.HandStatusPaused
 		return nil
 	})
 }
@@ -65,7 +65,7 @@ func (s *Service) Resume(id uuid.UUID) error {
 	}
 	bi.Runner.Resume()
 	return s.repo.Update(id, func(d *domain.Hand) error {
-		d.Status = "running"
+		d.Status = domain.HandStatusRunning
 		return nil
 	})
 }
@@ -77,9 +77,9 @@ func (s *Service) Kill(ctx context.Context, id uuid.UUID) error {
 	}
 	s.heraldDeregister(id)
 	bi.Runner.Kill(ctx)
-	bi.Data.Status = "stopped"
+	bi.Data.Status = domain.HandStatusStopped
 	return s.repo.Update(id, func(d *domain.Hand) error {
-		d.Status = "stopped"
+		d.Status = domain.HandStatusStopped
 		return nil
 	})
 }
@@ -94,9 +94,9 @@ func (s *Service) Release(ctx context.Context, id uuid.UUID) error {
 	}
 	s.heraldDeregister(id)
 	bi.Runner.Release(ctx)
-	bi.Data.Status = "stopped"
+	bi.Data.Status = domain.HandStatusStopped
 	return s.repo.Update(id, func(d *domain.Hand) error {
-		d.Status = "stopped"
+		d.Status = domain.HandStatusStopped
 		return nil
 	})
 }
@@ -114,9 +114,9 @@ func (s *Service) Restart(id uuid.UUID) error {
 	}
 	s.heraldRegister(id, bi.Data)
 	bi.Runner.Start()
-	bi.Data.Status = "running"
+	bi.Data.Status = domain.HandStatusRunning
 	return s.repo.Update(id, func(d *domain.Hand) error {
-		d.Status = "running"
+		d.Status = domain.HandStatusRunning
 		return nil
 	})
 }

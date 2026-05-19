@@ -9,8 +9,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 	"github.com/shopspring/decimal"
-
-	"mallow/pkg/contracts"
 )
 
 // Reply is the standard NATS request/reply response envelope.
@@ -78,8 +76,7 @@ const (
 	SubjOrchTrades    = "helm.helms.trades"
 	SubjOrchOrders    = "helm.helms.orders"
 
-	// Events published by identity/investment service (fire-and-forget).
-	// Keep them under helm.> so they match the helm NATS ACL.
+	// Account lifecycle events (published by helm broker module).
 	SubjAccountLinked   = "helm.accounts.linked"   // triggers auto-create helm
 	SubjAccountUnlinked = "helm.accounts.unlinked" // triggers auto-delete helm
 
@@ -95,22 +92,20 @@ const (
 	SubjHandResume  = "helm.hands.resume"
 	SubjHandKill    = "helm.hands.kill"
 
-	// Events (fire-and-forget, not request/reply)
-	// Format with orchestrator_id: fmt.Sprintf(SubjTradeFilled, orchID)
-	SubjTradeFilled = "trade.filled.%s"
-
-	// Published to investment service after each portfolio sync (polling or on-enable).
+	// JetStream subjects — all retained for audit / query.
+	// Format with account_id: fmt.Sprintf(SubjTradeFilled, accountID)
 	// Format with account_id: fmt.Sprintf(SubjPortfolioSynced, accountID)
+	SubjTradeFilled     = "trade.filled.%s"
 	SubjPortfolioSynced = "portfolio.synced.%s"
 
-	// JetStream subject for investment transaction events.
-	// Format with account_id: fmt.Sprintf(SubjInvestmentTransactions, accountID)
-	SubjInvestmentTransactions = "investment.transactions.%s"
+	// Real-time behavior event stream for a helm. Published on every significant
+	// hand/helm lifecycle event (signal, order, fill, pause, …). Fire-and-forget;
+	// clients subscribe to `helm.events.{helm_id}` for live activity feed.
+	// Format with helm_id: fmt.Sprintf(SubjHelmEvents, helmID)
+	SubjHelmEvents = "helm.events.%s"
 )
 
 // AccountLinkedEvent is published to helm.accounts.linked when a broker account is linked.
-// Helm subscribes and auto-creates an HelmConfig for that account.
-// Credentials are NOT included — helm fetches them on demand via investment.accounts.credentials.
 type AccountLinkedEvent struct {
 	AccountID   string          `json:"account_id"`
 	UserID      string          `json:"user_id"`
@@ -123,12 +118,8 @@ type AccountLinkedEvent struct {
 	Paper       bool            `json:"paper,omitempty"` // true = paper/demo trading
 }
 
-// SubjCredentialsFetch is the NATS request/reply subject to fetch decrypted broker credentials
-// from the investment service. Helm calls this before spawning a runtime.
-const SubjCredentialsFetch = "investment.accounts.credentials"
-
-// CredentialsFetchResp is the data payload returned by investment.accounts.credentials.
-// Includes both credentials and exchange metadata so a single call is enough to spawn a runtime.
+// CredentialsFetchResp carries decrypted broker credentials and exchange metadata
+// needed to spawn a helm runtime. Returned directly by BrokerConnectionService.GetCredentialsByAccountID.
 type CredentialsFetchResp struct {
 	APIKey     string `json:"api_key"`
 	APISecret  string `json:"api_secret"`
@@ -141,45 +132,10 @@ type CredentialsFetchResp struct {
 	Paper       bool   `json:"paper,omitempty"` // true = paper/demo trading
 }
 
-// FetchCredentials requests decrypted broker credentials from the investment service via NATS.
-// The accountID is the investment Account UUID (not the broker connection UUID).
-func FetchCredentials(nc *nats.Conn, accountID string) (CredentialsFetchResp, error) {
-	req, _ := json.Marshal(map[string]string{"account_id": accountID})
-	msg, err := nc.Request(SubjCredentialsFetch, req, 10*time.Second)
-	if err != nil {
-		return CredentialsFetchResp{}, fmt.Errorf("fetch credentials: %w", err)
-	}
-	var reply Reply
-	if err := json.Unmarshal(msg.Data, &reply); err != nil {
-		return CredentialsFetchResp{}, fmt.Errorf("parse credentials reply: %w", err)
-	}
-	if !reply.OK {
-		return CredentialsFetchResp{}, fmt.Errorf("credentials fetch: %s", reply.Error)
-	}
-	var data CredentialsFetchResp
-	if err := json.Unmarshal(reply.Data, &data); err != nil {
-		return CredentialsFetchResp{}, fmt.Errorf("parse credentials data: %w", err)
-	}
-	return data, nil
-}
-
 // AccountUnlinkedEvent is published to helm.accounts.unlinked when a broker account is removed.
 type AccountUnlinkedEvent struct {
 	AccountID string `json:"account_id"`
 	UserID    string `json:"user_id"`
-}
-
-// FillNotification is published to trade.filled.{orchestrator_id} when an
-// order is confirmed filled via the exchange's private account stream.
-type FillNotification struct {
-	OrchestratorID string          `json:"helm_id"`
-	BotID          string          `json:"hand_id"`
-	OrderID        string          `json:"order_id"`
-	Symbol         string          `json:"symbol"`
-	Side           string          `json:"side"`
-	FilledQty      decimal.Decimal `json:"filled_qty"`
-	FilledAvg      decimal.Decimal `json:"filled_avg"`
-	Timestamp      time.Time       `json:"timestamp"`
 }
 
 // SyncedPositionMsg is one position inside PortfolioSyncEvent.
@@ -202,14 +158,21 @@ type SyncedPositionMsg struct {
 // exchange-assigned fill/trade ID (unique per partial fill). For open_order and
 // cancel events it is orderID+"_open" / orderID+"_cancel".
 type TransactionMsg struct {
+	// Routing
+	HelmID    string `json:"helm_id"`
+	AccountID string `json:"account_id"`
+	UserID    string `json:"user_id"`
+	HandID    string `json:"hand_id,omitempty"`
+
+	// Fill data
 	TradeID  string          `json:"trade_id"` // dedup key; exchange fill ID for fills
 	OrderID  string          `json:"order_id"` // groups all events for the same order
 	Kind     string          `json:"kind"`     // "open_order" | "fill" | "cancel"
 	Symbol   string          `json:"symbol"`
-	Side     string          `json:"side"`                // "buy" | "sell"
-	Qty      decimal.Decimal `json:"qty"`                 // fill qty (fills) or original order qty (open/cancel)
-	AvgPrice decimal.Decimal `json:"avg_price,omitempty"` // fill price; zero for open_order/cancel
-	Fee      decimal.Decimal `json:"fee,omitempty"`
+	Side     string          `json:"side"`
+	Qty      decimal.Decimal `json:"qty"`
+	AvgPrice decimal.Decimal `json:"avg_price,omitzero"`
+	Fee      decimal.Decimal `json:"fee,omitzero"`
 	FilledAt time.Time       `json:"filled_at"`
 }
 
@@ -219,6 +182,7 @@ type TransactionMsg struct {
 type PortfolioSyncEvent struct {
 	OrchestratorID string              `json:"helm_id"`
 	AccountID      string              `json:"account_id"`
+	UserID         string              `json:"user_id"`
 	Cash           decimal.Decimal     `json:"cash"`
 	Equity         decimal.Decimal     `json:"equity"`
 	Positions      []SyncedPositionMsg `json:"positions"`
@@ -226,84 +190,31 @@ type PortfolioSyncEvent struct {
 	SyncedAt       time.Time           `json:"synced_at"`
 }
 
-// brokerMeta returns the assetType, currency, and exchange name for a given broker type.
-func brokerMeta(brokerType string) (assetType, currency, exchangeName string) {
-	switch brokerType {
-	case "binance":
-		return "crypto", "USDT", "BINANCE"
-	case "okx":
-		return "crypto", "USD", "OKX"
-	case "bybit":
-		return "crypto", "USDT", "BYBIT"
-	case "ibkr":
-		return "stock", "USD", "IBKR"
-	case "oanda":
-		return "forex", "USD", "OANDA"
-	default: // alpaca and unknown
-		return "stock", "USD", "ALPACA"
-	}
-}
-
-// PublishInvestmentTransaction publishes a single fill as an InvestmentTransactionMsg to the
-// INVESTMENT_TRANSACTIONS JetStream stream (investment.transactions.{accountID}).
-// Uses Nats-Msg-Id = "{orchID}-{orderID}" for deduplication across real-time and sync paths.
-func PublishInvestmentTransaction(js nats.JetStreamContext, orchID, accountID, userID, botID, brokerType string, txn TransactionMsg) {
-	assetType, currency, exchangeName := brokerMeta(brokerType)
-
-	// Map Kind to investment transaction type.
-	txType := txn.Kind
-	if txType == "" || txType == "fill" {
-		txType = txn.Side // "buy" | "sell" for fills
-	}
-
-	msg := contracts.InvestmentTransactionMsg{
-		AccountID:       accountID,
-		UserID:          userID,
-		Type:            txType,
-		Symbol:          txn.Symbol,
-		AssetType:       assetType,
-		Exchange:        exchangeName,
-		Currency:        currency,
-		Quantity:        txn.Qty.InexactFloat64(),
-		PricePerUnit:    txn.AvgPrice.InexactFloat64(),
-		Amount:          txn.Qty.Mul(txn.AvgPrice).InexactFloat64(),
-		Fees:            txn.Fee.InexactFloat64(),
-		TransactionDate: txn.FilledAt,
-		ExternalID:      txn.OrderID,
-		TradeID:         txn.TradeID,
-		Kind:            txn.Kind,
-		Source:          "hand",
-		BotID:           botID,
-	}
-	data, _ := json.Marshal(msg)
-
+// PublishTradeFill publishes txn to TRADE_FILLS JetStream stream (trade.filled.{accountID}).
+// Nats-Msg-Id = TradeID for dedup across real-time and sync paths; falls back to helmID+orderID.
+func PublishTradeFill(js nats.JetStreamContext, txn TransactionMsg) {
+	data, _ := json.Marshal(txn)
 	natMsg := &nats.Msg{
-		Subject: fmt.Sprintf(SubjInvestmentTransactions, accountID),
+		Subject: fmt.Sprintf(SubjTradeFilled, txn.AccountID),
 		Data:    data,
 		Header:  nats.Header{},
 	}
-	// Dedup key = TradeID (exchange fill ID), falls back to orchID+orderID for open/cancel events.
 	dedupKey := txn.TradeID
 	if dedupKey == "" {
-		dedupKey = orchID + "-" + txn.OrderID
+		dedupKey = txn.HelmID + "-" + txn.OrderID
 	}
 	natMsg.Header.Set(nats.MsgIdHdr, dedupKey)
-
 	if _, err := js.PublishMsg(natMsg); err != nil {
-		slog.Warn("investment transaction publish failed",
-			"subject", natMsg.Subject,
-			"trade_id", txn.TradeID,
-			"order_id", txn.OrderID,
-			"err", err,
-		)
+		slog.Warn("trade fill publish failed", "subject", natMsg.Subject, "trade_id", txn.TradeID, "err", err)
 	}
 }
 
 // PublishPortfolioSync publishes a PortfolioSyncEvent to portfolio.synced.{accountID}.
-func PublishPortfolioSync(nc *nats.Conn, orchID, accountID string, cash, equity decimal.Decimal, positions []SyncedPositionMsg, transactions []TransactionMsg, syncedAt time.Time) {
+func PublishPortfolioSync(nc *nats.Conn, orchID, accountID, userID string, cash, equity decimal.Decimal, positions []SyncedPositionMsg, transactions []TransactionMsg, syncedAt time.Time) {
 	ev := PortfolioSyncEvent{
 		OrchestratorID: orchID,
 		AccountID:      accountID,
+		UserID:         userID,
 		Cash:           cash,
 		Equity:         equity,
 		Positions:      positions,
@@ -314,5 +225,31 @@ func PublishPortfolioSync(nc *nats.Conn, orchID, accountID string, cash, equity 
 	subj := fmt.Sprintf(SubjPortfolioSynced, accountID)
 	if err := nc.Publish(subj, data); err != nil {
 		slog.Warn("portfolio sync: nats publish failed", "subject", subj, "err", err)
+	}
+}
+
+// HelmEvent is published to helm.events.{helm_id} on every significant hand/helm
+// lifecycle event. Clients subscribe to this subject for a real-time activity feed.
+// HandID is empty for helm-level events (pause, resume, sync, …).
+type HelmEvent struct {
+	HelmID    string          `json:"helm_id"`
+	HandID    string          `json:"hand_id,omitempty"`
+	At        time.Time       `json:"at"`
+	Code      int             `json:"code"`
+	Symbol    string          `json:"symbol,omitempty"`
+	Direction string          `json:"direction,omitempty"`
+	Side      string          `json:"side,omitempty"`
+	Qty       decimal.Decimal `json:"qty,omitzero"`
+	Price     decimal.Decimal `json:"price,omitzero"`
+	OrderID   string          `json:"order_id,omitempty"`
+	Reason    string          `json:"reason,omitempty"`
+	Msg       string          `json:"msg"`
+}
+
+// PublishHelmEvent publishes a HelmEvent to helm.events.{helmID} (fire-and-forget).
+func PublishHelmEvent(nc *nats.Conn, helmID string, ev HelmEvent) {
+	data, _ := json.Marshal(ev)
+	if err := nc.Publish(fmt.Sprintf(SubjHelmEvents, helmID), data); err != nil {
+		slog.Warn("helm event: nats publish failed", "helm_id", helmID, "code", ev.Code, "err", err)
 	}
 }

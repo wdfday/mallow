@@ -37,17 +37,8 @@ type jsEquityLog struct {
 // NewEquityLog creates the HELM_EQUITY stream (idempotent) and returns a
 // JetStream-backed perf.EquityLog.
 func NewEquityLog(js nats.JetStreamContext) (perf.EquityLog, error) {
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:       equityStream,
-		Subjects:   []string{equitySubjBase + ".>"},
-		Storage:    nats.FileStorage,
-		MaxAge:     equityMaxAge,
-		Duplicates: equityDedupWin,
-	})
-	if err != nil {
-		if _, infoErr := js.StreamInfo(equityStream); infoErr != nil {
-			return nil, fmt.Errorf("create stream %s: %w", equityStream, err)
-		}
+	if _, err := js.StreamInfo(equityStream); err != nil {
+		return nil, fmt.Errorf("stream %s not found: %w", equityStream, err)
 	}
 	return &jsEquityLog{js: js}, nil
 }

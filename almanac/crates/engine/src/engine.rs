@@ -189,13 +189,16 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
             }
         }
 
-        // Force-close remaining open positions at the last bar's close.
+        // Force-close ALL remaining open positions at the last bar's close.
+        // Multi-symbol strategies may hold positions on symbols other than the
+        // feed's primary — leaving them open would understate trade count and
+        // leave the equity curve mid-trade.
         if let Some(bar) = self.bar_window.back().cloned() {
             let open_positions: Vec<_> = self
                 .portfolio
                 .positions
                 .values()
-                .filter(|p| p.qty.abs() > f64::EPSILON && p.symbol == symbol)
+                .filter(|p| p.qty.abs() > f64::EPSILON)
                 .map(|p| (p.symbol.clone(), p.qty))
                 .collect();
 
@@ -363,24 +366,50 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
 
                 // Process pending orders at this bar's open (avoids look-ahead bias).
                 let fills = self.broker.process_pending(bar);
+                let fill_count = fills.len();
                 for fill in fills {
                     self.bus.send(Event::Fill(FillEvent { fill }));
                 }
 
-                // Snapshot equity at bar close.
-                let prices = std::iter::once((bar.symbol.clone(), self.last_price)).collect::<HashMap<_, _>>();
-                self.portfolio.record_equity(bar.timestamp, &prices);
-                let eq = self.portfolio.equity(&prices);
-                self.bus.send(Event::Equity(EquityEvent {
-                    timestamp: bar.timestamp,
-                    equity: eq,
-                    cash: self.portfolio.cash,
-                }));
+                // Immediately drain Fill (and Equity) events from the bus before
+                // running exit rules. This prevents a double-close race condition:
+                // when a strategy emits `exit = true` on bar N (creating a pending
+                // Sell in the broker), and the PositionTracker SL/TP also fires on
+                // bar N+1, both would try to close the same long position. By
+                // processing the pending-order Fill first, the position is already
+                // flat when exit rules run, so exit rules skip it.
+                //
+                // Invariant: at this point the bus only holds the `fill_count` Fill
+                // events we just enqueued. Fill dispatch does not re-emit, so the
+                // drain terminates after exactly `fill_count` iterations. We bound
+                // the loop defensively in case a future regression introduces
+                // recursive event emission from Fill dispatch.
+                let mut guard_iters = fill_count + 2;
+                while let Some(early_ev) = self.bus.try_recv() {
+                    if guard_iters == 0 {
+                        tracing::error!("early-drain guard tripped — bailing out");
+                        self.bus.send(early_ev);
+                        break;
+                    }
+                    guard_iters -= 1;
+                    match early_ev {
+                        Event::Fill(_) | Event::Equity(_) => self.dispatch(early_ev),
+                        other => {
+                            tracing::warn!(
+                                "unexpected non-Fill/Equity event during early drain"
+                            );
+                            self.bus.send(other);
+                            break;
+                        }
+                    }
+                }
 
                 // ── Exit rules ────────────────────────────────────────────────
-                // Check before strategy signals so SL/TP fires as soon as possible.
-                // Always call update_and_check: even with no exit rules it tracks
-                // bars_held, MAE, and MFE for every open position.
+                // Run BEFORE recording equity so that exit-fired close fills are
+                // reflected in this bar's equity point (otherwise the curve lags
+                // the exit by one bar). Always call update_and_check: even with
+                // no exit rules it tracks bars_held, MAE, and MFE for every open
+                // position.
                 {
                     let to_close: Vec<(String, f64, ExitReason)> = self
                         .position_trackers
@@ -395,6 +424,10 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                     for (sym, fill_price, reason) in to_close {
                         let tracker = self.position_trackers.remove(&sym);
                         let regime_state = self.regime_at_entry.remove(&sym);
+                        // Cancel any pending close order for this symbol so it
+                        // does not fire again in the same bar's inner event loop
+                        // and accidentally open an unintended short position.
+                        self.broker.cancel_for_symbol(&sym);
                         if let Some(pos) = self.portfolio.positions.get(&sym) {
                             let qty  = pos.qty.abs();
                             let side = if pos.is_long() { Side::Sell } else { Side::Buy };
@@ -417,6 +450,17 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                     }
                 }
 
+                // Snapshot equity at bar close — AFTER exit rules so that any
+                // SL/TP/trailing fills applied this bar are reflected.
+                let prices = std::iter::once((bar.symbol.clone(), self.last_price)).collect::<HashMap<_, _>>();
+                self.portfolio.record_equity(bar.timestamp, &prices);
+                let eq = self.portfolio.equity(&prices);
+                self.bus.send(Event::Equity(EquityEvent {
+                    timestamp: bar.timestamp,
+                    equity: eq,
+                    cash: self.portfolio.cash,
+                }));
+
                 // ── Portfolio snapshot → strategy (opt-in) ───────────────────
                 if self.strategy.uses_portfolio_snapshot() {
                     let prices = std::iter::once((bar.symbol.clone(), self.last_price)).collect::<HashMap<_, _>>();
@@ -429,7 +473,7 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
 
                 // Snapshot the regime state produced by the strategy on this bar
                 // (e.g. from a `regime { ... }` block). Record transitions on label
-                // change; store the full state so position opens can tag the trade
+                // change; strategy the full state so position opens can tag the trade
                 // with all three dimensions (status + value) at entry time.
                 if let Some(state) = self.strategy.current_regime() {
                     let prev_label = self.last_regime.as_ref().map(|s| s.label());

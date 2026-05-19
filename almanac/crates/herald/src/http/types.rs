@@ -150,6 +150,7 @@ pub struct IndicatorPoint {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UnifiedDataResponse {
+    pub source: String,
     pub symbol: String,
     pub tf: String,
     #[serde(skip_serializing_if = "Option::is_none")]

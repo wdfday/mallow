@@ -31,18 +31,8 @@ type NatsLog struct {
 
 // NewNatsLog creates a NatsLog, ensuring the HELM_POSITIONS stream exists.
 func NewNatsLog(js nats.JetStreamContext) (*NatsLog, error) {
-	_, err := js.AddStream(&nats.StreamConfig{
-		Name:       streamName,
-		Subjects:   []string{subjectBase + ".>"},
-		Storage:    nats.FileStorage,
-		MaxAge:     30 * 24 * time.Hour,
-		Duplicates: 2 * time.Minute,
-	})
-	if err != nil {
-		// Already exists — verify we can reach it.
-		if _, infoErr := js.StreamInfo(streamName); infoErr != nil {
-			return nil, fmt.Errorf("create stream %s: %w", streamName, err)
-		}
+	if _, err := js.StreamInfo(streamName); err != nil {
+		return nil, fmt.Errorf("stream %s not found: %w", streamName, err)
 	}
 	return &NatsLog{js: js}, nil
 }
@@ -71,6 +61,97 @@ func (l *NatsLog) ReplayHand(ctx context.Context, helmID, handID string) ([]Even
 func (l *NatsLog) ReplayLeg(ctx context.Context, helmID, handID, positionID string) ([]Event, error) {
 	filter := fmt.Sprintf("%s.%s.%s.%s", subjectBase, helmID, handID, positionID)
 	return l.drain(ctx, filter)
+}
+
+// TradesPaged returns at most limit completed trades for a hand.
+// cursor=0 starts from the beginning of the stream; pass TradeRecord.Cursor+1 for the next page.
+// Only position_closed events contribute to the result — other kinds are skipped.
+func (l *NatsLog) TradesPaged(ctx context.Context, helmID, handID string, cursor uint64, limit int) (TradesPage, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	filter := fmt.Sprintf("%s.%s.%s.>", subjectBase, helmID, handID)
+
+	var startOpt nats.SubOpt
+	if cursor > 0 {
+		startOpt = nats.StartSequence(cursor)
+	} else {
+		startOpt = nats.DeliverAll()
+	}
+
+	sub, err := l.js.SubscribeSync(filter,
+		nats.OrderedConsumer(),
+		startOpt,
+		nats.Context(ctx),
+	)
+	if err != nil {
+		return TradesPage{}, fmt.Errorf("poslog trades subscribe: %w", err)
+	}
+	defer sub.Unsubscribe()
+
+	var trades []TradeRecord
+	var lastSeq uint64
+
+	for len(trades) < limit {
+		msg, err := sub.NextMsg(500 * time.Millisecond)
+		if err != nil {
+			if errors.Is(err, nats.ErrTimeout) {
+				break
+			}
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return TradesPage{}, ctx.Err()
+			}
+			return TradesPage{}, fmt.Errorf("poslog trades recv: %w", err)
+		}
+
+		meta, _ := msg.Metadata()
+		if meta != nil {
+			lastSeq = meta.Sequence.Stream
+		}
+
+		var e Event
+		if jsonErr := json.Unmarshal(msg.Data, &e); jsonErr != nil {
+			if meta != nil && meta.NumPending == 0 {
+				break
+			}
+			continue
+		}
+
+		if e.Kind == KindPositionClosed {
+			var p PositionClosedPayload
+			if jsonErr := json.Unmarshal(e.Payload, &p); jsonErr == nil {
+				trades = append(trades, TradeRecord{
+					HandID:      e.HandID,
+					Symbol:      p.Symbol,
+					Side:        p.Side,
+					Qty:         p.Qty,
+					EntryPrice:  p.EntryPrice,
+					ExitPrice:   p.ClosePrice,
+					EntryAt:     p.EntryAt,
+					ExitAt:      e.At,
+					RealizedPnL: p.RealizedPnL,
+					Source:      p.Source,
+					Cursor:      lastSeq,
+				})
+			}
+		}
+
+		if meta != nil && meta.NumPending == 0 {
+			break
+		}
+	}
+
+	var next uint64
+	hasMore := len(trades) == limit
+	if hasMore && lastSeq > 0 {
+		next = lastSeq + 1
+	}
+
+	return TradesPage{
+		Trades:  trades,
+		HasMore: hasMore,
+		Next:    next,
+	}, nil
 }
 
 // drain pulls all available messages matching filterSubject from the stream.

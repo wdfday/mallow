@@ -36,10 +36,10 @@
 //!
 //! # Session boundary (stocks)
 //!
-//! If two consecutive base bars are more than 22 hours apart the resampler
-//! treats it as an overnight gap and resets its bucket state. This prevents
-//! the pre-market open of one session from merging with the close of the
-//! previous session.
+//! Session gaps (e.g. 16:00 close → 09:30 next-day open) are handled implicitly
+//! by wall-clock bucket alignment: the next day's bar falls in a new bucket so
+//! the prior session's HTF bar is emitted normally. No explicit "N-hour reset"
+//! is applied — the bucket-floor math does the right thing on its own.
 //!
 //! # Scripts
 //!
@@ -182,7 +182,11 @@ impl TimeBarResampler {
     /// the current bar belongs to a new bucket).  Returns `None` while
     /// accumulating within the current bucket.
     pub fn push(&mut self, bar: &Bar) -> Option<Bar> {
-        let bucket = bar.timestamp - (bar.timestamp % self.interval_ms);
+        // Floor-towards-negative-infinity bucket alignment. `i64 % n` in Rust
+        // gives a result with the dividend's sign, so for negative timestamps
+        // (pre-1970, edge case) `ts - ts % n` lands in the wrong bucket. Use
+        // `div_euclid` to always floor toward −∞.
+        let bucket = bar.timestamp.div_euclid(self.interval_ms) * self.interval_ms;
 
         match self.bucket {
             None => {

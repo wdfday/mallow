@@ -36,9 +36,22 @@ use axum::{
     Json, Router,
 };
 use axum::routing::post;
+
+fn parse_timeframe(s: &str) -> Option<Timeframe> {
+    match s.to_ascii_uppercase().as_str() {
+        "M1"  => Some(Timeframe::M1),  "M3"  => Some(Timeframe::M3),
+        "M5"  => Some(Timeframe::M5),  "M15" => Some(Timeframe::M15),
+        "M30" => Some(Timeframe::M30), "H1"  => Some(Timeframe::H1),
+        "H2"  => Some(Timeframe::H2),  "H4"  => Some(Timeframe::H4),
+        "H6"  => Some(Timeframe::H6),  "H12" => Some(Timeframe::H12),
+        "D1"  => Some(Timeframe::D1),  "W1"  => Some(Timeframe::W1),
+        _ => None,
+    }
+}
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
+use alm_core::Timeframe;
 use alm_strategy::{script_lint, LintDiagnostic, ScriptLintScope};
 
 use super::types::ok;
@@ -50,6 +63,10 @@ use super::HttpState;
 pub struct ScriptValidateReq {
     /// Full strategy script to lint.
     pub script: String,
+    /// Optional base timeframe (e.g. `"M1"`, `"H1"`). When provided, the linter
+    /// will flag any HTF indicator declared on a TF smaller than the base TF.
+    #[serde(default)]
+    pub base_tf: Option<String>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -86,6 +103,7 @@ pub async fn validate_script(
     // Run lint synchronously — it's pure CPU with no I/O, typically < 1 ms.
     // Scripts that are very large could theoretically block, but script compile
     // is fast and lint scripts are tiny; no need for spawn_blocking here.
-    let (errors, scope) = script_lint(&req.script);
+    let base_tf = req.base_tf.as_deref().and_then(parse_timeframe);
+    let (errors, scope) = script_lint(&req.script, base_tf);
     ok(ScriptValidateResp { errors, scope })
 }

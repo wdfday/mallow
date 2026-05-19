@@ -1,0 +1,354 @@
+package runtime
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/shopspring/decimal"
+
+	"mallow/helm/internal/infra/exchange"
+	"mallow/helm/internal/infra/natsapi"
+	helmdomain "mallow/helm/internal/module/helm/domain"
+	"mallow/helm/internal/runtime/perf"
+	"mallow/helm/internal/runtime/position"
+)
+
+// handleWsFill processes a fully-filled OrderEvent received via the WS path.
+func (h *Hand) handleWsFill(ctx context.Context, ev exchange.OrderEvent) {
+	h.mu.Lock()
+	if _, seen := h.seenFills[ev.OrderID]; seen {
+		// REST-immediate path already handled this fill — skip to avoid double-apply.
+		h.mu.Unlock()
+		return
+	}
+	h.seenFills[ev.OrderID] = struct{}{}
+	h.mu.Unlock()
+
+	side := "buy"
+	if ev.Side == exchange.Sell {
+		side = "sell"
+	}
+	h.applyFill(ctx, ev.OrderID, ev.Symbol, side, ev.FilledQty, ev.FilledAvg, "ws")
+}
+
+// applyFill is the single authority for all fill side-effects:
+// portfolio update, exit-level management, metrics, and poslog publishing.
+// It is called from three paths:
+//   - WS (handleWsFill): fast-path, fill arrives via broker WebSocket
+//   - REST poll (pollOrders): 5s fallback when WS event was missed
+//   - REST-immediate (handleSignal): broker confirmed fill in the PlaceOrder response
+func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty, price decimal.Decimal, source string) {
+	h.metrics.ordersFilled.Add(1)
+
+	// ── 1. Resolve pending exit level (entry fill only) ───────────────────────
+	// pendingExits holds the SL/TP for an entry order before the fill price is known.
+	// On entry fill: promote to exitLevels (resolved to absolute price if IsOffset).
+	// On close fill: pendingExits[orderID] will not exist — this block is a no-op.
+	var resolvedEl exitLevel
+	var hasExitBracket bool
+	h.mu.Lock()
+	if pending, ok := h.pendingExits[orderID]; ok {
+		delete(h.pendingExits, orderID)
+		resolved := exitLevel{Side: pending.Side}
+		if pending.IsOffset {
+			// Use the portfolio's weighted average cost as the reference price for
+			// offset resolution. When the order had multiple partial fills, the
+			// portfolio AvgPrice reflects the true blended entry cost; the raw fill
+			// price passed here is only the last-trade price (Binance LatestPrice).
+			refPrice := price
+			if pos := h.rt.Portfolio.GetPosition(symbol); pos != nil && pos.AvgPrice.IsPositive() {
+				refPrice = pos.AvgPrice
+			}
+			if refPrice.IsPositive() {
+				if !pending.StopOffset.IsZero() {
+					resolved.StopLoss = refPrice.Add(pending.StopOffset)
+				}
+				if !pending.TakeProfitOffset.IsZero() {
+					resolved.TakeProfit = refPrice.Add(pending.TakeProfitOffset)
+				}
+			}
+		} else {
+			resolved.StopLoss = pending.StopLoss
+			resolved.TakeProfit = pending.TakeProfit
+		}
+		h.exitLevels[symbol] = resolved
+		if resolved.StopLoss.IsPositive() || resolved.TakeProfit.IsPositive() {
+			resolvedEl = resolved
+			hasExitBracket = true
+		}
+	}
+	h.mu.Unlock()
+
+	// ── 2. Place exchange-side bracket orders (entry fill only) ──────────────
+	// Runs in a goroutine so it doesn't block the fill handling path.
+	// On success, stores the resulting order IDs back into exitLevels so they
+	// can be cancelled if the position closes via the other exit leg.
+	if hasExitBracket {
+		if placer, ok := h.rt.Exchange.(exchange.ExitOrderPlacer); ok {
+			exitSide := exchange.Sell
+			if resolvedEl.Side == "sell" { // short → buy to close
+				exitSide = exchange.Buy
+			}
+			market := exchange.MarketSpot
+			if h.rt.Creds.AccountType == exchange.AccountFuturesUSDM ||
+				h.rt.Creds.AccountType == exchange.AccountFuturesCOINM {
+				market = exchange.MarketFutures
+			}
+			// Capture the hand's lifecycle context so the goroutine exits
+			// immediately when Hand.Stop() is called — prevents goroutine leaks
+			// when tests or operators shut down a hand during the retry window.
+			h.mu.RLock()
+			handCtx := h.ctx
+			h.mu.RUnlock()
+
+			go func(el exitLevel) {
+				// Retry loop: spot exchanges may return "insufficient balance" briefly after
+				// a fill if the asset has not yet settled into the available balance.
+				// Retries up to 5× with linear backoff (1s, 2s … 5s = 15s total).
+				exitReq := exchange.ExitOrderRequest{
+					Symbol:     symbol,
+					Market:     market,
+					Side:       exitSide,
+					Qty:        qty,
+					StopLoss:   el.StopLoss,
+					TakeProfit: el.TakeProfit,
+				}
+				var result *exchange.ExitOrderResult
+				var err error
+				for attempt := 1; attempt <= 5; attempt++ {
+					select {
+					case <-handCtx.Done():
+						slog.Info("hand: exit order goroutine cancelled (hand stopped)", "hand_id", h.id, "symbol", symbol)
+						return
+					case <-time.After(time.Duration(attempt) * time.Second):
+					}
+					exitCtx, cancel := context.WithTimeout(handCtx, 10*time.Second)
+					result, err = placer.PlaceExitOrders(exitCtx, h.rt.Creds, exitReq)
+					cancel()
+					if err == nil {
+						break
+					}
+					slog.Warn("hand: place exit orders retry", "hand_id", h.id, "symbol", symbol,
+						"attempt", attempt, "err", err)
+				}
+				if err != nil {
+					slog.Error("hand: place exit orders failed", "hand_id", h.id, "symbol", symbol, "err", err)
+					return
+				}
+				slog.Info("hand: exit orders placed", "hand_id", h.id, "symbol", symbol, "order_ids", result.OrderIDs)
+				h.mu.Lock()
+				if lv, ok := h.exitLevels[symbol]; ok {
+					lv.ExchangeOrderIDs = result.OrderIDs
+					h.exitLevels[symbol] = lv
+				}
+				h.mu.Unlock()
+			}(resolvedEl)
+		}
+	}
+
+	// ── 3. Close detection via poslog phase ──────────────────────────────────
+	// Use h.pos (poslog-backed per-hand state) instead of rt.Portfolio.
+	// h.pos still reflects pre-fill state here — publishOrderFilled runs later.
+	// A close fill is identified by the leg being in PhaseExiting (exit order placed
+	// and now confirmed filled), as opposed to PhaseEntering (entry order).
+	h.mu.RLock()
+	posID := h.pendingOrderPos[orderID]
+	isClosingFill := posID != "" && h.pos.LegPhase(posID) == position.PhaseExiting
+	entryPrice := h.pos.LegEntryPrice(posID)
+	h.mu.RUnlock()
+
+	var closePnL decimal.Decimal
+	var closeSource string
+	if isClosingFill {
+		h.mu.Lock()
+		h.cancelExitOrders(ctx, symbol)
+		delete(h.exitLevels, symbol)
+		h.mu.Unlock()
+		closeSource = source
+		if price.IsPositive() && entryPrice.IsPositive() {
+			if side == "sell" { // closing a long position
+				closePnL = price.Sub(entryPrice).Mul(qty)
+			} else { // closing a short position (buy to cover)
+				closePnL = entryPrice.Sub(price).Mul(qty)
+			}
+			h.metrics.mu.Lock()
+			h.metrics.totalPnL = h.metrics.totalPnL.Add(closePnL)
+			if closePnL.IsPositive() {
+				h.metrics.winCount++
+			} else {
+				h.metrics.lossCount++
+			}
+			h.metrics.mu.Unlock()
+			h.checkEdgeRisk(closePnL)
+		}
+	}
+
+	// ── 4. Portfolio update ───────────────────────────────────────────────────
+	// Single update point for all fill paths (WS, poll, REST-immediate).
+	// Registry no longer calls ReportFill before routing to hand.
+	h.rt.ReportFill(helmdomain.FillReport{
+		HandID:    h.id.String(),
+		HelmID:    h.helmID.String(),
+		OrderID:   orderID,
+		Symbol:    symbol,
+		Side:      side,
+		Qty:       qty,
+		Price:     price,
+		Timestamp: time.Now().UTC(),
+	})
+
+	h.rt.EmitEvent(natsapi.HelmEvent{
+		HandID:  h.id.String(),
+		Code:    CodeOrderFilled,
+		Symbol:  symbol,
+		Side:    side,
+		Qty:     qty,
+		Price:   price,
+		OrderID: orderID,
+		Reason:  source,
+		Msg:     "order: filled",
+	})
+	h.recordActivity(ActivityEntry{
+		At:      time.Now(),
+		Code:    CodeOrderFilled,
+		Symbol:  symbol,
+		OrderID: orderID,
+		Side:    side,
+		Qty:     qty,
+		Price:   price,
+		Reason:  source,
+	})
+
+	// ── 5. Poslog ─────────────────────────────────────────────────────────────
+	h.publishOrderFilled(ctx, orderID, qty, price, closePnL, source, closeSource)
+
+	// ── 6. Hand-level portfolio snapshot ─────────────────────────────────────
+	// Publish raw leg state (no price multiplication) so the FE can compute
+	// per-hand equity at any timeframe by applying its own prices.
+	if h.rt.PortfolioLog != nil {
+		snap := h.handSnapshot(time.Now().UTC())
+		go func() {
+			sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := h.rt.PortfolioLog.Append(sctx, snap); err != nil {
+				slog.Warn("portfolio_log: hand snapshot append failed", "hand_id", h.id, "err", err)
+			}
+		}()
+	}
+}
+
+// handSnapshot builds a hand-level PortfolioSnapshot from active leg state.
+func (h *Hand) handSnapshot(ts time.Time) perf.PortfolioSnapshot {
+	h.mu.RLock()
+	legs := h.pos.ActiveLegs()
+	h.mu.RUnlock()
+
+	entries := make([]perf.PositionEntry, 0, len(legs))
+	for _, leg := range legs {
+		entries = append(entries, perf.PositionEntry{
+			Symbol:   leg.Symbol,
+			Side:     leg.Side,
+			Qty:      leg.Qty,
+			AvgPrice: leg.EntryPrice,
+		})
+	}
+	return perf.PortfolioSnapshot{
+		HelmID:    h.helmID.String(),
+		HandID:    h.id.String(),
+		TS:        ts,
+		Positions: entries,
+	}
+}
+
+// checkEdgeRisk evaluates the per-hand sliding-window edge-degradation guard.
+// Called after every closing fill from the run-loop goroutine (no extra lock needed
+// for the ring buffer fields — they are exclusively written here).
+// Auto-pauses the hand when any enabled threshold is breached.
+func (h *Hand) checkEdgeRisk(pnl decimal.Decimal) {
+	cfg := h.edgeRisk
+	if cfg.WindowTrades == 0 {
+		return
+	}
+
+	// ── 1. Push PnL into ring ─────────────────────────────────────────────────
+	h.tradeRing[h.ringHead] = pnl
+	h.ringHead = (h.ringHead + 1) % cfg.WindowTrades
+	if h.ringHead == 0 {
+		h.ringFull = true
+	}
+
+	// ── 2. Update consecutive-loss streak ────────────────────────────────────
+	if pnl.IsNegative() {
+		h.consecLoss++
+	} else {
+		h.consecLoss = 0
+	}
+
+	// ── 3. Determine active window size ──────────────────────────────────────
+	count := cfg.WindowTrades
+	if !h.ringFull {
+		count = h.ringHead // number of pushes so far; ringHead hasn't wrapped yet
+		if count == 0 {
+			return
+		}
+	}
+
+	// ── 4. Compute window stats ───────────────────────────────────────────────
+	sum := decimal.Zero
+	minPnL := h.tradeRing[0]
+	for i := 0; i < count; i++ {
+		sum = sum.Add(h.tradeRing[i])
+		if h.tradeRing[i].LessThan(minPnL) {
+			minPnL = h.tradeRing[i]
+		}
+	}
+	avg := sum.Div(decimal.NewFromInt(int64(count)))
+
+	// Reference capital for pct thresholds.
+	ref := h.allocatedCap
+	if !ref.IsPositive() {
+		ref = h.rt.Portfolio.Equity()
+	}
+	if !ref.IsPositive() {
+		return
+	}
+
+	// ── 5. Check thresholds ───────────────────────────────────────────────────
+	pct := func(v decimal.Decimal) float64 {
+		return v.Div(ref).Mul(decimal.NewFromInt(100)).InexactFloat64()
+	}
+
+	var breachReason string
+	switch {
+	case cfg.MaxTotalLossPct > 0 && sum.LessThan(ref.Mul(decimal.NewFromFloat(-cfg.MaxTotalLossPct))):
+		breachReason = fmt.Sprintf("window total loss %.2f%% > max %.2f%% (last %d trades)",
+			-pct(sum), cfg.MaxTotalLossPct*100, count)
+
+	case cfg.MaxAvgLossPct > 0 && avg.LessThan(ref.Mul(decimal.NewFromFloat(-cfg.MaxAvgLossPct))):
+		breachReason = fmt.Sprintf("window avg loss %.2f%% > max %.2f%% (last %d trades)",
+			-pct(avg), cfg.MaxAvgLossPct*100, count)
+
+	case cfg.MaxSingleLossPct > 0 && minPnL.LessThan(ref.Mul(decimal.NewFromFloat(-cfg.MaxSingleLossPct))):
+		breachReason = fmt.Sprintf("single trade loss %.2f%% > max %.2f%%",
+			-pct(minPnL), cfg.MaxSingleLossPct*100)
+
+	case cfg.MaxConsecLoss > 0 && h.consecLoss >= cfg.MaxConsecLoss:
+		breachReason = fmt.Sprintf("consecutive losses %d reached max %d", h.consecLoss, cfg.MaxConsecLoss)
+	}
+
+	if breachReason == "" {
+		return
+	}
+
+	// ── 6. Auto-pause ─────────────────────────────────────────────────────────
+	slog.Warn("hand: edge degradation detected — auto-pausing",
+		"hand_id", h.id, "reason", breachReason)
+	h.Pause()
+	h.recordActivity(ActivityEntry{
+		At:     time.Now(),
+		Code:   CodeHandAutoPaused,
+		Reason: "edge risk: " + breachReason,
+	})
+}

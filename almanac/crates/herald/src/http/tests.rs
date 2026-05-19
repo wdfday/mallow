@@ -98,7 +98,7 @@ async fn seed_strategy(state: &HttpState) -> String {
         "strategy_spec": script_spec()
     });
     let resp = router(state.clone())
-        .oneshot(post_json("/api/v1/store/strategies", body))
+        .oneshot(post_json("/api/v1/strategy/strategies", body))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED, "seed_strategy: create failed");
@@ -113,7 +113,7 @@ async fn seed_case(state: &HttpState, strategy_id: &str) -> String {
         "symbol": "BTCUSDT"
     });
     let resp = router(state.clone())
-        .oneshot(post_json("/api/v1/store/cases", body))
+        .oneshot(post_json("/api/v1/strategy/cases", body))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED, "seed_case: create failed");
@@ -167,13 +167,15 @@ async fn symbols_after_advance_lists_symbol() {
     let resp = router(state).oneshot(get("/api/v1/symbols")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
-    let group = &body["data"]["binance"];
+    let group = &body["data"]["Binance"];
     let arr = group.as_array().unwrap();
     assert_eq!(arr.len(), 1);
     // Prefix is stripped — only the raw ticker reaches the wire.
     assert_eq!(arr[0]["symbol"], "BTCUSDT");
-    assert_eq!(arr[0]["tf"], "M1");
-    assert_eq!(arr[0]["bars"], 1);
+    let tfs = arr[0]["timeframes"].as_array().unwrap();
+    assert_eq!(tfs.len(), 1);
+    assert_eq!(tfs[0]["tf"], "M1");
+    assert_eq!(tfs[0]["bars"], 1);
 }
 
 #[tokio::test]
@@ -190,8 +192,9 @@ async fn symbols_without_indicators_flag_omits_field() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
-    let item = &body["data"]["binance"].as_array().unwrap()[0];
-    assert!(!item.as_object().unwrap().contains_key("indicators"));
+    let item = &body["data"]["Binance"].as_array().unwrap()[0];
+    let tf0 = &item["timeframes"].as_array().unwrap()[0];
+    assert!(!tf0.as_object().unwrap().contains_key("indicators"));
 }
 
 #[tokio::test]
@@ -208,8 +211,9 @@ async fn symbols_with_indicators_flag_includes_array() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = json_body(resp).await;
-    let item = &body["data"]["binance"].as_array().unwrap()[0];
-    assert!(item["indicators"].is_array());
+    let item = &body["data"]["Binance"].as_array().unwrap()[0];
+    let tf0 = &item["timeframes"].as_array().unwrap()[0];
+    assert!(tf0["indicators"].is_array());
 }
 
 // ── /api/indicators ───────────────────────────────────────────────────────────
@@ -224,7 +228,7 @@ async fn indicators_catalogue_non_empty_with_name_field() {
     assert!(arr[0].as_object().unwrap().contains_key("name"));
 }
 
-// ── /api/store/strategies ─────────────────────────────────────────────────────
+// ── /api/strategy/strategies ─────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn create_strategy_returns_201_with_id() {
@@ -234,7 +238,7 @@ async fn create_strategy_returns_201_with_id() {
         "strategy_spec": script_spec()
     });
     let resp = test_app()
-        .oneshot(post_json("/api/v1/store/strategies", body))
+        .oneshot(post_json("/api/v1/strategy/strategies", body))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
@@ -248,7 +252,7 @@ async fn list_strategies_contains_created() {
     let state = test_state();
     let id = seed_strategy(&state).await;
 
-    let resp = router(state).oneshot(get("/api/v1/store/strategies")).await.unwrap();
+    let resp = router(state).oneshot(get("/api/v1/strategy/strategies")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let list = json_body(resp).await;
     assert!(list["data"].as_array().unwrap().iter().any(|s| s["id"] == id));
@@ -260,7 +264,7 @@ async fn get_strategy_by_id_returns_200() {
     let id = seed_strategy(&state).await;
 
     let resp = router(state)
-        .oneshot(get(&format!("/api/v1/store/strategies/{id}")))
+        .oneshot(get(&format!("/api/v1/strategy/strategies/{id}")))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -270,7 +274,7 @@ async fn get_strategy_by_id_returns_200() {
 #[tokio::test]
 async fn get_strategy_unknown_id_returns_404() {
     let resp = test_app()
-        .oneshot(get("/api/v1/store/strategies/does-not-exist"))
+        .oneshot(get("/api/v1/strategy/strategies/does-not-exist"))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -283,7 +287,7 @@ async fn update_strategy_label_returns_200() {
 
     let resp = router(state)
         .oneshot(put_json(
-            &format!("/api/v1/store/strategies/{id}"),
+            &format!("/api/v1/strategy/strategies/{id}"),
             serde_json::json!({ "label": "Renamed" }),
         ))
         .await
@@ -298,19 +302,19 @@ async fn delete_strategy_then_404() {
     let id = seed_strategy(&state).await;
 
     let del = router(state.clone())
-        .oneshot(delete(&format!("/api/v1/store/strategies/{id}")))
+        .oneshot(delete(&format!("/api/v1/strategy/strategies/{id}")))
         .await
         .unwrap();
     assert_eq!(del.status(), StatusCode::NO_CONTENT);
 
     let get_resp = router(state)
-        .oneshot(get(&format!("/api/v1/store/strategies/{id}")))
+        .oneshot(get(&format!("/api/v1/strategy/strategies/{id}")))
         .await
         .unwrap();
     assert_eq!(get_resp.status(), StatusCode::NOT_FOUND);
 }
 
-// ── /api/store/cases ──────────────────────────────────────────────────────────
+// ── /api/strategy/cases ──────────────────────────────────────────────────────────
 
 #[tokio::test]
 async fn create_case_valid_strategy_id_returns_201() {
@@ -323,7 +327,7 @@ async fn create_case_valid_strategy_id_returns_201() {
         "symbol": "BTCUSDT"
     });
     let resp = router(state)
-        .oneshot(post_json("/api/v1/store/cases", body))
+        .oneshot(post_json("/api/v1/strategy/cases", body))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::CREATED);
@@ -340,7 +344,7 @@ async fn create_case_unknown_strategy_id_rejected() {
         "symbol": "BTCUSDT"
     });
     let resp = test_app()
-        .oneshot(post_json("/api/v1/store/cases", body))
+        .oneshot(post_json("/api/v1/strategy/cases", body))
         .await
         .unwrap();
     assert!(resp.status().is_client_error());
@@ -353,7 +357,7 @@ async fn get_case_by_id_returns_200() {
     let case_id = seed_case(&state, &strategy_id).await;
 
     let resp = router(state)
-        .oneshot(get(&format!("/api/v1/store/cases/{case_id}")))
+        .oneshot(get(&format!("/api/v1/strategy/cases/{case_id}")))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
@@ -371,7 +375,7 @@ async fn run_case_no_data_returns_error_not_panic() {
         .oneshot(
             Request::builder()
                 .method("POST")
-                .uri(format!("/api/v1/store/cases/{case_id}/run"))
+                .uri(format!("/api/v1/strategy/cases/{case_id}/run"))
                 .body(Body::empty())
                 .unwrap(),
         )
@@ -393,7 +397,7 @@ async fn delete_case_returns_204() {
     let case_id = seed_case(&state, &strategy_id).await;
 
     let resp = router(state)
-        .oneshot(delete(&format!("/api/v1/store/cases/{case_id}")))
+        .oneshot(delete(&format!("/api/v1/strategy/cases/{case_id}")))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
@@ -450,38 +454,48 @@ async fn delete_watch_then_404() {
     assert_eq!(get_resp.status(), StatusCode::NOT_FOUND);
 }
 
-// ── /api/v1/data/:symbol ──────────────────────────────────────────────────────
+// ── /api/v1/data/:source/:symbol ─────────────────────────────────────────────
 
 #[tokio::test]
 async fn data_symbol_empty_body_returns_empty_response() {
     let state = test_state();
     state
         .ledger
-        .advance(Timeframe::M1, Bar::new(1_000_000, "BTCUSDT", 100.0, 101.0, 99.0, 100.5, 10.0))
+        .advance(Timeframe::M1, Bar::new(1_000_000, "binance:BTCUSDT", 100.0, 101.0, 99.0, 100.5, 10.0))
         .unwrap();
     let body = serde_json::json!({});
     let resp = router(state)
-        .oneshot(post_json("/api/v1/data/BTCUSDT", body))
+        .oneshot(post_json("/api/v1/data/binance/BTCUSDT", body))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let b = json_body(resp).await;
     assert_eq!(b["data"]["symbol"], "BTCUSDT");
+    assert_eq!(b["data"]["source"], "binance");
 }
 
 #[tokio::test]
 async fn data_unknown_symbol_no_ledger_entry_returns_empty_candles() {
     let body = serde_json::json!({ "candles": {} });
     let resp = test_app()
-        .oneshot(post_json("/api/v1/data/UNKNOWN_XYZ", body))
+        .oneshot(post_json("/api/v1/data/binance/UNKNOWN_XYZ", body))
         .await
         .unwrap();
-    // No ledger entry and no parquet dir → returns empty candles (not 5xx).
     assert!(
         resp.status().is_success() || resp.status().is_client_error(),
         "unexpected status {}",
         resp.status()
     );
+}
+
+#[tokio::test]
+async fn data_invalid_source_returns_400() {
+    let body = serde_json::json!({});
+    let resp = test_app()
+        .oneshot(post_json("/api/v1/data/kraken/BTCUSDT", body))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 #[tokio::test]
@@ -491,11 +505,127 @@ async fn data_too_many_indicators_rejected() {
         .collect();
     let body = serde_json::json!({ "indicators": indicators });
     let resp = test_app()
-        .oneshot(post_json("/api/v1/data/BTCUSDT", body))
+        .oneshot(post_json("/api/v1/data/binance/BTCUSDT", body))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     assert!(json_body(resp).await["message"].is_string());
+}
+
+// ── /api/v1/data — out-of-ledger (parquet fallback) paths ────────────────────
+
+/// `before` predates every bar in the ledger → falls through to DuckDB.
+/// No parquet files in test → graceful empty response (not 5xx).
+#[tokio::test]
+async fn data_before_outside_ledger_window_falls_back_gracefully() {
+    let state = test_state();
+    // Seed a bar at t=1_000_000.
+    state
+        .ledger
+        .advance(
+            Timeframe::M1,
+            Bar::new(1_000_000, "binance:BTCUSDT", 100.0, 101.0, 99.0, 100.5, 10.0),
+        )
+        .unwrap();
+
+    // Request bars BEFORE the ledger window — triggers DuckDB fallback.
+    let body = serde_json::json!({ "candles": { "before": 500_000, "limit": 10 } });
+    let resp = router(state)
+        .oneshot(post_json("/api/v1/data/binance/BTCUSDT", body))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let b = json_body(resp).await;
+    // No parquet files → candles.bars is empty but the shape is correct.
+    assert_eq!(b["data"]["source"], "binance");
+    assert_eq!(b["data"]["symbol"], "BTCUSDT");
+    // candles section must be present when requested.
+    assert!(b["data"]["candles"].is_object());
+}
+
+/// `before` cursor that falls within the ledger window returns bars from memory,
+/// not from parquet — the DuckDB path must NOT be taken.
+#[tokio::test]
+async fn data_before_within_window_returns_bars_from_ledger() {
+    let state = test_state();
+    for i in 0u64..5 {
+        state
+            .ledger
+            .advance(
+                Timeframe::M1,
+                Bar::new((1_000_000 + i * 60_000) as i64, "binance:BTCUSDT",
+                         100.0 + i as f64, 101.0, 99.0, 100.5, 10.0),
+            )
+            .unwrap();
+    }
+    // Ask for bars before the last bar — should return from the live ring.
+    let body = serde_json::json!({ "candles": { "before": 1_000_000 + 4 * 60_000, "limit": 10 } });
+    let resp = router(state)
+        .oneshot(post_json("/api/v1/data/binance/BTCUSDT", body))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let b = json_body(resp).await;
+    let bars = b["data"]["candles"]["bars"].as_array().unwrap();
+    assert!(!bars.is_empty(), "expected bars from live ledger");
+    // Bars must be sorted oldest-first.
+    let ts: Vec<i64> = bars.iter().map(|b| b["t"].as_i64().unwrap()).collect();
+    assert!(ts.windows(2).all(|w| w[0] <= w[1]), "bars not sorted ascending");
+}
+
+/// `before` outside window WITH indicators triggers the historical compute path.
+/// No parquet → returns empty bars + empty indicators, not a crash.
+#[tokio::test]
+async fn data_before_outside_window_with_indicators_uses_historical_compute() {
+    let state = test_state();
+    state
+        .ledger
+        .advance(
+            Timeframe::M1,
+            Bar::new(1_000_000, "binance:BTCUSDT", 100.0, 101.0, 99.0, 100.5, 10.0),
+        )
+        .unwrap();
+
+    let body = serde_json::json!({
+        "candles": { "before": 500_000, "limit": 10 },
+        "indicators": [{ "type": "sma", "period": 14 }]
+    });
+    let resp = router(state)
+        .oneshot(post_json("/api/v1/data/binance/BTCUSDT", body))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let b = json_body(resp).await;
+    assert_eq!(b["data"]["source"], "binance");
+    // indicators key present (may be empty map if no parquet data).
+    assert!(b["data"]["indicators"].is_object());
+}
+
+/// OKX dashed symbol accepted; ledger key uses the dashes as-is.
+#[tokio::test]
+async fn data_okx_dashed_symbol_accepted() {
+    let state = test_state();
+    state
+        .ledger
+        .advance(
+            Timeframe::M1,
+            Bar::new(1_000_000, "okx:BTC-USDT", 100.0, 101.0, 99.0, 100.5, 10.0),
+        )
+        .unwrap();
+
+    let body = serde_json::json!({ "candles": {} });
+    let resp = router(state)
+        .oneshot(post_json("/api/v1/data/okx/BTC-USDT", body))
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), StatusCode::OK);
+    let b = json_body(resp).await;
+    assert_eq!(b["data"]["source"], "okx");
+    assert_eq!(b["data"]["symbol"], "BTC-USDT");
 }
 
 // ── SSE smoke tests ───────────────────────────────────────────────────────────

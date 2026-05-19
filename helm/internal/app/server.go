@@ -8,6 +8,8 @@ import (
 	ginSwagger "github.com/swaggo/gin-swagger"
 
 	_ "mallow/helm/docs"
+	accounthandler "mallow/helm/internal/module/account/handler"
+	brokerhandler "mallow/helm/internal/module/broker/handler"
 	handhandler "mallow/helm/internal/module/hand/handler"
 	helmhandler "mallow/helm/internal/module/helm/handler"
 	"mallow/helm/internal/shared"
@@ -24,6 +26,8 @@ type HealthResponse struct {
 func NewServer(
 	helmH *helmhandler.Handler,
 	handH *handhandler.Handler,
+	accountH *accounthandler.Handler,
+	brokerH *brokerhandler.BrokerConnectionHandler,
 ) *gin.Engine {
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
@@ -35,6 +39,8 @@ func NewServer(
 	api := r.Group("/api", pkgmw.TrustedHeaders())
 	helmH.Register(api)
 	handH.Register(api)
+	accountH.RegisterRoutes(r)
+	brokerH.RegisterRoutes(r)
 
 	r.GET("/swagger/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
 	r.GET("/metrics", handH.Metrics)

@@ -198,7 +198,7 @@ fn report_to_pydict<'py>(
     // Timeframe
     out.set_item("timeframe", report.timeframe.to_string())?;
 
-    // Regime summary — populated when a Rhai script sets regime.* variables.
+    // Regime summary — populated when a script sets regime.* variables.
     // changes: [(timestamp_ms, label), ...] — on-change transitions only.
     // trade_breakdown: [{"label", "trades", "win_rate_pct", "avg_return_pct", "profit_factor"}, ...]
     if let Some(rs) = &report.regime_summary {
@@ -386,7 +386,7 @@ fn add_extra_fields<'py>(
 ///     All ``BacktestReport`` fields plus ``"equity_curve"``, ``"trades"``,
 ///     ``"pnl_pct"``, ``"indicator_series"``, ``"exposure_pct"``, ``"benchmark"``.
 #[pyfunction]
-#[pyo3(signature = (symbol, strategy, params, bars, initial_capital=10_000.0, commission_pct=0.001, slippage_pct=0.0005, lot_size=-1.0, sizing="fixed", sizing_params=None, next_bar=false, exit=None, risk_free_annual=0.04))]
+#[pyo3(signature = (symbol, strategy, params, bars, initial_capital=10_000.0, commission_pct=0.001, slippage_pct=0.0005, lot_size=-1.0, sizing="fixed", sizing_params=None, next_bar=false, exit=None, risk_free_annual=0.04, strength_sizing=true))]
 fn run_backtest<'py>(
     py: Python<'py>,
     symbol: &str,
@@ -402,6 +402,7 @@ fn run_backtest<'py>(
     next_bar: bool,
     exit: Option<&Bound<'py, PyDict>>,
     risk_free_annual: f64,
+    strength_sizing: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     let params_json = pydict_to_json(params)?;
     let bar_vec = extract_bars(symbol, bars)?;
@@ -476,15 +477,17 @@ fn run_backtest<'py>(
         }
         _ => {
             // "fixed" (default)
-            let risk = FixedFractional::new(0.95, 1).with_lot_size(resolved_lot);
+            let risk = FixedFractional::new(0.95, 1)
+                .with_lot_size(resolved_lot)
+                .with_strength_sizing(strength_sizing);
             run_engine!(risk)
         }
     }
 }
 
-// ── run_rhai_backtest ────────────────────────────────────────────────────────
+// ── run_script_backtest ────────────────────────────────────────────────────────
 
-/// Run a backtest using a **Rhai script** strategy.
+/// Run a backtest using a **script** strategy.
 ///
 /// The script declares indicators with ``ind.TYPE(period)`` and assigns
 /// boolean variables ``entry`` / ``exit`` (and optionally ``tp`` / ``sl`` for
@@ -496,7 +499,7 @@ fn run_backtest<'py>(
 /// symbol : str
 ///     Asset symbol, e.g. ``"BTCUSDT"``.
 /// script : str
-///     Rhai script. Example:
+///     Script. Example:
 ///
 /// ```text
 /// let ema9  = ind.ema(9);
@@ -522,9 +525,9 @@ fn run_backtest<'py>(
 ///     Same as :func:`run_backtest`. ``indicator_series`` contains one entry
 ///     per ``plot()`` call: ``{"name": [{"t": ts_ms, "v": float}, ...]}``.
 #[pyfunction]
-#[pyo3(signature = (symbol, script, bars, initial_capital=10_000.0, commission_pct=0.001, slippage_pct=0.0005, lot_size=-1.0, sizing="fixed", sizing_params=None, next_bar=false, exit=None, risk_free_annual=0.04))]
+#[pyo3(signature = (symbol, script, bars, initial_capital=10_000.0, commission_pct=0.001, slippage_pct=0.0005, lot_size=-1.0, sizing="fixed", sizing_params=None, next_bar=false, exit=None, risk_free_annual=0.04, strength_sizing=true))]
 #[allow(clippy::too_many_arguments)]
-fn run_rhai_backtest<'py>(
+fn run_script_backtest<'py>(
     py: Python<'py>,
     symbol: &str,
     script: &str,
@@ -538,11 +541,12 @@ fn run_rhai_backtest<'py>(
     next_bar: bool,
     exit: Option<&Bound<'py, PyDict>>,
     risk_free_annual: f64,
+    strength_sizing: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     let params_json = json!({ "script": script });
     let bar_vec = extract_bars(symbol, bars)?;
-    let strat = build_strategy("rhai", &params_json)
-        .map_err(|e| PyRuntimeError::new_err(format!("Rhai strategy build error: {e}")))?;
+    let strat = build_strategy("script", &params_json)
+        .map_err(|e| PyRuntimeError::new_err(format!("Script strategy build error: {e}")))?;
 
     let resolved_lot = if lot_size < 0.0 {
         if is_crypto(symbol) { 0.0 } else { 1.0 }
@@ -601,7 +605,9 @@ fn run_rhai_backtest<'py>(
             get_f("fraction", 0.5),
             get_u("max_positions", 1),
         )),
-        _ => run_engine!(FixedFractional::new(0.95, 1).with_lot_size(resolved_lot)),
+        _ => run_engine!(FixedFractional::new(0.95, 1)
+            .with_lot_size(resolved_lot)
+            .with_strength_sizing(strength_sizing)),
     }
 }
 
@@ -798,7 +804,7 @@ fn buy_hold_benchmark<'py>(
 ///       }
 ///     }``
 #[pyfunction]
-#[pyo3(signature = (symbol_bar_pairs, strategy, params, initial_capital=10_000.0, commission_pct=0.001, slippage_pct=0.0005, risk_free_annual=0.04, benchmark_equity=None))]
+#[pyo3(signature = (symbol_bar_pairs, strategy, params, initial_capital=10_000.0, commission_pct=0.001, slippage_pct=0.0005, risk_free_annual=0.04, benchmark_equity=None, strength_sizing=true))]
 fn run_portfolio_backtest<'py>(
     py: Python<'py>,
     symbol_bar_pairs: Vec<(String, Bound<'py, PyDict>)>,
@@ -809,6 +815,7 @@ fn run_portfolio_backtest<'py>(
     slippage_pct: f64,
     risk_free_annual: f64,
     benchmark_equity: Option<Vec<f64>>,
+    strength_sizing: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     let params_json = pydict_to_json(params)?;
 
@@ -821,7 +828,9 @@ fn run_portfolio_backtest<'py>(
             .map_err(|e| PyRuntimeError::new_err(format!("strategy build error: {e}")))?;
 
         let resolved_lot = if is_crypto(symbol) { 0.0 } else { 1.0 };
-        let risk = FixedFractional::new(0.95, 1).with_lot_size(resolved_lot);
+        let risk = FixedFractional::new(0.95, 1)
+            .with_lot_size(resolved_lot)
+            .with_strength_sizing(strength_sizing);
 
         let mut feed = BarVecFeed::new(bar_vec, symbol.clone());
         let mut engine = Engine::sync(initial_capital, strat, risk, commission_pct, slippage_pct);
@@ -1082,7 +1091,7 @@ fn list_strategies() -> Vec<&'static str> {
 #[pymodule]
 fn alm_py(m: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(run_backtest, m)?)?;
-    m.add_function(wrap_pyfunction!(run_rhai_backtest, m)?)?;
+    m.add_function(wrap_pyfunction!(run_script_backtest, m)?)?;
     m.add_function(wrap_pyfunction!(run_portfolio_backtest, m)?)?;
     m.add_function(wrap_pyfunction!(run_walk_forward, m)?)?;
     m.add_function(wrap_pyfunction!(run_indicators, m)?)?;

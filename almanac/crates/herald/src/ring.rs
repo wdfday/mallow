@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use alm_core::Bar;
 use parking_lot::RwLock;
+use tracing::warn;
 
 /// Maximum M1 bars kept per symbol (24 hours).
 const RING_CAPACITY: usize = 24 * 60;
@@ -22,6 +23,18 @@ impl BarRing {
     pub fn push(&self, bar: Bar) {
         let mut map = self.0.write();
         let deq = map.entry(bar.symbol.clone()).or_default();
+        if let Some(last) = deq.back() {
+            let gap_ms = bar.timestamp - last.timestamp;
+            if gap_ms > 2 * 60_000 {
+                warn!(
+                    symbol = %bar.symbol,
+                    last_ts = last.timestamp,
+                    bar_ts = bar.timestamp,
+                    gap_ms,
+                    "BarRing M1 gap detected",
+                );
+            }
+        }
         if deq.len() == RING_CAPACITY {
             deq.pop_front();
         }

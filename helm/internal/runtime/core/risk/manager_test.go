@@ -68,7 +68,6 @@ func TestResetHalt_ClearsHaltedFlag(t *testing.T) {
 	p := newPort(10_000)
 	cfg := risk.Config{
 		MaxPositions:      10,
-		MaxPositionPct:    0.50,
 		DailyLossLimitPct: 1.0,
 		MaxDrawdownPct:    0.05,
 	}
@@ -93,7 +92,6 @@ func TestResetHalt_AlsoClearsDailyHalt(t *testing.T) {
 	p := newPort(10_000)
 	cfg := risk.Config{
 		MaxPositions:      10,
-		MaxPositionPct:    0.50,
 		DailyLossLimitPct: 0.01,
 		MaxDrawdownPct:    1.0,
 	}
@@ -125,7 +123,7 @@ func TestValidate_CloseIntent_AlwaysApproved(t *testing.T) {
 
 func TestValidate_CloseIntent_ApprovedWhenHalted(t *testing.T) {
 	p := newPort(10_000)
-	cfg := risk.Config{MaxPositions: 10, MaxPositionPct: 0.50, DailyLossLimitPct: 1.0, MaxDrawdownPct: 0.05}
+	cfg := risk.Config{MaxPositions: 10, DailyLossLimitPct: 1.0, MaxDrawdownPct: 0.05}
 	m := risk.New(cfg, p)
 	applyLoss(p, "AAPL", 100, 100, 94)
 
@@ -144,8 +142,7 @@ func TestValidate_CloseIntent_ApprovedWhenHalted(t *testing.T) {
 
 func TestValidate_MaxPositions_Zero_BlocksEntry(t *testing.T) {
 	p := newPort(10_000)
-	cfg := risk.Config{MaxPositions: 0, MaxPositionPct: 0.10, DailyLossLimitPct: 1.0, MaxDrawdownPct: 1.0}
-	m := risk.New(cfg, p)
+	m := risk.New(risk.Config{MaxPositions: 0, DailyLossLimitPct: 1.0, MaxDrawdownPct: 1.0}, p)
 
 	ok, reason := m.Validate(entryIntent("AAPL", 0.5))
 	if ok {
@@ -200,15 +197,14 @@ func TestValidate_MaxPositions_AllowsAddingToExistingPosition(t *testing.T) {
 
 func TestUpdateConfig_ChangesMaxPositionsImmediately(t *testing.T) {
 	p := newPort(10_000)
-	m := risk.New(risk.Config{MaxPositions: 0, MaxPositionPct: 0.10, DailyLossLimitPct: 1.0, MaxDrawdownPct: 1.0}, p)
+	m := risk.New(risk.Config{MaxPositions: 0, DailyLossLimitPct: 1.0, MaxDrawdownPct: 1.0}, p)
 
 	ok, _ := m.Validate(entryIntent("AAPL", 0.5))
 	if ok {
 		t.Fatal("expected blocked with MaxPositions=0")
 	}
 
-	m.UpdateConfig(risk.Config{MaxPositions: 5, MaxPositionPct: 0.10, DailyLossLimitPct: 0.02, MaxDrawdownPct: 0.10})
-
+	m.UpdateConfig(risk.Config{MaxPositions: 5, DailyLossLimitPct: 0.02, MaxDrawdownPct: 0.10})
 	ok, _ = m.Validate(entryIntent("AAPL", 0.5))
 	if !ok {
 		t.Fatal("expected allowed after MaxPositions raised to 5")
@@ -230,7 +226,6 @@ func TestManager_ConcurrentUpdateConfig_NoRace(t *testing.T) {
 		for i := 0; i < iterations; i++ {
 			m.UpdateConfig(risk.Config{
 				MaxPositions:      i%10 + 1,
-				MaxPositionPct:    0.05,
 				DailyLossLimitPct: 0.02,
 				MaxDrawdownPct:    0.10,
 			})

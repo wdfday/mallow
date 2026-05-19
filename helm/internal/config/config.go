@@ -24,8 +24,9 @@ type Config struct {
 }
 
 type InfraConfig struct {
-	NATSURL     string
-	PostgresURL string
+	NATSURL       string
+	PostgresURL   string
+	EncryptionKey string
 }
 
 type ServerConfig struct {
@@ -50,6 +51,7 @@ func Load() Config {
 	v := viper.New()
 	v.SetDefault("NATS_URL", "nats://localhost:4222")
 	v.SetDefault("POSTGRES_URL", "")
+	v.SetDefault("ENCRYPTION_KEY", "")
 	v.SetDefault("API_ADDR", "localhost:8084")
 	v.SetDefault("PYROSCOPE_URL", "")
 	v.SetDefault("SYNC_INTERVAL", "5m")
@@ -68,8 +70,9 @@ func Load() Config {
 
 	cfg := Config{
 		Infra: InfraConfig{
-			NATSURL:     v.GetString("NATS_URL"),
-			PostgresURL: v.GetString("POSTGRES_URL"),
+			NATSURL:       v.GetString("NATS_URL"),
+			PostgresURL:   v.GetString("POSTGRES_URL"),
+			EncryptionKey: v.GetString("ENCRYPTION_KEY"),
 		},
 		Server: ServerConfig{
 			APIAddr:      v.GetString("API_ADDR"),

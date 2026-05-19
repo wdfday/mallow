@@ -15,6 +15,19 @@ import (
 // All fields come from the herald protobuf SignalMsg + NATS metadata.
 type Signal = strategy.Signal
 
+// Health status values for HandHealth.Status.
+// The first three mirror domain.HandStatus for the persisted lifecycle states.
+// The remainder are runtime-only states not written to the DB.
+const (
+	HealthRunning  = "running"
+	HealthStopped  = "stopped"
+	HealthPaused   = "paused"
+	HealthStale    = "stale"    // no signal received for >5 min; run-loop still active
+	HealthError    = "error"    // last order failed; clears on next successful order
+	HealthKilled   = "killed"   // Kill() called; positions flattened
+	HealthReleased = "released" // Release() called; positions orphaned
+)
+
 // HandHealth tracks liveness and error state.
 type HandHealth struct {
 	Status       string     `json:"status"`
@@ -28,10 +41,12 @@ type HandHealth struct {
 
 // ── Activity codes ────────────────────────────────────────────────────────────
 //
-// Numeric event codes for the hand activity log.
+// Numeric event codes for the hand activity log and NATS HelmEvent stream.
 // Ranges:
 //   10000–10099  signal lifecycle
 //   10100–10199  order lifecycle
+//   10200–10299  hand lifecycle
+//   10300–10399  helm lifecycle
 
 const (
 	// Signal received — logged for every signal before any filtering.
@@ -52,9 +67,16 @@ const (
 	CodeOrderFailed        = 10102 // exchange returned an error for the order
 	CodeOrderPartialCancel = 10103 // partial fill remainder auto-cancelled (below min lot)
 	CodeOrderLimitTimeout  = 10104 // limit order cancelled by helm after timeout with no fill
-	CodeOrderLimitReprice  = 10105 // limit order cancelled and re-placed at new price after timeout
+	CodeOrderLimitReprice  = 10105 // reserved: cancel + re-price (not yet implemented; see EXECUTION_TACTICS.md)
 	CodeOrderLimitFallback = 10106 // limit order cancelled and re-placed as market after timeout
-	CodeHandAutoPaused     = 10200 // hand auto-paused due to persistent sizing failure (no open position)
+
+	// Hand lifecycle codes.
+	CodeHandAutoPaused = 10200 // hand auto-paused due to persistent sizing failure (no open position)
+
+	// Helm lifecycle codes.
+	CodeHelmPaused  = 10300 // helm paused — all hands will ignore signals
+	CodeHelmResumed = 10301 // helm resumed
+	CodeHelmSynced  = 10302 // portfolio synced from exchange
 )
 
 // ActivityEntry records a single hand event in the activity ring buffer.
@@ -144,16 +166,16 @@ func (b *HandRef) Summary() handdomain.HandSummary {
 		Uptime:    h.Uptime,
 	}
 	if h.StartedAt != nil && !h.StartedAt.IsZero() {
-		hv.StartedAt = h.StartedAt.Format("2006-01-02T15:04:05Z")
+		hv.StartedAt = h.StartedAt.Format(time.RFC3339)
 	}
 	if h.LastSignalAt != nil && !h.LastSignalAt.IsZero() {
-		hv.LastSignalAt = h.LastSignalAt.Format("2006-01-02T15:04:05Z")
+		hv.LastSignalAt = h.LastSignalAt.Format(time.RFC3339)
 	}
 	if h.LastOrderAt != nil && !h.LastOrderAt.IsZero() {
-		hv.LastOrderAt = h.LastOrderAt.Format("2006-01-02T15:04:05Z")
+		hv.LastOrderAt = h.LastOrderAt.Format(time.RFC3339)
 	}
 	if h.LastErrorAt != nil && !h.LastErrorAt.IsZero() {
-		hv.LastErrorAt = h.LastErrorAt.Format("2006-01-02T15:04:05Z")
+		hv.LastErrorAt = h.LastErrorAt.Format(time.RFC3339)
 	}
 
 	mv := handdomain.HandMetricsView{
@@ -169,22 +191,24 @@ func (b *HandRef) Summary() handdomain.HandSummary {
 	}
 
 	return handdomain.HandSummary{
-		ID:              b.Data.ID,
-		Name:            b.Data.Name,
-		Type:            b.Data.Type,
-		Market:          b.Data.Market,
-		HelmID:          b.Data.HelmID,
-		Strategy:        b.Data.Strategy,
-		Position:        b.Data.Position,
-		Risk:            b.Data.Risk,
-		Symbols:         []string(b.Data.Symbols),
-		Status:          b.Data.Status,
-		Running:         b.Runner.IsRunning(),
-		OrderCount:      len(b.Runner.Orders()),
-		Health:          hv,
-		Metrics:         mv,
-		Futures:         b.Data.Futures,
-		CreatedAt:       b.Data.CreatedAt,
-		DeployedCapital: b.Runner.DeployedCapital(),
+		ID:               b.Data.ID,
+		Name:             b.Data.Name,
+		Type:             b.Data.Type,
+		Market:           b.Data.Market,
+		HelmID:           b.Data.HelmID,
+		Strategy:         b.Data.Strategy,
+		Position:         b.Data.Position,
+		Risk:             b.Data.Risk,
+		Symbols:          []string(b.Data.Symbols),
+		Status:           b.Data.Status,
+		Running:          b.Runner.IsRunning(),
+		OrderCount:       len(b.Runner.Orders()),
+		Health:           hv,
+		Metrics:          mv,
+		Futures:          b.Data.Futures,
+		CreatedAt:        b.Data.CreatedAt,
+		DeployedCapital:  b.Runner.DeployedCapital(),
+		AllocatedCapital: b.Data.AllocatedCapital,
+		SignalTTLSec:     b.Data.SignalTTLSec,
 	}
 }

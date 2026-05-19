@@ -8,19 +8,27 @@
 pub mod engine_builder;
 pub mod loader;
 pub mod response;
+pub mod mtf_response;
 
 pub use engine_builder::{asset_lot_size, intra_bar_mode_from_str};
 
 use std::path::Path;
 
+use alm_core::{MtfStrategy, Timeframe};
 use alm_data::{BarFeed, BarVecFeed};
-use anyhow::Result;
+use alm_strategy::{
+    build_mtf_strategy, probe_script_htfs, AnySizer, FixedFractional, FixedQuantity, FixedUsd,
+    MtfScriptStrategy,
+};
+use anyhow::{bail, Result};
 use serde_json::Value;
 
 use crate::data::parse_date_ms;
-use crate::types::{BacktestRequest, BacktestResponse};
+use crate::mtf_engine::MtfEngine;
+use crate::types::{BacktestRequest, BacktestResponse, CurvePoint, MtfBacktestRequest};
 
 use crate::data::{find_parquet_files, load_bars, market_region_from_data_source};
+use crate::backtest::loader::load_bars_for_tf;
 
 pub(crate) const DEFAULT_RISK_FREE: f64 = 0.04;
 pub(crate) const DEFAULT_COMMISSION: f64 = 0.001;
@@ -58,9 +66,12 @@ pub fn estimate(req: &BacktestRequest, data_dir: &Path) -> Result<(usize, f64)> 
     let from_ms = req.from.as_deref().and_then(parse_date_ms);
     let to_ms = req.to.as_deref()
         .and_then(|s| parse_date_ms(s).map(|ms| ms + 86_400_000 - 1));
+    // Default to "" (24/7, no filter) when caller doesn't specify a source —
+    // crypto is the most common case and was previously being wrongly clamped
+    // to US market hours, dropping ~75% of bars.
     let market_region = req.data_source.as_deref()
         .map(market_region_from_data_source)
-        .unwrap_or("us");
+        .unwrap_or("");
     let market_hours_only = !market_region.is_empty();
     let files = find_parquet_files(data_dir, symbol, req.timeframe.as_deref(), req.data_source.as_deref());
     let feed = load_bars(&files, symbol, from_ms, to_ms, market_hours_only, market_region)
@@ -74,7 +85,30 @@ pub fn estimate(req: &BacktestRequest, data_dir: &Path) -> Result<(usize, f64)> 
 }
 
 /// Run a full backtest from a request, discovering data under `data_dir`.
+///
+/// When `strategy == "script"` and the script declares HTF indicators
+/// (e.g. `ind.ema(20, "H1")`), the runner auto-detects this and routes to
+/// [`run_mtf_script`] — using `MtfScriptStrategy` + `MtfEngine` with real HTF
+/// parquet feeds instead of the v1 internal resampler.
 pub fn run(req: BacktestRequest, data_dir: &Path) -> Result<BacktestResponse> {
+    // ── Auto-detect MTF script ────────────────────────────────────────────────
+    //
+    // Cheap parse-only probe — no Rhai AST compile, no IndicatorBox allocation.
+    // V1 path will reject any TF-bearing script anyway, so probing first is the
+    // only way to keep MTF scripts working through the unified `run()` entry.
+    if req.strategy == "script" {
+        let params = req.params.clone().unwrap_or_default();
+        if let Some(script) = params.get("script").and_then(|v| v.as_str()) {
+            let htfs = probe_script_htfs(script);
+            if !htfs.is_empty() {
+                let base_tf_str = req.timeframe.as_deref().unwrap_or("M1");
+                let base_tf = parse_timeframe(base_tf_str)?;
+                let strategy = MtfScriptStrategy::from_script(script, base_tf)?;
+                return run_mtf_script(req, strategy, htfs, data_dir);
+            }
+        }
+    }
+
     let symbol = loader::effective_symbol(&req.symbol).to_string();
     let capital = req.initial_capital.unwrap_or(DEFAULT_CAPITAL);
     let risk_free = req.risk_free_annual.unwrap_or(DEFAULT_RISK_FREE);
@@ -109,6 +143,254 @@ pub fn run(req: BacktestRequest, data_dir: &Path) -> Result<BacktestResponse> {
     let report = engine.run(&mut bar_feed, risk_free);
 
     Ok(response::build(engine, report, req, symbol, bar_count, &all_bars, capital, risk_free, curve_max))
+}
+
+/// Run a multi-timeframe backtest from a [`MtfBacktestRequest`].
+///
+/// Loads one independent bar feed per timeframe, builds a [`MtfEngine`] with
+/// the named [`MtfStrategy`], and returns the same [`BacktestResponse`] shape
+/// as the single-TF runner.
+pub fn run_mtf(req: MtfBacktestRequest, data_dir: &Path) -> Result<BacktestResponse> {
+    if req.htf_timeframes.is_empty() {
+        bail!("`htf_timeframes` must contain at least one entry");
+    }
+
+    let symbol = loader::effective_symbol(&req.symbol).to_string();
+    let capital = req.initial_capital.unwrap_or(DEFAULT_CAPITAL);
+    let commission = req.commission_pct.unwrap_or(DEFAULT_COMMISSION);
+    let slippage = req.slippage_pct.unwrap_or(DEFAULT_SLIPPAGE);
+    let risk_free = req.risk_free_annual.unwrap_or(DEFAULT_RISK_FREE);
+    let lot_size = asset_lot_size(req.asset_type.as_deref());
+    let max_positions = req.max_positions.unwrap_or(1).max(1);
+    let params = req.params.clone().unwrap_or(Value::Object(Default::default()));
+
+    let base_tf_str = req.base_tf.as_deref().unwrap_or("M1");
+    let base_tf = parse_timeframe(base_tf_str)?;
+
+    let from_ms = req.from.as_deref().and_then(parse_date_ms);
+    let to_ms = req
+        .to
+        .as_deref()
+        .and_then(|s| parse_date_ms(s).map(|ms| ms + 86_400_000 - 1));
+
+    // Load base TF bars (also used for buy-hold benchmark).
+    let base_bars = load_bars_for_tf(
+        &symbol,
+        Some(base_tf_str),
+        req.data_source.as_deref(),
+        from_ms,
+        to_ms,
+        data_dir,
+    )?;
+    if base_bars.is_empty() {
+        bail!("no bars found for symbol '{}' at base timeframe '{}'", symbol, base_tf_str);
+    }
+    let base_bar_count = base_bars.len();
+
+    // Build risk manager.
+    let risk: AnySizer = if let Some(qty) = req.position_size_quantity {
+        AnySizer::FixedQuantity(FixedQuantity::new(qty, max_positions))
+    } else if let Some(usd) = req.position_size_usd {
+        AnySizer::FixedUsd(FixedUsd::new(usd, max_positions).with_lot_size(lot_size))
+    } else {
+        let pct = req.position_size_pct.unwrap_or(DEFAULT_POSITION_PCT).clamp(0.01, 1.0);
+        AnySizer::FixedFractional(FixedFractional::new(pct, max_positions).with_lot_size(lot_size))
+    };
+
+    let strategy = build_mtf_strategy(&req.strategy, &params)?;
+    let strategy_name = strategy.name().to_string();
+
+    let curve_max = estimate_curve_target(base_bar_count);
+
+    tracing::info!(
+        symbol = %symbol,
+        strategy = %strategy_name,
+        base_tf = %base_tf_str,
+        htf = ?req.htf_timeframes,
+        base_bars = base_bar_count,
+        "starting MTF backtest",
+    );
+
+    let mut engine = MtfEngine::sync(capital, strategy, risk, commission, slippage)
+        .with_base_tf(base_tf)
+        .with_single_entry();
+
+    engine.add_feed(base_tf, BarVecFeed::new(base_bars.clone(), symbol.clone()));
+
+    for tf_str in &req.htf_timeframes {
+        let htf = parse_timeframe(tf_str)?;
+        let htf_bars = load_bars_for_tf(
+            &symbol,
+            Some(tf_str.as_str()),
+            req.data_source.as_deref(),
+            from_ms,
+            to_ms,
+            data_dir,
+        )?;
+        if htf_bars.is_empty() {
+            bail!(
+                "no bars found for symbol '{}' at HTF '{}'",
+                symbol,
+                tf_str
+            );
+        }
+        engine.add_feed(htf, BarVecFeed::new(htf_bars, symbol.clone()));
+    }
+
+    let report = engine.run(risk_free);
+
+    let monte_carlo_cfg = req.monte_carlo;
+    Ok(mtf_response::build(
+        engine,
+        report,
+        strategy_name,
+        symbol,
+        base_bar_count,
+        &base_bars,
+        capital,
+        risk_free,
+        curve_max,
+        monte_carlo_cfg,
+        std::collections::HashMap::new(),
+    ))
+}
+
+/// Run a Rhai v2 MTF script backtest.
+///
+/// Called automatically from [`run`] when the script declares HTF indicators.
+/// Feeds `MtfEngine` with real parquet files for each declared TF — no resampling.
+fn run_mtf_script(
+    req: BacktestRequest,
+    mut strategy: MtfScriptStrategy,
+    htfs: Vec<Timeframe>,
+    data_dir: &Path,
+) -> Result<BacktestResponse> {
+    let symbol = loader::effective_symbol(&req.symbol).to_string();
+    let capital = req.initial_capital.unwrap_or(DEFAULT_CAPITAL);
+    let commission = req.commission_pct.unwrap_or(DEFAULT_COMMISSION);
+    let slippage = req.slippage_pct.unwrap_or(DEFAULT_SLIPPAGE);
+    let risk_free = req.risk_free_annual.unwrap_or(DEFAULT_RISK_FREE);
+    let lot_size = asset_lot_size(req.asset_type.as_deref());
+    let max_positions = req.max_positions.unwrap_or(1).max(1);
+
+    let base_tf_str = req.timeframe.as_deref().unwrap_or("M1");
+    let base_tf = parse_timeframe(base_tf_str)?;
+
+    let from_ms = req.from.as_deref().and_then(parse_date_ms);
+    let to_ms = req.to.as_deref()
+        .and_then(|s| parse_date_ms(s).map(|ms| ms + 86_400_000 - 1));
+
+    let base_bars = load_bars_for_tf(
+        &symbol,
+        Some(base_tf_str),
+        req.data_source.as_deref(),
+        from_ms,
+        to_ms,
+        data_dir,
+    )?;
+    if base_bars.is_empty() {
+        anyhow::bail!(
+            "no bars found for '{}' at base timeframe '{}'",
+            symbol, base_tf_str
+        );
+    }
+    let bar_count = base_bars.len();
+
+    if bar_count > MAX_BARS {
+        anyhow::bail!(
+            "{} bars exceeds the {} bar limit. Narrow the date range or use a higher timeframe.",
+            bar_count, MAX_BARS
+        );
+    }
+
+    let risk: AnySizer = if let Some(qty) = req.position_size_quantity {
+        AnySizer::FixedQuantity(FixedQuantity::new(qty, max_positions))
+    } else if let Some(usd) = req.position_size_usd {
+        AnySizer::FixedUsd(FixedUsd::new(usd, max_positions).with_lot_size(lot_size))
+    } else {
+        let pct = req.position_size_pct.unwrap_or(DEFAULT_POSITION_PCT).clamp(0.01, 1.0);
+        AnySizer::FixedFractional(FixedFractional::new(pct, max_positions).with_lot_size(lot_size))
+    };
+
+    let curve_max = estimate_curve_target(bar_count);
+    let strategy_name = strategy.name().to_string();
+
+    tracing::info!(
+        symbol = %symbol,
+        strategy = %strategy_name,
+        base_tf = %base_tf_str,
+        htf = ?htfs,
+        bars = bar_count,
+        "starting MTF script backtest (v2 auto-detected)",
+    );
+
+    let mut engine = MtfEngine::sync(capital, strategy, risk, commission, slippage)
+        .with_base_tf(base_tf)
+        .with_single_entry();
+
+    engine.add_feed(base_tf, BarVecFeed::new(base_bars.clone(), symbol.clone()));
+
+    for htf in &htfs {
+        let tf_str = htf.to_string();
+        let htf_bars = load_bars_for_tf(
+            &symbol,
+            Some(tf_str.as_str()),
+            req.data_source.as_deref(),
+            from_ms,
+            to_ms,
+            data_dir,
+        )?;
+        if htf_bars.is_empty() {
+            anyhow::bail!(
+                "no bars found for '{}' at HTF '{}' — needed by script",
+                symbol, tf_str
+            );
+        }
+        engine.add_feed(*htf, BarVecFeed::new(htf_bars, symbol.clone()));
+    }
+
+    let report = engine.run(risk_free);
+
+    // Drain plot series collected during the run.
+    let raw_series = engine.strategy.take_series();
+    let indicator_series = raw_series
+        .into_iter()
+        .map(|(k, pts)| (k, pts.into_iter().map(|(t, v)| CurvePoint { t, v }).collect()))
+        .collect();
+
+    Ok(mtf_response::build(
+        engine,
+        report,
+        strategy_name,
+        symbol,
+        bar_count,
+        &base_bars,
+        capital,
+        risk_free,
+        curve_max,
+        req.monte_carlo,
+        indicator_series,
+    ))
+}
+
+/// Parse a timeframe string to [`Timeframe`], case-insensitive.
+fn parse_timeframe(s: &str) -> Result<Timeframe> {
+    match s.to_uppercase().as_str() {
+        "M1"  => Ok(Timeframe::M1),
+        "M3"  => Ok(Timeframe::M3),
+        "M5"  => Ok(Timeframe::M5),
+        "M10" => Ok(Timeframe::M10),
+        "M15" => Ok(Timeframe::M15),
+        "M30" => Ok(Timeframe::M30),
+        "H1"  => Ok(Timeframe::H1),
+        "H2"  => Ok(Timeframe::H2),
+        "H4"  => Ok(Timeframe::H4),
+        "H6"  => Ok(Timeframe::H6),
+        "H12" => Ok(Timeframe::H12),
+        "D1"  => Ok(Timeframe::D1),
+        "W1"  => Ok(Timeframe::W1),
+        other => bail!("unknown timeframe '{other}'. Expected one of: M1 M3 M5 M10 M15 M30 H1 H2 H4 H6 H12 D1 W1"),
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

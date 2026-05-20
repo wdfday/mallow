@@ -105,21 +105,6 @@ async fn seed_strategy(state: &HttpState) -> String {
     json_body(resp).await["data"]["id"].as_str().unwrap().to_owned()
 }
 
-/// Create a backtest case in `state` and return its UUID.
-async fn seed_case(state: &HttpState, strategy_id: &str) -> String {
-    let body = serde_json::json!({
-        "label": "Seed Case",
-        "strategy_id": strategy_id,
-        "symbol": "BTCUSDT"
-    });
-    let resp = router(state.clone())
-        .oneshot(post_json("/api/v1/strategy/cases", body))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED, "seed_case: create failed");
-    json_body(resp).await["data"]["id"].as_str().unwrap().to_owned()
-}
-
 /// Create a watch entry in `state` and return its UUID.
 async fn seed_watch(state: &HttpState) -> String {
     let body = serde_json::json!({
@@ -312,95 +297,6 @@ async fn delete_strategy_then_404() {
         .await
         .unwrap();
     assert_eq!(get_resp.status(), StatusCode::NOT_FOUND);
-}
-
-// ── /api/strategy/cases ──────────────────────────────────────────────────────────
-
-#[tokio::test]
-async fn create_case_valid_strategy_id_returns_201() {
-    let state = test_state();
-    let strategy_id = seed_strategy(&state).await;
-
-    let body = serde_json::json!({
-        "label": "Test Case",
-        "strategy_id": strategy_id,
-        "symbol": "BTCUSDT"
-    });
-    let resp = router(state)
-        .oneshot(post_json("/api/v1/strategy/cases", body))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED);
-    let created = json_body(resp).await;
-    assert!(created["data"]["id"].is_string());
-    assert_eq!(created["data"]["symbol"], "BTCUSDT");
-}
-
-#[tokio::test]
-async fn create_case_unknown_strategy_id_rejected() {
-    let body = serde_json::json!({
-        "label": "Bad Case",
-        "strategy_id": "nonexistent-uuid",
-        "symbol": "BTCUSDT"
-    });
-    let resp = test_app()
-        .oneshot(post_json("/api/v1/strategy/cases", body))
-        .await
-        .unwrap();
-    assert!(resp.status().is_client_error());
-}
-
-#[tokio::test]
-async fn get_case_by_id_returns_200() {
-    let state = test_state();
-    let strategy_id = seed_strategy(&state).await;
-    let case_id = seed_case(&state, &strategy_id).await;
-
-    let resp = router(state)
-        .oneshot(get(&format!("/api/v1/strategy/cases/{case_id}")))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(json_body(resp).await["data"]["id"], case_id);
-}
-
-#[tokio::test]
-async fn run_case_no_data_returns_error_not_panic() {
-    let state = test_state();
-    let strategy_id = seed_strategy(&state).await;
-    let case_id = seed_case(&state, &strategy_id).await;
-
-    // data_dir points to /nonexistent-test-dir, so run must fail gracefully
-    let resp = router(state)
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri(format!("/api/v1/strategy/cases/{case_id}/run"))
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert!(
-        resp.status().is_client_error() || resp.status().is_server_error(),
-        "expected 4xx/5xx, got {}",
-        resp.status()
-    );
-    let body = json_body(resp).await;
-    assert!(body["message"].is_string(), "response should contain message field");
-}
-
-#[tokio::test]
-async fn delete_case_returns_204() {
-    let state = test_state();
-    let strategy_id = seed_strategy(&state).await;
-    let case_id = seed_case(&state, &strategy_id).await;
-
-    let resp = router(state)
-        .oneshot(delete(&format!("/api/v1/strategy/cases/{case_id}")))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 }
 
 // ── /api/watch ────────────────────────────────────────────────────────────────

@@ -24,7 +24,9 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use alm_strategy::build_strategy;
+// build_strategy / probe_script_htfs / MtfScriptStrategy aren't needed here:
+// `Registry::register` runs the real build internally and returns its error
+// directly, so we don't pre-validate in this handler anymore.
 use alm_core::msg::{
     BarMsg, HandInfo, HandListResponse, DeregisterMsg, HeartbeatRequest, HeartbeatResponse,
     PingResponse, ReadyEvent, RegisterMsg, ResetMsg, SignalMsg, SignalResponse,
@@ -229,7 +231,7 @@ impl Handler {
         info!(hand_id = %req.hand_id, symbol = %req.symbol, "registering hand");
         // Timeframe is required — strategies are TF-specific so silent fallback
         // to herald's base TF would run a script designed for H1 on M1 bars.
-        let _target_tf = match req.timeframe.as_str() {
+        let target_tf = match req.timeframe.as_str() {
             "" => {
                 let err = "timeframe is required (e.g. \"M1\", \"M15\", \"H1\")";
                 warn!(hand_id = %req.hand_id, "register rejected: {err}");
@@ -254,28 +256,14 @@ impl Handler {
                 }
             },
         };
-        // Validate the script BEFORE touching the registry — try a dry-run
-        // build. This catches: script syntax errors, indicator typos
-        // (`ind.mma` etc.), invalid `candle.transform(...)` directives,
-        // misplaced directives, unbalanced `regime { ... }` block, duplicate
-        // indicator names. Doing this here avoids the side-effect leak from
-        // `registry.register()` calling `ledger.ensure_symbol(...)` before
-        // build fails — and gives the caller the error in the ack instead of
-        // a generic registry error.
-        let probe = serde_json::json!({ "script": req.script, "_live": true });
-        if let Err(e) = build_strategy("script", &probe) {
-            let err = format!("script validation failed: {e}");
-            warn!(hand_id = %req.hand_id, "register rejected: {err}");
-            if let Some(reply) = msg.reply {
-                let ack = serde_json::json!({"ok": false, "error": err}).to_string();
-                let _ = self.client.publish(reply, ack.into_bytes().into()).await;
-            }
-            return;
-        }
-
+        // No separate validation pass: `Registry::register` builds the real
+        // strategy via `Handle::new`, which runs the same Rhai compile +
+        // indicator instantiation that any dry-run probe would do. Errors
+        // surface here as `Err(_)` and are returned in the ack. Avoids the
+        // double-compile we used to do (probe-then-discard + register build).
         let result = self.registry.register(
             req.hand_id.clone(), req.helm_id.clone(), req.symbol.clone(),
-            req.script.clone(),
+            req.script.clone(), target_tf,
         );
         if let Some(reply) = msg.reply {
             let ack = match result {
@@ -349,22 +337,48 @@ impl Handler {
                 return;
             }
         };
+
+        // (hand_id, helm_id) tuples currently in our registry, scoped to this
+        // helm so we don't report hands owned by sibling helms as orphan.
+        //
+        // Fallback / default hands are seeded by herald itself with empty
+        // helm_id (see `Registry::ensure_fallback_hand`) — they must NOT be
+        // reported as orphan to any caller, since no helm owns them.
         let all_hands = self.registry.list_hands();
-        let registered_set: std::collections::HashSet<&str> =
-            all_hands.iter().map(|(id, ..)| id.as_str()).collect();
+        let our_hands: std::collections::HashSet<&str> = all_hands
+            .iter()
+            .filter(|(_, helm_id, _, _, _)| !helm_id.is_empty() && helm_id == &req.helm_id)
+            .map(|(id, ..)| id.as_str())
+            .collect();
+        let expected: std::collections::HashSet<&str> =
+            req.hands.iter().map(String::as_str).collect();
+
+        // `missing`    = helm expects them, we don't have them → helm must register.
+        // `registered` = helm expects them, we have them → confirm.
+        // `orphan`     = we have them under helm_id, helm doesn't expect them → helm must deregister.
         let mut missing = Vec::new();
         let mut registered = Vec::new();
         for hand_id in &req.hands {
-            if registered_set.contains(hand_id.as_str()) {
+            if our_hands.contains(hand_id.as_str()) {
                 registered.push(hand_id.clone());
             } else {
                 missing.push(hand_id.clone());
             }
         }
+        let orphan: Vec<String> = our_hands
+            .iter()
+            .filter(|id| !expected.contains(**id))
+            .map(|s| s.to_string())
+            .collect();
+
         if !missing.is_empty() {
             warn!(helm_id = %req.helm_id, missing = ?missing, "heartbeat: hands missing from registry");
         }
-        let resp = HeartbeatResponse { ok: missing.is_empty(), missing, registered };
+        if !orphan.is_empty() {
+            warn!(helm_id = %req.helm_id, orphan = ?orphan, "heartbeat: orphan hands in registry");
+        }
+        let ok = missing.is_empty() && orphan.is_empty();
+        let resp = HeartbeatResponse { ok, missing, registered, orphan };
         let _ = self.client.publish(reply, resp.encode_to_vec().into()).await;
     }
 }

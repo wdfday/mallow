@@ -154,9 +154,17 @@ async fn main() -> Result<()> {
         }
     }
 
+    // ── ResampleManager ───────────────────────────────────────────────────────
+    //
+    // Drives base→HTF aggregation for hands that need TFs the WS feed doesn't
+    // publish directly. Subscribed BEFORE the registry so HTF advances appear
+    // in the observer fan-out by the time hands react to them.
+    let resample_mgr = alm_herald::resample::ResampleManager::new(Arc::downgrade(&ledger));
+    ledger.subscribe(resample_mgr.clone() as Arc<dyn LedgerObserver>);
+
     let (sig_tx, sig_rx) = mpsc::unbounded_channel();
     let registry = Arc::new(Registry::with_default_scripts(
-        ledger.clone(), tf, sig_tx,
+        ledger.clone(), resample_mgr.clone(), tf, sig_tx,
         default_live_scripts(),
     ));
     ledger.subscribe(registry.clone() as Arc<dyn LedgerObserver>);

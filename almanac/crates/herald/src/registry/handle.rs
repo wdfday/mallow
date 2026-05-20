@@ -5,6 +5,7 @@ use anyhow::{anyhow, Result};
 use alm_core::{signal::Signal, strategy::Strategy, Bar, Timeframe};
 use alm_core::{MtfSnapshot, MtfStrategy, TfBarEvent, TfView};
 use alm_ledger::{IndicatorHandle, IndicatorSpec, Ledger};
+use alm_data::aggregator::StandaloneAggregator;
 use alm_strategy::factory::{build_strategy_with_deps, IndicatorDep};
 use alm_strategy::{probe_script_htfs, MtfScriptStrategy};
 use tracing::{debug, trace, warn};
@@ -47,9 +48,21 @@ pub struct Handle {
     /// for the lifetime of the hand. On drop the handles decrement the refcount;
     /// unused cells are evicted after `LedgerConfig::drop_grace_bars`.
     pub(super) _indicator_handles: Vec<IndicatorHandle>,
+    /// Resample subscriptions this hand acquired at register time. Released
+    /// when the hand is removed from the registry. Each tuple is
+    /// `(source_tf, target_tf)` matching what `Registry::register` called
+    /// `resample.ensure` with.
+    pub(super) resample_subs: Vec<(Timeframe, Timeframe)>,
 }
 
 impl Handle {
+    /// Build a hand.
+    ///
+    /// - `base_tf` is the ledger's external feed TF (typically M1). Used by V2
+    ///   warmup to align HTF replay with base-TF history.
+    /// - `target_tf` is the TF the hand evaluates at. For V1 this is the only
+    ///   TF the strategy sees. For V2 it's the strategy's base TF — declared
+    ///   HTFs in the script must be larger than `target_tf`.
     pub fn new(
         hand_id: String,
         helm_id: String,
@@ -57,6 +70,7 @@ impl Handle {
         script: String,
         ledger: &Arc<Ledger>,
         base_tf: Timeframe,
+        target_tf: Timeframe,
     ) -> Result<Self> {
         // ── v2 detection: script declares HTF indicators ──────────────────────
         //
@@ -64,56 +78,121 @@ impl Handle {
         // MtfScriptStrategy when we know the script actually needs V2.
         let htfs = probe_script_htfs(&script);
         if !htfs.is_empty() {
-            let mut probe = MtfScriptStrategy::from_script_live(&script, base_tf)?;
+            // Sanity: every declared HTF must be strictly larger than target_tf.
+            if let Some(bad) = htfs.iter().find(|h| h.duration_ms() <= target_tf.duration_ms()) {
+                anyhow::bail!(
+                    "script declares TF `{bad}` not larger than hand target TF `{target_tf}`"
+                );
+            }
+            let mut probe = MtfScriptStrategy::from_script_live(&script, target_tf)?;
             for &htf in &htfs {
                 ledger.ensure_symbol(&symbol, htf, None);
             }
-            let last_htf_ts = warmup_v2(&mut probe, &symbol, base_tf, &htfs, ledger);
+            let last_htf_ts = warmup_v2(&mut probe, &symbol, target_tf, &htfs, ledger);
             debug!(
                 %hand_id, %symbol,
-                base_tf = %base_tf, htfs = ?htfs,
+                base_tf = %base_tf, target_tf = %target_tf, htfs = ?htfs,
                 "v2 MTF strategy warmed from ledger"
             );
+            // V2 subscriptions: target_tf (if > base) + every declared HTF (if > base).
+            let mut resample_subs: Vec<(Timeframe, Timeframe)> = Vec::new();
+            if target_tf != base_tf {
+                resample_subs.push((base_tf, target_tf));
+            }
+            for htf in &htfs {
+                if *htf != base_tf {
+                    resample_subs.push((base_tf, *htf));
+                }
+            }
             return Ok(Self {
                 hand_id,
                 helm_id,
                 symbol,
                 script,
-                target_tf: base_tf,
-                live: LiveStrategy::V2 { strategy: probe, declared_htfs: htfs, base_tf, last_htf_ts },
+                target_tf,
+                live: LiveStrategy::V2 {
+                    strategy: probe,
+                    declared_htfs: htfs,
+                    base_tf: target_tf,
+                    last_htf_ts,
+                },
                 ledger: Arc::clone(ledger),
                 _indicator_handles: vec![],
+                resample_subs,
             });
         }
 
-        // ── v1 path: pure single-TF ───────────────────────────────────────────
+        // ── v1 path: pure single-TF, hand evaluates at target_tf ─────────────
         let mut value = serde_json::json!({ "script": script, "_live": true });
         let (mut strategy, deps) = build_strategy_with_deps("script", &mut value)
             .map_err(|e| anyhow!("{e}"))?;
-        let handles = acquire_dep_handles(ledger, &symbol, base_tf, &deps, &hand_id);
+        let handles = acquire_dep_handles(ledger, &symbol, target_tf, &deps, &hand_id);
 
-        let base_bars: Vec<Bar> = ledger
-            .with_state(&symbol, base_tf, |s| s.bar_window.iter().cloned().collect())
-            .unwrap_or_default();
-        for bar in &base_bars {
+        // Warm the strategy from ledger history at `target_tf`. Two cases:
+        //
+        // 1. `target_tf == base_tf` — feed the existing window directly.
+        // 2. `target_tf > base_tf` and the ledger already has HTF bars (e.g.
+        //    from a parallel V2 hand or an external HTF feed) — use them.
+        // 3. `target_tf > base_tf` and the HTF window is empty (most common
+        //    on first registration after restart) — aggregate the BASE-TF
+        //    history into one-shot HTF bars via `StandaloneAggregator` so
+        //    the strategy lands ready instead of waiting up to one full
+        //    bucket period before the first signal.
+        let warm_bars: Vec<Bar> = if target_tf == base_tf {
+            ledger
+                .with_state(&symbol, target_tf, |s| s.bar_window.iter().cloned().collect())
+                .unwrap_or_default()
+        } else {
+            let htf_window: Vec<Bar> = ledger
+                .with_state(&symbol, target_tf, |s| s.bar_window.iter().cloned().collect())
+                .unwrap_or_default();
+            if !htf_window.is_empty() {
+                htf_window
+            } else {
+                // One-shot aggregate base history → HTF bars in memory. We
+                // don't push these into the ledger to avoid racing with the
+                // ResampleManager subscription that will be wired right after.
+                let base_window: Vec<Bar> = ledger
+                    .with_state(&symbol, base_tf, |s| s.bar_window.iter().cloned().collect())
+                    .unwrap_or_default();
+                let mut agg = StandaloneAggregator::new(target_tf);
+                let mut out = Vec::new();
+                for b in &base_window {
+                    if let Some(htf) = agg.update(b) {
+                        out.push(htf);
+                    }
+                }
+                out
+            }
+        };
+        for bar in &warm_bars {
             let _ = strategy.on_bar(bar);
         }
 
         debug!(
             %hand_id, %symbol,
-            base_tf = %base_tf,
+            base_tf = %base_tf, target_tf = %target_tf,
+            warmed_bars = warm_bars.len(),
             "v1 strategy warmed up from ledger history"
         );
 
+        // V1 only needs a subscription if target_tf > base_tf (script-declared
+        // HTFs were rejected by V1 build, so no HTF leak here).
+        let resample_subs: Vec<(Timeframe, Timeframe)> = if target_tf != base_tf {
+            vec![(base_tf, target_tf)]
+        } else {
+            Vec::new()
+        };
         Ok(Self {
             hand_id,
             helm_id,
             symbol,
             script,
-            target_tf: base_tf,
+            target_tf,
             live: LiveStrategy::V1 { strategy },
             ledger: Arc::clone(ledger),
             _indicator_handles: handles,
+            resample_subs,
         })
     }
 
@@ -278,14 +357,41 @@ impl SymbolGroup {
         Self { symbol, hands: Vec::new() }
     }
 
-    pub fn add(&mut self, hand: Handle) {
-        // Replace existing hand with same id (re-register = reconfigure).
-        self.hands.retain(|h| h.hand_id != hand.hand_id);
+    /// Insert / replace a hand. Returns the resample subscriptions of any
+    /// previously-existing hand with the same id so the caller can release
+    /// them (re-register may have changed the subscription set).
+    pub fn add(&mut self, hand: Handle) -> Vec<(Timeframe, Timeframe)> {
+        let mut dropped = Vec::new();
+        self.hands.retain(|h| {
+            if h.hand_id == hand.hand_id {
+                dropped.extend(h.resample_subs.iter().copied());
+                false
+            } else { true }
+        });
         self.hands.push(hand);
+        dropped
     }
 
-    pub fn remove(&mut self, hand_id: &str) {
-        self.hands.retain(|h| h.hand_id != hand_id);
+    /// Remove a hand and return its resample subscriptions so the caller can
+    /// release them.
+    pub fn remove(&mut self, hand_id: &str) -> Vec<(Timeframe, Timeframe)> {
+        let mut dropped = Vec::new();
+        self.hands.retain(|h| {
+            if h.hand_id == hand_id {
+                dropped.extend(h.resample_subs.iter().copied());
+                false
+            } else { true }
+        });
+        dropped
+    }
+
+    /// Drain every hand and return all their subscriptions for batch release.
+    pub fn drain_subs(&mut self) -> Vec<(Timeframe, Timeframe)> {
+        let mut subs = Vec::new();
+        for h in self.hands.drain(..) {
+            subs.extend(h.resample_subs);
+        }
+        subs
     }
 
     pub fn is_empty(&self) -> bool {
@@ -296,10 +402,13 @@ impl SymbolGroup {
         self.hands.len()
     }
 
-    /// Run every hand on `bar`. Returns one entry per hand that emitted a signal.
-    pub fn evaluate(&mut self, bar: &Bar) -> Vec<(String, String, Signal)> {
+    /// Run every hand whose `target_tf` matches `tf`. Other hands are skipped
+    /// — they'll evaluate on their own TF's advance event. Returns one entry
+    /// per emitting hand.
+    pub fn evaluate_at(&mut self, tf: Timeframe, bar: &Bar) -> Vec<(String, String, Signal)> {
         self.hands
             .iter_mut()
+            .filter(|h| h.target_tf == tf)
             .filter_map(|h| {
                 h.on_bar(bar).into_iter().next()
                     .map(|sig| (h.hand_id.clone(), h.helm_id.clone(), sig))

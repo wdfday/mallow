@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/module/hand/service"
@@ -89,14 +90,29 @@ func newSvc() *service.Service {
 
 func validConfig(helmID uuid.UUID) domain.HandConfig {
 	return domain.HandConfig{
-		Name:     "test-hand",
-		HelmID:   helmID,
-		Symbols:  []string{"AAPL"},
-		Strategy: domain.StrategySpec{Script: "let rsi = ind.RSI(14); if rsi[0] < 30 { \"long\" } else { \"\" }"},
+		Name:             "test-hand",
+		HelmID:           helmID,
+		Symbols:          []string{"AAPL"},
+		Strategy:         domain.StrategySpec{Script: "let rsi = ind.RSI(14); if rsi[0] < 30 { \"long\" } else { \"\" }"},
+		AllocatedCapital: decimal.NewFromFloat(1000),
 	}
 }
 
 // ── Create — input validation ─────────────────────────────────────────────────
+
+func TestCreate_ZeroAllocatedCapital_ReturnsError(t *testing.T) {
+	svc := newSvc()
+	cfg := validConfig(uuid.New())
+	cfg.AllocatedCapital = decimal.Zero
+
+	_, err := svc.Create(cfg)
+	if err == nil {
+		t.Fatal("expected error for zero allocated capital")
+	}
+	if err.Error() != "allocated capital must be greater than zero" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
 
 func TestCreate_EmptyName_ReturnsError(t *testing.T) {
 	svc := newSvc()

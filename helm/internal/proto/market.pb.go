@@ -862,10 +862,15 @@ func (x *HeartbeatRequest) GetHands() []string {
 }
 
 type HeartbeatResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Ok            bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
-	Missing       []string               `protobuf:"bytes,2,rep,name=missing,proto3" json:"missing,omitempty"`       // not in registry → helm must re-register
-	Registered    []string               `protobuf:"bytes,3,rep,name=registered,proto3" json:"registered,omitempty"` // confirmed present
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Ok         bool                   `protobuf:"varint,1,opt,name=ok,proto3" json:"ok,omitempty"`
+	Missing    []string               `protobuf:"bytes,2,rep,name=missing,proto3" json:"missing,omitempty"`       // not in registry → helm must re-register
+	Registered []string               `protobuf:"bytes,3,rep,name=registered,proto3" json:"registered,omitempty"` // confirmed present
+	// Hands present in herald's registry under `req.helm_id` but NOT in
+	// `req.hands` → helm must deregister. Catches the inverse drift: stale
+	// registrations herald kept after helm forgot about them (e.g. helm
+	// restarted with new state and the original deregister was lost).
+	Orphan        []string `protobuf:"bytes,4,rep,name=orphan,proto3" json:"orphan,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -917,6 +922,13 @@ func (x *HeartbeatResponse) GetMissing() []string {
 func (x *HeartbeatResponse) GetRegistered() []string {
 	if x != nil {
 		return x.Registered
+	}
+	return nil
+}
+
+func (x *HeartbeatResponse) GetOrphan() []string {
+	if x != nil {
+		return x.Orphan
 	}
 	return nil
 }
@@ -1071,13 +1083,14 @@ const file_market_proto_rawDesc = "" +
 	"\therald_id\x18\x04 \x01(\tR\bheraldId\"A\n" +
 	"\x10HeartbeatRequest\x12\x17\n" +
 	"\ahelm_id\x18\x01 \x01(\tR\x06helmId\x12\x14\n" +
-	"\x05hands\x18\x02 \x03(\tR\x05hands\"]\n" +
+	"\x05hands\x18\x02 \x03(\tR\x05hands\"u\n" +
 	"\x11HeartbeatResponse\x12\x0e\n" +
 	"\x02ok\x18\x01 \x01(\bR\x02ok\x12\x18\n" +
 	"\amissing\x18\x02 \x03(\tR\amissing\x12\x1e\n" +
 	"\n" +
 	"registered\x18\x03 \x03(\tR\n" +
-	"registered\"c\n" +
+	"registered\x12\x16\n" +
+	"\x06orphan\x18\x04 \x03(\tR\x06orphan\"c\n" +
 	"\n" +
 	"ReadyEvent\x12\x1b\n" +
 	"\therald_id\x18\x01 \x01(\tR\bheraldId\x12\x0e\n" +

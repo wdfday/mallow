@@ -50,6 +50,16 @@ type AccountSyncer interface {
 	SyncAccount(ctx context.Context, creds Credentials, since *time.Time) (*AccountSnapshot, error)
 }
 
+// ── Balance event streaming ───────────────────────────────────────────────────
+
+// BalanceEvent is pushed by the exchange private WS whenever an asset's free
+// balance changes — on fills, deposits, withdrawals, or fee deductions.
+type BalanceEvent struct {
+	Asset string
+	Free  decimal.Decimal
+	At    time.Time
+}
+
 // ── Order event streaming ─────────────────────────────────────────────────────
 
 // OrderEventType classifies a private WS order lifecycle event.
@@ -81,8 +91,10 @@ type OrderEvent struct {
 
 // AccountStreamer is optionally implemented by exchanges that support private
 // WebSocket streaming for account order lifecycle events.
+// balanceHandler is optional (nil = ignore balance events); exchanges that do
+// not push balance updates on the same connection may ignore it entirely.
 type AccountStreamer interface {
-	StreamOrders(ctx context.Context, creds Credentials, handler func(OrderEvent)) error
+	StreamOrders(ctx context.Context, creds Credentials, orderHandler func(OrderEvent), balanceHandler func(BalanceEvent)) error
 }
 
 // ── Price fetch ───────────────────────────────────────────────────────────────

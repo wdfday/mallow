@@ -49,7 +49,10 @@ func (c *Client) SyncAccount(ctx context.Context, creds exchange.Credentials, _ 
 			balances = append(balances, exchange.AssetBalance{Asset: b.Currency, Free: available})
 		}
 		if stablecoins[b.Currency] {
-			cash = cash.Add(available)
+			// Only USDT counts as cash; other stablecoins are held but not included.
+			if b.Currency == "USDT" {
+				cash = cash.Add(available)
+			}
 		} else {
 			nonCash = append(nonCash, holding{ccy: b.Currency, qty: qty})
 		}

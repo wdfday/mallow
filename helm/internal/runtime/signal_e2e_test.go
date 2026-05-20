@@ -40,8 +40,7 @@ import (
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// fillNotify watches the hand's activity ring and sends the first
-// CodeOrderFilled entry to the returned channel.
+// fillNotify polls the hand activity ring and sends the first CodeOrderFilled entry.
 func fillNotify(hand *runtime.Hand, timeout time.Duration) <-chan runtime.ActivityEntry {
 	ch := make(chan runtime.ActivityEntry, 1)
 	deadline := time.Now().Add(timeout)
@@ -59,9 +58,7 @@ func fillNotify(hand *runtime.Hand, timeout time.Duration) <-chan runtime.Activi
 	return ch
 }
 
-// orderNotify watches the hand's activity ring and sends the first
-// CodeOrderPlaced or CodeOrderFailed entry to the returned channel.
-// The test selects on that channel with a timeout rather than polling inline.
+// orderNotify polls the hand activity ring and sends the first CodeOrderPlaced or CodeOrderFailed entry.
 func orderNotify(hand *runtime.Hand, timeout time.Duration) <-chan runtime.ActivityEntry {
 	ch := make(chan runtime.ActivityEntry, 1)
 	deadline := time.Now().Add(timeout)

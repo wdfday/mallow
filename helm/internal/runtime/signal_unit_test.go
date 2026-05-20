@@ -152,7 +152,7 @@ func addSimHand(rt *runtime.HelmRuntime, symbol string, qty float64, signalTTL t
 		uuid.New(), rt.HelmID, rt,
 		strat, tact,
 		false, maxUnits, signalTTL,
-		nil, 0, "",
+		nil, domain.OrderTypeMarket, 0, domain.LimitFallbackCancel,
 		domain.HandRiskConfig{}, decimal.Zero,
 	)
 	h.Symbol = symbol
@@ -507,5 +507,52 @@ func TestSignal_ExitLevelsPopulated_AfterFill(t *testing.T) {
 	// implement ExitOrderPlacer.
 	if sim.placedCount() != 1 {
 		t.Errorf("expected 1 order (entry only, no bracket), got %d", sim.placedCount())
+	}
+}
+
+type stubZeroQtyPlanner struct {
+	tactics.Planner
+}
+
+func (s *stubZeroQtyPlanner) Plan(intent strategy.Intent, ctx tactics.MarketContext) tactics.ExecutionPlan {
+	return tactics.ExecutionPlan{
+		Action: intent.Action,
+		Symbol: intent.Signal.Symbol,
+		Side:   "buy",
+		Qty:    decimal.Zero,
+	}
+}
+
+func (s *stubZeroQtyPlanner) UpdateEquity(equity decimal.Decimal) {}
+
+func TestSignal_InsufficientCapital_AutoPause(t *testing.T) {
+	const symbol = "BTCUSDT"
+	sim := newSim(50_000)
+	rt := buildSimRuntime(sim, 100_000, 10)
+	defer rt.Stop()
+
+	strat := strategy.NewSignalFollower(0.3)
+	tact := &stubZeroQtyPlanner{}
+	h := runtime.NewHand(
+		uuid.New(), rt.HelmID, rt,
+		strat, tact,
+		false, 1, 0,
+		nil, domain.OrderTypeMarket, 0, domain.LimitFallbackCancel,
+		domain.HandRiskConfig{}, decimal.Zero,
+	)
+	h.Symbol = symbol
+	h.StrategyName = "signal_follower"
+	rt.AddHand(h)
+
+	rt.UpdatePrice(symbol, decimal.NewFromFloat(50_000))
+	h.Start()
+	defer h.Stop()
+
+	h.DeliverSignal(longSignalFor(symbol))
+
+	mustWaitCode(t, h, runtime.CodeSignalRejected, simWait)
+
+	if !h.IsPaused() {
+		t.Fatal("expected hand to be paused after failing to size entry trade due to insufficient capital")
 	}
 }

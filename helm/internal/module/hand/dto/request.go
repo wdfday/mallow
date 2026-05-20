@@ -17,8 +17,8 @@ type CreateHandReq struct {
 	Symbols   []string          `json:"symbols" binding:"required,min=1"`
 	Strategy  StrategyDTO       `json:"strategy" binding:"required"`
 	// AllocatedCapital is the hand's fixed capital budget (quote currency, e.g. USDT).
-	// Zero means the hand draws from full helm equity without isolation.
-	AllocatedCapital float64 `json:"allocated_capital,omitempty" binding:"omitempty,gte=0"`
+	// Must be greater than zero.
+	AllocatedCapital float64 `json:"allocated_capital" binding:"required,gt=0"`
 	// SignalTTLSec: max age of a signal before discard. 0 = default (10s), -1 = disable.
 	SignalTTLSec int `json:"signal_ttl_sec,omitempty" binding:"omitempty,min=-1,max=3600"`
 	// OrderType: default entry order type. "market" (default) or "limit".
@@ -59,7 +59,7 @@ func (r CreateHandReq) ToDomain() domain.HandConfig {
 // Symbols, Strategy, Type, and Market are immutable after creation.
 type UpdateHandReq struct {
 	Name             string             `json:"name" binding:"omitempty,min=1,max=128"`
-	AllocatedCapital float64            `json:"allocated_capital,omitempty" binding:"omitempty,gte=0"`
+	AllocatedCapital float64            `json:"allocated_capital,omitempty" binding:"omitempty,gt=0"`
 	SignalTTLSec     int                `json:"signal_ttl_sec,omitempty" binding:"omitempty,min=-1,max=3600"`
 	Position         *PositionDTO       `json:"position"`
 	Risk             *HandRiskConfigDTO `json:"risk"`
@@ -84,4 +84,9 @@ func (r UpdateHandReq) ToDomain() domain.HandConfig {
 type ConfigureStrategyReq struct {
 	Strategy string             `json:"strategy" binding:"required"`
 	Params   map[string]float64 `json:"params"`
+}
+
+// AllocateCapitalReq is the payload to increase or decrease a hand's capital budget.
+type AllocateCapitalReq struct {
+	Amount float64 `json:"amount" binding:"required"`
 }

@@ -69,14 +69,24 @@ const (
 	CodeOrderLimitTimeout  = 10104 // limit order cancelled by helm after timeout with no fill
 	CodeOrderLimitReprice  = 10105 // reserved: cancel + re-price (not yet implemented; see EXECUTION_TACTICS.md)
 	CodeOrderLimitFallback = 10106 // limit order cancelled and re-placed as market after timeout
+	CodeOrderCancelled     = 10107 // order cancelled / rejected / expired (detected via poll)
 
 	// Hand lifecycle codes.
-	CodeHandAutoPaused = 10200 // hand auto-paused due to persistent sizing failure (no open position)
+	CodeHandAutoPaused = 10200 // hand auto-paused due to persistent sizing failure or edge risk
+	CodeHandStarted    = 10201 // hand run-loop started
+	CodeHandStopped    = 10202 // hand run-loop stopped (clean shutdown)
+	CodeHandPaused     = 10203 // hand manually paused via API
+	CodeHandResumed    = 10204 // hand manually resumed via API
+	CodeHandKilled     = 10205 // hand killed — all positions flattened at market
+	CodeHandReleased   = 10206 // hand released — open positions orphaned (left live at exchange)
+	CodeHandStale      = 10207 // signal feed silent > stale threshold
 
-	// Helm lifecycle codes.
-	CodeHelmPaused  = 10300 // helm paused — all hands will ignore signals
-	CodeHelmResumed = 10301 // helm resumed
-	CodeHelmSynced  = 10302 // portfolio synced from exchange
+	// Helm lifecycle codes (used in HelmRuntime activity ring).
+	CodeHelmPaused   = 10300 // helm paused — all hands will ignore signals
+	CodeHelmResumed  = 10301 // helm resumed
+	CodeHelmSynced   = 10302 // portfolio synced from exchange
+	CodeHelmHalted   = 10303 // helm halted by risk manager
+	CodeHelmUnhalted = 10304 // helm halt reset (manual)
 )
 
 // ActivityEntry records a single hand event in the activity ring buffer.
@@ -93,38 +103,44 @@ type ActivityEntry struct {
 	Price     decimal.Decimal `json:"price,omitempty"`
 }
 
-const activityRingSize = 200
+// activityRingSize is the number of entries retained in the in-memory activity ring.
+// Small on purpose — the durable event log lives in HELM_EVENTS JetStream;
+// the ring is only for test observability and the recent-events UI chip.
+const activityRingSize = 20
 
-// ActivityRing is a fixed-capacity circular buffer of ActivityEntry values.
-// Safe for concurrent use. Oldest entries are overwritten when full.
+// ActivityRing is a fixed-size circular buffer for recent hand activity entries.
+// Thread-safe via an embedded mutex. Oldest entries are silently overwritten.
 type ActivityRing struct {
-	mu      sync.Mutex
-	entries [activityRingSize]ActivityEntry
-	head    int
-	count   int
+	mu   sync.Mutex
+	buf  [activityRingSize]ActivityEntry
+	head int // next write slot
+	size int // entries written so far (capped at activityRingSize)
 }
 
+// push appends an entry, overwriting the oldest when full.
 func (r *ActivityRing) push(e ActivityEntry) {
 	r.mu.Lock()
-	r.entries[r.head] = e
+	r.buf[r.head] = e
 	r.head = (r.head + 1) % activityRingSize
-	if r.count < activityRingSize {
-		r.count++
+	if r.size < activityRingSize {
+		r.size++
 	}
 	r.mu.Unlock()
 }
 
-// Snapshot returns a copy of all buffered entries in chronological order (oldest first).
+// Snapshot returns all entries in chronological order (oldest first).
 func (r *ActivityRing) Snapshot() []ActivityEntry {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.count == 0 {
+	if r.size == 0 {
 		return nil
 	}
-	out := make([]ActivityEntry, r.count)
-	start := (r.head - r.count + activityRingSize) % activityRingSize
-	for i := 0; i < r.count; i++ {
-		out[i] = r.entries[(start+i)%activityRingSize]
+	out := make([]ActivityEntry, r.size)
+	if r.size < activityRingSize {
+		copy(out, r.buf[:r.size])
+	} else {
+		n := copy(out, r.buf[r.head:])
+		copy(out[n:], r.buf[:r.head])
 	}
 	return out
 }

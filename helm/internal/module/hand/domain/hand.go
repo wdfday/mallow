@@ -45,10 +45,9 @@ type Hand struct {
 	UpdatedAt time.Time
 }
 
-// ApplyConfig copies all fields from a HandConfig onto the hand.
-// Call after setting ID, HelmID, Status, CreatedAt.
+// ApplyConfig copies mutable config fields from a HandConfig onto the hand.
+// Identity fields (ID, HelmID, Status, CreatedAt) must be set by the caller.
 func (b *Hand) ApplyConfig(cfg HandConfig) {
-	b.HelmID = cfg.HelmID
 	b.Name = cfg.Name
 	b.Type = cfg.Type
 	b.Market = cfg.Market

@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"encoding/json"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -42,96 +41,74 @@ type exitLevel struct {
 
 // Hand is an autonomous trading agent.
 // Each Hand owns its own strategy, tactician, signal channel, and run-loop goroutine.
-// Account-level resources (Exchange, Portfolio, OrderBook) are shared via HelmRuntime.
+// Account-level resources (Exchange, Portfolio, RiskManager) are shared via HelmRuntime.
 type Hand struct {
-	id        uuid.UUID
-	helmID    uuid.UUID
-	rt        *HelmRuntime
+	// ── Identity ─────────────────────────────────────────────────────────────
+	id          uuid.UUID
+	helmID      uuid.UUID
+	helmRuntime *HelmRuntime
+
+	// ── Strategy & tactics ───────────────────────────────────────────────────
 	strategy  strategy.Strategy
 	tactician tactics.Planner
 	limiter   *rate.Limiter
 
-	// Position sizing config — used by the reconciler to replay poslog correctly.
-	pyramid  bool
-	maxUnits int
-
-	// signalTTL is the per-hand maximum age of a signal (measured from NATS
-	// ingestion time) before it is discarded. 0 disables the check.
-	signalTTL time.Duration
-
-	// orderType is the default entry order type (market or limit).
-	orderType domain.OrderType
-
-	// limitTimeoutSec / limitFallback control what happens when a limit order
-	// hasn't filled after the specified number of seconds. 0 = no timeout.
-	limitTimeoutSec int
+	// ── Execution config (immutable after Start) ──────────────────────────────
+	pyramid         bool          // true = merge additional entries into existing leg
+	maxUnits        int           // max concurrent legs; used by reconciler on replay
+	signalTTL       time.Duration // 0 = TTL check disabled
+	orderType       domain.OrderType
+	limitTimeoutSec int // 0 = no timeout
 	limitFallback   domain.LimitFallback
+	futuresConfig   *domain.FuturesConfig // nil for spot
 
-	// futuresConfig holds leverage/margin type for futures hands. nil for spot.
-	futuresConfig *domain.FuturesConfig
-
-	// leverageApplied tracks which symbols have had SetLeverage called to avoid
-	// redundant calls on every entry order.
 	leverageAppliedMu sync.Mutex
-	leverageApplied   map[string]bool
+	leverageApplied   map[string]bool // symbols where SetLeverage has been called
 
-	// Signals receives regular (non-urgent) entry/exit signals.
-	// Buffer=1 with drain-replace: always holds the latest signal, never stale ones.
-	Signals chan Signal
+	// ── Inbound channels ─────────────────────────────────────────────────────
+	Signals       chan Signal              // buf=1, drain-replace; always latest non-urgent signal
+	UrgentSignals chan Signal              // buf=4; exit signals, never silently dropped
+	fillCh        chan exchange.OrderEvent // buf=8; WS fills routed from runOrderProcessor
 
-	// UrgentSignals receives close/exit signals that must not be dropped.
-	// Buffer=4 to absorb bursts without blocking the dispatcher.
-	// Drained with priority in the run-loop before Signals.
-	UrgentSignals chan Signal
+	seenFills map[string]struct{} // dedup: WS-applied fills vs REST poll fallback
 
-	// fillCh receives fully-filled OrderEvents from the WS order processor so that
-	// hand-level state (exit levels, poslog, metrics) is updated immediately without
-	// waiting for the 5s REST poll cycle.
-	// Buffer=8: registry never blocks; hand processes at run-loop pace.
-	fillCh chan exchange.OrderEvent
-
-	// seenFills tracks order IDs already processed via the WS fill path so that
-	// the REST poll fallback does not double-apply portfolio and poslog updates.
-	seenFills map[string]struct{}
-
-	// Edge-degradation guard — sliding window over closed trades.
-	// All fields are written exclusively from the run-loop goroutine; no extra lock needed.
+	// ── Edge-risk guard ───────────────────────────────────────────────────────
+	// All fields written exclusively from the run-loop goroutine — no extra lock.
 	edgeRisk     domain.HandRiskConfig
-	allocatedCap decimal.Decimal   // reference capital for pct thresholds; falls back to portfolio equity
-	tradeRing    []decimal.Decimal // circular buffer of per-trade PnL, len = edgeRisk.WindowTrades
-	ringHead     int               // next write slot
-	ringFull     bool              // true once the ring has been filled at least once
+	allocatedCap decimal.Decimal   // initial budget; zero = fall back to full portfolio equity
+	tradeRing    []decimal.Decimal // circular PnL buffer, len = edgeRisk.WindowTrades
+	ringHead     int               // next write slot in tradeRing
+	ringFull     bool              // true after tradeRing has wrapped at least once
 	consecLoss   int               // current consecutive-loss streak
 
-	// Metadata — set by the service layer, used for runtime bookkeeping and display.
+	// ── Display metadata (set by service layer, read-only after Start) ────────
 	Symbol       string
 	StrategyName string
 	CapitalPct   float64
+	WasRunning   bool // pre-pause state; read by Resume to decide whether to restart
 
-	// WasRunning remembers pre-pause state so OrchestratorRuntime.Resume can restore the bot.
-	WasRunning bool
+	// ── Goroutine lifecycle ───────────────────────────────────────────────────
+	mu      sync.RWMutex
+	running bool
+	paused  bool
+	ctx     context.Context // cancelled by Stop()
+	cancel  context.CancelFunc
+	done    chan struct{} // closed when run-loop goroutine exits
 
-	mu           sync.RWMutex
-	running      bool
-	paused       bool
-	ctx          context.Context // cancelled when Stop() is called; used by goroutines spawned during run
-	cancel       context.CancelFunc
-	done         chan struct{}
-	orders       []domain.Order
-	pendingExits map[string]exitPending // orderID → raw SL/TP from signal; resolved to exitLevel on entry fill
-	exitLevels   map[string]exitLevel   // symbol → resolved SL/TP for open position (local safety net)
+	// ── Live order & position state (all under mu) ────────────────────────────
+	orders          []domain.Order
+	pendingExits    map[string]exitPending  // orderID → raw SL/TP from signal; resolved on entry fill
+	exitLevels      map[string]exitLevel    // symbol → active local SL/TP safety net
+	pos             *position.HandPositions // in-memory mirror of poslog
+	pendingOrderPos map[string]string       // orderID → positionID for fill/cancel attribution
 
-	// Position event log — durable write-ahead log for crash resilience.
-	pos             *position.HandPositions // live in-memory position state (mirrors poslog)
-	pendingOrderPos map[string]string       // orderID → positionID (for fill/cancel attribution)
-
+	// ── Observability ────────────────────────────────────────────────────────
+	health      HandHealth
 	activityLog ActivityRing
-
-	health  HandHealth
-	metrics struct {
+	metrics     struct {
 		signalsReceived atomic.Int64
 		signalsFiltered atomic.Int64
-		signalsDropped  atomic.Int64 // channel-full drops (non-urgent only)
+		signalsDropped  atomic.Int64 // non-urgent channel-full drops
 		tradesApproved  atomic.Int64
 		ordersPlaced    atomic.Int64
 		ordersFilled    atomic.Int64
@@ -152,28 +129,24 @@ func (h *Hand) ID() uuid.UUID { return h.id }
 // Capped at zero — a hand that has blown through its allocation stops trading
 // via the zero-quantity guard in ProcessTrade, not by going negative.
 func (h *Hand) realizedEquity() decimal.Decimal {
-	if !h.allocatedCap.IsPositive() {
+	h.mu.RLock()
+	allocatedCap := h.allocatedCap
+	h.mu.RUnlock()
+
+	if !allocatedCap.IsPositive() {
 		return decimal.Zero
 	}
 	h.metrics.mu.Lock()
 	pnl := h.metrics.totalPnL
 	h.metrics.mu.Unlock()
-	realized := h.allocatedCap.Add(pnl)
+	realized := allocatedCap.Add(pnl)
 	if realized.IsPositive() {
 		return realized
 	}
 	return decimal.Zero
 }
 
-func timePtr(t time.Time) *time.Time { return &t }
-
-func unmarshalJSON(b []byte, v any) error {
-	return json.Unmarshal(b, v)
-}
-
-func (h *Hand) recordActivity(e ActivityEntry) { h.activityLog.push(e) }
-
 // trackOrder records a placed order in the helm-level orderID→handID map.
 func (h *Hand) trackOrder(orderID string) {
-	h.rt.TrackOrder(orderID, h.id.String())
+	h.helmRuntime.TrackOrder(orderID, h.id.String())
 }

@@ -32,55 +32,54 @@ type RiskManager interface {
 // Holds account-level shared resources: Exchange, Portfolio, RiskManager.
 // Per-hand resources (strategy, tactician) live on the Hand itself.
 type HelmRuntime struct {
+	// ── Identity ─────────────────────────────────────────────────────────────
 	HelmID     uuid.UUID
 	AccountID  uuid.UUID
 	UserID     uuid.UUID
 	BrokerType string
 
+	// ── Core resources (account-level, shared across all hands) ──────────────
 	Portfolio *portfolio.Portfolio
 	RiskMgr   RiskManager
 	Exchange  exchange.Exchange
-	Creds     exchange.Credentials // per-account credentials passed to all Exchange calls
+	Creds     exchange.Credentials
 
-	// orderCh decouples the broker WS goroutine from NATS publishing.
-	orderCh chan exchange.OrderEvent
-
-	// orderHandMap maps orderID → handID for WS fill routing.
-	// Populated by TrackOrder when a hand places an order; cleared on fill or cancel.
-	orderHandMap   map[string]string
-	orderHandMapMu sync.RWMutex
-
+	// ── Hands ────────────────────────────────────────────────────────────────
 	mu     sync.RWMutex
 	hands  map[string]*Hand
 	paused bool
 
-	// lastSyncAtNano stores the last successful sync time as UnixNano (0 = never).
-	lastSyncAtNano atomic.Int64
+	// ── Fill routing ─────────────────────────────────────────────────────────
+	// orderCh decouples the broker WS callback from NATS publishing.
+	// runOrderProcessor drains it; EnqueueOrderEvent is non-blocking (drops on full).
+	orderCh        chan exchange.OrderEvent
+	orderHandMap   map[string]string // orderID → handID; cleared on fill or cancel
+	orderHandMapMu sync.RWMutex
 
-	pricesMu sync.RWMutex
-	prices   map[string]decimal.Decimal // last known price per symbol
-	l2Mu     sync.RWMutex
-	l2       map[string]exchange.L2Snapshot // latest L2 snapshot per symbol (shared across all hands)
+	// ── Market data cache ────────────────────────────────────────────────────
+	lastSyncAtNano atomic.Int64 // UnixNano of last successful REST sync; 0 = never
+	pricesMu       sync.RWMutex
+	prices         map[string]decimal.Decimal
 
-	tradeMu      sync.Mutex
-	requestCount atomic.Int64
+	// getL2 delegates L2 lookups to the registry's shared broker-level cache.
+	// Injected at Spawn(); nil = no L2 streamer connected (ok=false on all lookups).
+	getL2 func(symbol string) (exchange.L2Snapshot, bool)
+
+	// ── Trade gate (per-minute circuit breaker) ───────────────────────────────
+	tradeMu      sync.Mutex   // serialises ProcessTrade + ReportFill across all hands
+	requestCount atomic.Int64 // resets every minute via resetTicker goroutine
 	resetTicker  *time.Ticker
-	stopCh       chan struct{} // closes on Stop() to terminate the circuit-breaker goroutine
+	stopCh       chan struct{} // closed by Stop() to exit the resetTicker goroutine
 
-	// PosLog is the durable position event log. nil = NATS unavailable (dev/test).
-	PosLog poslog.Log
+	// ── Durability ───────────────────────────────────────────────────────────
+	// nil fields degrade gracefully: poslog events are lost, events go to slog only.
+	PosLog      poslog.Log            // JetStream WAL for position events
+	SnapshotLog perf.SnapshotLog      // cash+equity+positions snapshot after every fill (HELM_SNAPSHOTS)
+	nc          *nats.Conn            // NATS connection; used for portfolio.synced.* (nc.Publish path)
+	js          nats.JetStreamContext // JetStream context; publishes helm.events.* (durable, 7d)
 
-	// PortfolioLog records raw portfolio state (cash + positions) after every fill.
-	// nil = NATS unavailable (dev/test). FE uses these snapshots to compute equity
-	// at any timeframe without needing pre-multiplied values.
-	PortfolioLog perf.PortfolioLog
-
-	// nc is used for real-time activity event publishing (helm.events.{helmID}).
-	// nil = NATS unavailable (dev/test) — EmitEvent degrades to slog-only.
-	nc *nats.Conn
-
-	// processedTrades tracks TradeIDs applied in the current session to prevent
-	// double-applying gap recovery fills if RecoverGapFills runs more than once.
+	// ── Gap-recovery dedup ───────────────────────────────────────────────────
+	// Prevents double-applying the same fill if RecoverGapFills runs more than once.
 	processedTradesMu sync.Mutex
 	processedTrades   map[string]struct{}
 }
@@ -108,7 +107,6 @@ func NewHelmRuntime(
 		orderHandMap:    make(map[string]string),
 		hands:           make(map[string]*Hand),
 		prices:          make(map[string]decimal.Decimal),
-		l2:              make(map[string]exchange.L2Snapshot),
 		processedTrades: make(map[string]struct{}),
 		resetTicker:     time.NewTicker(1 * time.Minute),
 		stopCh:          make(chan struct{}),
@@ -130,10 +128,13 @@ func NewHelmRuntime(
 	return rt
 }
 
-// SetEventConn injects the NATS connection used for real-time event publishing.
-// Called after construction from registry_lifecycle.go, same pattern as PosLog.
+// SetEventConn injects the NATS connection and JetStream context.
+// nc is used for portfolio.synced.* publishes; js is used for helm.events.* (durable).
 // nil = slog-only mode (dev/test).
-func (r *HelmRuntime) SetEventConn(nc *nats.Conn) { r.nc = nc }
+func (r *HelmRuntime) SetEventConn(nc *nats.Conn, js nats.JetStreamContext) {
+	r.nc = nc
+	r.js = js
+}
 
 // EmitEvent logs a behavioral event via slog.Info and, when NATS is available,
 // publishes it to helm.events.{helmID} so clients receive a real-time activity stream.
@@ -163,7 +164,7 @@ func (r *HelmRuntime) EmitEvent(ev natsapi.HelmEvent) {
 
 	slog.Info(ev.Msg, args...)
 
-	if r.nc != nil {
-		natsapi.PublishHelmEvent(r.nc, r.HelmID.String(), ev)
+	if r.js != nil {
+		natsapi.PublishHelmEvent(r.js, r.HelmID.String(), ev)
 	}
 }

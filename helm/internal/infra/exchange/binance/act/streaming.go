@@ -56,11 +56,11 @@ func min(a, b int) int {
 var wsMu sync.Mutex
 
 // StreamOrders implements exchange.AccountStreamer.
-func (c *Client) StreamOrders(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent)) error {
-	go c.streamSpotOrders(ctx, creds, handler)
+func (c *Client) StreamOrders(ctx context.Context, creds exchange.Credentials, orderHandler func(exchange.OrderEvent), balanceHandler func(exchange.BalanceEvent)) error {
+	go c.streamSpotOrders(ctx, creds, orderHandler, balanceHandler)
 	if !c.paper {
 		fut := c.newFut(creds)
-		go c.streamFuturesOrders(ctx, fut, handler)
+		go c.streamFuturesOrders(ctx, fut, orderHandler)
 	} else {
 		slog.Info("binance: futures order streaming skipped on paper account")
 	}
@@ -70,12 +70,12 @@ func (c *Client) StreamOrders(ctx context.Context, creds exchange.Credentials, h
 
 // ── Spot ──────────────────────────────────────────────────────────────────────
 
-func (c *Client) streamSpotOrders(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent)) {
+func (c *Client) streamSpotOrders(ctx context.Context, creds exchange.Credentials, orderHandler func(exchange.OrderEvent), balanceHandler func(exchange.BalanceEvent)) {
 	for attempt := 0; ; attempt++ {
 		if ctx.Err() != nil {
 			return
 		}
-		err := c.streamSpotOrdersOnce(ctx, creds, handler)
+		err := c.streamSpotOrdersOnce(ctx, creds, orderHandler, balanceHandler)
 		if ctx.Err() != nil {
 			return
 		}
@@ -92,12 +92,12 @@ func (c *Client) streamSpotOrders(ctx context.Context, creds exchange.Credential
 
 // streamSpotOrdersOnce uses WsUserDataServeSignature (HMAC, no listen key).
 // WsUserDataServe (listen-key) is deprecated and returns 410 — always use signature auth.
-func (c *Client) streamSpotOrdersOnce(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent)) error {
+func (c *Client) streamSpotOrdersOnce(ctx context.Context, creds exchange.Credentials, orderHandler func(exchange.OrderEvent), balanceHandler func(exchange.BalanceEvent)) error {
 	wsMu.Lock()
 	gobinance.UseDemo = c.paper
 	doneC, stopC, err := gobinance.WsUserDataServeSignature(
 		creds.APIKey, creds.APISecret, "HMAC", 0,
-		spotOrderHandler(handler),
+		spotAccountHandler(orderHandler, balanceHandler),
 		func(err error) { slog.Warn("binance: spot ws error", "err", err) },
 	)
 	gobinance.UseDemo = false
@@ -114,9 +114,28 @@ func (c *Client) streamSpotOrdersOnce(ctx context.Context, creds exchange.Creden
 	}
 }
 
-func spotOrderHandler(handler func(exchange.OrderEvent)) gobinance.WsUserDataHandler {
+// spotAccountHandler dispatches both order lifecycle events and balance-change
+// events arriving on the same Binance USER_DATA WebSocket stream.
+func spotAccountHandler(orderHandler func(exchange.OrderEvent), balanceHandler func(exchange.BalanceEvent)) gobinance.WsUserDataHandler {
 	return func(event *gobinance.WsUserDataEvent) {
-		if event.Event != gobinance.UserDataEventTypeExecutionReport {
+		switch event.Event {
+		case gobinance.UserDataEventTypeOutboundAccountPosition:
+			if balanceHandler == nil {
+				return
+			}
+			at := time.Now().UTC()
+			for _, b := range event.AccountUpdate.WsAccountUpdates {
+				free := parseDecimal(b.Free)
+				balanceHandler(exchange.BalanceEvent{
+					Asset: b.Asset,
+					Free:  free,
+					At:    at,
+				})
+			}
+			return
+		case gobinance.UserDataEventTypeExecutionReport:
+			// handled below
+		default:
 			return
 		}
 		ou := event.OrderUpdate
@@ -129,7 +148,7 @@ func spotOrderHandler(handler func(exchange.OrderEvent)) gobinance.WsUserDataHan
 
 		switch ou.ExecutionType {
 		case "NEW":
-			handler(exchange.OrderEvent{
+			orderHandler(exchange.OrderEvent{
 				Type:      exchange.OrderEventLive,
 				OrderID:   orderID,
 				TradeID:   orderID + "_open",
@@ -157,7 +176,7 @@ func spotOrderHandler(handler func(exchange.OrderEvent)) gobinance.WsUserDataHan
 				"status", ou.Status,
 				"exchange_ts", ts,
 			)
-			handler(exchange.OrderEvent{
+			orderHandler(exchange.OrderEvent{
 				Type:      evType,
 				OrderID:   orderID,
 				TradeID:   strconv.FormatInt(ou.TradeId, 10),
@@ -169,7 +188,7 @@ func spotOrderHandler(handler func(exchange.OrderEvent)) gobinance.WsUserDataHan
 				Timestamp: ts,
 			})
 		case "CANCELED", "EXPIRED", "REJECTED":
-			handler(exchange.OrderEvent{
+			orderHandler(exchange.OrderEvent{
 				Type:      exchange.OrderEventCanceled,
 				OrderID:   orderID,
 				TradeID:   orderID + "_cancel",
@@ -184,12 +203,12 @@ func spotOrderHandler(handler func(exchange.OrderEvent)) gobinance.WsUserDataHan
 
 // ── Futures ───────────────────────────────────────────────────────────────────
 
-func (c *Client) streamFuturesOrders(ctx context.Context, fut *futures.Client, handler func(exchange.OrderEvent)) {
+func (c *Client) streamFuturesOrders(ctx context.Context, fut *futures.Client, orderHandler func(exchange.OrderEvent)) {
 	for {
 		if ctx.Err() != nil {
 			return
 		}
-		err := c.streamFuturesOrdersOnce(ctx, fut, handler)
+		err := c.streamFuturesOrdersOnce(ctx, fut, orderHandler)
 		if ctx.Err() != nil {
 			return
 		}
@@ -202,7 +221,7 @@ func (c *Client) streamFuturesOrders(ctx context.Context, fut *futures.Client, h
 	}
 }
 
-func (c *Client) streamFuturesOrdersOnce(ctx context.Context, fut *futures.Client, handler func(exchange.OrderEvent)) error {
+func (c *Client) streamFuturesOrdersOnce(ctx context.Context, fut *futures.Client, orderHandler func(exchange.OrderEvent)) error {
 	listenKey, err := fut.NewStartUserStreamService().Do(ctx)
 	if err != nil {
 		return fmt.Errorf("start futures user stream: %w", err)
@@ -222,7 +241,7 @@ func (c *Client) streamFuturesOrdersOnce(ctx context.Context, fut *futures.Clien
 
 		switch ou.ExecutionType {
 		case "NEW":
-			handler(exchange.OrderEvent{
+			orderHandler(exchange.OrderEvent{
 				Type:      exchange.OrderEventLive,
 				OrderID:   orderID,
 				TradeID:   orderID + "_open",
@@ -250,7 +269,7 @@ func (c *Client) streamFuturesOrdersOnce(ctx context.Context, fut *futures.Clien
 				"status", ou.Status,
 				"exchange_ts", ts,
 			)
-			handler(exchange.OrderEvent{
+			orderHandler(exchange.OrderEvent{
 				Type:      evType,
 				OrderID:   orderID,
 				TradeID:   strconv.FormatInt(ou.TradeID, 10),
@@ -262,7 +281,7 @@ func (c *Client) streamFuturesOrdersOnce(ctx context.Context, fut *futures.Clien
 				Timestamp: ts,
 			})
 		case "CANCELED", "EXPIRED", "CALCULATED":
-			handler(exchange.OrderEvent{
+			orderHandler(exchange.OrderEvent{
 				Type:      exchange.OrderEventCanceled,
 				OrderID:   orderID,
 				TradeID:   orderID + "_cancel",

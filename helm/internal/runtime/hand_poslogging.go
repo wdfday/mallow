@@ -19,8 +19,8 @@ import (
 // the reconciler will detect and patch the missing event on next startup.
 // Must NOT be called while b.mu is held.
 func (h *Hand) publishAndApply(ctx context.Context, e poslog.Event) {
-	if h.rt.PosLog != nil {
-		if err := h.rt.PosLog.Publish(ctx, e); err != nil {
+	if h.helmRuntime.PosLog != nil {
+		if err := h.helmRuntime.PosLog.Publish(ctx, e); err != nil {
 			slog.Error("poslog publish failed", "hand_id", h.id, "event_id", e.ID, "kind", e.Kind, "err", err)
 		}
 	}

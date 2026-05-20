@@ -10,6 +10,7 @@ import (
 	"mallow/helm/internal/infra/poslog"
 	handdomain "mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/runtime/core/strategy"
+	"mallow/helm/internal/runtime/position"
 )
 
 // cancelExitOrders cancels any exchange-side SL/TP orders for the given symbol.
@@ -26,7 +27,7 @@ func (h *Hand) cancelExitOrders(_ context.Context, symbol string) {
 		cancelCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		for _, id := range ids {
-			if err := h.rt.Exchange.CancelOrder(cancelCtx, h.rt.Creds, id); err != nil {
+			if err := h.helmRuntime.Exchange.CancelOrder(cancelCtx, h.helmRuntime.Creds, id); err != nil {
 				slog.Warn("bot: cancel exit order failed", "hand_id", h.id, "symbol", symbol, "order_id", id, "err", err)
 			} else {
 				slog.Info("bot: exit order cancelled", "hand_id", h.id, "symbol", symbol, "order_id", id)
@@ -39,6 +40,49 @@ func (h *Hand) cancelExitOrders(_ context.Context, symbol string) {
 // Only closes the qty tracked in this hand's poslog — does not touch other hands' positions.
 func (h *Hand) flattenPositions(ctx context.Context) {
 	for _, leg := range h.pos.ActiveLegs() {
+		if leg.Phase == position.PhaseEntering {
+			slog.Info("bot: kill flattening pending entry order", "hand_id", h.id, "symbol", leg.Symbol, "order_id", leg.PendingOrderID)
+			if err := h.helmRuntime.Exchange.CancelOrder(ctx, h.helmRuntime.Creds, leg.PendingOrderID); err != nil {
+				slog.Error("bot: kill cancel pending entry order failed", "hand_id", h.id, "symbol", leg.Symbol, "order_id", leg.PendingOrderID, "err", err)
+			}
+
+			payload, _ := json.Marshal(poslog.OrderCancelledPayload{
+				OrderID: leg.PendingOrderID,
+				Reason:  "kill",
+			})
+			h.publishAndApply(ctx, poslog.Event{
+				ID:         leg.PendingOrderID + "_cancelled",
+				HandID:     h.id.String(),
+				HelmID:     h.helmID.String(),
+				PositionID: leg.PositionID,
+				Kind:       poslog.KindOrderCancelled,
+				Payload:    payload,
+				At:         time.Now().UTC(),
+			})
+			continue
+		}
+
+		if leg.Phase == position.PhaseAdding {
+			slog.Info("bot: kill flattening pending add order", "hand_id", h.id, "symbol", leg.Symbol, "order_id", leg.PendingOrderID)
+			if err := h.helmRuntime.Exchange.CancelOrder(ctx, h.helmRuntime.Creds, leg.PendingOrderID); err != nil {
+				slog.Error("bot: kill cancel pending add order failed", "hand_id", h.id, "symbol", leg.Symbol, "order_id", leg.PendingOrderID, "err", err)
+			}
+
+			payload, _ := json.Marshal(poslog.OrderCancelledPayload{
+				OrderID: leg.PendingOrderID,
+				Reason:  "kill",
+			})
+			h.publishAndApply(ctx, poslog.Event{
+				ID:         leg.PendingOrderID + "_cancelled",
+				HandID:     h.id.String(),
+				HelmID:     h.helmID.String(),
+				PositionID: leg.PositionID,
+				Kind:       poslog.KindOrderCancelled,
+				Payload:    payload,
+				At:         time.Now().UTC(),
+			})
+		}
+
 		closeSide := exchange.Sell
 		closeSideStr := "sell"
 		if leg.Side == "sell" { // short position → buy to close
@@ -46,7 +90,7 @@ func (h *Hand) flattenPositions(ctx context.Context) {
 			closeSideStr = "buy"
 		}
 		qty := leg.Qty.Abs()
-		result, err := h.rt.Exchange.PlaceOrder(ctx, h.rt.Creds, exchange.OrderRequest{
+		result, err := h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, exchange.OrderRequest{
 			Symbol: leg.Symbol,
 			Side:   closeSide,
 			Type:   exchange.Market,
@@ -131,6 +175,7 @@ func (h *Hand) releasePositions(ctx context.Context) {
 			Payload:    payload,
 			At:         time.Now().UTC(),
 		})
+		h.helmRuntime.Portfolio.RemovePosition(leg.Symbol)
 	}
 	h.mu.Lock()
 	h.exitLevels = make(map[string]exitLevel)
@@ -149,7 +194,7 @@ func (h *Hand) checkExits() {
 	h.mu.RUnlock()
 
 	for sym, el := range exits {
-		price := h.rt.lastKnownPrice(sym)
+		price := h.helmRuntime.lastKnownPrice(sym)
 		if !price.IsPositive() {
 			continue
 		}

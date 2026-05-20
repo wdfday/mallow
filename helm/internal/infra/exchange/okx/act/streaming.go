@@ -23,7 +23,8 @@ const (
 )
 
 // StreamOrders implements exchange.AccountStreamer.
-func (c *Client) StreamOrders(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent)) error {
+// balanceHandler is ignored — OKX does not push balance updates on the orders channel.
+func (c *Client) StreamOrders(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent), _ func(exchange.BalanceEvent)) error {
 	go func() {
 		for {
 			if ctx.Err() != nil {

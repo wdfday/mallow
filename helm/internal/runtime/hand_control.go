@@ -8,6 +8,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
+	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/runtime/core/portfolio"
 )
@@ -29,9 +30,10 @@ func (h *Hand) Start() {
 	h.ctx = ctx
 	h.cancel = cancel
 	h.health.Status = HealthRunning
-	h.health.StartedAt = timePtr(time.Now().UTC())
+	h.health.StartedAt = new(time.Now().UTC())
 	go h.run(ctx)
-	slog.Info("hand started", "hand_id", h.id, "exchange", h.rt.Exchange.Name())
+	slog.Info("hand started", "hand_id", h.id, "exchange", h.helmRuntime.Exchange.Name())
+	h.helmRuntime.EmitEvent(natsapi.HelmEvent{HandID: h.id.String(), Code: CodeHandStarted, Msg: "hand: started"})
 }
 
 // Stop cancels the run-loop and waits for it to exit.
@@ -42,7 +44,9 @@ func (h *Hand) Stop() {
 		return
 	}
 	h.running = false
-	h.health.Status = HealthStopped
+	if h.health.Status != HealthKilled && h.health.Status != HealthReleased {
+		h.health.Status = HealthStopped
+	}
 	cancel := h.cancel
 	done := h.done
 	h.mu.Unlock()
@@ -53,6 +57,7 @@ func (h *Hand) Stop() {
 		<-done
 	}
 	slog.Info("hand stopped", "hand_id", h.id)
+	h.helmRuntime.EmitEvent(natsapi.HelmEvent{HandID: h.id.String(), Code: CodeHandStopped, Msg: "hand: stopped"})
 }
 
 // Pause suspends signal processing without stopping the run-loop goroutine.
@@ -63,6 +68,7 @@ func (h *Hand) Pause() {
 	h.health.Status = HealthPaused
 	h.mu.Unlock()
 	slog.Info("hand paused", "hand_id", h.id)
+	h.helmRuntime.EmitEvent(natsapi.HelmEvent{HandID: h.id.String(), Code: CodeHandPaused, Msg: "hand: paused"})
 }
 
 // Resume re-enables signal processing after a Pause.
@@ -74,18 +80,32 @@ func (h *Hand) Resume() {
 	}
 	h.mu.Unlock()
 	slog.Info("hand resumed", "hand_id", h.id)
+	h.helmRuntime.EmitEvent(natsapi.HelmEvent{HandID: h.id.String(), Code: CodeHandResumed, Msg: "hand: resumed"})
 }
 
 // Kill stops the hand and immediately closes all open positions via market orders.
 // Use for emergency shutdown when you must exit the exchange immediately.
 func (h *Hand) Kill(ctx context.Context) {
 	slog.Warn("hand: kill initiated — flattening all positions", "hand_id", h.id)
+	h.helmRuntime.EmitEvent(natsapi.HelmEvent{HandID: h.id.String(), Code: CodeHandKilled, Reason: "flattening all positions", Msg: "hand: killed"})
 	h.mu.Lock()
 	h.paused = true
 	h.health.Status = HealthKilled
 	h.mu.Unlock()
 	h.flattenPositions(ctx)
+
+	// Publish final flat snapshot after kill
+	if h.helmRuntime.SnapshotLog != nil {
+		snap := h.handSnapshot(time.Now().UTC())
+		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := h.helmRuntime.SnapshotLog.Append(sctx, snap); err != nil {
+			slog.Warn("snapshot_log: hand snapshot append failed on kill", "hand_id", h.id, "err", err)
+		}
+		cancel()
+	}
+
 	h.Stop()
+	h.helmRuntime.RemoveHand(h.id.String())
 }
 
 // Release stops the hand without closing open positions.
@@ -94,12 +114,32 @@ func (h *Hand) Kill(ctx context.Context) {
 // exchange-side SL/TP already placed.
 func (h *Hand) Release(ctx context.Context) {
 	slog.Info("hand: release — orphaning open positions", "hand_id", h.id)
+	h.helmRuntime.EmitEvent(natsapi.HelmEvent{HandID: h.id.String(), Code: CodeHandReleased, Reason: "positions orphaned at exchange", Msg: "hand: released"})
 	h.mu.Lock()
 	h.paused = true
 	h.health.Status = HealthReleased
 	h.mu.Unlock()
 	h.releasePositions(ctx)
+
+	// Publish final flat snapshot after release
+	if h.helmRuntime.SnapshotLog != nil {
+		snap := h.handSnapshot(time.Now().UTC())
+		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := h.helmRuntime.SnapshotLog.Append(sctx, snap); err != nil {
+			slog.Warn("snapshot_log: hand snapshot append failed on release", "hand_id", h.id, "err", err)
+		}
+		cancel()
+	}
+
 	h.Stop()
+	h.helmRuntime.RemoveHand(h.id.String())
+}
+
+// SetAllocatedCapital updates the hand's allocated capital budget dynamically.
+func (h *Hand) SetAllocatedCapital(val decimal.Decimal) {
+	h.mu.Lock()
+	h.allocatedCap = val
+	h.mu.Unlock()
 }
 
 // ---------------------------------------------------------------------------
@@ -162,18 +202,15 @@ func (h *Hand) Metrics() HandMetrics {
 	}
 }
 
-// Activity returns a chronological snapshot of the hand's recent activity log.
-func (h *Hand) Activity() []ActivityEntry { return h.activityLog.Snapshot() }
-
 // Position returns the current open position for this hand's symbol, or nil if flat.
 func (h *Hand) Position() *portfolio.Position {
-	return h.rt.Portfolio.GetPosition(h.Symbol)
+	return h.helmRuntime.Portfolio.GetPosition(h.Symbol)
 }
 
 // L2 returns the latest L2 order-book snapshot for this hand's symbol.
 // ok=false if no snapshot has been received yet (e.g. market streamer not connected).
 func (h *Hand) L2() (exchange.L2Snapshot, bool) {
-	return h.rt.LatestL2(h.Symbol)
+	return h.helmRuntime.LatestL2(h.Symbol)
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +276,15 @@ func (h *Hand) EnqueueFill(ev exchange.OrderEvent) {
 // RecordDrop increments the dropped-signal counter. Called by the dispatcher.
 func (h *Hand) RecordDrop() { h.metrics.signalsDropped.Add(1) }
 
+// recordActivity pushes an entry into the in-memory activity ring.
+// The ring holds the last activityRingSize events for test observability and
+// the recent-activity UI chip; durable history lives in HELM_EVENTS JetStream.
+func (h *Hand) recordActivity(e ActivityEntry) { h.activityLog.push(e) }
+
+// Activity returns a snapshot of recent activity entries, oldest-first.
+// The ring holds at most activityRingSize (20) entries; older events are evicted.
+func (h *Hand) Activity() []ActivityEntry { return h.activityLog.Snapshot() }
+
 // DeployedCapital returns the notional capital currently committed in open
 // positions: sum(leg.Qty × leg.EntryPrice) across all active legs.
 func (h *Hand) DeployedCapital() decimal.Decimal {
@@ -249,4 +295,11 @@ func (h *Hand) DeployedCapital() decimal.Decimal {
 		total = total.Add(leg.Qty.Mul(leg.EntryPrice))
 	}
 	return total
+}
+
+// AllocatedCapital returns the hand's current allocated capital.
+func (h *Hand) AllocatedCapital() decimal.Decimal {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return h.allocatedCap
 }

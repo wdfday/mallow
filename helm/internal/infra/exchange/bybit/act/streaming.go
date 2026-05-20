@@ -26,7 +26,8 @@ const (
 // StreamOrders implements exchange.AccountStreamer.
 // Connects to Bybit private WebSocket, authenticates, subscribes to the "order"
 // topic, and calls handler on each order lifecycle event. Reconnects automatically.
-func (c *Client) StreamOrders(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent)) error {
+// balanceHandler is ignored — Bybit wallet updates arrive on a separate topic not yet subscribed.
+func (c *Client) StreamOrders(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent), _ func(exchange.BalanceEvent)) error {
 	go func() {
 		for {
 			if ctx.Err() != nil {

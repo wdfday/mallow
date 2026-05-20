@@ -57,7 +57,7 @@ func (r *HelmRuntime) storeSyncAt(t time.Time) {
 
 // Sync fetches current account state from the exchange REST API, updates the in-memory
 // portfolio, and publishes a portfolio.synced event to NATS.
-func (r *HelmRuntime) Sync(ctx context.Context, nc *nats.Conn, js nats.JetStreamContext) error {
+func (r *HelmRuntime) Sync(ctx context.Context, js nats.JetStreamContext) error {
 	syncer, ok := r.Exchange.(exchange.AccountSyncer)
 	if !ok {
 		return nil
@@ -134,10 +134,8 @@ func (r *HelmRuntime) Sync(ctx context.Context, nc *nats.Conn, js nats.JetStream
 		Msg:    "helm: portfolio synced from exchange",
 	})
 
-	if nc != nil {
-		natsapi.PublishPortfolioSync(nc, helmID, accountID, userID, snap.Cash, snap.Equity, natsPositions, natsPositionTxns, now)
-	}
 	if js != nil {
+		natsapi.PublishPortfolioSync(js, helmID, accountID, userID, snap.Cash, snap.Equity, natsPositions, natsPositionTxns, now)
 		for _, t := range newTxns {
 			natsapi.PublishTradeFill(js, t)
 		}

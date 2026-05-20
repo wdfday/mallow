@@ -32,20 +32,14 @@ func (r *HelmRuntime) lastKnownPrice(symbol string) decimal.Decimal {
 	return decimal.Zero
 }
 
-// UpdateL2 stores the latest L2 order-book snapshot for a symbol.
-// Called by the registry's handleL2 fan-out; shared across all hands of this helm.
-func (r *HelmRuntime) UpdateL2(snap exchange.L2Snapshot) {
-	r.l2Mu.Lock()
-	r.l2[snap.Symbol] = snap
-	r.l2Mu.Unlock()
-}
-
-// LatestL2 returns the most recent L2 snapshot for a symbol, or false if none received yet.
+// LatestL2 returns the most recent L2 snapshot for a symbol.
+// Delegates to the registry-level broker cache injected at Spawn().
+// ok=false when no L2 streamer is connected or no snapshot has been received yet.
 func (r *HelmRuntime) LatestL2(symbol string) (exchange.L2Snapshot, bool) {
-	r.l2Mu.RLock()
-	snap, ok := r.l2[symbol]
-	r.l2Mu.RUnlock()
-	return snap, ok
+	if r.getL2 == nil {
+		return exchange.L2Snapshot{}, false
+	}
+	return r.getL2(symbol)
 }
 
 // EnqueueOrderEvent drops a broker order event into the runtime's channel non-blocking.

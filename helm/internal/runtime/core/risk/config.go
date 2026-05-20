@@ -8,7 +8,7 @@ type Config struct {
 	MaxPositions int `json:"max_positions"`
 
 	// DailyLossLimitPct halts new entries for the rest of the calendar day
-	// when realised daily PnL exceeds this fraction of equity (e.g. 0.02 = 2%).
+	// when realized daily PnL exceeds this fraction of equity (e.g. 0.02 = 2%).
 	DailyLossLimitPct float64 `json:"daily_loss_limit_pct"`
 
 	// MaxDrawdownPct permanently halts all trading (until ResetHalt)

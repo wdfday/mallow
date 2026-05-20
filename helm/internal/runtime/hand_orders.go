@@ -11,6 +11,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
+	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/infra/poslog"
 	handdomain "mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/runtime/position"
@@ -28,7 +29,7 @@ func (h *Hand) pollOrders(ctx context.Context) {
 	h.mu.RUnlock()
 
 	for _, o := range pending {
-		result, err := h.rt.Exchange.GetOrder(ctx, h.rt.Creds, o.ID)
+		result, err := h.helmRuntime.Exchange.GetOrder(ctx, h.helmRuntime.Creds, o.ID)
 		if err != nil {
 			slog.Warn("bot: poll order failed", "order_id", o.ID, "err", err)
 			continue
@@ -83,18 +84,19 @@ func (h *Hand) pollOrders(ctx context.Context) {
 			if result.FilledQty.IsPositive() && o.Qty.IsPositive() {
 				remaining := o.Qty.Sub(result.FilledQty)
 				if remaining.IsPositive() && remaining.Div(o.Qty).LessThan(decimal.NewFromFloat(0.02)) {
-					if err := h.rt.Exchange.CancelOrder(ctx, h.rt.Creds, o.ID); err != nil {
+					if err := h.helmRuntime.Exchange.CancelOrder(ctx, h.helmRuntime.Creds, o.ID); err != nil {
 						slog.Warn("bot: cancel partial remainder failed", "order_id", o.ID, "err", err)
 					} else {
 						slog.Info("bot: cancelled dust remainder on partial fill",
 							"order_id", o.ID, "filled", result.FilledQty, "original", o.Qty)
-						h.recordActivity(ActivityEntry{
-							At:      time.Now(),
+						h.helmRuntime.EmitEvent(natsapi.HelmEvent{
+							HandID:  h.id.String(),
 							Code:    CodeOrderPartialCancel,
 							Symbol:  result.Symbol,
 							OrderID: o.ID,
 							Qty:     result.FilledQty,
 							Reason:  fmt.Sprintf("remainder %.4f < 2%% of original %.4f — cancelled", remaining.InexactFloat64(), o.Qty.InexactFloat64()),
+							Msg:     "order: dust remainder cancelled",
 						})
 					}
 					side := "buy"
@@ -113,6 +115,16 @@ func (h *Hand) pollOrders(ctx context.Context) {
 			}
 
 		case "cancelled", "rejected", "expired":
+			h.helmRuntime.EmitEvent(natsapi.HelmEvent{
+				HandID:  h.id.String(),
+				Code:    CodeOrderCancelled,
+				Symbol:  result.Symbol,
+				OrderID: o.ID,
+				Side:    string(result.Side),
+				Reason:  result.Status,
+				Msg:     "order: " + result.Status,
+			})
+			h.activityLog.push(ActivityEntry{At: time.Now(), Code: CodeOrderCancelled, Symbol: result.Symbol, OrderID: o.ID, Side: string(result.Side), Reason: result.Status})
 			h.mu.RLock()
 			posID := h.pendingOrderPos[o.ID]
 			h.mu.RUnlock()
@@ -146,7 +158,7 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 	origPhase := h.pos.LegPhase(origPosID)
 	h.mu.RUnlock()
 
-	if cancelErr := h.rt.Exchange.CancelOrder(ctx, h.rt.Creds, o.ID); cancelErr != nil {
+	if cancelErr := h.helmRuntime.Exchange.CancelOrder(ctx, h.helmRuntime.Creds, o.ID); cancelErr != nil {
 		slog.Warn("bot: limit timeout cancel failed", "order_id", o.ID, "err", cancelErr)
 		return
 	}
@@ -192,17 +204,18 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 	slog.Info("bot: limit order timed out", "order_id", o.ID, "age", age,
 		"filled", alreadyFilledQty, "remaining", remainingQty, "fallback", h.limitFallback)
 
-	h.recordActivity(ActivityEntry{
-		At:      time.Now(),
+	h.helmRuntime.EmitEvent(natsapi.HelmEvent{
+		HandID:  h.id.String(),
 		Code:    CodeOrderLimitTimeout,
 		Symbol:  o.Symbol,
 		OrderID: o.ID,
 		Qty:     remainingQty,
 		Reason:  fmt.Sprintf("limit unfilled after %s (filled %s / %s)", age, alreadyFilledQty, o.Qty),
+		Msg:     "order: limit timeout",
 	})
 
 	if h.limitFallback == handdomain.LimitFallbackMarket && remainingQty.IsPositive() {
-		result, err := h.rt.Exchange.PlaceOrder(ctx, h.rt.Creds, exchange.OrderRequest{
+		result, err := h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, exchange.OrderRequest{
 			Symbol: o.Symbol,
 			Side:   exchange.OrderSide(o.Side),
 			Type:   exchange.Market,
@@ -213,14 +226,15 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 			return
 		}
 		slog.Info("bot: limit fallback market placed", "new_order_id", result.ID, "qty", remainingQty)
-		h.recordActivity(ActivityEntry{
-			At:      time.Now(),
+		h.helmRuntime.EmitEvent(natsapi.HelmEvent{
+			HandID:  h.id.String(),
 			Code:    CodeOrderLimitFallback,
 			Symbol:  o.Symbol,
 			OrderID: result.ID,
 			Side:    string(o.Side),
 			Qty:     remainingQty,
 			Reason:  fmt.Sprintf("fallback from timed-out limit %s", o.ID),
+			Msg:     "order: limit fallback to market",
 		})
 		h.trackOrder(result.ID)
 

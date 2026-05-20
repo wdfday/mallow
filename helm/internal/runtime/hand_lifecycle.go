@@ -43,7 +43,7 @@ func NewHand(
 	return &Hand{
 		id:              id,
 		helmID:          helmID,
-		rt:              rt,
+		helmRuntime:     rt,
 		strategy:        strat,
 		tactician:       tact,
 		limiter:         rate.NewLimiter(rate.Every(1*time.Second), 5),
@@ -129,7 +129,7 @@ func (h *Hand) restorePosition(hp *position.HandPositions, currentPrice decimal.
 
 	// Restore each active leg into the portfolio without generating new orders.
 	for _, leg := range hp.ActiveLegs() {
-		h.rt.Portfolio.RestorePosition(leg.Symbol, leg.Side, leg.Qty, leg.EntryPrice, currentPrice)
+		h.helmRuntime.Portfolio.RestorePosition(leg.Symbol, leg.Side, leg.Qty, leg.EntryPrice, currentPrice)
 	}
 
 	h.mu.Lock()
@@ -173,7 +173,7 @@ func (h *Hand) applyFuturesLeverage(ctx context.Context, symbol string, futures 
 	if futures == nil || futures.Leverage <= 0 {
 		return
 	}
-	setter, ok := h.rt.Exchange.(exchange.LeverageSetter)
+	setter, ok := h.helmRuntime.Exchange.(exchange.LeverageSetter)
 	if !ok {
 		return
 	}
@@ -181,7 +181,7 @@ func (h *Hand) applyFuturesLeverage(ctx context.Context, symbol string, futures 
 	if marginType == "" {
 		marginType = "isolated"
 	}
-	if err := setter.SetLeverage(ctx, h.rt.Creds, symbol, futures.Leverage, marginType); err != nil {
+	if err := setter.SetLeverage(ctx, h.helmRuntime.Creds, symbol, futures.Leverage, marginType); err != nil {
 		slog.Warn("hand: set leverage failed (non-fatal)", "hand_id", h.id, "symbol", symbol,
 			"leverage", futures.Leverage, "margin_type", marginType, "err", err)
 	} else {

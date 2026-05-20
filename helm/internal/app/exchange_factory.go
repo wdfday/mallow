@@ -12,7 +12,6 @@ import (
 	binanceex "mallow/helm/internal/infra/exchange/binance/ex"
 	bybitact "mallow/helm/internal/infra/exchange/bybit/act"
 	bybitex "mallow/helm/internal/infra/exchange/bybit/ex"
-	"mallow/helm/internal/infra/exchange/oanda"
 	okxact "mallow/helm/internal/infra/exchange/okx/act"
 	okxex "mallow/helm/internal/infra/exchange/okx/ex"
 	orchdomain "mallow/helm/internal/module/helm/domain"
@@ -58,10 +57,6 @@ func (f *exchangeFactory) create(cfg orchdomain.ExchangeConfig) (exchange.Exchan
 			BaseURL: cfg.BaseURL,
 			Paper:   cfg.Paper,
 		}), nil
-	case "oanda":
-		return oanda.New(oanda.Config{
-			BaseURL: cfg.BaseURL,
-		}), nil
 	case "alpaca", "":
 		baseURL := cfg.BaseURL
 		if baseURL == "" && cfg.Paper {
@@ -71,7 +66,7 @@ func (f *exchangeFactory) create(cfg orchdomain.ExchangeConfig) (exchange.Exchan
 			BaseURL: baseURL,
 		}), nil
 	default:
-		return nil, fmt.Errorf("unknown exchange: %q (supported: alpaca, binance, okx, bybit, oanda)", cfg.BrokerType)
+		return nil, fmt.Errorf("unknown exchange: %q (supported: alpaca, binance, okx, bybit)", cfg.BrokerType)
 	}
 }
 

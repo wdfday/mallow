@@ -58,6 +58,9 @@ func (s *Service) Create(cfg domain.HandConfig) (*runtime.HandRef, error) {
 			return nil, fmt.Errorf("symbols must not contain empty strings")
 		}
 	}
+	if !cfg.AllocatedCapital.IsPositive() {
+		return nil, fmt.Errorf("allocated capital must be greater than zero")
+	}
 	if err := cfg.Strategy.Validate(); err != nil {
 		return nil, err
 	}
@@ -80,6 +83,7 @@ func (s *Service) Create(cfg domain.HandConfig) (*runtime.HandRef, error) {
 	id := s.repo.GenerateID()
 	data := &domain.Hand{
 		ID:        id,
+		HelmID:    cfg.HelmID,
 		Status:    domain.HandStatusStopped,
 		CreatedAt: time.Now().UTC(),
 	}

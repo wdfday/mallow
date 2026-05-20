@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/module/hand/domain"
 	helmdomain "mallow/helm/internal/module/helm/domain"
@@ -34,6 +35,7 @@ type HandService interface {
 	Kill(ctx context.Context, id uuid.UUID) error
 	Release(ctx context.Context, id uuid.UUID) error
 	RunningHands() []*runtime.HandRef
+	AllocateCapital(id uuid.UUID, delta decimal.Decimal) (decimal.Decimal, error)
 }
 
 // RuntimeRegistry is the subset of runtime.Registry used by hand handlers.

@@ -71,6 +71,25 @@ func (s *Service) ReregisterByIDs(handIDs []string) {
 	}
 }
 
+// DeregisterByIDs deregisters specific hands from herald by their string IDs.
+// Called after heartbeat returns a non-empty orphan list — hands herald still
+// tracks but helm no longer expects. No local state to clean up; we just send
+// the deregister to herald so its registry matches reality.
+func (s *Service) DeregisterByIDs(handIDs []string) {
+	if s.herald == nil || len(handIDs) == 0 {
+		return
+	}
+	for _, raw := range handIDs {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			slog.Warn("herald orphan deregister: skipping malformed id", "id", raw, "err", err)
+			continue
+		}
+		s.heraldDeregister(id)
+	}
+	slog.Info("herald deregister orphans: done", "count", len(handIDs))
+}
+
 // ReregisterAll re-registers all running hands with herald.
 // Called after detecting a herald restart (via engine.ready or heartbeat missing[]).
 func (s *Service) ReregisterAll() {

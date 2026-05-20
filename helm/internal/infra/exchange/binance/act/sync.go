@@ -44,9 +44,9 @@ func (c *Client) syncSpot(ctx context.Context, creds exchange.Credentials) (*exc
 			continue
 		}
 		balances = append(balances, exchange.AssetBalance{Asset: b.Asset, Free: free})
-		if b.Asset == "USDT" || b.Asset == "BUSD" || b.Asset == "USDC" {
+		if b.Asset == "USDT" {
 			cash = cash.Add(free)
-		} else {
+		} else if b.Asset != "BUSD" && b.Asset != "USDC" {
 			nonCash = append(nonCash, assetBalance{asset: b.Asset, free: free})
 		}
 	}
@@ -99,7 +99,7 @@ func (c *Client) syncFuturesUSDM(ctx context.Context, creds exchange.Credentials
 			free = wallet
 		}
 		balances = append(balances, exchange.AssetBalance{Asset: a.Asset, Free: free})
-		if a.Asset == "USDT" || a.Asset == "BUSD" || a.Asset == "USDC" {
+		if a.Asset == "USDT" {
 			cash = cash.Add(avail)
 		}
 	}

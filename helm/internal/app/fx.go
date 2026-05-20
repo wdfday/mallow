@@ -86,11 +86,11 @@ var Module = fx.Options(
 	fx.Invoke(wirePosLog),
 	fx.Invoke(hydrateRuntimes), // helm runtimes must be ready before hands are hydrated
 	fx.Invoke(hydrateHands),    // depends on hydrateRuntimes having run first
-	fx.Invoke(subscribeSignals),
 	fx.Invoke(subscribeHeraldReady),
 	fx.Invoke(startHeartbeatLoop),
 	fx.Invoke(startNATSAPI),
 	fx.Invoke(runOrchestrator),
+	fx.Invoke(subscribeSignals),
 )
 
 // asRuntimeFactory adapts *exchangeFactory to the runtime.ExchangeFactory interface.
@@ -134,11 +134,10 @@ func newOrchHandler(
 	reg *runtime.Registry,
 	nc *nats.Conn,
 	fillLog *perflog.FillLog,
-	equityLog perf.EquityLog,
-	portfolioLog perf.PortfolioLog,
+	snapshotLog perf.SnapshotLog,
 	posLog poslog.Log,
 ) *orchhandler.Handler {
-	return orchhandler.New(svc, handMgr, reg, nc, fillLog, equityLog, portfolioLog, posLog)
+	return orchhandler.New(svc, handMgr, reg, nc, fillLog, snapshotLog, posLog)
 }
 
 func newHandHandler(handMgr *service.Service, helmSvc *orchservice.Service, reg *runtime.Registry) *handhandler.Handler {
@@ -152,12 +151,11 @@ func newAccountHandler(
 	reg *runtime.Registry,
 	nc *nats.Conn,
 	fillLog *perflog.FillLog,
-	equityLog perf.EquityLog,
-	portfolioLog perf.PortfolioLog,
+	snapshotLog perf.SnapshotLog,
 	posLog poslog.Log,
 	logger *slog.Logger,
 ) *accountHandler.Handler {
-	return accountHandler.NewHandler(svc, helmSvc, handMgr, reg, nc, fillLog, equityLog, portfolioLog, posLog, logger)
+	return accountHandler.NewHandler(svc, helmSvc, handMgr, reg, nc, fillLog, snapshotLog, posLog, logger)
 }
 
 func newServer(orchH *orchhandler.Handler, handH *handhandler.Handler, accountH *accountHandler.Handler, brokerH *brokerHandler.BrokerConnectionHandler) *gin.Engine {

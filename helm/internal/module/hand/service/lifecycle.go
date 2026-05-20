@@ -5,8 +5,10 @@ import (
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/module/hand/domain"
+	"mallow/helm/internal/runtime"
 )
 
 func (s *Service) Start(id uuid.UUID) error {
@@ -78,15 +80,17 @@ func (s *Service) Kill(ctx context.Context, id uuid.UUID) error {
 	s.heraldDeregister(id)
 	bi.Runner.Kill(ctx)
 	bi.Data.Status = domain.HandStatusStopped
+
+	s.mu.Lock()
+	delete(s.hands, id)
+	s.mu.Unlock()
+
 	return s.repo.Update(id, func(d *domain.Hand) error {
 		d.Status = domain.HandStatusStopped
 		return nil
 	})
 }
 
-// Release stops the hand without closing open positions.
-// Open legs are marked position_orphaned in the poslog so the reconciler
-// never restores them to this hand on restart.
 func (s *Service) Release(ctx context.Context, id uuid.UUID) error {
 	bi, err := s.getOrLoad(id)
 	if err != nil {
@@ -95,6 +99,11 @@ func (s *Service) Release(ctx context.Context, id uuid.UUID) error {
 	s.heraldDeregister(id)
 	bi.Runner.Release(ctx)
 	bi.Data.Status = domain.HandStatusStopped
+
+	s.mu.Lock()
+	delete(s.hands, id)
+	s.mu.Unlock()
+
 	return s.repo.Update(id, func(d *domain.Hand) error {
 		d.Status = domain.HandStatusStopped
 		return nil
@@ -169,17 +178,55 @@ func (s *Service) PurgeBots(ids []string) {
 
 // KillBots cascade-kills hands (flatten positions + stop) in-memory only. Called by helm kill.
 func (s *Service) KillBots(ids []string) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	ctx := context.Background()
+	toKill := make([]*runtime.HandRef, 0, len(ids))
+
+	s.mu.Lock()
 	for _, idStr := range ids {
 		id, err := uuid.Parse(idStr)
 		if err != nil {
 			continue
 		}
 		if bi, ok := s.hands[id]; ok {
-			s.heraldDeregister(id)
-			bi.Runner.Kill(ctx)
+			toKill = append(toKill, bi)
+			delete(s.hands, id)
 		}
 	}
+	s.mu.Unlock()
+
+	for _, bi := range toKill {
+		s.heraldDeregister(bi.Data.ID)
+		bi.Runner.Kill(ctx)
+	}
+}
+
+// AllocateCapital updates the allocated capital of a hand (adds the specified delta).
+// If the hand is in-memory, it dynamically updates the runner's allocated capital.
+func (s *Service) AllocateCapital(id uuid.UUID, delta decimal.Decimal) (decimal.Decimal, error) {
+	bi, err := s.getOrLoad(id)
+	if err != nil {
+		return decimal.Zero, err
+	}
+
+	newCapital := bi.Data.AllocatedCapital.Add(delta)
+	if !newCapital.IsPositive() {
+		return decimal.Zero, fmt.Errorf("new allocated capital must be greater than zero")
+	}
+
+	// Update DB
+	err = s.repo.Update(id, func(d *domain.Hand) error {
+		d.AllocatedCapital = newCapital
+		return nil
+	})
+	if err != nil {
+		return decimal.Zero, err
+	}
+
+	// Update service cache data
+	bi.Data.AllocatedCapital = newCapital
+
+	// Update runtime Hand runner
+	bi.Runner.SetAllocatedCapital(newCapital)
+
+	return newCapital, nil
 }

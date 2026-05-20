@@ -86,7 +86,7 @@ func (r *DefaultReconciler) Reconcile(ctx context.Context, orch *HelmRuntime) []
 
 func (r *DefaultReconciler) reconcileHand(
 	ctx context.Context,
-	orch *HelmRuntime,
+	helmRuntime *HelmRuntime,
 	hand *Hand,
 	openOrders map[string]exchange.OrderResult,
 	positions map[string]exchange.PositionResult,
@@ -111,7 +111,7 @@ func (r *DefaultReconciler) reconcileHand(
 	// Reconcile each active leg independently.
 	var lastAction ReconcileAction
 	for _, leg := range hp.ActiveLegs() {
-		action, err := r.reconcileLeg(ctx, orch, hand, leg, openOrders, positions)
+		action, err := r.reconcileLeg(ctx, helmRuntime, hand, leg, openOrders, positions)
 		if err != nil {
 			result.Action = ReconcileFailed
 			result.Err = err
@@ -146,7 +146,7 @@ func (r *DefaultReconciler) reconcileHand(
 // reconcileLeg handles one active leg: checks pending orders or confirms open positions.
 func (r *DefaultReconciler) reconcileLeg(
 	ctx context.Context,
-	orch *HelmRuntime,
+	helmRuntime *HelmRuntime,
 	hand *Hand,
 	leg *position.LegState,
 	openOrders map[string]exchange.OrderResult,
@@ -154,10 +154,10 @@ func (r *DefaultReconciler) reconcileLeg(
 ) (ReconcileAction, error) {
 	switch leg.Phase {
 	case position.PhaseEntering, position.PhaseAdding, position.PhaseExiting:
-		return r.reconcilePendingOrder(ctx, orch, hand, leg, openOrders)
+		return r.reconcilePendingOrder(ctx, helmRuntime, hand, leg, openOrders)
 
 	case position.PhaseOpen:
-		return r.reconcileOpenLeg(ctx, orch, hand, leg, positions)
+		return r.reconcileOpenLeg(ctx, helmRuntime, hand, leg, positions)
 
 	default:
 		return ReconcileSkipped, nil

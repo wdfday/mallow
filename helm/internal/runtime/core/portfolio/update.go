@@ -107,6 +107,15 @@ func (p *Portfolio) UpdatePrice(symbol string, price decimal.Decimal) {
 // the exchange REST API. Called on helm create, enable, and every SYNC_INTERVAL.
 //
 // It does NOT touch equityCurve or trades — those are append-only history.
+// SyncCash overrides the portfolio's cash balance with the value reported by
+// the exchange. Called on balance-push WS events so the portfolio converges to
+// the broker's authoritative free balance (which includes fees not tracked locally).
+func (p *Portfolio) SyncCash(v decimal.Decimal) {
+	p.mu.Lock()
+	p.cash = v
+	p.mu.Unlock()
+}
+
 func (p *Portfolio) ApplySync(cash decimal.Decimal, positions []SyncedPosition) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -166,4 +175,12 @@ func (p *Portfolio) RecordEquity(ts time.Time) {
 	if eq.GreaterThan(p.peakEquity) {
 		p.peakEquity = eq
 	}
+}
+
+// RemovePosition completely deletes the open position for the given symbol from the portfolio.
+// Typically called when a position is released/orphaned, so the portfolio stops tracking it.
+func (p *Portfolio) RemovePosition(symbol string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	delete(p.positions, symbol)
 }

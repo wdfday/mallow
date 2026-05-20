@@ -89,6 +89,7 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 		b.POST("/:id/resume", h.resume)
 		b.POST("/:id/kill", h.kill)
 		b.POST("/:id/release", h.release)
+		b.POST("/:id/allocate-capital", h.allocateCapital)
 	}
 
 }
@@ -642,7 +643,7 @@ func (h *Handler) release(c *gin.Context) {
 // @Router /metrics [get]
 // activity godoc
 // @Summary Get hand activity log
-// @Description Returns the last 200 signal/order events for a hand in chronological order
+// @Description Events from the HELM_EVENTS JetStream stream filtered by hand_id. Currently returns empty; JetStream query endpoint TBD.
 // @Tags hands
 // @Security BearerAuth
 // @Produce json
@@ -656,21 +657,13 @@ func (h *Handler) activity(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, _, err := h.checkHandOwner(c.Param("id"), userID)
+	_, _, err := h.checkHandOwner(c.Param("id"), userID)
 	if err != nil {
 		shared.RespondWithError(c, http.StatusNotFound, "not found")
 		return
 	}
-	bi, err := h.handMgr.Get(id)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, err.Error())
-		return
-	}
-	entries := bi.Runner.Activity()
-	if entries == nil {
-		entries = []runtime.ActivityEntry{}
-	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Activity retrieved", entries)
+	// TODO: query HELM_EVENTS JetStream, filter by hand_id, page by ?after=&limit=
+	shared.RespondWithSuccess(c, http.StatusOK, "Activity retrieved", []runtime.ActivityEntry{})
 }
 
 // trades godoc
@@ -751,4 +744,71 @@ func formatFloat(f float64) string {
 		return fmt.Sprintf("%d", int64(f))
 	}
 	return fmt.Sprintf("%g", f)
+}
+
+// allocateCapital godoc
+// @Summary Allocate capital
+// @Tags hands
+// @Security BearerAuth
+// @Accept json
+// @Produce json
+// @Param id path string true "Hand ID"
+// @Param request body dto.AllocateCapitalReq true "Capital allocation request"
+// @Success 200 {object} shared.SuccessResponse[domain.HandSummary]
+// @Failure 400 {object} shared.ErrorResponse
+// @Failure 401 {object} shared.ErrorResponse
+// @Failure 422 {object} shared.CapitalOverflow
+// @Router /api/v1/hands/{id}/allocate-capital [post]
+func (h *Handler) allocateCapital(c *gin.Context) {
+	userID, ok := callerUserID(c)
+	if !ok {
+		return
+	}
+	id, helmID, err := h.checkHandOwner(c.Param("id"), userID)
+	if err != nil {
+		shared.RespondWithError(c, http.StatusNotFound, "not found")
+		return
+	}
+
+	var req dto.AllocateCapitalReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	bi, err := h.handMgr.Get(id)
+	if err != nil {
+		shared.RespondWithError(c, http.StatusNotFound, err.Error())
+		return
+	}
+
+	delta := decimal.NewFromFloat(req.Amount)
+	newCapital := bi.Data.AllocatedCapital.Add(delta)
+
+	if !newCapital.IsPositive() {
+		shared.RespondWithError(c, http.StatusBadRequest, "new allocated capital must be greater than zero")
+		return
+	}
+
+	// Validate capital allocation against helm budget
+	rt, err := h.reg.Get(helmID)
+	if err != nil {
+		shared.RespondWithError(c, http.StatusBadRequest, "helm runtime not available")
+		return
+	}
+
+	if overflow, _ := checkCapitalAllocation(rt.Portfolio.Summary().Equity.InexactFloat64(), h.handMgr.ListByHelm(helmID), newCapital, id.String()); overflow != nil {
+		c.JSON(http.StatusUnprocessableEntity, overflow)
+		return
+	}
+
+	_, err = h.handMgr.AllocateCapital(id, delta)
+	if err != nil {
+		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Fetch updated details
+	bi, _ = h.handMgr.Get(id)
+	shared.RespondWithSuccess(c, http.StatusOK, "Capital allocated successfully", bi.Summary())
 }

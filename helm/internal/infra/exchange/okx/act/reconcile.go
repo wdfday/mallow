@@ -108,7 +108,7 @@ func (c *Client) SubscribeFills(ctx context.Context, creds exchange.Credentials)
 			FillPrice: ev.FilledAvg,
 			Timestamp: ev.Timestamp,
 		})
-	}); err != nil {
+	}, nil); err != nil {
 		return nil, fmt.Errorf("okx subscribe fills: %w", err)
 	}
 

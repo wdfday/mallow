@@ -57,12 +57,12 @@ type Registry struct {
 	streamerFactory MarketStreamerFactory
 
 	// nc, js, and runCtx are set once via SetRuntime after startup.
-	nc           *nats.Conn
-	js           nats.JetStreamContext
-	runCtx       context.Context
-	syncStore    SyncStore
-	posLog       poslog.Log        // nil when NATS unavailable
-	portfolioLog perf.PortfolioLog // nil when NATS unavailable
+	nc          *nats.Conn
+	js          nats.JetStreamContext
+	runCtx      context.Context
+	syncStore   SyncStore
+	posLog      poslog.Log       // nil when NATS unavailable
+	snapshotLog perf.SnapshotLog // nil when NATS unavailable
 }
 
 // NewRegistry creates an empty Registry.
@@ -90,14 +90,14 @@ func (r *Registry) SetPosLog(log poslog.Log) {
 	r.mu.Unlock()
 }
 
-// SetPortfolioLog injects the portfolio snapshot log (breaks init cycle — called after NATS connects).
+// SetSnapshotLog injects the portfolio snapshot log (breaks init cycle — called after NATS connects).
 // Also propagates to all already-spawned runtimes so runtimes created before startup
 // (e.g. during SpawnAll) get the log injected retroactively.
-func (r *Registry) SetPortfolioLog(log perf.PortfolioLog) {
+func (r *Registry) SetSnapshotLog(log perf.SnapshotLog) {
 	r.mu.Lock()
-	r.portfolioLog = log
+	r.snapshotLog = log
 	for _, rt := range r.helmRuntimes {
-		rt.PortfolioLog = log
+		rt.SnapshotLog = log
 	}
 	r.mu.Unlock()
 }

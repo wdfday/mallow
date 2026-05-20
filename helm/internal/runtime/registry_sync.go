@@ -39,7 +39,7 @@ func (r *Registry) StartPollingSync(ctx context.Context, nc *nats.Conn, interval
 		js := r.js
 		r.mu.RUnlock()
 		for _, rt := range rts {
-			if err := rt.Sync(ctx, nc, js); err != nil {
+			if err := rt.Sync(ctx, js); err != nil {
 				slog.Warn("registry: poll sync failed", "helm_id", rt.HelmID, "err", err)
 			} else {
 				r.persistSyncTime(rt)
@@ -92,11 +92,11 @@ func (r *Registry) ReconcileAllOrders(ctx context.Context) {
 func (r *Registry) RecoverGapFills(ctx context.Context, nc *nats.Conn) {
 	r.mu.RLock()
 	rts := make([]*HelmRuntime, 0, len(r.helmRuntimes))
-	js := r.js
-	r.mu.RUnlock()
 	for _, rt := range r.helmRuntimes {
 		rts = append(rts, rt)
 	}
+	js := r.js
+	r.mu.RUnlock()
 
 	for _, rt := range rts {
 		historian, ok := rt.Exchange.(exchange.HistoryFetcher)
@@ -157,8 +157,8 @@ func (r *Registry) RecoverGapFills(ctx context.Context, nc *nats.Conn) {
 func (r *Registry) SyncOne(id uuid.UUID) {
 	r.mu.RLock()
 	ctx := r.runCtx
-	nc := r.nc
 	js := r.js
+	_ = r.nc
 	r.mu.RUnlock()
 	if ctx == nil {
 		ctx = context.Background()
@@ -168,7 +168,7 @@ func (r *Registry) SyncOne(id uuid.UUID) {
 		return
 	}
 	go func() {
-		if err := rt.Sync(ctx, nc, js); err != nil {
+		if err := rt.Sync(ctx, js); err != nil {
 			slog.Warn("registry: sync failed", "helm_id", id, "err", err)
 			return
 		}

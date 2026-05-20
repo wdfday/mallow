@@ -68,14 +68,20 @@ func (r *Registry) Spawn(cfg *helmdomain.Helm, exchCfg helmdomain.ExchangeConfig
 		rt.paused = true
 	}
 
+	// Delegate L2 lookups to the registry's shared broker-level cache.
+	// Captured by value so the closure stays valid after Spawn returns.
+	rt.getL2 = func(symbol string) (exchange.L2Snapshot, bool) {
+		return r.LatestL2(brokerType, symbol)
+	}
+
 	// Wire the unit counter so MaxPositions counts actual open legs + manual positions,
 	// not just distinct portfolio symbols.
 	rt.RiskMgr.SetUnitCounter(rt.OpenUnitCount)
 
 	r.mu.RLock()
 	rt.PosLog = r.posLog
-	rt.PortfolioLog = r.portfolioLog
-	rt.SetEventConn(r.nc)
+	rt.SnapshotLog = r.snapshotLog
+	rt.SetEventConn(r.nc, r.js)
 	r.mu.RUnlock()
 
 	// Register this runtime's price updater with the shared market streamer.

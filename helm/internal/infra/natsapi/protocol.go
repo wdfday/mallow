@@ -209,8 +209,10 @@ func PublishTradeFill(js nats.JetStreamContext, txn TransactionMsg) {
 	}
 }
 
-// PublishPortfolioSync publishes a PortfolioSyncEvent to portfolio.synced.{accountID}.
-func PublishPortfolioSync(nc *nats.Conn, orchID, accountID, userID string, cash, equity decimal.Decimal, positions []SyncedPositionMsg, transactions []TransactionMsg, syncedAt time.Time) {
+// PublishPortfolioSync publishes a PortfolioSyncEvent to the PORTFOLIO_SYNC JetStream stream
+// (portfolio.synced.{accountID}). Durable with 1-day retention so consumers that
+// were briefly offline receive missed sync notifications on reconnect.
+func PublishPortfolioSync(js nats.JetStreamContext, orchID, accountID, userID string, cash, equity decimal.Decimal, positions []SyncedPositionMsg, transactions []TransactionMsg, syncedAt time.Time) {
 	ev := PortfolioSyncEvent{
 		OrchestratorID: orchID,
 		AccountID:      accountID,
@@ -223,8 +225,11 @@ func PublishPortfolioSync(nc *nats.Conn, orchID, accountID, userID string, cash,
 	}
 	data, _ := json.Marshal(ev)
 	subj := fmt.Sprintf(SubjPortfolioSynced, accountID)
-	if err := nc.Publish(subj, data); err != nil {
-		slog.Warn("portfolio sync: nats publish failed", "subject", subj, "err", err)
+	msg := nats.NewMsg(subj)
+	msg.Data = data
+	msg.Header.Set(nats.MsgIdHdr, fmt.Sprintf("%s-%d", accountID, syncedAt.UnixMilli()))
+	if _, err := js.PublishMsg(msg); err != nil {
+		slog.Warn("portfolio sync: jetstream publish failed", "subject", subj, "err", err)
 	}
 }
 
@@ -246,10 +251,16 @@ type HelmEvent struct {
 	Msg       string          `json:"msg"`
 }
 
-// PublishHelmEvent publishes a HelmEvent to helm.events.{helmID} (fire-and-forget).
-func PublishHelmEvent(nc *nats.Conn, helmID string, ev HelmEvent) {
+// PublishHelmEvent publishes a HelmEvent to the HELM_EVENTS JetStream stream
+// (helm.events.{helmID}). Durable — clients that were offline can replay recent events.
+func PublishHelmEvent(js nats.JetStreamContext, helmID string, ev HelmEvent) {
 	data, _ := json.Marshal(ev)
-	if err := nc.Publish(fmt.Sprintf(SubjHelmEvents, helmID), data); err != nil {
-		slog.Warn("helm event: nats publish failed", "helm_id", helmID, "code", ev.Code, "err", err)
+	subj := fmt.Sprintf(SubjHelmEvents, helmID)
+	msg := nats.NewMsg(subj)
+	msg.Data = data
+	// Dedup key: helm + code + ts-ms so burst retries within 1 min don't duplicate.
+	msg.Header.Set(nats.MsgIdHdr, fmt.Sprintf("%s-%d-%d", helmID, ev.Code, ev.At.UnixMilli()))
+	if _, err := js.PublishMsg(msg); err != nil {
+		slog.Warn("helm event: jetstream publish failed", "helm_id", helmID, "code", ev.Code, "err", err)
 	}
 }

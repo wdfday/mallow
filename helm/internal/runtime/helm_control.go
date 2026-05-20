@@ -68,6 +68,7 @@ func (r *HelmRuntime) Resume() []string {
 // ResetHalt clears the risk-manager halt flag on this runtime.
 func (r *HelmRuntime) ResetHalt() {
 	r.RiskMgr.ResetHalt()
+	r.EmitEvent(natsapi.HelmEvent{Code: CodeHelmUnhalted, Msg: "helm: halt reset"})
 }
 
 // UpdateRiskConfig replaces the live risk parameters.

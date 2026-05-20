@@ -22,9 +22,8 @@ var Module = fx.Module("infra",
 	fx.Provide(postgres.NewGORMDB),
 	fx.Provide(newEncryptionService),
 	fx.Provide(newLogger),
-	fx.Provide(fx.Annotate(newEquityLog, fx.As(new(perf.EquityLog)))),
+	fx.Provide(fx.Annotate(newSnapshotLog, fx.As(new(perf.SnapshotLog)))),
 	fx.Provide(fx.Annotate(newTradeLog, fx.As(new(perf.TradeLog)))),
-	fx.Provide(fx.Annotate(newPortfolioLog, fx.As(new(perf.PortfolioLog)))),
 	fx.Provide(newFillLog),
 )
 
@@ -36,10 +35,10 @@ func newEncryptionService(cfg *config.Config) (*internalService.EncryptionServic
 	return internalService.NewEncryptionService(cfg.Infra.EncryptionKey)
 }
 
-func newEquityLog(js natsgo.JetStreamContext) perf.EquityLog {
-	l, err := perflog.NewEquityLog(js)
+func newSnapshotLog(js natsgo.JetStreamContext) perf.SnapshotLog {
+	l, err := perflog.NewSnapshotLog(js)
 	if err != nil {
-		slog.Warn("equity_log: JetStream init failed — equity points will not be persisted", "err", err)
+		slog.Warn("snapshot_log: JetStream init failed — portfolio snapshots will not be persisted", "err", err)
 		return nil
 	}
 	return l
@@ -49,15 +48,6 @@ func newTradeLog(js natsgo.JetStreamContext) perf.TradeLog {
 	l, err := perflog.NewTradeLog(js)
 	if err != nil {
 		slog.Warn("trade_log: JetStream init failed — trade records will not be persisted", "err", err)
-		return nil
-	}
-	return l
-}
-
-func newPortfolioLog(js natsgo.JetStreamContext) perf.PortfolioLog {
-	l, err := perflog.NewPortfolioLog(js)
-	if err != nil {
-		slog.Warn("portfolio_log: JetStream init failed — portfolio snapshots will not be persisted", "err", err)
 		return nil
 	}
 	return l

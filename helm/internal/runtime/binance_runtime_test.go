@@ -53,17 +53,31 @@ func newBinanceEnv(t *testing.T) *binanceTestEnv {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	// Fetch real sandbox balance before creating the runtime.
-	capital := decimal.NewFromFloat(100_000) // fallback
-	if syncer, ok := exchange.Exchange(ex).(exchange.AccountSyncer); ok {
+	// ── Sync real USDT cash from exchange ──────────────────────────────────
+	var capital decimal.Decimal
+	if syncer, ok := interface{}(ex).(exchange.AccountSyncer); ok {
 		if snap, err := syncer.SyncAccount(ctx, creds, nil); err == nil && snap.Cash.IsPositive() {
 			capital = snap.Cash
-			t.Logf("sandbox cash balance: %s USDT", capital)
+			t.Logf("╔═ EXCHANGE WALLET AT SETUP ═══════════════════════════")
+			t.Logf("║ cash(USDT) = %s", snap.Cash)
+			for _, b := range snap.Balances {
+				if b.Free.IsPositive() {
+					t.Logf("║ asset: %s free=%s", b.Asset, b.Free)
+				}
+			}
+			for _, p := range snap.Positions {
+				t.Logf("║ pos: %s qty=%s", p.Symbol, p.Qty)
+			}
+			t.Logf("╚══════════════════════════════════════════════════════")
 		} else {
-			t.Logf("SyncAccount failed (%v) — using fallback 100k", err)
+			t.Skipf("SyncAccount failed (%v) — cannot run integration test without real balance", err)
 		}
+	} else {
+		t.Skip("exchange does not support AccountSyncer")
 	}
 
+	// Create portfolio with real USDT cash. Positions are NOT synced —
+	// only fills from Hand trades will appear in the portfolio.
 	pf := portfolio.New(capital)
 	rm := risk.New(risk.DefaultConfig(), pf)
 	rt := runtime.NewHelmRuntime(
@@ -84,6 +98,7 @@ func newBinanceEnv(t *testing.T) *binanceTestEnv {
 	// Binance demo sandbox has a settlement delay (~20s) on fresh accounts before
 	// bought assets appear in available balance. Place a warmup buy and wait for
 	// it to settle so OCO placement in the actual tests succeeds on first attempt.
+	var warmupQty decimal.Decimal
 	warmupCtx, warmupCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer warmupCancel()
 	warmupReq := exchange.OrderRequest{
@@ -95,12 +110,13 @@ func newBinanceEnv(t *testing.T) *binanceTestEnv {
 	if _, err := ex.PlaceOrder(warmupCtx, creds, warmupReq); err != nil {
 		t.Logf("warmup buy failed (%v) — OCO may hit settlement delay", err)
 	} else {
+		warmupQty = warmupReq.Qty
 		t.Log("warmup buy placed; waiting 20s for asset settlement")
 		time.Sleep(20 * time.Second)
 	}
 
 	t.Cleanup(func() {
-		cleanupBinance(t, ex, creds, rt)
+		cleanupBinance(t, ex, creds, warmupQty)
 		rt.Stop()
 	})
 
@@ -139,21 +155,40 @@ func newBinanceHand(env *binanceTestEnv) *runtime.Hand {
 	return hand
 }
 
-func cleanupBinance(t *testing.T, ex *binanceact.Client, creds exchange.Credentials, _ *runtime.HelmRuntime) {
+// cleanupBinance cancels all open orders and sells back any warmup BTC.
+func cleanupBinance(t *testing.T, ex *binanceact.Client, creds exchange.Credentials, warmupQty decimal.Decimal) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	// Cancel open orders.
 	orders, err := ex.ListOpenOrders(ctx, creds, "BTCUSDT")
 	if err != nil {
 		t.Logf("cleanup ListOpenOrders: %v (non-fatal)", err)
-		return
+	} else {
+		for _, o := range orders {
+			if err := ex.CancelOrder(ctx, creds, o.ID); err != nil {
+				t.Logf("cleanup CancelOrder %s: %v (non-fatal)", o.ID, err)
+			} else {
+				t.Logf("cleanup: cancelled order %s (%s)", o.ID, o.Side)
+			}
+		}
 	}
-	for _, o := range orders {
-		if err := ex.CancelOrder(ctx, creds, o.ID); err != nil {
-			t.Logf("cleanup CancelOrder %s: %v (non-fatal)", o.ID, err)
+
+	// Sell back warmup BTC so it doesn't accumulate across test runs.
+	if warmupQty.IsPositive() {
+		sellCtx, sellCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer sellCancel()
+		sellReq := exchange.OrderRequest{
+			Symbol: "BTCUSDT",
+			Side:   exchange.Sell,
+			Type:   exchange.Market,
+			Qty:    warmupQty,
+		}
+		if res, err := ex.PlaceOrder(sellCtx, creds, sellReq); err != nil {
+			t.Logf("cleanup warmup sell failed: %v (non-fatal)", err)
 		} else {
-			t.Logf("cleanup: cancelled order %s (%s)", o.ID, o.Side)
+			t.Logf("cleanup: sold warmup %s BTC (order %s)", warmupQty, res.ID)
 		}
 	}
 }
@@ -306,5 +341,148 @@ func TestBinance_OffsetSLTP(t *testing.T) {
 
 	if len(openOrders) < 2 {
 		t.Errorf("expected ≥2 OCO legs, got %d — PlaceExitOrders may not have been called", len(openOrders))
+	}
+}
+
+// TestBinance_PyramidAndKill verifies that:
+//  1. Pyramid=true allows multiple entries for the same hand up to maxUnits.
+//  2. Kill(ctx) triggers the emergency cancellation of entry orders and flattens
+//     the accumulated spot positions synchronously.
+func TestBinance_PyramidAndKill(t *testing.T) {
+	env := newBinanceEnv(t)
+	if env.price.IsZero() {
+		t.Skip("price not available — cannot compute pyramid sizes")
+	}
+
+	const symbol = "BTCUSDT"
+
+	// Create a pyramid hand with maxUnits = 3.
+	strat := strategy.NewSignalFollower(0.3)
+	tact := tactics.New(tactics.SizingConfig{
+		Mode:     tactics.SizingFixedQty,
+		FixedQty: decimal.NewFromFloat(0.001),
+	})
+
+	hand := runtime.NewHand(
+		uuid.New(),
+		env.rt.HelmID,
+		env.rt,
+		strat,
+		tact,
+		true, // pyramid = true
+		3,    // maxUnits = 3
+		0,    // signalTTL = 0
+		nil,  // futuresConfig = nil
+		domain.OrderTypeMarket,
+		0,  // limitTimeoutSec = 0
+		"", // limitFallback = ""
+		domain.HandRiskConfig{},
+		decimal.Zero,
+	)
+	hand.Symbol = symbol
+	hand.StrategyName = "signal_follower"
+
+	hand.Start()
+	defer func() {
+		if hand.IsRunning() {
+			hand.Stop()
+		}
+	}()
+
+	// Deliver 1st signal.
+	placed1 := orderNotify(hand, 20*time.Second)
+	filled1 := fillNotify(hand, 30*time.Second)
+	hand.DeliverSignal(longSigWithSLTP(symbol, decimal.Zero, decimal.Zero, false))
+
+	select {
+	case e := <-placed1:
+		t.Logf("1st order placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
+		if e.Code == runtime.CodeOrderFailed {
+			if isBalanceError(e.Reason) {
+				t.Skipf("sandbox needs top-up: %s", e.Reason)
+			}
+			t.Fatalf("1st order failed: %s", e.Reason)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("timeout: 1st order not placed")
+	}
+
+	var fill1OrderID string
+	select {
+	case e := <-filled1:
+		fill1OrderID = e.OrderID
+		t.Logf("1st fill: order_id=%s qty=%s price=%s", e.OrderID, e.Qty, e.Price)
+	case <-time.After(30 * time.Second):
+		t.Fatal("timeout: 1st fill not observed")
+	}
+
+	// Verify position in portfolio exists.
+	pos := env.rt.Portfolio.GetPosition(symbol)
+	if pos == nil || !pos.Qty.IsPositive() {
+		t.Fatal("expected positive position after 1st fill")
+	}
+	t.Logf("position after 1st fill: qty=%s avg_px=%s", pos.Qty, pos.AvgPrice)
+
+	// Deliver 2nd signal (Pyramid Add).
+	placed2 := orderNotifyNew(hand, fill1OrderID, 20*time.Second)
+	filled2 := fillNotify(hand, 30*time.Second)
+	hand.DeliverSignal(longSigWithSLTP(symbol, decimal.Zero, decimal.Zero, false))
+
+	select {
+	case e := <-placed2:
+		t.Logf("2nd order placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
+		if e.Code == runtime.CodeOrderFailed {
+			t.Fatalf("2nd order failed: %s", e.Reason)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("timeout: 2nd order not placed")
+	}
+
+	select {
+	case e := <-filled2:
+		t.Logf("2nd fill: order_id=%s qty=%s price=%s", e.OrderID, e.Qty, e.Price)
+	case <-time.After(30 * time.Second):
+		t.Fatal("timeout: 2nd fill not observed")
+	}
+
+	// Verify accumulated position.
+	pos = env.rt.Portfolio.GetPosition(symbol)
+	if pos == nil || pos.Qty.LessThan(decimal.NewFromFloat(0.002)) {
+		t.Fatalf("expected accumulated position size >= 0.002, got %v", pos)
+	}
+	t.Logf("accumulated position: qty=%s avg_px=%s", pos.Qty, pos.AvgPrice)
+
+	// Now trigger KILL to emergency flat/close the position.
+	killCtx, killCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer killCancel()
+
+	t.Log("triggering Hand.Kill()...")
+	hand.Kill(killCtx)
+
+	// Wait for the exit order fill and verify position becomes flat.
+	flatDeadline := time.Now().Add(10 * time.Second)
+	var flat bool
+	for time.Now().Before(flatDeadline) {
+		pos = env.rt.Portfolio.GetPosition(symbol)
+		if pos == nil || pos.Qty.IsZero() {
+			flat = true
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	if !flat {
+		t.Errorf("expected position to be flat after Kill, but got qty = %s", pos.Qty)
+	} else {
+		t.Log("position successfully flattened after Kill! ✓")
+	}
+
+	// Verify hand state is stopped and status is HealthKilled.
+	if hand.IsRunning() {
+		t.Error("expected hand to be stopped after Kill")
+	}
+	h := hand.Health()
+	if h.Status != runtime.HealthKilled {
+		t.Errorf("expected hand health status to be HealthKilled, got %s", h.Status)
 	}
 }

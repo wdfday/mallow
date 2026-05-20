@@ -58,7 +58,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 			// portfolio AvgPrice reflects the true blended entry cost; the raw fill
 			// price passed here is only the last-trade price (Binance LatestPrice).
 			refPrice := price
-			if pos := h.rt.Portfolio.GetPosition(symbol); pos != nil && pos.AvgPrice.IsPositive() {
+			if pos := h.helmRuntime.Portfolio.GetPosition(symbol); pos != nil && pos.AvgPrice.IsPositive() {
 				refPrice = pos.AvgPrice
 			}
 			if refPrice.IsPositive() {
@@ -86,14 +86,14 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 	// On success, stores the resulting order IDs back into exitLevels so they
 	// can be cancelled if the position closes via the other exit leg.
 	if hasExitBracket {
-		if placer, ok := h.rt.Exchange.(exchange.ExitOrderPlacer); ok {
+		if placer, ok := h.helmRuntime.Exchange.(exchange.ExitOrderPlacer); ok {
 			exitSide := exchange.Sell
 			if resolvedEl.Side == "sell" { // short → buy to close
 				exitSide = exchange.Buy
 			}
 			market := exchange.MarketSpot
-			if h.rt.Creds.AccountType == exchange.AccountFuturesUSDM ||
-				h.rt.Creds.AccountType == exchange.AccountFuturesCOINM {
+			if h.helmRuntime.Creds.AccountType == exchange.AccountFuturesUSDM ||
+				h.helmRuntime.Creds.AccountType == exchange.AccountFuturesCOINM {
 				market = exchange.MarketFutures
 			}
 			// Capture the hand's lifecycle context so the goroutine exits
@@ -125,7 +125,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 					case <-time.After(time.Duration(attempt) * time.Second):
 					}
 					exitCtx, cancel := context.WithTimeout(handCtx, 10*time.Second)
-					result, err = placer.PlaceExitOrders(exitCtx, h.rt.Creds, exitReq)
+					result, err = placer.PlaceExitOrders(exitCtx, h.helmRuntime.Creds, exitReq)
 					cancel()
 					if err == nil {
 						break
@@ -188,7 +188,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 	// ── 4. Portfolio update ───────────────────────────────────────────────────
 	// Single update point for all fill paths (WS, poll, REST-immediate).
 	// Registry no longer calls ReportFill before routing to hand.
-	h.rt.ReportFill(helmdomain.FillReport{
+	h.helmRuntime.ReportFill(helmdomain.FillReport{
 		HandID:    h.id.String(),
 		HelmID:    h.helmID.String(),
 		OrderID:   orderID,
@@ -199,7 +199,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 		Timestamp: time.Now().UTC(),
 	})
 
-	h.rt.EmitEvent(natsapi.HelmEvent{
+	h.helmRuntime.EmitEvent(natsapi.HelmEvent{
 		HandID:  h.id.String(),
 		Code:    CodeOrderFilled,
 		Symbol:  symbol,
@@ -210,42 +210,41 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 		Reason:  source,
 		Msg:     "order: filled",
 	})
-	h.recordActivity(ActivityEntry{
-		At:      time.Now(),
-		Code:    CodeOrderFilled,
-		Symbol:  symbol,
-		OrderID: orderID,
-		Side:    side,
-		Qty:     qty,
-		Price:   price,
-		Reason:  source,
-	})
-
+	h.activityLog.push(ActivityEntry{At: time.Now(), Code: CodeOrderFilled, Symbol: symbol, Side: side, Qty: qty, Price: price, OrderID: orderID, Reason: source})
 	// ── 5. Poslog ─────────────────────────────────────────────────────────────
 	h.publishOrderFilled(ctx, orderID, qty, price, closePnL, source, closeSource)
 
-	// ── 6. Hand-level portfolio snapshot ─────────────────────────────────────
-	// Publish raw leg state (no price multiplication) so the FE can compute
-	// per-hand equity at any timeframe by applying its own prices.
-	if h.rt.PortfolioLog != nil {
+	// ── 6. Hand-level snapshot ───────────────────────────────────────────────
+	// Publish leg state + equity so the FE can reconstruct per-hand equity curves.
+	if h.helmRuntime.SnapshotLog != nil {
 		snap := h.handSnapshot(time.Now().UTC())
 		go func() {
 			sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if err := h.rt.PortfolioLog.Append(sctx, snap); err != nil {
-				slog.Warn("portfolio_log: hand snapshot append failed", "hand_id", h.id, "err", err)
+			if err := h.helmRuntime.SnapshotLog.Append(sctx, snap); err != nil {
+				slog.Warn("snapshot_log: hand snapshot append failed", "hand_id", h.id, "err", err)
 			}
 		}()
 	}
 }
 
-// handSnapshot builds a hand-level PortfolioSnapshot from active leg state.
-func (h *Hand) handSnapshot(ts time.Time) perf.PortfolioSnapshot {
+// handSnapshot builds a hand-level Snapshot from active leg state.
+// For hands with allocated capital, equity and cash are computed from closed P&L
+// and open position cost basis — no live price needed.
+// For hands without allocated capital (shared-pool), equity/cash are left zero;
+// the FE derives mark-to-market from the helm-level portfolio snapshot instead.
+func (h *Hand) handSnapshot(ts time.Time) perf.Snapshot {
 	h.mu.RLock()
 	legs := h.pos.ActiveLegs()
+	allocatedCap := h.allocatedCap
 	h.mu.RUnlock()
 
+	h.metrics.mu.Lock()
+	totalPnL := h.metrics.totalPnL
+	h.metrics.mu.Unlock()
+
 	entries := make([]perf.PositionEntry, 0, len(legs))
+	invested := decimal.Zero
 	for _, leg := range legs {
 		entries = append(entries, perf.PositionEntry{
 			Symbol:   leg.Symbol,
@@ -253,11 +252,21 @@ func (h *Hand) handSnapshot(ts time.Time) perf.PortfolioSnapshot {
 			Qty:      leg.Qty,
 			AvgPrice: leg.EntryPrice,
 		})
+		invested = invested.Add(leg.EntryPrice.Mul(leg.Qty))
 	}
-	return perf.PortfolioSnapshot{
+
+	var equity, cash decimal.Decimal
+	if allocatedCap.IsPositive() {
+		equity = allocatedCap.Add(totalPnL)
+		cash = equity.Sub(invested)
+	}
+
+	return perf.Snapshot{
 		HelmID:    h.helmID.String(),
 		HandID:    h.id.String(),
 		TS:        ts,
+		Cash:      cash,
+		Equity:    equity,
 		Positions: entries,
 	}
 }
@@ -307,9 +316,11 @@ func (h *Hand) checkEdgeRisk(pnl decimal.Decimal) {
 	avg := sum.Div(decimal.NewFromInt(int64(count)))
 
 	// Reference capital for pct thresholds.
+	h.mu.RLock()
 	ref := h.allocatedCap
+	h.mu.RUnlock()
 	if !ref.IsPositive() {
-		ref = h.rt.Portfolio.Equity()
+		ref = h.helmRuntime.Portfolio.Equity()
 	}
 	if !ref.IsPositive() {
 		return
@@ -346,9 +357,10 @@ func (h *Hand) checkEdgeRisk(pnl decimal.Decimal) {
 	slog.Warn("hand: edge degradation detected — auto-pausing",
 		"hand_id", h.id, "reason", breachReason)
 	h.Pause()
-	h.recordActivity(ActivityEntry{
-		At:     time.Now(),
+	h.helmRuntime.EmitEvent(natsapi.HelmEvent{
+		HandID: h.id.String(),
 		Code:   CodeHandAutoPaused,
 		Reason: "edge risk: " + breachReason,
+		Msg:    "hand: auto-paused — edge degradation",
 	})
 }

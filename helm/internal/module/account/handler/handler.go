@@ -24,16 +24,15 @@ import (
 
 // Handler manages account endpoints.
 type Handler struct {
-	service      accountservice.Service
-	helmSvc      HelmLookup
-	handMgr      HandLister
-	reg          *runtime.Registry
-	nc           *nats.Conn
-	fillLog      *perflog.FillLog
-	equityLog    perf.EquityLog
-	portfolioLog perf.PortfolioLog
-	posLog       poslog.Log
-	logger       *slog.Logger
+	service     accountservice.Service
+	helmSvc     HelmLookup
+	handMgr     HandLister
+	reg         *runtime.Registry
+	nc          *nats.Conn
+	fillLog     *perflog.FillLog
+	snapshotLog perf.SnapshotLog
+	posLog      poslog.Log
+	logger      *slog.Logger
 }
 
 // NewHandler constructs an account handler.
@@ -44,22 +43,20 @@ func NewHandler(
 	reg *runtime.Registry,
 	nc *nats.Conn,
 	fillLog *perflog.FillLog,
-	equityLog perf.EquityLog,
-	portfolioLog perf.PortfolioLog,
+	snapshotLog perf.SnapshotLog,
 	posLog poslog.Log,
 	logger *slog.Logger,
 ) *Handler {
 	return &Handler{
-		service:      service,
-		helmSvc:      helmSvc,
-		handMgr:      handMgr,
-		reg:          reg,
-		nc:           nc,
-		fillLog:      fillLog,
-		equityLog:    equityLog,
-		portfolioLog: portfolioLog,
-		posLog:       posLog,
-		logger:       logger.With("component", "account.handler"),
+		service:     service,
+		helmSvc:     helmSvc,
+		handMgr:     handMgr,
+		reg:         reg,
+		nc:          nc,
+		fillLog:     fillLog,
+		snapshotLog: snapshotLog,
+		posLog:      posLog,
+		logger:      logger.With("component", "account.handler"),
 	}
 }
 
@@ -359,7 +356,7 @@ func (h *Handler) snapshots(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if h.portfolioLog == nil {
+	if h.snapshotLog == nil {
 		shared.RespondWithError(c, http.StatusServiceUnavailable, "portfolio log unavailable")
 		return
 	}
@@ -370,7 +367,7 @@ func (h *Handler) snapshots(c *gin.Context) {
 			page.After = t
 		}
 	}
-	result, err := h.portfolioLog.Query(c.Request.Context(), helmID.String(), "", page)
+	result, err := h.snapshotLog.Query(c.Request.Context(), helmID.String(), "", page)
 	if err != nil {
 		shared.RespondWithError(c, http.StatusInternalServerError, err.Error())
 		return
@@ -409,7 +406,7 @@ func (h *Handler) equity(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if h.equityLog == nil {
+	if h.snapshotLog == nil {
 		shared.RespondWithError(c, http.StatusServiceUnavailable, "equity log unavailable")
 		return
 	}
@@ -421,11 +418,11 @@ func (h *Handler) equity(c *gin.Context) {
 		}
 	}
 	hands := h.handMgr.ListByHelm(helmID)
-	var all []perf.EquityLogPoint
+	var all []perf.Snapshot
 	for _, hs := range hands {
-		result, qErr := h.equityLog.Query(c.Request.Context(), hs.ID.String(), page)
+		result, qErr := h.snapshotLog.Query(c.Request.Context(), helmID.String(), hs.ID.String(), page)
 		if qErr == nil {
-			all = append(all, result.Points...)
+			all = append(all, result.Snapshots...)
 		}
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].TS.Before(all[j].TS) })
@@ -442,7 +439,7 @@ func (h *Handler) equity(c *gin.Context) {
 		resp.Next = all[len(all)-1].TS.UTC().Format(time.RFC3339)
 	}
 	for _, p := range all {
-		resp.Points = append(resp.Points, helmdto.EquityPointResp{HandID: p.HandID, TS: p.TS, Equity: p.Equity})
+		resp.Points = append(resp.Points, helmdto.EquityPointResp{HandID: p.HandID, TS: p.TS, Equity: p.Equity.InexactFloat64()})
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Equity retrieved successfully", resp)
 }

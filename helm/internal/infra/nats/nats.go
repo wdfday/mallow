@@ -72,18 +72,31 @@ func NewJetStream(nc *nats.Conn) (nats.JetStreamContext, error) {
 			MaxAge:     365 * 24 * time.Hour,
 			Duplicates: 30 * time.Minute,
 		},
+		// HELM_EVENTS: real-time activity feed (was fire-and-forget nc.Publish).
+		// 7 days retention so reconnecting UI/strategist clients can replay recent events.
 		{
-			Name:       "HELM_EQUITY",
-			Subjects:   []string{"helm.equity.>"},
+			Name:       "HELM_EVENTS",
+			Subjects:   []string{"helm.events.>"},
+			Storage:    nats.FileStorage,
+			MaxAge:     7 * 24 * time.Hour,
+			Duplicates: 1 * time.Minute,
+		},
+		// HELM_SNAPSHOTS: portfolio state after every fill (replaces HELM_EQUITY + PORTFOLIO_SNAPSHOTS).
+		// Subjects: helm.snapshot.{helm_id} (helm-level), helm.snapshot.{helm_id}.{hand_id} (hand-level).
+		{
+			Name:       "HELM_SNAPSHOTS",
+			Subjects:   []string{"helm.snapshot.>"},
 			Storage:    nats.FileStorage,
 			MaxAge:     90 * 24 * time.Hour,
 			Duplicates: 5 * time.Minute,
 		},
+		// PORTFOLIO_SYNC: REST sync notifications (was fire-and-forget nc.Publish).
+		// 1 day retention so missed syncs are replayed on reconnect.
 		{
-			Name:     "PORTFOLIO_SNAPSHOTS",
-			Subjects: []string{"portfolio.>"},
-			Storage:  nats.FileStorage,
-			MaxAge:   90 * 24 * time.Hour,
+			Name:     "PORTFOLIO_SYNC",
+			Subjects: []string{"portfolio.synced.>"},
+			Storage:  nats.MemoryStorage,
+			MaxAge:   24 * time.Hour,
 		},
 	}
 	for _, cfg := range streams {

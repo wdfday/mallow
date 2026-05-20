@@ -18,11 +18,10 @@ func (r *Registry) LatestL2(brokerType, symbol string) (exchange.L2Snapshot, boo
 }
 
 // handleL2 returns the L2 book handler for a given broker type.
-// Registered once per market streamer; fans-out to all hands watching that symbol
-// across every helm of that broker — no per-helm handler needed.
+// Registered once per market streamer; all helms of the same broker share this cache
+// via the getL2 closure injected at Spawn() — no per-helm copy or fan-out needed.
 func (r *Registry) handleL2(brokerType string) func(exchange.L2Snapshot) {
 	return func(snap exchange.L2Snapshot) {
-		// Update registry-level cache.
 		r.l2Mu.Lock()
 		m := r.l2Books[brokerType]
 		if m == nil {
@@ -31,14 +30,5 @@ func (r *Registry) handleL2(brokerType string) func(exchange.L2Snapshot) {
 		}
 		m[snap.Symbol] = snap
 		r.l2Mu.Unlock()
-
-		// Push to every helm of this broker — one write per helm, not per hand.
-		r.mu.RLock()
-		for _, rt := range r.helmRuntimes {
-			if rt.BrokerType == brokerType {
-				rt.UpdateL2(snap)
-			}
-		}
-		r.mu.RUnlock()
 	}
 }

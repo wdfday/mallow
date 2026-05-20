@@ -139,22 +139,24 @@ func runHeraldHeartbeat(ctx context.Context, sc *engine.SignalClient, reg *runti
 
 func doHeraldHeartbeat(ctx context.Context, sc *engine.SignalClient, reg *runtime.Registry, handMgr *handservice.Service) {
 	for _, rt := range reg.All() {
-		runningIDs := rt.RunningHandIDs()
-		if len(runningIDs) == 0 {
-			continue
-		}
-		handIDs := runningIDs
+		// Always send heartbeat, even with empty list — herald uses it to
+		// detect orphan hands (hands it still has but helm forgot about).
+		handIDs := rt.RunningHandIDs()
 		resp, err := sc.Heartbeat(ctx, rt.HelmID.String(), handIDs)
 		if err != nil {
 			slog.Warn("herald heartbeat failed", "helm_id", rt.HelmID, "err", err)
 			continue
 		}
-		if len(resp.Missing) == 0 {
-			continue
+		if len(resp.Missing) > 0 {
+			slog.Warn("herald heartbeat: missing hands — re-registering",
+				"helm_id", rt.HelmID, "missing", resp.Missing)
+			handMgr.ReregisterByIDs(resp.Missing)
 		}
-		slog.Warn("herald heartbeat: missing hands — re-registering",
-			"helm_id", rt.HelmID, "missing", resp.Missing)
-		handMgr.ReregisterByIDs(resp.Missing)
+		if len(resp.Orphan) > 0 {
+			slog.Warn("herald heartbeat: orphan hands — deregistering",
+				"helm_id", rt.HelmID, "orphan", resp.Orphan)
+			handMgr.DeregisterByIDs(resp.Orphan)
+		}
 	}
 }
 
@@ -166,7 +168,7 @@ func runOrchestrator(
 	ginEngine *gin.Engine,
 	reg *runtime.Registry,
 	nc *nats.Conn,
-	portfolioLog perf.PortfolioLog,
+	snapshotLog perf.SnapshotLog,
 ) {
 	srv := &http.Server{Addr: cfg.Server.APIAddr, Handler: ginEngine}
 	var cancel context.CancelFunc
@@ -177,7 +179,7 @@ func runOrchestrator(
 			cancel = c
 
 			reg.SetRuntime(runCtx, nc)
-			reg.SetPortfolioLog(portfolioLog)
+			reg.SetSnapshotLog(snapshotLog)
 			reg.ReconcileAllOrders(ctx)
 			reg.RecoverGapFills(ctx, nc)
 			reg.StartFillStreaming(runCtx, nc)

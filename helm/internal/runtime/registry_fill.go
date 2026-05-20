@@ -33,13 +33,30 @@ func (r *Registry) startFillStream(ctx context.Context, nc *nats.Conn, rt *HelmR
 		return
 	}
 	// WS callback only enqueues — never blocks on NATS.
-	if err := streamer.StreamOrders(ctx, rt.Creds, rt.EnqueueOrderEvent); err != nil {
+	if err := streamer.StreamOrders(ctx, rt.Creds, rt.EnqueueOrderEvent, makeBalanceHandler(rt)); err != nil {
 		slog.Error("order stream start failed", "helm_id", rt.HelmID, "err", err)
 		return
 	}
 	// Dedicated goroutine drains orderCh and processes all event types.
 	go r.runOrderProcessor(ctx, nc, rt)
 	slog.Info("order streaming started", "helm_id", rt.HelmID, "exchange", rt.Exchange.Name())
+}
+
+// makeBalanceHandler returns a callback that syncs the portfolio's cash from a
+// live balance push. Only USDT and USDC are treated as quote currency (cash);
+// other assets (BTC, ETH, etc.) represent base-currency positions and are ignored.
+func makeBalanceHandler(rt *HelmRuntime) func(exchange.BalanceEvent) {
+	return func(ev exchange.BalanceEvent) {
+		if ev.Asset != "USDT" {
+			return
+		}
+		rt.Portfolio.SyncCash(ev.Free)
+		slog.Info("runtime: cash synced from exchange",
+			"helm_id", rt.HelmID,
+			"asset", ev.Asset,
+			"free", ev.Free,
+		)
+	}
 }
 
 // runOrderProcessor drains rt.orderCh and dispatches each event by type:
@@ -103,55 +120,82 @@ func (r *Registry) applyFill(nc *nats.Conn, js nats.JetStreamContext, rt *HelmRu
 
 	rt.MarkTradeProcessed(ev.TradeID)
 
-	// For a full fill on a tracked order: route to the owning hand.
-	// The hand's applyFill owns the complete fill lifecycle — portfolio update,
-	// exit-level management, metrics, and poslog — so we do NOT call ReportFill here.
-	//
-	// For partial fills or orders with no owning hand (manual orders placed outside
-	// the bot), update the portfolio directly from the registry since there is no
-	// hand run-loop to process the fill.
-	if ev.Type == exchange.OrderEventFilled && botID != "" {
-		rt.mu.RLock()
-		hand, ok := rt.hands[botID]
-		rt.mu.RUnlock()
-		if ok {
-			hand.EnqueueFill(ev)
-		} else {
-			// Hand was removed between order placement and fill — update portfolio directly.
-			rt.ReportFill(helmdomain.FillReport{
-				HandID:    botID,
-				HelmID:    helmID,
-				OrderID:   ev.OrderID,
-				Symbol:    ev.Symbol,
-				Side:      string(ev.Side),
-				Qty:       ev.FilledQty,
-				Price:     ev.FilledAvg,
-				Timestamp: ev.Timestamp,
-			})
-		}
-	} else {
-		// Partial fill or manual order: update portfolio from registry.
-		// For partial fills with a known owning hand, mark the orderID as seen so
-		// pollOrders does not double-apply the same fill via the dust-cancel path.
-		if botID != "" && ev.Type == exchange.OrderEventPartialFill {
+	fillReport := helmdomain.FillReport{
+		HandID:    botID,
+		HelmID:    helmID,
+		OrderID:   ev.OrderID,
+		Symbol:    ev.Symbol,
+		Side:      string(ev.Side),
+		Qty:       ev.FilledQty,
+		Price:     ev.FilledAvg,
+		Timestamp: ev.Timestamp,
+	}
+
+	if ev.Type == exchange.OrderEventFilled {
+		// Full fill is terminal — routing info no longer needed.
+		// Remove before dispatching so any concurrent lookup correctly misses.
+		rt.RemoveOrderTracking(ev.OrderID)
+
+		if botID != "" {
 			rt.mu.RLock()
 			hand, ok := rt.hands[botID]
 			rt.mu.RUnlock()
 			if ok {
+				// Route to hand: hand.applyFill owns exit-level management,
+				// poslog, metrics, and calls rt.ReportFill itself.
+				// Publish trade.filled here before routing — hand processes
+				// asynchronously via fillCh so we can't rely on it to publish.
+				hand.EnqueueFill(ev)
+				if js != nil {
+					natsapi.PublishTradeFill(js, natsapi.TransactionMsg{
+						HelmID:    helmID,
+						AccountID: rt.AccountID.String(),
+						UserID:    rt.UserID.String(),
+						HandID:    botID,
+						TradeID:   ev.TradeID,
+						OrderID:   ev.OrderID,
+						Kind:      "fill",
+						Symbol:    ev.Symbol,
+						Side:      string(ev.Side),
+						Qty:       ev.FilledQty,
+						AvgPrice:  ev.FilledAvg,
+						FilledAt:  ev.Timestamp,
+					})
+				}
+				return
+			}
+		}
+		// Orphan: hand removed between order placement and fill.
+		// Fall through to ReportFill to at least update portfolio.
+		rt.ReportFill(fillReport)
+	} else {
+		// Partial fill: order is still open — keep routing info for subsequent fills.
+		// Update portfolio with the filled portion, but routing stays intact.
+		if botID != "" {
+			rt.mu.RLock()
+			hand, ok := rt.hands[botID]
+			rt.mu.RUnlock()
+			if ok {
+				// Mark seen so pollOrders (5s REST tick) does not double-apply this partial.
 				hand.MarkFillSeen(ev.OrderID)
 			}
 		}
-		rt.ReportFill(helmdomain.FillReport{
-			HandID:    botID,
-			HelmID:    helmID,
-			OrderID:   ev.OrderID,
-			Symbol:    ev.Symbol,
-			Side:      string(ev.Side),
-			Qty:       ev.FilledQty,
-			Price:     ev.FilledAvg,
-			Timestamp: ev.Timestamp,
-		})
+		rt.ReportFill(fillReport)
 	}
+
+	// Emit fill event for orphan and partial paths — hand emits its own CodeOrderFilled
+	// on the normal path (EnqueueFill → applyFill → EmitEvent). These two paths have
+	// no hand, so we emit here to keep HELM_EVENTS consistent.
+	rt.EmitEvent(natsapi.HelmEvent{
+		HandID:  botID,
+		Code:    CodeOrderFilled,
+		Symbol:  ev.Symbol,
+		Side:    string(ev.Side),
+		Qty:     ev.FilledQty,
+		Price:   ev.FilledAvg,
+		OrderID: ev.OrderID,
+		Msg:     "runtime: fill applied to portfolio",
+	})
 
 	if js == nil {
 		return

@@ -8,7 +8,6 @@ import (
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
-	"mallow/helm/internal/infra/natsapi"
 	helmdomain "mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/runtime/core/portfolio"
 	"mallow/helm/internal/runtime/core/strategy"
@@ -44,13 +43,6 @@ func (r *HelmRuntime) ProcessTrade(
 		return helmdomain.TradeReply{Approved: false, Reason: "circuit breaker: too many requests"}
 	}
 
-	r.tradeMu.Lock()
-	defer r.tradeMu.Unlock()
-
-	if ok, reason := r.RiskMgr.Validate(proposal.Intent); !ok {
-		return helmdomain.TradeReply{Approved: false, Reason: "risk: " + reason}
-	}
-
 	price := proposal.Price
 	if price.IsZero() {
 		price = r.lastKnownPrice(proposal.Symbol)
@@ -67,6 +59,13 @@ func (r *HelmRuntime) ProcessTrade(
 	}
 	if price.IsZero() {
 		return helmdomain.TradeReply{Approved: false, Reason: "no price available for " + proposal.Symbol}
+	}
+
+	r.tradeMu.Lock()
+	defer r.tradeMu.Unlock()
+
+	if ok, reason := r.RiskMgr.Validate(proposal.Intent); !ok {
+		return helmdomain.TradeReply{Approved: false, Reason: "risk: " + reason}
 	}
 
 	posQty := decimal.Zero
@@ -116,14 +115,22 @@ func (r *HelmRuntime) ProcessTrade(
 	}
 }
 
-// ReportFill applies a fill to the portfolio and removes the order from the tracking map.
-// After applying, it records an equity point (for maxDrawdown) and publishes a helm-level
-// portfolio snapshot to the PortfolioLog so the FE can compute equity at any timeframe.
+// ReportFill is the single choke-point for updating portfolio state after any fill.
+//
+// It is called from three paths:
+//   - hand.applyFill        — normal hand-owned fill after hand has updated its own state
+//   - runOrderProcessor     — orphan fill (hand removed between order and fill) or partial fill
+//   - RecoverGapFills       — replaying fills missed during a crash/restart window
+//
+// All three paths must converge here so portfolio cash+positions stay consistent
+// regardless of whether the owning hand is alive. Hand-level concerns (exit levels,
+// poslog, metrics) are handled by the hand before calling here; this function owns
+// only the helm-level aggregate state.
 func (r *HelmRuntime) ReportFill(fill helmdomain.FillReport) {
 	r.tradeMu.Lock()
 
-	r.RemoveOrderTracking(fill.OrderID)
-
+	// Fill price is the freshest known price; update cache so the next
+	// ProcessTrade sizing call doesn't fall back to a stale tick.
 	if fill.Price.IsPositive() {
 		r.pricesMu.Lock()
 		r.prices[fill.Symbol] = fill.Price
@@ -136,6 +143,8 @@ func (r *HelmRuntime) ReportFill(fill helmdomain.FillReport) {
 	}
 
 	now := time.Now().UTC()
+	// Apply to portfolio: adjusts cash and positions. This is what makes
+	// subsequent ProcessTrade calls see the correct open exposure.
 	r.Portfolio.ApplyFill(portfolio.Fill{
 		Timestamp:  fill.Timestamp,
 		HandID:     fill.HandID,
@@ -145,33 +154,25 @@ func (r *HelmRuntime) ReportFill(fill helmdomain.FillReport) {
 		Price:      fill.Price,
 		Commission: decimal.Zero,
 	})
+	// Record an equity data point so RiskMgr can evaluate maxDrawdown on the next trade.
 	r.Portfolio.RecordEquity(now)
 
-	// Snapshot for PortfolioLog: raw cash + positions (no price multiplication).
-	var snap *perf.PortfolioSnapshot
-	if r.PortfolioLog != nil {
+	// Snapshot while still under tradeMu so cash+positions are consistent.
+	// Published async below so NATS I/O does not block the lock.
+	var snap *perf.Snapshot
+	if r.SnapshotLog != nil {
 		snap = r.helmSnapshot(now)
 	}
 
 	r.tradeMu.Unlock()
 
-	r.EmitEvent(natsapi.HelmEvent{
-		HandID:  fill.HandID,
-		Code:    CodeOrderFilled,
-		Symbol:  fill.Symbol,
-		Side:    fill.Side,
-		Qty:     fill.Qty,
-		Price:   fill.Price,
-		OrderID: fill.OrderID,
-		Msg:     "runtime: fill applied to portfolio",
-	})
-
+	// Append snapshot async: JetStream publish is slow relative to trade decisions.
 	if snap != nil {
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			if err := r.PortfolioLog.Append(ctx, *snap); err != nil {
-				slog.Warn("portfolio_log: helm snapshot append failed", "helm_id", r.HelmID, "err", err)
+			if err := r.SnapshotLog.Append(ctx, *snap); err != nil {
+				slog.Warn("snapshot_log: helm snapshot append failed", "helm_id", r.HelmID, "err", err)
 			}
 		}()
 	}
@@ -179,7 +180,7 @@ func (r *HelmRuntime) ReportFill(fill helmdomain.FillReport) {
 
 // helmSnapshot builds a helm-level PortfolioSnapshot from current portfolio state.
 // Caller must hold tradeMu (or otherwise ensure portfolio is not being written concurrently).
-func (r *HelmRuntime) helmSnapshot(ts time.Time) *perf.PortfolioSnapshot {
+func (r *HelmRuntime) helmSnapshot(ts time.Time) *perf.Snapshot {
 	rawPos := r.Portfolio.Positions()
 	entries := make([]perf.PositionEntry, 0, len(rawPos))
 	for _, p := range rawPos {
@@ -194,10 +195,11 @@ func (r *HelmRuntime) helmSnapshot(ts time.Time) *perf.PortfolioSnapshot {
 			AvgPrice: p.AvgPrice,
 		})
 	}
-	return &perf.PortfolioSnapshot{
+	return &perf.Snapshot{
 		HelmID:    r.HelmID.String(),
 		TS:        ts,
 		Cash:      r.Portfolio.Cash(),
+		Equity:    r.Portfolio.Equity(),
 		Positions: entries,
 	}
 }

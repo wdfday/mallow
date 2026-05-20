@@ -96,15 +96,18 @@ func (m *Manager) Validate(intent strategy.Intent) (bool, string) {
 	// Gate 3: max concurrent open units (entries only).
 	// Counts all active legs across hands plus any manual portfolio positions not
 	// owned by a hand. This correctly reflects pre-existing account exposure.
-	if intent.Action.IsEntry() && m.cfg.MaxPositions > 0 {
-		var units int
-		if m.unitCounter != nil {
-			units = m.unitCounter()
-		} else {
-			units = len(m.portfolio.Positions())
-		}
-		if units >= m.cfg.MaxPositions {
-			return false, "max positions reached"
+	if intent.Action.IsEntry() && m.cfg.MaxPositions >= 0 {
+		// Adding to an existing position is always allowed under MaxPositions.
+		if m.portfolio.GetPosition(intent.Signal.Symbol) == nil {
+			var units int
+			if m.unitCounter != nil {
+				units = m.unitCounter()
+			} else {
+				units = len(m.portfolio.Positions())
+			}
+			if units >= m.cfg.MaxPositions {
+				return false, "max positions reached"
+			}
 		}
 	}
 

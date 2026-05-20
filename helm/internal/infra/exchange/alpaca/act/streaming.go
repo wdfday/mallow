@@ -23,7 +23,8 @@ func (c *Client) StreamTradeUpdates(ctx context.Context, creds exchange.Credenti
 }
 
 // StreamOrders implements exchange.AccountStreamer.
-func (c *Client) StreamOrders(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent)) error {
+// balanceHandler is ignored — Alpaca does not push balance updates on the trade-updates stream.
+func (c *Client) StreamOrders(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent), _ func(exchange.BalanceEvent)) error {
 	slog.Info("alpaca: starting order stream")
 	c.newSDK(creds).StreamTradeUpdatesInBackground(ctx, func(tu alpacasdk.TradeUpdate) {
 		side := exchange.Buy

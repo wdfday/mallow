@@ -20,14 +20,13 @@ import (
 )
 
 type Handler struct {
-	svc          HelmService
-	handMgr      HandManager
-	reg          *runtime.Registry
-	nc           *nats.Conn
-	fillLog      *perflog.FillLog
-	equityLog    perf.EquityLog
-	portfolioLog perf.PortfolioLog
-	posLog       poslog.Log
+	svc         HelmService
+	handMgr     HandManager
+	reg         *runtime.Registry
+	nc          *nats.Conn
+	fillLog     *perflog.FillLog
+	snapshotLog perf.SnapshotLog
+	posLog      poslog.Log
 }
 
 func New(
@@ -36,19 +35,17 @@ func New(
 	reg *runtime.Registry,
 	nc *nats.Conn,
 	fillLog *perflog.FillLog,
-	equityLog perf.EquityLog,
-	portfolioLog perf.PortfolioLog,
+	snapshotLog perf.SnapshotLog,
 	posLog poslog.Log,
 ) *Handler {
 	return &Handler{
-		svc:          svc,
-		handMgr:      handMgr,
-		reg:          reg,
-		nc:           nc,
-		fillLog:      fillLog,
-		equityLog:    equityLog,
-		portfolioLog: portfolioLog,
-		posLog:       posLog,
+		svc:         svc,
+		handMgr:     handMgr,
+		reg:         reg,
+		nc:          nc,
+		fillLog:     fillLog,
+		snapshotLog: snapshotLog,
+		posLog:      posLog,
 	}
 }
 
@@ -660,7 +657,7 @@ func (h *Handler) snapshots(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusNotFound, "not found")
 		return
 	}
-	if h.portfolioLog == nil {
+	if h.snapshotLog == nil {
 		shared.RespondWithError(c, http.StatusServiceUnavailable, "portfolio log unavailable")
 		return
 	}
@@ -671,7 +668,7 @@ func (h *Handler) snapshots(c *gin.Context) {
 			page.After = t
 		}
 	}
-	result, err := h.portfolioLog.Query(c.Request.Context(), id.String(), "", page)
+	result, err := h.snapshotLog.Query(c.Request.Context(), id.String(), "", page)
 	if err != nil {
 		shared.RespondWithError(c, http.StatusInternalServerError, err.Error())
 		return
@@ -715,7 +712,7 @@ func (h *Handler) equity(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusNotFound, "not found")
 		return
 	}
-	if h.equityLog == nil {
+	if h.snapshotLog == nil {
 		shared.RespondWithError(c, http.StatusServiceUnavailable, "equity log unavailable")
 		return
 	}
@@ -728,11 +725,11 @@ func (h *Handler) equity(c *gin.Context) {
 	}
 	// Fan-out across all hands, merge by TS.
 	hands := h.handMgr.ListByHelm(id)
-	var all []perf.EquityLogPoint
+	var all []perf.Snapshot
 	for _, hs := range hands {
-		result, qErr := h.equityLog.Query(c.Request.Context(), hs.ID.String(), page)
+		result, qErr := h.snapshotLog.Query(c.Request.Context(), id.String(), hs.ID.String(), page)
 		if qErr == nil {
-			all = append(all, result.Points...)
+			all = append(all, result.Snapshots...)
 		}
 	}
 	sort.Slice(all, func(i, j int) bool { return all[i].TS.Before(all[j].TS) })
@@ -749,7 +746,7 @@ func (h *Handler) equity(c *gin.Context) {
 		resp.Next = all[len(all)-1].TS.UTC().Format(time.RFC3339)
 	}
 	for _, p := range all {
-		resp.Points = append(resp.Points, dto.EquityPointResp{HandID: p.HandID, TS: p.TS, Equity: p.Equity})
+		resp.Points = append(resp.Points, dto.EquityPointResp{HandID: p.HandID, TS: p.TS, Equity: p.Equity.InexactFloat64()})
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Equity retrieved successfully", resp)
 }

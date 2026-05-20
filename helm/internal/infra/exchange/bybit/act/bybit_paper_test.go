@@ -247,7 +247,7 @@ func TestBybit_StreamOrders(t *testing.T) {
 	events := make(chan exchange.OrderEvent, 8)
 	if err := c.StreamOrders(cx, creds, func(e exchange.OrderEvent) {
 		events <- e
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatalf("StreamOrders: %v", err)
 	}
 	t.Log("order stream started — placing a market order to trigger events...")

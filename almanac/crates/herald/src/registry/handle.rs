@@ -8,7 +8,7 @@ use alm_ledger::{IndicatorHandle, IndicatorSpec, Ledger};
 use alm_data::aggregator::StandaloneAggregator;
 use alm_strategy::factory::{build_strategy_with_deps, IndicatorDep};
 use alm_strategy::{probe_script_htfs, MtfScriptStrategy};
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 // ── LiveStrategy ──────────────────────────────────────────────────────────────
 
@@ -38,7 +38,9 @@ enum LiveStrategy {
 pub struct Handle {
     pub hand_id: String,
     pub helm_id: String,
-    pub symbol: String,
+    pub symbol: String,   // raw ticker: "BTCUSDT", "BTC-USDT"
+    pub exchange: String, // "binance" | "okx" | "alpaca" | "" (empty = backtest/test)
+    pub is_future: bool,  // false = spot; true = perpetual/futures
     pub script: String,
     /// The timeframe this hand evaluates at (may differ from registry base TF).
     pub target_tf: Timeframe,
@@ -67,6 +69,8 @@ impl Handle {
         hand_id: String,
         helm_id: String,
         symbol: String,
+        exchange: String,
+        is_future: bool,
         script: String,
         ledger: &Arc<Ledger>,
         base_tf: Timeframe,
@@ -108,6 +112,8 @@ impl Handle {
                 hand_id,
                 helm_id,
                 symbol,
+                exchange,
+                is_future,
                 script,
                 target_tf,
                 live: LiveStrategy::V2 {
@@ -187,6 +193,8 @@ impl Handle {
             hand_id,
             helm_id,
             symbol,
+            exchange,
+            is_future,
             script,
             target_tf,
             live: LiveStrategy::V1 { strategy },
@@ -378,6 +386,11 @@ impl SymbolGroup {
         let mut dropped = Vec::new();
         self.hands.retain(|h| {
             if h.hand_id == hand_id {
+                info!(
+                    hand_id = %h.hand_id, helm_id = %h.helm_id,
+                    symbol = %self.symbol, target_tf = %h.target_tf,
+                    "hand deregistered"
+                );
                 dropped.extend(h.resample_subs.iter().copied());
                 false
             } else { true }
@@ -402,18 +415,37 @@ impl SymbolGroup {
         self.hands.len()
     }
 
+    /// Count hands that evaluate at the given timeframe.
+    pub fn count_for_tf(&self, tf: Timeframe) -> usize {
+        self.hands.iter().filter(|h| h.target_tf == tf).count()
+    }
+
     /// Run every hand whose `target_tf` matches `tf`. Other hands are skipped
     /// — they'll evaluate on their own TF's advance event. Returns one entry
     /// per emitting hand.
     pub fn evaluate_at(&mut self, tf: Timeframe, bar: &Bar) -> Vec<(String, String, Signal)> {
-        self.hands
-            .iter_mut()
-            .filter(|h| h.target_tf == tf)
-            .filter_map(|h| {
-                h.on_bar(bar).into_iter().next()
-                    .map(|sig| (h.hand_id.clone(), h.helm_id.clone(), sig))
-            })
-            .collect()
+        let mut results = Vec::new();
+        for h in self.hands.iter_mut().filter(|h| h.target_tf == tf) {
+            let bot_start = std::time::Instant::now();
+            let sigs = h.on_bar(bar);
+            let bot_us = bot_start.elapsed().as_micros();
+            if let Some(sig) = sigs.into_iter().next() {
+                trace!(
+                    hand_id = %h.hand_id, helm_id = %h.helm_id,
+                    symbol = %self.symbol, direction = ?sig.direction,
+                    strength = sig.strength, bot_us,
+                    "bot evaluate → signal"
+                );
+                results.push((h.hand_id.clone(), h.helm_id.clone(), sig));
+            } else {
+                trace!(
+                    hand_id = %h.hand_id, symbol = %self.symbol,
+                    bot_us,
+                    "bot evaluate → DoNothing"
+                );
+            }
+        }
+        results
     }
 
     pub fn hand_infos(&self) -> impl Iterator<Item = &Handle> {

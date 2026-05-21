@@ -293,71 +293,71 @@ fn parse_tf(s: &str) -> Option<Timeframe> {
 /// Mix of v1 (base-TF only) and v2 (MTF with H1/H4 context).
 fn default_live_scripts() -> Vec<String> {
     vec![
-        // ── v1: base-TF only ─────────────────────────────────────────────
-        // 0. EMA cross 20/50
-        r#"let fast = ind.ema(20);
-let slow = ind.ema(50);
-let long = cross_above(fast, slow);
-let exit = cross_below(fast, slow);"#.into(),
-
-        // 1. RSI mean reversion
-        r#"let rsi = ind.rsi(14);
-let long = rsi[0] < 30.0;
-let short = rsi[0] > 70.0;
-let exit = (rsi[1] < 50.0 && rsi[0] >= 50.0) || (rsi[1] > 50.0 && rsi[0] <= 50.0);"#.into(),
-
-        // 2. MACD histogram flip
-        r#"let macd = ind.macd(12, 26, 9);
-let long = macd[1].histogram < 0.0 && macd[0].histogram >= 0.0;
-let exit = macd[1].histogram > 0.0 && macd[0].histogram <= 0.0;"#.into(),
-
-        // 3. Bollinger band mean reversion
-        r#"let bb = ind.bbands(20);
-let rsi = ind.rsi(14);
-let long = close[0] < bb[0].lower && rsi[0] < 35.0;
-let exit = close[0] > bb[0].middle;"#.into(),
-
-        // 4. SuperTrend direction flip
-        r#"let st = ind.supertrend(10, 3.0);
-let long = st[1].direction < 0.0 && st[0].direction >= 0.0;
-let exit = st[0].direction < 0.0;"#.into(),
-
-        // ── v2: MTF (H1 / H4 context + M1 entry) ────────────────────────
-        // 5. H1 EMA trend + M1 EMA cross entry
-        r#"let h1_ema = ind.ema(50, "H1");
-let fast = ind.ema(8);
-let slow = ind.ema(21);
-let trend_up = close[0] > h1_ema[0];
-let long = trend_up && cross_above(fast, slow);
-let exit = cross_below(fast, slow) || close[0] < h1_ema[0];"#.into(),
-
-        // 6. H1 RSI filter + M1 RSI oversold entry
-        r#"let h1_rsi = ind.rsi(14, "H1");
-let rsi = ind.rsi(7);
-let h1_bull = h1_rsi[0] > 50.0;
-let long = h1_bull && rsi[0] < 30.0;
-let exit = rsi[0] > 65.0;"#.into(),
-
-        // 7. H4 ADX trending + M1 EMA cross entry
-        r#"let h4_adx = ind.adx(14, "H4");
-let fast = ind.ema(8);
-let slow = ind.ema(21);
-let trending = h4_adx[0].adx > 25.0 && h4_adx[0].di_plus > h4_adx[0].di_minus;
-let long = trending && cross_above(fast, slow);
-let exit = cross_below(fast, slow);"#.into(),
-
-        // 8. H1 MACD + M1 RSI pullback
-        r#"let h1_macd = ind.macd(12, 26, 9, "H1");
-let rsi = ind.rsi(14);
-let h1_bull = h1_macd[0].histogram > 0.0;
-let long = h1_bull && rsi[0] < 40.0;
-let exit = !h1_bull || rsi[0] > 65.0;"#.into(),
-
-        // 9. H1 BB position + M1 EMA momentum
-        r#"let h1_bb = ind.bbands(20, "H1");
-let ema = ind.ema(21);
-let above_mid = close[0] > h1_bb[0].middle;
-let long = above_mid && close[0] > ema[0] && close[1] <= ema[1];
-let exit = close[0] < h1_bb[0].middle;"#.into(),
+//         // ── v1: base-TF only ─────────────────────────────────────────────
+//         // 0. EMA cross 20/50
+//         r#"let fast = ind.ema(20);
+// let slow = ind.ema(50);
+// let long = cross_above(fast, slow);
+// let exit = cross_below(fast, slow);"#.into(),
+//
+//         // 1. RSI mean reversion
+//         r#"let rsi = ind.rsi(14);
+// let long = rsi[0] < 30.0;
+// let short = rsi[0] > 70.0;
+// let exit = (rsi[1] < 50.0 && rsi[0] >= 50.0) || (rsi[1] > 50.0 && rsi[0] <= 50.0);"#.into(),
+//
+//         // 2. MACD histogram flip
+//         r#"let macd = ind.macd(12, 26, 9);
+// let long = macd[1].histogram < 0.0 && macd[0].histogram >= 0.0;
+// let exit = macd[1].histogram > 0.0 && macd[0].histogram <= 0.0;"#.into(),
+//
+//         // 3. Bollinger band mean reversion
+//         r#"let bb = ind.bbands(20);
+// let rsi = ind.rsi(14);
+// let long = close[0] < bb[0].lower && rsi[0] < 35.0;
+// let exit = close[0] > bb[0].middle;"#.into(),
+//
+//         // 4. SuperTrend direction flip
+//         r#"let st = ind.supertrend(10, 3.0);
+// let long = st[1].direction < 0.0 && st[0].direction >= 0.0;
+// let exit = st[0].direction < 0.0;"#.into(),
+//
+//         // ── v2: MTF (H1 / H4 context + M1 entry) ────────────────────────
+//         // 5. H1 EMA trend + M1 EMA cross entry
+//         r#"let h1_ema = ind.ema(50, "H1");
+// let fast = ind.ema(8);
+// let slow = ind.ema(21);
+// let trend_up = close[0] > h1_ema[0];
+// let long = trend_up && cross_above(fast, slow);
+// let exit = cross_below(fast, slow) || close[0] < h1_ema[0];"#.into(),
+//
+//         // 6. H1 RSI filter + M1 RSI oversold entry
+//         r#"let h1_rsi = ind.rsi(14, "H1");
+// let rsi = ind.rsi(7);
+// let h1_bull = h1_rsi[0] > 50.0;
+// let long = h1_bull && rsi[0] < 30.0;
+// let exit = rsi[0] > 65.0;"#.into(),
+//
+//         // 7. H4 ADX trending + M1 EMA cross entry
+//         r#"let h4_adx = ind.adx(14, "H4");
+// let fast = ind.ema(8);
+// let slow = ind.ema(21);
+// let trending = h4_adx[0].adx > 25.0 && h4_adx[0].di_plus > h4_adx[0].di_minus;
+// let long = trending && cross_above(fast, slow);
+// let exit = cross_below(fast, slow);"#.into(),
+//
+//         // 8. H1 MACD + M1 RSI pullback
+//         r#"let h1_macd = ind.macd(12, 26, 9, "H1");
+// let rsi = ind.rsi(14);
+// let h1_bull = h1_macd[0].histogram > 0.0;
+// let long = h1_bull && rsi[0] < 40.0;
+// let exit = !h1_bull || rsi[0] > 65.0;"#.into(),
+//
+//         // 9. H1 BB position + M1 EMA momentum
+//         r#"let h1_bb = ind.bbands(20, "H1");
+// let ema = ind.ema(21);
+// let above_mid = close[0] > h1_bb[0].middle;
+// let long = above_mid && close[0] > ema[0] && close[1] <= ema[1];
+// let exit = close[0] < h1_bb[0].middle;"#.into(),
     ]
 }

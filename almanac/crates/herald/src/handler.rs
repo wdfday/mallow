@@ -142,7 +142,7 @@ impl Handler {
     async fn publish_ready(&self) {
         let mut symbols: Vec<String> = self.registry.list_hands()
             .into_iter()
-            .map(|(_, _, sym, _, _)| sym)
+            .map(|(_, _, sym, _, _, _, _)| sym)
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
@@ -228,7 +228,14 @@ impl Handler {
             Ok(r) => r,
             Err(e) => { error!(err = %e, "failed to decode RegisterMsg"); return; }
         };
-        info!(hand_id = %req.hand_id, symbol = %req.symbol, "registering hand");
+        // Build the ledger key: "{exchange}:{symbol}" when exchange is set,
+        // plain symbol otherwise (tests / backtest-only setups).
+        let ledger_key = if req.exchange.is_empty() {
+            req.symbol.clone()
+        } else {
+            format!("{}:{}", req.exchange, req.symbol)
+        };
+        info!(hand_id = %req.hand_id, symbol = %ledger_key, "registering hand");
         // Timeframe is required — strategies are TF-specific so silent fallback
         // to herald's base TF would run a script designed for H1 on M1 bars.
         let target_tf = match req.timeframe.as_str() {
@@ -262,13 +269,14 @@ impl Handler {
         // surface here as `Err(_)` and are returned in the ack. Avoids the
         // double-compile we used to do (probe-then-discard + register build).
         let result = self.registry.register(
-            req.hand_id.clone(), req.helm_id.clone(), req.symbol.clone(),
+            req.hand_id.clone(), req.helm_id.clone(), ledger_key.clone(),
+            req.exchange.clone(), req.is_future,
             req.script.clone(), target_tf,
         );
         if let Some(reply) = msg.reply {
             let ack = match result {
                 Ok(()) => {
-                    info!(hand_id = %req.hand_id, symbol = %req.symbol, "hand registered");
+                    info!(hand_id = %req.hand_id, symbol = %ledger_key, "hand registered");
                     serde_json::json!({"ok": true}).to_string()
                 }
                 Err(e) => {
@@ -305,8 +313,8 @@ impl Handler {
             return;
         };
         let hands = self.registry.list_hands().into_iter()
-            .map(|(hand_id, helm_id, symbol, script, timeframe)| {
-                HandInfo { hand_id, symbol, script, timeframe, helm_id }
+            .map(|(hand_id, helm_id, symbol, script, timeframe, exchange, is_future)| {
+                HandInfo { hand_id, symbol, script, timeframe, helm_id, exchange, is_future }
             })
             .collect();
         let payload = HandListResponse { hands }.encode_to_vec();
@@ -347,7 +355,7 @@ impl Handler {
         let all_hands = self.registry.list_hands();
         let our_hands: std::collections::HashSet<&str> = all_hands
             .iter()
-            .filter(|(_, helm_id, _, _, _)| !helm_id.is_empty() && helm_id == &req.helm_id)
+            .filter(|(_, helm_id, _, _, _, _, _)| !helm_id.is_empty() && helm_id == &req.helm_id)
             .map(|(id, ..)| id.as_str())
             .collect();
         let expected: std::collections::HashSet<&str> =
@@ -417,16 +425,22 @@ async fn signal_publisher(
             hand_id: batch.hand_id.clone(),
         };
         let payload = response.encode_to_vec();
-        debug!(hand_id = %batch.hand_id, symbol = %batch.signal.symbol, "publishing signal to JetStream");
+        debug!(
+            helm_id = %batch.helm_id, hand_id = %batch.hand_id,
+            symbol = %batch.signal.symbol, subject = SUBJ_SIGNALS,
+            "publishing signal to NATS"
+        );
         match js.publish(SUBJ_SIGNALS, payload.into()).await {
             Ok(ack_future) => {
                 if let Err(e) = ack_future.await {
                     error!(subject = SUBJ_SIGNALS, err = %e, "JetStream signal ack failed");
                 } else {
                     info!(
-                        hand_id = %batch.hand_id, symbol = %batch.signal.symbol,
+                        helm_id = %batch.helm_id, hand_id = %batch.hand_id,
+                        symbol = %batch.signal.symbol, subject = SUBJ_SIGNALS,
                         direction = ?batch.signal.direction, strength = batch.signal.strength,
-                        bar_ts = batch.bar_ts, "signal emitted to JetStream"
+                        bar_ts = batch.bar_ts,
+                        "signal published to NATS"
                     );
                 }
             }

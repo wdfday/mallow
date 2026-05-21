@@ -27,7 +27,7 @@ use alm_ledger::{AdvanceOutcome, Ledger, LedgerObserver};
 use alm_strategy::probe_script_htfs;
 use parking_lot::Mutex;
 use tokio::sync::mpsc;
-use tracing::{debug, trace, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::resample::ResampleManager;
 
@@ -128,6 +128,8 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
         hand_id: String,
         helm_id: String,
         symbol: String,
+        exchange: String,
+        is_future: bool,
         script: String,
         target_tf: Timeframe,
     ) -> Result<()> {
@@ -145,7 +147,7 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
         // return the error to the caller verbatim. This avoids polluting
         // ResampleManager with subscriptions for a hand that never lived.
         let hand = Handle::new(
-            hand_id, helm_id, symbol.clone(), script,
+            hand_id, helm_id, symbol.clone(), exchange, is_future, script,
             &self.ledger, self.base_tf, target_tf,
         )?;
 
@@ -156,11 +158,13 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
         for (src, tgt) in &hand.resample_subs {
             self.resample.ensure(&symbol, *src, *tgt);
         }
-        debug!(
-            hand_id = %hand.hand_id, symbol = %hand.symbol,
-            target_tf = %target_tf,
-            handles = hand._indicator_handles.len(),
-            "hand activated in registry"
+        info!(
+            hand_id = %hand.hand_id, helm_id = %hand.helm_id,
+            symbol = %hand.symbol, target_tf = %target_tf,
+            exchange = %hand.exchange, is_future = hand.is_future,
+            script_bytes = hand.script.len(),
+            indicator_handles = hand._indicator_handles.len(),
+            "hand registered"
         );
         let replaced_subs = {
             let mut w = self.inner.lock();
@@ -185,6 +189,8 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
             let mut w = self.inner.lock();
             let mut out = Vec::new();
             if hand_id.is_empty() {
+                let total: usize = w.groups.values().map(|g| g.len()).sum();
+                info!(n_hands = total, "deregistering all hands");
                 for (sym, group) in w.groups.iter_mut() {
                     let subs = group.drain_subs();
                     if !subs.is_empty() {
@@ -257,8 +263,8 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
         }
     }
 
-    /// Returns (hand_id, helm_id, symbol, script, timeframe_str) for every registered hand.
-    pub fn list_hands(&self) -> Vec<(String, String, String, String, String)> {
+    /// Returns HandInfo fields for every registered hand.
+    pub fn list_hands(&self) -> Vec<(String, String, String, String, String, String, bool)> {
         let r = self.inner.lock();
         r.groups
             .values()
@@ -269,6 +275,8 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
                 h.symbol.clone(),
                 h.script.clone(),
                 h.target_tf.to_string(),
+                h.exchange.clone(),
+                h.is_future,
             ))
             .collect()
     }
@@ -317,28 +325,44 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
             }
         }
 
+        let eval_start = std::time::Instant::now();
         let emitted = {
             let mut w = self.inner.lock();
             match w.groups.get_mut(symbol) {
-                Some(g) => g.evaluate_at(tf, &bar),
-                None => Vec::new(),
+                Some(g) => {
+                    let n_bots = g.count_for_tf(tf);
+                    if n_bots == 0 {
+                        return;
+                    }
+                    debug!(%symbol, ?tf, bar_ts = outcome.ts, n_bots, "evaluating bots");
+                    g.evaluate_at(tf, &bar)
+                }
+                None => return,
             }
         };
+        let eval_us = eval_start.elapsed().as_micros();
+
+        debug!(
+            %symbol, ?tf, bar_ts = outcome.ts,
+            n_emitted = emitted.len(), eval_us,
+            "evaluation complete"
+        );
 
         if emitted.is_empty() {
-            trace!(%symbol, bar_ts = outcome.ts, "no signals this bar");
             return;
         }
 
-        debug!(%symbol, bar_ts = outcome.ts, n = emitted.len(), "signals produced");
-
         if is_stale {
-            debug!(%symbol, age_ms, freshness_gate_ms = FRESHNESS_GATE_MS, "stale bar — suppressing");
+            debug!(%symbol, age_ms, freshness_gate_ms = gate_ms, "stale bar — suppressing signals");
             return;
         }
 
         for (hand_id, helm_id, signal) in emitted {
-            debug!(hand_id = %hand_id, %symbol, direction = ?signal.direction, "forwarding signal");
+            debug!(
+                hand_id = %hand_id, helm_id = %helm_id,
+                %symbol, direction = ?signal.direction, strength = signal.strength,
+                "forwarding signal to publisher"
+            );
             let _ = self.signal_tx.send(HandSignal {
                 hand_id, helm_id, bar_ts: outcome.ts, signal,
             });
@@ -366,7 +390,9 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
                 }
             }
             match Handle::new(
-                hand_id.clone(), String::new(), symbol.to_string(), script.clone(),
+                hand_id.clone(), String::new(), symbol.to_string(),
+                String::new(), false, // fallback hands have no exchange context
+                script.clone(),
                 &self.ledger, self.base_tf, self.base_tf,
             ) {
                 Ok(h) => {
@@ -423,6 +449,7 @@ mod tests {
         let (_led, reg, _rx) = make_registry();
         reg.register(
             "hand1".into(), "helm1".into(), "BTCUSDT".into(),
+            String::new(), false,
             "let r = ind.rsi(14);\nif r[0] < 30.0 { long = true; }\nif r[0] > 70.0 { exit = true; }".into(),
             Timeframe::M1,
         ).unwrap();
@@ -436,6 +463,7 @@ mod tests {
         let (led, reg, mut rx) = make_registry();
         reg.register(
             "hand1".into(), "helm1".into(), "BTCUSDT".into(),
+            String::new(), false,
             "let e2 = ind.ema(2); let e3 = ind.ema(3);\nif e2[0] > e3[0] { long = true; }\nif e2[0] < e3[0] { exit = true; }".into(),
             Timeframe::M1,
         ).unwrap();
@@ -451,6 +479,7 @@ mod tests {
         let (led, reg, mut rx) = make_registry();
         reg.register(
             "hand1".into(), "helm1".into(), "TEST".into(),
+            String::new(), false,
             "let e2 = ind.ema(2, 2); let e3 = ind.ema(3, 2);\nif cross_above(e2, e3) { long = true; }\nif cross_below(e2, e3) { exit = true; }".into(),
             Timeframe::M1,
         ).unwrap();
@@ -474,6 +503,7 @@ mod tests {
         let (led, reg, _rx) = make_registry();
         reg.register(
             "hand1".into(), "helm1".into(), "BTCUSDT".into(),
+            String::new(), false,
             "let r = ind.rsi(14);\nif r[0] < 30.0 { long = true; }\nif r[0] > 70.0 { exit = true; }".into(),
             Timeframe::M1,
         ).unwrap();
@@ -485,6 +515,7 @@ mod tests {
         let (led, reg, _rx) = make_registry();
         reg.register(
             "hand1".into(), "helm1".into(), "BTCUSDT".into(),
+            String::new(), false,
 "let r = ind.rsi(14);\nlet e50 = ind.ema(50);\nlet e200 = ind.ema(200);\nif r[0] < 30.0 && e50[0] > e200[0] { long = true; }\nif r[0] > 70.0 { exit = true; }".into(),
             Timeframe::M1,
         ).unwrap();
@@ -498,6 +529,7 @@ mod tests {
         let (led, reg, _rx) = make_registry();
         reg.register(
             "hand1".into(), "helm1".into(), "BTCUSDT".into(),
+            String::new(), false,
             "let r = ind.rsi(14);\nif r[0] < 30.0 { long = true; }\nif r[0] > 70.0 { exit = true; }".into(),
             Timeframe::M1,
         ).unwrap();
@@ -510,8 +542,8 @@ mod tests {
     fn two_hands_share_one_indicator_cell() {
         let (led, reg, _rx) = make_registry();
         let script = "let r = ind.rsi(14);\nif r[0] < 30.0 { long = true; }\nif r[0] > 70.0 { exit = true; }";
-        reg.register("hand1".into(), "h".into(), "BTCUSDT".into(), script.into(), Timeframe::M1).unwrap();
-        reg.register("hand2".into(), "h".into(), "BTCUSDT".into(), script.into(), Timeframe::M1).unwrap();
+        reg.register("hand1".into(), "h".into(), "BTCUSDT".into(), String::new(), false, script.into(), Timeframe::M1).unwrap();
+        reg.register("hand2".into(), "h".into(), "BTCUSDT".into(), String::new(), false, script.into(), Timeframe::M1).unwrap();
         assert_eq!(peek_refcount(&led, "BTCUSDT", serde_json::json!({"type":"rsi","period":14})), Some(2));
         reg.deregister("hand1");
         assert_eq!(peek_refcount(&led, "BTCUSDT", serde_json::json!({"type":"rsi","period":14})), Some(1));
@@ -521,8 +553,8 @@ mod tests {
     fn reregister_same_hand_keeps_single_handle() {
         let (led, reg, _rx) = make_registry();
         let script = "let r = ind.rsi(14);\nif r[0] < 30.0 { long = true; }\nif r[0] > 70.0 { exit = true; }";
-        reg.register("hand1".into(), "h".into(), "BTCUSDT".into(), script.into(), Timeframe::M1).unwrap();
-        reg.register("hand1".into(), "h".into(), "BTCUSDT".into(), script.into(), Timeframe::M1).unwrap();
+        reg.register("hand1".into(), "h".into(), "BTCUSDT".into(), String::new(), false, script.into(), Timeframe::M1).unwrap();
+        reg.register("hand1".into(), "h".into(), "BTCUSDT".into(), String::new(), false, script.into(), Timeframe::M1).unwrap();
         assert_eq!(peek_refcount(&led, "BTCUSDT", serde_json::json!({"type":"rsi","period":14})), Some(1));
     }
 
@@ -530,8 +562,8 @@ mod tests {
     async fn deregister_all_clears() {
         let (_led, reg, _rx) = make_registry();
         let script = "let e5 = ind.ema(5); let e20 = ind.ema(20);\nif e5[0] > e20[0] { long = true; }\nif e5[0] < e20[0] { exit = true; }";
-        reg.register("hand1".into(), "helm1".into(), "BTCUSDT".into(), script.into(), Timeframe::M1).unwrap();
-        reg.register("hand2".into(), "helm2".into(), "ETHUSDT".into(), script.into(), Timeframe::M1).unwrap();
+        reg.register("hand1".into(), "helm1".into(), "BTCUSDT".into(), String::new(), false, script.into(), Timeframe::M1).unwrap();
+        reg.register("hand2".into(), "helm2".into(), "ETHUSDT".into(), String::new(), false, script.into(), Timeframe::M1).unwrap();
         reg.deregister("");
         assert_eq!(reg.list_hands().len(), 0);
     }
@@ -547,8 +579,8 @@ mod tests {
         ledger.subscribe(reg.clone() as Arc<dyn LedgerObserver>);
 
         let script = "let r = ind.rsi(14); if r[0] < 30.0 { long = true; }";
-        reg.register("hA".into(), "h".into(), "BTCUSDT".into(), script.into(), Timeframe::H1).unwrap();
-        reg.register("hB".into(), "h".into(), "BTCUSDT".into(), script.into(), Timeframe::H1).unwrap();
+        reg.register("hA".into(), "h".into(), "BTCUSDT".into(), String::new(), false, script.into(), Timeframe::H1).unwrap();
+        reg.register("hB".into(), "h".into(), "BTCUSDT".into(), String::new(), false, script.into(), Timeframe::H1).unwrap();
         // Both hands ask for the same (BTCUSDT, M1→H1) subscription — one aggregator, refcount=2.
         assert_eq!(resample.len(), 1);
     }
@@ -565,6 +597,7 @@ mod tests {
         reg.set_freshness_gate_ms(i64::MAX);
         reg.register(
             "hand_m5".into(), "helm1".into(), "BTCUSDT".into(),
+            String::new(), false,
             "long = true;".into(),
             Timeframe::M5,
         ).unwrap();

@@ -85,14 +85,16 @@ loki.write "default" {
 
 // ── Metrics scraping → Prometheus ────────────────────────────────────────────
 
-prometheus.scrape "nats_surveyor" {
-  targets    = [{ __address__ = "nats-surveyor:7777" }]
-  forward_to = [prometheus.remote_write.default.receiver]
-}
-
 prometheus.scrape "tempo" {
   targets    = [{ __address__ = "tempo:3200" }]
   forward_to = [prometheus.remote_write.default.receiver]
+}
+
+prometheus.scrape "helm" {
+  targets         = [{ __address__ = "helm:8084" }]
+  metrics_path    = "/metrics"
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.default.receiver]
 }
 
 prometheus.remote_write "default" {

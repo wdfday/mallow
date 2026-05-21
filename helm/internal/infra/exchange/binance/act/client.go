@@ -5,6 +5,7 @@ import (
 	"time"
 
 	gobinance "github.com/adshao/go-binance/v2"
+	"github.com/adshao/go-binance/v2/delivery"
 	"github.com/adshao/go-binance/v2/futures"
 
 	"mallow/helm/internal/infra/exchange"
@@ -12,13 +13,15 @@ import (
 
 const paperBaseURL = "https://demo-api.binance.com"
 const paperFuturesURL = "https://demo-fapi.binance.com"
+const paperDeliveryURL = "https://demo-dapi.binance.com"
 
 // Client is a stateless Binance HTTP client.
 // One instance is shared across all Binance accounts; credentials are passed per-call.
 type Client struct {
 	httpClient *http.Client // shared connection pool
 	baseURL    string       // spot base URL override
-	futBaseURL string       // futures base URL override
+	futBaseURL string       // USDM futures base URL override
+	delivURL   string       // COINM delivery base URL override
 	paper      bool
 }
 
@@ -26,14 +29,17 @@ type Client struct {
 func New(paper bool) *Client {
 	baseURL := ""
 	futURL := ""
+	delivURL := ""
 	if paper {
 		baseURL = paperBaseURL
 		futURL = paperFuturesURL
+		delivURL = paperDeliveryURL
 	}
 	return &Client{
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 		baseURL:    baseURL,
 		futBaseURL: futURL,
+		delivURL:   delivURL,
 		paper:      paper,
 	}
 }
@@ -60,12 +66,22 @@ func (c *Client) newSpot(creds exchange.Credentials) *gobinance.Client {
 	return cl
 }
 
-// newFut creates a futures.Client with the given credentials, reusing the shared HTTP pool.
+// newFut creates a USDM-margined futures.Client (FAPI), reusing the shared HTTP pool.
 func (c *Client) newFut(creds exchange.Credentials) *futures.Client {
 	cl := futures.NewClient(creds.APIKey, creds.APISecret)
 	cl.HTTPClient = c.httpClient
 	if c.futBaseURL != "" {
 		cl.BaseURL = c.futBaseURL
+	}
+	return cl
+}
+
+// newDelivery creates a COIN-M-margined delivery.Client (DAPI), reusing the shared HTTP pool.
+func (c *Client) newDelivery(creds exchange.Credentials) *delivery.Client {
+	cl := delivery.NewClient(creds.APIKey, creds.APISecret)
+	cl.HTTPClient = c.httpClient
+	if c.delivURL != "" {
+		cl.BaseURL = c.delivURL
 	}
 	return cl
 }

@@ -71,8 +71,13 @@ func Default(service string) {
 	slog.SetDefault(New(service))
 }
 
-// Setup initialises the global slog default with text format.
-// Reads LOG_LEVEL (debug|info|warn|error) and LOG_FILE (path).
+// Setup initialises the global slog default logger.
+//
+// Format selection:
+//   - LOG_FORMAT=json → JSON with OTel field names + trace_id injection (recommended for production)
+//   - default          → text (readable for local development)
+//
+// Other env vars: LOG_LEVEL (debug|info|warn|error), LOG_FILE (path).
 // When LOG_FILE is set, logs go to both stdout and the file (append mode).
 // Returns a cleanup func that must be deferred in main().
 func Setup(service string) func() {
@@ -91,11 +96,32 @@ func Setup(service string) func() {
 		}
 	}
 
-	handler := slog.NewTextHandler(w, &slog.HandlerOptions{
+	opts := &slog.HandlerOptions{
 		Level:     level,
 		AddSource: level == slog.LevelDebug,
-	})
-	slog.SetDefault(slog.New(handler).With("service", service))
+	}
+
+	var h slog.Handler
+	if os.Getenv("LOG_FORMAT") == "json" {
+		// JSON format for production: Loki can parse fields, trace_id enables
+		// Loki→Tempo correlation via the derivedField regex '"trace_id":"(\w+)"'.
+		opts.ReplaceAttr = func(_ []string, a slog.Attr) slog.Attr {
+			switch a.Key {
+			case slog.MessageKey:
+				a.Key = "msg"
+			case slog.LevelKey:
+				a.Key = "level"
+			case slog.TimeKey:
+				a.Key = "time"
+			}
+			return a
+		}
+		h = NewTraceHandler(slog.NewJSONHandler(w, opts))
+	} else {
+		h = slog.NewTextHandler(w, opts)
+	}
+
+	slog.SetDefault(slog.New(h).With("service", service))
 
 	if closeFile != nil {
 		return closeFile

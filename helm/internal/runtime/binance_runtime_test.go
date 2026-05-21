@@ -82,7 +82,7 @@ func newBinanceEnv(t *testing.T) *binanceTestEnv {
 	rm := risk.New(risk.DefaultConfig(), pf)
 	rt := runtime.NewHelmRuntime(
 		uuid.New(), uuid.New(), uuid.New(),
-		ex.Name(), pf, rm, ex, creds, nil,
+		ex.Name(), pf, rm, ex, creds, nil, time.Now(),
 	)
 
 	// Seed live price for sizing.

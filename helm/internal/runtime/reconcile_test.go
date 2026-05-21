@@ -132,7 +132,7 @@ func buildRuntime(ex exchange.Exchange, log poslog.Log) *runtime.HelmRuntime {
 	userID := uuid.New()
 	pf := portfolio.New(decimal.Zero)
 	rm := risk.New(risk.DefaultConfig(), pf)
-	rt := runtime.NewHelmRuntime(helmID, accountID, userID, "fake", pf, rm, ex, exchange.Credentials{}, nil)
+	rt := runtime.NewHelmRuntime(helmID, accountID, userID, "fake", pf, rm, ex, exchange.Credentials{}, nil, time.Now())
 	rt.PosLog = log
 	return rt
 }

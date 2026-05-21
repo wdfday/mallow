@@ -62,9 +62,9 @@ func (r *Registry) Spawn(cfg *helmdomain.Helm, exchCfg helmdomain.ExchangeConfig
 		Passphrase: exchCfg.Passphrase,
 		AccountID:  exchCfg.AccountID,
 	}
-	rt := NewHelmRuntime(cfg.ID, cfg.AccountID, cfg.UserID, brokerType, pf, riskMgr, ex, creds, cfg.LastSyncedAt)
+	rt := NewHelmRuntime(cfg.ID, cfg.AccountID, cfg.UserID, brokerType, pf, riskMgr, ex, creds, cfg.LastSyncedAt, cfg.CreatedAt)
 	// Restore pause state so signal gating survives a restart.
-	if cfg.Status == "paused" || cfg.Status == "halted" {
+	if cfg.Status == helmdomain.HelmStatusPaused || cfg.Status == helmdomain.HelmStatusHalted {
 		rt.paused = true
 	}
 

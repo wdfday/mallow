@@ -34,6 +34,7 @@ func (h *Hand) Start() {
 	go h.run(ctx)
 	slog.Info("hand started", "hand_id", h.id, "exchange", h.helmRuntime.Exchange.Name())
 	h.helmRuntime.EmitEvent(natsapi.HelmEvent{HandID: h.id.String(), Code: CodeHandStarted, Msg: "hand: started"})
+	h.activityLog.push(ActivityEntry{At: time.Now(), Code: CodeHandStarted, Symbol: h.Symbol, Reason: "hand run-loop started"})
 }
 
 // Stop cancels the run-loop and waits for it to exit.
@@ -58,6 +59,7 @@ func (h *Hand) Stop() {
 	}
 	slog.Info("hand stopped", "hand_id", h.id)
 	h.helmRuntime.EmitEvent(natsapi.HelmEvent{HandID: h.id.String(), Code: CodeHandStopped, Msg: "hand: stopped"})
+	h.activityLog.push(ActivityEntry{At: time.Now(), Code: CodeHandStopped, Symbol: h.Symbol, Reason: "hand run-loop stopped"})
 }
 
 // Pause suspends signal processing without stopping the run-loop goroutine.
@@ -69,6 +71,7 @@ func (h *Hand) Pause() {
 	h.mu.Unlock()
 	slog.Info("hand paused", "hand_id", h.id)
 	h.helmRuntime.EmitEvent(natsapi.HelmEvent{HandID: h.id.String(), Code: CodeHandPaused, Msg: "hand: paused"})
+	h.activityLog.push(ActivityEntry{At: time.Now(), Code: CodeHandPaused, Symbol: h.Symbol, Reason: "hand manually paused via API"})
 }
 
 // Resume re-enables signal processing after a Pause.
@@ -81,6 +84,7 @@ func (h *Hand) Resume() {
 	h.mu.Unlock()
 	slog.Info("hand resumed", "hand_id", h.id)
 	h.helmRuntime.EmitEvent(natsapi.HelmEvent{HandID: h.id.String(), Code: CodeHandResumed, Msg: "hand: resumed"})
+	h.activityLog.push(ActivityEntry{At: time.Now(), Code: CodeHandResumed, Symbol: h.Symbol, Reason: "hand manually resumed via API"})
 }
 
 // Kill stops the hand and immediately closes all open positions via market orders.
@@ -88,6 +92,7 @@ func (h *Hand) Resume() {
 func (h *Hand) Kill(ctx context.Context) {
 	slog.Warn("hand: kill initiated — flattening all positions", "hand_id", h.id)
 	h.helmRuntime.EmitEvent(natsapi.HelmEvent{HandID: h.id.String(), Code: CodeHandKilled, Reason: "flattening all positions", Msg: "hand: killed"})
+	h.activityLog.push(ActivityEntry{At: time.Now(), Code: CodeHandKilled, Symbol: h.Symbol, Reason: "hand killed — flattening positions"})
 	h.mu.Lock()
 	h.paused = true
 	h.health.Status = HealthKilled
@@ -115,6 +120,7 @@ func (h *Hand) Kill(ctx context.Context) {
 func (h *Hand) Release(ctx context.Context) {
 	slog.Info("hand: release — orphaning open positions", "hand_id", h.id)
 	h.helmRuntime.EmitEvent(natsapi.HelmEvent{HandID: h.id.String(), Code: CodeHandReleased, Reason: "positions orphaned at exchange", Msg: "hand: released"})
+	h.activityLog.push(ActivityEntry{At: time.Now(), Code: CodeHandReleased, Symbol: h.Symbol, Reason: "hand released — positions orphaned"})
 	h.mu.Lock()
 	h.paused = true
 	h.health.Status = HealthReleased

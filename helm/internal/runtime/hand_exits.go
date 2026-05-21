@@ -3,10 +3,12 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 
 	"mallow/helm/internal/infra/exchange"
+	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/infra/poslog"
 	handdomain "mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/runtime/core/strategy"
@@ -14,17 +16,28 @@ import (
 )
 
 // cancelExitOrders cancels any exchange-side SL/TP orders for the given symbol.
-// Must be called while b.mu is held (reads exitLevels without locking).
+// Must be called while h.mu is held (reads exitLevels without locking).
 // Launches a goroutine to avoid blocking the caller on network I/O.
-func (h *Hand) cancelExitOrders(_ context.Context, symbol string) {
+// Uses the hand's lifecycle context so the goroutine exits immediately when
+// Hand.Stop() is called — prevents goroutine leaks during shutdown.
+func (h *Hand) cancelExitOrders(_ context.Context, symbol string, skipOrderID string) {
 	lv, ok := h.exitLevels[symbol]
 	if !ok || len(lv.ExchangeOrderIDs) == 0 {
 		return
 	}
-	ids := make([]string, len(lv.ExchangeOrderIDs))
-	copy(ids, lv.ExchangeOrderIDs)
+	ids := make([]string, 0, len(lv.ExchangeOrderIDs))
+	for _, id := range lv.ExchangeOrderIDs {
+		if id != skipOrderID {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	// Capture hand context under existing lock (caller already holds h.mu).
+	handCtx := h.ctx
 	go func() {
-		cancelCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		cancelCtx, cancel := context.WithTimeout(handCtx, 10*time.Second)
 		defer cancel()
 		for _, id := range ids {
 			if err := h.helmRuntime.Exchange.CancelOrder(cancelCtx, h.helmRuntime.Creds, id); err != nil {
@@ -185,6 +198,11 @@ func (h *Hand) releasePositions(ctx context.Context) {
 // checkExits scans open positions against locally stored SL/TP levels.
 // Called on every pollTicker tick (every 5s) as a safety net in case
 // exchange-side bracket orders fail to execute.
+//
+// IMPORTANT: exitLevels[sym] is deleted ONLY after the DirExit signal is
+// successfully enqueued into UrgentSignals. If the channel is full the level
+// is preserved so the next tick can retry — prevents the safety net from
+// being silently lost when the urgent buffer is momentarily saturated.
 func (h *Hand) checkExits() {
 	h.mu.RLock()
 	exits := make(map[string]exitLevel, len(h.exitLevels))
@@ -215,16 +233,65 @@ func (h *Hand) checkExits() {
 		if reason == "" {
 			continue
 		}
+
+		// Guard against external close desync: if the portfolio no longer holds
+		// this symbol but exitLevels still has an entry, the position was closed
+		// outside the bot (manual trade or another hand). Firing a close order
+		// against a flat position would open a reverse position on futures margin.
+		// Clean up the stale level and pause the hand so a human can review.
+		if pos := h.helmRuntime.Portfolio.GetPosition(sym); pos == nil {
+			h.mu.Lock()
+			delete(h.exitLevels, sym)
+			h.mu.Unlock()
+			slog.Warn("exit monitor: portfolio flat but exitLevels present — external close detected, pausing hand",
+				"hand_id", h.id, "symbol", sym)
+			h.helmRuntime.EmitEvent(natsapi.HelmEvent{
+				HandID: h.id.String(),
+				Code:   CodeHandAutoPaused,
+				Symbol: sym,
+				Reason: "external close detected: portfolio flat but local exit level present",
+				Msg:    "hand: auto-paused due to position desync",
+			})
+			h.activityLog.push(ActivityEntry{
+				At:     time.Now(),
+				Code:   CodeHandAutoPaused,
+				Symbol: sym,
+				Reason: "external close detected: portfolio flat but local exit level present",
+			})
+			h.Pause()
+			continue
+		}
+
 		slog.Info("exit monitor triggered", "hand_id", h.id, "symbol", sym,
 			"reason", reason, "price", price,
 			"stop_loss", el.StopLoss, "take_profit", el.TakeProfit)
-		h.mu.Lock()
-		delete(h.exitLevels, sym)
-		h.mu.Unlock()
+
+		h.helmRuntime.EmitEvent(natsapi.HelmEvent{
+			HandID:    h.id.String(),
+			Code:      CodeOrderExitTriggered,
+			Symbol:    sym,
+			Direction: string(strategy.DirExit),
+			Price:     price,
+			Reason:    fmt.Sprintf("exit monitor %s triggered (SL: %s, TP: %s)", reason, el.StopLoss, el.TakeProfit),
+			Msg:       "order: local exit trigger activated",
+		})
+		h.activityLog.push(ActivityEntry{
+			At:        time.Now(),
+			Code:      CodeOrderExitTriggered,
+			Symbol:    sym,
+			Direction: string(strategy.DirExit),
+			Reason:    fmt.Sprintf("exit monitor %s triggered at price %s (SL: %s, TP: %s)", reason, price, el.StopLoss, el.TakeProfit),
+		})
+
+		// Delete exitLevels only after signal is successfully enqueued.
+		// If UrgentSignals is full, we keep the level intact and retry next tick.
 		select {
 		case h.UrgentSignals <- Signal{Symbol: sym, Direction: strategy.DirExit, Strength: 1.0, ReceivedAt: time.Now()}:
+			h.mu.Lock()
+			delete(h.exitLevels, sym)
+			h.mu.Unlock()
 		default:
-			slog.Warn("exit monitor: urgent channel full", "hand_id", h.id, "symbol", sym)
+			slog.Warn("exit monitor: urgent channel full, will retry next tick", "hand_id", h.id, "symbol", sym)
 		}
 	}
 }

@@ -26,17 +26,25 @@ const (
 // balanceHandler is ignored — OKX does not push balance updates on the orders channel.
 func (c *Client) StreamOrders(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent), _ func(exchange.BalanceEvent)) error {
 	go func() {
+		bo := exchange.Backoff{Min: 2 * time.Second, Max: 60 * time.Second, Factor: 2.0, Jitter: true}
+		attempt := 0
 		for {
 			if ctx.Err() != nil {
 				return
 			}
+			start := time.Now()
 			err := c.streamOrdersOnce(ctx, creds, handler)
 			if ctx.Err() != nil {
 				return
 			}
-			slog.Warn("okx: order stream disconnected, reconnecting in 5s", "err", err)
+			if time.Since(start) > 30*time.Second {
+				attempt = 0
+			}
+			sleepDur := bo.Next(attempt)
+			attempt++
+			slog.Warn("okx: order stream disconnected, reconnecting", "err", err, "attempt", attempt, "sleep_dur", sleepDur)
 			select {
-			case <-time.After(5 * time.Second):
+			case <-time.After(sleepDur):
 			case <-ctx.Done():
 				return
 			}
@@ -100,6 +108,7 @@ func (c *Client) streamOrdersOnce(ctx context.Context, creds exchange.Credential
 			if string(msg) == "pong" {
 				continue
 			}
+			slog.Info("okx: raw ws message", "raw", string(msg))
 			handleOKXMessage(msg, handler)
 		}
 	}

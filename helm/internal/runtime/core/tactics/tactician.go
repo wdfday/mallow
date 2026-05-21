@@ -135,12 +135,6 @@ func (t *Tactician) size(intent strategy.Intent, ctx MarketContext) decimal.Deci
 		qty = maxQty
 	}
 
-	// Round down to whole shares for instruments with qty ≥ 1 (e.g. US equities).
-	// Crypto fractional lots (qty < 1) must not be floored.
-	if qty.GreaterThanOrEqual(decimal.NewFromInt(1)) {
-		qty = qty.Floor()
-	}
-
 	if qty.IsNegative() {
 		return decimal.Zero
 	}

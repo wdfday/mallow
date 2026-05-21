@@ -85,10 +85,13 @@ func (r *Registry) ReconcileAllOrders(ctx context.Context) {
 }
 
 // RecoverGapFills fetches filled order history from each exchange that implements
-// HistoryFetcher, covering the window [lastSyncAt, now). Fills that were missed
-// while helm was offline are applied to the portfolio and published to TRADE_FILLS
-// JetStream. Call this after ReconcileAllOrders but before starting WS streaming
-// so the fill processor is ready to receive.
+// HistoryFetcher, covering the window [since, now) where:
+//   - since = LastSyncAt()  when the helm has been synced before (crash recovery)
+//   - since = CreatedAt     when LastSyncAt is zero (first startup after helm creation)
+//
+// Fills that occurred BEFORE the helm was created are never applied — they belong
+// to the account's prior history, not this helm's portfolio.
+// Call this after ReconcileAllOrders but before starting WS streaming.
 func (r *Registry) RecoverGapFills(ctx context.Context, nc *nats.Conn) {
 	r.mu.RLock()
 	rts := make([]*HelmRuntime, 0, len(r.helmRuntimes))
@@ -103,12 +106,24 @@ func (r *Registry) RecoverGapFills(ctx context.Context, nc *nats.Conn) {
 		if !ok {
 			continue
 		}
-		lastSync := rt.LastSyncAt()
-		if lastSync.IsZero() {
-			continue // never synced — no gap to recover
+
+		// Determine the lower-bound for gap recovery:
+		//   lastSyncAt  → set after every successful Sync; use after crash/restart
+		//   CreatedAt   → helm just created, no prior sync; only recover fills since creation
+		//   zero        → should not happen, but skip to be safe
+		var since time.Time
+		if lastSync := rt.LastSyncAt(); !lastSync.IsZero() {
+			since = lastSync
+		} else if !rt.CreatedAt.IsZero() {
+			since = rt.CreatedAt
+		} else {
+			slog.Warn("gap recovery: skipping helm with no createdAt or lastSyncAt",
+				"helm_id", rt.HelmID)
+			continue
 		}
+
 		now := time.Now().UTC()
-		if now.Sub(lastSync) < 5*time.Second {
+		if now.Sub(since) < 5*time.Second {
 			continue // restarted too recently, nothing to recover
 		}
 
@@ -117,9 +132,9 @@ func (r *Registry) RecoverGapFills(ctx context.Context, nc *nats.Conn) {
 		var symbols []string
 
 		slog.Info("gap recovery: fetching fill history",
-			"helm_id", rt.HelmID, "from", lastSync, "to", now, "symbols", len(symbols))
+			"helm_id", rt.HelmID, "from", since, "to", now, "symbols", len(symbols))
 
-		fills, err := historian.FilledOrders(ctx, rt.Creds, symbols, lastSync, now)
+		fills, err := historian.FilledOrders(ctx, rt.Creds, symbols, since, now)
 		if err != nil {
 			slog.Error("gap recovery: fetch failed", "helm_id", rt.HelmID, "err", err)
 			continue

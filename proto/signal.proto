@@ -1,0 +1,54 @@
+// Signal messages: strategy output from herald → helm.
+//
+// NATS subjects:
+//   signals  ← herald → helm (SignalResponse; JetStream, durable consumer)
+//              helm_id + hand_id are in the payload for routing.
+
+syntax = "proto3";
+package market;
+
+// ── Signal (strategy output) ─────────────────────────────────────────────────
+//
+// Strategy is stateless — it emits signals whenever market conditions are met,
+// without tracking position state. Helm decides whether to execute or ignore
+// each signal and logs the outcome with a reason.
+
+message SignalMsg {
+  int64  t        = 1;  // Unix milliseconds
+  string s        = 2;  // symbol
+  string dir      = 3;  // "long" | "short" | "exit"
+  double strength = 4;  // conviction [0.0, 1.0] — derived from indicator values
+
+  // Entry reference price (bar.close at signal time).
+  // Helm uses this for informational purposes; actual fill is at next bar open.
+  optional double price        = 9;
+
+  // Exit levels. Absolute price by default; deltas from fill_price if is_offset=true.
+  optional double target_price = 5;
+  optional double stop_price   = 6;
+
+  // When true, target_price and stop_price are offsets from fill_price.
+  // Helm computes: actual_tp = fill_price + target_price
+  //                actual_sl = fill_price - stop_price
+  optional bool   is_offset    = 10;
+
+  // Human-readable reason for this signal — logged by helm for auditability.
+  // Not used for execution logic. E.g. "ema9 cross above H4 ema20, rsi < 60".
+  optional string reason       = 11;
+
+  // ATR (Average True Range) at bar close — forwarded from the herald ledger.
+  // Used by helm's tactician for ATR-based stop-loss / take-profit sizing and
+  // the volatility position-sizing mode. Zero when the strategy does not use ATR.
+  optional double atr          = 12;
+
+  // Pattern metadata (populated by pattern_breakout strategy only).
+  optional string pattern_kind = 7;
+  optional double confidence   = 8;
+}
+
+// One hand emits at most one signal per bar.
+message SignalResponse {
+  SignalMsg signal = 1;
+  string helm_id  = 2;  // owning helm — used for routing on the consumer side
+  string hand_id  = 3;  // target hand
+}

@@ -1,9 +1,9 @@
 package service
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -22,14 +22,6 @@ func (s *Service) Enable(id uuid.UUID) error {
 	return nil
 }
 
-// Disable marks an orchestrator as disabled, blocking hand creation and deletion.
-func (s *Service) Disable(id uuid.UUID) error {
-	return s.repo.Update(id, func(o *domain.Helm) error {
-		o.Enabled = false
-		return nil
-	})
-}
-
 // Pause pauses an orchestrator and cascade-stops all its running bots.
 func (s *Service) Pause(id uuid.UUID) error {
 	wasRunning, err := s.spawner.Pause(id)
@@ -40,7 +32,7 @@ func (s *Service) Pause(id uuid.UUID) error {
 		s.hands.StopBots(wasRunning)
 	}
 	if err := s.repo.Update(id, func(o *domain.Helm) error {
-		o.Status = "paused"
+		o.Status = domain.HelmStatusPaused
 		return nil
 	}); err != nil {
 		return fmt.Errorf("persist paused status: %w", err)
@@ -59,7 +51,7 @@ func (s *Service) Resume(id uuid.UUID) error {
 		s.hands.StartBots(toRestart)
 	}
 	if err := s.repo.Update(id, func(o *domain.Helm) error {
-		o.Status = "active"
+		o.Status = domain.HelmStatusActive
 		return nil
 	}); err != nil {
 		return fmt.Errorf("persist active status: %w", err)
@@ -68,24 +60,47 @@ func (s *Service) Resume(id uuid.UUID) error {
 	return nil
 }
 
-// Kill flattens all open positions across every running hand and halts the orchestrator.
-// The runtime stays alive for monitoring; use Enable/Resume to reactivate.
-func (s *Service) Kill(ctx context.Context, id uuid.UUID) error {
-	// Collect all running hand IDs before stopping.
-	var runningHands []string
-	if s.hands != nil {
-		// Pause the runtime first so new signals are rejected immediately.
-		runningHands, _ = s.spawner.Pause(id)
-		// Kill (flatten + stop) each running hand.
-		s.hands.KillBots(runningHands)
+// Disable flattens all open positions across every running hand, marks the helm
+// disabled, and tears down the runtime after a short grace period so in-flight
+// WS fills can settle before the runtime is removed from the registry.
+//
+// Ordering is critical:
+//  1. Pause  — gate new signals immediately (runtime still in registry)
+//  2. KillBots — place market close orders (fills route to the live runtime)
+//  3. Persist disabled status in DB
+//  4. Async teardown after 5 s — market fills should arrive well within this window
+//
+// Use Enable to re-spawn a fresh runtime.
+func (s *Service) Disable(id uuid.UUID) error {
+	// Step 1: pause runtime so no new signals are accepted.
+	runningHandIDs, _ := s.spawner.Pause(id)
+
+	// Step 2: flatten open positions — runtime remains in registry so WS fills
+	// from the close orders can still be routed and applied to poslog.
+	if s.hands != nil && len(runningHandIDs) > 0 {
+		s.hands.KillBots(runningHandIDs)
 	}
+
+	// Step 3: persist immediately so restarts do not re-spawn this helm.
 	if err := s.repo.Update(id, func(o *domain.Helm) error {
-		o.Status = "halted"
+		o.Enabled = false
+		o.Status = domain.HelmStatusDisabled
 		return nil
 	}); err != nil {
-		return fmt.Errorf("persist halted status: %w", err)
+		return fmt.Errorf("persist disabled status: %w", err)
 	}
-	slog.Warn("helm killed", "id", id, "hands_killed", len(runningHands))
+
+	// Step 4: remove runtime after grace period.
+	go func() {
+		time.Sleep(5 * time.Second)
+		handIDs := s.spawner.Teardown(id)
+		if s.hands != nil && len(handIDs) > 0 {
+			s.hands.PurgeBots(handIDs)
+		}
+		slog.Info("helm disabled: runtime torn down", "id", id)
+	}()
+
+	slog.Info("helm disabled", "id", id, "hands_killed", len(runningHandIDs))
 	return nil
 }
 
@@ -96,7 +111,7 @@ func (s *Service) ResetHalt(id uuid.UUID) error {
 		return err
 	}
 	if err := s.repo.Update(id, func(o *domain.Helm) error {
-		o.Status = "active"
+		o.Status = domain.HelmStatusActive
 		return nil
 	}); err != nil {
 		return fmt.Errorf("persist active status: %w", err)

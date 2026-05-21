@@ -107,17 +107,35 @@ paths:
                 $ref: '#/components/schemas/ScriptValidateResp'
         '400':
           description: Request body malformed
-  /api/v1/store/strategies:
+  /api/v1/strategies:
     get:
       tags:
-      - store
+      - backtest
+      operationId: list_strategies
+      responses:
+        '200':
+          description: Named and MTF strategy keys
+  /api/v1/strategy/my:
+    get:
+      tags:
+      - strategy
+      operationId: list_my_strategies
+      responses:
+        '200':
+          description: Latest version of each strategy owned by the caller
+        '401':
+          description: Missing X-User-ID header
+  /api/v1/strategy/strategies:
+    get:
+      tags:
+      - strategy
       operationId: list_strategies
       responses:
         '200':
           description: List of saved strategies
     post:
       tags:
-      - store
+      - strategy
       operationId: create_strategy
       requestBody:
         description: ''
@@ -131,10 +149,10 @@ paths:
           description: Strategy created
         '409':
           description: Conflict — version already exists
-  /api/v1/store/strategies/{id}:
+  /api/v1/strategy/strategies/{id}:
     get:
       tags:
-      - store
+      - strategy
       operationId: get_strategy
       parameters:
       - name: id
@@ -150,7 +168,7 @@ paths:
           description: Not found
     put:
       tags:
-      - store
+      - strategy
       operationId: update_strategy
       parameters:
       - name: id
@@ -173,7 +191,7 @@ paths:
           description: Not found
     delete:
       tags:
-      - store
+      - strategy
       operationId: delete_strategy
       parameters:
       - name: id
@@ -187,37 +205,21 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /api/v1/store/strategies/{name}/versions:
+  /api/v1/strategy/strategies/{id}/chain:
     get:
       tags:
-      - store
-      operationId: list_strategy_versions
+      - strategy
+      operationId: list_strategy_chain
       parameters:
-      - name: name
+      - name: id
         in: path
-        description: Strategy name
+        description: Any version UUID in the lineage
         required: true
         schema:
           type: string
       responses:
         '200':
-          description: All versions for the named strategy
-  /api/v1/strategies:
-    get:
-      tags:
-      - backtest
-      operationId: list_strategies
-      responses:
-        '200':
-          description: List of registered named strategy keys
-  /api/v1/strategy/my:
-    get:
-      tags:
-      - strategy
-      operationId: list_my_strategies
-      responses:
-        '200':
-          description: Latest version of each strategy owned by the caller
+          description: All versions in the lineage owned by caller, version DESC
         '401':
           description: Missing X-User-ID header
   /api/v1/stream/signals:
@@ -264,7 +266,7 @@ paths:
           nullable: true
       responses:
         '200':
-          description: List of tracked symbols
+          description: List of tracked symbols grouped by exchange
   /api/v1/watch:
     get:
       tags:
@@ -369,13 +371,6 @@ components:
           description: 'Maximum simultaneous open positions (default: 1).'
           nullable: true
           minimum: 0
-        min_strength:
-          type: number
-          format: double
-          description: |-
-            Minimum signal strength [0.0, 1.0] — signals below this threshold are
-            filtered out. Only meaningful for named strategies with variable strength.
-          nullable: true
         monte_carlo:
           allOf:
           - $ref: '#/components/schemas/MonteCarloConfig'
@@ -763,10 +758,6 @@ components:
         asset_type:
           type: string
           nullable: true
-        case_id:
-          type: string
-          description: Existing case ID to update and re-run. Omit to create a new case.
-          nullable: true
         commission_pct:
           type: number
           format: double
@@ -826,17 +817,6 @@ components:
           type: number
           format: double
           nullable: true
-        strategy_id:
-          type: string
-          description: |-
-            ID of an existing strategy version to compare against.
-
-            - Same script as that version → reuse it, open a new case.
-            - Different script → create a new version with `previous_id = strategy_id`.
-
-            When omitted, the server deduplicates by `spec_hash` across all versions
-            of `name`; a new version is created only if no matching hash exists.
-          nullable: true
         symbol:
           type: string
           description: Symbol to backtest, e.g. `"BTCUSDT"`.
@@ -880,6 +860,12 @@ components:
       required:
       - script
       properties:
+        base_tf:
+          type: string
+          description: |-
+            Optional base timeframe (e.g. `"M1"`, `"H1"`). When provided, the linter
+            will flag any HTF indicator declared on a TF smaller than the base TF.
+          nullable: true
         script:
           type: string
           description: Full strategy script to lint.
@@ -1134,7 +1120,7 @@ tags:
   description: Live ledger data
 - name: backtest
   description: Backtest execution
-- name: store
+- name: strategy
   description: Saved strategy versions
 - name: watch
   description: Watchlist / warm-set management

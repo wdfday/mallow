@@ -78,7 +78,7 @@ func TestPoslog_E2E(t *testing.T) {
 	helmID := uuid.New()
 	pf := portfolio.New(capital)
 	rm := risk.New(risk.DefaultConfig(), pf)
-	rt := runtime.NewHelmRuntime(helmID, uuid.New(), uuid.New(), ex.Name(), pf, rm, ex, creds, nil)
+	rt := runtime.NewHelmRuntime(helmID, uuid.New(), uuid.New(), ex.Name(), pf, rm, ex, creds, nil, time.Now())
 	rt.PosLog = pl
 	defer rt.Stop()
 
@@ -230,7 +230,7 @@ func TestTradeRoundTrip_E2E(t *testing.T) {
 
 	pf := portfolio.New(capital)
 	rm := risk.New(risk.DefaultConfig(), pf)
-	rt := runtime.NewHelmRuntime(helmID, uuid.New(), uuid.New(), ex.Name(), pf, rm, ex, creds, nil)
+	rt := runtime.NewHelmRuntime(helmID, uuid.New(), uuid.New(), ex.Name(), pf, rm, ex, creds, nil, time.Now())
 	rt.PosLog = pl
 	defer rt.Stop()
 

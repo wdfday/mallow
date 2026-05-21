@@ -6,6 +6,13 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+func minDecimal(a, b decimal.Decimal) decimal.Decimal {
+	if a.LessThan(b) {
+		return a
+	}
+	return b
+}
+
 // ApplyFill processes a confirmed order fill: adjusts cash, updates the open
 // position, and records a completed Trade when a long position is fully closed.
 //
@@ -39,24 +46,25 @@ func (p *Portfolio) ApplyFill(fill Fill) {
 
 	epsilon := decimal.NewFromFloat(1e-9)
 
-	switch fill.Side {
-	case SideBuy:
-		newQty := pos.Qty.Add(fill.Qty)
-		if newQty.GreaterThan(epsilon) {
+	if pos.Qty.IsZero() {
+		// New position opening.
+		pos.EntryTimestamp = fill.Timestamp
+		if fill.Side == SideBuy {
+			pos.Qty = fill.Qty
+		} else {
+			pos.Qty = fill.Qty.Neg()
+		}
+		pos.AvgPrice = fill.Price
+	} else if pos.Qty.IsPositive() {
+		// Existing Long position.
+		if fill.Side == SideBuy {
+			// Adding to long.
+			newQty := pos.Qty.Add(fill.Qty)
 			pos.AvgPrice = pos.AvgPrice.Mul(pos.Qty).Add(fill.Price.Mul(fill.Qty)).Div(newQty)
-		}
-		if pos.Qty.LessThanOrEqual(decimal.Zero) {
-			pos.EntryTimestamp = fill.Timestamp
-		}
-		pos.Qty = newQty
-
-	case SideSell:
-		absQty := pos.Qty.Abs()
-		closedQty := fill.Qty
-		if fill.Qty.GreaterThan(absQty) {
-			closedQty = absQty
-		}
-		if closedQty.IsPositive() && pos.Qty.IsPositive() {
+			pos.Qty = newQty
+		} else {
+			// Reducing, closing, or reversing long to short.
+			closedQty := minDecimal(fill.Qty, pos.Qty)
 			pnl := fill.Price.Sub(pos.AvgPrice).Mul(closedQty).Sub(fill.Commission)
 			costBasis := pos.AvgPrice.Mul(closedQty)
 			var pnlPct decimal.Decimal
@@ -75,11 +83,57 @@ func (p *Portfolio) ApplyFill(fill Fill) {
 				PnL:            pnl,
 				PnLPct:         pnlPct,
 			})
+
+			pos.Qty = pos.Qty.Sub(fill.Qty)
+			if pos.Qty.LessThan(epsilon.Neg()) {
+				// Reversed to short.
+				pos.AvgPrice = fill.Price
+				pos.EntryTimestamp = fill.Timestamp
+			} else if pos.Qty.Abs().LessThan(epsilon) {
+				delete(p.positions, fill.Symbol)
+				return
+			}
 		}
-		pos.Qty = pos.Qty.Sub(fill.Qty)
-		if pos.Qty.Abs().LessThan(epsilon) {
-			delete(p.positions, fill.Symbol)
-			return
+	} else {
+		// Existing Short position (pos.Qty is negative).
+		if fill.Side == SideSell {
+			// Adding to short.
+			absQty := pos.Qty.Abs()
+			newQty := pos.Qty.Sub(fill.Qty)
+			pos.AvgPrice = pos.AvgPrice.Mul(absQty).Add(fill.Price.Mul(fill.Qty)).Div(newQty.Abs())
+			pos.Qty = newQty
+		} else {
+			// Reducing, closing, or reversing short to long.
+			absQty := pos.Qty.Abs()
+			closedQty := minDecimal(fill.Qty, absQty)
+			pnl := pos.AvgPrice.Sub(fill.Price).Mul(closedQty).Sub(fill.Commission)
+			costBasis := pos.AvgPrice.Mul(closedQty)
+			var pnlPct decimal.Decimal
+			if costBasis.IsPositive() {
+				pnlPct = pnl.Div(costBasis)
+			}
+			p.trades = append(p.trades, Trade{
+				HandID:         fill.HandID,
+				Symbol:         fill.Symbol,
+				Side:           SideSell,
+				Qty:            closedQty,
+				EntryPrice:     pos.AvgPrice,
+				ExitPrice:      fill.Price,
+				EntryTimestamp: pos.EntryTimestamp,
+				ExitTimestamp:  fill.Timestamp,
+				PnL:            pnl,
+				PnLPct:         pnlPct,
+			})
+
+			pos.Qty = pos.Qty.Add(fill.Qty)
+			if pos.Qty.GreaterThan(epsilon) {
+				// Reversed to long.
+				pos.AvgPrice = fill.Price
+				pos.EntryTimestamp = fill.Timestamp
+			} else if pos.Qty.Abs().LessThan(epsilon) {
+				delete(p.positions, fill.Symbol)
+				return
+			}
 		}
 	}
 
@@ -120,17 +174,23 @@ func (p *Portfolio) ApplySync(cash decimal.Decimal, positions []SyncedPosition) 
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	oldPositions := p.positions
 	p.cash = cash
 	p.positions = make(map[string]*Position, len(positions))
 	for _, sp := range positions {
 		mv := sp.Qty.Mul(sp.CurPrice)
+		entryTS := time.Time{}
+		if old, ok := oldPositions[sp.Symbol]; ok {
+			entryTS = old.EntryTimestamp
+		}
 		p.positions[sp.Symbol] = &Position{
-			Symbol:        sp.Symbol,
-			Qty:           sp.Qty,
-			AvgPrice:      sp.AvgPrice,
-			CurrentPrice:  sp.CurPrice,
-			UnrealizedPnL: sp.CurPrice.Sub(sp.AvgPrice).Mul(sp.Qty),
-			MarketValue:   mv,
+			Symbol:         sp.Symbol,
+			Qty:            sp.Qty,
+			AvgPrice:       sp.AvgPrice,
+			CurrentPrice:   sp.CurPrice,
+			UnrealizedPnL:  sp.CurPrice.Sub(sp.AvgPrice).Mul(sp.Qty),
+			MarketValue:    mv,
+			EntryTimestamp: entryTS,
 		}
 	}
 	eq := p.equityLocked()
@@ -143,7 +203,7 @@ func (p *Portfolio) ApplySync(cash decimal.Decimal, positions []SyncedPosition) 
 // cash. Called by the poslog reconciler on startup to replay positions that were
 // open when the process last stopped. avgPrice is the original entry price;
 // currentPrice is the latest known market price.
-func (p *Portfolio) RestorePosition(symbol, side string, qty, avgPrice, currentPrice decimal.Decimal) {
+func (p *Portfolio) RestorePosition(symbol, side string, qty, avgPrice, currentPrice decimal.Decimal, entryTimestamp time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -152,12 +212,13 @@ func (p *Portfolio) RestorePosition(symbol, side string, qty, avgPrice, currentP
 	}
 	mv := qty.Mul(currentPrice)
 	p.positions[symbol] = &Position{
-		Symbol:        symbol,
-		Qty:           qty,
-		AvgPrice:      avgPrice,
-		CurrentPrice:  currentPrice,
-		UnrealizedPnL: currentPrice.Sub(avgPrice).Mul(qty),
-		MarketValue:   mv,
+		Symbol:         symbol,
+		Qty:            qty,
+		AvgPrice:       avgPrice,
+		CurrentPrice:   currentPrice,
+		UnrealizedPnL:  currentPrice.Sub(avgPrice).Mul(qty),
+		MarketValue:    mv,
+		EntryTimestamp: entryTimestamp,
 	}
 }
 
@@ -171,6 +232,7 @@ func (p *Portfolio) RecordEquity(ts time.Time) {
 	p.equityCurve = append(p.equityCurve, EquityPoint{
 		Timestamp: ts,
 		Equity:    eq,
+		Cash:      p.cash,
 	})
 	if eq.GreaterThan(p.peakEquity) {
 		p.peakEquity = eq

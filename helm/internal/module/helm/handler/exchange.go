@@ -191,6 +191,70 @@ func (h *Handler) exchangeGetOrder(c *gin.Context) {
 	shared.RespondWithSuccess(c, http.StatusOK, "Order retrieved successfully", dto.MapOrderResult(result))
 }
 
+// exchangeMetrics godoc
+// @Summary Get exchange instrumentation metrics
+// @Description Returns HTTP latency/error stats (PlaceOrder, GetOrder, CancelOrder, SyncAccount, Ping)
+// @Description and WebSocket stream health (event counts, idle time, reconnect count).
+// @Tags exchange
+// @Security BearerAuth
+// @Produce json
+// @Param id path string true "Helm ID"
+// @Success 200 {object} shared.SuccessResponse[dto.ExchangeMetricsResp]
+// @Failure 404 {object} shared.ErrorResponse
+// @Failure 503 {object} shared.ErrorResponse
+// @Router /api/v1/helms/{id}/exchange/metrics [get]
+func (h *Handler) exchangeMetrics(c *gin.Context) {
+	userID, ok := callerUserID(c)
+	if !ok {
+		return
+	}
+	rt := h.requireOwnedRuntime(c, userID)
+	if rt == nil {
+		return
+	}
+	snap := rt.ExchangeSnapshot()
+	if snap == nil {
+		shared.RespondWithError(c, http.StatusServiceUnavailable, "exchange metrics unavailable")
+		return
+	}
+	shared.RespondWithSuccess(c, http.StatusOK, "Exchange metrics retrieved", dto.MetricsSnapshotToResp(*snap))
+}
+
+// exchangePing godoc
+// @Summary Ping the exchange and report latency
+// @Description Measures HTTP round-trip latency (via a dummy GetOrder call) and returns
+// @Description the current WebSocket stream idle time from the metrics snapshot.
+// @Tags exchange
+// @Security BearerAuth
+// @Produce json
+// @Param id path string true "Helm ID"
+// @Success 200 {object} shared.SuccessResponse[dto.ExchangePingResp]
+// @Failure 404 {object} shared.ErrorResponse
+// @Failure 503 {object} shared.ErrorResponse
+// @Router /api/v1/helms/{id}/exchange/ping [get]
+func (h *Handler) exchangePing(c *gin.Context) {
+	userID, ok := callerUserID(c)
+	if !ok {
+		return
+	}
+	rt := h.requireOwnedRuntime(c, userID)
+	if rt == nil {
+		return
+	}
+	metered, ok := rt.Exchange.(*exchange.MeteredExchange)
+	if !ok {
+		shared.RespondWithError(c, http.StatusServiceUnavailable, "exchange ping unavailable")
+		return
+	}
+	rtt := metered.Ping(c.Request.Context())
+	snap := metered.Snapshot()
+	shared.RespondWithSuccess(c, http.StatusOK, "Pong", dto.ExchangePingResp{
+		Exchange:  snap.Name,
+		LatencyMs: float64(rtt.Nanoseconds()) / 1e6,
+		WSIdleSec: snap.WS.IdleSec,
+	})
+}
+
 // exchangeCancelOrder godoc
 // @Summary Cancel an open order on the exchange
 // @Tags exchange

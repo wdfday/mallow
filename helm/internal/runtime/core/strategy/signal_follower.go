@@ -70,7 +70,7 @@ func (s *SignalFollower) Evaluate(sig Signal) Intent {
 }
 
 // exitAction maps an exit signal to a concrete exit action.
-// DirExit is resolved against the live position side in hand_run.go.
+// DirExit is resolved against the live position side in hand_runner.go.
 func (s *SignalFollower) exitAction(_ Signal) Action {
 	return ActionExitLong
 }

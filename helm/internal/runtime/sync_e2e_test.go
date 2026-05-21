@@ -89,6 +89,7 @@ func TestSync_E2E(t *testing.T) {
 		"binance",
 		pf, rm, ex, creds,
 		nil, // no prior sync time → full sync
+		time.Now(),
 	)
 
 	// ── Subscribe NATS before Sync (investment user) ──────────────────────────

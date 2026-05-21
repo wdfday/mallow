@@ -20,6 +20,7 @@ import (
 
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/module/hand/domain"
+	helmdomain "mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/runtime"
 	"mallow/helm/internal/runtime/core/portfolio"
 	"mallow/helm/internal/runtime/core/risk"
@@ -80,7 +81,7 @@ func buildSnapshotRuntime(ex *simExchange, capital float64, snapLog perf.Snapsho
 	rm := risk.New(cfg, pf)
 	rt := runtime.NewHelmRuntime(
 		uuid.New(), uuid.New(), uuid.New(),
-		"sim", pf, rm, ex, exchange.Credentials{}, nil,
+		"sim", pf, rm, ex, exchange.Credentials{}, nil, time.Now(),
 	)
 	rm.SetUnitCounter(rt.OpenUnitCount)
 	rt.SnapshotLog = snapLog
@@ -115,10 +116,10 @@ func addAllocatedHand(rt *runtime.HelmRuntime, symbol string, qty, allocatedCap 
 // appended to SnapshotLog with the correct positions and equity values.
 func TestSnapshot_SignalToFill_HelmAndHandSnapshot(t *testing.T) {
 	const (
-		symbol      = "BTCUSDT"
-		fillPrice   = 50_000.0
-		orderQty    = 0.01   // BTC
-		capital     = 100_000.0
+		symbol       = "BTCUSDT"
+		fillPrice    = 50_000.0
+		orderQty     = 0.01 // BTC
+		capital      = 100_000.0
 		allocatedCap = 5_000.0 // hand has its own budget
 	)
 
@@ -233,10 +234,10 @@ func TestSnapshot_SignalToFill_HelmAndHandSnapshot(t *testing.T) {
 // helm positions are empty, hand cash equals allocatedCap ± PnL.
 func TestSnapshot_RoundTrip_EntryThenExit(t *testing.T) {
 	const (
-		symbol      = "BTCUSDT"
-		fillPrice   = 50_000.0
-		orderQty    = 0.01
-		capital     = 100_000.0
+		symbol       = "BTCUSDT"
+		fillPrice    = 50_000.0
+		orderQty     = 0.01
+		capital      = 100_000.0
 		allocatedCap = 5_000.0
 	)
 
@@ -307,5 +308,90 @@ func TestSnapshot_RoundTrip_EntryThenExit(t *testing.T) {
 	// Equity should still be ~capital (buy and sell at same price → flat PnL).
 	if !lastHelmSnap.Equity.Equal(decimal.NewFromFloat(capital)) {
 		t.Logf("helm equity after round-trip: %s (expected ~%v)", lastHelmSnap.Equity, capital)
+	}
+}
+
+// TestAvailableCash verifies that available cash is properly computed and segregated:
+//   - Hand allocations are subtracted from total cash to get AvailableCash.
+//   - Hand trades (fills) do not affect AvailableCash.
+//   - Manual trades (fills with no Hand ID) do affect AvailableCash.
+func TestAvailableCash(t *testing.T) {
+	const (
+		symbol       = "BTCUSDT"
+		fillPrice    = 50_000.0
+		orderQty     = 0.01 // $500 cost
+		capital      = 10_000.0
+		allocatedCap = 3_000.0
+	)
+
+	ex := newSim(fillPrice)
+	rt := buildSnapshotRuntime(ex, capital, &mockSnapshotLog{})
+	defer rt.Stop()
+
+	// Initial State: total cash = 10,000, no hands
+	// Available cash should equal total cash since there are no active hands.
+	if !rt.AvailableCash().Equal(decimal.NewFromFloat(capital)) {
+		t.Errorf("expected available cash %f, got %s", capital, rt.AvailableCash())
+	}
+
+	// Seed price so ProcessTrade can size the order.
+	rt.UpdatePrice(symbol, decimal.NewFromFloat(fillPrice))
+
+	// Add hand with allocated capital: 3,000
+	// Available cash should be 10,000 - 3,000 = 7,000
+	hand := addAllocatedHand(rt, symbol, orderQty, allocatedCap)
+	hand.Start()
+	defer hand.Stop()
+
+	expectedAvailable := decimal.NewFromFloat(capital - allocatedCap)
+	if !rt.AvailableCash().Equal(expectedAvailable) {
+		t.Errorf("expected available cash after allocation %s, got %s", expectedAvailable, rt.AvailableCash())
+	}
+
+	// Deliver a hand trade entry signal.
+	// This will buy BTC, decreasing total cash by $500 (to 9500), but hand deployed increases to $500.
+	// hand logical cash = allocated (3000) + PnL (0) - deployed (500) = 2500
+	// available cash = total cash (9500) - hand logical cash (2500) = 7000
+	hand.DeliverSignal(longSignalFor(symbol))
+	if _, ok := waitCode(hand, runtime.CodeOrderFilled, 2*time.Second); !ok {
+		t.Fatal("timeout: hand fill not observed")
+	}
+
+	if !rt.AvailableCash().Equal(expectedAvailable) {
+		t.Errorf("expected available cash after hand trade fill to remain %s, got %s", expectedAvailable, rt.AvailableCash())
+	}
+
+	// Deliver a manual trade fill (no HandID).
+	// This simulates a manual buy order of $1000 filled.
+	// Total cash should decrease by 1000 to 8500.
+	// Since hand deployed capital is still 500, hand logical cash is still 2500.
+	// available cash = total cash (8500) - hand logical cash (2500) = 6000
+	rt.ReportFill(helmdomain.FillReport{
+		HandID:    "", // manual
+		HelmID:    rt.HelmID.String(),
+		OrderID:   "manual-order-1",
+		Symbol:    symbol,
+		Side:      "buy",
+		Qty:       decimal.NewFromFloat(0.02), // $1000 cost
+		Price:     decimal.NewFromFloat(fillPrice),
+		Timestamp: time.Now().UTC(),
+	})
+
+	expectedAvailableManual := expectedAvailable.Sub(decimal.NewFromFloat(1000))
+	if !rt.AvailableCash().Equal(expectedAvailableManual) {
+		t.Errorf("expected available cash after manual trade fill %s, got %s", expectedAvailableManual, rt.AvailableCash())
+	}
+
+	// Stop & Release / Kill the hand.
+	// Removing the hand should reclaim its remaining budget.
+	// The hand had 3000 allocated, 0 PnL, and 500 deployed. So logical cash is 2500.
+	// When killed, it is evicted from memory.
+	rt.RemoveHand(hand.ID().String())
+
+	// Once the hand is removed, the general pool cash should be the total cash minus any other active hands (0).
+	// Total cash is currently 8500. So available cash should be 8500.
+	// Note that since we manually added a fill, the position is not managed by any active hand, so it's manual.
+	if !rt.AvailableCash().Equal(rt.Cash()) {
+		t.Errorf("expected available cash after hand kill to equal total cash %s, got %s", rt.Cash(), rt.AvailableCash())
 	}
 }

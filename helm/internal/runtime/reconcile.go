@@ -11,6 +11,7 @@ import (
 
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/poslog"
+	handdomain "mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/runtime/position"
 )
 
@@ -68,10 +69,23 @@ func (r *DefaultReconciler) Reconcile(ctx context.Context, orch *HelmRuntime) []
 	orch.mu.RUnlock()
 
 	// Batch-fetch open orders and positions once per reconcile run.
-	exchangeOrders := r.fetchOpenOrders(ctx, orch)
-	exchangePositions := r.fetchPositions(ctx, orch)
+	exchangeOrders, errOrders := r.fetchOpenOrders(ctx, orch)
+	exchangePositions, errPositions := r.fetchPositions(ctx, orch)
 
 	results := make([]HandReconcileResult, 0, len(hands))
+	if errOrders != nil || errPositions != nil {
+		combinedErr := fmt.Errorf("exchange fetch failed: orders_err=%v, positions_err=%v", errOrders, errPositions)
+		for _, hand := range hands {
+			results = append(results, HandReconcileResult{
+				HandID: hand.id.String(),
+				Action: ReconcileFailed,
+				Err:    combinedErr,
+			})
+			slog.Error("reconcile failed due to exchange API error", "hand_id", hand.id, "err", combinedErr)
+		}
+		return results
+	}
+
 	for _, hand := range hands {
 		res := r.reconcileHand(ctx, orch, hand, exchangeOrders, exchangePositions)
 		results = append(results, res)
@@ -175,7 +189,37 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 	orderID := leg.PendingOrderID
 
 	// Fast path: order still open at exchange — nothing missed.
-	if _, stillOpen := openOrders[orderID]; stillOpen {
+	if exOrder, stillOpen := openOrders[orderID]; stillOpen {
+		// Restore order tracking map so that future WS fill events can be routed to this hand.
+		orch.TrackOrder(orderID, hand.id.String())
+
+		// Restore order into hand.orders so that pollOrders can check its status.
+		// Use remaining qty (original − already filled) to avoid double-counting
+		// any partial fills that arrived before the restart.
+		hand.mu.Lock()
+		alreadyTracked := false
+		for _, o := range hand.orders {
+			if o.ID == orderID {
+				alreadyTracked = true
+				break
+			}
+		}
+		if !alreadyTracked {
+			remainingQty := leg.Qty.Sub(exOrder.FilledQty)
+			if !remainingQty.IsPositive() {
+				remainingQty = leg.Qty // defensive: treat as fully open if exchange data is inconsistent
+			}
+			hand.orders = append(hand.orders, handdomain.Order{
+				ID:         orderID,
+				Symbol:     leg.Symbol,
+				Side:       leg.Side,
+				Qty:        remainingQty,
+				Status:     "submitted",
+				SubmitTime: leg.OpenedAt,
+			})
+		}
+		hand.mu.Unlock()
+
 		return ReconcileRestored, nil
 	}
 
@@ -206,7 +250,7 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 // reconcileOpenLeg confirms an open leg still exists at the exchange.
 func (r *DefaultReconciler) reconcileOpenLeg(
 	ctx context.Context,
-	orch *HelmRuntime,
+	_ *HelmRuntime,
 	hand *Hand,
 	leg *position.LegState,
 	positions map[string]exchange.PositionResult,
@@ -295,28 +339,28 @@ func (r *DefaultReconciler) emitExternalClose(
 
 // ── Exchange batch helpers ────────────────────────────────────────────────────
 
-func (r *DefaultReconciler) fetchOpenOrders(ctx context.Context, orch *HelmRuntime) map[string]exchange.OrderResult {
+func (r *DefaultReconciler) fetchOpenOrders(ctx context.Context, orch *HelmRuntime) (map[string]exchange.OrderResult, error) {
 	orders, err := orch.Exchange.ListOpenOrders(ctx, orch.Creds, "")
 	if err != nil {
 		slog.Warn("reconcile: ListOpenOrders failed", "exchange", orch.Exchange.Name(), "err", err)
-		return nil
+		return nil, err
 	}
 	m := make(map[string]exchange.OrderResult, len(orders))
 	for _, o := range orders {
 		m[o.ID] = o
 	}
-	return m
+	return m, nil
 }
 
-func (r *DefaultReconciler) fetchPositions(ctx context.Context, orch *HelmRuntime) map[string]exchange.PositionResult {
+func (r *DefaultReconciler) fetchPositions(ctx context.Context, orch *HelmRuntime) (map[string]exchange.PositionResult, error) {
 	positions, err := orch.Exchange.ListPositions(ctx, orch.Creds)
 	if err != nil {
 		slog.Warn("reconcile: ListPositions failed", "exchange", orch.Exchange.Name(), "err", err)
-		return nil
+		return nil, err
 	}
 	m := make(map[string]exchange.PositionResult, len(positions))
 	for _, p := range positions {
 		m[p.Symbol] = p
 	}
-	return m
+	return m, nil
 }

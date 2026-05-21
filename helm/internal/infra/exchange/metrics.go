@@ -2,8 +2,11 @@ package exchange
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"time"
+
+	"github.com/shopspring/decimal"
 )
 
 // ActionMetrics tracks latency and error counts for a single exchange action type.
@@ -63,28 +66,68 @@ func (m *ActionMetrics) record(d time.Duration, err error) {
 	}
 }
 
+// WSMetrics tracks real-time WebSocket stream health.
+// All fields are atomic — updated directly from the WS event callbacks.
+type WSMetrics struct {
+	// StreamStarts counts how many times StreamOrders was called
+	// (each reconnect increments this).
+	StreamStarts atomic.Int64
+	// StreamErrors counts StreamOrders calls that returned a non-nil error.
+	StreamErrors atomic.Int64
+
+	// OrderEvents is the total number of order lifecycle events received via WS.
+	OrderEvents atomic.Int64
+	// BalanceEvents is the total number of balance-change events received via WS.
+	BalanceEvents atomic.Int64
+
+	// LastEventNanos is the Unix nanosecond timestamp of the most recent WS event
+	// (order or balance). Zero means no event has arrived yet.
+	LastEventNanos atomic.Int64
+}
+
+// IdleDuration returns the time elapsed since the last WS event.
+// Returns 0 if no event has been received yet.
+func (w *WSMetrics) IdleDuration() time.Duration {
+	ns := w.LastEventNanos.Load()
+	if ns == 0 {
+		return 0
+	}
+	idle := time.Now().UnixNano() - ns
+	if idle < 0 {
+		return 0
+	}
+	return time.Duration(idle)
+}
+
+func (w *WSMetrics) touchEvent() {
+	w.LastEventNanos.Store(time.Now().UnixNano())
+}
+
 // ExchangeMetrics holds per-action metrics for one exchange adapter instance.
-// Embed or attach to an exchange adapter to expose infrastructure health.
 type ExchangeMetrics struct {
 	PlaceOrder  ActionMetrics
 	GetOrder    ActionMetrics
 	CancelOrder ActionMetrics
-	Ping        ActionMetrics // optional — populated by MeteredExchange.Ping()
+	SyncAccount ActionMetrics // REST portfolio sync latency
+	Ping        ActionMetrics // HTTP ping (dummy GetOrder round-trip)
 
-	// PingLastNanos is the most recent ping RTT in nanoseconds (0 = never measured).
+	// PingLastNanos is the most recent HTTP ping RTT in nanoseconds (0 = never measured).
 	PingLastNanos atomic.Int64
+
+	WS WSMetrics // WebSocket stream health
 }
 
 // ── MeteredExchange ───────────────────────────────────────────────────────────
 
 // MeteredExchange wraps any Exchange and records ExchangeMetrics for each call.
-// It satisfies the Exchange interface and is transparent to callers.
+// It satisfies the Exchange interface and all optional interfaces — type assertions
+// on the wrapped value reach the underlying adapter transparently.
 type MeteredExchange struct {
 	inner   Exchange
 	Metrics ExchangeMetrics
 }
 
-// NewMeteredExchange wraps inner with latency/error instrumentation.
+// NewMeteredExchange wraps inner with latency/error and WS instrumentation.
 func NewMeteredExchange(inner Exchange) *MeteredExchange {
 	return &MeteredExchange{inner: inner}
 }
@@ -124,9 +167,8 @@ func (m *MeteredExchange) SubscribeFills(ctx context.Context, creds Credentials)
 	return m.inner.SubscribeFills(ctx, creds)
 }
 
-// Ping measures a round-trip to the exchange by calling GetOrder with a dummy ID
-// and recording only the latency (errors are expected and ignored for ping purposes).
-// For exchanges that expose a dedicated server-time or ping endpoint, override this.
+// Ping measures HTTP round-trip latency to the exchange.
+// Uses a dummy GetOrder call; errors are expected and ignored.
 func (m *MeteredExchange) Ping(ctx context.Context) time.Duration {
 	start := time.Now()
 	_, _ = m.inner.GetOrder(ctx, Credentials{}, "__ping__")
@@ -138,15 +180,29 @@ func (m *MeteredExchange) Ping(ctx context.Context) time.Duration {
 	return rtt
 }
 
-// Snapshot returns a point-in-time copy of all action metrics, safe to serialize.
+// ── Snapshot ──────────────────────────────────────────────────────────────────
+
+// MetricsSnapshot is a serializable point-in-time copy of all exchange metrics.
 type MetricsSnapshot struct {
 	Name        string         `json:"exchange"`
 	PlaceOrder  ActionSnapshot `json:"place_order"`
 	GetOrder    ActionSnapshot `json:"get_order"`
 	CancelOrder ActionSnapshot `json:"cancel_order"`
+	SyncAccount ActionSnapshot `json:"sync_account"`
 	PingLastMs  float64        `json:"ping_last_ms"`
+	WS          WSSnapshot     `json:"ws"`
 }
 
+// WSSnapshot is the serializable form of WSMetrics.
+type WSSnapshot struct {
+	StreamStarts  int64   `json:"stream_starts"`
+	StreamErrors  int64   `json:"stream_errors"`
+	OrderEvents   int64   `json:"order_events"`
+	BalanceEvents int64   `json:"balance_events"`
+	IdleSec       float64 `json:"idle_sec"` // seconds since last WS event (0 = never received)
+}
+
+// ActionSnapshot is a serializable point-in-time copy of ActionMetrics.
 type ActionSnapshot struct {
 	Calls     int64   `json:"calls"`
 	Errors    int64   `json:"errors"`
@@ -178,17 +234,118 @@ func snapshotAction(a *ActionMetrics) ActionSnapshot {
 
 // Snapshot returns a serializable point-in-time copy of all metrics.
 func (m *MeteredExchange) Snapshot() MetricsSnapshot {
+	ws := &m.Metrics.WS
+	idle := ws.IdleDuration()
+	var idleSec float64
+	if idle > 0 {
+		idleSec = idle.Seconds()
+	}
 	return MetricsSnapshot{
 		Name:        m.Name(),
 		PlaceOrder:  snapshotAction(&m.Metrics.PlaceOrder),
 		GetOrder:    snapshotAction(&m.Metrics.GetOrder),
 		CancelOrder: snapshotAction(&m.Metrics.CancelOrder),
+		SyncAccount: snapshotAction(&m.Metrics.SyncAccount),
 		PingLastMs:  float64(m.Metrics.PingLastNanos.Load()) / 1e6,
+		WS: WSSnapshot{
+			StreamStarts:  ws.StreamStarts.Load(),
+			StreamErrors:  ws.StreamErrors.Load(),
+			OrderEvents:   ws.OrderEvents.Load(),
+			BalanceEvents: ws.BalanceEvents.Load(),
+			IdleSec:       idleSec,
+		},
 	}
 }
 
-// ensure MeteredExchange satisfies Exchange at compile time.
+// ── Optional interface forwarding ─────────────────────────────────────────────
+// MeteredExchange forwards all optional interfaces so type assertions on the
+// wrapped exchange reach the underlying adapter.
+
+// SyncAccount implements AccountSyncer — records latency and delegates to inner.
+func (m *MeteredExchange) SyncAccount(ctx context.Context, creds Credentials, since *time.Time) (*AccountSnapshot, error) {
+	s, ok := m.inner.(AccountSyncer)
+	if !ok {
+		return nil, fmt.Errorf("exchange %q does not implement AccountSyncer", m.Name())
+	}
+	start := time.Now()
+	snap, err := s.SyncAccount(ctx, creds, since)
+	m.Metrics.SyncAccount.record(time.Since(start), err)
+	return snap, err
+}
+
+// StreamOrders implements AccountStreamer — wraps handlers to update WS metrics.
+func (m *MeteredExchange) StreamOrders(ctx context.Context, creds Credentials, orderHandler func(OrderEvent), balanceHandler func(BalanceEvent)) error {
+	s, ok := m.inner.(AccountStreamer)
+	if !ok {
+		return fmt.Errorf("exchange %q does not implement AccountStreamer", m.Name())
+	}
+	m.Metrics.WS.StreamStarts.Add(1)
+
+	wrappedOrder := func(ev OrderEvent) {
+		m.Metrics.WS.OrderEvents.Add(1)
+		m.Metrics.WS.touchEvent()
+		orderHandler(ev)
+	}
+	var wrappedBalance func(BalanceEvent)
+	if balanceHandler != nil {
+		wrappedBalance = func(ev BalanceEvent) {
+			m.Metrics.WS.BalanceEvents.Add(1)
+			m.Metrics.WS.touchEvent()
+			balanceHandler(ev)
+		}
+	}
+
+	err := s.StreamOrders(ctx, creds, wrappedOrder, wrappedBalance)
+	if err != nil {
+		m.Metrics.WS.StreamErrors.Add(1)
+	}
+	return err
+}
+
+func (m *MeteredExchange) GetCurrentPrice(ctx context.Context, creds Credentials, symbol string) (decimal.Decimal, error) {
+	if s, ok := m.inner.(PriceFetcher); ok {
+		return s.GetCurrentPrice(ctx, creds, symbol)
+	}
+	return decimal.Zero, fmt.Errorf("exchange %q does not implement PriceFetcher", m.Name())
+}
+
+func (m *MeteredExchange) GetPendingOrders(ctx context.Context, creds Credentials, symbol string) ([]OrderResult, error) {
+	if s, ok := m.inner.(OrderReconciler); ok {
+		return s.GetPendingOrders(ctx, creds, symbol)
+	}
+	return nil, fmt.Errorf("exchange %q does not implement OrderReconciler", m.Name())
+}
+
+func (m *MeteredExchange) FilledOrders(ctx context.Context, creds Credentials, symbols []string, from, to time.Time) ([]AccountTransaction, error) {
+	if s, ok := m.inner.(HistoryFetcher); ok {
+		return s.FilledOrders(ctx, creds, symbols, from, to)
+	}
+	return nil, fmt.Errorf("exchange %q does not implement HistoryFetcher", m.Name())
+}
+
+func (m *MeteredExchange) PlaceExitOrders(ctx context.Context, creds Credentials, req ExitOrderRequest) (*ExitOrderResult, error) {
+	if s, ok := m.inner.(ExitOrderPlacer); ok {
+		return s.PlaceExitOrders(ctx, creds, req)
+	}
+	return nil, fmt.Errorf("exchange %q does not implement ExitOrderPlacer", m.Name())
+}
+
+func (m *MeteredExchange) SetLeverage(ctx context.Context, creds Credentials, symbol string, leverage int, marginType string) error {
+	if s, ok := m.inner.(LeverageSetter); ok {
+		return s.SetLeverage(ctx, creds, symbol, leverage, marginType)
+	}
+	return fmt.Errorf("exchange %q does not implement LeverageSetter", m.Name())
+}
+
+// ensure MeteredExchange satisfies Exchange and all optional interfaces at compile time.
 var _ Exchange = (*MeteredExchange)(nil)
+var _ AccountSyncer = (*MeteredExchange)(nil)
+var _ AccountStreamer = (*MeteredExchange)(nil)
+var _ PriceFetcher = (*MeteredExchange)(nil)
+var _ OrderReconciler = (*MeteredExchange)(nil)
+var _ HistoryFetcher = (*MeteredExchange)(nil)
+var _ ExitOrderPlacer = (*MeteredExchange)(nil)
+var _ LeverageSetter = (*MeteredExchange)(nil)
 
 // AtomicMinStore atomically stores v only if v < current (or current == 0).
 // Exported for testing.

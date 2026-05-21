@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"context"
 	"encoding/json"
 	"log/slog"
 	"time"
@@ -280,12 +279,12 @@ func (h *NATSHandler) kill(msg *nats.Msg) {
 		_ = msg.Respond(natsapi.ReplyErr("not found"))
 		return
 	}
-	if err := h.svc.Kill(context.Background(), id); err != nil {
+	if err := h.svc.Disable(id); err != nil {
 		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
 		return
 	}
-	slog.Warn("nats: orchestrator killed", "id", id, "caller_svc", caller.CallerSvc, "caller_user_id", caller.CallerUserID)
-	_ = msg.Respond(natsapi.ReplyOK(helmDto.ActionResp{Status: "halted", ID: id}))
+	slog.Info("nats: orchestrator disabled via kill", "id", id, "caller_svc", caller.CallerSvc, "caller_user_id", caller.CallerUserID)
+	_ = msg.Respond(natsapi.ReplyOK(helmDto.ActionResp{Status: "disabled", ID: id}))
 }
 
 func (h *NATSHandler) resetHalt(msg *nats.Msg) {
@@ -326,7 +325,7 @@ func (h *NATSHandler) portfolio(msg *nats.Msg) {
 		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
 		return
 	}
-	_ = msg.Respond(natsapi.ReplyOK(helmDto.PortfolioToResp(rt.Portfolio.Summary())))
+	_ = msg.Respond(natsapi.ReplyOK(helmDto.PortfolioToResp(rt.PortfolioSummary())))
 }
 
 func (h *NATSHandler) positions(msg *nats.Msg) {

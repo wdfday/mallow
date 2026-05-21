@@ -86,6 +86,7 @@ func (p *Portfolio) Summary() Summary {
 	return Summary{
 		InitialCapital: p.initialCapital,
 		Cash:           p.cash,
+		AvailableCash:  p.cash,
 		Equity:         eq,
 		TotalReturn:    totalReturn,
 		CurrentDD:      dd,

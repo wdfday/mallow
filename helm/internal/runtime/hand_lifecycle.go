@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
+	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/runtime/core/strategy"
 	"mallow/helm/internal/runtime/core/tactics"
@@ -129,7 +131,7 @@ func (h *Hand) restorePosition(hp *position.HandPositions, currentPrice decimal.
 
 	// Restore each active leg into the portfolio without generating new orders.
 	for _, leg := range hp.ActiveLegs() {
-		h.helmRuntime.Portfolio.RestorePosition(leg.Symbol, leg.Side, leg.Qty, leg.EntryPrice, currentPrice)
+		h.helmRuntime.Portfolio.RestorePosition(leg.Symbol, leg.Side, leg.Qty, leg.EntryPrice, currentPrice, leg.OpenedAt)
 	}
 
 	h.mu.Lock()
@@ -187,5 +189,12 @@ func (h *Hand) applyFuturesLeverage(ctx context.Context, symbol string, futures 
 	} else {
 		slog.Info("hand: leverage set", "hand_id", h.id, "symbol", symbol,
 			"leverage", futures.Leverage, "margin_type", marginType)
+		h.helmRuntime.EmitEvent(natsapi.HelmEvent{
+			HandID: h.id.String(),
+			Code:   CodeHandLeverageSet,
+			Symbol: symbol,
+			Reason: fmt.Sprintf("leverage=%d margin_type=%s", futures.Leverage, marginType),
+			Msg:    "hand: leverage & margin configured",
+		})
 	}
 }

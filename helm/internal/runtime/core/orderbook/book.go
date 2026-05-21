@@ -117,14 +117,19 @@ func (ob *orderBook) Validate(order ProposedOrder) ValidationResult {
 		return ValidationResult{Valid: false, Reason: fmt.Sprintf("qty rounds to %s, below min %s", adjustedQty, info.MinQty)}
 	}
 
-	if order.Price.IsPositive() && info.MinNotional.IsPositive() {
-		notional := adjustedQty.Mul(order.Price)
+	adjustedPrice := order.Price
+	if order.Price.IsPositive() && info.TickSize.IsPositive() {
+		adjustedPrice = roundToTick(order.Price, info.TickSize)
+	}
+
+	if adjustedPrice.IsPositive() && info.MinNotional.IsPositive() {
+		notional := adjustedQty.Mul(adjustedPrice)
 		if notional.LessThan(info.MinNotional) {
 			return ValidationResult{Valid: false, Reason: fmt.Sprintf("notional %s below min %s", notional, info.MinNotional)}
 		}
 	}
 
-	return ValidationResult{Valid: true, AdjustedQty: adjustedQty}
+	return ValidationResult{Valid: true, AdjustedQty: adjustedQty, AdjustedPrice: adjustedPrice}
 }
 
 // SupportedSymbols returns all registered symbols in sorted order.
@@ -186,4 +191,13 @@ func roundToStep(qty, step decimal.Decimal) decimal.Decimal {
 		return qty
 	}
 	return qty.Div(step).Floor().Mul(step)
+}
+
+// roundToTick rounds price to the nearest multiple of tick.
+// Returns price unchanged if tick is zero or negative.
+func roundToTick(price, tick decimal.Decimal) decimal.Decimal {
+	if !tick.IsPositive() {
+		return price
+	}
+	return price.Div(tick).Round(0).Mul(tick)
 }

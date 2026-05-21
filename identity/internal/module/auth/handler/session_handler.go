@@ -58,7 +58,7 @@ func (h *SessionHandler) list(c *gin.Context) {
 // @Tags auth
 // @Produce json
 // @Param sid path string true "Session ID"
-// @Success 200 {object} shared.SuccessResponse
+// @Success 200 {object} map[string]interface{}
 // @Router /api/v1/auth/sessions/{sid} [delete]
 // @Security BearerAuth
 func (h *SessionHandler) revoke(c *gin.Context) {
@@ -76,7 +76,7 @@ func (h *SessionHandler) revoke(c *gin.Context) {
 // @Description Logs out from all devices by revoking every active session
 // @Tags auth
 // @Produce json
-// @Success 200 {object} shared.SuccessResponse
+// @Success 200 {object} map[string]interface{}
 // @Router /api/v1/auth/sessions [delete]
 // @Security BearerAuth
 func (h *SessionHandler) revokeAll(c *gin.Context) {

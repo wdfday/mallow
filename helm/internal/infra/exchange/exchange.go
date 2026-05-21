@@ -180,3 +180,58 @@ type Exchange interface {
 	// Callers should reconnect on close. Fills arrive here before GetOrder polling.
 	SubscribeFills(ctx context.Context, creds Credentials) (<-chan FillEvent, error)
 }
+
+// Backoff manages reconnection intervals with exponential backoff and jitter.
+type Backoff struct {
+	Min    time.Duration
+	Max    time.Duration
+	Factor float64
+	Jitter bool
+}
+
+// Next calculates the next sleep duration given the current attempt number (0-indexed).
+func (b *Backoff) Next(attempt int) time.Duration {
+	min := b.Min
+	if min <= 0 {
+		min = 1 * time.Second
+	}
+	max := b.Max
+	if max <= 0 {
+		max = 30 * time.Second
+	}
+	factor := b.Factor
+	if factor <= 0 {
+		factor = 2.0
+	}
+
+	// Calculate base backoff: min * factor^attempt
+	dur := float64(min)
+	for i := 0; i < attempt; i++ {
+		dur *= factor
+		if dur >= float64(max) {
+			dur = float64(max)
+			break
+		}
+	}
+
+	result := time.Duration(dur)
+	if result > max {
+		result = max
+	}
+
+	if b.Jitter {
+		// Apply simple 10% random jitter: result * [0.95, 1.05]
+		ns := time.Now().UnixNano()
+		jitterRange := float64(result) * 0.1
+		offset := float64(ns%1000) / 1000.0 * jitterRange
+		result = result - time.Duration(jitterRange/2) + time.Duration(offset)
+		if result < min {
+			result = min
+		}
+		if result > max {
+			result = max
+		}
+	}
+
+	return result
+}

@@ -123,22 +123,18 @@ type Hand struct {
 // ID returns the bot's unique identifier.
 func (h *Hand) ID() uuid.UUID { return h.id }
 
-// realizedEquity returns the hand's actual capital base for sizing:
-// AllocatedCapital + all closed PnL so far. Returns zero when AllocatedCapital
-// is not set, signalling ProcessTrade to fall back to full portfolio equity.
-// Capped at zero — a hand that has blown through its allocation stops trading
-// via the zero-quantity guard in ProcessTrade, not by going negative.
+// realizedEquity returns the hand's capital base for sizing: AllocatedCapital
+// plus all closed PnL so far. Capped at zero — a hand that has blown through
+// its allocation stops trading via the zero-quantity guard in ProcessTrade.
 func (h *Hand) realizedEquity() decimal.Decimal {
 	h.mu.RLock()
 	allocatedCap := h.allocatedCap
 	h.mu.RUnlock()
 
-	if !allocatedCap.IsPositive() {
-		return decimal.Zero
-	}
 	h.metrics.mu.Lock()
 	pnl := h.metrics.totalPnL
 	h.metrics.mu.Unlock()
+
 	realized := allocatedCap.Add(pnl)
 	if realized.IsPositive() {
 		return realized

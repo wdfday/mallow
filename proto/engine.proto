@@ -1,0 +1,51 @@
+// Engine handshake and health messages: ping, heartbeat, ready.
+//
+// NATS subjects:
+//   engine.ping       ← helm → herald (req/rep → PingResponse)
+//   engine.heartbeat  ← helm → herald (req/rep → HeartbeatResponse)
+//   engine.ready      ← herald → helm  (JetStream publish on startup)
+
+syntax = "proto3";
+package market;
+
+// ── Ping ─────────────────────────────────────────────────────────────────────
+
+// engine.ping — request: empty payload
+message PingResponse {
+  bool   ok        = 1;
+  int32  hands     = 2;  // total registered hands
+  int64  uptime_ms = 3;
+  string herald_id = 4;  // instance identifier — changes on restart
+}
+
+// ── Heartbeat ────────────────────────────────────────────────────────────────
+//
+// Helm sends the list of hand_ids it expects to be registered under helm_id.
+// Herald returns a diff: missing (helm must re-register) and orphan (helm must
+// deregister). Allows both sides to self-heal after partial restarts.
+
+message HeartbeatRequest {
+  string          helm_id = 1;
+  repeated string hands   = 2;  // hand_ids expected to be registered
+}
+
+message HeartbeatResponse {
+  bool            ok         = 1;
+  repeated string missing    = 2;  // not in registry → helm must re-register
+  repeated string registered = 3;  // confirmed present
+  // Present in herald's registry under helm_id but absent from req.hands.
+  // Catches stale registrations after helm forgot about them (e.g. restart
+  // with new state and the original deregister was lost in transit).
+  repeated string orphan     = 4;
+}
+
+// ── Ready ────────────────────────────────────────────────────────────────────
+
+// engine.ready — JetStream publish on herald startup.
+// Consumers (helm) subscribe to detect herald restarts and re-register hands.
+message ReadyEvent {
+  string          herald_id = 1;
+  int64           ts        = 2;
+  string          tf        = 3;  // base timeframe (e.g. "M1")
+  repeated string symbols   = 4;  // currently ingested symbols
+}

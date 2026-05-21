@@ -1,7 +1,6 @@
 package service_test
 
 import (
-	"context"
 	"fmt"
 	"sync"
 	"testing"
@@ -110,11 +109,12 @@ type mockSpawner struct {
 	updateRiskCalled []uuid.UUID
 	syncedOne        []uuid.UUID
 
-	pauseResult  []string // hand IDs returned by Pause
-	resumeResult []string // hand IDs returned by Resume
-	pauseErr     error
-	resumeErr    error
-	resetHaltErr error
+	pauseResult    []string // hand IDs returned by Pause
+	resumeResult   []string // hand IDs returned by Resume
+	teardownResult []string // hand IDs returned by Teardown
+	pauseErr       error
+	resumeErr      error
+	resetHaltErr   error
 }
 
 func (m *mockSpawner) Spawn(cfg *domain.Helm, _ domain.ExchangeConfig, _ decimal.Decimal) error {
@@ -124,7 +124,7 @@ func (m *mockSpawner) Spawn(cfg *domain.Helm, _ domain.ExchangeConfig, _ decimal
 
 func (m *mockSpawner) Teardown(id uuid.UUID) []string {
 	m.tornDown = append(m.tornDown, id)
-	return []string{}
+	return m.teardownResult
 }
 
 func (m *mockSpawner) Pause(id uuid.UUID) ([]string, error) {
@@ -151,23 +151,23 @@ func (m *mockSpawner) SyncOne(id uuid.UUID) {
 	m.syncedOne = append(m.syncedOne, id)
 }
 
-// ── mock BotLifecycle ────────────────────────────────────────────────────────
-
 type mockBotLifecycle struct {
-	stopped []string
-	started []string
-	killed  []string
-	purged  []string
+	stopped  []string
+	started  []string
+	killed   []string
+	released []string
+	purged   []string
 }
 
-func (m *mockBotLifecycle) StopBots(ids []string)  { m.stopped = append(m.stopped, ids...) }
-func (m *mockBotLifecycle) StartBots(ids []string) { m.started = append(m.started, ids...) }
-func (m *mockBotLifecycle) KillBots(ids []string)  { m.killed = append(m.killed, ids...) }
-func (m *mockBotLifecycle) PurgeBots(ids []string) { m.purged = append(m.purged, ids...) }
+func (m *mockBotLifecycle) StopBots(ids []string)    { m.stopped = append(m.stopped, ids...) }
+func (m *mockBotLifecycle) StartBots(ids []string)   { m.started = append(m.started, ids...) }
+func (m *mockBotLifecycle) KillBots(ids []string)    { m.killed = append(m.killed, ids...) }
+func (m *mockBotLifecycle) ReleaseBots(ids []string) { m.released = append(m.released, ids...) }
+func (m *mockBotLifecycle) PurgeBots(ids []string)   { m.purged = append(m.purged, ids...) }
 
 // ── test helpers ─────────────────────────────────────────────────────────────
 
-func newOrch(id uuid.UUID, status string) *domain.Helm {
+func newOrch(id uuid.UUID, status domain.HelmStatus) *domain.Helm {
 	return &domain.Helm{
 		ID:        id,
 		UserID:    uuid.New(),
@@ -194,7 +194,7 @@ func setup() (*service.Service, *mockSpawner, *mockBotLifecycle, *stubHelmRepo) 
 func TestEnable_SetsEnabledTrue(t *testing.T) {
 	svc, spawner, _, store := setup()
 	id := uuid.New()
-	orch := newOrch(id, "active")
+	orch := newOrch(id, domain.HelmStatusActive)
 	orch.Enabled = false
 	_ = store.Save(orch)
 
@@ -212,12 +212,15 @@ func TestEnable_SetsEnabledTrue(t *testing.T) {
 	}
 }
 
-func TestDisable_SetsEnabledFalse(t *testing.T) {
-	svc, _, _, store := setup()
+func TestDisable_PersistsDisabledAndKillsBots(t *testing.T) {
+	svc, spawner, bots, store := setup()
 	id := uuid.New()
-	orch := newOrch(id, "active")
+	orch := newOrch(id, domain.HelmStatusActive)
 	orch.Enabled = true
 	_ = store.Save(orch)
+
+	spawner.pauseResult = []string{"bot-x", "bot-y"}
+	spawner.teardownResult = []string{"bot-x", "bot-y"}
 
 	if err := svc.Disable(id); err != nil {
 		t.Fatalf("Disable returned error: %v", err)
@@ -226,6 +229,28 @@ func TestDisable_SetsEnabledFalse(t *testing.T) {
 	got, _ := store.Get(id)
 	if got.Enabled {
 		t.Fatal("expected Enabled=false after Disable()")
+	}
+	if got.Status != domain.HelmStatusDisabled {
+		t.Fatalf("expected status 'disabled', got %q", got.Status)
+	}
+	// KillBots (flatten) must be called, not ReleaseBots (orphan).
+	if len(bots.killed) != 2 {
+		t.Fatalf("expected 2 hands killed, got %d: KillBots must run before Teardown", len(bots.killed))
+	}
+	if len(bots.released) != 0 {
+		t.Fatalf("expected 0 hands released, got %d: Disable should flatten, not orphan", len(bots.released))
+	}
+}
+
+func TestDisable_PauseCalledBeforeKill(t *testing.T) {
+	svc, spawner, _, store := setup()
+	id := uuid.New()
+	_ = store.Save(newOrch(id, domain.HelmStatusActive))
+
+	_ = svc.Disable(id)
+
+	if len(spawner.paused) == 0 {
+		t.Fatal("Disable must call spawner.Pause before killing bots")
 	}
 }
 
@@ -252,7 +277,7 @@ func TestPause_PersistsStatusAndStopsBots(t *testing.T) {
 
 	// Status persisted.
 	got, _ := store.Get(id)
-	if got.Status != "paused" {
+	if got.Status != domain.HelmStatusPaused {
 		t.Fatalf("expected status 'paused', got %q", got.Status)
 	}
 	// StopBots called with running bots.
@@ -293,7 +318,7 @@ func TestPause_SpawnerError_Propagated(t *testing.T) {
 func TestResume_PersistsStatusAndStartsBots(t *testing.T) {
 	svc, spawner, bots, store := setup()
 	id := uuid.New()
-	_ = store.Save(newOrch(id, "paused"))
+	_ = store.Save(newOrch(id, domain.HelmStatusPaused))
 
 	spawner.resumeResult = []string{"bot-a", "bot-b", "bot-c"}
 
@@ -302,7 +327,7 @@ func TestResume_PersistsStatusAndStartsBots(t *testing.T) {
 	}
 
 	got, _ := store.Get(id)
-	if got.Status != "active" {
+	if got.Status != domain.HelmStatusActive {
 		t.Fatalf("expected status 'active', got %q", got.Status)
 	}
 	if len(bots.started) != 3 {
@@ -313,7 +338,7 @@ func TestResume_PersistsStatusAndStartsBots(t *testing.T) {
 func TestResume_NoBots_DoesNotCallStartBots(t *testing.T) {
 	svc, spawner, bots, store := setup()
 	id := uuid.New()
-	_ = store.Save(newOrch(id, "paused"))
+	_ = store.Save(newOrch(id, domain.HelmStatusPaused))
 
 	spawner.resumeResult = nil
 
@@ -324,54 +349,21 @@ func TestResume_NoBots_DoesNotCallStartBots(t *testing.T) {
 	}
 }
 
-// ── Kill ──────────────────────────────────────────────────────────────────────
-
-func TestKill_PersistsHaltedAndKillsBots(t *testing.T) {
-	svc, spawner, bots, store := setup()
-	id := uuid.New()
-	_ = store.Save(newOrch(id, "active"))
-
-	spawner.pauseResult = []string{"bot-x", "bot-y"}
-
-	if err := svc.Kill(context.Background(), id); err != nil {
-		t.Fatalf("Kill returned error: %v", err)
-	}
-
-	got, _ := store.Get(id)
-	if got.Status != "halted" {
-		t.Fatalf("expected status 'halted', got %q", got.Status)
-	}
-	// KillBots called.
-	if len(bots.killed) != 2 {
-		t.Fatalf("expected 2 hands killed, got %d", len(bots.killed))
-	}
-}
-
-func TestKill_PauseCalledFirst(t *testing.T) {
-	svc, spawner, _, store := setup()
-	id := uuid.New()
-	_ = store.Save(newOrch(id, "active"))
-
-	_ = svc.Kill(context.Background(), id)
-
-	if len(spawner.paused) == 0 {
-		t.Fatal("Kill should call spawner.Pause before killing bots")
-	}
-}
+// ── ResetHalt ─────────────────────────────────────────────────────────────────
 
 // ── ResetHalt ─────────────────────────────────────────────────────────────────
 
 func TestResetHalt_PersistsActiveAndCallsSpawner(t *testing.T) {
 	svc, spawner, _, store := setup()
 	id := uuid.New()
-	_ = store.Save(newOrch(id, "halted"))
+	_ = store.Save(newOrch(id, domain.HelmStatusHalted))
 
 	if err := svc.ResetHalt(id); err != nil {
 		t.Fatalf("ResetHalt returned error: %v", err)
 	}
 
 	got, _ := store.Get(id)
-	if got.Status != "active" {
+	if got.Status != domain.HelmStatusActive {
 		t.Fatalf("expected status 'active' after ResetHalt, got %q", got.Status)
 	}
 	if len(spawner.resetHaltCalled) != 1 || spawner.resetHaltCalled[0] != id {
@@ -382,7 +374,7 @@ func TestResetHalt_PersistsActiveAndCallsSpawner(t *testing.T) {
 func TestResetHalt_SpawnerError_Propagated(t *testing.T) {
 	svc, spawner, _, store := setup()
 	id := uuid.New()
-	_ = store.Save(newOrch(id, "halted"))
+	_ = store.Save(newOrch(id, domain.HelmStatusHalted))
 
 	spawner.resetHaltErr = errTest("spawner reset failed")
 

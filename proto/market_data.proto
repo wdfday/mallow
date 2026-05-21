@@ -1,0 +1,32 @@
+// Market data messages: raw ticks and aggregated OHLCV bars.
+//
+// NATS subjects:
+//   bars.{symbol}  ← herald → helm (BarMsg, aggregated from WS feed)
+
+syntax = "proto3";
+package market;
+
+// ── Tick (raw trade event from exchange WebSocket) ───────────────────────────
+
+message TickMsg {
+  int64  t     = 1;  // Unix milliseconds
+  string s     = 2;  // symbol (normalized uppercase, e.g. "BTCUSDT")
+  string class = 3;  // asset class: "crypto" | "stocks" | "forex"
+  string src   = 4;  // source: "binance" | "alpaca" | "okx"
+  double p     = 5;  // last price
+  double v     = 6;  // volume (trade qty)
+  double bid   = 7;  // bid (forex only)
+  double ask   = 8;  // ask (forex only)
+}
+
+// ── Bar (OHLCV candle, aggregated from ticks) ────────────────────────────────
+
+message BarMsg {
+  int64  t = 1;  // Unix milliseconds
+  string s = 2;  // symbol
+  double o = 3;  // open
+  double h = 4;  // high
+  double l = 5;  // low
+  double c = 6;  // close
+  double v = 7;  // volume
+}

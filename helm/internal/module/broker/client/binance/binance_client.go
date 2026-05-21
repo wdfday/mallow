@@ -278,7 +278,8 @@ func (c *Client) DetectAccounts(ctx context.Context, creds client.Credentials) (
 		if r.err != nil {
 			return nil, r.err
 		}
-		if r.acct.AccountType != "" {
+		// Temporarily restrict to spot only — futures accounts not yet supported for users.
+		if r.acct.AccountType == "spot" {
 			accounts = append(accounts, r.acct)
 		}
 	}

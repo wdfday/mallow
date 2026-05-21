@@ -68,6 +68,7 @@ func TestOrderBookValidateStillUsesSupportedSymbolState(t *testing.T) {
 		MaxQty:      decimal.NewFromInt(10),
 		StepSize:    decimal.NewFromInt(1),
 		MinNotional: decimal.NewFromInt(100),
+		TickSize:    decimal.NewFromFloat(0.01),
 	})
 
 	result := ob.Validate(ProposedOrder{
@@ -75,13 +76,16 @@ func TestOrderBookValidateStillUsesSupportedSymbolState(t *testing.T) {
 		Symbol: "NVDA",
 		Side:   SideBuy,
 		Qty:    decimal.NewFromFloat(2.7),
-		Price:  decimal.NewFromInt(60),
+		Price:  decimal.NewFromFloat(60.123),
 	})
 	if !result.Valid {
 		t.Fatalf("expected order to validate, got invalid: %+v", result)
 	}
 	if !result.AdjustedQty.Equal(decimal.NewFromInt(2)) {
 		t.Fatalf("expected adjusted qty 2, got %s", result.AdjustedQty)
+	}
+	if !result.AdjustedPrice.Equal(decimal.NewFromFloat(60.12)) {
+		t.Fatalf("expected adjusted price 60.12, got %s", result.AdjustedPrice)
 	}
 
 	unsupported := ob.Validate(ProposedOrder{

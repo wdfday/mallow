@@ -32,6 +32,7 @@ type RiskConfigDTO struct {
 type PortfolioResp struct {
 	InitialCapital decimal.Decimal `json:"initial_capital"`
 	Cash           decimal.Decimal `json:"cash"`
+	AvailableCash  decimal.Decimal `json:"available_cash"`
 	Equity         decimal.Decimal `json:"equity"`
 	TotalReturn    float64         `json:"total_return_pct"`
 	CurrentDD      float64         `json:"current_drawdown_pct"`
@@ -189,6 +190,7 @@ type EquityPointResp struct {
 	HandID string    `json:"hand_id"`
 	TS     time.Time `json:"ts"`
 	Equity float64   `json:"equity"`
+	Cash   float64   `json:"cash"`
 }
 
 type EquityPageResp struct {
@@ -246,6 +248,7 @@ func PortfolioToResp(s portfolio.Summary) PortfolioResp {
 	return PortfolioResp{
 		InitialCapital: s.InitialCapital,
 		Cash:           s.Cash,
+		AvailableCash:  s.AvailableCash,
 		Equity:         s.Equity,
 		TotalReturn:    s.TotalReturn,
 		CurrentDD:      s.CurrentDD,

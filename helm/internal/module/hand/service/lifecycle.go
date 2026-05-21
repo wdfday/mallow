@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
@@ -19,7 +20,9 @@ func (s *Service) Start(id uuid.UUID) error {
 	if rt, _ := s.registry.Get(bi.Data.HelmID); rt != nil && rt.IsPaused() {
 		return fmt.Errorf("helm %q is paused — resume it first", bi.Data.HelmID)
 	}
-	s.heraldRegister(id, bi.Data)
+	if err := s.heraldRegister(id, bi.Data); err != nil {
+		return fmt.Errorf("hand start: %w", err)
+	}
 	bi.Runner.Start()
 	bi.Data.Status = domain.HandStatusRunning
 	return s.repo.Update(id, func(d *domain.Hand) error {
@@ -121,7 +124,9 @@ func (s *Service) Restart(id uuid.UUID) error {
 	if rt, _ := s.registry.Get(bi.Data.HelmID); rt != nil && rt.IsPaused() {
 		return fmt.Errorf("helm %q is paused — resume it first", bi.Data.HelmID)
 	}
-	s.heraldRegister(id, bi.Data)
+	if err := s.heraldRegister(id, bi.Data); err != nil {
+		return fmt.Errorf("hand restart: %w", err)
+	}
 	bi.Runner.Start()
 	bi.Data.Status = domain.HandStatusRunning
 	return s.repo.Update(id, func(d *domain.Hand) error {
@@ -157,7 +162,10 @@ func (s *Service) StartBots(ids []string) {
 			continue
 		}
 		if bi, ok := s.hands[id]; ok && !bi.Runner.IsRunning() {
-			s.heraldRegister(id, bi.Data)
+			if err := s.heraldRegister(id, bi.Data); err != nil {
+				slog.Error("hand start bot: herald register failed", "hand_id", id, "err", err)
+				continue
+			}
 			bi.Runner.Start()
 		}
 	}
@@ -176,7 +184,7 @@ func (s *Service) PurgeBots(ids []string) {
 	}
 }
 
-// KillBots cascade-kills hands (flatten positions + stop) in-memory only. Called by helm kill.
+// KillBots cascade-kills hands (flatten positions + stop) and persists stopped status to DB. Called by helm kill.
 func (s *Service) KillBots(ids []string) {
 	ctx := context.Background()
 	toKill := make([]*runtime.HandRef, 0, len(ids))
@@ -197,6 +205,59 @@ func (s *Service) KillBots(ids []string) {
 	for _, bi := range toKill {
 		s.heraldDeregister(bi.Data.ID)
 		bi.Runner.Kill(ctx)
+		bi.Data.Status = domain.HandStatusStopped
+	}
+
+	for _, idStr := range ids {
+		id, err := uuid.Parse(idStr)
+		if err != nil {
+			continue
+		}
+		if err := s.repo.Update(id, func(d *domain.Hand) error {
+			d.Status = domain.HandStatusStopped
+			return nil
+		}); err != nil {
+			slog.Error("hand: persist stopped status failed on helm kill", "hand_id", id, "err", err)
+		}
+	}
+}
+
+// ReleaseBots cascade-releases hands (stop without flattening, positions become orphaned) and persists stopped status to DB.
+// Called by helm disable.
+func (s *Service) ReleaseBots(ids []string) {
+	ctx := context.Background()
+	toRelease := make([]*runtime.HandRef, 0, len(ids))
+
+	s.mu.Lock()
+	for _, idStr := range ids {
+		id, err := uuid.Parse(idStr)
+		if err != nil {
+			continue
+		}
+		if bi, ok := s.hands[id]; ok {
+			toRelease = append(toRelease, bi)
+			delete(s.hands, id)
+		}
+	}
+	s.mu.Unlock()
+
+	for _, bi := range toRelease {
+		s.heraldDeregister(bi.Data.ID)
+		bi.Runner.Release(ctx)
+		bi.Data.Status = domain.HandStatusStopped
+	}
+
+	for _, idStr := range ids {
+		id, err := uuid.Parse(idStr)
+		if err != nil {
+			continue
+		}
+		if err := s.repo.Update(id, func(d *domain.Hand) error {
+			d.Status = domain.HandStatusStopped
+			return nil
+		}); err != nil {
+			slog.Error("hand: persist stopped status failed on helm disable", "hand_id", id, "err", err)
+		}
 	}
 }
 

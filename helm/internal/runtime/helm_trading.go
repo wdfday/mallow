@@ -8,6 +8,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
+	"mallow/helm/internal/infra/natsapi"
 	helmdomain "mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/runtime/core/portfolio"
 	"mallow/helm/internal/runtime/core/strategy"
@@ -29,6 +30,10 @@ type TradeProposal struct {
 }
 
 // ProcessTrade validates a trade against account-level guards and sizes via the hand's tactician.
+//
+// Price resolution is intentionally performed BEFORE acquiring tradeMu so that
+// a slow or missing exchange REST call never blocks ReportFill (which also needs
+// tradeMu) for other hands on the same helm.
 func (r *HelmRuntime) ProcessTrade(
 	ctx context.Context,
 	proposal TradeProposal,
@@ -43,12 +48,17 @@ func (r *HelmRuntime) ProcessTrade(
 		return helmdomain.TradeReply{Approved: false, Reason: "circuit breaker: too many requests"}
 	}
 
+	// ── Resolve price BEFORE acquiring tradeMu ────────────────────────────────
+	// lastKnownPrice and pricesMu are independent from tradeMu, so this does not
+	// block concurrent ReportFill calls from other hands.
 	price := proposal.Price
 	if price.IsZero() {
 		price = r.lastKnownPrice(proposal.Symbol)
 	}
 	if price.IsZero() {
 		if pf, ok := r.Exchange.(exchange.PriceFetcher); ok {
+			// Fallback to REST only when WebSocket price cache is cold.
+			// This call may take 100ms–2s but runs outside tradeMu.
 			if p, err := pf.GetCurrentPrice(ctx, r.Creds, proposal.Symbol); err == nil && p.IsPositive() {
 				price = p
 				r.pricesMu.Lock()
@@ -61,10 +71,19 @@ func (r *HelmRuntime) ProcessTrade(
 		return helmdomain.TradeReply{Approved: false, Reason: "no price available for " + proposal.Symbol}
 	}
 
+	// ── Critical section: risk check + portfolio read + sizing ────────────────
 	r.tradeMu.Lock()
 	defer r.tradeMu.Unlock()
 
-	if ok, reason := r.RiskMgr.Validate(proposal.Intent); !ok {
+	wasHalted := r.RiskMgr.IsHalted()
+	if ok, reason := r.RiskMgr.Validate(proposal.Intent, proposal.HandID); !ok {
+		if !wasHalted && r.RiskMgr.IsHalted() {
+			r.EmitEvent(natsapi.HelmEvent{
+				Code:   CodeHelmHalted,
+				Reason: reason,
+				Msg:    "helm: halted by risk manager",
+			})
+		}
 		return helmdomain.TradeReply{Approved: false, Reason: "risk: " + reason}
 	}
 

@@ -122,12 +122,61 @@ func (h *Hand) publishOrderPlaced(
 func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, price, pnl decimal.Decimal, source, closeSource string) {
 	h.mu.RLock()
 	positionID := h.pendingOrderPos[orderID]
-	isClosingFill := positionID != "" && h.pos.LegPhase(positionID) == position.PhaseExiting
-	snap, hasSnap := h.pos.LegSnapshot(positionID)
+	var isBracketExit bool
+	var snap position.LegSnapshot
+	var hasSnap bool
+	if positionID == "" {
+		// Look for orderID in exitLevels
+		for _, lv := range h.exitLevels {
+			for _, id := range lv.ExchangeOrderIDs {
+				if id == orderID {
+					isBracketExit = true
+					if primaryLeg := h.pos.PrimaryLeg(); primaryLeg != nil {
+						positionID = primaryLeg.PositionID
+						snap, hasSnap = h.pos.LegSnapshot(positionID)
+					}
+					break
+				}
+			}
+			if positionID != "" {
+				break
+			}
+		}
+	} else {
+		snap, hasSnap = h.pos.LegSnapshot(positionID)
+	}
+	isClosingFill := isBracketExit || (positionID != "" && h.pos.LegPhase(positionID) == position.PhaseExiting)
 	h.mu.RUnlock()
 
 	if positionID == "" {
 		return // order not tracked in poslog
+	}
+
+	if isBracketExit {
+		cp := poslog.PositionClosedPayload{
+			OrderID:     positionID,
+			ClosePrice:  price.String(),
+			RealizedPnL: pnl.String(),
+			Source:      closeSource,
+		}
+		if hasSnap {
+			cp.Symbol = snap.Symbol
+			cp.Side = snap.Side
+			cp.Qty = qty.String() // fill qty, not leg's accumulated qty
+			cp.EntryPrice = snap.EntryPrice.String()
+			cp.EntryAt = snap.OpenedAt
+		}
+		closedPayload, _ := json.Marshal(cp)
+		h.publishAndApply(ctx, poslog.Event{
+			ID:         positionID + "_closed_" + orderID,
+			HandID:     h.id.String(),
+			HelmID:     h.helmID.String(),
+			PositionID: positionID,
+			Kind:       poslog.KindPositionClosed,
+			Payload:    closedPayload,
+			At:         time.Now().UTC(),
+		})
+		return
 	}
 
 	payload, _ := json.Marshal(poslog.OrderFilledPayload{

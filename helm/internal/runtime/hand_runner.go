@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"runtime/pprof"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -12,10 +13,26 @@ import (
 	"mallow/helm/internal/infra/natsapi"
 	handdomain "mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/runtime/core/strategy"
+	"mallow/helm/internal/runtime/position"
 )
 
 func (h *Hand) run(ctx context.Context) {
 	defer close(h.done)
+
+	// Tag this goroutine for Pyroscope continuous profiling.
+	// CPU/memory profiles will carry hand_id + helm_id labels,
+	// enabling per-hand flame graph filtering in the Grafana Pyroscope UI.
+	pprof.Do(ctx, pprof.Labels(
+		"hand_id", h.id.String(),
+		"helm_id", h.helmID.String(),
+		"symbol", h.Symbol,
+	), func(ctx context.Context) {
+		h.runLoop(ctx)
+	})
+}
+
+// runLoop is the actual select loop; extracted so pprof.Do labels cover the entire goroutine lifetime.
+func (h *Hand) runLoop(ctx context.Context) {
 	pollTicker := time.NewTicker(5 * time.Second)
 	defer pollTicker.Stop()
 	staleTicker := time.NewTicker(30 * time.Second)
@@ -61,6 +78,12 @@ func (h *Hand) checkStale() {
 				Code:   CodeHandStale,
 				Reason: "no signal received in > 5 minutes",
 				Msg:    "hand: signal feed stale",
+			})
+			h.activityLog.push(ActivityEntry{
+				At:     time.Now(),
+				Code:   CodeHandStale,
+				Symbol: h.Symbol,
+				Reason: "no signal received in > 5 minutes",
 			})
 		}
 	}
@@ -147,13 +170,35 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 	}
 
 	if sig.IsUrgent() {
-		// Resolve close direction against actual position side.
-		if pos := h.helmRuntime.Portfolio.GetPosition(sig.Symbol); pos != nil {
-			if pos.Qty.IsNegative() {
-				intent.Action = strategy.ActionExitShort
-			} else if pos.Qty.IsPositive() {
-				intent.Action = strategy.ActionExitLong
+		// Resolve close direction against this hand's own position, not the net
+		// helm-level portfolio. Portfolio.GetPosition aggregates all hands on the
+		// same symbol, so it would stay non-nil while another hand still holds the
+		// asset — causing spurious close orders after this hand is already flat.
+		// Also guards against the OCO + checkExits race: if the position was
+		// already closed by an OCO fill before this urgent signal is processed,
+		// handSide will be "" and we drop the signal rather than placing a spurious
+		// closing order (which would short-reverse on a margin account).
+		// Only PhaseOpen and PhaseAdding legs have an actual exchange position.
+		// PhaseEntering = entry order placed but not yet filled (qty=0 at exchange).
+		// PhaseExiting  = close order already in-flight; another exit is redundant.
+		h.mu.RLock()
+		var handSide string
+		for _, leg := range h.pos.ActiveLegs() {
+			if leg.Symbol == sig.Symbol &&
+				(leg.Phase == position.PhaseOpen || leg.Phase == position.PhaseAdding) {
+				handSide = leg.Side
+				break
 			}
+		}
+		h.mu.RUnlock()
+		if handSide == "" {
+			filtered(CodeSignalNoPosition, "exit signal: position already closed")
+			return
+		}
+		if handSide == "sell" {
+			intent.Action = strategy.ActionExitShort
+		} else {
+			intent.Action = strategy.ActionExitLong
 		}
 	}
 
@@ -265,10 +310,15 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		})
 		h.activityLog.push(ActivityEntry{At: time.Now(), Code: CodeOrderFailed, Symbol: sig.Symbol, Direction: string(sig.Direction), Side: reply.Side, Qty: reply.Qty, Reason: err.Error()})
 		// Auto-pause when a sizing/lot constraint causes a persistent entry failure.
-		// Only pause if there is no open position — if we already hold a position
+		// Only pause if this hand has no open position — if we already hold a position
 		// the failure is on a scale-in or exit, which should not pause the hand.
+		// Use h.pos (per-hand) not Portfolio.GetPosition (net helm) so that another
+		// hand holding the same symbol does not suppress the auto-pause.
 		if isLotSizeError(err) && !isExitOrder {
-			if pos := h.helmRuntime.Portfolio.GetPosition(sig.Symbol); pos == nil || pos.Qty.IsZero() {
+			h.mu.RLock()
+			flat := h.pos.ActiveCount() == 0
+			h.mu.RUnlock()
+			if flat {
 				h.Pause()
 				h.helmRuntime.EmitEvent(natsapi.HelmEvent{
 					HandID: h.id.String(),
@@ -276,6 +326,12 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 					Symbol: sig.Symbol,
 					Reason: fmt.Sprintf("lot/notional constraint — %s", err.Error()),
 					Msg:    "hand: auto-paused due to sizing constraint",
+				})
+				h.activityLog.push(ActivityEntry{
+					At:     time.Now(),
+					Code:   CodeHandAutoPaused,
+					Symbol: sig.Symbol,
+					Reason: fmt.Sprintf("lot/notional constraint — %s", err.Error()),
 				})
 			}
 		}

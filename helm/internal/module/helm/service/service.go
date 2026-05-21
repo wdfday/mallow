@@ -30,6 +30,8 @@ type HandLifecycle interface {
 	StopBots(ids []string)
 	StartBots(ids []string)
 	KillBots(ids []string)
+	// ReleaseBots stops hands without flattening positions (positions become orphaned).
+	ReleaseBots(ids []string)
 	// PurgeBots removes hands from the in-memory map after their helm is deleted.
 	PurgeBots(ids []string)
 }

@@ -4,7 +4,7 @@ package runtime_test
 //
 // No real exchange, no NATS — all dependencies are fakes in this file.
 // simExchange.PlaceOrder returns "filled" immediately so the fill path
-// (hand_signal.go:341) fires synchronously inside handleSignal.
+// (hand_fills.go) fires synchronously inside handleSignal.
 //
 // Scenarios:
 //
@@ -33,6 +33,7 @@ import (
 
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/module/hand/domain"
+	helmdomain "mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/runtime"
 	"mallow/helm/internal/runtime/core/portfolio"
 	"mallow/helm/internal/runtime/core/risk"
@@ -44,7 +45,7 @@ import (
 
 // simExchange is an in-memory exchange that immediately fills every order.
 // PlaceOrder captures the request, assigns a sequential ID, and returns
-// Status="filled" so hand_signal.go applies the fill synchronously.
+// Status="filled" so hand_runner.go/hand_fills.go applies the fill synchronously.
 type simExchange struct {
 	mu        sync.Mutex
 	placed    []exchange.OrderRequest
@@ -135,7 +136,7 @@ func buildSimRuntime(ex exchange.Exchange, capital float64, maxPositions int) *r
 	rm := risk.New(cfg, pf)
 	rt := runtime.NewHelmRuntime(
 		uuid.New(), uuid.New(), uuid.New(),
-		"sim", pf, rm, ex, exchange.Credentials{}, nil,
+		"sim", pf, rm, ex, exchange.Credentials{}, nil, time.Now(),
 	)
 	rm.SetUnitCounter(rt.OpenUnitCount)
 	return rt
@@ -554,5 +555,86 @@ func TestSignal_InsufficientCapital_AutoPause(t *testing.T) {
 
 	if !h.IsPaused() {
 		t.Fatal("expected hand to be paused after failing to size entry trade due to insufficient capital")
+	}
+}
+
+func TestSignal_HaltedHelm_NotForwarded(t *testing.T) {
+	const symbol = "BTCUSDT"
+	sim := newSim(50_000)
+	rt := buildSimRuntime(sim, 10_000, 10)
+	defer rt.Stop()
+
+	h := addSimHand(rt, symbol, 0.001, 0, 0.3, 1)
+	rt.UpdatePrice(symbol, decimal.NewFromFloat(50_000))
+
+	// 1. Update risk manager config to trigger halt easily
+	rt.RiskMgr.UpdateConfig(risk.Config{
+		MaxPositions:      10,
+		DailyLossLimitPct: 0.01,
+		MaxDrawdownPct:    0.01,
+	})
+
+	// 2. Record initial equity and execute a loss
+	now := time.Now()
+	rt.Portfolio.RecordEquity(now.Add(-10 * time.Minute))
+	rt.ReportFill(helmdomain.FillReport{
+		Symbol: symbol,
+		Side:   "buy",
+		Qty:    decimal.NewFromInt(100),
+		Price:  decimal.NewFromInt(100),
+	})
+	rt.ReportFill(helmdomain.FillReport{
+		Symbol: symbol,
+		Side:   "sell",
+		Qty:    decimal.NewFromInt(100),
+		Price:  decimal.NewFromInt(90),
+	})
+
+	// 3. Trigger risk checks
+	rt.RiskMgr.Validate(strategy.Intent{
+		Action: strategy.ActionEnterLong,
+		Signal: strategy.Signal{Symbol: symbol, Direction: strategy.DirLong},
+	}, h.ID().String())
+
+	if !rt.IsHalted() {
+		t.Fatal("expected runtime to be halted after drawdown breach")
+	}
+
+	// 4. Dispatch an entry signal — should NOT be forwarded to the hand
+	sig := strategy.Signal{
+		Symbol:    symbol,
+		Direction: strategy.DirLong,
+	}
+	dispatched := rt.DispatchHandSignal(h.ID().String(), sig)
+	if !dispatched {
+		t.Fatal("expected DispatchHandSignal to return true (signal swallowed)")
+	}
+
+	// 5. Verify the hand's signal channel is empty (no signal forwarded)
+	select {
+	case s := <-h.Signals:
+		t.Fatalf("expected no signal to be forwarded to the hand, but got: %v", s)
+	case <-time.After(50 * time.Millisecond):
+		// Success: signal was not forwarded!
+	}
+
+	// 6. Dispatch an urgent exit signal — should STILL be forwarded to the hand
+	exitSig := strategy.Signal{
+		Symbol:    symbol,
+		Direction: strategy.DirExit, // DirExit makes it urgent
+	}
+	dispatched = rt.DispatchHandSignal(h.ID().String(), exitSig)
+	if !dispatched {
+		t.Fatal("expected DispatchHandSignal to return true for urgent signal")
+	}
+
+	// Verify the hand's urgent signal channel has the exit signal
+	select {
+	case s := <-h.UrgentSignals:
+		if s.Direction != strategy.DirExit {
+			t.Fatalf("expected urgent exit signal, got: %v", s)
+		}
+	case <-time.After(50 * time.Millisecond):
+		t.Fatal("expected urgent exit signal to be forwarded to the hand, but timed out")
 	}
 }

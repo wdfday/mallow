@@ -184,6 +184,7 @@ type PortfolioSyncEvent struct {
 	AccountID      string              `json:"account_id"`
 	UserID         string              `json:"user_id"`
 	Cash           decimal.Decimal     `json:"cash"`
+	AvailableCash  decimal.Decimal     `json:"available_cash"`
 	Equity         decimal.Decimal     `json:"equity"`
 	Positions      []SyncedPositionMsg `json:"positions"`
 	Transactions   []TransactionMsg    `json:"transactions"` // filled orders since last sync
@@ -212,12 +213,13 @@ func PublishTradeFill(js nats.JetStreamContext, txn TransactionMsg) {
 // PublishPortfolioSync publishes a PortfolioSyncEvent to the PORTFOLIO_SYNC JetStream stream
 // (portfolio.synced.{accountID}). Durable with 1-day retention so consumers that
 // were briefly offline receive missed sync notifications on reconnect.
-func PublishPortfolioSync(js nats.JetStreamContext, orchID, accountID, userID string, cash, equity decimal.Decimal, positions []SyncedPositionMsg, transactions []TransactionMsg, syncedAt time.Time) {
+func PublishPortfolioSync(js nats.JetStreamContext, orchID, accountID, userID string, cash, availableCash, equity decimal.Decimal, positions []SyncedPositionMsg, transactions []TransactionMsg, syncedAt time.Time) {
 	ev := PortfolioSyncEvent{
 		OrchestratorID: orchID,
 		AccountID:      accountID,
 		UserID:         userID,
 		Cash:           cash,
+		AvailableCash:  availableCash,
 		Equity:         equity,
 		Positions:      positions,
 		Transactions:   transactions,

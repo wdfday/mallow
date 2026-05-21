@@ -95,6 +95,8 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 		{
 			ex.GET("/account", h.exchangeAccount)
 			ex.GET("/price", h.exchangePrice)
+			ex.GET("/metrics", h.exchangeMetrics)
+			ex.GET("/ping", h.exchangePing)
 			ex.POST("/orders", h.exchangePlaceOrder)
 			ex.GET("/orders", h.exchangeGetOrder)
 			ex.DELETE("/orders", h.exchangeCancelOrder)
@@ -357,7 +359,7 @@ func (h *Handler) resume(c *gin.Context) {
 }
 
 // kill godoc
-// @Summary Kill orchestrator — flatten all hand positions and halt
+// @Summary Disable orchestrator — flatten all hand positions and disable
 // @Tags helms
 // @Security BearerAuth
 // @Produce json
@@ -381,11 +383,11 @@ func (h *Handler) kill(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusNotFound, "not found")
 		return
 	}
-	if err := h.svc.Kill(c.Request.Context(), id); err != nil {
+	if err := h.svc.Disable(id); err != nil {
 		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Orchestrator killed successfully", dto.ActionResp{Status: "halted", ID: id})
+	shared.RespondWithSuccess(c, http.StatusOK, "Orchestrator disabled successfully", dto.ActionResp{Status: "disabled", ID: id})
 }
 
 // resetHalt godoc
@@ -477,7 +479,7 @@ func (h *Handler) portfolio(c *gin.Context) {
 	if rt == nil {
 		return
 	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Portfolio retrieved successfully", dto.PortfolioToResp(rt.Portfolio.Summary()))
+	shared.RespondWithSuccess(c, http.StatusOK, "Portfolio retrieved successfully", dto.PortfolioToResp(rt.PortfolioSummary()))
 }
 
 // positions godoc
@@ -746,7 +748,12 @@ func (h *Handler) equity(c *gin.Context) {
 		resp.Next = all[len(all)-1].TS.UTC().Format(time.RFC3339)
 	}
 	for _, p := range all {
-		resp.Points = append(resp.Points, dto.EquityPointResp{HandID: p.HandID, TS: p.TS, Equity: p.Equity.InexactFloat64()})
+		resp.Points = append(resp.Points, dto.EquityPointResp{
+			HandID: p.HandID,
+			TS:     p.TS,
+			Equity: p.Equity.InexactFloat64(),
+			Cash:   p.Cash.InexactFloat64(),
+		})
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Equity retrieved successfully", resp)
 }

@@ -18,6 +18,7 @@ import (
 	mdbinance "mallow/helm/internal/infra/marketdata/binance"
 	mdbybit "mallow/helm/internal/infra/marketdata/bybit"
 	mdokx "mallow/helm/internal/infra/marketdata/okx"
+	"mallow/helm/internal/infra/poslog"
 	handhandler "mallow/helm/internal/module/hand/handler"
 	handservice "mallow/helm/internal/module/hand/service"
 	orchhandler "mallow/helm/internal/module/helm/handler"
@@ -138,37 +139,79 @@ func runHeraldHeartbeat(ctx context.Context, sc *engine.SignalClient, reg *runti
 }
 
 func doHeraldHeartbeat(ctx context.Context, sc *engine.SignalClient, reg *runtime.Registry, handMgr *handservice.Service) {
-	for _, rt := range reg.All() {
-		// Always send heartbeat, even with empty list — herald uses it to
-		// detect orphan hands (hands it still has but helm forgot about).
-		handIDs := rt.RunningHandIDs()
-		resp, err := sc.Heartbeat(ctx, rt.HelmID.String(), handIDs)
-		if err != nil {
-			slog.Warn("herald heartbeat failed", "helm_id", rt.HelmID, "err", err)
-			continue
-		}
-		if len(resp.Missing) > 0 {
-			slog.Warn("herald heartbeat: missing hands — re-registering",
-				"helm_id", rt.HelmID, "missing", resp.Missing)
-			handMgr.ReregisterByIDs(resp.Missing)
-		}
-		if len(resp.Orphan) > 0 {
-			slog.Warn("herald heartbeat: orphan hands — deregistering",
-				"helm_id", rt.HelmID, "orphan", resp.Orphan)
-			handMgr.DeregisterByIDs(resp.Orphan)
+	resp, err := sc.ListHands(ctx)
+	if err != nil {
+		slog.Warn("herald heartbeat: failed to list hands from herald", "err", err)
+		return
+	}
+
+	heraldHands := make(map[string]bool)
+	if resp != nil {
+		for _, h := range resp.Hands {
+			heraldHands[h.HandId] = true
 		}
 	}
+
+	runningHands := handMgr.RunningHands()
+	expectedRunning := make(map[string]bool, len(runningHands))
+
+	var missing []string
+	for _, hRef := range runningHands {
+		idStr := hRef.Data.ID.String()
+		expectedRunning[idStr] = true
+		if !heraldHands[idStr] {
+			missing = append(missing, idStr)
+		}
+	}
+
+	var orphans []string
+	if resp != nil {
+		for _, h := range resp.Hands {
+			// Skip fallback/default hands which have empty HelmId
+			if h.HelmId != "" && !expectedRunning[h.HandId] {
+				orphans = append(orphans, h.HandId)
+			}
+		}
+	}
+
+	if len(missing) > 0 {
+		slog.Warn("herald heartbeat: missing hands detected — re-registering", "missing", missing)
+		handMgr.ReregisterByIDs(missing)
+	}
+	if len(orphans) > 0 {
+		slog.Warn("herald heartbeat: orphan hands detected — deregistering", "orphans", orphans)
+		handMgr.DeregisterByIDs(orphans)
+	}
+
+	slog.Info("herald heartbeat: sync cycle completed",
+		"running_hands", len(runningHands),
+		"herald_hands", len(heraldHands),
+		"re_registered", len(missing),
+		"deregistered", len(orphans),
+	)
 }
 
 // runOrchestrator starts market data listener, API server, and account fill
 // streaming for exchanges that support it.
+// Startup sequence (order is critical):
+//  1. SetRuntime / SetSnapshotLog  — wire NATS context into registry
+//  2. ReconcileAll                 — restore hand positions from poslog WAL vs exchange
+//  3. ReconcileAllOrders           — re-track open orders in orderHandMap
+//  4. RecoverGapFills              — apply fills missed in [lastSyncAt/createdAt, now)
+//  5. StartFillStreaming           — start WS fill listener (hands now ready)
+//  6. StartPollingSync             — periodic REST sync fallback
+//
+// subscribeSignals (step 7) is registered AFTER runOrchestrator in fx.go so NATS
+// signal delivery only starts after all hand state is fully restored.
 func runOrchestrator(
 	lc fx.Lifecycle,
 	cfg *config.Config,
 	ginEngine *gin.Engine,
 	reg *runtime.Registry,
 	nc *nats.Conn,
+	posLog poslog.Log,
 	snapshotLog perf.SnapshotLog,
+	handSvc *handservice.Service,
 ) {
 	srv := &http.Server{Addr: cfg.Server.APIAddr, Handler: ginEngine}
 	var cancel context.CancelFunc
@@ -180,6 +223,30 @@ func runOrchestrator(
 
 			reg.SetRuntime(runCtx, nc)
 			reg.SetSnapshotLog(snapshotLog)
+
+			// Step 2: Reconcile hand positions from poslog WAL vs exchange.
+			// Runs synchronously so every hand is fully restored before signals arrive.
+			if posLog != nil {
+				reconciler := runtime.NewReconciler(posLog)
+				for _, rt := range reg.All() {
+					results := reconciler.Reconcile(ctx, rt)
+					for _, res := range results {
+						if res.Err != nil {
+							slog.Error("startup reconcile failed",
+								"helm_id", rt.HelmID, "hand_id", res.HandID, "err", res.Err)
+						} else {
+							slog.Info("startup reconcile",
+								"helm_id", rt.HelmID, "hand_id", res.HandID,
+								"action", res.Action, "phase", res.Phase)
+						}
+					}
+				}
+			}
+
+			// Step 2.5: Start all hydrated hands now that position state is reconciled.
+			handSvc.StartAllHydrated()
+
+			// Steps 3–6.
 			reg.ReconcileAllOrders(ctx)
 			reg.RecoverGapFills(ctx, nc)
 			reg.StartFillStreaming(runCtx, nc)

@@ -59,7 +59,7 @@ func HelmToResp(cfg *domain.Helm) HelmResp {
 		Portfolio:   portfolioToDTO(cfg.Portfolio),
 		Risk:        riskToDTO(cfg.Risk),
 		Enabled:     cfg.Enabled,
-		Status:      cfg.Status,
+		Status:      string(cfg.Status),
 		CreatedAt:   cfg.CreatedAt,
 		UpdatedAt:   cfg.UpdatedAt,
 	}

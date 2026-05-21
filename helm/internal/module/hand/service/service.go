@@ -73,9 +73,20 @@ func (s *Service) hydrate(data *domain.Hand) (*runtime.HandRef, error) {
 	rt.AddHand(hand)
 	if data.Status == domain.HandStatusRunning {
 		s.heraldRegister(data.ID, data)
-		hand.Start()
 	}
 	return &runtime.HandRef{Data: data, Runner: hand, Exchange: rt.Exchange}, nil
+}
+
+// StartAllHydrated starts the runners of all hydrated hands that have status HandStatusRunning.
+// This is called at startup after the orchestrator has reconciled position state.
+func (s *Service) StartAllHydrated() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, bi := range s.hands {
+		if bi.Data.Status == domain.HandStatusRunning {
+			bi.Runner.Start()
+		}
+	}
 }
 
 func (s *Service) getOrLoad(id uuid.UUID) (*runtime.HandRef, error) {

@@ -52,6 +52,7 @@ type Source interface {
 type EquityPoint struct {
 	Timestamp time.Time
 	Equity    float64
+	Cash      float64
 }
 
 // ClosedTrade is a completed round-trip with the fields Reporter needs.

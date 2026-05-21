@@ -7,7 +7,7 @@ func (r *HelmRuntime) TrackOrder(orderID, handID string) {
 	r.orderHandMapMu.Unlock()
 }
 
-// RemoveOrderTracking removes a completed or cancelled order from the tracking map.
+// RemoveOrderTracking removes a completed or canceled order from the tracking map.
 func (r *HelmRuntime) RemoveOrderTracking(orderID string) {
 	r.orderHandMapMu.Lock()
 	delete(r.orderHandMap, orderID)

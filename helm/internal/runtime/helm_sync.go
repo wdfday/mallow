@@ -24,11 +24,20 @@ func (r *HelmRuntime) HasProcessedTrade(tradeID string) bool {
 }
 
 // MarkTradeProcessed records a TradeID so duplicate gap recovery fills are skipped.
+// The map is bounded to maxProcessedTrades entries; when exceeded it is reset
+// to prevent unbounded memory growth on long-running bots.
+// This is safe to reset because the map is only a session-level dedup guard —
+// gap recovery runs once at startup, not continuously.
+const maxProcessedTrades = 50_000
+
 func (r *HelmRuntime) MarkTradeProcessed(tradeID string) {
 	if tradeID == "" {
 		return
 	}
 	r.processedTradesMu.Lock()
+	if len(r.processedTrades) >= maxProcessedTrades {
+		r.processedTrades = make(map[string]struct{}, maxProcessedTrades)
+	}
 	r.processedTrades[tradeID] = struct{}{}
 	r.processedTradesMu.Unlock()
 }
@@ -135,7 +144,7 @@ func (r *HelmRuntime) Sync(ctx context.Context, js nats.JetStreamContext) error 
 	})
 
 	if js != nil {
-		natsapi.PublishPortfolioSync(js, helmID, accountID, userID, snap.Cash, snap.Equity, natsPositions, natsPositionTxns, now)
+		natsapi.PublishPortfolioSync(js, helmID, accountID, userID, snap.Cash, r.AvailableCash(), snap.Equity, natsPositions, natsPositionTxns, now)
 		for _, t := range newTxns {
 			natsapi.PublishTradeFill(js, t)
 		}

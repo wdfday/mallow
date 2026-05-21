@@ -1,8 +1,6 @@
 package handler
 
 import (
-	"context"
-
 	"github.com/google/uuid"
 
 	handdomain "mallow/helm/internal/module/hand/domain"
@@ -19,10 +17,11 @@ type HelmService interface {
 	ListByUser(userID uuid.UUID) ([]*helmdomain.Helm, error)
 	CheckOwner(id, userID uuid.UUID) error
 	Enable(id uuid.UUID) error
+	// Disable flattens all open positions, tears down the runtime, and marks the
+	// helm disabled. Both /disable and /kill routes map to this operation.
 	Disable(id uuid.UUID) error
 	Pause(id uuid.UUID) error
 	Resume(id uuid.UUID) error
-	Kill(ctx context.Context, id uuid.UUID) error
 	ResetHalt(id uuid.UUID) error
 	Update(id uuid.UUID, req helmDto.UpdateReq) (*helmdomain.Helm, error)
 	CreateForAccount(req helmDto.CreateForAccountReq) (*helmdomain.Helm, error)

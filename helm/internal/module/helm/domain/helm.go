@@ -6,6 +6,16 @@ import (
 	"github.com/google/uuid"
 )
 
+// HelmStatus identifies the current operational state of a Helm orchestrator.
+type HelmStatus string
+
+const (
+	HelmStatusActive   HelmStatus = "active"
+	HelmStatusPaused   HelmStatus = "paused"
+	HelmStatusHalted   HelmStatus = "halted"
+	HelmStatusDisabled HelmStatus = "disabled"
+)
+
 // Helm is the persisted configuration of one orchestrator instance.
 // 1:1 with an investment account (via AccountID).
 // Auto-created on account.linked event; never manually created/deleted via API.
@@ -21,7 +31,7 @@ type Helm struct {
 	Portfolio    PortfolioConfig `json:"portfolio"`      // capital allocation at account level
 	Risk         RiskConfig      `json:"risk"`           // circuit-breakers / drawdown guards
 	Enabled      bool            `json:"enabled"`        // user toggle — gates hand create/delete
-	Status       string          `json:"status"`         // active | paused | halted (runtime state)
+	Status       HelmStatus      `json:"status"`         // active | paused | halted | disabled (runtime state)
 	LastSyncedAt *time.Time      `json:"last_synced_at"` // persisted after each successful REST sync
 	CreatedAt    time.Time       `json:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at"`

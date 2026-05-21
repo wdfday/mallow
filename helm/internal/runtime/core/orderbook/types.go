@@ -37,9 +37,10 @@ type ProposedOrder struct {
 
 // ValidationResult is the outcome of orderbook validation.
 type ValidationResult struct {
-	Valid       bool            `json:"valid"`
-	Reason      string          `json:"reason,omitempty"`
-	AdjustedQty decimal.Decimal `json:"adjusted_qty,omitempty"`
+	Valid         bool            `json:"valid"`
+	Reason        string          `json:"reason,omitempty"`
+	AdjustedQty   decimal.Decimal `json:"adjusted_qty,omitempty"`
+	AdjustedPrice decimal.Decimal `json:"adjusted_price,omitempty"`
 }
 
 // BookUpdate is one market-data observation stored in the per-symbol history buffer.

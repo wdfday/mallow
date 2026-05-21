@@ -35,10 +35,13 @@ func (f *exchangeFactory) New(cfg orchdomain.ExchangeConfig) (exchange.Exchange,
 	if cl, ok := f.clients[key]; ok {
 		return cl, nil
 	}
-	cl, err := f.create(cfg)
+	raw, err := f.create(cfg)
 	if err != nil {
 		return nil, err
 	}
+	// Wrap with MeteredExchange so PlaceOrder/GetOrder/CancelOrder latency
+	// and error rates are tracked and exposed via /metrics.
+	cl := exchange.NewMeteredExchange(raw)
 	f.clients[key] = cl
 	return cl, nil
 }

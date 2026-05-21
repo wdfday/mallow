@@ -72,7 +72,7 @@ func newOKXEnv(t *testing.T) *okxTestEnv {
 	rm := risk.New(risk.DefaultConfig(), pf)
 	rt := runtime.NewHelmRuntime(
 		uuid.New(), uuid.New(), uuid.New(),
-		ex.Name(), pf, rm, ex, creds, nil,
+		ex.Name(), pf, rm, ex, creds, nil, time.Now(),
 	)
 
 	var price decimal.Decimal

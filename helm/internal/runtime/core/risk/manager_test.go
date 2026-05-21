@@ -74,7 +74,7 @@ func TestResetHalt_ClearsHaltedFlag(t *testing.T) {
 	m := risk.New(cfg, p)
 	applyLoss(p, "AAPL", 100, 100, 94) // 6% drawdown > 5% limit
 
-	ok, reason := m.Validate(entryIntent("AAPL", 0.5))
+	ok, reason := m.Validate(entryIntent("AAPL", 0.5), "test-hand")
 	if ok {
 		t.Fatalf("expected halt after max drawdown breach; reason=%q", reason)
 	}
@@ -98,7 +98,7 @@ func TestResetHalt_AlsoClearsDailyHalt(t *testing.T) {
 	m := risk.New(cfg, p)
 	applyLoss(p, "AAPL", 50, 100, 90) // ~5% loss > 1% limit
 
-	ok, _ := m.Validate(entryIntent("AAPL", 0.5))
+	ok, _ := m.Validate(entryIntent("AAPL", 0.5), "test-hand")
 	if ok {
 		t.Fatal("expected daily loss halt to fire")
 	}
@@ -115,7 +115,7 @@ func TestValidate_CloseIntent_AlwaysApproved(t *testing.T) {
 	p := newPort(10_000)
 	m := risk.New(risk.Config{MaxPositions: 0}, p)
 
-	ok, reason := m.Validate(closeIntent("AAPL"))
+	ok, reason := m.Validate(closeIntent("AAPL"), "test-hand")
 	if !ok {
 		t.Fatalf("close intent must always be approved; got: %s", reason)
 	}
@@ -127,12 +127,12 @@ func TestValidate_CloseIntent_ApprovedWhenHalted(t *testing.T) {
 	m := risk.New(cfg, p)
 	applyLoss(p, "AAPL", 100, 100, 94)
 
-	ok, _ := m.Validate(entryIntent("AAPL", 0.5))
+	ok, _ := m.Validate(entryIntent("AAPL", 0.5), "test-hand")
 	if ok {
 		t.Fatal("entry should be blocked when halted")
 	}
 
-	ok, reason := m.Validate(closeIntent("AAPL"))
+	ok, reason := m.Validate(closeIntent("AAPL"), "test-hand")
 	if !ok {
 		t.Fatalf("close should be allowed even when halted; got: %s", reason)
 	}
@@ -144,7 +144,7 @@ func TestValidate_MaxPositions_Zero_BlocksEntry(t *testing.T) {
 	p := newPort(10_000)
 	m := risk.New(risk.Config{MaxPositions: 0, DailyLossLimitPct: 1.0, MaxDrawdownPct: 1.0}, p)
 
-	ok, reason := m.Validate(entryIntent("AAPL", 0.5))
+	ok, reason := m.Validate(entryIntent("AAPL", 0.5), "test-hand")
 	if ok {
 		t.Fatal("expected entry blocked when MaxPositions=0")
 	}
@@ -159,7 +159,7 @@ func TestValidate_MaxPositions_AllowsNewWhenBelowLimit(t *testing.T) {
 	cfg.MaxPositions = 3
 	m := risk.New(cfg, p)
 
-	ok, _ := m.Validate(entryIntent("AAPL", 0.5))
+	ok, _ := m.Validate(entryIntent("AAPL", 0.5), "test-hand")
 	if !ok {
 		t.Fatal("expected entry allowed when position count below max")
 	}
@@ -179,17 +179,70 @@ func TestValidate_MaxPositions_AllowsAddingToExistingPosition(t *testing.T) {
 		Price:     decimal.NewFromInt(100),
 	})
 
-	ok, reason := m.Validate(entryIntent("AAPL", 0.5))
+	ok, reason := m.Validate(entryIntent("AAPL", 0.5), "test-hand")
 	if !ok {
 		t.Fatalf("adding to existing position should be allowed: %s", reason)
 	}
 
-	ok, reason = m.Validate(entryIntent("TSLA", 0.5))
+	ok, reason = m.Validate(entryIntent("TSLA", 0.5), "test-hand")
 	if ok {
 		t.Fatal("expected new position blocked when max positions reached")
 	}
 	if reason != "max positions reached" {
 		t.Fatalf("expected 'max positions reached', got %q", reason)
+	}
+}
+
+// ── Validate — MaxOrderRateLimit ──────────────────────────────────────────────
+
+func TestValidate_MaxOrderRateLimit_HaltsWhenExceeded(t *testing.T) {
+	p := newPort(10_000)
+	cfg := risk.Config{
+		MaxPositions:       10,
+		DailyLossLimitPct:  1.0,
+		MaxDrawdownPct:     1.0,
+		MaxOrderRateLimit:  3,
+		OrderRateWindowSec: 60,
+	}
+	m := risk.New(cfg, p)
+
+	// First 3 entry intents are approved
+	for i := 0; i < 3; i++ {
+		ok, reason := m.Validate(entryIntent("AAPL", 0.5), "hand-1")
+		if !ok {
+			t.Fatalf("expected intent %d to be approved; got: %s", i, reason)
+		}
+	}
+
+	// 4th entry intent exceeds limit, halts trading
+	ok, reason := m.Validate(entryIntent("AAPL", 0.5), "hand-1")
+	if ok {
+		t.Fatal("expected 4th intent to be blocked by rate limit")
+	}
+	if reason != "order frequency limit exceeded" {
+		t.Fatalf("expected rate limit error, got %q", reason)
+	}
+
+	if !m.IsHalted() {
+		t.Fatal("expected manager to be halted after rate limit breach")
+	}
+
+	// Exits are still allowed even when halted by rate limit
+	ok, reason = m.Validate(closeIntent("AAPL"), "hand-1")
+	if !ok {
+		t.Fatalf("expected close intent to be approved even when halted; got: %s", reason)
+	}
+
+	// Reset clears rate limit and halts
+	m.ResetHalt()
+	if m.IsHalted() {
+		t.Fatal("expected manager to be unhalted after reset")
+	}
+
+	// Next entries are approved again
+	ok, reason = m.Validate(entryIntent("AAPL", 0.5), "hand-1")
+	if !ok {
+		t.Fatalf("expected entry to be approved after reset; got: %s", reason)
 	}
 }
 
@@ -199,13 +252,13 @@ func TestUpdateConfig_ChangesMaxPositionsImmediately(t *testing.T) {
 	p := newPort(10_000)
 	m := risk.New(risk.Config{MaxPositions: 0, DailyLossLimitPct: 1.0, MaxDrawdownPct: 1.0}, p)
 
-	ok, _ := m.Validate(entryIntent("AAPL", 0.5))
+	ok, _ := m.Validate(entryIntent("AAPL", 0.5), "test-hand")
 	if ok {
 		t.Fatal("expected blocked with MaxPositions=0")
 	}
 
 	m.UpdateConfig(risk.Config{MaxPositions: 5, DailyLossLimitPct: 0.02, MaxDrawdownPct: 0.10})
-	ok, _ = m.Validate(entryIntent("AAPL", 0.5))
+	ok, _ = m.Validate(entryIntent("AAPL", 0.5), "test-hand")
 	if !ok {
 		t.Fatal("expected allowed after MaxPositions raised to 5")
 	}
@@ -237,7 +290,7 @@ func TestManager_ConcurrentUpdateConfig_NoRace(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for i := 0; i < iterations; i++ {
-				m.Validate(entryIntent("AAPL", 0.5))
+				m.Validate(entryIntent("AAPL", 0.5), "test-hand")
 				m.IsHalted()
 			}
 		}()

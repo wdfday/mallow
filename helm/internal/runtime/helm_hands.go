@@ -1,6 +1,10 @@
 package runtime
 
-import "log/slog"
+import (
+	"log/slog"
+
+	"mallow/helm/internal/infra/natsapi"
+)
 
 // HandSummary is a lightweight snapshot of a hand for logging and monitoring.
 type HandSummary struct {
@@ -90,6 +94,17 @@ func (r *HelmRuntime) DispatchHandSignal(handID string, sig Signal) bool {
 	if hand.IsPaused() {
 		slog.Debug("runtime: hand paused, signal skipped",
 			"hand_id", handID, "symbol", sig.Symbol, "direction", sig.Direction)
+		return true
+	}
+	if r.IsHalted() && !sig.IsUrgent() {
+		r.EmitEvent(natsapi.HelmEvent{
+			HandID:    handID,
+			Code:      CodeSignalRejected,
+			Symbol:    sig.Symbol,
+			Direction: string(sig.Direction),
+			Reason:    "helm halted",
+			Msg:       "signal: skipped — helm halted",
+		})
 		return true
 	}
 	hand.DeliverSignal(sig)

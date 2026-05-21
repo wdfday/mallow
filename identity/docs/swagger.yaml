@@ -1,5 +1,20 @@
 basePath: /
 definitions:
+  internal_module_auth_handler.sessionResponse:
+    properties:
+      created_at:
+        type: string
+      expires_at:
+        type: string
+      ip:
+        type: string
+      is_current:
+        type: boolean
+      sid:
+        type: string
+      user_agent:
+        type: string
+    type: object
   mallow_identity_internal_module_auth_dto.AuthResponse:
     properties:
       token:
@@ -178,6 +193,8 @@ definitions:
     properties:
       alert_threshold_budget:
         type: number
+      avatar_url:
+        type: string
       budget_method:
         type: string
       created_at:
@@ -188,13 +205,19 @@ definitions:
         type: string
       currency_secondary:
         type: string
+      date_of_birth:
+        type: string
       debt_to_income_ratio:
         type: number
       dependents_count:
         type: integer
+      display_name:
+        type: string
       emergency_fund_months:
         type: number
       employer:
+        type: string
+      full_name:
         type: string
       income_stability:
         type: string
@@ -235,6 +258,9 @@ definitions:
     properties:
       alert_threshold_budget:
         type: number
+      avatar_url:
+        maxLength: 512
+        type: string
       budget_method:
         enum:
         - custom
@@ -248,15 +274,24 @@ definitions:
         type: string
       currency_secondary:
         type: string
+      date_of_birth:
+        type: string
       debt_to_income_ratio:
         type: number
       dependents_count:
         minimum: 0
         type: integer
+      display_name:
+        maxLength: 255
+        type: string
       emergency_fund_months:
         type: number
       employer:
         maxLength: 255
+        type: string
+      full_name:
+        maxLength: 255
+        minLength: 1
         type: string
       income_stability:
         enum:
@@ -407,19 +442,13 @@ definitions:
     type: object
   mallow_identity_internal_module_user_dto.UserResponse:
     properties:
-      avatar_url:
-        type: string
       created_at:
-        type: string
-      display_name:
         type: string
       email:
         type: string
       email_verified:
         type: boolean
       email_verified_at:
-        type: string
-      full_name:
         type: string
       id:
         type: string
@@ -737,6 +766,60 @@ paths:
       summary: Send verification email
       tags:
       - auth
+  /api/v1/auth/sessions:
+    delete:
+      description: Logs out from all devices by revoking every active session
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Revoke all sessions
+      tags:
+      - auth
+    get:
+      description: Returns all active sessions for the authenticated user
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/internal_module_auth_handler.sessionResponse'
+            type: array
+      security:
+      - BearerAuth: []
+      summary: List active sessions
+      tags:
+      - auth
+  /api/v1/auth/sessions/{sid}:
+    delete:
+      description: Revokes the specified session, immediately invalidating its tokens
+      parameters:
+      - description: Session ID
+        in: path
+        name: sid
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties: true
+            type: object
+      security:
+      - BearerAuth: []
+      summary: Revoke a session
+      tags:
+      - auth
   /api/v1/auth/telegram/bot:
     get:
       description: Returns the bot username and deep link for the frontend "Connect
@@ -858,6 +941,35 @@ paths:
       summary: Verify email address
       tags:
       - auth
+  /api/v1/internal/blacklist/check:
+    get:
+      description: Checks blacklist by sid and sub; falls back to DB when Redis is
+        cold (wakes cache).
+      parameters:
+      - description: Session ID
+        in: query
+        name: sid
+        type: string
+      - description: User ID (subject)
+        in: query
+        name: sub
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            additionalProperties:
+              type: boolean
+            type: object
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/mallow_identity_internal_shared.ErrorResponse'
+      summary: Check if a session or user is revoked (internal)
+      tags:
+      - internal
   /api/v1/internal/telegram/user/{telegram_id}:
     get:
       description: Internal service endpoint to resolve platform user by telegram_id

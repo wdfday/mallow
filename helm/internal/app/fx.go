@@ -208,7 +208,7 @@ func hydrateRuntimes(repo orchdomain.HelmRepo, reg *runtime.Registry, brokerSvc 
 	}
 	spawned := 0
 	for _, cfg := range cfgs {
-		if cfg.Status == "halted" {
+		if cfg.Status == orchdomain.HelmStatusHalted || cfg.Status == orchdomain.HelmStatusDisabled {
 			continue
 		}
 		creds, err := brokerSvc.GetCredentialsByAccountID(context.Background(), cfg.AccountID.String())
@@ -230,7 +230,7 @@ func hydrateRuntimes(repo orchdomain.HelmRepo, reg *runtime.Registry, brokerSvc 
 			slog.Error("runtime: spawn failed", "helm_id", cfg.ID, "err", err)
 			continue
 		}
-		if cfg.Status == "paused" {
+		if cfg.Status == orchdomain.HelmStatusPaused {
 			if rt, err := reg.Get(cfg.ID); err == nil {
 				rt.Pause()
 				slog.Info("runtime: spawned paused", "helm_id", cfg.ID)

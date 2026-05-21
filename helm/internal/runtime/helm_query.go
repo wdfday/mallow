@@ -3,6 +3,7 @@ package runtime
 import (
 	"github.com/shopspring/decimal"
 
+	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/runtime/core/portfolio"
 )
 
@@ -11,9 +12,46 @@ func (r *HelmRuntime) Equity() decimal.Decimal {
 	return r.Portfolio.Equity()
 }
 
-// Cash returns the available cash balance (equity minus deployed capital).
+// Cash returns the total exchange cash balance.
 func (r *HelmRuntime) Cash() decimal.Decimal {
 	return r.Portfolio.Cash()
+}
+
+// AvailableCash computes the cash available for manual trading:
+//
+//	totalCash − Σ(allocated + cumPnL − deployed)  for each hand
+//
+// Each hand's "logical cash" is its remaining undeployed budget. Summing those
+// and subtracting from total cash gives the portion not spoken-for by any hand.
+// All hands are required to have a positive AllocatedCapital.
+func (r *HelmRuntime) AvailableCash() decimal.Decimal {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	totalCash := r.Portfolio.Cash()
+	var handCashSum decimal.Decimal
+
+	for _, hand := range r.hands {
+		metrics := hand.Metrics()
+		deployed := hand.DeployedCapital()
+		handCash := hand.AllocatedCapital().Add(metrics.TotalPnL).Sub(deployed)
+		if handCash.IsPositive() {
+			handCashSum = handCashSum.Add(handCash)
+		}
+	}
+
+	available := totalCash.Sub(handCashSum)
+	if available.IsNegative() {
+		return decimal.Zero
+	}
+	return available
+}
+
+// PortfolioSummary returns the portfolio summary with available cash correctly adjusted.
+func (r *HelmRuntime) PortfolioSummary() portfolio.Summary {
+	s := r.Portfolio.Summary()
+	s.AvailableCash = r.AvailableCash()
+	return s
 }
 
 // Positions returns a snapshot of all currently open positions.
@@ -42,4 +80,14 @@ func (r *HelmRuntime) IsHalted() bool {
 // Returns zero if no price has been received yet.
 func (r *HelmRuntime) Price(symbol string) decimal.Decimal {
 	return r.lastKnownPrice(symbol)
+}
+
+// ExchangeSnapshot returns a point-in-time copy of exchange latency/error metrics.
+// Returns nil if the underlying exchange adapter is not instrumented with MeteredExchange.
+func (r *HelmRuntime) ExchangeSnapshot() *exchange.MetricsSnapshot {
+	if m, ok := r.Exchange.(*exchange.MeteredExchange); ok {
+		s := m.Snapshot()
+		return &s
+	}
+	return nil
 }

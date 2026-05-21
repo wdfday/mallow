@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -12,26 +13,38 @@ import (
 	"mallow/helm/internal/runtime"
 )
 
-func (s *Service) heraldRegister(handID uuid.UUID, b *domain.Hand) {
+func (s *Service) heraldRegister(handID uuid.UUID, b *domain.Hand) error {
 	if s.herald == nil {
-		return
+		return nil
 	}
+	// Resolve exchange name from the helm's runtime so herald can bind the
+	// hand to the correct feed (ledger key = "{exchange}:{symbol}").
+	// Failing to resolve means bars will never match — treat as hard error.
+	rt, err := s.registry.Get(b.HelmID)
+	if err != nil {
+		return fmt.Errorf("herald register: could not resolve exchange for helm %q: %w", b.HelmID, err)
+	}
+	exchangeName := rt.Exchange.Name()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	for _, sym := range b.Symbols {
 		req := &engine.RegisterMsg{
 			HandId:    handID.String(),
 			Symbol:    sym,
+			Exchange:  exchangeName,
+			IsFuture:  b.Market == domain.MarketTypeFutures,
 			Script:    b.Strategy.Script,
 			HelmId:    b.HelmID.String(),
 			Timeframe: b.Strategy.Timeframe, // required end-to-end
 		}
 		if ack, err := s.herald.Register(ctx, req); err != nil {
-			slog.Warn("herald register failed", "hand_id", handID, "symbol", sym, "err", err)
+			return fmt.Errorf("herald register failed for symbol %q: %w", sym, err)
 		} else {
 			slog.Info("herald registered", "hand_id", handID, "symbol", sym, "ack", ack)
 		}
 	}
+	return nil
 }
 
 func (s *Service) heraldDeregister(handID uuid.UUID) {
@@ -63,11 +76,16 @@ func (s *Service) ReregisterByIDs(handIDs []string) {
 		}
 	}
 	s.mu.RUnlock()
+	registered := 0
 	for _, ref := range snapshot {
-		s.heraldRegister(ref.Data.ID, ref.Data)
+		if err := s.heraldRegister(ref.Data.ID, ref.Data); err != nil {
+			slog.Error("herald re-register by IDs: failed", "hand_id", ref.Data.ID, "err", err)
+			continue
+		}
+		registered++
 	}
-	if len(snapshot) > 0 {
-		slog.Info("herald re-register: by IDs", "count", len(snapshot))
+	if registered > 0 {
+		slog.Info("herald re-register: by IDs", "count", registered)
 	}
 }
 
@@ -108,7 +126,10 @@ func (s *Service) ReregisterAll() {
 		if ref.Data.Status != domain.HandStatusRunning {
 			continue
 		}
-		s.heraldRegister(ref.Data.ID, ref.Data)
+		if err := s.heraldRegister(ref.Data.ID, ref.Data); err != nil {
+			slog.Error("herald re-register: failed", "hand_id", ref.Data.ID, "err", err)
+			continue
+		}
 		count++
 	}
 	if count > 0 {

@@ -12,6 +12,6 @@ func (noopOrderBook) SupportedSymbols() []string                 { return nil }
 func (noopOrderBook) RecordUpdate(_ BookUpdate) error            { return nil }
 func (noopOrderBook) LatestUpdate(_ string) (BookUpdate, bool)   { return BookUpdate{}, false }
 func (noopOrderBook) RecentUpdates(_ string, _ int) []BookUpdate { return nil }
-func (noopOrderBook) Validate(_ ProposedOrder) ValidationResult {
-	return ValidationResult{Valid: true}
+func (noopOrderBook) Validate(order ProposedOrder) ValidationResult {
+	return ValidationResult{Valid: true, AdjustedQty: order.Qty, AdjustedPrice: order.Price}
 }

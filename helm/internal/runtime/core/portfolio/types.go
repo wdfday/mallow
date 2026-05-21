@@ -38,6 +38,7 @@ type Fill struct {
 }
 
 // Trade represents a completed round-trip trade (entry + exit).
+// Side is the entry direction: SideBuy = long entry, SideSell = short entry.
 type Trade struct {
 	HandID         string          `json:"hand_id"`
 	Symbol         string          `json:"symbol"`
@@ -55,6 +56,7 @@ type Trade struct {
 type EquityPoint struct {
 	Timestamp time.Time       `json:"timestamp"`
 	Equity    decimal.Decimal `json:"equity"`
+	Cash      decimal.Decimal `json:"cash"`
 }
 
 // SyncedPosition is a position as received from an external sync source (exchange REST API).
@@ -69,6 +71,7 @@ type SyncedPosition struct {
 type Summary struct {
 	InitialCapital decimal.Decimal `json:"initial_capital"`
 	Cash           decimal.Decimal `json:"cash"`
+	AvailableCash  decimal.Decimal `json:"available_cash"`
 	Equity         decimal.Decimal `json:"equity"`
 	TotalReturn    float64         `json:"total_return_pct"`
 	CurrentDD      float64         `json:"current_drawdown_pct"`

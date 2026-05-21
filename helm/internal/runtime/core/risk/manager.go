@@ -19,11 +19,12 @@ import (
 //
 // Exit intents always bypass all gates — positions must be closeable regardless of risk state.
 type Manager struct {
-	mu        sync.RWMutex
-	cfg       Config
-	portfolio *portfolio.Portfolio
-	halted    bool      // true if max drawdown was breached; reset only via ResetHalt
-	haltedDay time.Time // UTC date when the daily loss limit last triggered
+	mu             sync.RWMutex
+	cfg            Config
+	portfolio      *portfolio.Portfolio
+	halted         bool      // true if max drawdown was breached; reset only via ResetHalt
+	haltedDay      time.Time // UTC date when the daily loss limit last triggered
+	handOrderTimes map[string][]time.Time
 
 	// unitCounter counts total open position units (hand legs + manual portfolio positions).
 	// When nil, falls back to len(portfolio.Positions()) as a best-effort estimate.
@@ -41,13 +42,17 @@ func (m *Manager) SetUnitCounter(fn func() int) {
 
 // New creates a Manager with the given config and portfolio.
 func New(cfg Config, p *portfolio.Portfolio) *Manager {
-	return &Manager{cfg: cfg, portfolio: p}
+	return &Manager{
+		cfg:            cfg,
+		portfolio:      p,
+		handOrderTimes: make(map[string][]time.Time),
+	}
 }
 
 // Validate checks portfolio-level risk gates before a trade intent is executed.
 // Returns (approved=true, reason="") on success.
 // Returns (approved=false, reason) when a gate blocks the intent.
-func (m *Manager) Validate(intent strategy.Intent) (bool, string) {
+func (m *Manager) Validate(intent strategy.Intent, handID string) (bool, string) {
 	// Exit/close signals always pass — never block a position close.
 	if intent.Signal.IsUrgent() || intent.Action.IsExit() {
 		return true, ""
@@ -65,6 +70,37 @@ func (m *Manager) Validate(intent strategy.Intent) (bool, string) {
 	today := time.Now().UTC().Truncate(24 * time.Hour)
 	if m.haltedDay.Equal(today) {
 		return false, "trading halted: daily loss limit breached"
+	}
+
+	// Gate 2.5: Order frequency / loop protection (if enabled and handID is provided)
+	if handID != "" && m.cfg.MaxOrderRateLimit > 0 && m.cfg.OrderRateWindowSec > 0 {
+		now := time.Now()
+		window := time.Duration(m.cfg.OrderRateWindowSec) * time.Second
+		cutoff := now.Add(-window)
+
+		// Filter existing timestamps to keep only those within the window
+		times := m.handOrderTimes[handID]
+		var activeTimes []time.Time
+		for _, t := range times {
+			if t.After(cutoff) {
+				activeTimes = append(activeTimes, t)
+			}
+		}
+
+		if len(activeTimes) >= m.cfg.MaxOrderRateLimit {
+			m.halted = true // permanently halt trading for safety
+			slog.Warn("risk: order frequency limit exceeded — halting all trading",
+				"hand_id", handID,
+				"window_sec", m.cfg.OrderRateWindowSec,
+				"limit", m.cfg.MaxOrderRateLimit,
+				"actual_count", len(activeTimes),
+			)
+			return false, "order frequency limit exceeded"
+		}
+
+		// Append new timestamp and update map
+		activeTimes = append(activeTimes, now)
+		m.handOrderTimes[handID] = activeTimes
 	}
 
 	equity := m.portfolio.Equity()
@@ -114,11 +150,15 @@ func (m *Manager) Validate(intent strategy.Intent) (bool, string) {
 	return true, ""
 }
 
-// IsHalted reports whether trading has been globally halted by a max-drawdown breach.
+// IsHalted reports whether trading has been globally halted by a max-drawdown or daily loss breach.
 func (m *Manager) IsHalted() bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	return m.halted
+	if m.halted {
+		return true
+	}
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	return m.haltedDay.Equal(today)
 }
 
 // ResetHalt clears both the global halt and the daily loss halt.
@@ -129,6 +169,7 @@ func (m *Manager) ResetHalt() {
 	defer m.mu.Unlock()
 	m.halted = false
 	m.haltedDay = time.Time{}
+	m.handOrderTimes = make(map[string][]time.Time)
 	slog.Info("risk: halt reset")
 }
 

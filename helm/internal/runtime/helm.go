@@ -21,7 +21,7 @@ import (
 
 // RiskManager is the interface for account-level risk controls.
 type RiskManager interface {
-	Validate(intent strategy.Intent) (bool, string)
+	Validate(intent strategy.Intent, handID string) (bool, string)
 	IsHalted() bool
 	ResetHalt()
 	UpdateConfig(cfg risk.Config)
@@ -37,6 +37,11 @@ type HelmRuntime struct {
 	AccountID  uuid.UUID
 	UserID     uuid.UUID
 	BrokerType string
+	// CreatedAt is the wall-clock time when this Helm was first configured.
+	// Used as a lower-bound sentinel by gap recovery and the startup reconciler:
+	// fills that occurred before this timestamp belong to a prior account configuration
+	// and must never be applied to this helm's portfolio.
+	CreatedAt time.Time
 
 	// ── Core resources (account-level, shared across all hands) ──────────────
 	Portfolio *portfolio.Portfolio
@@ -93,12 +98,14 @@ func NewHelmRuntime(
 	ex exchange.Exchange,
 	creds exchange.Credentials,
 	lastSyncedAt *time.Time,
+	createdAt time.Time,
 ) *HelmRuntime {
 	rt := &HelmRuntime{
 		HelmID:          orchID,
 		AccountID:       accountID,
 		UserID:          userID,
 		BrokerType:      brokerType,
+		CreatedAt:       createdAt,
 		Portfolio:       pf,
 		RiskMgr:         riskMgr,
 		Exchange:        ex,

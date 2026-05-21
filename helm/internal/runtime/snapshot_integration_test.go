@@ -23,18 +23,18 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/shopspring/decimal"
 
+	"github.com/google/uuid"
 	"mallow/helm/internal/infra/exchange"
 	binanceact "mallow/helm/internal/infra/exchange/binance/act"
 	bybitact "mallow/helm/internal/infra/exchange/bybit/act"
 	okxact "mallow/helm/internal/infra/exchange/okx/act"
 	"mallow/helm/internal/infra/perflog"
+	"mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/runtime"
 	"mallow/helm/internal/runtime/core/portfolio"
 	"mallow/helm/internal/runtime/core/risk"
-	"mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/runtime/core/strategy"
 	"mallow/helm/internal/runtime/core/tactics"
-	"github.com/google/uuid"
 )
 
 // ── NATS helper ───────────────────────────────────────────────────────────────
@@ -81,7 +81,7 @@ func buildIntegrationRuntime(t *testing.T, js natsgo.JetStreamContext, ex exchan
 	rm := risk.New(risk.Config{MaxPositions: 10, DailyLossLimitPct: 0.5, MaxDrawdownPct: 0.5}, pf)
 	rt := runtime.NewHelmRuntime(
 		uuid.New(), uuid.New(), uuid.New(),
-		ex.Name(), pf, rm, ex, creds, nil,
+		ex.Name(), pf, rm, ex, creds, nil, time.Now(),
 	)
 	rm.SetUnitCounter(rt.OpenUnitCount)
 	rt.SnapshotLog = snapLog
@@ -1332,4 +1332,3 @@ func TestSnapshotIntegration_Binance_KillPauseRelease(t *testing.T) {
 	}
 	t.Log("Kill correctly flattened hand2 logical state and snapshots ✓")
 }
-

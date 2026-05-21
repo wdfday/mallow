@@ -83,7 +83,7 @@ func newTestRuntime(ex exchange.Exchange, creds exchange.Credentials, capital de
 	rm := risk.New(risk.DefaultConfig(), pf)
 	return runtime.NewHelmRuntime(
 		uuid.New(), uuid.New(), uuid.New(),
-		ex.Name(), pf, rm, ex, creds, nil,
+		ex.Name(), pf, rm, ex, creds, nil, time.Now(),
 	)
 }
 

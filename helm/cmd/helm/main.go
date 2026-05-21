@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"runtime"
 	"time"
 
 	pyroscope "github.com/grafana/pyroscope-go"
@@ -22,7 +23,13 @@ func main() {
 	// ── Pyroscope continuous profiling ────────────────────────────────
 	// Goroutine + block profiling is the primary target — detects leaks
 	// and channel stalls in the hand runtime / registry loops.
+	//
+	// Block and mutex profiling require explicit rate > 0 — Go runtime
+	// disables them by default (rate = 0 → no samples collected).
+	// Set before pyroscope.Start so the first profile window is complete.
 	if cfg.Server.PyroscopeURL != "" {
+		runtime.SetBlockProfileRate(1)     // sample every blocking event
+		runtime.SetMutexProfileFraction(1) // sample every mutex contention
 		profiler, err := pyroscope.Start(pyroscope.Config{
 			ApplicationName: "helm",
 			ServerAddress:   cfg.Server.PyroscopeURL,

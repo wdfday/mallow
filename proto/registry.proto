@@ -1,0 +1,62 @@
+// Hand registry messages: register/deregister hands with herald's signal engine.
+//
+// NATS subjects:
+//   engine.reset       ← helm → herald (pub, no reply)
+//   engine.register    ← helm → herald (req/rep → JSON ack {"ok":bool})
+//   engine.deregister  ← helm → herald (req/rep → JSON ack {"ok":bool})
+//   engine.list        ← helm → herald (req/rep → HandListResponse)
+
+syntax = "proto3";
+package market;
+
+// ── Engine Control ───────────────────────────────────────────────────────────
+
+message ResetMsg {
+  string symbol = 1;  // empty = reset all
+}
+
+// ── Hand Registry ─────────────────────────────────────────────────────────────
+// Hands run scripts only. The script is the full source, not a named strategy key.
+
+message RegisterMsg {
+  string hand_id   = 1;  // unique hand identifier
+  string symbol    = 2;  // raw ticker: "BTCUSDT", "BTC-USDT"
+  string script    = 3;  // full Rhai strategy script source
+
+  // Timeframe the hand evaluates at (e.g. "M1", "H1", "D1") — REQUIRED.
+  // Strategies are calibrated to a specific TF (a 14-period EMA on M1 vs H1
+  // means completely different things), so register must declare it explicitly.
+  // Herald resamples incoming base-TF bars to this TF before running the script.
+  // Empty string is rejected by herald with a clear error.
+  string timeframe = 4;
+
+  string helm_id   = 5;  // owning helm — used for routing in SignalResponse
+
+  // Auto-expiry (optional — omit for permanent hands).
+  optional int64  expires_at_ms = 6;  // Unix ms; auto-deregister after this time
+  optional int32  max_bars      = 7;  // auto-deregister after N bars received
+
+  // Instrument descriptor — tells herald which exchange feed to bind against.
+  // Herald builds the internal ledger key as "{exchange}:{symbol}".
+  // Empty exchange is accepted for tests / backtest-only setups.
+  string exchange  = 8;  // "binance" | "okx" | "alpaca" | "bybit" | ""
+  bool   is_future = 9;  // false = spot; true = perpetual / futures contract
+}
+
+message DeregisterMsg {
+  string hand_id = 1;  // hand to remove; empty = remove all
+}
+
+message HandInfo {
+  string hand_id   = 1;
+  string symbol    = 2;  // raw ticker
+  string script    = 3;
+  string timeframe = 4;
+  string helm_id   = 5;
+  string exchange  = 6;
+  bool   is_future = 7;
+}
+
+message HandListResponse {
+  repeated HandInfo hands = 1;
+}

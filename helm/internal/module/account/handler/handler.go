@@ -204,7 +204,7 @@ func (h *Handler) portfolio(c *gin.Context) {
 	if !ok {
 		return
 	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Portfolio retrieved successfully", helmdto.PortfolioToResp(rt.Portfolio.Summary()))
+	shared.RespondWithSuccess(c, http.StatusOK, "Portfolio retrieved successfully", helmdto.PortfolioToResp(rt.PortfolioSummary()))
 }
 
 // positions godoc
@@ -439,7 +439,12 @@ func (h *Handler) equity(c *gin.Context) {
 		resp.Next = all[len(all)-1].TS.UTC().Format(time.RFC3339)
 	}
 	for _, p := range all {
-		resp.Points = append(resp.Points, helmdto.EquityPointResp{HandID: p.HandID, TS: p.TS, Equity: p.Equity.InexactFloat64()})
+		resp.Points = append(resp.Points, helmdto.EquityPointResp{
+			HandID: p.HandID,
+			TS:     p.TS,
+			Equity: p.Equity.InexactFloat64(),
+			Cash:   p.Cash.InexactFloat64(),
+		})
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Equity retrieved successfully", resp)
 }

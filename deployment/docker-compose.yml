@@ -127,7 +127,7 @@ services:
       TELEGRAM_GENERAL_BOT_TOKEN: ${TELEGRAM_GENERAL_BOT_TOKEN:-}
       TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
       TELEGRAM_ALLOWED_CHATS: ${TELEGRAM_ALLOWED_CHATS:-}
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-tempo:4317}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8082/health"]
@@ -204,9 +204,10 @@ services:
       SYNC_INTERVAL: ${SYNC_INTERVAL:-5m}
       GIN_MODE: ${GIN_MODE:-release}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
       LOG_FILE: ${HELM_LOG_FILE:-}
-      PYROSCOPE_URL: ${PYROSCOPE_URL:-}
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      PYROSCOPE_URL: ${PYROSCOPE_URL:-http://pyroscope:4040}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-tempo:4317}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8084/health"]
       interval: 10s
@@ -218,41 +219,8 @@ services:
   # API layer
   # ═══════════════════════════════════════════════════════════════════
 
-  strategist:
-    profiles: ["strategist"]
-    build:
-      context: ../thstrategist
-      dockerfile: Dockerfile
-    image: strategist:latest
-    container_name: strategist
-    ports:
-      - "8081:8081"
-    depends_on:
-      nats:
-        condition: service_healthy
-      postgres:
-        condition: service_healthy
-    environment:
-      PORT: "8081"
-      NATS_URL: nats://strategist:${NATS_PASS_STRATEGIST:-strategist-dev}@nats:4222
-      POSTGRES_URL: "postgres://mallow:${POSTGRES_PASSWORD:-mallow-dev}@postgres:5432/strategist?sslmode=disable"
-      HELM_URL: http://helm:8084
-      IDENTITY_URL: http://identity:8082
-      IDENTITY_SERVICE_SECRET: ${SERVICE_SECRET:-}
-      LLM_PROVIDER: ${LLM_PROVIDER:-gemini}
-      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
-      TELEGRAM_ALLOWED_CHATS: ${TELEGRAM_ALLOWED_CHATS:-}
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8081/health"]
-      interval: 15s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-    restart: unless-stopped
+  # strategist — AI agent (Google ADK); add back when Dockerfile is ready
+  # profiles: ["strategist"]
 
   gateway:
     build:
@@ -265,11 +233,9 @@ services:
     depends_on:
       nats:
         condition: service_healthy
-#      identity:
-#        condition: service_healthy
-#      herald:
-#        condition: service_healthy
       redis:
+        condition: service_healthy
+      herald:
         condition: service_healthy
     environment:
       PORT: "8080"
@@ -278,66 +244,21 @@ services:
       IDENTITY_URL: http://identity:8082
       HELM_URL: http://helm:8084
       STRATEGIST_URL: http://strategist:8081
-      HERALD_URL: http://herald:8090
+      HERALD_URL: ${HERALD_URL:-http://herald:8090}
       REDIS_URL: redis://redis:6379
       GIN_MODE: ${GIN_MODE:-release}
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-tempo:4317}
     restart: unless-stopped
 
   # ═══════════════════════════════════════════════════════════════════
   # Monitoring — LGTP stack  (docker compose --profile monitoring up -d)
   # ═══════════════════════════════════════════════════════════════════
 
-  nats-ui:
-    image: ghcr.io/gastbob40/nats-ui:latest
-    container_name: nats-ui
-    profiles: ["monitoring"]
-    depends_on:
-      nats:
-        condition: service_healthy
-    ports:
-      - "3000:3000"
-    restart: unless-stopped
-
-  nats-box:
-    image: natsio/nats-box:latest
-    container_name: nats-box
-    profiles: ["monitoring"]
-    depends_on:
-      nats:
-        condition: service_healthy
-    environment:
-      NATS_URL: "nats://nats:4222"
-    entrypoint: ["sh", "-c", "sleep infinity"]
-    restart: unless-stopped
-
-
-  nats-surveyor:
-    image: natsio/nats-surveyor:latest
-    container_name: nats-surveyor
-    profiles: ["monitoring"]
-    depends_on:
-      nats:
-        condition: service_healthy
-    command:
-      - "-s"
-      - "nats://surveyor:${NATS_PASS_SURVEYOR:-surveyor-dev}@nats:4222"
-      - "-p"
-      - "7777"
-      - "--jsz"
-      - "all"
-      - "--accounts"
-    ports:
-      - "7777:7777"
-    restart: unless-stopped
-
   # Prometheus — metrics
   prometheus:
     image: prom/prometheus:latest
     container_name: prometheus
     profiles: ["monitoring"]
-    depends_on:
-      - nats-surveyor
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
@@ -376,7 +297,7 @@ services:
 
   # Tempo — distributed tracing
   tempo:
-    image: grafana/tempo:latest
+    image: grafana/tempo:2.6.1
     container_name: tempo
     profiles: ["monitoring"]
     command: ["-config.file=/etc/tempo/config.yaml"]

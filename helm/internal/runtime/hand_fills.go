@@ -138,6 +138,17 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 					return
 				}
 				slog.Info("hand: exit orders placed", "hand_id", h.id, "symbol", symbol, "order_ids", result.OrderIDs)
+				h.helmRuntime.EmitEvent(natsapi.HelmEvent{
+					HandID:  h.id.String(),
+					Code:    CodeOrderExitPlaced,
+					Symbol:  symbol,
+					OrderID: fmt.Sprintf("%v", result.OrderIDs),
+					Reason:  fmt.Sprintf("stop_loss=%s take_profit=%s", el.StopLoss, el.TakeProfit),
+					Msg:     "order: bracket exit placed (safety net)",
+				})
+				for _, id := range result.OrderIDs {
+					h.trackOrder(id)
+				}
 				h.mu.Lock()
 				if lv, ok := h.exitLevels[symbol]; ok {
 					lv.ExchangeOrderIDs = result.OrderIDs
@@ -157,16 +168,37 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 	posID := h.pendingOrderPos[orderID]
 	isClosingFill := posID != "" && h.pos.LegPhase(posID) == position.PhaseExiting
 	entryPrice := h.pos.LegEntryPrice(posID)
+
+	var isBracketExit bool
+	if !isClosingFill {
+		if lv, ok := h.exitLevels[symbol]; ok {
+			for _, id := range lv.ExchangeOrderIDs {
+				if id == orderID {
+					isBracketExit = true
+					isClosingFill = true
+					if primaryLeg := h.pos.PrimaryLeg(); primaryLeg != nil {
+						posID = primaryLeg.PositionID
+						entryPrice = primaryLeg.EntryPrice
+					}
+					break
+				}
+			}
+		}
+	}
 	h.mu.RUnlock()
 
 	var closePnL decimal.Decimal
 	var closeSource string
 	if isClosingFill {
 		h.mu.Lock()
-		h.cancelExitOrders(ctx, symbol)
+		h.cancelExitOrders(ctx, symbol, orderID)
 		delete(h.exitLevels, symbol)
 		h.mu.Unlock()
-		closeSource = source
+		if isBracketExit {
+			closeSource = "bracket_exit"
+		} else {
+			closeSource = source
+		}
 		if price.IsPositive() && entryPrice.IsPositive() {
 			if side == "sell" { // closing a long position
 				closePnL = price.Sub(entryPrice).Mul(qty)
@@ -362,5 +394,11 @@ func (h *Hand) checkEdgeRisk(pnl decimal.Decimal) {
 		Code:   CodeHandAutoPaused,
 		Reason: "edge risk: " + breachReason,
 		Msg:    "hand: auto-paused — edge degradation",
+	})
+	h.activityLog.push(ActivityEntry{
+		At:     time.Now(),
+		Code:   CodeHandAutoPaused,
+		Symbol: h.Symbol,
+		Reason: "edge risk: " + breachReason,
 	})
 }

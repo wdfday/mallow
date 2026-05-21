@@ -440,6 +440,93 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/auth/sessions": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns all active sessions for the authenticated user",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "List active sessions",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/internal_module_auth_handler.sessionResponse"
+                            }
+                        }
+                    }
+                }
+            },
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Logs out from all devices by revoking every active session",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Revoke all sessions",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/auth/sessions/{sid}": {
+            "delete": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Revokes the specified session, immediately invalidating its tokens",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "auth"
+                ],
+                "summary": "Revoke a session",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Session ID",
+                        "name": "sid",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": true
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/auth/telegram/bot": {
             "get": {
                 "description": "Returns the bot username and deep link for the frontend \"Connect Telegram\" button",
@@ -619,6 +706,49 @@ const docTemplate = `{
                     },
                     "401": {
                         "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_identity_internal_shared.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/internal/blacklist/check": {
+            "get": {
+                "description": "Checks blacklist by sid and sub; falls back to DB when Redis is cold (wakes cache).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "internal"
+                ],
+                "summary": "Check if a session or user is revoked (internal)",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Session ID",
+                        "name": "sid",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "User ID (subject)",
+                        "name": "sub",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "object",
+                            "additionalProperties": {
+                                "type": "boolean"
+                            }
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
                         "schema": {
                             "$ref": "#/definitions/mallow_identity_internal_shared.ErrorResponse"
                         }
@@ -1137,6 +1267,29 @@ const docTemplate = `{
         }
     },
     "definitions": {
+        "internal_module_auth_handler.sessionResponse": {
+            "type": "object",
+            "properties": {
+                "created_at": {
+                    "type": "string"
+                },
+                "expires_at": {
+                    "type": "string"
+                },
+                "ip": {
+                    "type": "string"
+                },
+                "is_current": {
+                    "type": "boolean"
+                },
+                "sid": {
+                    "type": "string"
+                },
+                "user_agent": {
+                    "type": "string"
+                }
+            }
+        },
         "mallow_identity_internal_module_auth_dto.AuthResponse": {
             "type": "object",
             "properties": {
@@ -1401,6 +1554,9 @@ const docTemplate = `{
                 "alert_threshold_budget": {
                     "type": "number"
                 },
+                "avatar_url": {
+                    "type": "string"
+                },
                 "budget_method": {
                     "type": "string"
                 },
@@ -1416,16 +1572,25 @@ const docTemplate = `{
                 "currency_secondary": {
                     "type": "string"
                 },
+                "date_of_birth": {
+                    "type": "string"
+                },
                 "debt_to_income_ratio": {
                     "type": "number"
                 },
                 "dependents_count": {
                     "type": "integer"
                 },
+                "display_name": {
+                    "type": "string"
+                },
                 "emergency_fund_months": {
                     "type": "number"
                 },
                 "employer": {
+                    "type": "string"
+                },
+                "full_name": {
                     "type": "string"
                 },
                 "income_stability": {
@@ -1487,6 +1652,10 @@ const docTemplate = `{
                 "alert_threshold_budget": {
                     "type": "number"
                 },
+                "avatar_url": {
+                    "type": "string",
+                    "maxLength": 512
+                },
                 "budget_method": {
                     "type": "string",
                     "enum": [
@@ -1505,6 +1674,9 @@ const docTemplate = `{
                 "currency_secondary": {
                     "type": "string"
                 },
+                "date_of_birth": {
+                    "type": "string"
+                },
                 "debt_to_income_ratio": {
                     "type": "number"
                 },
@@ -1512,12 +1684,21 @@ const docTemplate = `{
                     "type": "integer",
                     "minimum": 0
                 },
+                "display_name": {
+                    "type": "string",
+                    "maxLength": 255
+                },
                 "emergency_fund_months": {
                     "type": "number"
                 },
                 "employer": {
                     "type": "string",
                     "maxLength": 255
+                },
+                "full_name": {
+                    "type": "string",
+                    "maxLength": 255,
+                    "minLength": 1
                 },
                 "income_stability": {
                     "type": "string",
@@ -1734,13 +1915,7 @@ const docTemplate = `{
         "mallow_identity_internal_module_user_dto.UserResponse": {
             "type": "object",
             "properties": {
-                "avatar_url": {
-                    "type": "string"
-                },
                 "created_at": {
-                    "type": "string"
-                },
-                "display_name": {
                     "type": "string"
                 },
                 "email": {
@@ -1750,9 +1925,6 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "email_verified_at": {
-                    "type": "string"
-                },
-                "full_name": {
                     "type": "string"
                 },
                 "id": {

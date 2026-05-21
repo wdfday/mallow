@@ -59,6 +59,10 @@ func (s *brokerConnectionService) getBrokerClient(t domain.BrokerType) (client.B
 }
 
 func (s *brokerConnectionService) Create(ctx context.Context, req *dto.CreateBrokerConnectionServiceRequest) (*domain.BrokerConnection, error) {
+	if !req.IsPaper {
+		return nil, pkgshared.NewAppError("LIVE_TRADING_DISABLED", "Live trading is not available yet. Please use paper trading.", 403)
+	}
+
 	bc, err := s.getBrokerClient(req.BrokerType)
 	if err != nil {
 		return nil, err

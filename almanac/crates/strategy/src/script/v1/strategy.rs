@@ -481,7 +481,7 @@ pub fn script_indicator_deps(params: &serde_json::Value) -> Vec<crate::factory::
         .filter_map(|decl| {
             make_indicator_box(&decl).ok()?;
             Some(crate::factory::IndicatorDep {
-                config:    indicator_json_config(&decl.ind_type, decl.period),
+                config:    indicator_json_config(&decl.ind_type, decl.period, &decl.extra_params),
                 source_tf: decl.timeframe,
             })
         })

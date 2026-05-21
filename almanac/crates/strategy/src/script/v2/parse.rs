@@ -9,6 +9,7 @@ use anyhow::Result;
 use alm_core::Timeframe;
 use alm_indicator::IndicatorBox;
 use serde_json::json;
+use std::collections::HashMap;
 
 use super::feed_binding::FieldExtract;
 
@@ -24,16 +25,17 @@ pub(super) use crate::script::v1::{
 // ── IndicatorDecl ─────────────────────────────────────────────────────────────
 
 pub(super) struct IndicatorDecl {
-    pub(super) var_name:  String,
-    pub(super) ind_type:  String,
-    pub(super) period:    usize,
-    pub(super) buf_depth: usize,
-    pub(super) extract:   FieldExtract,
-    pub(super) timeframe: Option<Timeframe>,
+    pub(super) var_name:     String,
+    pub(super) ind_type:     String,
+    pub(super) period:       usize,
+    pub(super) extra_params: HashMap<String, f64>,
+    pub(super) buf_depth:    usize,
+    pub(super) extract:      FieldExtract,
+    pub(super) timeframe:    Option<Timeframe>,
     /// `true` when the user wrote `"live_H1"` — forces live even if we would
     /// otherwise infer it. (In v2, all HTF bindings get live by default; this
     /// flag is kept for parity with the v1 syntax.)
-    pub(super) live:      bool,
+    pub(super) live:         bool,
 }
 
 // ── Timeframe parser ──────────────────────────────────────────────────────────
@@ -76,31 +78,38 @@ pub(super) fn try_parse_indicator_line(line: &str) -> Option<IndicatorDecl> {
     if type_str.is_empty() { return None; }
     let args_inner = after_dot[paren + 1..].trim_end_matches(')');
 
-    let mut args = args_inner.splitn(3, ',');
+    let mut args = args_inner.split(',');
     let period: usize = args.next()?.trim().parse().ok()?;
 
-    let mut timeframe = None;
-    let mut buf_depth = DEFAULT_BUF_DEPTH;
-    let mut live      = false;
+    let mut extra_params = HashMap::new();
+    let mut timeframe    = None;
+    let mut buf_depth    = DEFAULT_BUF_DEPTH;
+    let mut live         = false;
 
-    if let Some(second) = args.next() {
-        let s = second.trim().trim_matches('"').trim_matches('\'');
-        if let Ok(n) = s.parse::<usize>() {
-            buf_depth = n;
+    for token in args {
+        let token = token.trim();
+        if let Some(eq) = token.find('=') {
+            let name    = token[..eq].trim().to_string();
+            let val_str = token[eq + 1..].trim();
+            if let Ok(v) = val_str.parse::<f64>() {
+                extra_params.insert(name, v);
+            }
         } else {
-            let (tf_str, is_live) = s.strip_prefix("live_")
-                .map(|r| (r, true))
-                .unwrap_or((s, false));
-            live      = is_live;
-            timeframe = parse_timeframe_str(tf_str);
-            if let Some(third) = args.next() {
-                buf_depth = third.trim().parse().unwrap_or(DEFAULT_BUF_DEPTH);
+            let s = token.trim_matches('"').trim_matches('\'');
+            if let Ok(n) = s.parse::<usize>() {
+                buf_depth = n;
+            } else {
+                let (tf_str, is_live) = s.strip_prefix("live_")
+                    .map(|r| (r, true))
+                    .unwrap_or((s, false));
+                live      = is_live;
+                timeframe = parse_timeframe_str(tf_str);
             }
         }
     }
 
     let (ind_type, extract) = map_indicator_type(&type_str);
-    Some(IndicatorDecl { var_name, ind_type, period, buf_depth, extract, timeframe, live })
+    Some(IndicatorDecl { var_name, ind_type, period, extra_params, buf_depth, extract, timeframe, live })
 }
 
 // ── Type → (canonical_type, FieldExtract) ─────────────────────────────────────
@@ -162,28 +171,67 @@ fn map_indicator_type(type_str: &str) -> (String, FieldExtract) {
 
 // ── JSON config / factory ─────────────────────────────────────────────────────
 
-pub(super) fn indicator_json_config(ind_type: &str, period: usize) -> serde_json::Value {
+pub(super) fn indicator_json_config(
+    ind_type: &str,
+    period: usize,
+    extra: &HashMap<String, f64>,
+) -> serde_json::Value {
+    macro_rules! p {
+        ($key:literal, $default:expr) => {
+            extra.get($key).copied().unwrap_or($default)
+        };
+    }
     match ind_type {
-        "macd"          => json!({"type": "macd",          "fast": period, "slow": 26, "signal": 9}),
-        "bbands"        => json!({"type": "bbands",        "period": period, "multiplier": 2.0}),
-        "stochastic"    => json!({"type": "stochastic",    "k_period": period, "d_period": 3}),
-        "stoch_rsi"     => json!({"type": "stoch_rsi",     "rsi_period": period, "smooth_d": 3}),
-        "supertrend"    => json!({"type": "supertrend",    "period": period, "multiplier": 3.0}),
-        "parabolic_sar" => json!({"type": "parabolic_sar", "step": 0.02, "max": 0.2}),
-        "kama"          => json!({"type": "kama",          "er_period": period}),
-        "obv"           => json!({"type": "obv"}),
-        "vwap"          => json!({"type": "vwap"}),
-        "ao"            => json!({"type": "ao",            "fast": 5, "slow": 34}),
-        "bop"           => json!({"type": "bop"}),
-        "coppock"       => json!({"type": "coppock"}),
-        "uo"            => json!({"type": "uo",            "fast": 7, "medium": 14, "slow": 28}),
-        "kdj"           => json!({"type": "kdj", "period": period, "k_period": 3, "d_period": 3}),
-        t               => json!({"type": t, "period": period}),
+        "macd" => json!({
+            "type": "macd",
+            "fast": period,
+            "slow": p!("slow", 26.0) as u64,
+            "signal": p!("signal", 9.0) as u64,
+        }),
+        "bbands" => json!({
+            "type": "bbands",
+            "period": period,
+            "multiplier": p!("multiplier", 2.0),
+        }),
+        "stochastic" => json!({
+            "type": "stochastic",
+            "k_period": period,
+            "d_period": p!("d_period", 3.0) as u64,
+        }),
+        "stoch_rsi" => json!({
+            "type": "stoch_rsi",
+            "rsi_period": period,
+            "smooth_d": p!("smooth_d", 3.0) as u64,
+        }),
+        "supertrend" => json!({
+            "type": "supertrend",
+            "period": period,
+            "multiplier": p!("multiplier", 3.0),
+        }),
+        "parabolic_sar" => json!({
+            "type": "parabolic_sar",
+            "step": p!("step", 0.02),
+            "max":  p!("max", 0.2),
+        }),
+        "kdj" => json!({
+            "type": "kdj",
+            "period": period,
+            "k_period": p!("k_period", 3.0) as u64,
+            "d_period": p!("d_period", 3.0) as u64,
+        }),
+        "kama"    => json!({"type": "kama",    "er_period": period}),
+        "obv"     => json!({"type": "obv"}),
+        "vwap"    => json!({"type": "vwap"}),
+        "ao"      => json!({"type": "ao",      "fast": 5, "slow": 34}),
+        "bop"     => json!({"type": "bop"}),
+        "coppock" => json!({"type": "coppock"}),
+        "uo"      => json!({"type": "uo",      "fast": 7, "medium": 14, "slow": 28}),
+        t         => json!({"type": t, "period": period}),
     }
 }
 
 pub(super) fn make_indicator_box(decl: &IndicatorDecl) -> Result<IndicatorBox> {
-    IndicatorBox::from_config(&indicator_json_config(&decl.ind_type, decl.period))
+    IndicatorBox::from_config(&indicator_json_config(&decl.ind_type, decl.period, &decl.extra_params))
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

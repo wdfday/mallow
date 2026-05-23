@@ -8,6 +8,9 @@ use alm_core::{Bar, Strategy, signal::Direction};
 use alm_indicator::{HeikenAshi, IndicatorBox};
 use alm_strategy::build_strategy;
 
+mod chart_state;
+pub use chart_state::ChartState;
+
 // ── WASM init ─────────────────────────────────────────────────────────────────
 
 #[wasm_bindgen(start)]
@@ -19,13 +22,21 @@ pub fn init() {
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
-fn build_bars(symbol: &str, t: &[f64], o: &[f64], h: &[f64], l: &[f64], c: &[f64], v: &[f64]) -> Vec<Bar> {
+pub(crate) fn build_bars(symbol: &str, t: &[f64], o: &[f64], h: &[f64], l: &[f64], c: &[f64], v: &[f64]) -> Vec<Bar> {
     let n = t.len().min(o.len()).min(h.len()).min(l.len()).min(c.len()).min(v.len());
     (0..n).map(|i| Bar::new(t[i] as i64, symbol, o[i], h[i], l[i], c[i], v[i])).collect()
 }
 
-fn js_error(msg: &str) -> JsValue {
-    serde_wasm_bindgen::to_value(&json!({ "error": msg })).unwrap_or(JsValue::NULL)
+/// Serialize any `Serialize` value to `JsValue` using json-compatible mode
+/// (maps → plain JS objects, not JS `Map`). Required for serde-wasm-bindgen 0.6+
+/// where the default changed to emitting JS `Map` for HashMap/BTreeMap.
+pub(crate) fn to_js<T: serde::Serialize>(v: &T) -> JsValue {
+    v.serialize(&serde_wasm_bindgen::Serializer::json_compatible())
+        .unwrap_or(JsValue::NULL)
+}
+
+pub(crate) fn js_error(msg: &str) -> JsValue {
+    to_js(&json!({ "error": msg }))
 }
 
 #[derive(Serialize)]
@@ -47,7 +58,7 @@ pub fn heikin_ashi(
             out.l.push(b.low); out.c.push(b.close); out.v.push(v[i]);
         }
     }
-    serde_wasm_bindgen::to_value(&out).unwrap_or(JsValue::NULL)
+    to_js(&out)
 }
 
 /// EMA-smoothed Heikin-Ashi. Warmup bars trimmed from output.
@@ -65,7 +76,7 @@ pub fn smooth_ha(
             out.l.push(b.low); out.c.push(b.close); out.v.push(v[i]);
         }
     }
-    serde_wasm_bindgen::to_value(&out).unwrap_or(JsValue::NULL)
+    to_js(&out)
 }
 
 // ── Indicators ────────────────────────────────────────────────────────────────
@@ -126,7 +137,7 @@ pub fn run_indicators(
         }
         result.insert(label.clone(), serde_json::Value::Object(ind_obj));
     }
-    serde_wasm_bindgen::to_value(&serde_json::Value::Object(result)).unwrap_or(JsValue::NULL)
+    to_js(&serde_json::Value::Object(result))
 }
 
 /// List all indicator type strings accepted by `run_indicators`.
@@ -142,13 +153,13 @@ pub fn list_indicators() -> JsValue {
         "alligator","gmma","heikin_ashi","chop","chop_zone","volatility_ratio",
         "atr","supertrend","parabolic_sar","chandelier_exit","chande_kroll",
     ];
-    serde_wasm_bindgen::to_value(&names).unwrap_or(JsValue::NULL)
+    to_js(&names)
 }
 
 // ── Mini backtest engine ──────────────────────────────────────────────────────
 
 #[derive(Serialize)]
-struct TradeOut {
+pub(crate) struct TradeOut {
     entry_ts:    i64,
     exit_ts:     i64,
     entry_price: f64,
@@ -158,10 +169,10 @@ struct TradeOut {
 }
 
 #[derive(Serialize)]
-struct EquityPoint { t: i64, equity: f64 }
+pub(crate) struct EquityPoint { t: i64, equity: f64 }
 
 #[derive(Serialize)]
-struct BacktestOut {
+pub(crate) struct BacktestOut {
     total_return_pct:  f64,
     max_drawdown_pct:  f64,
     win_rate_pct:      f64,
@@ -184,7 +195,7 @@ struct BacktestOut {
 ///   "slippage_pct": 0.0005
 /// }
 /// ```
-fn run_strategy(
+pub(crate) fn run_strategy(
     _symbol: &str,
     bars: &[Bar],
     strategy: &mut dyn Strategy,
@@ -322,7 +333,7 @@ pub fn run_backtest(
     let bars = build_bars(symbol, t, o, h, l, c, v);
     let (cap, size, comm, slip) = parse_config(config_json);
     let out = run_strategy(symbol, &bars, strategy.as_mut(), cap, size, comm, slip);
-    serde_wasm_bindgen::to_value(&out).unwrap_or(JsValue::NULL)
+    to_js(&out)
 }
 
 /// Run a script backtest client-side.
@@ -343,10 +354,10 @@ pub fn run_script_backtest(
     let bars = build_bars(symbol, t, o, h, l, c, v);
     let (cap, size, comm, slip) = parse_config(config_json);
     let out = run_strategy(symbol, &bars, strategy.as_mut(), cap, size, comm, slip);
-    serde_wasm_bindgen::to_value(&out).unwrap_or(JsValue::NULL)
+    to_js(&out)
 }
 
-fn parse_config(config_json: &str) -> (f64, f64, f64, f64) {
+pub(crate) fn parse_config(config_json: &str) -> (f64, f64, f64, f64) {
     let v: serde_json::Value = serde_json::from_str(config_json).unwrap_or(json!({}));
     let get = |key: &str, default: f64| v.get(key).and_then(|v| v.as_f64()).unwrap_or(default);
     (
@@ -361,5 +372,5 @@ fn parse_config(config_json: &str) -> (f64, f64, f64, f64) {
 #[wasm_bindgen]
 pub fn list_strategies() -> JsValue {
     use alm_strategy::catalog::STRATEGY_KEYS;
-    serde_wasm_bindgen::to_value(&STRATEGY_KEYS).unwrap_or(JsValue::NULL)
+    to_js(&STRATEGY_KEYS)
 }

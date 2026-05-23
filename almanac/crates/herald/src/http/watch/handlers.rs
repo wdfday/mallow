@@ -10,7 +10,7 @@ use axum::{
 };
 use tracing::{debug, info, warn};
 
-use super::types::{CreateWatchReq, UpdateWatchReq, WatchEntry, WatchSlot, parse_tf};
+use super::types::{CreateWatchReq, UpdateWatchReq, WatchEntry, WatchSlot};
 use crate::http::types::{ok, created, no_content, err};
 use crate::http::HttpState;
 
@@ -67,7 +67,7 @@ pub async fn create_watch(
     let tf = req
         .timeframe
         .as_deref()
-        .and_then(parse_tf)
+        .and_then(|s| s.parse().ok())
         .unwrap_or(state.tf);
 
     let (strategy_key, params) = req.spec.to_factory_args();
@@ -178,7 +178,7 @@ pub async fn update_watch(
         if let Some(spec) = req.spec     { slot.entry.spec        = spec; }
         if let Some(tf)   = req.timeframe { slot.entry.timeframe  = Some(tf); }
 
-        let tf = slot.entry.timeframe.as_deref().and_then(parse_tf).unwrap_or(state.tf);
+        let tf = slot.entry.timeframe.as_deref().and_then(|s| s.parse().ok()).unwrap_or(state.tf);
         let (strategy_key, params) = slot.entry.spec.to_factory_args();
         let deps = indicator_deps(&strategy_key, &params);
 
@@ -260,7 +260,7 @@ pub async fn restore_from_store(state: &HttpState) {
 
     let mut store = state.watches.write().await;
     for mut entry in entries {
-        let tf = entry.timeframe.as_deref().and_then(parse_tf).unwrap_or(state.tf);
+        let tf = entry.timeframe.as_deref().and_then(|s| s.parse().ok()).unwrap_or(state.tf);
         let (strategy_key, params) = entry.spec.to_factory_args();
         let deps = indicator_deps(&strategy_key, &params);
 

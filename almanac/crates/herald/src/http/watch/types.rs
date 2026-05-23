@@ -92,18 +92,3 @@ pub fn new_store() -> WatchStore {
     Arc::new(RwLock::new(HashMap::new()))
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-pub fn parse_tf(s: &str) -> Option<alm_core::Timeframe> {
-    match s.to_ascii_uppercase().as_str() {
-        "M1"  => Some(alm_core::Timeframe::M1),
-        "M5"  => Some(alm_core::Timeframe::M5),
-        "M15" => Some(alm_core::Timeframe::M15),
-        "M30" => Some(alm_core::Timeframe::M30),
-        "H1"  => Some(alm_core::Timeframe::H1),
-        "H4"  => Some(alm_core::Timeframe::H4),
-        "D1"  => Some(alm_core::Timeframe::D1),
-        "W1"  => Some(alm_core::Timeframe::W1),
-        _     => None,
-    }
-}

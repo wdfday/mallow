@@ -13,6 +13,7 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use tokio::time::sleep;
 use tracing::{debug, info, warn};
+use metrics::{counter, histogram};
 
 /// Minimum gap between OKX REST pages (history-candles limit: 20 req/2s).
 /// 250 ms → max 4 req/s, well under the quota.
@@ -247,6 +248,7 @@ pub async fn gap_fill_symbol(
     base_from_ms: Option<i64>,
     subscribe_tfs: &[Timeframe],
 ) {
+    let gap_fill_start = std::time::Instant::now();
     let now_ms = chrono::Utc::now().timestamp_millis();
 
     // 1. Base TF: bridge the gap from the last parquet bar to now, or — when no
@@ -280,6 +282,9 @@ pub async fn gap_fill_symbol(
         let result = fetch_tf(&exchange, rest_sym, tf, from_ms, to_ms).await;
         advance_bars(ledger, result, live_sym, tf, "HTF window");
     }
+    histogram!("herald_gap_fill_duration_ms",
+        "symbol" => live_sym.to_string()
+    ).record(gap_fill_start.elapsed().as_millis() as f64);
 }
 
 async fn fetch_tf(
@@ -305,6 +310,10 @@ fn advance_bars(
     match result {
         Ok(bars) => {
             let count = bars.len();
+            counter!("herald_gap_fill_bars_total",
+                "symbol" => live_sym.to_string(),
+                "tf"     => format!("{:?}", tf),
+            ).increment(count as u64);
             let tf_ms = tf.duration_ms();
             let mut gap_count = 0usize;
             for w in bars.windows(2) {

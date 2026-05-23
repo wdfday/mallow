@@ -83,7 +83,6 @@ impl Modify for BearerAuthAddon {
         types::CandlesQuery,
         types::CandlesResult,
         types::IndicatorConfig,
-        types::IndicatorPoint,
         types::UnifiedDataRequest,
         types::UnifiedDataResponse,
         // Stream

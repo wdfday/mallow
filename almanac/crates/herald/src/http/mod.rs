@@ -78,11 +78,14 @@
 //! file index is needed.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use alm_core::Bar;
 use alm_ledger::Ledger;
-use axum::{routing::get, Json, Router};
+use axum::{extract::State, http::StatusCode, middleware, response::IntoResponse, routing::get, Json, Router};
+use metrics::{counter, histogram};
+use metrics_exporter_prometheus::PrometheusHandle;
 use serde_json::json;
 use tokio::sync::{broadcast, Semaphore};
 use tower_http::compression::CompressionLayer;
@@ -91,7 +94,9 @@ use tower_http::trace::TraceLayer;
 
 use crate::registry::HandSignal;
 use crate::watch_evaluator::WatchEvaluator;
+use crate::ws_latency::WsLatencyTracker;
 
+pub mod admin;
 mod backtest;
 pub mod data;
 mod duckdb_helpers;
@@ -131,6 +136,12 @@ pub struct HttpState {
     pub sig_bcast: broadcast::Sender<Arc<HandSignal>>,
     /// Watch evaluator — `delete_watch` calls `remove_watch` to eagerly free handles.
     pub watch_evaluator: Arc<WatchEvaluator>,
+    /// WebSocket delivery latency tracker — shared with `Handler`.
+    pub ws_latency: Arc<WsLatencyTracker>,
+    /// Prometheus metrics handle — rendered by `GET /metrics`.
+    pub prometheus: PrometheusHandle,
+    /// Set to true once bootstrap + gap-fill finish. /health returns 503 until then.
+    pub ready: Arc<AtomicBool>,
 }
 
 impl HttpState {
@@ -144,8 +155,11 @@ impl HttpState {
         sig_bcast: broadcast::Sender<Arc<HandSignal>>,
         watch_evaluator: Arc<WatchEvaluator>,
         watches: WatchStore,
-    ) -> Self {
-        Self {
+        ws_latency: Arc<WsLatencyTracker>,
+        prometheus: PrometheusHandle,
+    ) -> (Self, Arc<AtomicBool>) {
+        let ready = Arc::new(AtomicBool::new(false));
+        let state = Self {
             ledger,
             tf,
             data_dir,
@@ -155,13 +169,40 @@ impl HttpState {
             bar_bcast,
             sig_bcast,
             watch_evaluator,
-        }
+            ws_latency,
+            prometheus,
+            ready: Arc::clone(&ready),
+        };
+        (state, ready)
     }
+}
+
+async fn record_request_metrics(
+    req: axum::http::Request<axum::body::Body>,
+    next: middleware::Next,
+) -> axum::response::Response {
+    let method = req.method().to_string();
+    let path = req.uri().path().to_string();
+    let start = std::time::Instant::now();
+    let res = next.run(req).await;
+    let status = res.status().as_u16().to_string();
+    let duration_ms = start.elapsed().as_millis() as f64;
+    counter!("herald_http_requests_total",
+        "method" => method.clone(),
+        "path"   => path.clone(),
+        "status" => status,
+    ).increment(1);
+    histogram!("herald_http_request_duration_ms",
+        "method" => method,
+        "path"   => path,
+    ).record(duration_ms);
+    res
 }
 
 pub fn router(state: HttpState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/metrics", get(prometheus_metrics))
         .merge(symbols::routes())
         .merge(data::routes())
         .merge(backtest::routes())
@@ -170,12 +211,22 @@ pub fn router(state: HttpState) -> Router {
         .merge(watch::routes())
         .merge(sse::routes())
         .merge(openapi::routes())
+        .merge(admin::routes())
         .with_state(state)
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
+        .layer(middleware::from_fn(record_request_metrics))
 }
 
-async fn health() -> Json<serde_json::Value> {
-    Json(json!({ "ok": true, "service": "herald" }))
+async fn health(State(state): State<HttpState>) -> impl IntoResponse {
+    if state.ready.load(Ordering::Relaxed) {
+        (StatusCode::OK, Json(json!({ "ok": true, "service": "herald" })))
+    } else {
+        (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "ok": false, "service": "herald", "msg": "warming up" })))
+    }
+}
+
+async fn prometheus_metrics(State(state): State<HttpState>) -> String {
+    state.prometheus.render()
 }

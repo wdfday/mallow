@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use alm_core::Timeframe;
 use futures::{SinkExt, StreamExt};
+use metrics::{counter, gauge};
 use serde::Deserialize;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, info, warn};
@@ -43,10 +44,19 @@ pub fn spawn(symbols: Vec<String>, tx: BarTx) {
             "binance: subscribing to combined stream"
         );
 
+        let mut first = true;
         loop {
+            if !first {
+                counter!("herald_feed_reconnects_total", "source" => "binance").increment(1);
+            }
+            first = false;
             match run_once(&url, &tx).await {
-                Ok(()) => return,
+                Ok(()) => {
+                    gauge!("herald_feed_ws_connected", "source" => "binance").set(0.0);
+                    return;
+                }
                 Err(e) => {
+                    gauge!("herald_feed_ws_connected", "source" => "binance").set(0.0);
                     if tx.is_closed() {
                         return;
                     }
@@ -61,6 +71,7 @@ pub fn spawn(symbols: Vec<String>, tx: BarTx) {
 async fn run_once(url: &str, tx: &BarTx) -> anyhow::Result<()> {
     let (ws, _) = connect_async(url).await?;
     info!("binance: connected");
+    gauge!("herald_feed_ws_connected", "source" => "binance").set(1.0);
     let (mut write, mut read) = ws.split();
 
     while let Some(msg) = read.next().await {
@@ -85,6 +96,10 @@ async fn run_once(url: &str, tx: &BarTx) -> anyhow::Result<()> {
             _ => continue,
         };
 
+        // Capture arrival time before JSON parse so it's as close to
+        // wire receipt as possible.
+        let received_at_ms = super::now_ms();
+
         let Ok(env) = serde_json::from_str::<Envelope>(&text) else {
             continue;
         };
@@ -105,9 +120,11 @@ async fn run_once(url: &str, tx: &BarTx) -> anyhow::Result<()> {
         );
         if k.closed {
             debug!(symbol = %bar.symbol, ?tf, close = bar.close, "binance: bar closed");
+            let sym = env.data.symbol.to_uppercase();
+            counter!("herald_feed_bars_total", "source" => "binance", "symbol" => sym).increment(1);
         }
 
-        if tx.send(BarEvent { tf, bar, closed: k.closed }).is_err() {
+        if tx.send(BarEvent { tf, bar, closed: k.closed, received_at_ms }).is_err() {
             let _ = write.close().await;
             return Ok(());
         }

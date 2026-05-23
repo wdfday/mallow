@@ -116,9 +116,9 @@ pub struct CandlesResult {
     pub truncated_below: bool,
 }
 
-/// Single indicator spec in a unified request. Flat form — anything the
-/// `alm_indicator::IndicatorBox::from_config` accepts, plus an optional
-/// `label` to override the response key.
+/// Single indicator spec used by the SSE stream endpoint.
+/// Flat form — anything `alm_indicator::IndicatorBox::from_config` accepts,
+/// plus an optional `label` to override the response key.
 ///
 /// Example: `{"type":"ema","period":20}` or `{"type":"rsi","period":14,"label":"rsi14"}`.
 #[derive(Debug, Clone, Deserialize, ToSchema)]
@@ -131,23 +131,15 @@ pub struct IndicatorConfig {
     pub config: serde_json::Map<String, Value>,
 }
 
+/// Request body for `POST /api/v1/data/:source/:symbol`.
+/// Indicator computation is handled client-side via WASM — only raw bars are returned.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct UnifiedDataRequest {
     pub tf: Option<String>,
     pub candles: Option<CandlesQuery>,
-    pub indicators: Option<Vec<IndicatorConfig>>,
 }
 
-/// Individual indicator point in a series — `t` plus the indicator's fields.
-/// Kept flat so clients can address `row.value` / `row.macd` etc.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct IndicatorPoint {
-    pub t: i64,
-    #[serde(flatten)]
-    #[schema(value_type = Object)]
-    pub fields: HashMap<String, f64>,
-}
-
+/// Response for `POST /api/v1/data/:source/:symbol` — raw OHLCV bars only.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct UnifiedDataResponse {
     pub source: String,
@@ -155,13 +147,6 @@ pub struct UnifiedDataResponse {
     pub tf: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub candles: Option<CandlesResult>,
-    /// Keyed by `label` or the indicator's canonical key when `label` is omitted.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub indicators: Option<HashMap<String, Vec<IndicatorPoint>>>,
-    /// Specs that were requested but could not be satisfied — bad config,
-    /// missing `"type"`, exceeded `max_period`, etc. Empty on the happy path.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub missing: Vec<String>,
 }
 
 // ── Stream (POST /api/stream/:symbol) ────────────────────────────────────────

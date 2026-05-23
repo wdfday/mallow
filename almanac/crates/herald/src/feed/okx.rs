@@ -9,6 +9,7 @@ use std::time::Duration;
 
 use alm_core::Timeframe;
 use futures::{SinkExt, StreamExt};
+use metrics::{counter, gauge};
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, info, warn};
@@ -26,10 +27,19 @@ pub fn spawn(symbols: Vec<String>, tx: BarTx) {
         return;
     }
     tokio::spawn(async move {
+        let mut first = true;
         loop {
+            if !first {
+                counter!("herald_feed_reconnects_total", "source" => "okx").increment(1);
+            }
+            first = false;
             match run_once(&symbols, &tx).await {
-                Ok(()) => return,
+                Ok(()) => {
+                    gauge!("herald_feed_ws_connected", "source" => "okx").set(0.0);
+                    return;
+                }
                 Err(e) => {
+                    gauge!("herald_feed_ws_connected", "source" => "okx").set(0.0);
                     if tx.is_closed() {
                         return;
                     }
@@ -44,6 +54,7 @@ pub fn spawn(symbols: Vec<String>, tx: BarTx) {
 async fn run_once(symbols: &[String], tx: &BarTx) -> anyhow::Result<()> {
     let (ws, _) = connect_async(WS_URL).await?;
     info!("okx: connected");
+    gauge!("herald_feed_ws_connected", "source" => "okx").set(1.0);
     let (mut write, mut read) = ws.split();
 
     // Subscribe to candle{interval} for every symbol × TF.
@@ -100,6 +111,9 @@ async fn handle_push(
     tx: &BarTx,
     write: &mut (impl futures::Sink<Message> + Unpin),
 ) -> anyhow::Result<()> {
+    // Capture arrival time before JSON parse.
+    let received_at_ms = super::now_ms();
+
     let Ok(push) = serde_json::from_str::<CandlePush>(text) else {
         return Ok(());
     };
@@ -128,8 +142,9 @@ async fn handle_push(
         );
         if closed {
             debug!(symbol = %bar.symbol, ?tf, close = bar.close, "okx: bar closed");
+            counter!("herald_feed_bars_total", "source" => "okx", "symbol" => push.arg.inst_id.clone()).increment(1);
         }
-        if tx.send(BarEvent { tf, bar, closed }).is_err() {
+        if tx.send(BarEvent { tf, bar, closed, received_at_ms }).is_err() {
             let _ = write.close().await;
             return Ok(());
         }

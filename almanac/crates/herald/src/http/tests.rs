@@ -18,6 +18,7 @@ use tokio::sync::broadcast;
 use crate::http::{router, HttpState, StoreBackend};
 use crate::registry::HandSignal;
 use crate::watch_evaluator::WatchEvaluator;
+use crate::ws_latency::WsLatencyTracker;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -34,7 +35,11 @@ fn test_state() -> HttpState {
         Timeframe::M1,
         dispatch_tx,
     ));
-    HttpState::new(
+    let ws_latency = Arc::new(WsLatencyTracker::new());
+    let prometheus = metrics_exporter_prometheus::PrometheusBuilder::new()
+        .build_recorder()
+        .handle();
+    let (state, ready) = HttpState::new(
         ledger,
         Timeframe::M1,
         data_dir,
@@ -44,7 +49,11 @@ fn test_state() -> HttpState {
         sig_tx,
         watch_eval,
         watch_store,
-    )
+        ws_latency,
+        prometheus,
+    );
+    ready.store(true, std::sync::atomic::Ordering::Relaxed);
+    state
 }
 
 fn test_app() -> axum::Router {
@@ -394,20 +403,6 @@ async fn data_invalid_source_returns_400() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
-#[tokio::test]
-async fn data_too_many_indicators_rejected() {
-    let indicators: Vec<serde_json::Value> = (0..17)
-        .map(|i| serde_json::json!({"type": "sma", "period": i + 2}))
-        .collect();
-    let body = serde_json::json!({ "indicators": indicators });
-    let resp = test_app()
-        .oneshot(post_json("/api/v1/data/binance/BTCUSDT", body))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    assert!(json_body(resp).await["message"].is_string());
-}
-
 // ── /api/v1/data — out-of-ledger (parquet fallback) paths ────────────────────
 
 /// `before` predates every bar in the ledger → falls through to DuckDB.
@@ -471,10 +466,10 @@ async fn data_before_within_window_returns_bars_from_ledger() {
     assert!(ts.windows(2).all(|w| w[0] <= w[1]), "bars not sorted ascending");
 }
 
-/// `before` outside window WITH indicators triggers the historical compute path.
-/// No parquet → returns empty bars + empty indicators, not a crash.
+/// `before` outside window triggers the historical compute path.
+/// No parquet → returns empty bars, not a crash.
 #[tokio::test]
-async fn data_before_outside_window_with_indicators_uses_historical_compute() {
+async fn data_before_outside_window_uses_historical_compute() {
     let state = test_state();
     state
         .ledger
@@ -485,8 +480,7 @@ async fn data_before_outside_window_with_indicators_uses_historical_compute() {
         .unwrap();
 
     let body = serde_json::json!({
-        "candles": { "before": 500_000, "limit": 10 },
-        "indicators": [{ "type": "sma", "period": 14 }]
+        "candles": { "before": 500_000, "limit": 10 }
     });
     let resp = router(state)
         .oneshot(post_json("/api/v1/data/binance/BTCUSDT", body))
@@ -496,8 +490,6 @@ async fn data_before_outside_window_with_indicators_uses_historical_compute() {
     assert_eq!(resp.status(), StatusCode::OK);
     let b = json_body(resp).await;
     assert_eq!(b["data"]["source"], "binance");
-    // indicators key present (may be empty map if no parquet data).
-    assert!(b["data"]["indicators"].is_object());
 }
 
 /// OKX dashed symbol accepted; ledger key uses the dashes as-is.

@@ -6,8 +6,8 @@ use alm_core::{signal::Signal, strategy::Strategy, Bar, Timeframe};
 use alm_core::{MtfSnapshot, MtfStrategy, TfBarEvent, TfView};
 use alm_ledger::{IndicatorHandle, IndicatorSpec, Ledger};
 use alm_data::aggregator::StandaloneAggregator;
-use alm_strategy::factory::{build_strategy_with_deps, IndicatorDep};
-use alm_strategy::{probe_script_htfs, MtfScriptStrategy};
+use alm_strategy::factory::IndicatorDep;
+use alm_strategy::{probe_script_htfs, script_indicator_deps, ScriptStrategy, MtfScriptStrategy};
 use tracing::{debug, info, trace, warn};
 
 // ── LiveStrategy ──────────────────────────────────────────────────────────────
@@ -20,11 +20,11 @@ enum LiveStrategy {
     V1 {
         strategy: Box<dyn Strategy>,
     },
-    /// v2: MtfScriptStrategy fed by confirmed HTF bars read directly from ledger.
+    /// v2: multi-TF strategy fed by confirmed HTF bars read directly from ledger.
     /// `last_htf_ts` tracks the last HTF bar timestamp fed per TF so we only
     /// push newly-confirmed bars into the strategy (no double-feed on warmup).
     V2 {
-        strategy: MtfScriptStrategy,
+        strategy: Box<dyn MtfStrategy>,
         declared_htfs: Vec<Timeframe>,
         base_tf: Timeframe,
         /// Last bar.timestamp fed into the strategy per HTF, used to detect
@@ -88,11 +88,11 @@ impl Handle {
                     "script declares TF `{bad}` not larger than hand target TF `{target_tf}`"
                 );
             }
-            let mut probe = MtfScriptStrategy::from_script_live(&script, target_tf)?;
+            let mut probe: Box<dyn MtfStrategy> = Box::new(MtfScriptStrategy::from_script_live(&script, target_tf)?);
             for &htf in &htfs {
                 ledger.ensure_symbol(&symbol, htf, None);
             }
-            let last_htf_ts = warmup_v2(&mut probe, &symbol, target_tf, &htfs, ledger);
+            let last_htf_ts = warmup_v2(probe.as_mut(), &symbol, target_tf, &htfs, ledger);
             debug!(
                 %hand_id, %symbol,
                 base_tf = %base_tf, target_tf = %target_tf, htfs = ?htfs,
@@ -129,9 +129,10 @@ impl Handle {
         }
 
         // ── v1 path: pure single-TF, hand evaluates at target_tf ─────────────
-        let mut value = serde_json::json!({ "script": script, "_live": true });
-        let (mut strategy, deps) = build_strategy_with_deps("script", &mut value)
-            .map_err(|e| anyhow!("{e}"))?;
+        let mut strategy: Box<dyn Strategy> =
+            Box::new(ScriptStrategy::from_script_live(&script).map_err(|e| anyhow!("{e}"))?);
+        let deps: Vec<IndicatorDep> =
+            script_indicator_deps(&serde_json::json!({ "script": &script }));
         let handles = acquire_dep_handles(ledger, &symbol, target_tf, &deps, &hand_id);
 
         // Warm the strategy from ledger history at `target_tf`. Two cases:
@@ -206,9 +207,17 @@ impl Handle {
 
     pub fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let sigs = match &mut self.live {
+            // V1: single-TF — bar arrives already at target_tf (either base TF
+            // or a resampled HTF bar from ResampleManager). Push straight through;
+            // no ledger look-up needed because the strategy maintains its own
+            // rolling indicator state internally.
             LiveStrategy::V1 { strategy } => strategy.on_bar(bar),
+
+            // V2: multi-TF — before feeding the base-TF bar we check the ledger
+            // for any newly-confirmed HTF bars and deliver them first (largest TF
+            // first), then the base bar. See `on_bar_v2` for the full ordering.
             LiveStrategy::V2 { strategy, declared_htfs, base_tf, last_htf_ts } => {
-                on_bar_v2(strategy, bar, *base_tf, declared_htfs, last_htf_ts, &self.symbol, &self.ledger)
+                on_bar_v2(strategy.as_mut(), bar, *base_tf, declared_htfs, last_htf_ts, &self.symbol, &self.ledger)
             }
         };
         if !sigs.is_empty() {
@@ -225,7 +234,7 @@ impl Handle {
 // ── v2 live evaluation ────────────────────────────────────────────────────────
 
 fn on_bar_v2(
-    strategy: &mut MtfScriptStrategy,
+    strategy: &mut dyn MtfStrategy,
     bar: &Bar,
     base_tf: Timeframe,
     declared_htfs: &[Timeframe],
@@ -285,7 +294,7 @@ fn on_bar_v2(
 /// Returns `last_htf_ts` initialized to the last HTF bar timestamp fed, so
 /// the live `on_bar_v2` path doesn't re-feed them.
 fn warmup_v2(
-    strategy: &mut MtfScriptStrategy,
+    strategy: &mut dyn MtfStrategy,
     symbol: &str,
     base_tf: Timeframe,
     declared_htfs: &[Timeframe],
@@ -426,9 +435,27 @@ impl SymbolGroup {
     pub fn evaluate_at(&mut self, tf: Timeframe, bar: &Bar) -> Vec<(String, String, Signal)> {
         let mut results = Vec::new();
         for h in self.hands.iter_mut().filter(|h| h.target_tf == tf) {
+            let strategy_type = match &h.live {
+                LiveStrategy::V1 { .. } => "v1",
+                LiveStrategy::V2 { .. } => "v2",
+            };
+            let bot_span = tracing::info_span!(
+                "hand.eval",
+                hand_id = %h.hand_id,
+                strategy_type = strategy_type,
+            );
+            let _bot_enter = bot_span.enter();
+
             let bot_start = std::time::Instant::now();
             let sigs = h.on_bar(bar);
             let bot_us = bot_start.elapsed().as_micros();
+
+            metrics::histogram!(
+                "herald_registry_hand_eval_us",
+                "symbol" => self.symbol.clone(),
+                "tf"     => h.target_tf.to_string(),
+            ).record(bot_us as f64);
+
             if let Some(sig) = sigs.into_iter().next() {
                 trace!(
                     hand_id = %h.hand_id, helm_id = %h.helm_id,

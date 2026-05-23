@@ -8,6 +8,7 @@
 use std::path::Path;
 
 use tracing::{debug, warn};
+use metrics::{counter, histogram};
 
 use alm_core::Bar;
 use alm_engine::data::find_parquet_files;
@@ -205,6 +206,7 @@ pub fn query_bars_for_compute(
     if files.is_empty() {
         return Ok(vec![]);
     }
+    let compute_start = std::time::Instant::now();
     let parquet_expr = build_parquet_expr(&files);
     let sql = if resample {
         let interval_ms = timeframe_to_ms(timeframe);
@@ -255,6 +257,8 @@ pub fn query_bars_for_compute(
         .map(|r| r.map_err(|e| anyhow::anyhow!("{e}")))
         .collect::<anyhow::Result<Vec<Bar>>>()?;
     detect_core_bar_gaps(&bars, timeframe, parquet_symbol, "duckdb compute");
+    histogram!("herald_duckdb_query_duration_ms", "kind" => "compute").record(compute_start.elapsed().as_millis() as f64);
+    counter!("herald_duckdb_queries_total", "kind" => "compute").increment(1);
     Ok(bars)
 }
 
@@ -267,6 +271,7 @@ fn build_parquet_expr(files: &[std::path::PathBuf]) -> String {
 }
 
 fn run_bar_query(sql: &str) -> anyhow::Result<Vec<BarRecord>> {
+    let start = std::time::Instant::now();
     let conn = duckdb::Connection::open_in_memory()
         .map_err(|e| anyhow::anyhow!("duckdb open: {e}"))?;
     let mut stmt = conn.prepare(sql)
@@ -287,5 +292,7 @@ fn run_bar_query(sql: &str) -> anyhow::Result<Vec<BarRecord>> {
         .map_err(|e| anyhow::anyhow!("duckdb query: {e}"))?
         .map(|r| r.map_err(|e| anyhow::anyhow!("{e}")))
         .collect::<anyhow::Result<_>>()?;
+    histogram!("herald_duckdb_query_duration_ms", "kind" => "before").record(start.elapsed().as_millis() as f64);
+    counter!("herald_duckdb_queries_total", "kind" => "before").increment(1);
     Ok(bars)
 }

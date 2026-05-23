@@ -1,8 +1,15 @@
+// jemalloc — returns freed pages to OS aggressively after startup spikes
+// (glibc malloc holds virtual memory indefinitely after HTF gap-fill allocs).
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
 mod feed;
 mod handler;
 mod ring;
 mod symbols;
 use alm_herald::{http, registry, watch_evaluator};
+use metrics_exporter_prometheus::PrometheusBuilder;
+use pyroscope_pprofrs::{pprof_backend, PprofConfig};
 use feed::rest::{gap_fill_symbol, Exchange};
 
 use std::sync::Arc;
@@ -17,15 +24,74 @@ use registry::Registry;
 use ring::BarRing;
 use tokio::sync::{broadcast, mpsc};
 use tracing::{info, warn};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "alm_herald=info,alm_ledger=info".into()),
-        )
-        .init();
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "alm_herald=info,alm_ledger=info".into());
+
+    let fmt_layer = tracing_subscriber::fmt::layer();
+
+    // ── OpenTelemetry OTLP tracing (optional) ─────────────────────────────────
+    // Only enabled when OTEL_EXPORTER_OTLP_ENDPOINT is set and non-empty.
+    // If the env var is absent or empty, herald runs without OTLP tracing.
+    let otel_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .ok()
+        .filter(|s| !s.is_empty());
+
+    if let Some(ref endpoint) = otel_endpoint {
+        match init_tracer(endpoint) {
+            Ok(tracer) => {
+                let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
+                tracing_subscriber::registry()
+                    .with(env_filter)
+                    .with(fmt_layer)
+                    .with(otel_layer)
+                    .init();
+                info!(endpoint = %endpoint, "OpenTelemetry OTLP tracing enabled");
+            }
+            Err(e) => {
+                // Fall back to plain logging if OTLP setup fails — don't crash.
+                tracing_subscriber::registry()
+                    .with(env_filter)
+                    .with(fmt_layer)
+                    .init();
+                warn!(err = %e, "OTLP tracer init failed — falling back to plain logging");
+            }
+        }
+    } else {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .init();
+    };
+
+    // Install Prometheus recorder globally. Must happen before any metrics
+    // are emitted. The handle is shared with the HTTP layer for rendering.
+    let prometheus_handle = PrometheusBuilder::new()
+        .install_recorder()
+        .expect("failed to install Prometheus recorder");
+
+    // ── Pyroscope continuous profiling ────────────────────────────────────────
+    // CPU profiling via pprof-rs (100 Hz). Enabled when PYROSCOPE_URL is set.
+    let _pyroscope_agent = if let Ok(url) = std::env::var("PYROSCOPE_URL") {
+        if url.is_empty() {
+            None
+        } else {
+            let app_name = "herald".to_string();
+            let agent = pyroscope::PyroscopeAgent::builder(&url, &app_name)
+                .backend(pprof_backend(PprofConfig::new().sample_rate(100)))
+                .build()
+                .expect("failed to build Pyroscope agent");
+            let running = agent.start().expect("failed to start Pyroscope agent");
+            info!(url = %url, "Pyroscope profiling active");
+            Some(running)
+        }
+    } else {
+        None
+    };
 
     let nats_url = std::env::var("NATS_URL").unwrap_or_else(|_| "nats://localhost:4222".into());
     let (host_url, url_user, url_pass) = split_nats_userinfo(&nats_url);
@@ -34,7 +100,7 @@ async fn main() -> Result<()> {
 
     let tf = std::env::var("HERALD_TF")
         .ok()
-        .and_then(|s| parse_tf(&s))
+        .and_then(|s| s.parse().ok())
         .unwrap_or(Timeframe::M1);
 
     info!(url = %host_url, user = ?nats_user, ?tf, "connecting to NATS");
@@ -91,6 +157,8 @@ async fn main() -> Result<()> {
     ));
 
     // ── Bootstrap from parquet ────────────────────────────────────────────────
+    // Loads historical bars before any observer is subscribed — no signals fire
+    // during bootstrap (registry is not yet wired to the ledger).
     if !startup_symbols.is_empty() {
         // HERALD_WARM_BARS: max M1 bars to load per symbol (1 bar = 1 min).
         // Default 2000 ≈ 33h, sized to match the M1 ledger capacity in
@@ -108,14 +176,20 @@ async fn main() -> Result<()> {
             for sym in &startup_symbols {
                 let (_, raw_sym) = crate::symbols::SymbolConfig::split_prefix(sym);
                 let parquet_sym = raw_sym.replace('-', "");
-                let files = find_parquet_files(&data_dir, &parquet_sym, Some("M1"), None);
-                if files.is_empty() {
+                let all_files = find_parquet_files(&data_dir, &parquet_sym, Some("M1"), None);
+                if all_files.is_empty() {
                     warn!(symbol = %sym, "no M1 parquet files — skipping bootstrap");
                     continue;
                 }
 
                 let now_ms = chrono::Utc::now().timestamp_millis();
                 let from_ms = now_ms - warm_bars * 60_000;
+
+                // Daily parquet files contain ~1440 M1 bars each.
+                // Only read the most recent files needed instead of the full history.
+                // warm_bars / 1440 rounds up + 1 extra for safety (partial current-day file).
+                let files_needed = (warm_bars as usize / 1440) + 2;
+                let files: Vec<_> = all_files.into_iter().rev().take(files_needed).rev().collect();
 
                 match load_bars(&files, &parquet_sym, Some(from_ms), None, false, "") {
                     Ok(mut feed) => {
@@ -137,29 +211,12 @@ async fn main() -> Result<()> {
         }
     }
 
-    // ── REST gap-fill ─────────────────────────────────────────────────────────
-    // For the base TF (M1): close the gap from the last parquet bar to now.
-    // For every other subscribed TF: fetch the last WINDOW_BARS bars directly.
-    // Observers are NOT yet subscribed — no signals fire during gap-fill.
-    if !startup_symbols.is_empty() {
-        info!("starting REST gap-fill for {} symbol(s)", startup_symbols.len());
-        for sym in &startup_symbols {
-            let last_ts = ledger.with_state(sym, tf, |s| s.last_ts).flatten();
-            // base_from_ms: one bar after the last parquet bar, or None if no parquet.
-            let base_from_ms = last_ts.map(|ts| ts + tf.duration_ms());
-
-            let (exchange_str, raw_sym) = crate::symbols::SymbolConfig::split_prefix(sym);
-            let exchange = if exchange_str == "okx" { Exchange::Okx } else { Exchange::Binance };
-            gap_fill_symbol(&ledger, tf, sym, raw_sym, exchange, base_from_ms, feed::SUBSCRIBE_TFS).await;
-        }
-    }
-
     // ── ResampleManager ───────────────────────────────────────────────────────
     //
     // Drives base→HTF aggregation for hands that need TFs the WS feed doesn't
     // publish directly. Subscribed BEFORE the registry so HTF advances appear
     // in the observer fan-out by the time hands react to them.
-    let resample_mgr = alm_herald::resample::ResampleManager::new(Arc::downgrade(&ledger));
+    let resample_mgr = alm_herald::helper::resample::ResampleManager::new(Arc::downgrade(&ledger));
     ledger.subscribe(resample_mgr.clone() as Arc<dyn LedgerObserver>);
 
     let (sig_tx, sig_rx) = mpsc::unbounded_channel();
@@ -182,6 +239,74 @@ async fn main() -> Result<()> {
 
     info!("ledger + registry + watch_evaluator wired");
 
+    // ── Store backend ─────────────────────────────────────────────────────────
+    let db_url = std::env::var("HERALD_DATABASE_URL")
+        .unwrap_or_else(|_| "postgres://mallow:mallow-dev@localhost:5432/herald?sslmode=disable".into());
+    info!("connecting to PostgreSQL: {}", db_url);
+    let pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(10)
+        .connect(&db_url)
+        .await?;
+    http::strategy::migrate::run(&pool).await?;
+    let store = http::StoreBackend::postgres(pool);
+
+    // ── SSE broadcast channels ────────────────────────────────────────────────
+    let (bar_bcast_tx, _) = broadcast::channel::<alm_core::Bar>(256);
+    let (sig_bcast_tx, _) = broadcast::channel::<std::sync::Arc<registry::HandSignal>>(64);
+
+    // ── WS latency tracker — shared between Handler and HTTP ─────────────────
+    let ws_latency = std::sync::Arc::new(alm_herald::WsLatencyTracker::new());
+
+    // ── HTTP server ───────────────────────────────────────────────────────────
+    // Bind and start serving immediately so the container responds to health
+    // checks during warm-up.  The `/health` endpoint returns 503 until `ready`
+    // is set to true after REST gap-fill completes.
+    let http_addr = std::env::var("HERALD_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:8090".into());
+    let max_concurrent_bt: usize = std::env::var("HERALD_MAX_BACKTESTS")
+        .ok().and_then(|s| s.parse().ok()).unwrap_or(4);
+    info!(data_dir = %data_dir.display(), max_concurrent_bt, "configuring HTTP");
+
+    let (http_state, ready) = http::HttpState::new(
+        ledger.clone(), tf, data_dir, max_concurrent_bt, store,
+        bar_bcast_tx.clone(), sig_bcast_tx.clone(),
+        watch_eval, watch_store,
+        Arc::clone(&ws_latency),
+        prometheus_handle,
+    );
+    http::watch::restore_from_store(&http_state).await;
+
+    let router = http::router(http_state);
+    let listener = tokio::net::TcpListener::bind(&http_addr).await?;
+    info!(addr = %http_addr, "herald HTTP listening (ready=false, /health → 503 until gap-fill done)");
+    let http_task = tokio::spawn(async move {
+        if let Err(e) = axum::serve(listener, router).await {
+            warn!(error = %e, "herald HTTP server exited");
+        }
+    });
+
+    // ── REST gap-fill ─────────────────────────────────────────────────────────
+    // For the base TF (M1): close the gap from the last parquet bar to now.
+    // For every other subscribed TF: fetch the last WINDOW_BARS bars directly.
+    // Runs AFTER HTTP is bound so the container is reachable during warm-up.
+    // Observers (registry, watch_eval) are subscribed — gap-fill bars will flow
+    // through them, but no hands are registered yet so no signals fire.
+    if !startup_symbols.is_empty() {
+        info!("starting REST gap-fill for {} symbol(s)", startup_symbols.len());
+        for sym in &startup_symbols {
+            let last_ts = ledger.with_state(sym, tf, |s| s.last_ts).flatten();
+            // base_from_ms: one bar after the last parquet bar, or None if no parquet.
+            let base_from_ms = last_ts.map(|ts| ts + tf.duration_ms());
+
+            let (exchange_str, raw_sym) = crate::symbols::SymbolConfig::split_prefix(sym);
+            let exchange = if exchange_str == "okx" { Exchange::Okx } else { Exchange::Binance };
+            gap_fill_symbol(&ledger, tf, sym, raw_sym, exchange, base_from_ms, feed::SUBSCRIBE_TFS).await;
+        }
+    }
+
+    // Mark service ready — /health now returns 200 OK.
+    ready.store(true, std::sync::atomic::Ordering::Relaxed);
+    info!("gap-fill complete — herald ready (ready=true, /health → 200 OK)");
+
     // ── 24h ring buffer ───────────────────────────────────────────────────────
     let ring = BarRing::new();
 
@@ -201,46 +326,9 @@ async fn main() -> Result<()> {
     }
     drop(bar_tx);
 
-    // ── Store backend ─────────────────────────────────────────────────────────
-    let db_url = std::env::var("HERALD_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://mallow:mallow-dev@localhost:5432/herald?sslmode=disable".into());
-    info!("connecting to PostgreSQL: {}", db_url);
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(10)
-        .connect(&db_url)
-        .await?;
-    http::strategy::migrate::run(&pool).await?;
-    let store = http::StoreBackend::postgres(pool);
-
-    // ── SSE broadcast channels ────────────────────────────────────────────────
-    let (bar_bcast_tx, _) = broadcast::channel::<alm_core::Bar>(256);
-    let (sig_bcast_tx, _) = broadcast::channel::<std::sync::Arc<registry::HandSignal>>(64);
-
-    // ── HTTP server ───────────────────────────────────────────────────────────
-    let http_addr = std::env::var("HERALD_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:8090".into());
-    let max_concurrent_bt: usize = std::env::var("HERALD_MAX_BACKTESTS")
-        .ok().and_then(|s| s.parse().ok()).unwrap_or(4);
-    info!(data_dir = %data_dir.display(), max_concurrent_bt, "configuring HTTP");
-
-    let http_state = http::HttpState::new(
-        ledger.clone(), tf, data_dir, max_concurrent_bt, store,
-        bar_bcast_tx.clone(), sig_bcast_tx.clone(),
-        watch_eval, watch_store,
-    );
-    http::watch::restore_from_store(&http_state).await;
-
-    let router = http::router(http_state);
-    let listener = tokio::net::TcpListener::bind(&http_addr).await?;
-    info!(addr = %http_addr, "herald HTTP listening");
-    let http_task = tokio::spawn(async move {
-        if let Err(e) = axum::serve(listener, router).await {
-            warn!(error = %e, "herald HTTP server exited");
-        }
-    });
-
     // ── Main loop ─────────────────────────────────────────────────────────────
     let handler = Handler::new(client, ledger, registry, ring, tf, bar_rx, sig_rx,
-        bar_bcast_tx, sig_bcast_tx);
+        bar_bcast_tx, sig_bcast_tx, ws_latency);
     let result = handler.run().await;
     http_task.abort();
     result?;
@@ -275,18 +363,36 @@ fn split_nats_userinfo(url: &str) -> (String, Option<String>, Option<String>) {
     (host_url, user, pass)
 }
 
-fn parse_tf(s: &str) -> Option<Timeframe> {
-    match s.to_ascii_uppercase().as_str() {
-        "M1"  => Some(Timeframe::M1),
-        "M5"  => Some(Timeframe::M5),
-        "M15" => Some(Timeframe::M15),
-        "M30" => Some(Timeframe::M30),
-        "H1"  => Some(Timeframe::H1),
-        "H4"  => Some(Timeframe::H4),
-        "D1"  => Some(Timeframe::D1),
-        "W1"  => Some(Timeframe::W1),
-        _ => None,
-    }
+
+// ── OpenTelemetry OTLP initialiser ────────────────────────────────────────────
+
+fn init_tracer(endpoint: &str) -> Result<opentelemetry_sdk::trace::Tracer, opentelemetry::trace::TraceError> {
+    use opentelemetry::trace::TracerProvider as _;
+    use opentelemetry_otlp::WithExportConfig;
+    use opentelemetry_sdk::trace::{BatchSpanProcessor, TracerProvider};
+
+    let exporter = opentelemetry_otlp::SpanExporter::builder()
+        .with_tonic()
+        .with_endpoint(endpoint)
+        .build()?;
+
+    let processor = BatchSpanProcessor::builder(exporter, opentelemetry_sdk::runtime::Tokio).build();
+
+    let resource = opentelemetry_sdk::Resource::new(vec![
+        opentelemetry::KeyValue::new("service.name", "herald"),
+    ]);
+
+    let provider = TracerProvider::builder()
+        .with_span_processor(processor)
+        .with_resource(resource)
+        .build();
+
+    let tracer = provider.tracer("herald");
+
+    // Set this provider as the global tracer provider so that spans are exported.
+    opentelemetry::global::set_tracer_provider(provider);
+
+    Ok(tracer)
 }
 
 /// Default live strategies seeded into every unregistered symbol.

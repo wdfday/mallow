@@ -34,6 +34,7 @@ use alm_engine::{
     backtest,
     types::{BacktestRequest, BacktestResponse, MtfBacktestRequest, ScriptBacktestRequest},
 };
+use metrics::{gauge, histogram};
 use super::types::{ok, err, err_code};
 use alm_strategy::catalog::STRATEGY_KEYS;
 use alm_strategy::MTF_STRATEGY_KEYS;
@@ -235,8 +236,14 @@ pub async fn run_backtest_mtf(
         "HTTP MTF backtest request",
     );
     let data_dir = Arc::clone(&state.data_dir);
-    match tokio::task::spawn_blocking(move || backtest::run_mtf(req, &data_dir)).await {
-        Ok(Ok(report)) => ok(report),
+    let t0 = std::time::Instant::now();
+    let result = tokio::task::spawn_blocking(move || backtest::run_mtf(req, &data_dir)).await;
+    let elapsed_ms = t0.elapsed().as_millis() as f64;
+    match result {
+        Ok(Ok(report)) => {
+            histogram!("herald_backtest_duration_ms").record(elapsed_ms);
+            ok(report)
+        }
         Ok(Err(e)) => {
             warn!(error = %e, "MTF backtest failed");
             err(StatusCode::BAD_REQUEST, e.to_string())
@@ -250,8 +257,22 @@ pub async fn run_backtest_mtf(
 
 // ── Core helpers ─────────────────────────────────────────────────────────────
 
-fn try_acquire(state: &HttpState) -> Option<tokio::sync::OwnedSemaphorePermit> {
-    Arc::clone(&state.backtest_semaphore).try_acquire_owned().ok()
+struct BacktestPermit(#[allow(dead_code)] tokio::sync::OwnedSemaphorePermit);
+
+impl Drop for BacktestPermit {
+    fn drop(&mut self) {
+        gauge!("herald_backtest_inflight").decrement(1.0);
+    }
+}
+
+fn try_acquire(state: &HttpState) -> Option<BacktestPermit> {
+    Arc::clone(&state.backtest_semaphore)
+        .try_acquire_owned()
+        .ok()
+        .map(|p| {
+            gauge!("herald_backtest_inflight").increment(1.0);
+            BacktestPermit(p)
+        })
 }
 
 /// Run the engine on a blocking thread. Returns `Ok(report)` or `Err(error_response)`.
@@ -259,8 +280,14 @@ pub(super) async fn run_blocking(
     data_dir: Arc<std::path::PathBuf>,
     req: BacktestRequest,
 ) -> Result<BacktestResponse, Response> {
-    match tokio::task::spawn_blocking(move || backtest::run(req, &data_dir)).await {
-        Ok(Ok(resp)) => Ok(resp),
+    let t0 = std::time::Instant::now();
+    let result = tokio::task::spawn_blocking(move || backtest::run(req, &data_dir)).await;
+    let elapsed_ms = t0.elapsed().as_millis() as f64;
+    match result {
+        Ok(Ok(resp)) => {
+            histogram!("herald_backtest_duration_ms").record(elapsed_ms);
+            Ok(resp)
+        }
         Ok(Err(e)) => {
             warn!(error = %e, "backtest failed");
             Err(err(StatusCode::BAD_REQUEST, e.to_string()))

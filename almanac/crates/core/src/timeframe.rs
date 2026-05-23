@@ -1,4 +1,5 @@
 use std::fmt;
+use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
@@ -88,6 +89,30 @@ impl Timeframe {
             .copied()
             .min_by_key(|tf| (tf.duration_ms() - ms).abs())
             .unwrap_or(Timeframe::M1)
+    }
+}
+
+impl FromStr for Timeframe {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_ascii_uppercase().as_str() {
+            "M1"  => Ok(Timeframe::M1),
+            "M3"  => Ok(Timeframe::M3),
+            "M5"  => Ok(Timeframe::M5),
+            "M10" => Ok(Timeframe::M10),
+            "M15" => Ok(Timeframe::M15),
+            "M30" => Ok(Timeframe::M30),
+            "H1"  => Ok(Timeframe::H1),
+            "H2"  => Ok(Timeframe::H2),
+            "H4"  => Ok(Timeframe::H4),
+            "H6"  => Ok(Timeframe::H6),
+            "H12" => Ok(Timeframe::H12),
+            "D1"  => Ok(Timeframe::D1),
+            "W1"  => Ok(Timeframe::W1),
+            "MN"  => Ok(Timeframe::MN),
+            _     => Err(format!("unknown timeframe: {s}")),
+        }
     }
 }
 

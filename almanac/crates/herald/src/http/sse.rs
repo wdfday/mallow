@@ -50,6 +50,23 @@ use super::data::shared::resolve_tf;
 use super::types::{BarStreamEvent, IndicatorConfig, IndicatorStatus, StreamRequest, StreamStatus};
 use super::HttpState;
 
+/// RAII guard: increments `herald_sse_streams_active{kind}` on construction,
+/// decrements on drop (when the client disconnects and the stream is dropped).
+struct SseStreamGuard(&'static str);
+
+impl SseStreamGuard {
+    fn new(kind: &'static str) -> Self {
+        metrics::gauge!("herald_sse_streams_active", "kind" => kind).increment(1.0);
+        Self(kind)
+    }
+}
+
+impl Drop for SseStreamGuard {
+    fn drop(&mut self) {
+        metrics::gauge!("herald_sse_streams_active", "kind" => self.0).decrement(1.0);
+    }
+}
+
 pub fn routes() -> Router<HttpState> {
     Router::new()
         .route("/api/v1/stream/signals", get(stream_signals))
@@ -129,7 +146,9 @@ pub async fn stream_bars(
     let bar_buf_depth = evaluator.as_ref().map(|e| e.bar_buf_depth()).unwrap_or(2);
     let mut bar_history: VecDeque<Bar> = VecDeque::with_capacity(bar_buf_depth);
 
+    let _guard = SseStreamGuard::new("bars");
     let bar_stream = TokioStreamExt::filter_map(BroadcastStream::new(rx), move |res| {
+        let _ = &_guard;   // capture guard — dropped when stream is dropped
         let _ = &handles;
         match res {
             Ok(bar) if bar.symbol.to_uppercase() == sym => {
@@ -198,12 +217,16 @@ pub async fn stream_signals(
     State(state): State<HttpState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let rx = state.sig_bcast.subscribe();
-    let stream = TokioStreamExt::filter_map(BroadcastStream::new(rx), |res| match res {
-        Ok(batch) => {
-            let data = serde_json::to_string(&*batch).unwrap_or_default();
-            Some(Ok(Event::default().event("signal").data(data)))
+    let _guard = SseStreamGuard::new("signals");
+    let stream = TokioStreamExt::filter_map(BroadcastStream::new(rx), move |res| {
+        let _ = &_guard;   // capture guard — dropped when stream is dropped
+        match res {
+            Ok(batch) => {
+                let data = serde_json::to_string(&*batch).unwrap_or_default();
+                Some(Ok(Event::default().event("signal").data(data)))
+            }
+            _ => None,
         }
-        _ => None,
     });
     Sse::new(stream).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("ping"))
 }

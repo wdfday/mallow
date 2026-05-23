@@ -7,7 +7,6 @@ use super::super::types::{BarRecord, ErrorResponse};
 
 pub const DEFAULT_LIMIT: usize = 500;
 pub const MAX_LIMIT: usize = 5_000;
-pub const MAX_INDICATORS_PER_REQUEST: usize = 16;
 
 /// Paging result over a slice of bars sorted by timestamp ascending.
 pub struct Page {
@@ -87,22 +86,8 @@ pub fn clamp_limit(raw: Option<usize>, default: usize) -> usize {
 
 pub fn resolve_tf(raw: &Option<String>, default: Timeframe) -> Timeframe {
     raw.as_deref()
-        .and_then(parse_tf)
+        .and_then(|s| s.parse().ok())
         .unwrap_or(default)
-}
-
-pub fn parse_tf(s: &str) -> Option<Timeframe> {
-    match s.to_ascii_uppercase().as_str() {
-        "M1"  => Some(Timeframe::M1),
-        "M5"  => Some(Timeframe::M5),
-        "M15" => Some(Timeframe::M15),
-        "M30" => Some(Timeframe::M30),
-        "H1"  => Some(Timeframe::H1),
-        "H4"  => Some(Timeframe::H4),
-        "D1"  => Some(Timeframe::D1),
-        "W1"  => Some(Timeframe::W1),
-        _ => None,
-    }
 }
 
 pub fn err(status: StatusCode, msg: impl Into<String>) -> Response {

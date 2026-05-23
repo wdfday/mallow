@@ -29,7 +29,7 @@ use parking_lot::Mutex;
 use tokio::sync::mpsc;
 use tracing::{debug, info, trace, warn};
 
-use crate::resample::ResampleManager;
+use crate::helper::ResampleManager;
 
 // ── Registry ──────────────────────────────────────────────────────────────────
 
@@ -178,6 +178,8 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
         for (src, tgt) in replaced_subs {
             self.resample.release(&symbol, src, tgt);
         }
+        metrics::counter!("herald_registry_hand_events_total", "event" => "registered").increment(1);
+        metrics::gauge!("herald_registry_hands").set(self.hand_count() as f64);
         Ok(())
     }
 
@@ -214,6 +216,8 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
                 self.resample.release(&sym, src, tgt);
             }
         }
+        metrics::counter!("herald_registry_hand_events_total", "event" => "deregistered").increment(1);
+        metrics::gauge!("herald_registry_hands").set(self.hand_count() as f64);
     }
 
     /// Set global fallback scripts (legacy `engine.configure` compat).
@@ -325,9 +329,18 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
             }
         }
 
-        let eval_start = std::time::Instant::now();
-        let emitted = {
+        let span = tracing::info_span!(
+            "registry.evaluate",
+            symbol = %symbol,
+            tf = %tf.to_string(),
+        );
+        let _enter = span.enter();
+
+        let lock_start = std::time::Instant::now();
+        let (emitted, lock_wait_us, eval_us) = {
             let mut w = self.inner.lock();
+            let lock_wait_us = lock_start.elapsed().as_micros();
+
             match w.groups.get_mut(symbol) {
                 Some(g) => {
                     let n_bots = g.count_for_tf(tf);
@@ -335,18 +348,32 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
                         return;
                     }
                     debug!(%symbol, ?tf, bar_ts = outcome.ts, n_bots, "evaluating bots");
-                    g.evaluate_at(tf, &bar)
+                    let eval_start = std::time::Instant::now();
+                    let result = g.evaluate_at(tf, &bar);
+                    let eval_us = eval_start.elapsed().as_micros();
+                    (result, lock_wait_us, eval_us)
                 }
                 None => return,
             }
         };
-        let eval_us = eval_start.elapsed().as_micros();
 
         debug!(
             %symbol, ?tf, bar_ts = outcome.ts,
-            n_emitted = emitted.len(), eval_us,
+            n_emitted = emitted.len(), lock_wait_us, eval_us,
             "evaluation complete"
         );
+
+        metrics::histogram!(
+            "herald_registry_lock_wait_us",
+            "symbol" => symbol.to_string(),
+            "tf"     => tf.to_string(),
+        ).record(lock_wait_us as f64);
+
+        metrics::histogram!(
+            "herald_registry_eval_us",
+            "symbol" => symbol.to_string(),
+            "tf"     => tf.to_string(),
+        ).record(eval_us as f64);
 
         if emitted.is_empty() {
             return;
@@ -354,8 +381,19 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
 
         if is_stale {
             debug!(%symbol, age_ms, freshness_gate_ms = gate_ms, "stale bar — suppressing signals");
+            metrics::counter!(
+                "herald_registry_signals_total",
+                "result" => "stale",
+                "symbol" => symbol.to_string(),
+            ).increment(emitted.len() as u64);
             return;
         }
+
+        metrics::counter!(
+            "herald_registry_signals_total",
+            "result" => "emitted",
+            "symbol" => symbol.to_string(),
+        ).increment(emitted.len() as u64);
 
         for (hand_id, helm_id, signal) in emitted {
             debug!(

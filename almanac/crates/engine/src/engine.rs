@@ -75,6 +75,10 @@ pub struct Engine<S: Strategy, R: RiskManager, B: EventBus> {
     last_regime:         Option<RegimeState>,
     /// Timestamped regime transitions over the run: `(timestamp_ms, label)`.
     regime_changes:      Vec<(i64, String)>,
+    /// Set at run() start; used by dispatch() for metric labels.
+    metrics_symbol:   String,
+    /// Set at run() start; used by dispatch() for metric labels.
+    metrics_strategy: String,
 }
 
 // ── Constructors ─────────────────────────────────────────────────────────────
@@ -108,6 +112,8 @@ impl<S: Strategy, R: RiskManager> Engine<S, R, SyncBus> {
             regime_at_entry: HashMap::new(),
             last_regime: None,
             regime_changes: Vec::new(),
+            metrics_symbol:   String::new(),
+            metrics_strategy: String::new(),
         }
     }
 }
@@ -164,9 +170,15 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
         let initial_capital = self.portfolio.cash;
         info!(symbol = %symbol, strategy = %strategy_name, capital = initial_capital, "backtest start");
 
+        self.metrics_symbol   = symbol.clone();
+        self.metrics_strategy = strategy_name.clone();
+
         let mut bar_count: usize = 0;
         while let Some(bar) = feed.next() {
             bar_count += 1;
+            metrics::counter!("alm_engine_bars_total",
+                "strategy" => strategy_name.clone()
+            ).increment(1);
             // Flush next-bar pending signals: execute at this bar's open.
             if self.next_bar && !self.pending_signals.is_empty() {
                 let pending = std::mem::take(&mut self.pending_signals);
@@ -231,6 +243,25 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
             risk_free_annual,
         );
         report.regime_summary = self.build_regime_summary();
+        // Record aggregate run stats.
+        {
+            let strat = strategy_name.clone();
+            let total = report.total_trades as u64;
+            let wins  = (report.win_rate_pct / 100.0 * report.total_trades as f64).round() as u64;
+            let losses = total.saturating_sub(wins);
+            metrics::counter!("alm_engine_trades_total",
+                "strategy" => strat.clone(), "result" => "all"
+            ).increment(total);
+            metrics::counter!("alm_engine_trades_total",
+                "strategy" => strat.clone(), "result" => "win"
+            ).increment(wins);
+            metrics::counter!("alm_engine_trades_total",
+                "strategy" => strat.clone(), "result" => "loss"
+            ).increment(losses);
+            metrics::histogram!("alm_engine_run_bars",
+                "strategy" => strat
+            ).record(bar_count as f64);
+        }
         info!(
             symbol = %symbol,
             strategy = %strategy_name,
@@ -469,7 +500,11 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                 }
 
                 // ── Indicator-based signals (bar-by-bar) ──────────────────────
+                let eval_start = std::time::Instant::now();
                 let signals = self.strategy.on_bar(strategy_bar);
+                metrics::histogram!("alm_engine_strategy_eval_us",
+                    "strategy" => self.metrics_strategy.clone()
+                ).record(eval_start.elapsed().as_micros() as f64);
 
                 // Snapshot the regime state produced by the strategy on this bar
                 // (e.g. from a `regime { ... }` block). Record transitions on label
@@ -485,6 +520,10 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                 }
 
                 for signal in signals {
+                    metrics::counter!("alm_engine_signals_total",
+                        "strategy"  => self.metrics_strategy.clone(),
+                        "direction" => format!("{:?}", signal.direction),
+                    ).increment(1);
                     self.bus
                         .send(Event::Signal(alm_core::event::SignalEvent { signal }));
                 }
@@ -525,6 +564,10 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                                     side,
                                     qty,
                                 );
+                                metrics::counter!("alm_engine_orders_total",
+                                    "strategy" => self.metrics_strategy.clone(),
+                                    "side"     => "sell",
+                                ).increment(1);
                                 self.bus
                                     .send(Event::Order(alm_core::event::OrderEvent { order }));
                                 debug!(symbol = %signal.symbol, qty, ?side, strength = signal.strength, "close signal → order");
@@ -552,6 +595,10 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                                     Side::Buy,
                                     qty,
                                 );
+                                metrics::counter!("alm_engine_orders_total",
+                                    "strategy" => self.metrics_strategy.clone(),
+                                    "side"     => "buy",
+                                ).increment(1);
                                 self.bus
                                     .send(Event::Order(alm_core::event::OrderEvent { order }));
                                 debug!(symbol = %signal.symbol, qty, strength = signal.strength, "long signal → buy order");
@@ -579,6 +626,10 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                                     Side::Sell,
                                     qty,
                                 );
+                                metrics::counter!("alm_engine_orders_total",
+                                    "strategy" => self.metrics_strategy.clone(),
+                                    "side"     => "sell",
+                                ).increment(1);
                                 self.bus
                                     .send(Event::Order(alm_core::event::OrderEvent { order }));
                                 debug!(symbol = %signal.symbol, qty, strength = signal.strength, "short signal → sell order");
@@ -593,6 +644,9 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
             }
 
             Event::Fill(ref fill_event) => {
+                metrics::counter!("alm_engine_fills_total",
+                    "strategy" => self.metrics_strategy.clone()
+                ).increment(1);
                 let fill = &fill_event.fill;
                 debug!(
                     symbol = %fill.symbol, side = ?fill.side,

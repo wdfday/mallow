@@ -21,7 +21,7 @@ pub mod wma;
 
 pub use adx::{Adx, AdxValue};
 pub use alma::Alma;
-pub use aroon::{Aroon, AroonValue};
+pub use aroon::{Aroon, AroonOscillator, AroonValue};
 pub use dema::Dema;
 pub use dmi::{Dmi, DmiValue};
 pub use ema::Ema;

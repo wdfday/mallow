@@ -40,7 +40,7 @@ use crate::Rsi;
 /// Dùng kết hợp với ADX hoặc CHOP để filter.
 ///
 /// # Warmup
-/// Cần `2 × rsi_period + smooth_d` bar (RSI warm up + rolling RSI window + D smooth).
+/// Cần `2 × rsi_period + smooth_k + smooth_d` bar (RSI warm up + rolling RSI window + K smooth + D smooth).
 #[derive(Debug, Clone)]
 pub struct StochasticRsi {
     rsi_period: usize,
@@ -48,11 +48,16 @@ pub struct StochasticRsi {
     rsi: Rsi,
     /// Rolling window of RSI values (length = rsi_period)
     rsi_window: VecDeque<f64>,
+    /// SMA(3) applied to raw stoch-K before outputting K (standard smooth_k=3)
+    raw_k_window: VecDeque<f64>,
+    raw_k_sum: f64,
     /// Rolling window for D-line SMA
     k_window: VecDeque<f64>,
     k_sum: f64,
     value: Option<StochRsiValue>,
 }
+
+const SMOOTH_K: usize = 3;
 
 /// Stochastic RSI output: k and d lines.
 #[derive(Debug, Clone, Copy)]
@@ -70,6 +75,8 @@ impl StochasticRsi {
             smooth_d,
             rsi: Rsi::new(rsi_period),
             rsi_window: VecDeque::with_capacity(rsi_period + 1),
+            raw_k_window: VecDeque::with_capacity(SMOOTH_K + 1),
+            raw_k_sum: 0.0,
             k_window: VecDeque::with_capacity(smooth_d + 1),
             k_sum: 0.0,
             value: None,
@@ -104,11 +111,22 @@ impl StochasticRsi {
         let min_rsi = self.rsi_window.iter().cloned().fold(f64::MAX, f64::min);
         let max_rsi = self.rsi_window.iter().cloned().fold(f64::MIN, f64::max);
 
-        let k = if (max_rsi - min_rsi).abs() < f64::EPSILON {
+        let raw_k = if (max_rsi - min_rsi).abs() < f64::EPSILON {
             0.0
         } else {
             ((rsi_val - min_rsi) / (max_rsi - min_rsi)).clamp(0.0, 1.0)
         };
+
+        // Apply smooth_k SMA to raw stochastic K
+        self.raw_k_window.push_back(raw_k);
+        self.raw_k_sum += raw_k;
+        if self.raw_k_window.len() > SMOOTH_K {
+            self.raw_k_sum -= self.raw_k_window.pop_front().unwrap();
+        }
+        if self.raw_k_window.len() < SMOOTH_K {
+            return None;
+        }
+        let k = self.raw_k_sum / SMOOTH_K as f64;
 
         // SMA for D line
         self.k_window.push_back(k);
@@ -137,6 +155,8 @@ impl StochasticRsi {
     pub fn reset(&mut self) {
         self.rsi = Rsi::new(self.rsi_period);
         self.rsi_window.clear();
+        self.raw_k_window.clear();
+        self.raw_k_sum = 0.0;
         self.k_window.clear();
         self.k_sum = 0.0;
         self.value = None;

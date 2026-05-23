@@ -35,8 +35,6 @@ pub struct AroonValue {
     pub up: f64,
     /// Aroon Down: 100 = low vừa đạt trong bar hiện tại, 0 = low cách đây period bar
     pub down: f64,
-    /// Aroon Oscillator = Aroon Up − Aroon Down (−100 đến +100)
-    pub oscillator: f64,
 }
 
 /// Aroon indicator — đo thời gian kể từ highest high / lowest low trong N bar.
@@ -93,12 +91,41 @@ impl Aroon {
         let up = ((self.period - bars_since_high) as f64 / self.period as f64) * 100.0;
         let down = ((self.period - bars_since_low) as f64 / self.period as f64) * 100.0;
 
-        Some(AroonValue { up, down, oscillator: up - down })
+        Some(AroonValue { up, down })
     }
 
     pub fn reset(&mut self) {
         self.highs.clear();
         self.lows.clear();
+    }
+}
+
+// ── AroonOscillator ───────────────────────────────────────────────────────────
+
+/// Aroon Oscillator — emits only `Aroon Up − Aroon Down` as a single scalar.
+///
+/// Range: −100 to +100. Positive = uptrend dominates; negative = downtrend.
+/// Use this when you only need the oscillator value and not the Up/Down components.
+#[derive(Debug, Clone)]
+pub struct AroonOscillator {
+    inner: Aroon,
+}
+
+impl AroonOscillator {
+    pub fn new(period: usize) -> Self {
+        Self { inner: Aroon::new(period) }
+    }
+
+    pub fn description() -> &'static str {
+        "Aroon Oscillator — Aroon Up minus Aroon Down. Positive = uptrend, negative = downtrend. Range: −100 to +100."
+    }
+
+    pub fn update(&mut self, high: f64, low: f64) -> Option<f64> {
+        self.inner.update(high, low).map(|v| v.up - v.down)
+    }
+
+    pub fn reset(&mut self) {
+        self.inner.reset();
     }
 }
 
@@ -115,11 +142,11 @@ mod tests {
     }
 
     #[test]
-    fn test_aroon_oscillator_range() {
-        let mut a = Aroon::new(5);
+    fn test_aroon_oscillator_via_separate_indicator() {
+        let mut a = AroonOscillator::new(5);
         let mut last = None;
         for i in 0..10 { last = a.update(i as f64, 10.0 - i as f64); }
         let v = last.unwrap();
-        assert!(v.oscillator >= -100.0 && v.oscillator <= 100.0);
+        assert!(v >= -100.0 && v <= 100.0);
     }
 }

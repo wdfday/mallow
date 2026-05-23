@@ -12,8 +12,10 @@ pub struct IchimokuValue {
     pub senkou_b: f64,
     /// Chikou Span: current close — plotted `kijun` periods back (returned as-is).
     pub chikou: f64,
-    /// `true` when price is above the cloud (senkou_a and senkou_b).
+    /// `true` when price is above the cloud top (both senkou_a and senkou_b, delayed by kijun).
     pub above_cloud: bool,
+    /// `true` when price is below the cloud bottom (both senkou_a and senkou_b, delayed by kijun).
+    pub below_cloud: bool,
 }
 
 /// Ichimoku Kinko Hyo — hệ thống phân tích toàn diện trong một indicator.
@@ -66,6 +68,9 @@ pub struct Ichimoku {
     senkou_b_period: usize,
     highs: VecDeque<f64>,
     lows: VecDeque<f64>,
+    /// Delay buffer: senkou_a/b values are plotted kijun bars ahead in charts,
+    /// so above_cloud must compare current close against cloud from kijun bars ago.
+    senkou_delay: VecDeque<(f64, f64)>,
 }
 
 impl Ichimoku {
@@ -76,6 +81,7 @@ impl Ichimoku {
             senkou_b_period,
             highs: VecDeque::new(),
             lows: VecDeque::new(),
+            senkou_delay: VecDeque::new(),
         }
     }
 
@@ -102,10 +108,19 @@ impl Ichimoku {
         let senkou_a = (tenkan + kijun) / 2.0;
         let senkou_b = midpoint(&self.highs, &self.lows, self.senkou_b_period)?;
 
-        let cloud_top = senkou_a.max(senkou_b);
-        let cloud_bottom = senkou_a.min(senkou_b);
-        let above_cloud = close > cloud_top;
-        let _ = cloud_bottom;
+        // Cloud is plotted kijun bars ahead; compare close against cloud from kijun bars ago.
+        self.senkou_delay.push_back((senkou_a, senkou_b));
+        if self.senkou_delay.len() > self.kijun + 1 {
+            self.senkou_delay.pop_front();
+        }
+        let (above_cloud, below_cloud) = if self.senkou_delay.len() == self.kijun + 1 {
+            let (da, db) = *self.senkou_delay.front().unwrap();
+            let cloud_top = da.max(db);
+            let cloud_bot = da.min(db);
+            (close > cloud_top, close < cloud_bot)
+        } else {
+            (false, false)
+        };
 
         Some(IchimokuValue {
             tenkan,
@@ -114,12 +129,14 @@ impl Ichimoku {
             senkou_b,
             chikou: close,
             above_cloud,
+            below_cloud,
         })
     }
 
     pub fn reset(&mut self) {
         self.highs.clear();
         self.lows.clear();
+        self.senkou_delay.clear();
     }
 }
 

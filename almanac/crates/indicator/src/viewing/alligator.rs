@@ -39,6 +39,9 @@ pub struct Alligator {
     jaw: Wma,
     teeth: Wma,
     lips: Wma,
+    jaw_period: usize,
+    teeth_period: usize,
+    lips_period: usize,
 }
 
 impl Alligator {
@@ -48,6 +51,9 @@ impl Alligator {
             jaw: Wma::new(jaw_period),
             teeth: Wma::new(teeth_period),
             lips: Wma::new(lips_period),
+            jaw_period,
+            teeth_period,
+            lips_period,
         }
     }
 
@@ -57,17 +63,22 @@ impl Alligator {
 
     pub fn update(&mut self, high: f64, low: f64) -> Option<AlligatorValue> {
         let median = (high + low) / 2.0;
-        let jaw = self.jaw.update(median)?;
-        let teeth = self.teeth.update(median)?;
-        let lips = self.lips.update(median)?;
+        // Feed all three WMAs independently — avoids cascade short-circuit where lips/teeth
+        // would miss early bars while jaw is still warming up.
+        let jaw_v   = self.jaw.update(median);
+        let teeth_v = self.teeth.update(median);
+        let lips_v  = self.lips.update(median);
+        let (Some(jaw), Some(teeth), Some(lips)) = (jaw_v, teeth_v, lips_v) else {
+            return None;
+        };
         let bullish = lips > teeth && teeth > jaw;
         Some(AlligatorValue { jaw, teeth, lips, bullish })
     }
 
     pub fn reset(&mut self) {
-        self.jaw.reset();
-        self.teeth.reset();
-        self.lips.reset();
+        self.jaw = Wma::new(self.jaw_period);
+        self.teeth = Wma::new(self.teeth_period);
+        self.lips = Wma::new(self.lips_period);
     }
 }
 

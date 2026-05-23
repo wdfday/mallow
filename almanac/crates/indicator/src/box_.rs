@@ -18,7 +18,7 @@ use anyhow::{bail, Result};
 use alm_core::Bar;
 use crate::{
     // Trend / MA
-    Adx, Alligator, Alma, Aroon, Dema, Dmi, Ema, Gmma, Hma, Kama, KalmanFilter, Kdj, Lsma, Macd,
+    Adx, Alligator, Alma, Aroon, AroonOscillator, Dema, Dmi, Ema, Gmma, Hma, Kama, KalmanFilter, Kdj, Lsma, Macd,
     McGinleyDynamic, Sma, Smma, Tema, Trix, Vortex, Vwma, Wma,
     // Momentum
     AwesomeOscillator, Bop, BullBearPower, Cci, Cmo, ConnorsRsi, Coppock, Dpo, Fisher, Kst,
@@ -55,6 +55,7 @@ pub enum IndicatorBox {
     Adx(Adx),
     Dmi(Dmi),
     Aroon(Aroon),
+    AroonOsc(AroonOscillator),
     Vortex(Vortex),
     Alligator(Alligator),
     Gmma(Gmma),
@@ -162,6 +163,7 @@ impl IndicatorBox {
             "adx"       => Self::Adx(Adx::new(get_usize(cfg, "period", 14))),
             "dmi"       => Self::Dmi(Dmi::new(get_usize(cfg, "period", 14))),
             "aroon"     => Self::Aroon(Aroon::new(get_usize(cfg, "period", 25))),
+            "aroon_osc" => Self::AroonOsc(AroonOscillator::new(get_usize(cfg, "period", 25))),
             "vortex"    => Self::Vortex(Vortex::new(get_usize(cfg, "period", 14))),
             "alligator" => Self::Alligator(Alligator::new(
                 get_usize(cfg, "jaw", 13),
@@ -322,11 +324,7 @@ impl IndicatorBox {
             }
             Self::Adx(i) => {
                 let v = i.update(bar.high, bar.low, bar.close)?;
-                let mut m = HashMap::new();
-                m.insert("adx".into(), v.adx);
-                m.insert("plus_di".into(), v.plus_di);
-                m.insert("minus_di".into(), v.minus_di);
-                Some(m)
+                scalar(v.adx)
             }
             Self::Dmi(i) => {
                 let v = i.update(bar.high, bar.low, bar.close)?;
@@ -341,7 +339,12 @@ impl IndicatorBox {
                 let mut m = HashMap::new();
                 m.insert("up".into(), v.up);
                 m.insert("down".into(), v.down);
-                m.insert("oscillator".into(), v.oscillator);
+                Some(m)
+            }
+            Self::AroonOsc(i) => {
+                let v = i.update(bar.high, bar.low)?;
+                let mut m = HashMap::new();
+                m.insert("value".into(), v);
                 Some(m)
             }
             Self::Vortex(i) => {
@@ -561,6 +564,7 @@ impl IndicatorBox {
                 m.insert("senkou_b".into(), v.senkou_b);
                 m.insert("chikou".into(), v.chikou);
                 m.insert("above_cloud".into(), if v.above_cloud { 1.0 } else { 0.0 });
+                m.insert("below_cloud".into(), if v.below_cloud { 1.0 } else { 0.0 });
                 Some(m)
             }
             Self::ParabolicSar(i) => {
@@ -610,6 +614,7 @@ impl IndicatorBox {
             Self::Adx(_)            => "adx",
             Self::Dmi(_)            => "dmi",
             Self::Aroon(_)          => "aroon",
+            Self::AroonOsc(_)       => "aroon_osc",
             Self::Vortex(_)         => "vortex",
             Self::Alligator(_)      => "alligator",
             Self::Gmma(_)           => "gmma",
@@ -683,9 +688,10 @@ impl IndicatorBox {
             Self::Lsma(_)      => &["value", "slope"],
             Self::Macd(_)      => &["macd", "signal", "histogram"],
             Self::Trix(_)      => &["trix", "signal", "histogram"],
-            Self::Adx(_)       => &["adx", "plus_di", "minus_di"],
+            Self::Adx(_)       => &["value"],
             Self::Dmi(_)       => &["plus_di", "minus_di", "dx"],
-            Self::Aroon(_)     => &["up", "down", "oscillator"],
+            Self::Aroon(_)     => &["up", "down"],
+            Self::AroonOsc(_)  => &["value"],
             Self::Vortex(_)    => &["plus_vi", "minus_vi"],
             Self::Alligator(_) => &["jaw", "teeth", "lips", "bullish"],
             Self::Gmma(_)      => &["short_avg", "long_avg", "bullish"],
@@ -708,7 +714,7 @@ impl IndicatorBox {
             Self::ChopZone(_)  => &["angle", "zone"],
             Self::ChandelierExit(_) => &["long_stop", "short_stop", "atr"],
             Self::ChandeKroll(_) => &["stop_long", "stop_short"],
-            Self::Ichimoku(_)  => &["tenkan", "kijun", "senkou_a", "senkou_b", "chikou", "above_cloud"],
+            Self::Ichimoku(_)  => &["tenkan", "kijun", "senkou_a", "senkou_b", "chikou", "above_cloud", "below_cloud"],
             Self::ParabolicSar(_) => &["sar", "bullish"],
             Self::Rwi(_)       => &["rwi_high", "rwi_low"],
             Self::WilliamsFractal(_) => &["bullish", "bearish", "fractal_high", "fractal_low"],
@@ -736,6 +742,7 @@ impl IndicatorBox {
             Self::Adx(_)             => Adx::description(),
             Self::Dmi(_)             => Dmi::description(),
             Self::Aroon(_)           => Aroon::description(),
+            Self::AroonOsc(_)        => AroonOscillator::description(),
             Self::Vortex(_)          => Vortex::description(),
             Self::Alligator(_)       => Alligator::description(),
             Self::Gmma(_)            => Gmma::description(),
@@ -807,9 +814,10 @@ impl IndicatorBox {
             Self::Kama(_)      => "ind.kama(10, 2, 30)[0]  → scalar value",
             Self::Macd(_)      => "ind.macd(12, 26, 9)[0] → .macd (default)  ·  .signal  ·  .histogram",
             Self::Trix(_)      => "ind.trix(18, 9)[0] → .trix (default)  ·  .signal  ·  .histogram",
-            Self::Adx(_)       => "ind.adx(14)[0] → .adx (default)  ·  .plus_di  ·  .minus_di",
+            Self::Adx(_)       => "ind.adx(14)[0] → scalar ADX strength (0–100)",
             Self::Dmi(_)       => "ind.dmi(14)[0] → .plus_di (default)  ·  .minus_di  ·  .dx",
-            Self::Aroon(_)     => "ind.aroon(25)[0] → .oscillator (default)  ·  .up  ·  .down",
+            Self::Aroon(_)     => "ind.aroon(25)[0] → .up  ·  .down  (oscillator: use aroon_osc)",
+            Self::AroonOsc(_)  => "ind.aroon_osc(25)[0] → scalar oscillator value",
             Self::Vortex(_)    => "ind.vortex(14)[0] → .plus_vi (default)  ·  .minus_vi",
             Self::Alligator(_) => "ind.alligator(13, 8, 5)[0] → .teeth (default)  ·  .jaw  ·  .lips  ·  .bullish",
             Self::Gmma(_)      => "ind.gmma()[0] → .long_avg (default)  ·  .short_avg  ·  .bullish",
@@ -857,7 +865,7 @@ impl IndicatorBox {
             Self::Vwap(_) => "ind.vwap()[0]  → scalar price level",
             // ── Pattern ───────────────────────────────────────────────────────
             Self::Ichimoku(_) =>
-                "ind.ichimoku(9, 26, 52)[0] → .tenkan (default)  ·  .kijun  ·  .senkou_a  ·  .senkou_b  ·  .chikou  ·  .above_cloud",
+                "ind.ichimoku(9, 26, 52)[0] → .tenkan (default)  ·  .kijun  ·  .senkou_a  ·  .senkou_b  ·  .chikou  ·  .above_cloud  ·  .below_cloud",
             Self::ParabolicSar(_) =>
                 "ind.parabolic_sar(0.02, 0.2)[0] → .sar (default)  ·  .bullish  (1.0 = bullish, 0.0 = bearish)",
             Self::Rwi(_) =>
@@ -886,6 +894,7 @@ impl IndicatorBox {
             Self::Adx(i)            => i.reset(),
             Self::Dmi(i)            => i.reset(),
             Self::Aroon(i)          => i.reset(),
+            Self::AroonOsc(i)       => i.reset(),
             Self::Vortex(i)         => i.reset(),
             Self::Alligator(i)      => i.reset(),
             Self::Gmma(i)           => i.reset(),
@@ -955,7 +964,7 @@ mod tests {
     const ALL_TYPES: &[&str] = &[
         "sma", "ema", "wma", "hma", "dema", "tema", "smma", "alma",
         "mcginley", "lsma", "vwma", "kama", "macd", "trix", "adx",
-        "dmi", "aroon", "vortex", "alligator", "gmma", "kdj", "kalman",
+        "dmi", "aroon", "aroon_osc", "vortex", "alligator", "gmma", "kdj", "kalman",
         "rsi", "cci", "roc", "mom", "cmo", "dpo", "mfi", "bop",
         "williams_r", "stochastic", "stoch_rsi", "tsi", "rci",
         "bull_bear", "fisher", "kst", "pmo", "ppo", "rvi", "smi",
@@ -990,7 +999,7 @@ mod tests {
         for name in &[
             "sma", "ema", "wma", "hma", "dema", "tema", "smma", "alma",
             "mcginley", "lsma", "vwma", "kama", "macd", "trix", "adx",
-            "dmi", "aroon", "vortex", "alligator", "gmma", "kdj", "kalman",
+            "dmi", "aroon", "aroon_osc", "vortex", "alligator", "gmma", "kdj", "kalman",
             "rsi", "cci", "roc", "mom", "cmo", "dpo", "mfi", "bop",
             "williams_r", "stochastic", "stoch_rsi", "tsi", "rci",
             "bull_bear", "fisher", "kst", "pmo", "ppo", "rvi", "smi",
@@ -1016,6 +1025,7 @@ mod tests {
             ("macd",       120),   // multi-field
             ("bbands",      60),
             ("aroon",       60),
+            ("aroon_osc",   60),
             ("stochastic",  60),
             ("ichimoku",   200),
         ];

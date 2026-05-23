@@ -81,8 +81,10 @@ impl ChopZone {
     }
 
     pub fn update(&mut self, high: f64, low: f64, close: f64) -> Option<ChopZoneValue> {
-        let ema_val = self.ema.update(close)?;
-        let atr_val = self.atr.update(high, low, close)?;
+        // Feed EMA and ATR independently to avoid cascade warmup delay.
+        let ema_v = self.ema.update(close);
+        let atr_v = self.atr.update(high, low, close);
+        let (Some(ema_val), Some(atr_val)) = (ema_v, atr_v) else { return None; };
 
         let result = if let Some(prev) = self.prev_ema {
             let ema_change = ema_val - prev;

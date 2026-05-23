@@ -64,10 +64,6 @@ impl Sma {
 pub struct AwesomeOscillator {
     fast: Sma,
     slow: Sma,
-    fast_period: usize,
-    slow_period: usize,
-    // Buffer to align fast and slow SMA outputs
-    fast_buf: VecDeque<f64>,
 }
 
 impl AwesomeOscillator {
@@ -75,9 +71,6 @@ impl AwesomeOscillator {
         Self {
             fast: Sma::new(fast_period),
             slow: Sma::new(slow_period),
-            fast_period,
-            slow_period,
-            fast_buf: VecDeque::new(),
         }
     }
 
@@ -89,30 +82,15 @@ impl AwesomeOscillator {
         let median = (high + low) / 2.0;
         let fast_val = self.fast.update(median);
         let slow_val = self.slow.update(median);
-
-        // Fast SMA starts outputting at fast_period, slow at slow_period.
-        // We need to skip fast values until slow is ready.
-        if let Some(fv) = fast_val {
-            self.fast_buf.push_back(fv);
-        }
-        let skip = self.slow_period - self.fast_period;
-        if self.fast_buf.len() > skip + 1 {
-            self.fast_buf.pop_front();
-        }
-
-        if let (Some(_), Some(sv)) = (fast_val, slow_val) {
-            let aligned_fast = *self.fast_buf.front()?;
-            self.fast_buf.pop_front();
-            Some(aligned_fast - sv)
-        } else {
-            None
+        match (fast_val, slow_val) {
+            (Some(fv), Some(sv)) => Some(fv - sv),
+            _ => None,
         }
     }
 
     pub fn reset(&mut self) {
         self.fast.reset();
         self.slow.reset();
-        self.fast_buf.clear();
     }
 }
 

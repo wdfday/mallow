@@ -12,7 +12,7 @@ pub use util::{RollingMax, RollingMin};
 
 // signal: trend + MA family
 pub use signal::trend::{
-    Adx, AdxValue, Alma, Aroon, AroonValue, Dema, Dmi, DmiValue, Ema, Hma, Kama, KalmanFilter,
+    Adx, AdxValue, Alma, Aroon, AroonOscillator, AroonValue, Dema, Dmi, DmiValue, Ema, Hma, Kama, KalmanFilter,
     KalmanValue, Kdj, KdjValue, Lsma, LsmaValue, Macd, MacdValue, McGinleyDynamic, Sma, Smma,
     Tema, Trix, TrixValue, Vortex, VortexValue, Vwma, Wma,
 };

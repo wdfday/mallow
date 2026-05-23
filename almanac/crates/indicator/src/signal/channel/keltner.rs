@@ -70,8 +70,10 @@ impl Keltner {
     }
 
     pub fn update(&mut self, high: f64, low: f64, close: f64) -> Option<KeltnerValue> {
-        let mid = self.ema.update(close)?;
-        let atr = self.atr.update(high, low, close)?;
+        // Feed EMA and ATR independently so ATR doesn't miss early bars while EMA warms.
+        let mid_v = self.ema.update(close);
+        let atr_v = self.atr.update(high, low, close);
+        let (Some(mid), Some(atr)) = (mid_v, atr_v) else { return None; };
         let band = self.multiplier * atr.atr;
         Some(KeltnerValue {
             middle: mid,

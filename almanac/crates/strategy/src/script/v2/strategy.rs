@@ -12,7 +12,7 @@
 //!
 //! # Script syntax
 //!
-//! Identical to v1 — same `ind.TYPE(period [, tf_or_buf [, buf]])` declarations,
+//! Identical to v1 — same `ind.TYPE(period [, params]* [, "TF"] [, buf=N])` declarations,
 //! same `entry/exit/long/short/tp/sl/strength` output variables, same
 //! `regime { }` block, same `candle.transform()` directive.
 //!
@@ -21,7 +21,6 @@
 //! [`MtfScriptStrategy::declared_htfs`] to discover which TFs the script needs.
 
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::sync::Arc;
 
 use anyhow::Result;
 use rhai::{Array, Dynamic, Engine, Scope, AST};
@@ -36,7 +35,7 @@ use super::parse::{
     make_indicator_box, parse_timeframe_str,
     try_parse_indicator_line, CandleDirective, DEFAULT_BUF_DEPTH,
 };
-use super::engine::{build_engine, BAR_FIELDS, PlotBuf};
+use super::engine::{build_engine, BAR_FIELDS};
 use crate::script::v1::MEntry;
 
 // ── MtfScriptStrategy ─────────────────────────────────────────────────────────
@@ -49,7 +48,6 @@ pub struct MtfScriptStrategy {
     binding_order:    Vec<String>,
     bar_buf:          VecDeque<Bar>,
     bar_buf_depth:    usize,
-    plot_buf:         PlotBuf,
     series:           Option<HashMap<String, Vec<(i64, f64)>>>,
     candle_transform: CandleTransform,
     current_regime:   Option<RegimeState>,
@@ -72,7 +70,7 @@ impl MtfScriptStrategy {
         Self::build(script, true, CandleType::Raw, base_tf)
     }
 
-    /// Live (herald) mode — plot() calls are discarded.
+    /// Live (herald registry) mode — series collection disabled.
     pub fn from_script_live(script: &str, base_tf: Timeframe) -> Result<Self> {
         Self::build(script, false, CandleType::Raw, base_tf)
     }
@@ -163,8 +161,7 @@ impl MtfScriptStrategy {
         let main_cleaned_script = main_cleaned_lines.join("\n");
 
         // ── Step 3: compile ASTs ──────────────────────────────────────────────
-        let plot_buf: PlotBuf = Arc::new(std::sync::Mutex::new(Vec::new()));
-        let engine = build_engine(Arc::clone(&plot_buf));
+        let engine = build_engine();
 
         let regime_ast = if regime_cleaned_script.trim().is_empty() {
             None
@@ -217,7 +214,6 @@ impl MtfScriptStrategy {
             binding_order,
             bar_buf: VecDeque::with_capacity(max_buf),
             bar_buf_depth: max_buf,
-            plot_buf,
             series: if collect_series { Some(HashMap::new()) } else { None },
             candle_transform: {
                 let effective = match &script_candle {
@@ -231,7 +227,7 @@ impl MtfScriptStrategy {
         })
     }
 
-    /// Drain collected plot series (backtest mode only). Returns empty map in live mode.
+    /// Drain auto-collected indicator series (backtest mode). Returns empty map in live mode.
     pub fn take_series(&mut self) -> HashMap<String, Vec<(i64, f64)>> {
         self.series.take().unwrap_or_default()
     }
@@ -262,7 +258,6 @@ impl MtfStrategy for MtfScriptStrategy {
         self.bar_buf.clear();
         self.candle_transform.reset();
         if let Some(s) = &mut self.series { s.clear(); }
-        if let Ok(mut buf) = self.plot_buf.lock() { buf.clear(); }
         self.current_regime = None;
     }
 
@@ -406,14 +401,24 @@ impl MtfStrategy for MtfScriptStrategy {
             return vec![];
         }
 
-        // ── 10. Plot series drain ──────────────────────────────────────────────
-        if let Ok(mut buf) = self.plot_buf.lock() {
-            if let Some(series) = &mut self.series {
-                for (n, v) in buf.drain(..) {
-                    series.entry(n).or_default().push((base_bar.timestamp, v));
+        // ── 10. Auto-collect indicator series ─────────────────────────────────
+        if let Some(series) = &mut self.series {
+            for name in &self.binding_order {
+                if let Some(binding) = self.bindings.get(name) {
+                    if let Some(fields) = binding.current_fields() {
+                        if binding.is_multi() {
+                            for (field, val) in &fields {
+                                series.entry(format!("{name}.{field}"))
+                                    .or_default()
+                                    .push((base_bar.timestamp, *val));
+                            }
+                        } else if let Some(&val) = fields.values().next() {
+                            series.entry(name.clone())
+                                .or_default()
+                                .push((base_bar.timestamp, val));
+                        }
+                    }
                 }
-            } else {
-                buf.clear();
             }
         }
 

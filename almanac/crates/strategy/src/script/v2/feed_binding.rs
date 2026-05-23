@@ -84,6 +84,17 @@ impl History {
             Self::Multi { data, .. } => data.len(),
         }
     }
+
+    fn current_fields(&self) -> Option<HashMap<String, f64>> {
+        match self {
+            Self::Single { field, data } => data.back().map(|&v| {
+                let mut m = HashMap::new();
+                m.insert(field.clone(), v);
+                m
+            }),
+            Self::Multi { data, .. } => data.back().cloned(),
+        }
+    }
 }
 
 // ── FeedVarBinding ──────────────────────────────────────────────────────────
@@ -212,6 +223,11 @@ impl FeedVarBinding {
 
     pub(in crate::script) fn is_multi(&self) -> bool {
         matches!(self.history, History::Multi { .. })
+    }
+
+    /// Latest confirmed raw field values for auto-series collection. `None` = not yet warm.
+    pub(in crate::script) fn current_fields(&self) -> Option<HashMap<String, f64>> {
+        self.history.current_fields()
     }
 
     /// Primary field name for multi-output indicators (used to build live MEntry).

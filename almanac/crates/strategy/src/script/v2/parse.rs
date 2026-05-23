@@ -59,9 +59,29 @@ pub(super) fn parse_timeframe_str(s: &str) -> Option<Timeframe> {
     }
 }
 
+// ── Positional parameter names per indicator type ─────────────────────────────
+
+/// Returns the ordered list of secondary parameter names for positional args.
+/// See v1's `positional_param_names` for rationale — kept in sync.
+fn positional_param_names(ind_type: &str) -> &'static [&'static str] {
+    match ind_type {
+        "macd"          => &["slow", "signal"],
+        "bbands"        => &["multiplier"],
+        "supertrend"    => &["multiplier"],
+        "stochastic"    => &["d_period"],
+        "stoch_rsi"     => &["smooth_d"],
+        "parabolic_sar" => &["step", "max"],
+        "kdj"           => &["k_period", "d_period"],
+        _               => &[],
+    }
+}
+
 // ── Declaration parser ────────────────────────────────────────────────────────
 
-/// Parse `let NAME = ind.TYPE(period [, tf_or_buf [, buf]]);`.
+/// Parse `let NAME = ind.TYPE(period [, name=value]* [, "TF"] [, buf=N]);`.
+///
+/// Positional integers after the period are mapped to per-type secondary
+/// parameter names. Buffer depth must be set explicitly as `buf=N`.
 pub(super) fn try_parse_indicator_line(line: &str) -> Option<IndicatorDecl> {
     let line = line.trim().split("//").next()?.trim();
     if line.is_empty() { return None; }
@@ -81,24 +101,33 @@ pub(super) fn try_parse_indicator_line(line: &str) -> Option<IndicatorDecl> {
     let mut args = args_inner.split(',');
     let period: usize = args.next()?.trim().parse().ok()?;
 
-    let mut extra_params = HashMap::new();
-    let mut timeframe    = None;
-    let mut buf_depth    = DEFAULT_BUF_DEPTH;
-    let mut live         = false;
+    let mut extra_params   = HashMap::new();
+    let mut timeframe      = None;
+    let mut buf_depth      = DEFAULT_BUF_DEPTH;
+    let mut live           = false;
+    let mut positional_idx = 0usize;
 
     for token in args {
         let token = token.trim();
         if let Some(eq) = token.find('=') {
-            let name    = token[..eq].trim().to_string();
+            let name    = token[..eq].trim();
             let val_str = token[eq + 1..].trim();
-            if let Ok(v) = val_str.parse::<f64>() {
-                extra_params.insert(name, v);
+            if name == "buf" {
+                if let Ok(n) = val_str.parse::<usize>() {
+                    buf_depth = n;
+                }
+            } else if let Ok(v) = val_str.parse::<f64>() {
+                extra_params.insert(name.to_string(), v);
             }
         } else {
             let s = token.trim_matches('"').trim_matches('\'');
-            if let Ok(n) = s.parse::<usize>() {
-                buf_depth = n;
-            } else {
+            if let Ok(n) = s.parse::<f64>() {
+                let param_names = positional_param_names(&type_str);
+                if let Some(param_name) = param_names.get(positional_idx) {
+                    extra_params.insert(param_name.to_string(), n);
+                }
+                positional_idx += 1;
+            } else if !s.is_empty() {
                 let (tf_str, is_live) = s.strip_prefix("live_")
                     .map(|r| (r, true))
                     .unwrap_or((s, false));
@@ -128,7 +157,7 @@ fn map_indicator_type(type_str: &str) -> (String, FieldExtract) {
 
         // ── Multi-output: Array<MEntry> ──────────────────────────────────────
         "macd" => ("macd".to_string(), Multi { primary: "macd".to_string() }),
-        "adx"  => ("adx".to_string(),  Multi { primary: "adx".to_string() }),
+        "adx"  => ("adx".to_string(),  Single("value".to_string())),
         "dmi"  => ("dmi".to_string(),  Multi { primary: "plus_di".to_string() }),
 
         "bbands"   => ("bbands".to_string(),   Multi { primary: "middle".to_string() }),
@@ -268,7 +297,7 @@ mod tests {
 
     #[test]
     fn parse_htf_custom_buf() {
-        let d = try_parse_indicator_line(r#"let x = ind.rsi(5, "M5", 3);"#).unwrap();
+        let d = try_parse_indicator_line(r#"let x = ind.rsi(5, "M5", buf=3);"#).unwrap();
         assert_eq!(d.timeframe, Some(Timeframe::M5));
         assert_eq!(d.buf_depth, 3);
     }

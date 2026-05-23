@@ -38,7 +38,7 @@ pub use v1::strategy;
 pub use v1::stream;
 
 pub use v1::{
-    ScriptStrategy,
+    ScriptStrategy, script_indicator_deps,
     ScriptStreamEval, StreamDecl, IndicatorSnapshot, PlotResult,
 };
 

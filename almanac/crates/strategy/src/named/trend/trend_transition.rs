@@ -4,8 +4,8 @@ use alm_indicator::{Adx, Ema};
 const RHAI: &str = r#"
 let e50  = ind.ema(50);
 let e200 = ind.ema(200);
-let adx14 = ind.adx(14, 1);
-if cross_above(e50, e200) && adx14[0].adx > 25.0 { entry = true; }
+let adx14 = ind.adx(14, buf=1);
+if cross_above(e50, e200) && adx14[0] > 25.0 { entry = true; }
 if cross_below(e50, e200) { exit = true; }
 "#;
 

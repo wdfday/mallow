@@ -3,8 +3,9 @@ use alm_indicator::Adx;
 
 const RHAI: &str = r#"
 let adx14 = ind.adx(14);
-if adx14[1].plus_di <= adx14[1].minus_di && adx14[0].plus_di > adx14[0].minus_di && adx14[0].adx > 25.0 { entry = true; }
-if adx14[1].plus_di >= adx14[1].minus_di && adx14[0].plus_di < adx14[0].minus_di { exit  = true; }
+let dmi14 = ind.dmi(14);
+if dmi14[1].plus_di <= dmi14[1].minus_di && dmi14[0].plus_di > dmi14[0].minus_di && adx14[0] > 25.0 { entry = true; }
+if dmi14[1].plus_di >= dmi14[1].minus_di && dmi14[0].plus_di < dmi14[0].minus_di { exit  = true; }
 "#;
 
 /// Bot #14 — DMI and ADX.

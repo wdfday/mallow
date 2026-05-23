@@ -87,7 +87,7 @@ fn script_rsi_threshold() {
 
     // buf_depth=1: only need current value
     let script = r#"
-let rsi14 = ind.rsi(14, 1);
+let rsi14 = ind.rsi(14, buf=1);
 
 if rsi14[0] < 30.0 { entry = true; }
 if rsi14[0] > 70.0 { exit  = true; }

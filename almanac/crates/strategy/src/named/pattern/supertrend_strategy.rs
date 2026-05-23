@@ -8,8 +8,8 @@ if st[1].bullish >= 0.5 && st[0].bullish < 0.5 { exit  = true; }
 "#;
 
 const RHAI_ST_MACD: &str = r#"
-let st10 = ind.supertrend(10, 1);
-let m    = ind.macd(12, 1);
+let st10 = ind.supertrend(10, buf=1);
+let m    = ind.macd(12, buf=1);
 if st10[0].bullish >= 0.5 && m[0].histogram > 0.0 { entry = true; }
 if st10[0].bullish < 0.5  { exit  = true; }
 "#;

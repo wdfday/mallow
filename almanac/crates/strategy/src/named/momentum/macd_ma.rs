@@ -87,7 +87,7 @@ mod tests {
 
         let script = r#"
 let mh = ind.macd(12);
-let sma50 = ind.sma(50, 1);
+let sma50 = ind.sma(50, buf=1);
 if mh[1].histogram <= 0.0 && mh[0].histogram > 0.0 && close[0] > sma50[0] { entry = true; }
 if (mh[1].histogram >= 0.0 && mh[0].histogram < 0.0) || close[0] < sma50[0] { exit = true; }
 "#;

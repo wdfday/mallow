@@ -2,10 +2,10 @@ use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::{Cmf, Ema};
 
 const RHAI: &str = r#"
-let cmf20 = ind.cmf(20, 1);
-let ema50  = ind.ema(50, 1);
-if cmf20[0] > 0.1 && close[0] > ema50[0]  { entry = true; }
-if cmf20[0] < -0.1 || close[0] < ema50[0] { exit  = true; }
+let cmf20 = ind.cmf(20, buf=1);
+let ema50  = ind.ema(50, buf=1);
+if cmf20[0] > 0.1 && close[0] > ema50[0] { entry = true; }
+if cmf20[0] < -0.1 { exit = true; }
 "#;
 
 /// Chaikin Money Flow + EMA trend filter.
@@ -51,7 +51,7 @@ impl Strategy for CmfEmaTrend {
         if cmf > self.bull_threshold && bar.close > ema {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if cmf < -self.bear_threshold || bar.close < ema {
+        if cmf < -self.bear_threshold {
             return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -62,7 +62,7 @@ impl Strategy for CmfEmaTrend {
     }
 
     fn description(&self) -> &'static str {
-        "Long when CMF > threshold and close > EMA. Exit when CMF turns negative or close drops below EMA."
+        "Long when CMF > threshold and close > EMA. Exit when CMF turns negative."
     }
 
     fn script(&self) -> Option<&'static str> { Some(RHAI) }

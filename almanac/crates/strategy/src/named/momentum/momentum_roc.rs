@@ -2,15 +2,15 @@ use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::{Ema, Roc};
 
 const RHAI_ROC: &str = r#"
-let roc10 = ind.roc(10, 1);
-let ema50  = ind.ema(50, 1);
+let roc10 = ind.roc(10, buf=1);
+let ema50  = ind.ema(50, buf=1);
 if roc10[0] > 2.0 && close[0] > ema50[0] { entry = true; }
 if roc10[0] < 0.0 || close[0] < ema50[0] { exit  = true; }
 "#;
 
 const RHAI_DUAL: &str = r#"
-let roc10 = ind.roc(10, 1);
-let roc30 = ind.roc(30, 1);
+let roc10 = ind.roc(10, buf=1);
+let roc30 = ind.roc(30, buf=1);
 if roc10[0] > 0.0 && roc30[0] > 0.0 { entry = true; }
 if roc10[0] < 0.0 || roc30[0] < 0.0 { exit  = true; }
 "#;

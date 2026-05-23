@@ -3,9 +3,9 @@ use alm_indicator::{Ema, WilliamsR};
 
 const RHAI: &str = r#"
 let wr14  = ind.williams_r(14);
-let ema50 = ind.ema(50, 1);
+let ema50 = ind.ema(50, buf=1);
 if wr14[1] <= -80.0 && wr14[0] > -80.0 && close[0] > ema50[0] { entry = true; }
-if (wr14[1] >= -20.0 && wr14[0] < -20.0) || close[0] < ema50[0] { exit  = true; }
+if wr14[1] >= -20.0 && wr14[0] < -20.0 { exit = true; }
 "#;
 
 /// Williams %R + EMA trend filter.
@@ -57,7 +57,7 @@ impl Strategy for WilliamsRMa {
         if exited_oversold && bar.close > ema {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if entered_overbought || bar.close < ema {
+        if entered_overbought {
             return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -68,7 +68,7 @@ impl Strategy for WilliamsRMa {
     }
 
     fn description(&self) -> &'static str {
-        "Long when Williams %R exits oversold and close is above EMA. Exit when overbought or price drops below EMA."
+        "Long when Williams %R exits oversold and close is above EMA. Exit when %R enters overbought."
     }
 
     fn script(&self) -> Option<&'static str> { Some(RHAI) }

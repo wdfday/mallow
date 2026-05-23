@@ -8,5 +8,4 @@
 pub(super) use crate::script::v1::{
     build_engine,
     BAR_FIELDS,
-    PlotBuf,
 };

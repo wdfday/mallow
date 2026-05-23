@@ -154,14 +154,14 @@ if cross_below(l20, l50) { exit = true; }
 
         // ── RSI ──────────────────────────────────────────────────────────────
         ("rsi_mean_rev", json!({"period": 14, "oversold": 30.0, "overbought": 70.0}), r#"
-let rsi14 = ind.rsi(14, 1);
+let rsi14 = ind.rsi(14, buf=1);
 if rsi14[0] < 30.0 { entry = true; }
 if rsi14[0] > 70.0 { exit  = true; }
 "#),
         ("rsi_ma_cross", json!({"fast": 20, "slow": 50, "rsi_period": 14, "rsi_entry": 50.0, "rsi_exit": 45.0}), r#"
 let e20 = ind.ema(20);
 let e50 = ind.ema(50);
-let rsi14 = ind.rsi(14, 1);
+let rsi14 = ind.rsi(14, buf=1);
 if cross_above(e20, e50) && rsi14[0] > 50.0 { entry = true; }
 if cross_below(e20, e50) || rsi14[0] < 45.0 { exit = true; }
 "#),
@@ -174,7 +174,7 @@ if mh[1].histogram >= 0.0 && mh[0].histogram < 0.0 { exit  = true; }
 "#),
         ("macd_ma", json!({"fast": 12, "slow": 26, "signal": 9, "ma": 50}), r#"
 let mh = ind.macd(12);
-let sma50 = ind.sma(50, 1);
+let sma50 = ind.sma(50, buf=1);
 if mh[1].histogram <= 0.0 && mh[0].histogram > 0.0 && close[0] > sma50[0] { entry = true; }
 if (mh[1].histogram >= 0.0 && mh[0].histogram < 0.0) || close[0] < sma50[0] { exit = true; }
 "#),
@@ -200,12 +200,12 @@ if sk[1].k <= 0.8 && sk[0].k > 0.8 { exit  = true; }
         ("adx_ema_cross", json!({"fast": 20, "slow": 50, "adx_period": 14, "adx_threshold": 25.0}), r#"
 let e20 = ind.ema(20);
 let e50 = ind.ema(50);
-let adx14 = ind.adx(14, 1);
-if cross_above(e20, e50) && adx14[0].adx > 25.0 { entry = true; }
+let adx14 = ind.adx(14, buf=1);
+if cross_above(e20, e50) && adx14[0] > 25.0 { entry = true; }
 if cross_below(e20, e50) { exit = true; }
 "#),
         ("aroon_trend", json!({"period": 25, "bull_threshold": 70.0, "bear_threshold": 30.0}), r#"
-let ar = ind.aroon(25, 1);
+let ar = ind.aroon(25, buf=1);
 if ar[0].up > 70.0 && ar[0].down < 30.0 { entry = true; }
 if ar[0].up < ar[0].down { exit = true; }
 "#),
@@ -222,8 +222,8 @@ if cci20[1] <= -100.0 && cci20[0] > -100.0 { entry = true; }
 if cci20[1] <= 100.0 && cci20[0] > 100.0 { exit = true; }
 "#),
         ("cmo_zero_cross", json!({"cmo_period": 14, "ema_period": 50}), r#"
-let cmo14 = ind.cmo(14, 2);
-let ema50 = ind.ema(50, 1);
+let cmo14 = ind.cmo(14, buf=2);
+let ema50 = ind.ema(50, buf=1);
 if cmo14[1] <= 0.0 && cmo14[0] > 0.0 && close[0] > ema50[0] { entry = true; }
 if (cmo14[1] >= 0.0 && cmo14[0] < 0.0) || close[0] < ema50[0] { exit = true; }
 "#),
@@ -253,7 +253,7 @@ if uo[1] <= 30.0 && uo[0] > 30.0 { entry = true; }
 if uo[0] > 70.0 { exit = true; }
 "#),
         ("connors_rsi", json!({"rsi_period": 3, "streak_period": 2, "rank_period": 100, "oversold": 10.0, "overbought": 70.0}), r#"
-let crsi = ind.connors_rsi(3, 1);
+let crsi = ind.connors_rsi(3, buf=1);
 if crsi[0] < 10.0 { entry = true; }
 if crsi[0] > 70.0 { exit  = true; }
 "#),
@@ -275,23 +275,23 @@ if mfi14[1] <= 20.0 && mfi14[0] > 20.0 { entry = true; }
 if mfi14[1] <= 80.0 && mfi14[0] > 80.0 { exit  = true; }
 "#),
         ("cmf_ema_trend", json!({"cmf_period": 20, "ema_period": 50, "bull_threshold": 0.1, "bear_threshold": 0.1}), r#"
-let cmf20 = ind.cmf(20, 1);
-let ema50 = ind.ema(50, 1);
+let cmf20 = ind.cmf(20, buf=1);
+let ema50 = ind.ema(50, buf=1);
 if cmf20[0] > 0.1 && close[0] > ema50[0] { entry = true; }
-if cmf20[0] < -0.1 || close[0] < ema50[0] { exit = true; }
+if cmf20[0] < -0.1 { exit = true; }
 "#),
         ("vwma_rsi", json!({"vwma_period": 20, "rsi_period": 14, "rsi_entry": 50.0, "rsi_exit": 45.0}), r#"
-let vwma20 = ind.vwma(20, 1);
-let rsi14 = ind.rsi(14, 1);
+let vwma20 = ind.vwma(20, buf=1);
+let rsi14 = ind.rsi(14, buf=1);
 if close[0] > vwma20[0] && rsi14[0] > 50.0 { entry = true; }
-if close[0] < vwma20[0] || rsi14[0] < 45.0 { exit = true; }
+if rsi14[0] < 45.0 { exit = true; }
 "#),
 
         // ── Trend filters (CCI/Stoch + ADX, RSI + EMA) ───────────────────────
         ("chop_filter", json!({"chop_period": 14, "fast_ema": 8, "slow_ema": 21, "chop_threshold": 61.8}), r#"
 let ema8  = ind.ema(8);
 let ema21 = ind.ema(21);
-let chop14 = ind.chop(14, 1);
+let chop14 = ind.chop(14, buf=1);
 if ema8[1] <= ema21[1] && ema8[0] > ema21[0] && chop14[0] < 61.8 { entry = true; }
 if ema8[1] >= ema21[1] && ema8[0] < ema21[0] { exit = true; }
 "#),
@@ -304,13 +304,13 @@ if close[0] > du20[1].upper { entry = true; }
 if close[0] < dl10[1].lower { exit  = true; }
 "#),
         ("keltner_breakout", json!({"period": 20, "atr_period": 10, "multiplier": 2.0}), r#"
-let kc20 = ind.keltner(20, 1);
-if close[0] > kc20[0].upper  { entry = true; }
-if close[0] < kc20[0].middle { exit  = true; }
+let kc20 = ind.keltner(20, buf=1);
+if close[0] > kc20[0].upper { entry = true; }
+if close[0] < kc20[0].lower { exit  = true; }
 "#),
         ("bb_rsi_reversal", json!({"bb_period": 20, "bb_std": 2.0, "rsi_period": 14, "oversold": 35.0, "overbought": 65.0}), r#"
-let bb20  = ind.bbands(20, 1);
-let rsi14 = ind.rsi(14, 1);
+let bb20  = ind.bbands(20, buf=1);
+let rsi14 = ind.rsi(14, buf=1);
 if close[0] < bb20[0].lower && rsi14[0] < 35.0 { entry = true; }
 if close[0] > bb20[0].middle || rsi14[0] > 65.0 { exit  = true; }
 "#),
@@ -340,14 +340,14 @@ if  was_bull && !now_bull { exit  = true; }
 
         // ── Momentum ROC variants ────────────────────────────────────────────
         ("momentum_roc", json!({"roc_period": 10, "ema_period": 50, "entry_threshold": 2.0, "exit_threshold": 0.0}), r#"
-let roc10 = ind.roc(10, 1);
-let ema50  = ind.ema(50, 1);
+let roc10 = ind.roc(10, buf=1);
+let ema50  = ind.ema(50, buf=1);
 if roc10[0] > 2.0 && close[0] > ema50[0] { entry = true; }
 if roc10[0] < 0.0 || close[0] < ema50[0] { exit  = true; }
 "#),
         ("dual_momentum", json!({"fast": 10, "slow": 30}), r#"
-let roc10 = ind.roc(10, 1);
-let roc30 = ind.roc(30, 1);
+let roc10 = ind.roc(10, buf=1);
+let roc30 = ind.roc(30, buf=1);
 if roc10[0] > 0.0 && roc30[0] > 0.0 { entry = true; }
 if roc10[0] < 0.0 || roc30[0] < 0.0 { exit  = true; }
 "#),
@@ -355,61 +355,63 @@ if roc10[0] < 0.0 || roc30[0] < 0.0 { exit  = true; }
         // ── Williams %R + EMA ────────────────────────────────────────────────
         ("williams_r_ma", json!({"wr_period": 14, "ema_period": 50, "oversold": -80.0, "overbought": -20.0}), r#"
 let wr14  = ind.williams_r(14);
-let ema50 = ind.ema(50, 1);
+let ema50 = ind.ema(50, buf=1);
 if wr14[1] <= -80.0 && wr14[0] > -80.0 && close[0] > ema50[0] { entry = true; }
-if (wr14[1] >= -20.0 && wr14[0] < -20.0) || close[0] < ema50[0] { exit  = true; }
+if wr14[1] >= -20.0 && wr14[0] < -20.0 { exit = true; }
 "#),
 
         // ── DMI / Wolfstein / TrendTransition / TrendFollower ────────────────
         ("dmi_adx", json!({"period": 14, "adx_threshold": 25.0}), r#"
 let adx14 = ind.adx(14);
-if adx14[1].plus_di <= adx14[1].minus_di && adx14[0].plus_di > adx14[0].minus_di && adx14[0].adx > 25.0 { entry = true; }
-if adx14[1].minus_di <= adx14[1].plus_di && adx14[0].minus_di > adx14[0].plus_di { exit  = true; }
+let dmi14 = ind.dmi(14);
+if dmi14[1].plus_di <= dmi14[1].minus_di && dmi14[0].plus_di > dmi14[0].minus_di && adx14[0] > 25.0 { entry = true; }
+if dmi14[1].minus_di <= dmi14[1].plus_di && dmi14[0].minus_di > dmi14[0].plus_di { exit  = true; }
 "#),
         ("wolfstein", json!({"adx_period": 14, "long_threshold": 27.5, "short_threshold": 20.5}), r#"
-let adx14 = ind.adx(14, 1);
-if adx14[0].adx > 27.5 && adx14[0].plus_di > adx14[0].minus_di { entry = true; }
-if adx14[0].adx < 20.5 { exit = true; }
+let adx14 = ind.adx(14, buf=1);
+let dmi14 = ind.dmi(14, buf=1);
+if adx14[0] > 27.5 && dmi14[0].plus_di > dmi14[0].minus_di { entry = true; }
+if adx14[0] < 20.5 { exit = true; }
 "#),
         ("swing_trader", json!({"cci_period": 20, "adx_period": 14, "adx_threshold": 25.0}), r#"
 let cci20 = ind.cci(20);
-let adx14 = ind.adx(14, 1);
-if cci20[1] <= 100.0  && cci20[0] >  100.0 && adx14[0].adx > 25.0 { entry = true; }
+let adx14 = ind.adx(14, buf=1);
+if cci20[1] <= 100.0  && cci20[0] >  100.0 && adx14[0] > 25.0 { entry = true; }
 if cci20[1] >= -100.0 && cci20[0] < -100.0 { exit = true; }
 "#),
 
         // ── Bollinger MACD / Volatility ──────────────────────────────────────
         ("bollinger_macd", json!({"bb_period": 20, "bb_std": 2.0, "fast": 12, "slow": 26, "signal": 9}), r#"
-let bb20 = ind.bbands(20, 1);
-let mh = ind.macd(12, 1);
+let bb20 = ind.bbands(20, buf=1);
+let mh = ind.macd(12, buf=1);
 if close[0] > bb20[0].upper && mh[0].histogram > 0.0 { entry = true; }
 if close[0] < bb20[0].middle || mh[0].histogram < 0.0 { exit = true; }
 "#),
 
         // ── Equilibrium / Range / Reversal / Oscillator combos ───────────────
         ("equilibrium_explorer", json!({"ema_period": 200, "stoch_k": 14, "stoch_d": 3, "stoch_oversold": 20.0, "stoch_overbought": 80.0, "macd_fast": 12, "macd_slow": 26, "macd_signal": 9}), r#"
-let ema200 = ind.ema(200, 1);
-let st = ind.stochastic(14, 1);
-let mh = ind.macd(12, 1);
+let ema200 = ind.ema(200, buf=1);
+let st = ind.stochastic(14, buf=1);
+let mh = ind.macd(12, buf=1);
 if close[0] > ema200[0] && st[0].k < 20.0 && mh[0].histogram > 0.0 { entry = true; }
 if st[0].k > 80.0 || mh[0].histogram < 0.0 { exit = true; }
 "#),
         ("range_rover", json!({"k": 14, "d": 3, "ma": 50, "oversold": 20.0, "overbought": 80.0}), r#"
-let st = ind.stochastic(14, 1);
-let sma50 = ind.sma(50, 1);
+let st = ind.stochastic(14, buf=1);
+let sma50 = ind.sma(50, buf=1);
 if st[0].k < 20.0 && close[0] > sma50[0] { entry = true; }
 if st[0].k > 80.0 { exit = true; }
 "#),
         ("reversal_catcher", json!({"k": 14, "d": 3, "rsi_period": 14}), r#"
 let st = ind.stochastic(14);
-let rsi14 = ind.rsi(14, 1);
+let rsi14 = ind.rsi(14, buf=1);
 if st[1].k <= st[1].d && st[0].k > st[0].d && rsi14[0] < 50.0 { entry = true; }
 if (st[1].k >= st[1].d && st[0].k < st[0].d) || rsi14[0] > 70.0 { exit = true; }
 "#),
         ("oscillator_overlord", json!({"rsi_period": 14, "stoch_k": 14, "stoch_d": 3, "cci_period": 20}), r#"
-let rsi14 = ind.rsi(14, 1);
-let st = ind.stochastic(14, 1);
-let cci20 = ind.cci(20, 1);
+let rsi14 = ind.rsi(14, buf=1);
+let st = ind.stochastic(14, buf=1);
+let cci20 = ind.cci(20, buf=1);
 let os = (if rsi14[0] < 30.0 { 1 } else { 0 })
        + (if st[0].k < 20.0 { 1 } else { 0 })
        + (if cci20[0] < -100.0 { 1 } else { 0 });
@@ -424,22 +426,22 @@ if ob >= 2 { exit  = true; }
         ("trend_transition", json!({"fast": 50, "slow": 200, "adx_period": 14, "adx_threshold": 25.0}), r#"
 let e50 = ind.ema(50);
 let e200 = ind.ema(200);
-let adx14 = ind.adx(14, 1);
-if cross_above(e50, e200) && adx14[0].adx > 25.0 { entry = true; }
+let adx14 = ind.adx(14, buf=1);
+if cross_above(e50, e200) && adx14[0] > 25.0 { entry = true; }
 if cross_below(e50, e200) { exit = true; }
 "#),
         ("trend_follower", json!({"fast_ma": 50, "slow_ma": 200, "macd_fast": 12, "macd_slow": 26, "macd_signal": 9}), r#"
 let s50 = ind.sma(50);
 let s200 = ind.sma(200);
-let mh = ind.macd(12, 1);
+let mh = ind.macd(12, buf=1);
 if cross_above(s50, s200) && mh[0].histogram > 0.0 { entry = true; }
 if cross_below(s50, s200) || mh[0].histogram < 0.0 { exit = true; }
 "#),
 
         // ── Multi: SuperTrend + MACD ─────────────────────────────────────────
         ("supertrend_macd", json!({"period": 10, "multiplier": 3.0, "macd_fast": 12, "macd_slow": 26, "macd_signal": 9}), r#"
-let st = ind.supertrend(10, 1);
-let mh = ind.macd(12, 1);
+let st = ind.supertrend(10, buf=1);
+let mh = ind.macd(12, buf=1);
 if st[0].bullish >= 0.5 && mh[0].histogram > 0.0 { entry = true; }
 if st[0].bullish < 0.5 { exit = true; }
 "#),
@@ -451,7 +453,7 @@ if st[1].k <= st[1].d && st[0].k > st[0].d { entry = true; }
 if st[1].k >= st[1].d && st[0].k < st[0].d { exit = true; }
 "#),
         ("rwi", json!({"period": 14, "threshold": 1.0}), r#"
-let rwi14 = ind.rwi(14, 1);
+let rwi14 = ind.rwi(14, buf=1);
 if rwi14[0].rwi_high > 1.0 { entry = true; }
 if rwi14[0].rwi_low  > 1.0 { exit  = true; }
 "#),
@@ -461,7 +463,7 @@ if al[1].bullish < 0.5 && al[0].bullish >= 0.5 { entry = true; }
 if al[1].bullish >= 0.5 && al[0].bullish < 0.5 { exit = true; }
 "#),
         ("volatility_ratio", json!({"lookback": 10, "threshold": 0.5}), r#"
-let vr = ind.volatility_ratio(10, 1);
+let vr = ind.volatility_ratio(10, buf=1);
 if vr[0] > 0.5 && close[0] > close[1] { entry = true; }
 if vr[0] <= 0.5 { exit = true; }
 "#),
@@ -482,9 +484,9 @@ if smi13[0].smi > 40.0 || (smi13[1].smi >= smi13[1].signal && smi13[0].smi < smi
 
         // ── Ichimoku ─────────────────────────────────────────────────────────
         ("ichimoku_cloud", json!({"tenkan": 9, "kijun": 26, "senkou_b": 52}), r#"
-let ic = ind.ichimoku(9, 1);
+let ic = ind.ichimoku(9, buf=1);
 if ic[0].above_cloud >= 0.5 { entry = true; }
-if ic[0].above_cloud  < 0.5 { exit  = true; }
+if ic[0].below_cloud >= 0.5 { exit  = true; }
 "#),
         ("ichimoku_cross", json!({"tenkan": 9, "kijun": 26, "senkou_b": 52}), r#"
 let ic = ind.ichimoku(9);

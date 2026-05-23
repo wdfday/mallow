@@ -32,7 +32,7 @@ impl Strategy for IchimokuCloud {
         if v.above_cloud {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if !v.above_cloud {
+        if v.below_cloud {
             return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]

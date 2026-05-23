@@ -6,13 +6,12 @@
 //! from the first bar because the ledger has been running continuously.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 
 use alm_core::{Bar, Timeframe};
 use anyhow::Result;
 use rhai::{Array, Dynamic, Engine, Scope, AST};
 
-use super::engine::{build_engine, extract_max_lookback, PlotBuf, BAR_FIELDS, DEFAULT_BUF_DEPTH};
+use super::engine::{build_engine, extract_max_lookback, BAR_FIELDS, DEFAULT_BUF_DEPTH};
 use super::parse::{indicator_json_config, try_parse_indicator_line, IndicatorKind};
 
 // ── StreamDecl ────────────────────────────────────────────────────────────────
@@ -51,18 +50,21 @@ pub enum IndicatorSnapshot {
     Multi(Vec<HashMap<String, f64>>),
 }
 
+/// Per-bar indicator snapshot returned by [`ScriptStreamEval::run`].
+/// Single-field indicators → `var_name → value`.
+/// Multi-field indicators → `var_name.field → value` (e.g. `macd14.histogram`).
 pub type PlotResult = HashMap<String, f64>;
 
 // ── ScriptStreamEval ────────────────────────────────────────────────────────────
 
 /// Stateless script evaluator backed by ledger-provided indicator snapshots.
 ///
-/// Call [`ScriptStreamEval::run`] once per bar with fresh indicator values; it
-/// returns the `plot()` outputs from the script for that bar.
+/// Call [`ScriptStreamEval::run`] once per bar; it runs the script (for signal
+/// side-effects) and returns the current indicator values auto-extracted from
+/// the supplied `indicators` map.
 pub struct ScriptStreamEval {
     engine:        Engine,
     ast:           AST,
-    plot_buf:      PlotBuf,
     decls:         Vec<StreamDecl>,
     bar_buf_depth: usize,
 }
@@ -79,10 +81,9 @@ impl ScriptStreamEval {
             }
         }
 
-        let cleaned   = cleaned_lines.join("\n");
-        let plot_buf: PlotBuf = Arc::new(Mutex::new(Vec::new()));
-        let engine    = build_engine(Arc::clone(&plot_buf));
-        let ast       = engine
+        let cleaned = cleaned_lines.join("\n");
+        let engine  = build_engine();
+        let ast     = engine
             .compile(&cleaned)
             .map_err(|e| anyhow::anyhow!("script compile error: {e}"))?;
 
@@ -100,7 +101,7 @@ impl ScriptStreamEval {
                 IndicatorKind::Multi(p)   => (None, Some(p)),
             };
             StreamDecl {
-                spec_config: indicator_json_config(&d.ind_type, d.period),
+                spec_config: indicator_json_config(&d.ind_type, d.period, &d.extra_params),
                 var_name:    d.var_name,
                 source_tf:   d.timeframe,
                 field,
@@ -109,7 +110,7 @@ impl ScriptStreamEval {
             }
         }).collect();
 
-        Ok(Self { engine, ast, plot_buf, decls, bar_buf_depth })
+        Ok(Self { engine, ast, decls, bar_buf_depth })
     }
 
     /// Parsed indicator declarations — herald acquires ledger handles from these.
@@ -124,14 +125,13 @@ impl ScriptStreamEval {
     ///   - `Multi`  → newest-first `Vec<HashMap<String,f64>>`, length = decl.buf_depth.
     /// `bar_history`: newest-first OHLCV bars (length = bar_buf_depth).
     ///
-    /// Returns the `plot("name", value)` outputs emitted by the script.
+    /// Returns the current indicator values auto-extracted from `indicators`:
+    /// single-field → `var_name → value`, multi-field → `var_name.field → value`.
     pub fn run(
         &self,
         indicators:  &HashMap<String, IndicatorSnapshot>,
         bar_history: &[Bar],
     ) -> PlotResult {
-        if let Ok(mut buf) = self.plot_buf.lock() { buf.clear(); }
-
         let mut scope = Scope::new();
 
         for decl in &self.decls {
@@ -168,8 +168,26 @@ impl ScriptStreamEval {
 
         let _ = self.engine.run_ast_with_scope(&mut scope, &self.ast);
 
-        self.plot_buf.lock()
-            .map(|buf| buf.iter().cloned().collect())
-            .unwrap_or_default()
+        // Auto-extract current indicator values from the supplied snapshots.
+        // Single-field → var_name. Multi-field → var_name.field.
+        let mut result = PlotResult::new();
+        for decl in &self.decls {
+            match indicators.get(&decl.var_name) {
+                Some(IndicatorSnapshot::Single(vals)) => {
+                    if let Some(&v) = vals.first() {
+                        result.insert(decl.var_name.clone(), v);
+                    }
+                }
+                Some(IndicatorSnapshot::Multi(snapshots)) => {
+                    if let Some(fields) = snapshots.first() {
+                        for (field, &val) in fields {
+                            result.insert(format!("{}.{}", decl.var_name, field), val);
+                        }
+                    }
+                }
+                None => {}
+            }
+        }
+        result
     }
 }

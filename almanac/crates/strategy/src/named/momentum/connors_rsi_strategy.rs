@@ -139,7 +139,7 @@ mod tests {
 
         // ind.connors_rsi(3) uses defaults: rsi_period=3, streak_period=2, rank_period=100
         let script = r#"
-let crsi = ind.connors_rsi(3, 1);
+let crsi = ind.connors_rsi(3, buf=1);
 if crsi[0] < 10.0 { entry = true; }
 if crsi[0] > 70.0 { exit  = true; }
 "#;

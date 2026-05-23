@@ -114,7 +114,7 @@ mod tests {
             .collect();
 
         let script = r#"
-let ar = ind.aroon(25, 1);
+let ar = ind.aroon(25, buf=1);
 if ar[0].up > 70.0 && ar[0].down < 30.0 { entry = true; }
 if ar[0].up < ar[0].down { exit = true; }
 "#;

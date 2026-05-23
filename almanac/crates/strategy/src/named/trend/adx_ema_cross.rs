@@ -102,8 +102,8 @@ mod tests {
         let script = r#"
 let e20 = ind.ema(20);
 let e50 = ind.ema(50);
-let adx14 = ind.adx(14, 1);
-if cross_above(e20, e50) && adx14[0].adx > 25.0 { entry = true; }
+let adx14 = ind.adx(14, buf=1);
+if cross_above(e20, e50) && adx14[0] > 25.0 { entry = true; }
 if cross_below(e20, e50) { exit = true; }
 "#;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();

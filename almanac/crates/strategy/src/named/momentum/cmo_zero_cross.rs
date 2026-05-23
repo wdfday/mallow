@@ -76,8 +76,8 @@ mod tests {
             .collect();
 
         let script = r#"
-let cmo14 = ind.cmo(14, 2);
-let ema50 = ind.ema(50, 1);
+let cmo14 = ind.cmo(14, buf=2);
+let ema50 = ind.ema(50, buf=1);
 if cmo14[1] <= 0.0 && cmo14[0] > 0.0 && close[0] > ema50[0] { entry = true; }
 if (cmo14[1] >= 0.0 && cmo14[0] < 0.0) || close[0] < ema50[0] { exit = true; }
 "#;

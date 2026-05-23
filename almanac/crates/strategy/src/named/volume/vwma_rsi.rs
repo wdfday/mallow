@@ -41,7 +41,7 @@ impl Strategy for VwmaRsi {
         if bar.close > vwma && rsi > self.rsi_entry {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if bar.close < vwma || rsi < self.rsi_exit {
+        if rsi < self.rsi_exit {
             return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -76,10 +76,10 @@ mod tests {
             .collect();
 
         let script = r#"
-let vwma20 = ind.vwma(20, 1);
-let rsi14 = ind.rsi(14, 1);
+let vwma20 = ind.vwma(20, buf=1);
+let rsi14 = ind.rsi(14, buf=1);
 if close[0] > vwma20[0] && rsi14[0] > 50.0 { entry = true; }
-if close[0] < vwma20[0] || rsi14[0] < 45.0 { exit = true; }
+if rsi14[0] < 45.0 { exit = true; }
 "#;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs: Vec<(i64, Direction)> = bars.iter()

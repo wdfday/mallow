@@ -247,10 +247,37 @@ fn parse_transform_args(args: &str, line_no: usize) -> anyhow::Result<CandleDire
     Ok(CandleDirective::Transform { kind, smooth })
 }
 
+// ── Positional parameter names per indicator type ─────────────────────────────
+
+/// Returns the ordered list of secondary parameter names for positional args
+/// after the period. These map `ind.macd(12, 26, 9)` → `{slow:26, signal:9}`.
+///
+/// Indicators not listed here accept no positional secondary params — any
+/// integer after the period is silently ignored (use `buf=N` for buf depth).
+fn positional_param_names(ind_type: &str) -> &'static [&'static str] {
+    match ind_type {
+        "macd"          => &["slow", "signal"],
+        "bbands"        => &["multiplier"],
+        "supertrend"    => &["multiplier"],
+        "stochastic"    => &["d_period"],
+        "stoch_rsi"     => &["smooth_d"],
+        "parabolic_sar" => &["step", "max"],
+        "kdj"           => &["k_period", "d_period"],
+        _               => &[],
+    }
+}
+
 // ── Declaration parser ────────────────────────────────────────────────────────
 
 /// Parse an indicator declaration line:
-///   `let NAME = ind.TYPE(period [, tf_or_buf [, buf]]);`
+/// ```text
+/// let NAME = ind.TYPE(period [, name=value]* [, "TF"] [, buf=N]);
+/// ```
+///
+/// Positional integers after the period are mapped to per-type secondary
+/// parameter names via [`positional_param_names`].  Buffer depth **must** be
+/// set with the explicit `buf=N` named form; a bare integer is no longer
+/// treated as buf.
 pub(crate) fn try_parse_indicator_line(line: &str) -> Option<IndicatorDecl> {
     let line = line.trim().split("//").next()?.trim();
     if line.is_empty() { return None; }
@@ -268,30 +295,40 @@ pub(crate) fn try_parse_indicator_line(line: &str) -> Option<IndicatorDecl> {
     if type_str.is_empty() { return None; }
     let args_inner = after_dot[paren + 1..].trim_end_matches(')');
 
-    // Parse args: period [, name=value]* [, "TF"] [, buf]
+    // Parse args: period [, name=value | positional_num | "TF"]*
     let mut args = args_inner.split(',');
     let period: usize = args.next()?.trim().parse().ok()?;
 
-    let mut extra_params = HashMap::new();
-    let mut timeframe    = None;
-    let mut buf_depth    = DEFAULT_BUF_DEPTH;
-    let mut live         = false;
+    let mut extra_params   = HashMap::new();
+    let mut timeframe      = None;
+    let mut buf_depth      = DEFAULT_BUF_DEPTH;
+    let mut live           = false;
+    let mut positional_idx = 0usize;
 
     for token in args {
         let token = token.trim();
         if let Some(eq) = token.find('=') {
-            // named param: name=value
-            let name    = token[..eq].trim().to_string();
+            // named param: `name=value`  or  `buf=N`
+            let name    = token[..eq].trim();
             let val_str = token[eq + 1..].trim();
-            if let Ok(v) = val_str.parse::<f64>() {
-                extra_params.insert(name, v);
+            if name == "buf" {
+                if let Ok(n) = val_str.parse::<usize>() {
+                    buf_depth = n;
+                }
+            } else if let Ok(v) = val_str.parse::<f64>() {
+                extra_params.insert(name.to_string(), v);
             }
         } else {
-            // positional: "TF" string or buf integer
+            // positional: quoted "TF" string or numeric secondary param
             let s = token.trim_matches('"').trim_matches('\'');
-            if let Ok(n) = s.parse::<usize>() {
-                buf_depth = n;
-            } else {
+            if let Ok(n) = s.parse::<f64>() {
+                // Map numeric positional to indicator param name by index.
+                let param_names = positional_param_names(&type_str);
+                if let Some(param_name) = param_names.get(positional_idx) {
+                    extra_params.insert(param_name.to_string(), n);
+                }
+                positional_idx += 1;
+            } else if !s.is_empty() {
                 let (tf_str, is_live) = s.strip_prefix("live_")
                     .map(|r| (r, true))
                     .unwrap_or((s, false));
@@ -325,8 +362,8 @@ pub(super) fn map_indicator_type(type_str: &str) -> (String, IndicatorKind) {
         // fields: .macd  .signal  .histogram  — MACD line is the primary output
         "macd" => ("macd".to_string(), Multi("macd".to_string())),
 
-        // fields: .adx  .plus_di  .minus_di   — ADX is the trend-strength value
-        "adx"  => ("adx".to_string(),  Multi("adx".to_string())),
+        // scalar: ADX trend-strength value only — use ind.dmi() for +DI/-DI lines
+        "adx"  => ("adx".to_string(),  Single("value".to_string())),
         // fields: .plus_di  .minus_di  .dx     — positive DI is the bullish leg
         "dmi"  => ("dmi".to_string(),  Multi("plus_di".to_string())),
 
@@ -348,8 +385,10 @@ pub(super) fn map_indicator_type(type_str: &str) -> (String, IndicatorKind) {
         // fields: .sar  .bullish    — price-level stop-and-reverse
         "parabolic_sar" => ("parabolic_sar".to_string(), Multi("sar".to_string())),
 
-        // fields: .up  .down  .oscillator  — net momentum = up − down
-        "aroon" => ("aroon".to_string(), Multi("oscillator".to_string())),
+        // fields: .up  .down  — bullish leg is primary; oscillator: use aroon_osc
+        "aroon"     => ("aroon".to_string(),     Multi("up".to_string())),
+        // scalar aroon oscillator (−100…+100) — up − down
+        "aroon_osc" => ("aroon_osc".to_string(), Single("value".to_string())),
         // fields: .plus_vi  .minus_vi      — bullish vortex indicator
         "vortex" => ("vortex".to_string(), Multi("plus_vi".to_string())),
 
@@ -492,7 +531,8 @@ mod tests {
 
     #[test]
     fn parse_custom_buf() {
-        let d = try_parse_indicator_line(r#"let atr = ind.atr(14, 5);"#).unwrap();
+        // buf must be explicit via `buf=N`
+        let d = try_parse_indicator_line(r#"let atr = ind.atr(14, buf=5);"#).unwrap();
         assert_eq!(d.period, 14);
         assert_eq!(d.buf_depth, 5);
         assert!(matches!(d.kind, IndicatorKind::Single(_)));
@@ -507,7 +547,7 @@ mod tests {
 
     #[test]
     fn parse_htf_custom_buf() {
-        let d = try_parse_indicator_line(r#"let x = ind.rsi(5, "M5", 3);"#).unwrap();
+        let d = try_parse_indicator_line(r#"let x = ind.rsi(5, "M5", buf=3);"#).unwrap();
         assert_eq!(d.timeframe, Some(Timeframe::M5));
         assert_eq!(d.buf_depth, 3);
     }
@@ -516,6 +556,112 @@ mod tests {
     fn non_indicator_line_returns_none() {
         assert!(try_parse_indicator_line("let x = 42;").is_none());
         assert!(try_parse_indicator_line("// comment").is_none());
+    }
+
+    #[test]
+    fn parse_named_param_single() {
+        let d = try_parse_indicator_line("let st = ind.supertrend(10, multiplier=5.0);").unwrap();
+        assert_eq!(d.period, 10);
+        assert_eq!(d.extra_params.get("multiplier").copied(), Some(5.0));
+        assert_eq!(d.buf_depth, DEFAULT_BUF_DEPTH);
+        assert!(d.timeframe.is_none());
+    }
+
+    #[test]
+    fn parse_named_param_with_buf() {
+        let d = try_parse_indicator_line("let st = ind.supertrend(10, multiplier=5.0, buf=4);").unwrap();
+        assert_eq!(d.period, 10);
+        assert_eq!(d.extra_params.get("multiplier").copied(), Some(5.0));
+        assert_eq!(d.buf_depth, 4);
+    }
+
+    #[test]
+    fn parse_named_param_with_tf_and_buf() {
+        let d = try_parse_indicator_line(r#"let st = ind.supertrend(10, multiplier=5.0, "H1", buf=3);"#).unwrap();
+        assert_eq!(d.period, 10);
+        assert_eq!(d.extra_params.get("multiplier").copied(), Some(5.0));
+        assert_eq!(d.timeframe, Some(Timeframe::H1));
+        assert_eq!(d.buf_depth, 3);
+    }
+
+    #[test]
+    fn parse_multiple_named_params() {
+        let d = try_parse_indicator_line("let m = ind.macd(12, slow=26, signal=9);").unwrap();
+        assert_eq!(d.period, 12);
+        assert_eq!(d.extra_params.get("slow").copied(), Some(26.0));
+        assert_eq!(d.extra_params.get("signal").copied(), Some(9.0));
+        assert!(d.extra_params.get("multiplier").is_none());
+    }
+
+    #[test]
+    fn indicator_json_config_supertrend_default_multiplier() {
+        let extra = HashMap::new();
+        let cfg = indicator_json_config("supertrend", 10, &extra);
+        assert_eq!(cfg["multiplier"].as_f64(), Some(3.0));
+        assert_eq!(cfg["period"].as_u64(), Some(10));
+    }
+
+    #[test]
+    fn indicator_json_config_supertrend_custom_multiplier() {
+        let mut extra = HashMap::new();
+        extra.insert("multiplier".to_string(), 5.0f64);
+        let cfg = indicator_json_config("supertrend", 10, &extra);
+        assert_eq!(cfg["multiplier"].as_f64(), Some(5.0));
+    }
+
+    #[test]
+    fn indicator_json_config_bbands_custom_multiplier() {
+        let mut extra = HashMap::new();
+        extra.insert("multiplier".to_string(), 2.5f64);
+        let cfg = indicator_json_config("bbands", 20, &extra);
+        assert_eq!(cfg["multiplier"].as_f64(), Some(2.5));
+        assert_eq!(cfg["period"].as_u64(), Some(20));
+    }
+
+    #[test]
+    fn indicator_json_config_macd_custom_secondary() {
+        let mut extra = HashMap::new();
+        extra.insert("slow".to_string(), 30.0f64);
+        extra.insert("signal".to_string(), 7.0f64);
+        let cfg = indicator_json_config("macd", 12, &extra);
+        assert_eq!(cfg["fast"].as_u64(), Some(12));
+        assert_eq!(cfg["slow"].as_u64(), Some(30));
+        assert_eq!(cfg["signal"].as_u64(), Some(7));
+    }
+
+    #[test]
+    fn buf_must_be_named() {
+        // Bare integer after period for single-param indicators is silently
+        // ignored (not treated as buf) — buf requires explicit `buf=N`.
+        let d1 = try_parse_indicator_line("let x = ind.atr(14, 5);").unwrap();
+        assert_eq!(d1.period, 14);
+        assert_eq!(d1.buf_depth, DEFAULT_BUF_DEPTH); // 5 is ignored, not buf
+        assert!(d1.extra_params.is_empty());
+
+        // The correct way to set buf:
+        let d2 = try_parse_indicator_line("let x = ind.atr(14, buf=5);").unwrap();
+        assert_eq!(d2.buf_depth, 5);
+
+        // HTF + buf still works via buf=N:
+        let d3 = try_parse_indicator_line(r#"let h = ind.ema(20, "H1", buf=3);"#).unwrap();
+        assert_eq!(d3.period, 20);
+        assert_eq!(d3.timeframe, Some(Timeframe::H1));
+        assert_eq!(d3.buf_depth, 3);
+        assert!(d3.extra_params.is_empty());
+    }
+
+    #[test]
+    fn positional_params_map_to_indicator_secondary() {
+        // MACD: period=fast, positional 0→slow, positional 1→signal.
+        let d = try_parse_indicator_line("let m = ind.macd(12, 26, 9);").unwrap();
+        assert_eq!(d.period, 12);
+        assert_eq!(d.extra_params.get("slow").copied(), Some(26.0));
+        assert_eq!(d.extra_params.get("signal").copied(), Some(9.0));
+        assert_eq!(d.buf_depth, DEFAULT_BUF_DEPTH);
+
+        // bbands: multiplier is first positional.
+        let d2 = try_parse_indicator_line("let bb = ind.bbands(20, 2.5);").unwrap();
+        assert_eq!(d2.extra_params.get("multiplier").copied(), Some(2.5));
     }
 
     #[test]

@@ -138,9 +138,9 @@ pub fn all() -> Vec<IndicatorMeta> {
         },
         IndicatorMeta {
             name: "adx", label: "Average Directional Index", category: "trend",
-            description: "Measures trend strength on a 0–100 scale — above 25 indicates a strong trend.",
+            description: "Scalar trend-strength value on a 0–100 scale — above 25 indicates a strong trend. Use ind.dmi() for +DI/-DI directional lines.",
             params: vec![p_int("period", 14)],
-            outputs: vec!["adx", "plus_di", "minus_di"],
+            outputs: vec!["value"],
         },
         IndicatorMeta {
             name: "dmi", label: "DMI (Directional Movement)", category: "trend",

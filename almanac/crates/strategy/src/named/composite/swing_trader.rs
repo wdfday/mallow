@@ -3,8 +3,8 @@ use alm_indicator::{Adx, Cci};
 
 const RHAI: &str = r#"
 let cci20 = ind.cci(20);
-let adx14 = ind.adx(14, 1);
-if cci20[1] <= 100.0 && cci20[0] > 100.0 && adx14[0].adx > 25.0 { entry = true; }
+let adx14 = ind.adx(14, buf=1);
+if cci20[1] <= 100.0 && cci20[0] > 100.0 && adx14[0] > 25.0 { entry = true; }
 if cci20[1] >= -100.0 && cci20[0] < -100.0 { exit  = true; }
 "#;
 

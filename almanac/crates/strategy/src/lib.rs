@@ -13,7 +13,8 @@ pub use candle_type::{CandleTransform, CandleType};
 // ── Expression / template strategies ─────────────────────────────────────────
 pub mod script;
 pub use script::{
-    ScriptStrategy, ScriptStreamEval, StreamDecl, IndicatorSnapshot, PlotResult,
+    ScriptStrategy, script_indicator_deps,
+    ScriptStreamEval, StreamDecl, IndicatorSnapshot, PlotResult,
     script_lint, LintDiagnostic, ScriptLintScope, DeclaredIndicator, KNOWN_INDICATOR_TYPES,
     MtfScriptStrategy, probe_script_htfs,
 };

@@ -2,7 +2,7 @@ use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::Rwi;
 
 const RHAI: &str = r#"
-let rwi14 = ind.rwi(14, 1);
+let rwi14 = ind.rwi(14, buf=1);
 if rwi14[0].rwi_high > 1.0 { entry = true; }
 if rwi14[0].rwi_low  > 1.0 { exit  = true; }
 "#;

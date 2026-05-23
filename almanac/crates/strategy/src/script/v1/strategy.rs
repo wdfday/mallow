@@ -17,12 +17,12 @@
 //!
 //! # Indicator declaration syntax
 //!
-//! `ind.TYPE(period [, buf])`
+//! `ind.TYPE(period [, params]* [, buf=N])`
 //!
 //! | Form | Meaning |
 //! |---|---|
 //! | `ind.ema(9)` | Base-TF, default buf=2 |
-//! | `ind.ema(9, 5)` | Base-TF, buf=5 |
+//! | `ind.ema(9, buf=5)` | Base-TF, buf=5 |
 //!
 //! **V1 is strict single-TF.** Any TF argument (`"H1"`, `"live_H1"`, etc.) is
 //! rejected at compile time. Use [`MtfScriptStrategy`] (V2) for multi-timeframe
@@ -56,10 +56,10 @@
 //!
 //! regime {
 //!     let adx14 = ind.adx(14);
-//!     if adx14[0].adx > 25.0 {
-//!         trend = "trending"; trend_value = adx14[0].adx;
+//!     if adx14[0] > 25.0 {
+//!         trend = "trending"; trend_value = adx14[0];
 //!     } else {
-//!         trend = "ranging";  trend_value = adx14[0].adx;
+//!         trend = "ranging";  trend_value = adx14[0];
 //!     }
 //! }
 //!
@@ -68,7 +68,6 @@
 //! ```
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
 use rhai::{Array, Dynamic, Engine, Scope, AST};
@@ -81,7 +80,7 @@ use super::parse::{
     extract_candle_directives, extract_regime_block, indicator_json_config,
     make_indicator_box, try_parse_indicator_line, CandleDirective, IndicatorDecl,
 };
-use super::engine::{build_engine, extract_max_lookback, PlotBuf, BAR_FIELDS, DEFAULT_BUF_DEPTH};
+use super::engine::{build_engine, extract_max_lookback, BAR_FIELDS, DEFAULT_BUF_DEPTH};
 
 // ── ScriptStrategy ───────────────────────────────────────────────────────────
 
@@ -96,16 +95,13 @@ pub struct ScriptStrategy {
     binding_order:    Vec<String>,
     bar_buf:          VecDeque<Bar>,
     bar_buf_depth:    usize,
-    plot_buf:         PlotBuf,
-    /// `None` in live mode — plot() calls are silently flushed and discarded.
+    /// `None` in live (registry) mode — avoids unbounded accumulation.
+    /// `Some` in backtest / stream mode — auto-populated from indicator bindings.
     series:           Option<HashMap<String, Vec<(i64, f64)>>>,
     candle_transform: CandleTransform,
-    /// Latest regime state computed by the regime sub-script. `None` until the
-    /// regime block runs at least once (or always `None` if no regime block).
+    /// Latest regime state computed by the regime sub-script.
     current_regime:   Option<RegimeState>,
     /// Candle directive parsed from the script header (e.g. `candle.transform("heiken_ashi")`).
-    /// Engine builder reads this via `Strategy::script_candle_spec()` and lets it
-    /// override the request-level `candle_type` field.
     script_candle:    Option<(String, Option<usize>)>,
 }
 
@@ -122,12 +118,12 @@ fn validate_candle_kind(kind: &str) -> Result<()> {
 }
 
 impl ScriptStrategy {
-    /// Backtest mode: `plot()` calls accumulate in `series()` / `take_indicator_series()`.
+    /// Backtest / stream mode: indicator series auto-collected into `take_indicator_series()`.
     pub fn from_script(script: &str) -> Result<Self> {
         Self::build(script, true, CandleType::Raw)
     }
 
-    /// Live (herald) mode: `plot()` calls are registered but immediately discarded.
+    /// Live (herald registry) mode: series collection disabled to avoid unbounded accumulation.
     pub fn from_script_live(script: &str) -> Result<Self> {
         Self::build(script, false, CandleType::Raw)
     }
@@ -207,10 +203,8 @@ impl ScriptStrategy {
             );
         }
 
-        // Step 3: compile both ASTs against a single engine. The plot buffer is
-        // shared so calls from either block accumulate together.
-        let plot_buf: PlotBuf = Arc::new(Mutex::new(Vec::new()));
-        let engine = build_engine(Arc::clone(&plot_buf));
+        // Step 3: compile both ASTs against a single engine.
+        let engine = build_engine();
 
         let regime_ast = if regime_cleaned_script.trim().is_empty() {
             None
@@ -254,7 +248,6 @@ impl ScriptStrategy {
             binding_order,
             bar_buf: VecDeque::with_capacity(max_buf),
             bar_buf_depth: max_buf,
-            plot_buf,
             series: if collect_series { Some(HashMap::new()) } else { None },
             // Script-declared candle directive overrides the caller-supplied
             // `candle_type` (which itself comes from `from_params`'s
@@ -291,7 +284,7 @@ impl ScriptStrategy {
         if live { Self::build(script, false, candle_type) } else { Self::build(script, true, candle_type) }
     }
 
-    /// Snapshot of collected plot series (backtest mode only).
+    /// Snapshot of auto-collected indicator series (backtest mode only).
     pub fn series(&self) -> Option<&HashMap<String, Vec<(i64, f64)>>> {
         self.series.as_ref()
     }
@@ -387,13 +380,25 @@ impl Strategy for ScriptStrategy {
             return vec![];
         }
 
-        if let Ok(mut buf) = self.plot_buf.lock() {
-            if let Some(series) = &mut self.series {
-                for (name, value) in buf.drain(..) {
-                    series.entry(name).or_default().push((bar.timestamp, value));
+        // Auto-collect indicator series from declared bindings (no explicit plot() needed).
+        // Single-field indicators → series[var_name]. Multi-field → series[var_name.field].
+        if let Some(series) = &mut self.series {
+            for name in &self.binding_order {
+                if let Some(binding) = self.bindings.get(name) {
+                    if let Some(fields) = binding.current_fields() {
+                        if binding.is_multi() {
+                            for (field, val) in &fields {
+                                series.entry(format!("{name}.{field}"))
+                                    .or_default()
+                                    .push((bar.timestamp, *val));
+                            }
+                        } else if let Some(&val) = fields.values().next() {
+                            series.entry(name.clone())
+                                .or_default()
+                                .push((bar.timestamp, val));
+                        }
+                    }
                 }
-            } else {
-                buf.clear();
             }
         }
 
@@ -460,7 +465,6 @@ impl Strategy for ScriptStrategy {
         self.bar_buf.clear();
         self.candle_transform.reset();
         if let Some(s) = &mut self.series { s.clear(); }
-        if let Ok(mut buf) = self.plot_buf.lock() { buf.clear(); }
         self.current_regime = None;
     }
 }
@@ -577,35 +581,26 @@ if falling(h1_ema20) || m1_rsi5[0] > 65.0 { exit = true; }
     // V1 path. MTF dependency extraction belongs to the V2 surface.
 
     #[test]
-    fn plot_collects_series() {
-        let script = r#"
-let ema9 = ind.ema(9);
-plot("ema9", ema9[0]);
-"#;
+    fn auto_series_collects_from_indicator_declarations() {
+        let script = "let ema9 = ind.ema(9);";
         let mut s = ScriptStrategy::from_script(script).unwrap();
         for i in 0..30 { let _ = s.on_bar(&make_bar(i)); }
         let series = s.series().expect("backtest mode must have series");
-        assert!(series.contains_key("ema9"));
+        assert!(series.contains_key("ema9"), "ema9 series auto-collected");
         assert!(!series["ema9"].is_empty());
     }
 
     #[test]
-    fn plot_live_mode_no_series() {
-        let script = r#"
-let ema9 = ind.ema(9);
-plot("ema9", ema9[0]);
-"#;
+    fn live_mode_no_series() {
+        let script = "let ema9 = ind.ema(9);";
         let mut s = ScriptStrategy::from_script_live(script).unwrap();
         for i in 0..30 { let _ = s.on_bar(&make_bar(i)); }
         assert!(s.series().is_none());
     }
 
     #[test]
-    fn plot_reset_clears_series() {
-        let script = r#"
-let ema9 = ind.ema(9);
-plot("ema9", ema9[0]);
-"#;
+    fn reset_clears_series() {
+        let script = "let ema9 = ind.ema(9);";
         let mut s = ScriptStrategy::from_script(script).unwrap();
         for i in 0..30 { let _ = s.on_bar(&make_bar(i)); }
         assert!(!s.series().unwrap()["ema9"].is_empty());
@@ -625,18 +620,20 @@ let exit  = false;
 
     #[test]
     fn highest_lowest_values() {
+        // `highest` / `lowest` are scalar locals — they don't auto-collect.
+        // Just verify the script runs without error and produces signals correctly.
         let script = r#"
+let ema9 = ind.ema(9);
 let h = highest(close, 5);
 let l = lowest(low, 5);
 let entry = close[0] > h * 0.99;
 let exit  = close[0] < l * 1.01;
-plot("h", h);
-plot("l", l);
 "#;
         let mut s = ScriptStrategy::from_script(script).unwrap();
         for i in 0..30 { let _ = s.on_bar(&make_bar(i)); }
+        // ema9 is auto-collected (it's a declared indicator binding)
         let series = s.series().unwrap();
-        assert!(series.contains_key("h") && series.contains_key("l"));
+        assert!(series.contains_key("ema9"));
     }
 
     #[test]
@@ -656,21 +653,20 @@ let exit  = close[0] < st[0];
     fn multi_indicator_field_access_still_works() {
         // `supertrend[0].value` and `supertrend[0].bullish` still work after
         // switching Multi storage from script-engine map to MEntry.
+        // Multi-field bindings are auto-collected as "st.value", "st.bullish", etc.
         let script = r#"
 let st = ind.supertrend(10);
 let val = st[0].value;
 let bull = st[0].bullish;
 let entry = close[0] > val && bull == 1.0;
 let exit  = bull == 0.0;
-plot("st_val",  val);
-plot("st_bull", bull);
 "#;
         let mut s = ScriptStrategy::from_script(script).unwrap();
         for i in 0..100 { let _ = s.on_bar(&make_bar(i)); }
         let series = s.series().unwrap();
-        assert!(series.contains_key("st_val"),  "st_val series missing");
-        assert!(series.contains_key("st_bull"), "st_bull series missing");
-        assert!(!series["st_val"].is_empty());
+        assert!(series.contains_key("st.value"),   "st.value series missing");
+        assert!(series.contains_key("st.bullish"), "st.bullish series missing");
+        assert!(!series["st.value"].is_empty());
     }
 
     #[test]
@@ -699,7 +695,7 @@ let exit  = false;
     #[test]
     fn rising_n_falling_n_buf_extended() {
         let script = r#"
-let adx14 = ind.adx(14, 4);
+let adx14 = ind.adx(14, buf=4);
 let entry = adx14[0] > 25.0 && rising_n(adx14, 3);
 let exit  = falling_n(adx14, 2);
 "#;
@@ -723,7 +719,7 @@ let exit  = m < -1.0;
     #[test]
     fn slope_and_momentum_compile_run() {
         let script = r#"
-let adx14 = ind.adx(14, 5);
+let adx14 = ind.adx(14, buf=5);
 let s     = slope(adx14);
 let m     = momentum(adx14, 3);
 let entry = adx14[0] > 25.0 && s > 0.0 && m > 0.5;
@@ -762,12 +758,12 @@ let ema21 = ind.ema(21);
 
 regime {
     let adx14 = ind.adx(14);
-    if adx14[0].adx > 25.0 {
+    if adx14[0] > 25.0 {
         trend = "trending";
-        trend_value = adx14[0].adx;
+        trend_value = adx14[0];
     } else {
         trend = "ranging";
-        trend_value = adx14[0].adx;
+        trend_value = adx14[0];
     }
 }
 
@@ -837,11 +833,11 @@ let ema21 = ind.ema(21);
 
 regime {
     let adx14 = ind.adx(14);
-    if adx14[0].adx > 25.0 { trend = "trending"; }
-    else                   { trend = "weak"; }
+    if adx14[0] > 25.0 { trend = "trending"; }
+    else               { trend = "weak"; }
 }
 
-if cross_above(ema9, ema21) && adx14[0].adx > 20.0 && trend == "trending" {
+if cross_above(ema9, ema21) && adx14[0] > 20.0 && trend == "trending" {
     entry = true;
 }
 "#;

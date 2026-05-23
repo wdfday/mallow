@@ -88,6 +88,18 @@ impl History {
         }
     }
 
+    /// Latest raw field map, or `None` if the buffer is empty (not yet warm).
+    fn current_fields(&self) -> Option<HashMap<String, f64>> {
+        match self {
+            Self::Single { field, data } => data.back().map(|&v| {
+                let mut m = HashMap::new();
+                m.insert(field.clone(), v);
+                m
+            }),
+            Self::Multi { data, .. } => data.back().cloned(),
+        }
+    }
+
     fn clear(&mut self) {
         match self {
             Self::Single { data, .. } => data.clear(),
@@ -123,6 +135,11 @@ impl VarBinding {
 
     pub(super) fn is_multi(&self) -> bool {
         matches!(self.history, History::Multi { .. })
+    }
+
+    /// Latest raw field values for auto-series collection. `None` = not yet warm.
+    pub(super) fn current_fields(&self) -> Option<HashMap<String, f64>> {
+        self.history.current_fields()
     }
 
     /// Feed a bar. Returns `true` when the history buffer is full.

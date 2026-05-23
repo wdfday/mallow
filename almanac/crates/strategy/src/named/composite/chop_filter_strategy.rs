@@ -160,7 +160,7 @@ mod tests {
         let script = r#"
 let ema8  = ind.ema(8);
 let ema21 = ind.ema(21);
-let chop14 = ind.chop(14, 1);
+let chop14 = ind.chop(14, buf=1);
 if ema8[1] <= ema21[1] && ema8[0] > ema21[0] && chop14[0] < 61.8 { entry = true; }
 if ema8[1] >= ema21[1] && ema8[0] < ema21[0] { exit = true; }
 "#;

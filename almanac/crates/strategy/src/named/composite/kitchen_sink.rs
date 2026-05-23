@@ -12,17 +12,17 @@ use crate::bar_resampler::TimeBarResampler;
 /// Logic mirrors the canonical script verbatim so the two can be parity-tested:
 ///
 /// ```text
-/// let ema9    = ind.ema(9, 4);
-/// let ema21   = ind.ema(21, 4);
-/// let ema50   = ind.ema(50, 4);
-/// let rsi14   = ind.rsi(14, 4);
-/// let adx14   = ind.adx(14, 5);
-/// let atr14   = ind.atr(14, 3);
-/// let macd    = ind.macd(12, 3);  // not used in signals
-/// let bb      = ind.bbands(20, 3);
-/// let h1_ema  = ind.ema(20, "live_H1", 3);
+/// let ema9    = ind.ema(9, buf=4);
+/// let ema21   = ind.ema(21, buf=4);
+/// let ema50   = ind.ema(50, buf=4);
+/// let rsi14   = ind.rsi(14, buf=4);
+/// let adx14   = ind.adx(14, buf=5);
+/// let atr14   = ind.atr(14, buf=3);
+/// let macd    = ind.macd(12, buf=3);  // not used in signals
+/// let bb      = ind.bbands(20, buf=3);
+/// let h1_ema  = ind.ema(20, "live_H1", buf=3);
 ///
-/// let trend   = adx14[0].adx > 25.0 && rising_n(adx14.adx, 3);
+/// let trend   = adx14[0] > 25.0 && rising_n(adx14, 3);
 /// let mom     = momentum(rsi14, 3) > 0.0;
 /// let squeeze = (bb[0].upper - bb[0].lower) < atr14[0] * 1.5;
 /// let h_break = highest(close, 20) == close[0];
@@ -32,7 +32,7 @@ use crate::bar_resampler::TimeBarResampler;
 ///     && trend && mom && squeeze && h_break && above(h1_ema, ema50) {
 ///   entry = true; tp = close[0] + atr14[0] * 2.5; sl = close[0] - atr14[0] * 1.5;
 /// }
-/// if cross_below(ema9, ema21) || rsi14[0] > 80.0 || falling_n(adx14.adx, 2) {
+/// if cross_below(ema9, ema21) || rsi14[0] > 80.0 || falling_n(adx14, 2) {
 ///   exit = true;
 /// }
 /// ```
@@ -271,17 +271,17 @@ impl Strategy for KitchenSinkStrategy {
 }
 
 pub(crate) const RHAI_SCRIPT: &str = r#"
-let ema9    = ind.ema(9, 4);
-let ema21   = ind.ema(21, 4);
-let ema50   = ind.ema(50, 4);
-let rsi14   = ind.rsi(14, 4);
-let adx14   = ind.adx(14, 5);
-let atr14   = ind.atr(14, 3);
-let macd    = ind.macd(12, 3);
-let bb      = ind.bbands(20, 3);
-let h1_ema  = ind.ema(20, "live_H1", 3);
+let ema9    = ind.ema(9, buf=4);
+let ema21   = ind.ema(21, buf=4);
+let ema50   = ind.ema(50, buf=4);
+let rsi14   = ind.rsi(14, buf=4);
+let adx14   = ind.adx(14, buf=5);
+let atr14   = ind.atr(14, buf=3);
+let macd    = ind.macd(12, buf=3);
+let bb      = ind.bbands(20, buf=3);
+let h1_ema  = ind.ema(20, "live_H1", buf=3);
 
-let trend   = adx14[0].adx > 25.0 && rising_n(adx14.adx, 3);
+let trend   = adx14[0] > 25.0 && rising_n(adx14, 3);
 let mom     = momentum(rsi14, 3) > 0.0;
 let squeeze = (bb[0].upper - bb[0].lower) < atr14[0] * 1.5;
 let h_break = highest(close, 20) == close[0];
@@ -297,7 +297,7 @@ if cross_above(ema9, ema21)
     sl = close[0] - atr14[0] * 1.5;
 }
 
-if cross_below(ema9, ema21) || rsi14[0] > 80.0 || falling_n(adx14.adx, 2) {
+if cross_below(ema9, ema21) || rsi14[0] > 80.0 || falling_n(adx14, 2) {
     exit = true;
 }
 
@@ -377,7 +377,7 @@ mod tests {
 
     #[test]
     fn kitchen_sink_script_reset_reproducible() {
-        // RHAI_SCRIPT declares `ind.ema(20, "live_H1", 3)` → V2 path.
+        // RHAI_SCRIPT declares `ind.ema(20, "live_H1", buf=3)` → V2 path.
         // Use MtfScriptStrategy directly via MtfSnapshot simulation so reset
         // parity is tested against the same execution model used in production.
         use std::collections::{BTreeMap, HashMap, VecDeque};

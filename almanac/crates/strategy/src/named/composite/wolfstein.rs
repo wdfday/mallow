@@ -2,9 +2,10 @@ use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::Adx;
 
 const RHAI: &str = r#"
-let adx14 = ind.adx(14, 1);
-if adx14[0].adx > 27.5 && adx14[0].plus_di > adx14[0].minus_di { entry = true; }
-if adx14[0].adx < 20.5 { exit  = true; }
+let adx14 = ind.adx(14, buf=1);
+let dmi14 = ind.dmi(14, buf=1);
+if adx14[0] > 27.5 && dmi14[0].plus_di > dmi14[0].minus_di { entry = true; }
+if adx14[0] < 20.5 { exit  = true; }
 "#;
 
 /// Bot #46 — Wolfstein Trending.

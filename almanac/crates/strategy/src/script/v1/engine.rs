@@ -1,12 +1,8 @@
-use std::sync::{Arc, Mutex};
-
 use rhai::{Array, Dynamic, Engine};
 
 use super::binding::MEntry;
 
 // ── Shared types / constants ──────────────────────────────────────────────────
-
-pub(crate) type PlotBuf = Arc<Mutex<Vec<(String, f64)>>>;
 
 pub(crate) const DEFAULT_BUF_DEPTH: usize = 2;
 pub(crate) const BAR_FIELDS: &[&str] = &["open", "high", "low", "close", "volume"];
@@ -41,8 +37,8 @@ fn extract_field(arr: &Array, name: &str) -> Array {
 const MULTI_FIELDS: &[&str] = &[
     // macd / trix / ppo / kst / pmo
     "histogram", "signal", "macd", "trix", "ppo", "kst", "pmo",
-    // adx / dmi
-    "adx", "plus_di", "minus_di", "dx",
+    // dmi
+    "plus_di", "minus_di", "dx",
     // bbands / keltner / donchian
     "upper", "middle", "lower", "bandwidth", "percent_b",
     // stochastic / stoch_rsi / kdj
@@ -58,7 +54,7 @@ const MULTI_FIELDS: &[&str] = &[
     // rwi
     "rwi_high", "rwi_low",
     // ichimoku
-    "tenkan", "kijun", "senkou_a", "senkou_b", "chikou", "above_cloud",
+    "tenkan", "kijun", "senkou_a", "senkou_b", "chikou", "above_cloud", "below_cloud",
     // alligator
     "jaw", "teeth", "lips",
     // gmma
@@ -79,7 +75,7 @@ const MULTI_FIELDS: &[&str] = &[
 
 // ── Script engine with built-in functions ────────────────────────────────────
 
-pub(crate) fn build_engine(plot_buf: PlotBuf) -> Engine {
+pub(crate) fn build_engine() -> Engine {
     let mut engine = Engine::new();
 
     // ── MEntry — multi-output indicator element ──────────────────────────────
@@ -203,13 +199,6 @@ pub(crate) fn build_engine(plot_buf: PlotBuf) -> Engine {
     // ── Debug ────────────────────────────────────────────────────────────────
     engine.register_fn("log", |msg: String| {
         tracing::debug!(rhai = %msg);
-    });
-
-    // ── Plot ─────────────────────────────────────────────────────────────────
-    engine.register_fn("plot", move |name: String, value: f64| {
-        if let Ok(mut buf) = plot_buf.lock() {
-            buf.push((name, value));
-        }
     });
 
     // ── Multi-output field extractors ────────────────────────────────────────

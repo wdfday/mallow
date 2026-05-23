@@ -105,7 +105,7 @@ mod tests {
         let script = r#"
 let e20 = ind.ema(20);
 let e50 = ind.ema(50);
-let rsi14 = ind.rsi(14, 1);
+let rsi14 = ind.rsi(14, buf=1);
 if cross_above(e20, e50) && rsi14[0] > 50.0 { entry = true; }
 if cross_below(e20, e50) || rsi14[0] < 45.0 { exit = true; }
 "#;

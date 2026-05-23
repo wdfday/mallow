@@ -162,7 +162,7 @@ impl Strategy for KeltnerBreakout {
         if bar.close > v.upper {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if bar.close < v.middle {
+        if bar.close < v.lower {
             return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -173,14 +173,14 @@ impl Strategy for KeltnerBreakout {
     }
 
     fn description(&self) -> &'static str {
-        "Long when close breaks above upper Keltner band. Exit when close drops below the middle EMA line."
+        "Long when close breaks above upper Keltner band. Exit when close drops below the lower Keltner band."
     }
 
     fn script(&self) -> Option<&'static str> {
         Some(r#"
-let kc20 = ind.keltner(20, 1);
-if close[0] > kc20[0].upper  { entry = true; }
-if close[0] < kc20[0].middle { exit  = true; }
+let kc20 = ind.keltner(20, buf=1);
+if close[0] > kc20[0].upper { entry = true; }
+if close[0] < kc20[0].lower { exit  = true; }
 "#)
     }
 

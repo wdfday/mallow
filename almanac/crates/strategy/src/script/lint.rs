@@ -6,12 +6,10 @@
 //! prefix/type validity, HTF-vs-base-TF ordering, and Rhai syntax — once,
 //! for both engines.
 
-use std::sync::{Arc, Mutex};
-
 use alm_core::Timeframe;
 
 use crate::script::v1::{
-    build_engine, PlotBuf, BAR_FIELDS,
+    build_engine, BAR_FIELDS,
     extract_candle_directives, extract_regime_block,
     try_parse_indicator_line, IndicatorKind,
 };
@@ -29,9 +27,10 @@ pub const KNOWN_INDICATOR_TYPES: &[&str] = &[
     "dpo", "rci", "chop", "williams", "cmf", "obv", "vwap", "ao", "bop",
     "coppock", "uo", "tsi",
     "atr",
+    "aroon_osc",   // scalar aroon oscillator (−100…+100)
+    "adx",         // scalar ADX strength (0–100) — use dmi for +DI/-DI lines
     // ── Multi-output: Array<Map> ─────────────────────────────────────────────
     "macd",        // .macd  .signal  .histogram
-    "adx",         // .adx  .plus_di  .minus_di
     "dmi",         // .plus_di  .minus_di  .dx
     "bbands",      // .upper  .middle  .lower  .bandwidth  .percent_b
     "keltner",     // .upper  .middle  .lower
@@ -41,7 +40,7 @@ pub const KNOWN_INDICATOR_TYPES: &[&str] = &[
     "kdj",         // .k  .d  .j
     "supertrend",  // .value  .bullish
     "parabolic_sar", // .sar  .bullish
-    "aroon",       // .up  .down  .oscillator
+    "aroon",       // .up  .down
     "vortex",      // .plus_vi  .minus_vi
     "trix",        // .trix  .signal  .histogram
     "ppo",         // .ppo  .signal  .histogram
@@ -216,8 +215,7 @@ pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnos
     }
 
     let cleaned = cleaned_lines.join("\n");
-    let plot_buf: PlotBuf = Arc::new(Mutex::new(Vec::new()));
-    let engine = build_engine(plot_buf);
+    let engine = build_engine();
     if let Err(e) = engine.compile(&cleaned) {
         let pos = e.1;
         let orig_line = pos
@@ -236,13 +234,34 @@ pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnos
     let scope = ScriptLintScope {
         indicators:  scope_inds,
         bar_fields:  BAR_FIELDS.to_vec(),
-        output_vars: vec!["long", "short", "exit", "tp", "sl", "strength", "is_offset", "reason"],
+        output_vars: vec![
+            // signal outputs
+            "long", "entry", "short", "exit",
+            "tp", "sl", "is_offset", "strength", "reason", "atr",
+            // regime outputs (writable in regime block, readable everywhere)
+            "trend", "trend_value",
+            "vol",   "vol_value",
+            "liq",   "liq_value",
+        ],
         functions:   vec![
-            "cross_above", "cross_below",
+            // crossover
+            "cross_above", "crossover",
+            "cross_below", "crossunder",
+            // direction
             "rising", "falling", "rising_n", "falling_n",
             "above", "below", "in_range",
+            // movement
+            "slope", "momentum",
+            // lookback
             "highest", "lowest",
-            "plot",
+            // aggregation
+            "avg", "sum",
+            // scalar math
+            "abs", "sqrt", "pow",
+            "round", "floor", "ceil",
+            "min", "max", "clamp",
+            // debug
+            "log",
         ],
     };
 

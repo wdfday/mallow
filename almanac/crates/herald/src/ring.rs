@@ -21,24 +21,29 @@ impl BarRing {
 
     /// Push a bar. Drops the oldest entry when at capacity.
     pub fn push(&self, bar: Bar) {
-        let mut map = self.0.write();
-        let deq = map.entry(bar.symbol.clone()).or_default();
-        if let Some(last) = deq.back() {
-            let gap_ms = bar.timestamp - last.timestamp;
-            if gap_ms > 2 * 60_000 {
-                warn!(
-                    symbol = %bar.symbol,
-                    last_ts = last.timestamp,
-                    bar_ts = bar.timestamp,
-                    gap_ms,
-                    "BarRing M1 gap detected",
-                );
+        let symbol = bar.symbol.clone();
+        let size = {
+            let mut map = self.0.write();
+            let deq = map.entry(symbol.clone()).or_default();
+            if let Some(last) = deq.back() {
+                let gap_ms = bar.timestamp - last.timestamp;
+                if gap_ms > 2 * 60_000 {
+                    warn!(
+                        symbol = %symbol,
+                        last_ts = last.timestamp,
+                        bar_ts = bar.timestamp,
+                        gap_ms,
+                        "BarRing M1 gap detected",
+                    );
+                }
             }
-        }
-        if deq.len() == RING_CAPACITY {
-            deq.pop_front();
-        }
-        deq.push_back(bar);
+            if deq.len() == RING_CAPACITY {
+                deq.pop_front();
+            }
+            deq.push_back(bar);
+            deq.len()
+        };
+        metrics::gauge!("herald_bar_ring_size", "symbol" => symbol).set(size as f64);
     }
 
 }

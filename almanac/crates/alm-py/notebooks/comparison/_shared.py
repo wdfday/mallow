@@ -165,8 +165,8 @@ def bt_run(
     strategy_cls,
     df: pd.DataFrame,
     capital: float = 10_000.0,
-    commission: float = 0.001,
-    slippage: float = 0.0005,
+    commission: float = 0.0,
+    slippage: float = 0.0,
     sizer_pct: float = 95.0,
     strategy_kwargs: dict | None = None,
     timeframe=bt.TimeFrame.Minutes,
@@ -195,7 +195,7 @@ def bt_run(
 
     cerebro.addstrategy(strategy_cls, **(strategy_kwargs or {}))
     cerebro.addanalyzer(bt.analyzers.SharpeRatio, _name="sharpe", riskfreerate=0.0,
-                        timeframe=bt.TimeFrame.Days, factor=252, annualize=True)
+                        timeframe=bt.TimeFrame.Days, factor=365, annualize=True)
     cerebro.addanalyzer(bt.analyzers.DrawDown,    _name="dd")
     cerebro.addanalyzer(bt.analyzers.TradeAnalyzer, _name="trades")
     cerebro.addanalyzer(bt.analyzers.TimeReturn,  _name="time_ret",
@@ -220,13 +220,11 @@ def bt_run(
                 })
     cerebro.addanalyzer(_TradeRec, _name="trade_rec")
 
-    # Track equity curve
-    class EquityObserver(bt.Observer):
-        lines = ("equity",)
-        plotinfo = dict(plot=False)
-        def next(self):
-            self.lines.equity[0] = self._owner.broker.getvalue()
-    cerebro.addobserver(EquityObserver)
+    # Track equity curve via Analyzer (more reliable than Observer ordering)
+    class _EquityRec(bt.Analyzer):
+        def start(self): self.equity = []
+        def next(self):  self.equity.append(float(self.strategy.broker.getvalue()))
+    cerebro.addanalyzer(_EquityRec, _name="equity_rec")
 
     results = cerebro.run()
     strat = results[0]
@@ -238,10 +236,9 @@ def bt_run(
     won      = trades.get("won",  {}).get("total", 0) or 0
     win_rate = (won / total_trades * 100.0) if total_trades else 0.0
 
-    # Pull equity curve from observer
-    obs = strat.observers[-1]
-    eq_line = list(obs.lines.equity.array)
-    eq = [v if (v == v and v != 0) else capital for v in eq_line][-len(df):]
+    # Pull equity curve from analyzer
+    eq_raw = strat.analyzers.equity_rec.equity
+    eq = eq_raw if eq_raw else [capital] * len(df)
 
     # ── Per-trade stats from TradeAnalyzer ───────────────────────────────────
     won_pnl  = trades.get("won",  {}).get("pnl", {})
@@ -436,8 +433,8 @@ def vbt_run(
     exits,          # boolean list/array
     closes,         # list of close prices
     capital: float = 10_000.0,
-    commission: float = 0.001,
-    slippage: float = 0.0005,
+    commission: float = 0.0,
+    slippage: float = 0.0,
     freq: str = "1h",
 ):
     """

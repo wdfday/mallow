@@ -145,7 +145,7 @@ pub fn run_indicators(
 pub fn list_indicators() -> JsValue {
     let names = vec![
         "sma","ema","wma","hma","dema","tema","smma","alma","lsma","kama","mcginley","vwma",
-        "kdj","kalman","aroon","adx","dmi","macd","trix","vortex",
+        "kdj","kalman","aroon","aroon_osc","adx","dmi","macd","trix","vortex",
         "rsi","cci","roc","mfi","williams_r","stochastic","tsi","connors_rsi","cmo","ppo",
         "pmo","kst","dpo","coppock","ao","bop","bull_bear_power","uo","smi","rvi","fisher","rci",
         "obv","cmf","vwap","bbands","keltner","donchian",
@@ -373,4 +373,30 @@ pub(crate) fn parse_config(config_json: &str) -> (f64, f64, f64, f64) {
 pub fn list_strategies() -> JsValue {
     use alm_strategy::catalog::STRATEGY_KEYS;
     to_js(&STRATEGY_KEYS)
+}
+
+/// Lint a strategy script client-side (no server round-trip).
+///
+/// Returns `{ errors: [{line, col, message, severity}], scope: {...} }`.
+/// Pass `base_tf` as e.g. `"H1"` or `null` / empty string to skip TF checks.
+#[wasm_bindgen]
+pub fn validate_script(script: &str, base_tf: &str) -> JsValue {
+    use alm_core::Timeframe;
+    use alm_strategy::script_lint;
+
+    let tf = match base_tf {
+        "" => None,
+        s  => match s.to_ascii_uppercase().as_str() {
+            "M1"  => Some(Timeframe::M1),  "M3"  => Some(Timeframe::M3),
+            "M5"  => Some(Timeframe::M5),  "M15" => Some(Timeframe::M15),
+            "M30" => Some(Timeframe::M30), "H1"  => Some(Timeframe::H1),
+            "H2"  => Some(Timeframe::H2),  "H4"  => Some(Timeframe::H4),
+            "H6"  => Some(Timeframe::H6),  "H12" => Some(Timeframe::H12),
+            "D1"  => Some(Timeframe::D1),  "W1"  => Some(Timeframe::W1),
+            _     => None,
+        },
+    };
+
+    let (errors, scope) = script_lint(script, tf);
+    to_js(&json!({ "errors": errors, "scope": scope }))
 }

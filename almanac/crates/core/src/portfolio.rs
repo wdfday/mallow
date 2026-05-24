@@ -184,7 +184,7 @@ impl Portfolio {
                             exit_timestamp: fill.timestamp,
                             pnl,
                             pnl_pct: if pos.avg_price.abs() > f64::EPSILON {
-                                pnl / (pos.avg_price * covered_qty)
+                                pnl / (pos.avg_price * covered_qty) * 100.0
                             } else {
                                 0.0
                             },
@@ -260,7 +260,7 @@ impl Portfolio {
                             exit_timestamp: fill.timestamp,
                             pnl,
                             pnl_pct: if pos.avg_price.abs() > f64::EPSILON {
-                                pnl / (pos.avg_price * closed_qty)
+                                pnl / (pos.avg_price * closed_qty) * 100.0
                             } else {
                                 0.0
                             },

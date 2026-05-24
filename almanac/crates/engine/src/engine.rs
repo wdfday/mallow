@@ -224,8 +224,8 @@ impl<S: Strategy, R: RiskManager, B: EventBus> Engine<S, R, B> {
                 self.portfolio.apply_fill(&fill);
                 if let Some(tr) = tracker {
                     if let Some(trade) = self.portfolio.trades.last_mut() {
-                        trade.mae_pct = tr.mae;
-                        trade.mfe_pct = tr.mfe;
+                        trade.mae_pct = tr.mae * 100.0;
+                        trade.mfe_pct = tr.mfe * 100.0;
                         trade.bars_held = tr.bars_held;
                         trade.exit_reason = ExitReason::EndOfData;
                         if let Some(state) = regime_state {

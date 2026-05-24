@@ -121,6 +121,23 @@ fn get_f64(v: &Value, key: &str, default: f64) -> f64 {
         .unwrap_or(default)
 }
 
+fn get_usize_arr6(v: &Value, key: &str, default: [usize; 6]) -> [usize; 6] {
+    v.get(key)
+        .and_then(Value::as_array)
+        .and_then(|arr| {
+            if arr.len() == 6 {
+                let mut out = [0usize; 6];
+                for (i, el) in arr.iter().enumerate() {
+                    out[i] = el.as_f64()? as usize;
+                }
+                Some(out)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(default)
+}
+
 impl IndicatorBox {
     /// Build from `{ "type": "rsi", "period": 14, ... }`.
     pub fn from_config(cfg: &Value) -> Result<Self> {
@@ -170,7 +187,11 @@ impl IndicatorBox {
                 get_usize(cfg, "teeth", 8),
                 get_usize(cfg, "lips", 5),
             )),
-            "gmma"      => Self::Gmma(Gmma::new()),
+            "gmma"      => {
+                let short = get_usize_arr6(cfg, "short", [3, 5, 8, 10, 12, 15]);
+                let long  = get_usize_arr6(cfg, "long",  [30, 35, 40, 45, 50, 60]);
+                Self::Gmma(Gmma::with_periods(short, long))
+            }
             "kdj"       => Self::Kdj(Kdj::new(
                 get_usize(cfg, "period", 9),
                 get_usize(cfg, "k_period", 3),
@@ -331,7 +352,6 @@ impl IndicatorBox {
                 let mut m = HashMap::new();
                 m.insert("plus_di".into(), v.plus_di);
                 m.insert("minus_di".into(), v.minus_di);
-                m.insert("dx".into(), v.dx);
                 Some(m)
             }
             Self::Aroon(i) => {
@@ -371,6 +391,19 @@ impl IndicatorBox {
                 m.insert("short_avg".into(), short_avg);
                 m.insert("long_avg".into(), long_avg);
                 m.insert("bullish".into(), if v.bullish { 1.0 } else { 0.0 });
+                // Individual EMA lines — position-indexed, period-agnostic
+                m.insert("short_0".into(), v.short[0]);
+                m.insert("short_1".into(), v.short[1]);
+                m.insert("short_2".into(), v.short[2]);
+                m.insert("short_3".into(), v.short[3]);
+                m.insert("short_4".into(), v.short[4]);
+                m.insert("short_5".into(), v.short[5]);
+                m.insert("long_0".into(),  v.long[0]);
+                m.insert("long_1".into(),  v.long[1]);
+                m.insert("long_2".into(),  v.long[2]);
+                m.insert("long_3".into(),  v.long[3]);
+                m.insert("long_4".into(),  v.long[4]);
+                m.insert("long_5".into(),  v.long[5]);
                 Some(m)
             }
             Self::Kdj(i) => {
@@ -689,12 +722,12 @@ impl IndicatorBox {
             Self::Macd(_)      => &["macd", "signal", "histogram"],
             Self::Trix(_)      => &["trix", "signal", "histogram"],
             Self::Adx(_)       => &["value"],
-            Self::Dmi(_)       => &["plus_di", "minus_di", "dx"],
+            Self::Dmi(_)       => &["plus_di", "minus_di"],
             Self::Aroon(_)     => &["up", "down"],
             Self::AroonOsc(_)  => &["value"],
             Self::Vortex(_)    => &["plus_vi", "minus_vi"],
             Self::Alligator(_) => &["jaw", "teeth", "lips", "bullish"],
-            Self::Gmma(_)      => &["short_avg", "long_avg", "bullish"],
+            Self::Gmma(_)      => &["short_avg", "long_avg", "bullish", "short_0", "short_1", "short_2", "short_3", "short_4", "short_5", "long_0", "long_1", "long_2", "long_3", "long_4", "long_5"],
             Self::Kdj(_)       => &["k", "d", "j"],
             Self::Kalman(_)    => &["value", "velocity"],
             Self::Stochastic(_) => &["k", "d"],
@@ -815,14 +848,14 @@ impl IndicatorBox {
             Self::Macd(_)      => "ind.macd(12, 26, 9)[0] → .macd (default)  ·  .signal  ·  .histogram",
             Self::Trix(_)      => "ind.trix(18, 9)[0] → .trix (default)  ·  .signal  ·  .histogram",
             Self::Adx(_)       => "ind.adx(14)[0] → scalar ADX strength (0–100)",
-            Self::Dmi(_)       => "ind.dmi(14)[0] → .plus_di (default)  ·  .minus_di  ·  .dx",
+            Self::Dmi(_)       => "ind.dmi(14)[0] → .plus_di (default)  ·  .minus_di",
             Self::Aroon(_)     => "ind.aroon(25)[0] → .up  ·  .down  (oscillator: use aroon_osc)",
             Self::AroonOsc(_)  => "ind.aroon_osc(25)[0] → scalar oscillator value",
             Self::Vortex(_)    => "ind.vortex(14)[0] → .plus_vi (default)  ·  .minus_vi",
             Self::Alligator(_) => "ind.alligator(13, 8, 5)[0] → .teeth (default)  ·  .jaw  ·  .lips  ·  .bullish",
-            Self::Gmma(_)      => "ind.gmma()[0] → .long_avg (default)  ·  .short_avg  ·  .bullish",
+            Self::Gmma(_)      => "ind.gmma(0)[0] → .long_avg (default)  ·  .short_avg  ·  .bullish  ·  .short_0..short_5  ·  .long_0..long_5\n  custom: ind.gmma(3, 5, 8, 10, 12, 15, 30, 35, 40, 45, 50, 60)",
             Self::Kdj(_)       => "ind.kdj(9, 3, 3)[0] → .k (default)  ·  .d  ·  .j",
-            Self::Kalman(_)    => "ind.kalman(0.001, 0.001, 1.0)[0] → .value (default)  ·  .slope",
+            Self::Kalman(_)    => "ind.kalman(0, q_pos=0.001, q_vel=0.001, r=1.0)[0] → .value (default)  ·  .velocity",
             // ── Momentum / Oscillator ─────────────────────────────────────────
             Self::Rsi(_)        => "ind.rsi(14)[0]  → scalar 0–100",
             Self::Cci(_)        => "ind.cci(20)[0]  → scalar (centered ~0)",

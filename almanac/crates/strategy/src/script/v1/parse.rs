@@ -256,14 +256,30 @@ fn parse_transform_args(args: &str, line_no: usize) -> anyhow::Result<CandleDire
 /// integer after the period is silently ignored (use `buf=N` for buf depth).
 fn positional_param_names(ind_type: &str) -> &'static [&'static str] {
     match ind_type {
-        "macd"          => &["slow", "signal"],
-        "bbands"        => &["multiplier"],
-        "supertrend"    => &["multiplier"],
-        "stochastic"    => &["d_period"],
-        "stoch_rsi"     => &["smooth_d"],
-        "parabolic_sar" => &["step", "max"],
-        "kdj"           => &["k_period", "d_period"],
-        _               => &[],
+        "macd"            => &["slow", "signal"],
+        "bbands"          => &["multiplier"],
+        "supertrend"      => &["multiplier"],
+        "stochastic"      => &["d_period"],
+        "stoch_rsi"       => &["smooth_d"],
+        "parabolic_sar"   => &["step", "max"],
+        "kdj"             => &["k_period", "d_period"],
+        "alma"            => &["offset", "sigma"],
+        "trix"            => &["signal"],
+        "kama"            => &["fast", "slow"],
+        "keltner"         => &["atr_period", "multiplier"],
+        "chop_zone"       => &["threshold"],
+        "chandelier_exit" => &["multiplier"],
+        "chande_kroll"    => &["factor", "stop_period"],
+        "alligator"       => &["teeth", "lips"],
+        "tsi"             => &["second"],
+        "ppo"             => &["slow", "signal"],
+        "uo"              => &["medium", "slow"],
+        "ao"              => &["slow"],
+        "connors_rsi"     => &["streak_period", "rank_period"],
+        "ichimoku"        => &["kijun", "senkou_b"],
+        // gmma: period = short[0]; remaining positionals fill short[1..5] then long[0..5]
+        "gmma"            => &["s1", "s2", "s3", "s4", "s5", "l0", "l1", "l2", "l3", "l4", "l5"],
+        _                 => &[],
     }
 }
 
@@ -350,8 +366,8 @@ pub(super) fn map_indicator_type(type_str: &str) -> (String, IndicatorKind) {
         // ── Single-output: Array<f64> ────────────────────────────────────────
         "ema" | "sma" | "wma" | "hma" | "dema" | "tema" | "smma" | "kama" | "alma" |
         "mcginley" | "lsma" | "vwma" | "rsi" | "cci" | "roc" | "mfi" | "mom" | "cmo" |
-        "dpo" | "rci" | "chop" | "williams" | "cmf" | "obv" | "vwap" | "ao" | "bop" |
-        "coppock" | "uo" | "tsi" =>
+        "dpo" | "rci" | "chop" | "williams_r" | "cmf" | "obv" | "vwap" | "ao" | "bop" |
+        "coppock" | "uo" | "tsi" | "connors_rsi" | "volatility_ratio" =>
             (type_str.to_string(), Single("value".to_string())),
 
         "atr" => ("atr".to_string(), Single("atr".to_string())),
@@ -416,17 +432,17 @@ pub(super) fn map_indicator_type(type_str: &str) -> (String, IndicatorKind) {
         "alligator" => ("alligator".to_string(), Multi("teeth".to_string())),
         // fields: .short_avg  .long_avg  .bullish  — long group defines the trend
         "gmma" => ("gmma".to_string(), Multi("long_avg".to_string())),
-        // fields: .value  .slope  — filtered price estimate
+        // fields: .value  .velocity  — filtered price + rate-of-change estimate
         "kalman" => ("kalman".to_string(), Multi("value".to_string())),
 
         // fields: .bull  .bear  .ema  — bull power = high − EMA
-        "bull_bear_power"  => ("bull_bear_power".to_string(),  Multi("bull".to_string())),
+        "bull_bear"  => ("bull_bear".to_string(),  Multi("bull".to_string())),
         // fields: .long_stop  .short_stop  .atr  — long-side chandelier stop
         "chandelier_exit"  => ("chandelier_exit".to_string(),  Multi("long_stop".to_string())),
         // fields: .stop_long  .stop_short  — long-side Chande-Kroll stop
-        "chande_kroll_stop" => ("chande_kroll_stop".to_string(), Multi("stop_long".to_string())),
+        "chande_kroll" => ("chande_kroll".to_string(), Multi("stop_long".to_string())),
         // fields: .bullish  .bearish  .fractal_high  .fractal_low
-        "william_fractal" => ("william_fractal".to_string(), Multi("bullish".to_string())),
+        "fractal" => ("fractal".to_string(), Multi("bullish".to_string())),
         // fields: .angle  .zone  — zone is the color-coded trend zone
         "chop_zone" => ("chop_zone".to_string(), Multi("zone".to_string())),
 
@@ -486,13 +502,117 @@ pub(crate) fn indicator_json_config(
             "k_period": p!("k_period", 3.0) as u64,
             "d_period": p!("d_period", 3.0) as u64,
         }),
-        "kama"    => json!({"type": "kama",    "er_period": period}),
+        "gmma" => {
+            if period == 0 {
+                // default GUPPY periods
+                json!({"type": "gmma"})
+            } else {
+                json!({
+                    "type": "gmma",
+                    "short": [
+                        period as u64,
+                        p!("s1", 5.0) as u64, p!("s2", 8.0) as u64,
+                        p!("s3", 10.0) as u64, p!("s4", 12.0) as u64, p!("s5", 15.0) as u64,
+                    ],
+                    "long": [
+                        p!("l0", 30.0) as u64, p!("l1", 35.0) as u64,
+                        p!("l2", 40.0) as u64, p!("l3", 45.0) as u64,
+                        p!("l4", 50.0) as u64, p!("l5", 60.0) as u64,
+                    ],
+                })
+            }
+        }
+        "alma" => json!({
+            "type": "alma",
+            "period": period,
+            "offset": p!("offset", 0.85),
+            "sigma": p!("sigma", 6.0),
+        }),
+        "trix" => json!({
+            "type": "trix",
+            "period": period,
+            "signal": p!("signal", 9.0) as u64,
+        }),
+        "kama" => json!({
+            "type": "kama",
+            "er_period": period,
+            "fast": p!("fast", 2.0) as u64,
+            "slow": p!("slow", 30.0) as u64,
+        }),
+        "keltner" => json!({
+            "type": "keltner",
+            "period": period,
+            "atr_period": p!("atr_period", 10.0) as u64,
+            "multiplier": p!("multiplier", 2.0),
+        }),
+        "chop_zone" => json!({
+            "type": "chop_zone",
+            "ema_period": period,
+            "threshold": p!("threshold", 5.0),
+        }),
+        "chandelier_exit" => json!({
+            "type": "chandelier_exit",
+            "period": period,
+            "multiplier": p!("multiplier", 3.0),
+        }),
+        "chande_kroll" => json!({
+            "type": "chande_kroll",
+            "atr_period": period,
+            "factor": p!("factor", 1.5),
+            "stop_period": p!("stop_period", 9.0) as u64,
+        }),
+        // kalman: no period concept — use named params only (period arg ignored)
+        "kalman" => json!({
+            "type": "kalman",
+            "q_pos": p!("q_pos", 0.001),
+            "q_vel": p!("q_vel", 0.001),
+            "r": p!("r", 1.0),
+        }),
+        "alligator" => json!({
+            "type": "alligator",
+            "jaw":   period,
+            "teeth": p!("teeth", 8.0) as u64,
+            "lips":  p!("lips",  5.0) as u64,
+        }),
+        "tsi" => json!({
+            "type": "tsi",
+            "first":  period,
+            "second": p!("second", 13.0) as u64,
+        }),
+        "ppo" => json!({
+            "type": "ppo",
+            "fast":   period,
+            "slow":   p!("slow",   26.0) as u64,
+            "signal": p!("signal",  9.0) as u64,
+        }),
+        "uo" => json!({
+            "type":   "uo",
+            "fast":   if period == 0 { 7 } else { period },
+            "medium": p!("medium", 14.0) as u64,
+            "slow":   p!("slow",   28.0) as u64,
+        }),
+        "ao" => json!({
+            "type": "ao",
+            "fast": if period == 0 { 5 } else { period },
+            "slow": p!("slow", 34.0) as u64,
+        }),
+        "connors_rsi" => json!({
+            "type":          "connors_rsi",
+            "rsi_period":    period,
+            "streak_period": p!("streak_period",   2.0) as u64,
+            "rank_period":   p!("rank_period",   100.0) as u64,
+        }),
+        "ichimoku" => json!({
+            "type":     "ichimoku",
+            "tenkan":   period,
+            "kijun":    p!("kijun",    26.0) as u64,
+            "senkou_b": p!("senkou_b", 52.0) as u64,
+        }),
+        "volatility_ratio" => json!({"type": "volatility_ratio", "lookback": period}),
         "obv"     => json!({"type": "obv"}),
         "vwap"    => json!({"type": "vwap"}),
-        "ao"      => json!({"type": "ao",      "fast": 5, "slow": 34}),
         "bop"     => json!({"type": "bop"}),
         "coppock" => json!({"type": "coppock"}),
-        "uo"      => json!({"type": "uo",      "fast": 7, "medium": 14, "slow": 28}),
         t         => json!({"type": t, "period": period}),
     }
 }

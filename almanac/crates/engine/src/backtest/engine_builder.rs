@@ -59,6 +59,36 @@ pub fn build(
         .with_candle_transform(CandleTransform::new(CandleType::Raw)))
 }
 
+/// Like [`build`] but accepts a pre-built strategy (e.g. with a shared error sink).
+pub fn build_with_strategy(
+    req: &BacktestRequest,
+    strategy: Box<dyn Strategy>,
+) -> Result<Engine<Box<dyn Strategy>, AnySizer, SyncBus>> {
+    let capital = req.initial_capital.unwrap_or(DEFAULT_CAPITAL);
+    let commission = req.commission_pct.unwrap_or(DEFAULT_COMMISSION);
+    let slippage = req.slippage_pct.unwrap_or(DEFAULT_SLIPPAGE);
+    let lot_size = asset_lot_size(req.asset_type.as_deref());
+    let max_positions = req.max_positions.unwrap_or(1).max(1);
+
+    let risk: AnySizer = if let Some(qty) = req.position_size_quantity {
+        AnySizer::FixedQuantity(FixedQuantity::new(qty, max_positions))
+    } else if let Some(usd) = req.position_size_usd {
+        AnySizer::FixedUsd(FixedUsd::new(usd, max_positions).with_lot_size(lot_size))
+    } else {
+        let pct = req.position_size_pct.unwrap_or(DEFAULT_POSITION_PCT).clamp(0.01, 1.0);
+        AnySizer::FixedFractional(FixedFractional::new(pct, max_positions).with_lot_size(lot_size))
+    };
+
+    let exit_rules = ExitRules {
+        intra_bar_mode: intra_bar_mode_from_str(req.intra_bar_mode.as_deref()),
+        ..Default::default()
+    };
+
+    Ok(Engine::sync(capital, strategy, risk, commission, slippage)
+        .with_exit_rules(exit_rules)
+        .with_candle_transform(CandleTransform::new(CandleType::Raw)))
+}
+
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 pub fn intra_bar_mode_from_str(s: Option<&str>) -> IntraBarMode {

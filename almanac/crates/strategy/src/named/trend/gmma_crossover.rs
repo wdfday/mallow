@@ -3,20 +3,21 @@ use alm_indicator::Gmma;
 
 /// Bot — GMMA Crossover (Guppy Multiple Moving Average).
 ///
-/// Long when all 6 short-term EMAs are above all 6 long-term EMAs (bullish alignment).
-/// Close when any short-term EMA drops below any long-term EMA (alignment breaks).
+/// Uses the average of the short group vs the average of the long group.
+/// Long when short_avg crosses above long_avg.
+/// Close when short_avg crosses below long_avg.
 ///
 /// Standard periods: short = [3,5,8,10,12,15], long = [30,35,40,45,50,60].
 pub struct GmmaCrossover {
     gmma: Gmma,
-    prev_bullish: Option<bool>,
+    prev_short_above: Option<bool>,
 }
 
 impl GmmaCrossover {
     pub fn new() -> Self {
         Self {
             gmma: Gmma::default(),
-            prev_bullish: None,
+            prev_short_above: None,
         }
     }
 }
@@ -33,15 +34,19 @@ impl Strategy for GmmaCrossover {
             return vec![];
         };
 
-        let prev = self.prev_bullish.replace(v.bullish);
-        let Some(was_bullish) = prev else {
+        let short_avg: f64 = v.short.iter().sum::<f64>() / 6.0;
+        let long_avg: f64  = v.long.iter().sum::<f64>()  / 6.0;
+        let short_above = short_avg > long_avg;
+
+        let prev = self.prev_short_above.replace(short_above);
+        let Some(was_above) = prev else {
             return vec![];
         };
 
-        if v.bullish && !was_bullish  {
+        if !was_above && short_above {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if !v.bullish && was_bullish {
+        if was_above && !short_above {
             return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -53,6 +58,6 @@ impl Strategy for GmmaCrossover {
 
     fn reset(&mut self) {
         self.gmma = Gmma::default();
-        self.prev_bullish = None;
+        self.prev_short_above = None;
     }
 }

@@ -113,6 +113,7 @@ async fn main() -> Result<()> {
         _ => async_nats::connect(&host_url).await?,
     };
     info!("connected to NATS");
+    metrics::gauge!("herald_nats_connected").set(1.0);
 
     // ── Symbol config (load early — needed for bootstrap + warm-set) ─────────
     //
@@ -173,37 +174,34 @@ async fn main() -> Result<()> {
         if warm_bars > 0 && data_dir.exists() {
             info!(symbols = startup_symbols.len(), warm_bars, "bootstrapping M1 from parquet");
 
-            for sym in &startup_symbols {
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let from_ms = now_ms - warm_bars * 60_000;
+            // Daily parquet files contain ~1440 M1 bars each.
+            let files_needed = (warm_bars as usize / 1440) + 2;
+
+            use rayon::prelude::*;
+            startup_symbols.par_iter().for_each(|sym| {
                 let (_, raw_sym) = crate::symbols::SymbolConfig::split_prefix(sym);
                 let parquet_sym = raw_sym.replace('-', "");
                 let all_files = find_parquet_files(&data_dir, &parquet_sym, Some("M1"), None);
                 if all_files.is_empty() {
                     warn!(symbol = %sym, "no M1 parquet files — skipping bootstrap");
-                    continue;
+                    return;
                 }
-
-                let now_ms = chrono::Utc::now().timestamp_millis();
-                let from_ms = now_ms - warm_bars * 60_000;
-
-                // Daily parquet files contain ~1440 M1 bars each.
-                // Only read the most recent files needed instead of the full history.
-                // warm_bars / 1440 rounds up + 1 extra for safety (partial current-day file).
-                let files_needed = (warm_bars as usize / 1440) + 2;
                 let files: Vec<_> = all_files.into_iter().rev().take(files_needed).rev().collect();
-
                 match load_bars(&files, &parquet_sym, Some(from_ms), None, false, "") {
                     Ok(mut feed) => {
-                        let mut count = 0usize;
-                        while let Some(mut bar) = feed.next() {
-                            bar.symbol = sym.clone();
-                            let _ = ledger.advance(tf, bar);
-                            count += 1;
+                        let bars = std::iter::from_fn(move || {
+                            feed.next().map(|mut bar| { bar.symbol = sym.clone(); bar })
+                        });
+                        match ledger.bootstrap_symbol(sym, tf, bars) {
+                            Ok(rep) => info!(symbol = %sym, bars = rep.fed, "parquet bootstrap done"),
+                            Err(e) => warn!(symbol = %sym, err = %e, "parquet bootstrap failed"),
                         }
-                        info!(symbol = %sym, bars = count, "parquet bootstrap done");
                     }
                     Err(e) => warn!(symbol = %sym, err = %e, "parquet bootstrap failed"),
                 }
-            }
+            });
         } else if warm_bars == 0 {
             info!("HERALD_WARM_BARS=0 — skipping bootstrap");
         } else {
@@ -284,33 +282,13 @@ async fn main() -> Result<()> {
         }
     });
 
-    // ── REST gap-fill ─────────────────────────────────────────────────────────
-    // For the base TF (M1): close the gap from the last parquet bar to now.
-    // For every other subscribed TF: fetch the last WINDOW_BARS bars directly.
-    // Runs AFTER HTTP is bound so the container is reachable during warm-up.
-    // Observers (registry, watch_eval) are subscribed — gap-fill bars will flow
-    // through them, but no hands are registered yet so no signals fire.
-    if !startup_symbols.is_empty() {
-        info!("starting REST gap-fill for {} symbol(s)", startup_symbols.len());
-        for sym in &startup_symbols {
-            let last_ts = ledger.with_state(sym, tf, |s| s.last_ts).flatten();
-            // base_from_ms: one bar after the last parquet bar, or None if no parquet.
-            let base_from_ms = last_ts.map(|ts| ts + tf.duration_ms());
-
-            let (exchange_str, raw_sym) = crate::symbols::SymbolConfig::split_prefix(sym);
-            let exchange = if exchange_str == "okx" { Exchange::Okx } else { Exchange::Binance };
-            gap_fill_symbol(&ledger, tf, sym, raw_sym, exchange, base_from_ms, feed::SUBSCRIBE_TFS).await;
-        }
-    }
-
-    // Mark service ready — /health now returns 200 OK.
-    ready.store(true, std::sync::atomic::Ordering::Relaxed);
-    info!("gap-fill complete — herald ready (ready=true, /health → 200 OK)");
-
     // ── 24h ring buffer ───────────────────────────────────────────────────────
     let ring = BarRing::new();
 
-    // ── WebSocket ingesters ───────────────────────────────────────────────────
+    // ── WebSocket ingesters (start before gap-fill) ───────────────────────────
+    // Bars that close during gap-fill queue in the unbounded channel.
+    // handler.run() drains them after gap-fill; SymbolState::advance() silently
+    // skips any duplicates that overlap with REST-fetched bars.
     let (bar_tx, bar_rx) = mpsc::unbounded_channel();
 
     if !sym_cfg.binance.is_empty() {
@@ -325,6 +303,32 @@ async fn main() -> Result<()> {
         warn!("no symbols configured — herald will receive no live bars");
     }
     drop(bar_tx);
+
+    // ── REST gap-fill ─────────────────────────────────────────────────────────
+    // For the base TF (M1): close the gap from the last parquet bar to now.
+    // For every other subscribed TF: fetch the last WINDOW_BARS bars directly.
+    // All symbols gap-fill in parallel (tokio::spawn) to minimise the window
+    // during which WS bars accumulate in the channel.
+    if !startup_symbols.is_empty() {
+        info!("starting REST gap-fill for {} symbol(s) (parallel)", startup_symbols.len());
+        let gap_tasks: Vec<_> = startup_symbols.iter().map(|sym| {
+            let ledger = ledger.clone();
+            let sym = sym.clone();
+            let last_ts = ledger.with_state(&sym, tf, |s| s.last_ts).flatten();
+            let base_from_ms = last_ts.map(|ts| ts + tf.duration_ms());
+            let (exchange_str, raw_sym) = crate::symbols::SymbolConfig::split_prefix(&sym);
+            let exchange = if exchange_str == "okx" { Exchange::Okx } else { Exchange::Binance };
+            let raw_sym = raw_sym.to_string();
+            tokio::spawn(async move {
+                gap_fill_symbol(&ledger, tf, &sym, &raw_sym, exchange, base_from_ms, feed::SUBSCRIBE_TFS).await;
+            })
+        }).collect();
+        futures::future::join_all(gap_tasks).await;
+    }
+
+    // Mark service ready — /health now returns 200 OK.
+    ready.store(true, std::sync::atomic::Ordering::Relaxed);
+    info!("gap-fill complete — herald ready (ready=true, /health → 200 OK)");
 
     // ── Main loop ─────────────────────────────────────────────────────────────
     let handler = Handler::new(client, ledger, registry, ring, tf, bar_rx, sig_rx,

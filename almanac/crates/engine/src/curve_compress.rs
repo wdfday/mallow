@@ -44,35 +44,14 @@ use crate::types::CurvePoint;
 ///
 /// If the curve already has ≤ `target` points after dedup, LTTB is skipped.
 /// The global extremes are always present in the output regardless.
-pub fn compress(pts: Vec<CurvePoint>, target: usize) -> Vec<CurvePoint> {
-    if pts.is_empty() {
-        return pts;
-    }
-    // Step 1: strip idle flat runs.
-    let mut out = dedup_flat(pts);
-
-    // Step 2: reduce to target if still oversized.
-    if target > 0 && out.len() > target {
-        out = lttb(out, target);
-    }
-
-    // Step 3: pin global peak and trough.
-    let (min_pt, max_pt) = out.iter().fold(
-        (out[0].clone(), out[0].clone()),
-        |(mn, mx), p| {
-            (
-                if p.v < mn.v { p.clone() } else { mn },
-                if p.v > mx.v { p.clone() } else { mx },
-            )
-        },
-    );
-    for must_have in [min_pt, max_pt] {
-        if !out.iter().any(|p| p.t == must_have.t) {
-            out.push(must_have);
-        }
-    }
-    out.sort_by_key(|p| p.t);
-    out
+/// Compress an equity or drawdown curve.
+///
+/// Strips the interior of flat runs (idle periods between trades) so the
+/// chart renderer gets an accurate shape without transmitting millions of
+/// identical points. Every value-change event is preserved — no lossy
+/// downsampling.
+pub fn compress(pts: Vec<CurvePoint>, _target: usize) -> Vec<CurvePoint> {
+    dedup_flat(pts)
 }
 
 // ── 1. Dedup flat runs ────────────────────────────────────────────────────────

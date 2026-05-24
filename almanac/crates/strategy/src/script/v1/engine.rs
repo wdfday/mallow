@@ -43,10 +43,10 @@ const MULTI_FIELDS: &[&str] = &[
     "upper", "middle", "lower", "bandwidth", "percent_b",
     // stochastic / stoch_rsi / kdj
     "k", "d", "j",
-    // supertrend / parabolic_sar / alligator / gmma / william_fractal
+    // supertrend / parabolic_sar / alligator / gmma / fractal
     "value", "bullish", "sar", "bearish",
     // aroon
-    "up", "down", "oscillator",
+    "up", "down",
     // vortex
     "plus_vi", "minus_vi",
     // rvi / smi / fisher
@@ -59,13 +59,15 @@ const MULTI_FIELDS: &[&str] = &[
     "jaw", "teeth", "lips",
     // gmma
     "short_avg", "long_avg",
+    "short_0", "short_1", "short_2", "short_3", "short_4", "short_5",
+    "long_0", "long_1", "long_2", "long_3", "long_4", "long_5",
     // kalman
-    "slope",
-    // bull_bear_power
+    "velocity",
+    // bull_bear
     "bull", "bear",
-    // chandelier_exit / chande_kroll_stop
+    // chandelier_exit / chande_kroll
     "long_stop", "short_stop", "stop_long", "stop_short",
-    // william_fractal
+    // fractal
     "fractal_high", "fractal_low",
     // chop_zone
     "angle", "zone",
@@ -200,6 +202,12 @@ pub(crate) fn build_engine() -> Engine {
     engine.register_fn("log", |msg: String| {
         tracing::debug!(rhai = %msg);
     });
+
+    // ── Plot ─────────────────────────────────────────────────────────────────
+    // `plot("name", value)` is a no-op hint: declared indicators are already
+    // auto-collected into `take_indicator_series()` without needing plot calls.
+    engine.register_fn("plot", |_name: String, _value: f64|  {});
+    engine.register_fn("plot", |_name: String, _value: bool| {});
 
     // ── Multi-output field extractors ────────────────────────────────────────
     // Register as BOTH a free function AND an Array property getter so that

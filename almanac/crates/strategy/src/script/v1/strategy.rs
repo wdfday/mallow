@@ -103,6 +103,12 @@ pub struct ScriptStrategy {
     current_regime:   Option<RegimeState>,
     /// Candle directive parsed from the script header (e.g. `candle.transform("heiken_ashi")`).
     script_candle:    Option<(String, Option<usize>)>,
+    /// Shared error sink — caller creates it, strategy writes first runtime error here.
+    /// `None` in live/registry mode (errors are logged but not captured).
+    pub error_sink:   Option<std::sync::Arc<std::sync::Mutex<Option<String>>>>,
+    /// Persistent key-value map shared across bar calls.
+    /// Scripts read/write `state["key"]` to carry state between bars (e.g. `in_position`).
+    persistent_state: rhai::Map,
 }
 
 /// Whitelist of accepted `candle.transform()` kinds. Mirrors `CandleType::from_str`
@@ -128,7 +134,7 @@ impl ScriptStrategy {
         Self::build(script, false, CandleType::Raw)
     }
 
-    fn build(script: &str, collect_series: bool, candle_type: CandleType) -> Result<Self> {
+    pub fn build(script: &str, collect_series: bool, candle_type: CandleType) -> Result<Self> {
         // Step 0: extract top-of-file `candle.*` directives BEFORE everything
         // else. Strict enforcement: any non-directive line closes the header,
         // so a later `candle.transform()` is a parse error.
@@ -265,6 +271,8 @@ impl ScriptStrategy {
             },
             current_regime: None,
             script_candle,
+            error_sink: None,
+            persistent_state: rhai::Map::new(),
         })
     }
 
@@ -284,10 +292,27 @@ impl ScriptStrategy {
         if live { Self::build(script, false, candle_type) } else { Self::build(script, true, candle_type) }
     }
 
+    /// Attach a shared error sink — backtest runner sets this to capture the
+    /// first Rhai runtime error and surface it as a 400 response.
+    pub fn with_error_sink(mut self, sink: std::sync::Arc<std::sync::Mutex<Option<String>>>) -> Self {
+        self.error_sink = Some(sink);
+        self
+    }
+
     /// Snapshot of auto-collected indicator series (backtest mode only).
     pub fn series(&self) -> Option<&HashMap<String, Vec<(i64, f64)>>> {
         self.series.as_ref()
     }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Returns `true` for indicator output fields that carry boolean semantics
+/// (stored as 0.0/1.0). These must not be plotted on the main price chart
+/// because their 0–1 range collapses the y-axis when the price is e.g. 60 000.
+#[inline]
+fn is_boolean_flag_field(field: &str) -> bool {
+    matches!(field, "bullish" | "bearish" | "above_cloud" | "below_cloud")
 }
 
 // ── Strategy impl ─────────────────────────────────────────────────────────────
@@ -310,32 +335,44 @@ impl Strategy for ScriptStrategy {
                 if !b.update(bar) { all_ready = false; }
             }
         }
+
+        // Collect series independently per indicator — each starts as soon as it
+        // individually warms up, not waiting for all_ready (which gates on the
+        // slowest indicator). This ensures e.g. EMA(20) is recorded from bar 20
+        // even if another indicator in the script needs 500 bars.
+        if let Some(series) = &mut self.series {
+            for name in &self.binding_order {
+                if let Some(binding) = self.bindings.get(name) {
+                    if let Some(fields) = binding.current_fields() {
+                        if binding.is_multi() {
+                            for (field, val) in &fields {
+                                if is_boolean_flag_field(field) { continue; }
+                                series.entry(format!("{name}.{field}"))
+                                    .or_default()
+                                    .push((bar.timestamp, *val));
+                            }
+                        } else if let Some(&val) = fields.values().next() {
+                            series.entry(name.clone())
+                                .or_default()
+                                .push((bar.timestamp, val));
+                        }
+                    }
+                }
+            }
+        }
+
         if !all_ready { return vec![]; }
 
         let mut scope = Scope::new();
 
-        for name in &self.binding_order {
-            if let Some(b) = self.bindings.get(name) {
-                scope.push_dynamic(name.as_str(), Dynamic::from_array(b.to_script_array()));
-            }
-        }
-
-        for field in BAR_FIELDS {
-            let arr: Array = self.bar_buf.iter().rev().map(|b| {
-                Dynamic::from_float(match *field {
-                    "open"   => b.open,
-                    "high"   => b.high,
-                    "low"    => b.low,
-                    "close"  => b.close,
-                    "volume" => b.volume,
-                    _        => 0.0,
-                })
-            }).collect();
-            scope.push_dynamic(*field, Dynamic::from_array(arr));
-        }
-
-        // Regime output slots: regime block writes these; main block reads them.
-        // Defaults represent an "unknown" regime — empty status, zero value.
+        // Output variables are pushed FIRST so that user-declared indicator names
+        // (e.g. `let atr = ind.atr(14)`) can shadow them when pushed below.
+        // Rhai resolves variables from the most-recently-pushed entry on the
+        // scope stack, so indicators pushed after these will win on reads.
+        // On write (`atr = my_atr[0]`), Rhai modifies the top entry (the
+        // indicator Array → f64), and `scope.get_value::<f64>("atr")` after
+        // the script still finds the written f64. If no write occurs it falls
+        // back to the default 0.0 further down the stack.
         scope.push("trend",        String::new());
         scope.push("trend_value",  0.0_f64);
         scope.push("vol",          String::new());
@@ -352,9 +389,32 @@ impl Strategy for ScriptStrategy {
         scope.push("strength",  1.0_f64);
         scope.push("is_offset", false);
         scope.push("reason",    String::new());
-        // atr: script may write the current ATR value here (e.g. `atr = atr14[0]`).
-        // Forwarded to helm's tactician for volatility-based position sizing.
         scope.push("atr",       0.0_f64);
+        scope.push("state", rhai::Dynamic::from_map(self.persistent_state.clone()));
+
+        // Bar arrays pushed after output vars so user can't shadow open/close/etc.
+        for field in BAR_FIELDS {
+            let arr: Array = self.bar_buf.iter().rev().map(|b| {
+                Dynamic::from_float(match *field {
+                    "open"   => b.open,
+                    "high"   => b.high,
+                    "low"    => b.low,
+                    "close"  => b.close,
+                    "volume" => b.volume,
+                    _        => 0.0,
+                })
+            }).collect();
+            scope.push_dynamic(*field, Dynamic::from_array(arr));
+        }
+
+        // Indicator bindings pushed LAST so they shadow any output variable with
+        // the same name (e.g. `let atr = ind.atr(14)` shadows the `atr` f64 slot
+        // above, making `atr[0]` resolve to the Array<f64> rather than 0.0).
+        for name in &self.binding_order {
+            if let Some(b) = self.bindings.get(name) {
+                scope.push_dynamic(name.as_str(), Dynamic::from_array(b.to_script_array()));
+            }
+        }
 
         // Run the regime sub-script first so the main block sees the latest
         // `trend` / `vol` / `liq` (and value) variables. A runtime error in the
@@ -376,30 +436,21 @@ impl Strategy for ScriptStrategy {
             }
         }
 
-        if self.engine.run_ast_with_scope(&mut scope, &self.ast).is_err() {
-            return vec![];
-        }
-
-        // Auto-collect indicator series from declared bindings (no explicit plot() needed).
-        // Single-field indicators → series[var_name]. Multi-field → series[var_name.field].
-        if let Some(series) = &mut self.series {
-            for name in &self.binding_order {
-                if let Some(binding) = self.bindings.get(name) {
-                    if let Some(fields) = binding.current_fields() {
-                        if binding.is_multi() {
-                            for (field, val) in &fields {
-                                series.entry(format!("{name}.{field}"))
-                                    .or_default()
-                                    .push((bar.timestamp, *val));
-                            }
-                        } else if let Some(&val) = fields.values().next() {
-                            series.entry(name.clone())
-                                .or_default()
-                                .push((bar.timestamp, val));
-                        }
+        if let Err(e) = self.engine.run_ast_with_scope(&mut scope, &self.ast) {
+            if let Some(sink) = &self.error_sink {
+                if let Ok(mut guard) = sink.lock() {
+                    if guard.is_none() {
+                        *guard = Some(e.to_string());
                     }
                 }
             }
+            tracing::warn!(error = %e, "script runtime error");
+            return vec![];
+        }
+
+        // Persist the state map back for the next bar.
+        if let Some(new_state) = scope.get_value::<rhai::Map>("state") {
+            self.persistent_state = new_state;
         }
 
         let strength  = scope.get_value::<f64>("strength").unwrap_or(1.0).clamp(0.0, 1.0);
@@ -466,6 +517,7 @@ impl Strategy for ScriptStrategy {
         self.candle_transform.reset();
         if let Some(s) = &mut self.series { s.clear(); }
         self.current_regime = None;
+        self.persistent_state.clear();
     }
 }
 
@@ -664,9 +716,48 @@ let exit  = bull == 0.0;
         let mut s = ScriptStrategy::from_script(script).unwrap();
         for i in 0..100 { let _ = s.on_bar(&make_bar(i)); }
         let series = s.series().unwrap();
-        assert!(series.contains_key("st.value"),   "st.value series missing");
-        assert!(series.contains_key("st.bullish"), "st.bullish series missing");
+        assert!(series.contains_key("st.value"),    "st.value series missing");
+        assert!(!series.contains_key("st.bullish"), "st.bullish should be excluded (boolean flag)");
         assert!(!series["st.value"].is_empty());
+    }
+
+    #[test]
+    fn persistent_state_tracks_in_position() {
+        let script = r#"
+let rsi14 = ind.rsi(14, buf=1);
+let in_pos = state["in_position"] == true;
+if !in_pos && rsi14[0] < 30.0 { entry = true; state["in_position"] = true; }
+if in_pos && rsi14[0] > 70.0  { exit  = true; state["in_position"] = false; }
+"#;
+        let mut s = ScriptStrategy::from_script(script).unwrap();
+        let mut entries = 0usize;
+        for i in 0..200 {
+            for sig in s.on_bar(&make_bar(i)) {
+                if sig.direction == alm_core::signal::Direction::Long { entries += 1; }
+            }
+        }
+        // With in_position guard, must never have two consecutive entries without an exit.
+        assert!(entries <= 100, "too many entries without position guard working");
+    }
+
+    #[test]
+    fn persistent_state_resets_on_strategy_reset() {
+        let script = r#"
+let rsi14 = ind.rsi(14, buf=1);
+let in_pos = state["in_position"] == true;
+if !in_pos { entry = true; state["in_position"] = true; }
+"#;
+        let mut s = ScriptStrategy::from_script(script).unwrap();
+        for i in 0..20 { let _ = s.on_bar(&make_bar(i)); }
+        s.reset();
+        // After reset, persistent state cleared — first ready bar fires entry again.
+        let mut fired = false;
+        for i in 0..20 {
+            if s.on_bar(&make_bar(i)).iter().any(|sig| sig.direction == alm_core::signal::Direction::Long) {
+                fired = true; break;
+            }
+        }
+        assert!(fired, "entry should fire again after reset clears state");
     }
 
     #[test]
@@ -987,5 +1078,37 @@ candle.transform("heiken_ashi");
             assert!(sig.target_price.is_some());
             assert!(sig.stop_price.is_some());
         }
+    }
+
+    #[test]
+    fn sample_script_with_plot_runs_without_error() {
+        // Full sample script: indicator named `atr` shadowing the `atr` output
+        // variable must not cause "Indexer unavailable: f64 [i64]".
+        // plot() calls must be no-ops, not fail with "Function not found".
+        let script = r#"// EMA Crossover + RSI Filter
+let fast = ind.ema(9);
+let slow = ind.ema(21);
+let rsi  = ind.rsi(14);
+let atr  = ind.atr(14);
+
+if crossover(fast, slow) && rsi[0] < 65.0 {
+    long     = true;
+    strength = (65.0 - rsi[0]) / 65.0;
+    sl       = close[0] - 2.0 * atr[0];
+    tp       = close[0] + 3.0 * atr[0];
+}
+if crossunder(fast, slow) || rsi[0] > 75.0 { exit = true; }
+
+plot("fast_ema", fast[0]);
+plot("slow_ema", slow[0]);
+plot("rsi",      rsi[0]);
+"#;
+        let sink = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+        let mut s = ScriptStrategy::from_script(script)
+            .expect("should compile")
+            .with_error_sink(std::sync::Arc::clone(&sink));
+        for i in 0..200 { let _ = s.on_bar(&make_bar(i)); }
+        let runtime_err = sink.lock().unwrap().clone();
+        assert!(runtime_err.is_none(), "script runtime error: {:?}", runtime_err);
     }
 }

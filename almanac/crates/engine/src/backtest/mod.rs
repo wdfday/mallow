@@ -18,7 +18,7 @@ use alm_core::{MtfStrategy, Timeframe};
 use alm_data::{BarFeed, BarVecFeed};
 use alm_strategy::{
     build_mtf_strategy, probe_script_htfs, AnySizer, FixedFractional, FixedQuantity, FixedUsd,
-    MtfScriptStrategy,
+    MtfScriptStrategy, ScriptStrategy,
 };
 use anyhow::{bail, Result};
 use serde_json::Value;
@@ -117,11 +117,6 @@ pub fn run(req: BacktestRequest, data_dir: &Path) -> Result<BacktestResponse> {
     let all_bars = loader::load_bars_for_request(&req, data_dir)?;
     let bar_count = all_bars.len();
 
-    // Auto-estimate curve compression target. Frontend charts are typically
-    // 800-2000 px wide — more points = wasted bandwidth without visible benefit.
-    // `compress` will further dedup flat segments, so this is the LTTB cap only.
-    // Strategies with few trades naturally produce few interesting points and
-    // skip LTTB entirely (handled inside `compress`).
     let curve_max = estimate_curve_target(bar_count);
 
     if bar_count > MAX_BARS {
@@ -138,9 +133,39 @@ pub fn run(req: BacktestRequest, data_dir: &Path) -> Result<BacktestResponse> {
 
     tracing::info!(symbol = %symbol, strategy = %req.strategy, bars = bar_count, "starting backtest");
 
-    let mut engine = engine_builder::build(&req, &params)?;
+    // For script strategies, attach an error sink so the first Rhai runtime error
+    // can be surfaced to the caller rather than being silently swallowed.
+    let script_error_sink: Option<std::sync::Arc<std::sync::Mutex<Option<String>>>> =
+        if req.strategy == "script" {
+            Some(std::sync::Arc::new(std::sync::Mutex::new(None)))
+        } else {
+            None
+        };
+
+    let mut engine = if let Some(sink) = script_error_sink.clone() {
+        let script_text = params.get("script").and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow::anyhow!("ScriptStrategy requires a 'script' param"))?;
+        use alm_core::strategy::Strategy;
+        let strategy: Box<dyn Strategy> = Box::new(
+            ScriptStrategy::build(script_text, true, alm_strategy::candle_type::CandleType::Raw)?
+                .with_error_sink(sink),
+        );
+        engine_builder::build_with_strategy(&req, strategy)?
+    } else {
+        engine_builder::build(&req, &params)?
+    };
     let mut bar_feed = BarVecFeed::new(all_bars.clone(), symbol.clone());
     let report = engine.run(&mut bar_feed, risk_free);
+
+    // Surface the first Rhai runtime error — gives the caller a 400 with a
+    // meaningful message instead of silently returning 0 trades.
+    if let Some(sink) = script_error_sink {
+        if let Ok(guard) = sink.lock() {
+            if let Some(err_msg) = guard.as_deref() {
+                anyhow::bail!("script runtime error: {}", err_msg);
+            }
+        }
+    }
 
     Ok(response::build(engine, report, req, symbol, bar_count, &all_bars, capital, risk_free, curve_max))
 }

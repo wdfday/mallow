@@ -24,14 +24,14 @@ pub const KNOWN_INDICATOR_TYPES: &[&str] = &[
     // ── Single-output: Array<f64> ────────────────────────────────────────────
     "ema", "sma", "wma", "hma", "dema", "tema", "smma", "kama", "alma",
     "mcginley", "lsma", "vwma", "rsi", "cci", "roc", "mfi", "mom", "cmo",
-    "dpo", "rci", "chop", "williams", "cmf", "obv", "vwap", "ao", "bop",
-    "coppock", "uo", "tsi",
+    "dpo", "rci", "chop", "williams_r", "cmf", "obv", "vwap", "ao", "bop",
+    "coppock", "uo", "tsi", "connors_rsi", "volatility_ratio",
     "atr",
     "aroon_osc",   // scalar aroon oscillator (−100…+100)
     "adx",         // scalar ADX strength (0–100) — use dmi for +DI/-DI lines
     // ── Multi-output: Array<Map> ─────────────────────────────────────────────
     "macd",        // .macd  .signal  .histogram
-    "dmi",         // .plus_di  .minus_di  .dx
+    "dmi",         // .plus_di  .minus_di
     "bbands",      // .upper  .middle  .lower  .bandwidth  .percent_b
     "keltner",     // .upper  .middle  .lower
     "donchian",    // .upper  .middle  .lower
@@ -50,14 +50,14 @@ pub const KNOWN_INDICATOR_TYPES: &[&str] = &[
     "smi",         // .smi  .signal
     "fisher",      // .fisher  .signal
     "rwi",         // .rwi_high  .rwi_low
-    "ichimoku",    // .tenkan  .kijun  .senkou_a  .senkou_b  .chikou  .above_cloud
+    "ichimoku",    // .tenkan  .kijun  .senkou_a  .senkou_b  .chikou  .above_cloud  .below_cloud
     "alligator",   // .jaw  .teeth  .lips  .bullish
     "gmma",        // .short_avg  .long_avg  .bullish
-    "kalman",      // .value  .slope
-    "bull_bear_power",   // .bull  .bear  .ema
+    "kalman",      // .value  .velocity
+    "bull_bear",         // .bull  .bear  .ema
     "chandelier_exit",   // .long_stop  .short_stop  .atr
-    "chande_kroll_stop", // .stop_long  .stop_short
-    "william_fractal",   // .bullish  .bearish  .fractal_high  .fractal_low
+    "chande_kroll",      // .stop_long  .stop_short
+    "fractal",           // .bullish  .bearish  .fractal_high  .fractal_low
     "chop_zone",         // .angle  .zone
 ];
 
@@ -214,6 +214,47 @@ pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnos
         }
     }
 
+    // ── Semantic check: field access on scalar indicators ────────────────────
+    //
+    // Rhai is dynamically typed — `adx14[0].adx` is syntactically valid AST but
+    // fails at runtime because `adx14[0]` is `f64` (no `.adx` getter). Detect
+    // this early by scanning every non-declaration line for `var[...].field`
+    // where `var` is a known single-output indicator.
+    {
+        let scalar_names: std::collections::HashSet<&str> = scope_inds.iter()
+            .filter(|d| !d.multi)
+            .map(|d| d.name.as_str())
+            .collect();
+
+        // Check main-block non-declaration lines.
+        for (i, &line) in cleaned_lines.iter().enumerate() {
+            let orig = line_map[i];
+            for diag in field_access_on_scalar(line, orig, &scalar_names) {
+                diags.push(diag);
+            }
+        }
+
+        // Check regime body lines (line numbers are body-relative; add an offset
+        // to approximate the original script position — close enough for UX).
+        if let Some(body) = regime_body_opt.as_deref() {
+            // Count how many lines come before the regime body in main_source.
+            let regime_start_line = main_source
+                .lines()
+                .take_while(|l| l.trim().is_empty() || !body.starts_with(l.trim()))
+                .count();
+            for (idx, line) in body.lines().enumerate() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() || try_parse_indicator_line(trimmed).is_some() {
+                    continue;
+                }
+                let approx_line = regime_start_line + idx + 1;
+                for diag in field_access_on_scalar(line, approx_line, &scalar_names) {
+                    diags.push(diag);
+                }
+            }
+        }
+    }
+
     let cleaned = cleaned_lines.join("\n");
     let engine = build_engine();
     if let Err(e) = engine.compile(&cleaned) {
@@ -269,6 +310,50 @@ pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnos
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
+
+/// Scan a single source line for `name[...].field` patterns where `name` is a
+/// known scalar (single-output) indicator. Returns one diagnostic per hit.
+fn field_access_on_scalar(
+    line: &str,
+    lineno: usize,
+    scalar_names: &std::collections::HashSet<&str>,
+) -> Vec<LintDiagnostic> {
+    let mut diags = Vec::new();
+    for name in scalar_names {
+        let needle = format!("{name}[");
+        let mut search = line;
+        let mut col_offset = 0usize;
+        while let Some(start) = search.find(&needle) {
+            let after_open = &search[start + needle.len()..];
+            // Find the matching ']' (ignore nested brackets — scripts don't nest them).
+            if let Some(close) = after_open.find(']') {
+                let after_close = &after_open[close + 1..];
+                let trimmed_after = after_close.trim_start();
+                if trimmed_after.starts_with('.') {
+                    // Extract the accessed field name for the message.
+                    let field: String = trimmed_after[1..]
+                        .chars()
+                        .take_while(|c| c.is_alphanumeric() || *c == '_')
+                        .collect();
+                    diags.push(LintDiagnostic {
+                        line: lineno,
+                        col: col_offset + start + 1,
+                        message: format!(
+                            "'{name}' is a scalar indicator (Array<f64>); \
+                             field access '.{field}' is invalid — use '{name}[0]' directly. \
+                             For multi-field access use a multi-output indicator."
+                        ),
+                        severity: "error",
+                    });
+                }
+            }
+            // Advance past this occurrence to find further hits on the same line.
+            col_offset += start + needle.len();
+            search = &search[start + needle.len()..];
+        }
+    }
+    diags
+}
 
 fn check_htf_vs_base(
     var_name: &str,
@@ -410,18 +495,19 @@ if macd[0].histogram > 0.0 && bb[0].upper > 0.0 { entry = true; }
 
     #[test]
     fn lint_regime_block_does_not_trip_parser() {
+        // adx is scalar in the shared linter — use adx14[0] directly (no field access).
         let script = r#"
 regime {
     let adx14 = ind.adx(14);
-    if adx14[0].adx > 25.0 { trend = "trending"; }
-    else                   { trend = "ranging";  }
+    if adx14[0] > 25.0 { trend = "trending"; }
+    else               { trend = "ranging";  }
 }
 
 let ema9 = ind.ema(9);
 if cross_above(ema9, ema9) && trend == "trending" { entry = true; }
 "#;
         let (errors, scope) = script_lint(script, None);
-        assert!(errors.is_empty(), "false-positive lint on regime block: {errors:?}");
+        assert!(errors.is_empty(), "unexpected errors: {errors:?}");
         let names: Vec<&str> = scope.indicators.iter().map(|i| i.name.as_str()).collect();
         assert!(names.contains(&"adx14"), "adx14 from regime block missing: {names:?}");
         assert!(names.contains(&"ema9"),  "ema9 from main missing: {names:?}");
@@ -445,6 +531,54 @@ candle.transform("heiken_ashi");
         let (errors, _) = script_lint(script, None);
         assert!(!errors.is_empty(), "misplaced directive should produce a diagnostic");
         assert!(errors[0].message.contains("must appear at the top"));
+    }
+
+    #[test]
+    fn lint_scalar_field_access_is_error() {
+        let script = r#"
+let adx14 = ind.adx(14);
+let rsi14 = ind.rsi(14);
+if adx14[0].adx > 25.0 { entry = true; }
+if rsi14[0] > 60.0     { exit  = true; }
+"#;
+        let (errors, _) = script_lint(script, None);
+        assert!(
+            errors.iter().any(|e| e.severity == "error" && e.message.contains("adx14")),
+            "expected error for adx14[0].adx on scalar indicator, got: {errors:?}"
+        );
+        assert!(
+            !errors.iter().any(|e| e.message.contains("rsi14")),
+            "rsi14[0] (no field access) should not error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn lint_scalar_field_access_in_regime_block_is_error() {
+        let script = r#"
+regime {
+    let adx14 = ind.adx(14);
+    if adx14[0].adx > 25.0 { trend = "trending"; }
+}
+let ema9 = ind.ema(9);
+if ema9[0] > 0.0 { entry = true; }
+"#;
+        let (errors, _) = script_lint(script, None);
+        assert!(
+            errors.iter().any(|e| e.severity == "error" && e.message.contains("adx14")),
+            "expected error for adx14[0].adx in regime block, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn lint_multi_field_access_is_clean() {
+        let script = r#"
+let macd  = ind.macd(12);
+let dmi14 = ind.dmi(14);
+if macd[0].histogram > 0.0 && dmi14[0].plus_di > dmi14[0].minus_di { entry = true; }
+"#;
+        let (errors, _) = script_lint(script, None);
+        let field_errs: Vec<_> = errors.iter().filter(|e| e.message.contains("field access")).collect();
+        assert!(field_errs.is_empty(), "multi-output field access should not error: {field_errs:?}");
     }
 
     #[test]
@@ -488,7 +622,7 @@ if ema9[0] > 0.0 { entry = true; }
         let script = r#"
 regime {
     let adx = ind.adx(14, "M1");
-    if adx[0].adx > 25.0 { trend = "trending"; }
+    if adx[0] > 25.0 { trend = "trending"; }
 }
 let ema9 = ind.ema(9);
 if ema9[0] > 0.0 { entry = true; }

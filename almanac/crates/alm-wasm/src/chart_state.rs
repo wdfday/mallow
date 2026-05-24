@@ -626,6 +626,23 @@ impl ChartState {
 
     /// Full replay of raw bars through the HA transform, then rebuild all slots
     /// (named indicators + script slot).
+    ///
+    /// ## Design intent — indicators compute on transformed candles
+    ///
+    /// Named indicator slots are rebuilt on the *transformed* bars (HA / smooth HA)
+    /// so that indicator values match what the user sees visually. For example, an
+    /// EMA overlaid on a Heikin-Ashi chart smooths the HA close values, not the raw
+    /// close — this is the conventional expectation on most charting platforms.
+    ///
+    /// Script slot is an exception: it always replays raw bars regardless of the
+    /// chart-level transform, because scripts are evaluated by the strategy engine
+    /// which always operates on raw OHLCV (same data the backtest engine uses).
+    ///
+    /// ## Deferred: option to pin indicators to raw prices
+    ///
+    /// If we ever want indicators to always compute on raw prices (transform = display
+    /// only), pass `&self.bars` to all `slot.rebuild()` calls and keep `t_bars` for
+    /// display only. Not done yet — evaluate when the distinction becomes user-visible.
     fn rebuild_transform(&mut self) {
         // Script slot always replays raw bars regardless of chart-level transform.
         if let Some(ss) = &mut self.script_slot {

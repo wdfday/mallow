@@ -8,9 +8,22 @@ Chạy:
 Output: cmp_<strategy_name>.ipynb (68 files) trong cùng thư mục.
 """
 from __future__ import annotations
-import json, pathlib, textwrap
+import json, pathlib, sys, textwrap
 
 HERE = pathlib.Path(__file__).parent
+
+# ─── Rhai script translations ──────────────────────────────────────────────────
+# Source of truth: tests/test_script_parity.py  TRANSLATION_ROWS
+# Maps strategy_name → rhai_script string (only for translatable strategies).
+_TESTS_DIR = str(HERE.parent.parent / "tests")
+if _TESTS_DIR not in sys.path:
+    sys.path.insert(0, _TESTS_DIR)
+try:
+    from test_script_parity import TRANSLATION_ROWS as _TR
+    RHAI_SCRIPTS: dict[str, str] = {name: script for name, _, script in _TR}
+except ImportError:
+    RHAI_SCRIPTS = {}
+    print("[warn] test_script_parity.py not found — script cells will be skipped")
 
 # ─── Notebook helpers ──────────────────────────────────────────────────────────
 
@@ -750,13 +763,13 @@ class BtStrat(bt.Strategy):
 
     "swing_trader": {
         "params": {"cci_period": 20, "adx_period": 14, "adx_threshold": 25.0},
-        "description": "CCI crosses above -100 AND ADX trend confirmed → long; CCI crosses above +100 → exit.",
+        "description": "CCI crosses above +100 AND ADX trend confirmed → long; CCI crosses below -100 → exit.",
         "pta_code": """\
 cci = ta.cci(high, low, close, length={cci_period})
 adx_df = ta.adx(high, low, close, length={adx_period})
 adx    = adx_df[f'ADX_{{{adx_period}}}']
-entries = cross_above(cci, pd.Series(-100.0, index=cci.index)) & (adx > {adx_threshold})
-exits   = cci > 100
+entries = cross_above(cci, pd.Series(100.0, index=cci.index)) & (adx > {adx_threshold})
+exits   = cross_below(cci, pd.Series(-100.0, index=cci.index))
 """,
         "bt_code": """\
 class BtStrat(bt.Strategy):
@@ -764,9 +777,10 @@ class BtStrat(bt.Strategy):
         self.cci = bt.indicators.CommodityChannelIndex(self.data, period={cci_period})
         self.adx = bt.indicators.AverageDirectionalMovementIndex(self.data, period={adx_period})
     def next(self):
-        cross_up = self.cci[-1] <= -100 and self.cci[0] > -100
+        cross_up = self.cci[-1] <= 100 and self.cci[0] > 100
+        cross_dn = self.cci[-1] >= -100 and self.cci[0] < -100
         if not self.position and cross_up and self.adx[0] > {adx_threshold}: self.buy()
-        elif self.position and self.cci[0] > 100: self.close()
+        elif self.position and cross_dn: self.close()
 """,
     },
 
@@ -1063,17 +1077,28 @@ entries = cross_above(tenkan_line, kijun_line) & (close > cloud_top)
 exits   = cross_below(tenkan_line, kijun_line)
 """,
         "bt_code": """\
+class IchimokuInd(bt.Indicator):
+    lines = ('tenkan', 'kijun', 'senkou_a', 'senkou_b',)
+    params = (('tenkan', {tenkan}), ('kijun', {kijun}), ('senkou_b', {senkou_b}),)
+    def __init__(self):
+        hh_t = bt.indicators.Highest(self.data.high, period=self.p.tenkan)
+        ll_t = bt.indicators.Lowest(self.data.low, period=self.p.tenkan)
+        self.lines.tenkan = (hh_t + ll_t) / 2.0
+        hh_k = bt.indicators.Highest(self.data.high, period=self.p.kijun)
+        ll_k = bt.indicators.Lowest(self.data.low, period=self.p.kijun)
+        self.lines.kijun = (hh_k + ll_k) / 2.0
+        self.lines.senkou_a = (self.lines.tenkan + self.lines.kijun) / 2.0
+        hh_s = bt.indicators.Highest(self.data.high, period=self.p.senkou_b)
+        ll_s = bt.indicators.Lowest(self.data.low, period=self.p.senkou_b)
+        self.lines.senkou_b = (hh_s + ll_s) / 2.0
+
 class BtStrat(bt.Strategy):
     def __init__(self):
-        ich = bt.indicators.Ichimoku(self.data, tenkan={tenkan}, kijun={kijun}, senkou={senkou_b})
-        self.tenkan = ich.lines.tenkan_sen
-        self.kijun  = ich.lines.kijun_sen
-        self.span_a = ich.lines.senkou_span_a
-        self.span_b = ich.lines.senkou_span_b
+        self.ich = IchimokuInd(self.data)
     def next(self):
-        cross_up = self.tenkan[-1] <= self.kijun[-1] and self.tenkan[0] > self.kijun[0]
-        cross_dn = self.tenkan[-1] >= self.kijun[-1] and self.tenkan[0] < self.kijun[0]
-        cloud_top = max(self.span_a[0], self.span_b[0])
+        cross_up = self.ich.lines.tenkan[-1] <= self.ich.lines.kijun[-1] and self.ich.lines.tenkan[0] > self.ich.lines.kijun[0]
+        cross_dn = self.ich.lines.tenkan[-1] >= self.ich.lines.kijun[-1] and self.ich.lines.tenkan[0] < self.ich.lines.kijun[0]
+        cloud_top = max(self.ich.lines.senkou_a[0], self.ich.lines.senkou_b[0])
         if not self.position and cross_up and self.data.close[0] > cloud_top: self.buy()
         elif self.position and cross_dn: self.close()
 """,
@@ -1085,11 +1110,10 @@ class BtStrat(bt.Strategy):
         "params": {"jaw": 13, "teeth": 8, "lips": 5},
         "description": "Williams Alligator: lips > teeth > jaw (bullish alignment) → long; inversion → exit.",
         "pta_code": """\
-def smma(s, n): return s.ewm(alpha=1/n, adjust=False).mean()
 mid   = (high + low) / 2
-jaw   = smma(mid, {jaw}).shift(8)
-teeth = smma(mid, {teeth}).shift(5)
-lips  = smma(mid, {lips}).shift(3)
+jaw   = ta.wma(mid, length={jaw})
+teeth = ta.wma(mid, length={teeth})
+lips  = ta.wma(mid, length={lips})
 bullish = (lips > teeth) & (teeth > jaw)
 entries = bullish & ~bullish.shift(1).fillna(True)
 exits   = ~bullish & bullish.shift(1).fillna(False)
@@ -1100,9 +1124,9 @@ class AlligatorInd(bt.Indicator):
     params = (('jaw', {jaw}), ('teeth', {teeth}), ('lips', {lips}),)
     def __init__(self):
         hl2 = (self.data.high + self.data.low) / 2.0
-        self.lines.jaw   = bt.indicators.SmoothedMovingAverage(hl2, period=self.p.jaw).shift(-8)
-        self.lines.teeth = bt.indicators.SmoothedMovingAverage(hl2, period=self.p.teeth).shift(-5)
-        self.lines.lips  = bt.indicators.SmoothedMovingAverage(hl2, period=self.p.lips).shift(-3)
+        self.lines.jaw   = bt.indicators.WeightedMovingAverage(hl2, period=self.p.jaw)
+        self.lines.teeth = bt.indicators.WeightedMovingAverage(hl2, period=self.p.teeth)
+        self.lines.lips  = bt.indicators.WeightedMovingAverage(hl2, period=self.p.lips)
 
 class BtStrat(bt.Strategy):
     def __init__(self):
@@ -1281,7 +1305,7 @@ class BtStrat(bt.Strategy):
     # ── Momentum ──────────────────────────────────────────────────────────────
 
     "momentum_roc": {
-        "params": {"roc_period": 10, "ema_period": 50, "entry_threshold": 2.0, "exit_threshold": 0.0},
+        "params": {"roc_period": 10, "ema_period": 50, "entry_threshold": 0.5, "exit_threshold": 0.0},
         "description": "ROC > entry_threshold AND price > EMA → long; ROC < exit_threshold or price < EMA → exit.",
         "pta_code": """\
 roc = ta.roc(close, length={roc_period})
@@ -1412,8 +1436,8 @@ class BtStrat(bt.Strategy):
         "params": {"period": 14, "smooth_d": 3, "oversold": 0.2, "overbought": 0.8},
         "description": "StochRSI K drops below oversold → long; rises above overbought → exit.",
         "pta_code": """\
-srsi = ta.stochrsi(close, length={period}, rsi_length={period}, k=3, d={smooth_d})
-k_col = f'STOCHRSIk_{{{period}}}_{{{period}}}_3_{{{smooth_d}}}'
+srsi = ta.stochrsi(close, length={period}, rsi_length={period}, k=1, d={smooth_d})
+k_col = f'STOCHRSIk_{{{period}}}_{{{period}}}_1_{{{smooth_d}}}'
 k = srsi[k_col] / 100.0  # normalize to [0,1]
 entries = cross_below(k, pd.Series({oversold}, index=k.index))
 exits   = cross_above(k, pd.Series({overbought}, index=k.index))
@@ -1421,13 +1445,13 @@ exits   = cross_above(k, pd.Series({overbought}, index=k.index))
         "bt_code": """\
 class StochRSIInd(bt.Indicator):
     lines = ('k',)
-    params = (('rsi_period', {period}), ('stoch_period', {period}), ('smooth_k', 3), ('smooth_d', {smooth_d}),)
+    params = (('rsi_period', {period}), ('stoch_period', {period}), ('smooth_k', 1), ('smooth_d', {smooth_d}),)
     def __init__(self):
         rsi = bt.indicators.RSI(self.data.close, period=self.p.rsi_period)
         rsi_high = bt.indicators.Highest(rsi, period=self.p.stoch_period)
         rsi_low  = bt.indicators.Lowest(rsi,  period=self.p.stoch_period)
         raw_k = (rsi - rsi_low) / (rsi_high - rsi_low + 1e-10)
-        self.lines.k = bt.indicators.SMA(raw_k, period=self.p.smooth_k)
+        self.lines.k = raw_k
 
 class BtStrat(bt.Strategy):
     def __init__(self):
@@ -1517,33 +1541,61 @@ class ConnorsRSIInd(bt.Indicator):
     lines = ('crsi',)
     params = (('rsi_period', {rsi_period}), ('streak_period', {streak_period}), ('rank_period', {rank_period}),)
     def __init__(self):
-        self.rsi3 = bt.indicators.RSI(self.data.close, period=self.p.rsi_period)
+        self.rsi3 = bt.indicators.RSI(self.data.close, period=self.p.rsi_period, safediv=True)
         self._streak = 0.0
-        self._returns = []
+        self._roc_window = []
+        # Wilder RSI-of-streak state (matches alm Rsi::new(streak_period))
+        self._sr_prev = None
+        self._sr_count = 0
+        self._sr_seed_g = []
+        self._sr_seed_l = []
+        self._sr_avg_gain = None
+        self._sr_avg_loss = None
+    def _streak_rsi(self, streak_val):
+        if self._sr_prev is None:
+            self._sr_prev = streak_val
+            return float('nan')
+        change = streak_val - self._sr_prev
+        self._sr_prev = streak_val
+        gain = max(0.0, change)
+        loss = max(0.0, -change)
+        self._sr_count += 1
+        if self._sr_count < self.p.streak_period:
+            self._sr_seed_g.append(gain)
+            self._sr_seed_l.append(loss)
+            return float('nan')
+        if self._sr_count == self.p.streak_period:
+            self._sr_seed_g.append(gain)
+            self._sr_seed_l.append(loss)
+            self._sr_avg_gain = sum(self._sr_seed_g) / self.p.streak_period
+            self._sr_avg_loss = sum(self._sr_seed_l) / self.p.streak_period
+        else:
+            a = 1.0 / self.p.streak_period
+            self._sr_avg_gain = gain * a + self._sr_avg_gain * (1.0 - a)
+            self._sr_avg_loss = loss * a + self._sr_avg_loss * (1.0 - a)
+        if self._sr_avg_loss < 1e-10:
+            return 100.0
+        return 100.0 - 100.0 / (1.0 + self._sr_avg_gain / self._sr_avg_loss)
     def next(self):
-        ret = (self.data.close[0] / self.data.close[-1] - 1) if self.data.close[-1] != 0 else 0.0
-        if ret > 0:
+        close, prev_close = self.data.close[0], self.data.close[-1]
+        ret = (close / prev_close - 1) if prev_close != 0 else 0.0
+        if close > prev_close:
             self._streak = self._streak + 1 if self._streak >= 0 else 1
-        elif ret < 0:
+        elif close < prev_close:
             self._streak = self._streak - 1 if self._streak <= 0 else -1
         else:
             self._streak = 0.0
-        self._returns.append(ret)
-        if len(self._returns) > self.p.rank_period:
-            self._returns.pop(0)
-        streak_abs = abs(self._streak)
-        # Simple percentile rank using sorted returns
-        if len(self._returns) >= 2:
-            sorted_r = sorted(self._returns)
-            rank = sum(1 for x in sorted_r if x <= ret) / len(sorted_r) * 100
+        self._roc_window.append(ret)
+        if len(self._roc_window) > self.p.rank_period:
+            self._roc_window.pop(0)
+        # Percent rank: past rank_period-1 values strictly < ret, divide by (rank_period-1)
+        if len(self._roc_window) >= self.p.rank_period:
+            past = self._roc_window[:-1]
+            rank = sum(1 for r in past if r < ret) / (self.p.rank_period - 1) * 100.0
         else:
-            rank = 50.0
-        # RSI of streak abs - approximate using ratio
-        if streak_abs > 0:
-            rsi_streak = 50.0  # simplified
-        else:
-            rsi_streak = 50.0
-        self.lines.crsi[0] = (self.rsi3[0] + rsi_streak + rank) / 3.0
+            rank = float('nan')
+        rsi2 = self._streak_rsi(self._streak)
+        self.lines.crsi[0] = (self.rsi3[0] + rsi2 + rank) / 3.0
 
 class BtStrat(bt.Strategy):
     def __init__(self):
@@ -1590,7 +1642,8 @@ class BtStrat(bt.Strategy):
         "params": {"fast": 5, "slow": 34},
         "description": "Awesome Oscillator crosses above 0 → long; below 0 → exit.",
         "pta_code": """\
-ao = ta.ao(high, low, fast={fast}, slow={slow})
+mid   = (high + low) / 2
+ao = mid.rolling({fast}).mean() - mid.rolling({slow}).mean()
 entries = cross_above(ao, pd.Series(0.0, index=ao.index))
 exits   = cross_below(ao, pd.Series(0.0, index=ao.index))
 """,
@@ -1614,7 +1667,7 @@ class BtStrat(bt.Strategy):
 wr  = ta.willr(high, low, close, length={wr_period})
 ema = ta.ema(close, length={ema_period})
 entries = cross_above(wr, pd.Series({oversold}, index=wr.index)) & (close > ema)
-exits   = wr > {overbought}
+exits   = cross_below(wr, pd.Series({overbought}, index=wr.index)) | (close < ema)
 """,
         "bt_code": """\
 class BtStrat(bt.Strategy):
@@ -1623,8 +1676,9 @@ class BtStrat(bt.Strategy):
         self.ema = bt.indicators.EMA(self.data.close, period={ema_period})
     def next(self):
         cross_up = self.wr[-1] <= {oversold} and self.wr[0] > {oversold}
+        cross_dn = self.wr[-1] >= {overbought} and self.wr[0] < {overbought}
         if not self.position and cross_up and self.data.close[0] > self.ema[0]: self.buy()
-        elif self.position and self.wr[0] > {overbought}: self.close()
+        elif self.position and (cross_dn or self.data.close[0] < self.ema[0]): self.close()
 """,
     },
 
@@ -1933,28 +1987,39 @@ class BtStrat(bt.Strategy):
         "description": "Majority-vote: RSI, Stoch, CCI all bullish → long; majority bearish → exit.",
         "pta_code": """\
 rsi   = ta.rsi(close, length={rsi_period})
-stoch = ta.stoch(high, low, close, k={stoch_k}, d={stoch_d})
-k_col = f'STOCHk_{{{stoch_k}}}_{{{stoch_d}}}_3'
-stk   = stoch[k_col]
+hh    = high.rolling({stoch_k}).max()
+ll    = low.rolling({stoch_k}).min()
+stk   = (close - ll) / (hh - ll + 1e-10) * 100.0
 cci   = ta.cci(high, low, close, length={cci_period})
-rsi_bull  = rsi  > 50
-stk_bull  = stk  > 50
-cci_bull  = cci  > 0
-bull_votes = rsi_bull.astype(int) + stk_bull.astype(int) + cci_bull.astype(int)
-entries = bull_votes >= 2
-exits   = bull_votes <= 1
+rsi_os = rsi < 30.0
+stk_os = stk < 20.0
+cci_os = cci < -100.0
+rsi_ob = rsi > 70.0
+stk_ob = stk > 80.0
+cci_ob = cci > 100.0
+entries = (rsi_os.astype(int) + stk_os.astype(int) + cci_os.astype(int)) >= 2
+exits   = (rsi_ob.astype(int) + stk_ob.astype(int) + cci_ob.astype(int)) >= 2
 """,
         "bt_code": """\
+class StochasticRaw(bt.Indicator):
+    lines = ('k',)
+    params = (('period', {stoch_k}),)
+    def __init__(self):
+        hh = bt.indicators.Highest(self.data.high, period=self.p.period)
+        ll = bt.indicators.Lowest(self.data.low, period=self.p.period)
+        self.lines.k = 100.0 * (self.data.close - ll) / (hh - ll + 1e-10)
+
 class BtStrat(bt.Strategy):
     def __init__(self):
         self.rsi  = bt.indicators.RSI(self.data.close, period={rsi_period})
-        stoch     = bt.indicators.StochasticFull(self.data, period={stoch_k}, period_dfast={stoch_d})
-        self.stk  = stoch.percK
+        self.stk_ind = StochasticRaw(self.data, period={stoch_k})
+        self.stk  = self.stk_ind.lines.k
         self.cci  = bt.indicators.CommodityChannelIndex(self.data, period={cci_period})
     def next(self):
-        votes = int(self.rsi[0] > 50) + int(self.stk[0] > 50) + int(self.cci[0] > 0)
-        if not self.position and votes >= 2: self.buy()
-        elif self.position and votes <= 1:   self.close()
+        os_count = int(self.rsi[0] < 30.0) + int(self.stk[0] < 20.0) + int(self.cci[0] < -100.0)
+        ob_count = int(self.rsi[0] > 70.0) + int(self.stk[0] > 80.0) + int(self.cci[0] > 100.0)
+        if not self.position and os_count >= 2: self.buy()
+        elif self.position and ob_count >= 2:   self.close()
 """,
     },
 
@@ -2006,8 +2071,8 @@ class BtStrat(bt.Strategy):
         macd = bt.indicators.MACDHisto(self.data.close, period_me1={macd_fast}, period_me2={macd_slow}, period_signal={macd_signal})
         self.hist = macd.lines.histo
     def next(self):
-        if not self.position and self.fast>self.slow and self.hist>0: self.buy()
-        elif self.position and (self.fast<self.slow or self.hist<0): self.close()
+        if not self.position and self.fast[0] > self.slow[0] and self.hist[0] > 0: self.buy()
+        elif self.position and (self.fast[0] < self.slow[0] or self.hist[0] < 0): self.close()
 """,
     },
 
@@ -2120,56 +2185,59 @@ class BtStrat(bt.Strategy):
         "params": {"period": 14, "threshold": 1.0},
         "description": "RWI high > threshold → trending up → long; RWI low > threshold (trending down) → exit.",
         "pta_code": """\
-# RWI high: (high - low[n]) / (ATR * sqrt(n))
-n   = {period}
-atr = ta.atr(high, low, close, length=n)
-rng = atr * (n ** 0.5)
-rwi_h = (high - low.shift(n)) / rng
-rwi_l = (high.shift(n) - low)  / rng
+tr = pd.concat([
+    high - low,
+    (high - close.shift(1)).abs(),
+    (low - close.shift(1)).abs()
+], axis=1).max(axis=1)
+atr = tr.rolling({period}).mean()
+rwi_h = pd.Series(0.0, index=close.index)
+rwi_l = pd.Series(0.0, index=close.index)
+for n in range(2, {period} + 1):
+    sqrt_n = n ** 0.5
+    rh = (high - low.shift(n)) / (atr * sqrt_n)
+    rl = (high.shift(n) - low) / (atr * sqrt_n)
+    rwi_h = pd.concat([rwi_h, rh], axis=1).max(axis=1)
+    rwi_l = pd.concat([rwi_l, rl], axis=1).max(axis=1)
 entries = rwi_h > {threshold}
 exits   = rwi_l > {threshold}
 """,
         "bt_code": """\
-import math as _math
+class RwiInd(bt.Indicator):
+    lines = ('rwi_high', 'rwi_low',)
+    params = (('period', {period}),)
+    def __init__(self):
+        tr = bt.indicators.TrueRange(self.data)
+        self.sma_tr = bt.indicators.SMA(tr, period=self.p.period)
+    def next(self):
+        if len(self) < self.p.period + 1:
+            self.lines.rwi_high[0] = 0.0
+            self.lines.rwi_low[0] = 0.0
+            return
+        atr = self.sma_tr[0]
+        if atr == 0.0:
+            self.lines.rwi_high[0] = 0.0
+            self.lines.rwi_low[0] = 0.0
+            return
+        rwi_h = 0.0
+        rwi_l = 0.0
+        for n in range(2, self.p.period + 1):
+            past_low = self.data.low[-n]
+            past_high = self.data.high[-n]
+            sqrt_n = n ** 0.5
+            rh = (self.data.high[0] - past_low) / (atr * sqrt_n)
+            rl = (past_high - self.data.low[0]) / (atr * sqrt_n)
+            rwi_h = max(rwi_h, rh)
+            rwi_l = max(rwi_l, rl)
+        self.lines.rwi_high[0] = rwi_h
+        self.lines.rwi_low[0] = rwi_l
 
 class BtStrat(bt.Strategy):
     def __init__(self):
-        self.atr = bt.indicators.ATR(self.data, period={period})
+        self.rwi = RwiInd(self.data, period={period})
     def next(self):
-        n = {period}
-        rng = self.atr[0] * _math.sqrt(n)
-        if rng == 0: return
-        rwi_h = (self.data.high[0]  - self.data.low[-n])  / rng
-        rwi_l = (self.data.high[-n] - self.data.low[0])   / rng
-        if not self.position and rwi_h > {threshold}: self.buy()
-        elif self.position and rwi_l > {threshold}:   self.close()
-""",
-    },
-
-    # ── Pattern Breakout ──────────────────────────────────────────────────────
-
-    "pattern_breakout": {
-        "params": {"window": 60},
-        "description": "Complex pattern detection — uses highest breakout as proxy.",
-        "pta_code": """\
-# Proxy: N-bar highest breakout (pattern detection requires proprietary logic)
-period = {window}
-prev_closes = close.shift(1)
-highest = prev_closes.rolling(period).max()
-lowest  = prev_closes.rolling(period).min()
-entries = close > highest
-exits   = close < lowest
-""",
-        "bt_code": """\
-class BtStrat(bt.Strategy):
-    def __init__(self):
-        self.hh = bt.indicators.Highest(self.data.close, period={window})
-        self.ll = bt.indicators.Lowest(self.data.close,  period={window})
-    def next(self):
-        highest = self.hh[-1]
-        lowest  = self.ll[-1]
-        if not self.position and self.data.close[0] > highest: self.buy()
-        elif self.position and self.data.close[0] < lowest:    self.close()
+        if not self.position and self.rwi.lines.rwi_high[0] > {threshold}: self.buy()
+        elif self.position and self.rwi.lines.rwi_low[0] > {threshold}:   self.close()
 """,
     },
 
@@ -2184,9 +2252,34 @@ entries = cross_above(close, kama)
 exits   = cross_below(close, kama)
 """,
         "bt_code": """\
+class KamaInd(bt.Indicator):
+    lines = ('kama',)
+    params = (('er_period', {er_period}), ('fast', {fast}), ('slow', {slow}),)
+    def __init__(self):
+        self.fast_sc = 2.0 / (self.p.fast + 1.0)
+        self.slow_sc = 2.0 / (self.p.slow + 1.0)
+    def next(self):
+        if len(self) < self.p.er_period + 1:
+            self.lines.kama[0] = float('nan')
+            return
+        if len(self) == self.p.er_period + 1:
+            self.lines.kama[0] = self.data[0]
+            return
+        close = self.data[0]
+        oldest = self.data[-self.p.er_period]
+        direction = abs(close - oldest)
+        volatility = sum(abs(self.data[-i] - self.data[-i-1]) for i in range(self.p.er_period))
+        if volatility == 0.0:
+            er = 0.0
+        else:
+            er = max(0.0, min(1.0, direction / volatility))
+        sc = (er * (self.fast_sc - self.slow_sc) + self.slow_sc) ** 2
+        prev_kama = self.lines.kama[-1]
+        self.lines.kama[0] = prev_kama + sc * (close - prev_kama)
+
 class BtStrat(bt.Strategy):
     def __init__(self):
-        self.kama = bt.indicators.KAMA(self.data.close, period={er_period})
+        self.kama = KamaInd(self.data.close, er_period={er_period}, fast={fast}, slow={slow})
     def next(self):
         cross_up = self.data.close[-1] <= self.kama[-1] and self.data.close[0] > self.kama[0]
         cross_dn = self.data.close[-1] >= self.kama[-1] and self.data.close[0] < self.kama[0]
@@ -2280,33 +2373,6 @@ class BtStrat(bt.Strategy):
 """,
     },
 
-    # ── Pixel 3 ───────────────────────────────────────────────────────────────
-
-    "pixel_3": {
-        "params": {"short": 5, "medium": 20, "long": 60},
-        "description": "Multi-timeframe midpoint: short, medium, long MA alignment → long; reverse → exit.",
-        "pta_code": """\
-s_ma = ta.ema(close, length={short})
-m_ma = ta.ema(close, length={medium})
-l_ma = ta.ema(close, length={long})
-bull = (s_ma > m_ma) & (m_ma > l_ma)
-entries = bull & ~bull.shift(1).fillna(True)
-exits   = ~bull & bull.shift(1).fillna(False)
-""",
-        "bt_code": """\
-class BtStrat(bt.Strategy):
-    def __init__(self):
-        self.s = bt.indicators.EMA(self.data.close, period={short})
-        self.m = bt.indicators.EMA(self.data.close, period={medium})
-        self.l = bt.indicators.EMA(self.data.close, period={long})
-    def next(self):
-        bull_now  = self.s[0]  > self.m[0]  > self.l[0]
-        bull_prev = self.s[-1] > self.m[-1] > self.l[-1]
-        if not self.position and not bull_prev and bull_now: self.buy()
-        elif self.position and bull_prev and not bull_now:   self.close()
-""",
-    },
-
 }
 
 
@@ -2325,7 +2391,7 @@ import alm_py
 import matplotlib.pyplot as plt
 from _shared import load_parquet, vbt_run
 
-CAPITAL, COMM, SLIP = 10_000.0, 0.001, 0.0005
+CAPITAL, COMM, SLIP = 10_000.0, 0.0, 0.0
 try:
     ALM_BARS, DF = load_parquet('BTCUSDT', 'H1', 'BinanceFlat', n=2000)
 except FileNotFoundError:
@@ -2680,6 +2746,7 @@ def build_notebook(strategy_name: str, impl: dict) -> dict:
     description = impl["description"]
     pta_raw     = impl["pta_code"]
     bt_raw      = impl.get("bt_code")
+    rhai_script = RHAI_SCRIPTS.get(strategy_name)
 
     # Format pta_code with params
     try:
@@ -2717,14 +2784,18 @@ def build_notebook(strategy_name: str, impl: dict) -> dict:
             HELPERS_CODE,
         ),
         code(
-            f"# ── alm_py run ──────────────────────────────────────────────────────",
+            f"# ── alm_py named strategy run ───────────────────────────────────────",
             f"alm_result = alm_py.run_backtest(",
             f"    'BTCUSDT', '{strategy_name}', {param_str}, ALM_BARS,",
             f"    initial_capital=CAPITAL, commission_pct=COMM, slippage_pct=SLIP, lot_size=0.0, strength_sizing=False",
             f")",
-            f"print(f\"alm_py: {{alm_result['total_trades']}} trades, "
+            f"print(f\"alm_py (named): {{alm_result['total_trades']}} trades, "
             f"return={{alm_result['total_return_pct']:.2f}}%, "
-            f"sharpe={{alm_result['sharpe_ratio']:.3f}}\")",
+            f"sharpe={{alm_result['sharpe_ratio']:.3f}}, "
+            f"sortino={{alm_result.get('sortino_ratio', float('nan')):.3f}}, "
+            f"maxdd={{alm_result.get('max_drawdown_pct', float('nan')):.2f}}%, "
+            f"winrate={{alm_result.get('win_rate_pct', float('nan')):.1f}}%, "
+            f"pf={{alm_result.get('profit_factor', float('nan')):.3f}}\")",
         ),
         code(
             f"# ── Native pandas_ta signals → vectorbt ─────────────────────────────",
@@ -2733,12 +2804,42 @@ def build_notebook(strategy_name: str, impl: dict) -> dict:
             "entries = np.asarray(entries.fillna(False) if hasattr(entries,'fillna') else entries, bool)",
             "exits   = np.asarray(exits.fillna(False)   if hasattr(exits,  'fillna') else exits,   bool)",
             "print(f'pandas_ta: {entries.sum()} entries, {exits.sum()} exits')",
-            "vbt_result = vbt_run(entries, exits, C, capital=CAPITAL, commission=COMM, slippage=SLIP, freq='1h')",
+            "vbt_result = vbt_run(entries, exits, C, capital=CAPITAL, commission=COMM, slippage=SLIP, freq='1min')",
             "print(f\"vectorbt: {vbt_result['total_trades']} trades, "
             "return={vbt_result['total_return_pct']:.2f}%, "
-            "sharpe={vbt_result['sharpe_ratio']:.3f}\")",
+            "sharpe={vbt_result['sharpe_ratio']:.3f}, "
+            "sortino={vbt_result.get('sortino_ratio', float('nan')):.3f}, "
+            "maxdd={vbt_result.get('max_drawdown_pct', float('nan')):.2f}%, "
+            "winrate={vbt_result.get('win_rate_pct', float('nan')):.1f}%, "
+            "pf={vbt_result.get('profit_factor', float('nan')):.3f}\")",
         ),
     ]
+
+    # ── Rhai script cell (inserted after named, before pandas_ta) ────────────
+    if rhai_script is not None:
+        # Escape the script for embedding in a Python triple-quoted string
+        escaped = rhai_script.replace("\\", "\\\\").replace('"""', '\\"\\"\\"')
+        cells.insert(4, code(
+            f"# ── alm_py Rhai script run ──────────────────────────────────────────",
+            f"RHAI_SCRIPT = \"\"\"{escaped}\"\"\"",
+            f"script_result = alm_py.run_script_backtest(",
+            f"    'BTCUSDT', RHAI_SCRIPT, ALM_BARS,",
+            f"    initial_capital=CAPITAL, commission_pct=COMM, slippage_pct=SLIP",
+            f")",
+            f"print(f\"alm_py (script): {{script_result['total_trades']}} trades, "
+            f"return={{script_result['total_return_pct']:.2f}}%, "
+            f"sharpe={{script_result['sharpe_ratio']:.3f}}, "
+            f"sortino={{script_result.get('sortino_ratio', float('nan')):.3f}}, "
+            f"maxdd={{script_result.get('max_drawdown_pct', float('nan')):.2f}}%, "
+            f"winrate={{script_result.get('win_rate_pct', float('nan')):.1f}}%, "
+            f"pf={{script_result.get('profit_factor', float('nan')):.3f}}\")",
+            f"# ── parity check ─────────────────────────────────────────────────────",
+            f"_n, _s = alm_result['total_trades'], script_result['total_trades']",
+            f"if _n == _s:",
+            f"    print(f'✓ PARITY OK — both produce {{_n}} trades')",
+            f"else:",
+            f"    print(f'✗ PARITY FAIL — named={{_n}} script={{_s}}')",
+        ))
 
     if has_bt:
         cells.append(code(
@@ -2749,7 +2850,11 @@ def build_notebook(strategy_name: str, impl: dict) -> dict:
             "bt_result = bt_run(BtStrat, DF, capital=CAPITAL, commission=COMM, slippage=SLIP)",
             "print(f\"backtrader: {bt_result['total_trades']} trades, "
             "return={bt_result['total_return_pct']:.2f}%, "
-            "sharpe={bt_result['sharpe_ratio']:.3f}\")",
+            "sharpe={bt_result['sharpe_ratio']:.3f}, "
+            "sortino={bt_result.get('sortino_ratio', float('nan')):.3f}, "
+            "maxdd={bt_result.get('max_drawdown_pct', float('nan')):.2f}%, "
+            "winrate={bt_result.get('win_rate_pct', float('nan')):.1f}%, "
+            "pf={bt_result.get('profit_factor', float('nan')):.3f}\")",
         ))
     else:
         cells.append(code(

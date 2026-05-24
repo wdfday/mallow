@@ -4,10 +4,11 @@ use alm_indicator::{Cci, Rsi, Stochastic};
 /// Bot #18 — Oscillator Overlord.
 ///
 /// Combines three oscillators for a consensus oversold/overbought signal.
-/// Long when at least 2 of 3 are oversold; closes when at least 2 of 3 are overbought.
+/// Long when at least 2 of 3 are oversold (and not already in position).
+/// Closes when at least 2 of 3 are overbought.
 ///
 /// - RSI < 30 → oversold, RSI > 70 → overbought
-/// - Stochastic %K < 20 → oversold, %K > 80 → overbought
+/// - Stochastic raw %K < 20 → oversold, %K > 80 → overbought
 /// - CCI < −100 → oversold, CCI > +100 → overbought
 pub struct OscillatorOverlord {
     rsi: Rsi,
@@ -17,6 +18,7 @@ pub struct OscillatorOverlord {
     stoch_k: usize,
     stoch_d: usize,
     cci_period: usize,
+    in_position: bool,
 }
 
 impl OscillatorOverlord {
@@ -29,6 +31,7 @@ impl OscillatorOverlord {
             stoch_k,
             stoch_d,
             cci_period,
+            in_position: false,
         }
     }
 }
@@ -52,10 +55,12 @@ impl Strategy for OscillatorOverlord {
             .filter(|&&x| x)
             .count();
 
-        if os_count >= 2 {
+        if !self.in_position && os_count >= 2 {
+            self.in_position = true;
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if ob_count >= 2 {
+        if self.in_position && ob_count >= 2 {
+            self.in_position = false;
             return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -69,6 +74,7 @@ impl Strategy for OscillatorOverlord {
         self.rsi = Rsi::new(self.rsi_period);
         self.stoch = Stochastic::new(self.stoch_k, self.stoch_d);
         self.cci = Cci::new(self.cci_period);
+        self.in_position = false;
     }
 }
 

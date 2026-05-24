@@ -6,14 +6,9 @@
 //! - Serialising the request / response envelopes.
 //! - Enforcing a concurrency cap via [`HttpState::backtest_semaphore`].
 //! - Dispatching the CPU-bound engine run onto `spawn_blocking`.
-//! - Persisting strategy version on every `POST /api/v1/backtest/script`.
 //!
-//! # Always-persist flow (`POST /api/v1/backtest/script`)
-//!
-//! 1. Validate → acquire semaphore.
-//! 2. Upsert strategy by `spec_hash` (same script → existing version returned).
-//! 3. Run engine on `spawn_blocking`.
-//! 4. Return merged response: `{ ...report, saved: { strategy_id } }`.
+//! `POST /api/v1/backtest/script` is a **pure run** — it does not save the
+//! strategy. Use `POST /api/v1/strategy/strategies` to persist a version.
 //!
 //! # Concurrency
 //!
@@ -41,7 +36,6 @@ use alm_strategy::MTF_STRATEGY_KEYS;
 use serde::Serialize;
 use tracing::{error, info, warn};
 
-use super::strategy::types::StrategySpec;
 use super::HttpState;
 
 pub fn routes() -> Router<HttpState> {
@@ -152,7 +146,7 @@ pub async fn run_backtest(
     post,
     path = "/api/v1/backtest/script",
     responses(
-        (status = 200, description = "Script backtest report with saved IDs"),
+        (status = 200, description = "Script backtest report"),
         (status = 400, description = "Bad request"),
         (status = 429, description = "Too many concurrent backtests")
     ),
@@ -160,31 +154,14 @@ pub async fn run_backtest(
 )]
 pub async fn run_backtest_script(
     State(state): State<HttpState>,
-    headers: axum::http::HeaderMap,
     Json(req): Json<ScriptBacktestRequest>,
 ) -> Response {
     let Some(_permit) = try_acquire(&state) else {
         return too_many_requests();
     };
 
-    let name  = req.name.clone();
-    let spec  = StrategySpec { script: req.script.clone() };
-    let label = req.label.clone().unwrap_or_else(|| format!("{name} on {}", req.symbol));
-    let notes = req.notes.clone();
-    let user_id = headers.get("x-user-id").and_then(|v| v.to_str().ok()).map(|s| s.to_owned());
+    info!(symbol = %req.symbol, "Script backtest request");
 
-    info!(symbol = %req.symbol, name = %name, "Script backtest request");
-
-    // 1. Upsert strategy (dedup by spec_hash globally across all versions of name).
-    let strategy = match state.store.upsert_strategy(name, label, spec, notes, None, user_id).await {
-        Ok(s)  => s,
-        Err(e) => {
-            warn!(error = %e, "strategy upsert failed");
-            return err(StatusCode::INTERNAL_SERVER_ERROR, format!("strategy upsert: {e}"));
-        }
-    };
-
-    // 2. Run engine.
     let started_at = std::time::Instant::now();
     let base: BacktestRequest = req.into();
     let report = match run_blocking(Arc::clone(&state.data_dir), base).await {
@@ -194,17 +171,14 @@ pub async fn run_backtest_script(
     let elapsed_ms = started_at.elapsed().as_millis() as u64;
 
     info!(
-        strategy_id  = %strategy.id,
         elapsed_ms,
         total_return = report.returns.total_pct,
         sharpe       = report.risk_adjusted.sharpe,
         trades       = report.trade_stats.total,
-        "backtest done"
+        "script backtest done"
     );
 
-    // 3. Merge `saved` + timing into response JSON.
     let mut body = serde_json::to_value(&report).unwrap_or_default();
-    body["saved"] = serde_json::json!({ "strategy_id": strategy.id });
     body["elapsed_ms"] = serde_json::json!(elapsed_ms);
     ok(body)
 }

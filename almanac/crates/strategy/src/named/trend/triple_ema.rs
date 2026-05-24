@@ -4,14 +4,13 @@ use alm_indicator::Ema;
 /// Bot #35 — Triple EMA Crossover.
 ///
 /// Long when all three EMAs are aligned bullishly: EMA(fast) > EMA(mid) > EMA(slow).
-/// Entry triggered when the fast EMA crosses above the mid EMA (with slow already below mid).
-/// Closes when fast EMA crosses back below mid EMA.
+/// Entry on the first bar where the alignment holds (transition from non-bull to bull).
+/// Exit when any EMA inverts the alignment.
 pub struct TripleEma {
     ema1: Ema,
     ema2: Ema,
     ema3: Ema,
-    prev_e1: Option<f64>,
-    prev_e2: Option<f64>,
+    prev_bull: Option<bool>,
     period1: usize,
     period2: usize,
     period3: usize,
@@ -24,8 +23,7 @@ impl TripleEma {
             ema1: Ema::new(period1),
             ema2: Ema::new(period2),
             ema3: Ema::new(period3),
-            prev_e1: None,
-            prev_e2: None,
+            prev_bull: None,
             period1,
             period2,
             period3,
@@ -43,23 +41,17 @@ impl Strategy for TripleEma {
             return vec![];
         };
 
-        let (Some(pe1), Some(pe2)) = (self.prev_e1, self.prev_e2) else {
-            self.prev_e1 = Some(e1);
-            self.prev_e2 = Some(e2);
+        let bull = e1 > e2 && e2 > e3;
+        let prev = self.prev_bull.replace(bull);
+
+        let Some(was_bull) = prev else {
             return vec![];
         };
 
-        let fast_crossed_above_mid = pe1 <= pe2 && e1 > e2;
-        let fast_crossed_below_mid = pe1 >= pe2 && e1 < e2;
-
-        self.prev_e1 = Some(e1);
-        self.prev_e2 = Some(e2);
-
-        // Bullish: fast crosses mid AND mid already above slow
-        if fast_crossed_above_mid && e2 > e3 {
+        if !was_bull && bull {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if fast_crossed_below_mid {
+        if was_bull && !bull {
             return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -73,8 +65,7 @@ impl Strategy for TripleEma {
         self.ema1 = Ema::new(self.period1);
         self.ema2 = Ema::new(self.period2);
         self.ema3 = Ema::new(self.period3);
-        self.prev_e1 = None;
-        self.prev_e2 = None;
+        self.prev_bull = None;
     }
 }
 
@@ -100,8 +91,10 @@ mod tests {
 let e10 = ind.ema(10);
 let e20 = ind.ema(20);
 let e50 = ind.ema(50);
-if cross_above(e10, e20) && e20[0] > e50[0] { entry = true; }
-if cross_below(e10, e20) { exit = true; }
+let bull_now  = e10[0] > e20[0] && e20[0] > e50[0];
+let bull_prev = e10[1] > e20[1] && e20[1] > e50[1];
+if !bull_prev && bull_now  { entry = true; }
+if bull_prev  && !bull_now { exit  = true; }
 "#;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs: Vec<(i64, Direction)> = bars.iter()

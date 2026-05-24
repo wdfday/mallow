@@ -325,8 +325,8 @@ impl<S: MtfStrategy, R: RiskManager> MtfEngine<S, R> {
                 self.portfolio.apply_fill(&fill);
                 if let Some(tr) = tracker {
                     if let Some(trade) = self.portfolio.trades.last_mut() {
-                        trade.mae_pct = tr.mae;
-                        trade.mfe_pct = tr.mfe;
+                        trade.mae_pct = tr.mae * 100.0;
+                        trade.mfe_pct = tr.mfe * 100.0;
                         trade.bars_held = tr.bars_held;
                         trade.exit_reason = ExitReason::EndOfData;
                     }
@@ -413,8 +413,8 @@ impl<S: MtfStrategy, R: RiskManager> MtfEngine<S, R> {
                 self.last_price = fp;
                 if let Some(tr) = tracker {
                     if let Some(trade) = self.portfolio.trades.last_mut() {
-                        trade.mae_pct = tr.mae;
-                        trade.mfe_pct = tr.mfe;
+                        trade.mae_pct = tr.mae * 100.0;
+                        trade.mfe_pct = tr.mfe * 100.0;
                         trade.bars_held = tr.bars_held;
                         trade.exit_reason = reason;
                     }
@@ -530,8 +530,8 @@ impl<S: MtfStrategy, R: RiskManager> MtfEngine<S, R> {
             self.pending_signal_levels.remove(&fill.symbol);
             if let Some(tr) = self.position_trackers.remove(&fill.symbol) {
                 if let Some(trade) = self.portfolio.trades.last_mut() {
-                    trade.mae_pct = tr.mae;
-                    trade.mfe_pct = tr.mfe;
+                    trade.mae_pct = tr.mae * 100.0;
+                    trade.mfe_pct = tr.mfe * 100.0;
                     trade.bars_held = tr.bars_held;
                 }
             }

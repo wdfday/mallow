@@ -1,6 +1,4 @@
-use std::sync::{Arc, Mutex};
-
-use super::engine::{build_engine, PlotBuf};
+use super::engine::build_engine;
 use super::parse::{
     extract_candle_directives, extract_regime_block, try_parse_indicator_line, IndicatorKind,
 };
@@ -21,7 +19,7 @@ pub const KNOWN_INDICATOR_TYPES: &[&str] = &[
     // ── Multi-output: Array<Map> ─────────────────────────────────────────────
     "macd",        // .macd  .signal  .histogram
     "adx",         // .adx  .plus_di  .minus_di
-    "dmi",         // .plus_di  .minus_di  .dx
+    "dmi",         // .plus_di  .minus_di
     "bbands",      // .upper  .middle  .lower  .bandwidth  .percent_b
     "keltner",     // .upper  .middle  .lower
     "donchian",    // .upper  .middle  .lower
@@ -203,8 +201,7 @@ pub fn script_lint(script: &str) -> (Vec<LintDiagnostic>, ScriptLintScope) {
     }
 
     let cleaned = cleaned_lines.join("\n");
-    let plot_buf: PlotBuf = Arc::new(Mutex::new(Vec::new()));
-    let engine = build_engine(plot_buf);
+    let engine = build_engine();
     if let Err(e) = engine.compile(&cleaned) {
         let pos = e.1;
         let orig_line = pos
@@ -229,7 +226,6 @@ pub fn script_lint(script: &str) -> (Vec<LintDiagnostic>, ScriptLintScope) {
             "rising", "falling", "rising_n", "falling_n",
             "above", "below", "in_range",
             "highest", "lowest",
-            "plot",
         ],
     };
 

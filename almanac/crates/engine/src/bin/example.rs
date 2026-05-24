@@ -1,66 +1,79 @@
+use alm_engine::backtest;
+use alm_engine::types::BacktestRequest;
 use anyhow::Result;
-use alm_data::{BarFeed, ParquetFeed};
-use alm_engine::Engine;
-use alm_strategy::{FixedFractional, MaCrossover};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use tracing::info;
+
+const SCRIPT_RSI: &str = r#"
+let rsi = ind.rsi(14);
+if rsi[0] < 35.0 { long = true; }
+if rsi[0] > 65.0 { exit = true; }
+"#;
+
+const SCRIPT_ST: &str = r#"
+let st  = ind.supertrend(10, 3.0);
+let rsi = ind.rsi(14);
+
+let bullish_now  = close[0] > st[0];
+let bullish_prev = close[1] > st[1];
+
+if !bullish_prev && bullish_now && rsi[0] > 50.0 { long = true; }
+if bullish_prev && !bullish_now                   { exit = true; }
+if rsi[0] < 40.0                                  { exit = true; }
+"#;
+
+fn run(label: &str, script: &str, data_dir: &PathBuf) -> Result<()> {
+    let req = BacktestRequest {
+        strategy: "script".into(),
+        symbol: "BTCUSDT".into(),
+        params: Some(serde_json::json!({ "script": script })),
+        from: Some("2024-01-01".into()),
+        to: Some("2024-12-31".into()),
+        initial_capital: Some(10_000.0),
+        commission_pct: Some(0.001),
+        slippage_pct: Some(0.0005),
+        risk_free_annual: Some(0.04),
+        position_size_pct: Some(0.95),
+        position_size_usd: None,
+        position_size_quantity: None,
+        max_positions: Some(1),
+        data_source: Some("binanceflat".into()),
+        asset_type: Some("crypto".into()),
+        timeframe: Some("H1".into()),
+        monte_carlo: None,
+        walk_forward: None,
+        intra_bar_mode: None,
+    };
+
+    let t0 = std::time::Instant::now();
+    let report = backtest::run(req, data_dir)?;
+    let elapsed = t0.elapsed();
+
+    info!(
+        label,
+        total_return = format!("{:.2}%", report.returns.total_pct),
+        cagr         = format!("{:.2}%", report.returns.cagr_pct),
+        sharpe       = format!("{:.3}", report.risk_adjusted.sharpe),
+        max_dd       = format!("{:.2}%", report.drawdown.max_pct),
+        trades       = report.trade_stats.total,
+        win_rate     = format!("{:.1}%", report.trade_stats.win_rate_pct),
+        elapsed_ms   = elapsed.as_millis(),
+        "result"
+    );
+    Ok(())
+}
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    // --- Single backtest example ---
     let data_dir = PathBuf::from(
-        std::env::var("DATA_DIR").unwrap_or_else(|_| "../../data/Polygon/stocks".into()),
+        std::env::var("DATA_DIR").unwrap_or_else(|_| "../../data".into()),
     );
 
-    let symbol = std::env::var("SYMBOL").unwrap_or_else(|_| "AAPL".into());
-    let parquet_path = find_parquet(&data_dir, &symbol)?;
-
-    info!(%symbol, path = %parquet_path.display(), "loading data");
-
-    let mut feed = ParquetFeed::load(&parquet_path, &symbol)?;
-    info!(bars = feed.len(), "data loaded");
-
-    let strategy = MaCrossover::new(20, 50);
-    let risk = FixedFractional::new(0.02, 5);
-
-    let mut engine = Engine::sync(
-        100_000.0, // initial capital $100K
-        strategy, risk, 0.001,  // 0.1% commission
-        0.0005, // 0.05% slippage
-    );
-
-    let t0 = std::time::Instant::now();
-    let report = engine.run(&mut feed, 0.04); // 4% risk-free rate
-    let elapsed = t0.elapsed();
-
-    info!(
-        strategy = %report.strategy,
-        symbol = %report.symbol,
-        total_return = format!("{:.2}%", report.total_return_pct),
-        cagr = format!("{:.2}%", report.cagr_pct),
-        sharpe = format!("{:.3}", report.sharpe_ratio),
-        max_dd = format!("{:.2}%", report.max_drawdown_pct),
-        trades = report.total_trades,
-        win_rate = format!("{:.1}%", report.win_rate_pct),
-        elapsed_ms = elapsed.as_millis(),
-        "backtest complete"
-    );
-
-    println!("{}", serde_json::to_string_pretty(&report)?);
+    run("rsi_mean_rev", SCRIPT_RSI, &data_dir)?;
+    run("supertrend_rsi", SCRIPT_ST, &data_dir)?;
 
     Ok(())
-}
-
-fn find_parquet(data_dir: &Path, symbol: &str) -> Result<PathBuf> {
-    let symbol_dir = data_dir.join(symbol);
-    let entry = std::fs::read_dir(&symbol_dir)
-        .map_err(|e| anyhow::anyhow!("cannot read {}: {}", symbol_dir.display(), e))?
-        .filter_map(|e| e.ok())
-        .find(|e| e.path().extension().and_then(|ext| ext.to_str()) == Some("parquet"))
-        .ok_or_else(|| anyhow::anyhow!("no parquet file for {symbol}"))?;
-
-    Ok(entry.path())
 }

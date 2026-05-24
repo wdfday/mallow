@@ -24,8 +24,7 @@ REQUIRED_KEYS = {
     "rolling_sharpe", "rolling_drawdown",
     "timeframe",
     "equity_curve", "trades", "pnl_pct",
-    "trending_pct", "ranging_pct", "neutral_pct",
-    "high_vol_pct", "low_vol_pct", "regime_changes",
+    "regime_changes", "regime_trade_breakdown",
     # extended fields
     "exposure_pct", "indicator_series", "benchmark",
 }
@@ -75,7 +74,7 @@ def test_no_trades_ratios_are_zero(flat_bars):
 
 
 def test_no_trades_equity_unchanged(flat_bars):
-    r = _run("rsi_mean_rev", flat_bars, capital=5_000.0)
+    r = _run("rsi_mean_rev", flat_bars, initial_capital=5_000.0)
     if r["total_trades"] == 0:
         assert r["final_equity"] == pytest.approx(5_000.0, rel=1e-6)
         assert r["total_return_pct"] == pytest.approx(0.0, abs=1e-6)
@@ -137,7 +136,7 @@ def test_trade_side_values(trending_bars):
 # ── position sizing ───────────────────────────────────────────────────────────
 
 def test_capital_respected(trending_bars):
-    r = _run("ma_crossover", trending_bars, {"fast": 5, "slow": 20}, capital=1_000.0)
+    r = _run("ma_crossover", trending_bars, {"fast": 5, "slow": 20}, initial_capital=1_000.0)
     assert r["initial_capital"] == pytest.approx(1_000.0)
 
 
@@ -149,7 +148,7 @@ def test_final_equity_positive(trending_bars):
 # ── crypto bars ──────────────────────────────────────────────────────────────
 
 def test_crypto_bars_work(crypto_bars):
-    r = _run("rsi_mean_rev", crypto_bars, {"period": 14}, capital=50_000.0)
+    r = _run("rsi_mean_rev", crypto_bars, {"period": 14}, initial_capital=50_000.0)
     assert r["initial_capital"] == pytest.approx(50_000.0)
     assert len(r["equity_curve"]) == len(crypto_bars["t"])
 
@@ -161,7 +160,7 @@ def test_list_strategies_non_empty():
     assert len(names) > 50
     assert "ma_crossover" in names
     assert "rsi_mean_rev" in names
-    assert "cel" in names
+    assert "supertrend" in names
 
 
 # ── kalman ───────────────────────────────────────────────────────────────────
@@ -186,12 +185,12 @@ def test_kalman_smoothing(flat_bars):
 
 def test_monte_carlo_requires_trades():
     with pytest.raises(Exception):
-        alm.monte_carlo([], capital=10_000)
+        alm.monte_carlo([], initial_capital=10_000)
 
 
 def test_monte_carlo_output_keys():
     pnl = [0.01, -0.005, 0.02, -0.01, 0.015] * 10
-    mc = alm.monte_carlo(pnl, capital=10_000, n_iter=100)
+    mc = alm.monte_carlo(pnl, initial_capital=10_000, n_iter=100)
     assert "ruin_probability" in mc
     assert "final" in mc
     assert "curves" in mc
@@ -200,7 +199,7 @@ def test_monte_carlo_output_keys():
 
 def test_monte_carlo_percentile_ordering():
     pnl = [0.01, -0.005, 0.02] * 20
-    mc = alm.monte_carlo(pnl, capital=10_000, n_iter=500, seed=42)
+    mc = alm.monte_carlo(pnl, initial_capital=10_000, n_iter=500, seed=42)
     f = mc["final"]
     assert f["p5"] <= f["p25"] <= f["p50"] <= f["p75"] <= f["p95"]
 
@@ -278,3 +277,82 @@ def test_buy_hold_benchmark_uptrend(trending_bars):
 def test_buy_hold_benchmark_length_mismatch():
     with pytest.raises(Exception):
         alm.buy_hold_benchmark([1.0, 2.0], [1_000_000])
+
+
+# ── run_script_backtest ───────────────────────────────────────────────────────
+
+EMA_CROSS_SCRIPT = """
+let ema9  = ind.ema(9);
+let ema21 = ind.ema(21);
+
+if cross_above(ema9, ema21) { entry = true; }
+if cross_below(ema9, ema21) { exit  = true; }
+"""
+
+
+def test_script_backtest_returns_required_keys(trending_bars):
+    r = alm.run_script_backtest("BTCUSDT", EMA_CROSS_SCRIPT, trending_bars)
+    for key in ("total_trades", "sharpe_ratio", "equity_curve", "trades",
+                "indicator_series", "regime_changes", "regime_trade_breakdown"):
+        assert key in r, f"run_script_backtest missing key '{key}'"
+
+
+def test_script_backtest_fires_trades(trending_bars):
+    r = alm.run_script_backtest("BTCUSDT", EMA_CROSS_SCRIPT, trending_bars)
+    assert r["total_trades"] >= 1
+
+
+def test_script_backtest_indicator_series_populated(trending_bars):
+    r = alm.run_script_backtest("BTCUSDT", EMA_CROSS_SCRIPT, trending_bars)
+    assert "ema9" in r["indicator_series"]
+    assert "ema21" in r["indicator_series"]
+    ema9_t = r["indicator_series"]["ema9"]["t"]
+    ema9_v = r["indicator_series"]["ema9"]["v"]
+    assert len(ema9_t) == len(ema9_v)
+    assert len(ema9_t) > 0
+
+
+def test_script_backtest_equity_curve_length(trending_bars):
+    r = alm.run_script_backtest("BTCUSDT", EMA_CROSS_SCRIPT, trending_bars)
+    assert len(r["equity_curve"]) == len(trending_bars["t"])
+
+
+def test_script_backtest_invalid_script_raises(trending_bars):
+    with pytest.raises(Exception):
+        alm.run_script_backtest("BTCUSDT", "let bad = ind.nonexistent_indicator(999);", trending_bars)
+
+
+def test_script_backtest_regime_block(trending_bars):
+    script = """
+regime {
+    let adx14 = ind.adx(14);
+    if adx14[0] > 20.0 { trend = "trending"; trend_value = adx14[0]; }
+    else                { trend = "ranging";  trend_value = adx14[0]; }
+}
+let ema9  = ind.ema(9);
+let ema21 = ind.ema(21);
+if cross_above(ema9, ema21) { entry = true; }
+if cross_below(ema9, ema21) { exit  = true; }
+"""
+    r = alm.run_script_backtest("BTCUSDT", script, trending_bars)
+    assert isinstance(r["regime_changes"], list)
+    assert isinstance(r["regime_trade_breakdown"], list)
+
+
+def test_portfolio_backtest(trending_bars, flat_bars):
+    symbol_bar_pairs = [
+        ("BTCUSDT", trending_bars),
+        ("ETHUSDT", flat_bars),
+    ]
+    r = alm.run_portfolio_backtest(
+        symbol_bar_pairs=symbol_bar_pairs,
+        strategy="rsi_mean_rev",
+        params={"period": 14, "oversold": 30, "overbought": 70},
+    )
+    assert "results" in r
+    assert "analytics" in r
+    assert "BTCUSDT" in r["results"]
+    assert "ETHUSDT" in r["results"]
+    assert "correlation_matrix" in r["analytics"]
+    assert len(r["analytics"]["symbols"]) == 2
+

@@ -4,8 +4,9 @@ use std::collections::VecDeque;
 
 /// Chandelier Exit — ATR-based trailing stop system.
 ///
-/// Long  when close breaks above the N-bar highest high.
-/// Exit  when close drops below (highest_high - multiplier * ATR) — the chandelier stop.
+/// Bullish when close > (rolling-highest-high - multiplier * ATR).
+/// Long on transition from non-bullish to bullish.
+/// Exit on transition from bullish to non-bullish.
 ///
 /// Default: period=22, multiplier=3.0
 pub struct ChandelierExit {
@@ -14,9 +15,8 @@ pub struct ChandelierExit {
     multiplier: f64,
     atr_p: usize,
     highs: VecDeque<f64>,
-    highest_high: f64,
     in_position: bool,
-    chandelier_stop: f64,
+    prev_bull: Option<bool>,
 }
 
 impl ChandelierExit {
@@ -27,16 +27,14 @@ impl ChandelierExit {
             multiplier,
             atr_p: period,
             highs: VecDeque::with_capacity(period),
-            highest_high: f64::NEG_INFINITY,
             in_position: false,
-            chandelier_stop: 0.0,
+            prev_bull: None,
         }
     }
 }
 
 impl Strategy for ChandelierExit {
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
-        // Update rolling highs
         self.highs.push_back(bar.high);
         if self.highs.len() > self.period { self.highs.pop_front(); }
 
@@ -46,30 +44,22 @@ impl Strategy for ChandelierExit {
         if self.highs.len() < self.period { return vec![]; }
 
         let hh = self.highs.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        self.chandelier_stop = hh - self.multiplier * atr_val.atr;
+        let stop = hh - self.multiplier * atr_val.atr;
+        let bull = bar.close > stop;
 
-        // Entry: close above previous highest high (breakout)
-        if bar.close > self.highest_high && self.highest_high != f64::NEG_INFINITY && !self.in_position {
+        let was_bull = self.prev_bull.replace(bull);
+        let Some(prev) = was_bull else {
+            return vec![];
+        };
+
+        if !prev && bull && !self.in_position {
             self.in_position = true;
-            self.highest_high = hh;
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-
-        // Update trailing highest high while in position
-        if self.in_position && hh > self.highest_high {
-            self.highest_high = hh;
-            self.chandelier_stop = hh - self.multiplier * atr_val.atr;
-        }
-
-        // Exit: close drops below chandelier stop
-        if self.in_position && bar.close < self.chandelier_stop {
+        if prev && !bull && self.in_position {
             self.in_position = false;
             return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
-
-        // Track highest high even when not in position
-        if !self.in_position { self.highest_high = hh; }
-
         vec![]
     }
 
@@ -77,11 +67,14 @@ impl Strategy for ChandelierExit {
         "chandelier_exit"
     }
 
+    fn description(&self) -> &'static str {
+        "Long when close crosses above chandelier stop (HH - mult*ATR). Exit when close drops below it."
+    }
+
     fn reset(&mut self) {
         self.atr = Atr::new(self.atr_p);
         self.highs.clear();
-        self.highest_high = f64::NEG_INFINITY;
         self.in_position = false;
-        self.chandelier_stop = 0.0;
+        self.prev_bull = None;
     }
 }

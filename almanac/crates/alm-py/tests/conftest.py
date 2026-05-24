@@ -7,8 +7,17 @@ Build & install before running:
 """
 
 import math
+import pathlib
 import numpy as np
 import pytest
+
+# ── Real-data Parquet path ────────────────────────────────────────────────────
+# 2M-row M1 file shipped in crates/data/testdata/
+_PARQUET_PATH = (
+    pathlib.Path(__file__).parent.parent.parent  # almanac/crates/
+    / "data/testdata/BTCUSDT/M1"
+    / "BTCUSDT_M1_2022-04-13_to_2026-04-12.parquet"
+)
 
 
 # ── Synthetic bar factories ──────────────────────────────────────────────────
@@ -70,3 +79,30 @@ def trending_bars():
 def crypto_bars():
     """500 crypto-style bars (high volatility, fractional sizing)."""
     return _make_bars(500, base=30_000.0, trend=0.001, noise=0.01, seed=99)
+
+
+@pytest.fixture(scope="session")
+def real_bars():
+    """10 000 real BTCUSDT M1 bars loaded from the committed Parquet testdata.
+
+    These are the most-recent 10k rows from the 2M-row file so they cover a
+    realistic range of market regimes.  Skips the test if the file is absent
+    (e.g. bare-clone CI without LFS).
+    """
+    if not _PARQUET_PATH.exists():
+        pytest.skip(f"real-data parquet missing: {_PARQUET_PATH}")
+    try:
+        import pyarrow.parquet as pq  # type: ignore
+    except ImportError:
+        pytest.skip("pyarrow not installed — skipping real-data tests")
+
+    tbl = pq.read_table(_PARQUET_PATH, columns=["t", "o", "h", "l", "c", "v"])
+    df  = tbl.to_pandas().tail(10_000)
+    return {
+        "t": df["t"].tolist(),
+        "o": df["o"].tolist(),
+        "h": df["h"].tolist(),
+        "l": df["l"].tolist(),
+        "c": df["c"].tolist(),
+        "v": df["v"].tolist(),
+    }

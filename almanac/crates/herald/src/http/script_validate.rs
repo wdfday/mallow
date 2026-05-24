@@ -54,7 +54,9 @@ use utoipa::ToSchema;
 use alm_core::Timeframe;
 use alm_strategy::{script_lint, LintDiagnostic, ScriptLintScope};
 
-use super::types::ok;
+use axum::http::StatusCode;
+
+use super::types::{ok, err};
 use super::HttpState;
 
 // ── Request / response types ──────────────────────────────────────────────────
@@ -103,7 +105,16 @@ pub async fn validate_script(
     // Run lint synchronously — it's pure CPU with no I/O, typically < 1 ms.
     // Scripts that are very large could theoretically block, but script compile
     // is fast and lint scripts are tiny; no need for spawn_blocking here.
-    let base_tf = req.base_tf.as_deref().and_then(parse_timeframe);
+    let base_tf = match req.base_tf.as_deref() {
+        None => None,
+        Some(s) => match parse_timeframe(s) {
+            Some(tf) => Some(tf),
+            None => return err(
+                StatusCode::BAD_REQUEST,
+                format!("unknown base_tf '{s}'; expected one of: M1 M3 M5 M15 M30 H1 H2 H4 H6 H12 D1 W1"),
+            ),
+        },
+    };
     let (errors, scope) = script_lint(&req.script, base_tf);
     ok(ScriptValidateResp { errors, scope })
 }

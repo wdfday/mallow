@@ -53,9 +53,6 @@ pub struct DmiValue {
     pub plus_di: f64,
     /// Negative Directional Indicator (0–100): sức mạnh downward trend
     pub minus_di: f64,
-    /// Directional Movement Index (0–100): mức độ phân kỳ giữa +DI và -DI.
-    /// DX < 20: thị trường không xu hướng; DX > 25: có xu hướng rõ ràng.
-    pub dx: f64,
 }
 
 impl Dmi {
@@ -104,15 +101,9 @@ impl Dmi {
 
             match (s_plus, s_minus, s_tr) {
                 (Some(sp), Some(sm), Some(st)) if st > f64::EPSILON => {
-                    let plus_di = sp / st * 100.0;
+                    let plus_di  = sp / st * 100.0;
                     let minus_di = sm / st * 100.0;
-                    let di_sum = plus_di + minus_di;
-                    let dx = if di_sum > f64::EPSILON {
-                        (plus_di - minus_di).abs() / di_sum * 100.0
-                    } else {
-                        0.0
-                    };
-                    Some(DmiValue { plus_di, minus_di, dx })
+                    Some(DmiValue { plus_di, minus_di })
                 }
                 _ => None,
             }
@@ -161,7 +152,6 @@ mod tests {
         if let Some(v) = feed_uptrend(&mut dmi, 30) {
             assert!(v.plus_di >= 0.0 && v.plus_di <= 100.0);
             assert!(v.minus_di >= 0.0 && v.minus_di <= 100.0);
-            assert!(v.dx >= 0.0 && v.dx <= 100.0);
         }
     }
 

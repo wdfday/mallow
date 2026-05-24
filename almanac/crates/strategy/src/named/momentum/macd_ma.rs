@@ -3,12 +3,12 @@ use alm_indicator::{Macd, Sma};
 
 /// Bot #3 — MACD with MA filter.
 ///
-/// Long when MACD histogram crosses above zero AND price is above MA.
-/// Closes when histogram crosses below zero OR price drops below MA.
+/// Long when MACD histogram > 0 AND price is above EMA (state-based, not crossover).
+/// Closes when histogram < 0.
 pub struct MacdMa {
     macd: Macd,
     ma: Sma,
-    prev_hist: Option<f64>,
+    in_position: bool,
     fast: usize,
     slow: usize,
     signal_period: usize,
@@ -20,7 +20,7 @@ impl MacdMa {
         Self {
             macd: Macd::new(fast, slow, signal_period),
             ma: Sma::new(ma_period),
-            prev_hist: None,
+            in_position: false,
             fast,
             slow,
             signal_period,
@@ -38,19 +38,12 @@ impl Strategy for MacdMa {
             return vec![];
         };
 
-        let Some(prev) = self.prev_hist else {
-            self.prev_hist = Some(m.histogram);
-            return vec![];
-        };
-
-        let hist_crossed_up = prev <= 0.0 && m.histogram > 0.0;
-        let hist_crossed_down = prev >= 0.0 && m.histogram < 0.0;
-        self.prev_hist = Some(m.histogram);
-
-        if hist_crossed_up && bar.close > ma {
+        if !self.in_position && m.histogram > 0.0 && bar.close > ma {
+            self.in_position = true;
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if hist_crossed_down || bar.close < ma {
+        if self.in_position && m.histogram < 0.0 {
+            self.in_position = false;
             return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -63,7 +56,7 @@ impl Strategy for MacdMa {
     fn reset(&mut self) {
         self.macd = Macd::new(self.fast, self.slow, self.signal_period);
         self.ma = Sma::new(self.ma_period);
-        self.prev_hist = None;
+        self.in_position = false;
     }
 }
 
@@ -87,9 +80,16 @@ mod tests {
 
         let script = r#"
 let mh = ind.macd(12);
-let sma50 = ind.sma(50, buf=1);
-if mh[1].histogram <= 0.0 && mh[0].histogram > 0.0 && close[0] > sma50[0] { entry = true; }
-if (mh[1].histogram >= 0.0 && mh[0].histogram < 0.0) || close[0] < sma50[0] { exit = true; }
+let sma50 = ind.sma(50);
+let in_pos = state["in_position"] == true;
+if !in_pos && mh[0].histogram > 0.0 && close[0] > sma50[0] {
+    entry = true;
+    state["in_position"] = true;
+}
+if in_pos && mh[0].histogram < 0.0 {
+    exit = true;
+    state["in_position"] = false;
+}
 "#;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs: Vec<(i64, Direction)> = bars.iter()
@@ -97,6 +97,7 @@ if (mh[1].histogram >= 0.0 && mh[0].histogram < 0.0) || close[0] < sma50[0] { ex
             .map(|s| (s.timestamp, s.direction))
             .collect();
 
+        assert!(!named_sigs.is_empty(), "macd_ma: must produce signals");
         assert_eq!(named_sigs, script_sigs, "script parity failed");
     }
 }

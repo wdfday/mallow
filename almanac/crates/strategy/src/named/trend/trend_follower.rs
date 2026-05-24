@@ -1,24 +1,15 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::{Macd, Sma};
 
-const RHAI: &str = r#"
-let s50  = ind.sma(50);
-let s200 = ind.sma(200);
-let m    = ind.macd(12);
-if cross_above(s50, s200) && m[0].histogram > 0.0  { entry = true; }
-if cross_below(s50, s200) || m[0].histogram < 0.0  { exit  = true; }
-"#;
-
 /// Bot #33 — Trend Follower.
 ///
-/// Long when fast SMA crosses above slow SMA AND MACD histogram confirms
-/// positive momentum.  Exits when SMA crosses back down OR histogram turns negative.
+/// Long when fast SMA > slow SMA AND MACD histogram > 0 (state-based, with position guard).
+/// Exits when SMA inverts OR histogram turns negative.
 pub struct TrendFollower {
     fast_ma: Sma,
     slow_ma: Sma,
     macd: Macd,
-    prev_fast: Option<f64>,
-    prev_slow: Option<f64>,
+    in_position: bool,
     fast_period: usize,
     slow_period: usize,
     macd_fast: usize,
@@ -38,8 +29,7 @@ impl TrendFollower {
             fast_ma: Sma::new(fast_period),
             slow_ma: Sma::new(slow_period),
             macd: Macd::new(macd_fast, macd_slow, macd_signal),
-            prev_fast: None,
-            prev_slow: None,
+            in_position: false,
             fast_period,
             slow_period,
             macd_fast,
@@ -59,22 +49,12 @@ impl Strategy for TrendFollower {
             return vec![];
         };
 
-        let (Some(pf), Some(ps)) = (self.prev_fast, self.prev_slow) else {
-            self.prev_fast = Some(f);
-            self.prev_slow = Some(s);
-            return vec![];
-        };
-
-        let crossed_above = pf <= ps && f > s;
-        let crossed_below = pf >= ps && f < s;
-
-        self.prev_fast = Some(f);
-        self.prev_slow = Some(s);
-
-        if crossed_above && m.histogram > 0.0 {
+        if !self.in_position && f > s && m.histogram > 0.0 {
+            self.in_position = true;
             return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
         }
-        if crossed_below || m.histogram < 0.0 {
+        if self.in_position && (f < s || m.histogram < 0.0) {
+            self.in_position = false;
             return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
         vec![]
@@ -85,17 +65,14 @@ impl Strategy for TrendFollower {
     }
 
     fn description(&self) -> &'static str {
-        "Long when fast SMA crosses above slow SMA with positive MACD histogram. Exit on SMA cross-down or negative histogram."
+        "Long when fast SMA > slow SMA AND MACD histogram > 0. Exit when SMA inverts or histogram turns negative."
     }
-
-    fn script(&self) -> Option<&'static str> { Some(RHAI) }
 
     fn reset(&mut self) {
         self.fast_ma = Sma::new(self.fast_period);
         self.slow_ma = Sma::new(self.slow_period);
         self.macd = Macd::new(self.macd_fast, self.macd_slow, self.macd_signal);
-        self.prev_fast = None;
-        self.prev_slow = None;
+        self.in_position = false;
     }
 }
 
@@ -118,8 +95,20 @@ mod tests {
         let mut named = TrendFollower::new(50, 200, 12, 26, 9);
         let named_sigs = run(&mut named, &bars);
 
-        // SMA(50) / SMA(200) cross with MACD histogram confirmation/exit
-        let script = TrendFollower::new(50, 200, 12, 26, 9).script().unwrap();
+        let script = r#"
+let s50  = ind.sma(50);
+let s200 = ind.sma(200);
+let m    = ind.macd(12);
+let in_pos = state["in_position"] == true;
+if !in_pos && s50[0] > s200[0] && m[0].histogram > 0.0 {
+    entry = true;
+    state["in_position"] = true;
+}
+if in_pos && (s50[0] < s200[0] || m[0].histogram < 0.0) {
+    exit = true;
+    state["in_position"] = false;
+}
+"#;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs = run(script_strat.as_mut(), &bars);
 

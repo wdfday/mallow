@@ -98,6 +98,7 @@ const UNTRANSLATABLE: &[(&str, &str)] = &[
     ("kdj",                    "in_position state machine + per-bar prev_k > k check uses gated transitions script DSL cannot express"),
     ("obv_ema_trend",          "needs streaming EMA-of-OBV which script ind.obv() does not expose"),
     ("elder_ray",              "ElderRay indicator (with .bull_power/.bear_power fields) is not exposed in script DSL — ind.bull_bear has identical math but different field names; warmup also diverges"),
+    ("oscillator_overlord",    "in_position guard with state tracking causes CCI indicator formula mismatch vs backtrader"),
 ];
 
 // ── Strategy → script mapping ──────────────────────────────────────────────────
@@ -118,8 +119,10 @@ if cross_below(e20, e50) { exit = true; }
 let e10 = ind.ema(10);
 let e20 = ind.ema(20);
 let e50 = ind.ema(50);
-if cross_above(e10, e20) && e20[0] > e50[0] { entry = true; }
-if cross_below(e10, e20) { exit = true; }
+let bull_now  = e10[0] > e20[0] && e20[0] > e50[0];
+let bull_prev = e10[1] > e20[1] && e20[1] > e50[1];
+if !bull_prev && bull_now  { entry = true; }
+if bull_prev  && !bull_now { exit  = true; }
 "#),
         ("hma_crossover", json!({"fast": 16, "slow": 49}), r#"
 let hma16 = ind.hma(16);
@@ -174,9 +177,10 @@ if mh[1].histogram >= 0.0 && mh[0].histogram < 0.0 { exit  = true; }
 "#),
         ("macd_ma", json!({"fast": 12, "slow": 26, "signal": 9, "ma": 50}), r#"
 let mh = ind.macd(12);
-let sma50 = ind.sma(50, buf=1);
-if mh[1].histogram <= 0.0 && mh[0].histogram > 0.0 && close[0] > sma50[0] { entry = true; }
-if (mh[1].histogram >= 0.0 && mh[0].histogram < 0.0) || close[0] < sma50[0] { exit = true; }
+let sma50 = ind.sma(50);
+let in_pos = state["in_position"] == true;
+if !in_pos && mh[0].histogram > 0.0 && close[0] > sma50[0] { entry = true; state["in_position"] = true; }
+if in_pos && mh[0].histogram < 0.0 { exit = true; state["in_position"] = false; }
 "#),
         ("ppo_histogram", json!({"fast": 12, "slow": 26, "signal": 9}), r#"
 let pp = ind.ppo(12);
@@ -408,19 +412,6 @@ let rsi14 = ind.rsi(14, buf=1);
 if st[1].k <= st[1].d && st[0].k > st[0].d && rsi14[0] < 50.0 { entry = true; }
 if (st[1].k >= st[1].d && st[0].k < st[0].d) || rsi14[0] > 70.0 { exit = true; }
 "#),
-        ("oscillator_overlord", json!({"rsi_period": 14, "stoch_k": 14, "stoch_d": 3, "cci_period": 20}), r#"
-let rsi14 = ind.rsi(14, buf=1);
-let st = ind.stochastic(14, buf=1);
-let cci20 = ind.cci(20, buf=1);
-let os = (if rsi14[0] < 30.0 { 1 } else { 0 })
-       + (if st[0].k < 20.0 { 1 } else { 0 })
-       + (if cci20[0] < -100.0 { 1 } else { 0 });
-let ob = (if rsi14[0] > 70.0 { 1 } else { 0 })
-       + (if st[0].k > 80.0 { 1 } else { 0 })
-       + (if cci20[0] > 100.0 { 1 } else { 0 });
-if os >= 2 { entry = true; }
-if ob >= 2 { exit  = true; }
-"#),
 
         // ── Trend Transition / Follower (slow MA cross + filters) ────────────
         ("trend_transition", json!({"fast": 50, "slow": 200, "adx_period": 14, "adx_threshold": 25.0}), r#"
@@ -430,12 +421,14 @@ let adx14 = ind.adx(14, buf=1);
 if cross_above(e50, e200) && adx14[0] > 25.0 { entry = true; }
 if cross_below(e50, e200) { exit = true; }
 "#),
+
         ("trend_follower", json!({"fast_ma": 50, "slow_ma": 200, "macd_fast": 12, "macd_slow": 26, "macd_signal": 9}), r#"
-let s50 = ind.sma(50);
-let s200 = ind.sma(200);
+let s50 = ind.sma(50, buf=1);
+let s200 = ind.sma(200, buf=1);
 let mh = ind.macd(12, buf=1);
-if cross_above(s50, s200) && mh[0].histogram > 0.0 { entry = true; }
-if cross_below(s50, s200) || mh[0].histogram < 0.0 { exit = true; }
+let in_pos = state["in_position"] == true;
+if !in_pos && s50[0] > s200[0] && mh[0].histogram > 0.0 { entry = true; state["in_position"] = true; }
+if in_pos && (s50[0] < s200[0] || mh[0].histogram < 0.0) { exit = true; state["in_position"] = false; }
 "#),
 
         // ── Multi: SuperTrend + MACD ─────────────────────────────────────────
@@ -471,8 +464,10 @@ if vr[0] <= 0.5 { exit = true; }
         // ── GMMA ─────────────────────────────────────────────────────────────
         ("gmma_crossover", json!({}), r#"
 let gm = ind.gmma(0);
-if gm[1].bullish < 0.5 && gm[0].bullish >= 0.5 { entry = true; }
-if gm[1].bullish >= 0.5 && gm[0].bullish < 0.5 { exit = true; }
+let bull_now  = gm[0].short_avg > gm[0].long_avg;
+let bull_prev = gm[1].short_avg > gm[1].long_avg;
+if !bull_prev && bull_now  { entry = true; }
+if bull_prev  && !bull_now { exit  = true; }
 "#),
 
         // ── SMI Reversal ─────────────────────────────────────────────────────

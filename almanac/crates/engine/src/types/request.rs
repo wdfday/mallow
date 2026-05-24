@@ -77,30 +77,18 @@ pub struct BacktestRequest {
 
 // ── ScriptBacktestRequest ───────────────────────────────────────────────────────
 
-/// Dedicated request for script backtests.
-/// Takes a `script` field containing the full strategy script.
+/// Dedicated request for script backtests — pure engine run, no persistence.
 ///
 /// Any `plot("name", value)` calls inside the script populate
 /// `indicator_series` in the response.
 ///
-/// Every request to this endpoint is persisted: strategy + case are created or
-/// updated before the engine runs, and the result is saved on completion.
-/// Use `case_id` to re-run an existing case (params may differ — the case row
-/// is updated in place). Omit `case_id` to open a new case.
+/// To save a strategy, use `POST /api/v1/strategy/strategies` separately.
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ScriptBacktestRequest {
     /// Symbol to backtest, e.g. `"BTCUSDT"`.
     pub symbol: String,
     /// Full strategy script.
     pub script: String,
-
-    // ── Persistence identity ─────────────────────────────────────────────────
-    /// Strategy name (slug). Used to group versions; required for server-side runs.
-    pub name: String,
-    /// Human-readable case label. Defaults to `"{name} on {symbol}"` if omitted.
-    pub label: Option<String>,
-    /// Optional change notes attached to the strategy version.
-    pub notes: Option<String>,
 
     // ── Date range ───────────────────────────────────────────────────────────
     pub from: Option<String>,

@@ -185,17 +185,23 @@ async fn record_request_metrics(
     let path = req.uri().path().to_string();
     let start = std::time::Instant::now();
     let res = next.run(req).await;
-    let status = res.status().as_u16().to_string();
+    let status = res.status().as_u16();
     let duration_ms = start.elapsed().as_millis() as f64;
+    let status_str = status.to_string();
     counter!("herald_http_requests_total",
         "method" => method.clone(),
         "path"   => path.clone(),
-        "status" => status,
+        "status" => status_str,
     ).increment(1);
     histogram!("herald_http_request_duration_ms",
-        "method" => method,
-        "path"   => path,
+        "method" => method.clone(),
+        "path"   => path.clone(),
     ).record(duration_ms);
+    if status >= 500 {
+        tracing::warn!(method, path, status, duration_ms, "http request");
+    } else {
+        tracing::debug!(method, path, status, duration_ms, "http request");
+    }
     res
 }
 

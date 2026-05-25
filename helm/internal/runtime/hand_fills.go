@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -30,7 +31,23 @@ func (h *Hand) handleWsFill(ctx context.Context, ev exchange.OrderEvent) {
 	if ev.Side == exchange.Sell {
 		side = "sell"
 	}
-	h.applyFill(ctx, ev.OrderID, ev.Symbol, side, ev.FilledQty, ev.FilledAvg, "ws")
+	qty := ev.FilledQty
+	// On Binance spot BUY, when the fee is paid in the base asset (e.g. "ETH" for ETHUSDT),
+	// Binance deducts it from the received base qty. The wallet holds FilledQty - Commission,
+	// not FilledQty. Record the net qty so exit orders don't exceed the actual balance.
+	if side == "buy" && ev.Commission.IsPositive() && ev.CommissionAsset != "" &&
+		strings.HasPrefix(ev.Symbol, ev.CommissionAsset) {
+		qty = qty.Sub(ev.Commission)
+		// Truncate to 4 decimal places so the qty fits exchange lot size step (0.0001).
+		// Rounding down avoids insufficient-balance on exit; the dust is negligible.
+		qty = qty.Truncate(4)
+		slog.Debug("fill: base-asset fee deducted from qty",
+			"hand_id", h.id, "symbol", ev.Symbol,
+			"commission_asset", ev.CommissionAsset, "commission", ev.Commission,
+			"gross_qty", ev.FilledQty, "net_qty", qty,
+		)
+	}
+	h.applyFill(ctx, ev.OrderID, ev.Symbol, side, qty, ev.FilledAvg, ev.Commission, "ws")
 }
 
 // applyFill is the single authority for all fill side-effects:
@@ -39,7 +56,7 @@ func (h *Hand) handleWsFill(ctx context.Context, ev exchange.OrderEvent) {
 //   - WS (handleWsFill): fast-path, fill arrives via broker WebSocket
 //   - REST poll (pollOrders): 5s fallback when WS event was missed
 //   - REST-immediate (handleSignal): broker confirmed fill in the PlaceOrder response
-func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty, price decimal.Decimal, source string) {
+func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty, price, commission decimal.Decimal, source string) {
 	h.metrics.ordersFilled.Add(1)
 
 	// ── 1. Resolve pending exit level (entry fill only) ───────────────────────
@@ -207,6 +224,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 			}
 			h.metrics.mu.Lock()
 			h.metrics.totalPnL = h.metrics.totalPnL.Add(closePnL)
+			h.metrics.totalCommission = h.metrics.totalCommission.Add(commission)
 			if closePnL.IsPositive() {
 				h.metrics.winCount++
 			} else {
@@ -221,30 +239,95 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 	// Single update point for all fill paths (WS, poll, REST-immediate).
 	// Registry no longer calls ReportFill before routing to hand.
 	h.helmRuntime.ReportFill(helmdomain.FillReport{
-		HandID:    h.id.String(),
-		HelmID:    h.helmID.String(),
-		OrderID:   orderID,
-		Symbol:    symbol,
-		Side:      side,
-		Qty:       qty,
-		Price:     price,
-		Timestamp: time.Now().UTC(),
+		HandID:     h.id.String(),
+		HelmID:     h.helmID.String(),
+		OrderID:    orderID,
+		Symbol:     symbol,
+		Side:       side,
+		Qty:        qty,
+		Price:      price,
+		Commission: commission,
+		Timestamp:  time.Now().UTC(),
 	})
 
-	h.helmRuntime.EmitEvent(natsapi.HelmEvent{
-		HandID:  h.id.String(),
-		Code:    CodeOrderFilled,
-		Symbol:  symbol,
-		Side:    side,
-		Qty:     qty,
-		Price:   price,
-		OrderID: orderID,
-		Reason:  source,
-		Msg:     "order: filled",
-	})
-	h.activityLog.push(ActivityEntry{At: time.Now(), Code: CodeOrderFilled, Symbol: symbol, Side: side, Qty: qty, Price: price, OrderID: orderID, Reason: source})
 	// ── 5. Poslog ─────────────────────────────────────────────────────────────
-	h.publishOrderFilled(ctx, orderID, qty, price, closePnL, source, closeSource)
+	// publishOrderFilled updates h.pos (ActiveLegs) — must run BEFORE emitEvent
+	// so that observers (tests, SSE clients) see a consistent DeployedCapital.
+	h.publishOrderFilled(ctx, orderID, qty, price, closePnL, commission, source, closeSource)
+
+	// ── 6. REST-path fill publish ─────────────────────────────────────────────
+	// The WS path (registry_fills.go) already calls natsapi.PublishTradeFill and
+	// RemoveOrderTracking before routing fills to this hand.
+	// For all other sources we publish here so consumers get near-realtime fills
+	// instead of waiting ~5 min for the next periodic Sync().
+	// MarkOrderFillPublished prevents Sync() from re-publishing with a different
+	// Nats-Msg-Id (which would cause duplicate fill events for consumers).
+	if source != "ws" {
+		h.helmRuntime.RemoveOrderTracking(orderID)
+		if h.helmRuntime.js != nil {
+			natsapi.PublishTradeFill(h.helmRuntime.js, natsapi.TransactionMsg{
+				HelmID:    h.helmID.String(),
+				AccountID: h.helmRuntime.AccountID.String(),
+				UserID:    h.helmRuntime.UserID.String(),
+				HandID:    h.id.String(),
+				TradeID:   orderID, // synthetic dedup key; REST path has no exchange TradeID
+				OrderID:   orderID,
+				Kind:      "fill",
+				Symbol:    symbol,
+				Side:      side,
+				Qty:       qty,
+				AvgPrice:  price,
+				FilledAt:  time.Now().UTC(),
+			})
+			h.helmRuntime.MarkOrderFillPublished(orderID)
+		}
+	}
+
+	equity := h.realizedEquity()
+	deployed := h.DeployedCapital()
+	// Compute unrealized PnL across all open legs using last known price.
+	var unrealized decimal.Decimal
+	h.mu.RLock()
+	for _, leg := range h.pos.ActiveLegs() {
+		curPrice := h.helmRuntime.lastKnownPrice(leg.Symbol)
+		if curPrice.IsPositive() && leg.EntryPrice.IsPositive() {
+			if leg.Side == "buy" {
+				unrealized = unrealized.Add(curPrice.Sub(leg.EntryPrice).Mul(leg.Qty.Abs()))
+			} else {
+				unrealized = unrealized.Add(leg.EntryPrice.Sub(curPrice).Mul(leg.Qty.Abs()))
+			}
+		}
+	}
+	h.mu.RUnlock()
+	availCash := equity.Sub(deployed) // USDT liquid — not locked in open positions
+	slog.Info("order: filled",
+		"hand_id", h.id,
+		"symbol", symbol,
+		"side", side,
+		"qty", qty,
+		"price", price,
+		"order_id", orderID,
+		"source", source,
+		"pnl", closePnL,
+		"available_cash", availCash,
+		"deployed", deployed,
+		"unrealized_pnl", unrealized,
+		"equity", equity,
+	)
+	h.emitEvent(natsapi.HelmEvent{
+		Code:            CodeOrderFilled,
+		Symbol:          symbol,
+		Side:            side,
+		Qty:             qty,
+		Price:           price,
+		OrderID:         orderID,
+		Reason:          source,
+		Msg:             "order: filled",
+		PnL:             closePnL,
+		AvailableCash:   availCash,
+		DeployedCapital: deployed,
+		Equity:          equity,
+	})
 
 	// ── 6. Hand-level snapshot ───────────────────────────────────────────────
 	// Publish leg state + equity so the FE can reconstruct per-hand equity curves.
@@ -389,16 +472,9 @@ func (h *Hand) checkEdgeRisk(pnl decimal.Decimal) {
 	slog.Warn("hand: edge degradation detected — auto-pausing",
 		"hand_id", h.id, "reason", breachReason)
 	h.Pause()
-	h.helmRuntime.EmitEvent(natsapi.HelmEvent{
-		HandID: h.id.String(),
+	h.emitEvent(natsapi.HelmEvent{
 		Code:   CodeHandAutoPaused,
 		Reason: "edge risk: " + breachReason,
 		Msg:    "hand: auto-paused — edge degradation",
-	})
-	h.activityLog.push(ActivityEntry{
-		At:     time.Now(),
-		Code:   CodeHandAutoPaused,
-		Symbol: h.Symbol,
-		Reason: "edge risk: " + breachReason,
 	})
 }

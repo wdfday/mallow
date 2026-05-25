@@ -4,8 +4,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shopspring/decimal"
-
+	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/runtime/core/strategy"
 )
 
@@ -73,17 +72,18 @@ const (
 	CodeOrderExitPlaced    = 10109 // safety net exit orders (SL/TP bracket) submitted to exchange
 
 	// Hand lifecycle codes.
-	CodeHandAutoPaused  = 10200 // hand auto-paused due to persistent sizing failure or edge risk
-	CodeHandStarted     = 10201 // hand run-loop started
-	CodeHandStopped     = 10202 // hand run-loop stopped (clean shutdown)
-	CodeHandPaused      = 10203 // hand manually paused via API
-	CodeHandResumed     = 10204 // hand manually resumed via API
-	CodeHandKilled      = 10205 // hand killed — all positions flattened at market
-	CodeHandReleased    = 10206 // hand released — open positions orphaned (left live at exchange)
-	CodeHandStale       = 10207 // signal feed silent > stale threshold
-	CodeHandLeverageSet = 10208 // futures leverage and margin type configured at exchange
+	CodeHandAutoPaused    = 10200 // hand auto-paused due to persistent sizing failure or edge risk
+	CodeHandStarted       = 10201 // hand run-loop started
+	CodeHandStopped       = 10202 // hand run-loop stopped (clean shutdown)
+	CodeHandPaused        = 10203 // hand manually paused via API
+	CodeHandResumed       = 10204 // hand manually resumed via API
+	CodeHandKilled        = 10205 // hand killed — all positions flattened at market
+	CodeHandReleased      = 10206 // hand released — open positions orphaned (left live at exchange)
+	CodeHandStale         = 10207 // signal feed silent > stale threshold
+	CodeHandLeverageSet   = 10208 // futures leverage and margin type configured at exchange
+	CodePositionExtClosed = 10209 // position externally closed (user manual exit at exchange detected via bracket order cancel)
 
-	// Helm lifecycle codes (used in HelmRuntime activity ring).
+	// Helm lifecycle codes.
 	CodeHelmPaused   = 10300 // helm paused — all hands will ignore signals
 	CodeHelmResumed  = 10301 // helm resumed
 	CodeHelmSynced   = 10302 // portfolio synced from exchange
@@ -91,58 +91,33 @@ const (
 	CodeHelmUnhalted = 10304 // helm halt reset (manual)
 )
 
-// ActivityEntry records a single hand event in the activity ring buffer.
-type ActivityEntry struct {
-	At        time.Time       `json:"at"`
-	Code      int             `json:"code"`
-	Symbol    string          `json:"symbol"`
-	Direction string          `json:"direction,omitempty"` // signal direction (long/short/close/…)
-	Strength  float64         `json:"strength,omitempty"`
-	Reason    string          `json:"reason,omitempty"` // human-readable detail (filter cause, rejection message, error)
-	OrderID   string          `json:"order_id,omitempty"`
-	Side      string          `json:"side,omitempty"`
-	Qty       decimal.Decimal `json:"qty,omitempty"`
-	Price     decimal.Decimal `json:"price,omitempty"`
-}
+// ── handEventBus — test-only broadcast ───────────────────────────────────────
 
-// activityRingSize is the number of entries retained in the in-memory activity ring.
-// Small on purpose — the durable event log lives in HELM_EVENTS JetStream;
-// the ring is only for test observability and the recent-events UI chip.
-const activityRingSize = 20
-
-// ActivityRing is a fixed-size circular buffer for recent hand activity entries.
-// Thread-safe via an embedded mutex. Oldest entries are silently overwritten.
-type ActivityRing struct {
+// handEventBus is a simple fan-out for test observability.
+// emitEvent broadcasts every HelmEvent to all registered subscriber channels.
+// Nil-safe: all methods are no-ops when bus is nil (production path).
+type handEventBus struct {
 	mu   sync.Mutex
-	buf  [activityRingSize]ActivityEntry
-	head int // next write slot
-	size int // entries written so far (capped at activityRingSize)
+	subs []chan natsapi.HelmEvent
 }
 
-// push appends an entry, overwriting the oldest when full.
-func (r *ActivityRing) push(e ActivityEntry) {
-	r.mu.Lock()
-	r.buf[r.head] = e
-	r.head = (r.head + 1) % activityRingSize
-	if r.size < activityRingSize {
-		r.size++
-	}
-	r.mu.Unlock()
+// subscribe returns a new channel that will receive all future events.
+func (b *handEventBus) subscribe(cap int) <-chan natsapi.HelmEvent {
+	ch := make(chan natsapi.HelmEvent, cap)
+	b.mu.Lock()
+	b.subs = append(b.subs, ch)
+	b.mu.Unlock()
+	return ch
 }
 
-// Snapshot returns all entries in chronological order (oldest first).
-func (r *ActivityRing) Snapshot() []ActivityEntry {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.size == 0 {
-		return nil
+// publish sends ev to every registered subscriber, non-blocking.
+func (b *handEventBus) publish(ev natsapi.HelmEvent) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, ch := range b.subs {
+		select {
+		case ch <- ev:
+		default: // subscriber is slow; drop rather than block the run-loop
+		}
 	}
-	out := make([]ActivityEntry, r.size)
-	if r.size < activityRingSize {
-		copy(out, r.buf[:r.size])
-	} else {
-		n := copy(out, r.buf[r.head:])
-		copy(out[n:], r.buf[:r.head])
-	}
-	return out
 }

@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"database/sql/driver"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,8 +26,9 @@ type HandSummary struct {
 	Metrics          HandMetricsView `json:"metrics"`
 	Futures          *FuturesConfig  `json:"futures,omitempty"`
 	CreatedAt        time.Time       `json:"created_at"`
-	DeployedCapital  decimal.Decimal `json:"deployed_capital"`
 	AllocatedCapital decimal.Decimal `json:"allocated_capital"`
+	DeployedCapital  decimal.Decimal `json:"deployed_capital"`
+	AvailableCash    decimal.Decimal `json:"available_cash"` // allocated + realized_pnl - deployed
 	SignalTTLSec     int             `json:"signal_ttl_sec,omitempty"`
 }
 
@@ -42,14 +44,22 @@ type HandHealthView struct {
 }
 
 // HandMetricsView is the JSON-safe metrics snapshot.
+// Also implements driver.Valuer/sql.Scanner for JSONB persistence.
 type HandMetricsView struct {
-	SignalsReceived int64           `json:"signals_received"`
-	SignalsFiltered int64           `json:"signals_filtered"`
-	TradesApproved  int64           `json:"trades_approved"`
-	OrdersPlaced    int64           `json:"orders_placed"`
-	OrdersFilled    int64           `json:"orders_filled"`
-	OrdersFailed    int64           `json:"orders_failed"`
-	TotalPnL        decimal.Decimal `json:"total_pnl"`
-	WinCount        int64           `json:"win_count"`
-	LossCount       int64           `json:"loss_count"`
+	SignalsReceived   int64           `json:"signals_received"`
+	SignalsFiltered   int64           `json:"signals_filtered"`
+	SignalsDropped    int64           `json:"signals_dropped"`
+	TradesApproved    int64           `json:"trades_approved"`
+	OrdersPlaced      int64           `json:"orders_placed"`
+	OrdersFilled      int64           `json:"orders_filled"`
+	OrdersFailed      int64           `json:"orders_failed"`
+	TotalPnL          decimal.Decimal `json:"total_pnl"`
+	TotalCommission   decimal.Decimal `json:"total_commission,omitempty"`
+	WinCount          int64           `json:"win_count"`
+	LossCount         int64           `json:"loss_count"`
+	LatestSignalLagMs int64           `json:"latest_signal_lag_ms,omitempty"`
+	SignalQueueDepth  int             `json:"signal_queue_depth,omitempty"`
 }
+
+func (m HandMetricsView) Value() (driver.Value, error) { return jsonValue(m) }
+func (m *HandMetricsView) Scan(src any) error          { return jsonScan(src, m) }

@@ -86,11 +86,24 @@ func (r *Registry) runOrderProcessor(ctx context.Context, nc *nats.Conn, rt *Hel
 			case exchange.OrderEventPartialFill, exchange.OrderEventFilled:
 				r.applyFill(nc, js, rt, ev)
 			case exchange.OrderEventCanceled:
+				// Lookup hand BEFORE removing tracking — needed for external-close detection.
+				handID := rt.PendingOrderHandID(ev.OrderID)
 				rt.RemoveOrderTracking(ev.OrderID)
 				slog.Info("order tracking: canceled order removed",
 					"helm_id", rt.HelmID,
 					"order_id", ev.OrderID,
 				)
+				// Route to the owning hand so it can distinguish helm-initiated
+				// cancels (OCO sibling cleanup) from external closes (user closed
+				// position manually at the exchange).
+				if handID != "" {
+					rt.mu.RLock()
+					hand, ok := rt.hands[handID]
+					rt.mu.RUnlock()
+					if ok {
+						go hand.HandleExitOrderCanceled(ctx, ev.OrderID)
+					}
+				}
 			}
 		case <-ctx.Done():
 			return
@@ -121,14 +134,15 @@ func (r *Registry) applyFill(nc *nats.Conn, js nats.JetStreamContext, rt *HelmRu
 	rt.MarkTradeProcessed(ev.TradeID)
 
 	fillReport := helmdomain.FillReport{
-		HandID:    botID,
-		HelmID:    helmID,
-		OrderID:   ev.OrderID,
-		Symbol:    ev.Symbol,
-		Side:      string(ev.Side),
-		Qty:       ev.FilledQty,
-		Price:     ev.FilledAvg,
-		Timestamp: ev.Timestamp,
+		HandID:     botID,
+		HelmID:     helmID,
+		OrderID:    ev.OrderID,
+		Symbol:     ev.Symbol,
+		Side:       string(ev.Side),
+		Qty:        ev.FilledQty,
+		Price:      ev.FilledAvg,
+		Commission: ev.Commission,
+		Timestamp:  ev.Timestamp,
 	}
 
 	if ev.Type == exchange.OrderEventFilled {

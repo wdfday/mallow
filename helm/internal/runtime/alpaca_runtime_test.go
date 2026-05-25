@@ -123,6 +123,7 @@ func newAlpacaHand(env *alpacaTestEnv) *runtime.Hand {
 	hand := runtime.NewHand(uuid.New(), env.rt.HelmID, env.rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandRiskConfig{}, decimal.Zero)
 	hand.Symbol = "AAPL"
 	hand.StrategyName = "signal_follower"
+	hand.EnableEventSink()
 	return hand
 }
 

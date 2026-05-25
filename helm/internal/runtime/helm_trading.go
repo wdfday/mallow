@@ -27,6 +27,10 @@ type TradeProposal struct {
 	// Hands with AllocatedCapital pass their realized equity (allocated + cumPnL)
 	// so position sizes compound with the hand's actual performance.
 	EquityOverride decimal.Decimal
+	// PositionQty is the per-hand qty from poslog (h.pos.ActiveLegs), not net portfolio.
+	// Used by the tactician to size exits and scale-outs correctly when multiple hands
+	// share the same symbol on this helm.
+	PositionQty decimal.Decimal
 }
 
 // ProcessTrade validates a trade against account-level guards and sizes via the hand's tactician.
@@ -59,10 +63,14 @@ func (r *HelmRuntime) ProcessTrade(
 		if pf, ok := r.Exchange.(exchange.PriceFetcher); ok {
 			// Fallback to REST only when WebSocket price cache is cold.
 			// This call may take 100ms–2s but runs outside tradeMu.
-			if p, err := pf.GetCurrentPrice(ctx, r.Creds, proposal.Symbol); err == nil && p.IsPositive() {
+			// Strip exchange prefix ("binance:ETHUSDT" → "ETHUSDT") before
+			// calling the REST ticker — exchange APIs never use the prefix.
+			restSymbol := stripExchangePrefix(proposal.Symbol)
+			if p, err := pf.GetCurrentPrice(ctx, r.Creds, restSymbol); err == nil && p.IsPositive() {
 				price = p
 				r.pricesMu.Lock()
 				r.prices[proposal.Symbol] = p
+				r.prices[restSymbol] = p
 				r.pricesMu.Unlock()
 			}
 		}
@@ -87,10 +95,7 @@ func (r *HelmRuntime) ProcessTrade(
 		return helmdomain.TradeReply{Approved: false, Reason: "risk: " + reason}
 	}
 
-	posQty := decimal.Zero
-	if pos := r.Portfolio.GetPosition(proposal.Symbol); pos != nil {
-		posQty = pos.Qty
-	}
+	posQty := proposal.PositionQty
 	equity := r.Portfolio.Equity()
 	if proposal.EquityOverride.IsPositive() {
 		equity = proposal.EquityOverride
@@ -171,7 +176,7 @@ func (r *HelmRuntime) ReportFill(fill helmdomain.FillReport) {
 		Side:       pfSide,
 		Qty:        fill.Qty,
 		Price:      fill.Price,
-		Commission: decimal.Zero,
+		Commission: fill.Commission,
 	})
 	// Record an equity data point so RiskMgr can evaluate maxDrawdown on the next trade.
 	r.Portfolio.RecordEquity(now)
@@ -221,4 +226,34 @@ func (r *HelmRuntime) helmSnapshot(ts time.Time) *perf.Snapshot {
 		Equity:    r.Portfolio.Equity(),
 		Positions: entries,
 	}
+}
+
+// ── Dust management ───────────────────────────────────────────────────────────
+
+// RecordDust adds qty to the known dust residual for symbol.
+// Called after a spot exit order is placed with truncated qty so the sub-step
+// remainder is not mistaken for an external close by checkPositionDesync.
+func (r *HelmRuntime) RecordDust(symbol string, qty decimal.Decimal) {
+	if qty.IsZero() || qty.IsNegative() {
+		return
+	}
+	r.dustMu.Lock()
+	r.dustQty[symbol] = r.dustQty[symbol].Add(qty)
+	r.dustMu.Unlock()
+}
+
+// ClearDust removes all recorded dust for symbol.
+// Called when a new position opens for the symbol (dust from the previous trade
+// is no longer relevant and should not suppress future desync detection).
+func (r *HelmRuntime) ClearDust(symbol string) {
+	r.dustMu.Lock()
+	delete(r.dustQty, symbol)
+	r.dustMu.Unlock()
+}
+
+// GetDust returns the accumulated dust qty for symbol (zero if none recorded).
+func (r *HelmRuntime) GetDust(symbol string) decimal.Decimal {
+	r.dustMu.Lock()
+	defer r.dustMu.Unlock()
+	return r.dustQty[symbol]
 }

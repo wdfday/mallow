@@ -17,6 +17,9 @@ func (s *Service) Start(id uuid.UUID) error {
 	if err != nil {
 		return err
 	}
+	if bi.Data.Status.IsTerminal() {
+		return fmt.Errorf("hand %q is %s — terminal hands cannot be restarted", id, bi.Data.Status)
+	}
 	if rt, _ := s.registry.Get(bi.Data.HelmID); rt != nil && rt.IsPaused() {
 		return fmt.Errorf("helm %q is paused — resume it first", bi.Data.HelmID)
 	}
@@ -82,14 +85,19 @@ func (s *Service) Kill(ctx context.Context, id uuid.UUID) error {
 	}
 	s.heraldDeregister(id)
 	bi.Runner.Kill(ctx)
-	bi.Data.Status = domain.HandStatusStopped
+	finalMetrics := bi.Runner.MetricsView() // snapshot before removing
+	bi.Data.Status = domain.HandStatusKilled
 
+	if rt, _ := s.registry.Get(bi.Data.HelmID); rt != nil {
+		rt.RemoveHand(id.String())
+	}
 	s.mu.Lock()
 	delete(s.hands, id)
 	s.mu.Unlock()
 
 	return s.repo.Update(id, func(d *domain.Hand) error {
-		d.Status = domain.HandStatusStopped
+		d.Status = domain.HandStatusKilled
+		d.FinalMetrics = &finalMetrics
 		return nil
 	})
 }
@@ -101,14 +109,19 @@ func (s *Service) Release(ctx context.Context, id uuid.UUID) error {
 	}
 	s.heraldDeregister(id)
 	bi.Runner.Release(ctx)
-	bi.Data.Status = domain.HandStatusStopped
+	finalMetrics := bi.Runner.MetricsView() // snapshot before removing
+	bi.Data.Status = domain.HandStatusReleased
 
+	if rt, _ := s.registry.Get(bi.Data.HelmID); rt != nil {
+		rt.RemoveHand(id.String())
+	}
 	s.mu.Lock()
 	delete(s.hands, id)
 	s.mu.Unlock()
 
 	return s.repo.Update(id, func(d *domain.Hand) error {
-		d.Status = domain.HandStatusStopped
+		d.Status = domain.HandStatusReleased
+		d.FinalMetrics = &finalMetrics
 		return nil
 	})
 }
@@ -118,6 +131,9 @@ func (s *Service) Restart(id uuid.UUID) error {
 	bi, err := s.getOrLoad(id)
 	if err != nil {
 		return err
+	}
+	if bi.Data.Status.IsTerminal() {
+		return fmt.Errorf("hand %q is %s — terminal hands cannot be restarted", id, bi.Data.Status)
 	}
 	s.heraldDeregister(id)
 	bi.Runner.Stop()

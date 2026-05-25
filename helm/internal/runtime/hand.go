@@ -36,7 +36,7 @@ type exitLevel struct {
 	Side             string
 	StopLoss         decimal.Decimal // absolute stop price; zero = not set
 	TakeProfit       decimal.Decimal // absolute take-profit price; zero = not set
-	ExchangeOrderIDs []string        // exchange-side SL/TP order IDs; cancelled when position closes
+	ExchangeOrderIDs []string        // exchange-side SL/TP order IDs; canceled when position closes
 }
 
 // Hand is an autonomous trading agent.
@@ -69,6 +69,7 @@ type Hand struct {
 	Signals       chan Signal              // buf=1, drain-replace; always latest non-urgent signal
 	UrgentSignals chan Signal              // buf=4; exit signals, never silently dropped
 	fillCh        chan exchange.OrderEvent // buf=8; WS fills routed from runOrderProcessor
+	eventBus      *handEventBus            // nil in production; non-nil only when EnableEventSink() is called (tests)
 
 	seenFills map[string]struct{} // dedup: WS-applied fills vs REST poll fallback
 
@@ -101,22 +102,27 @@ type Hand struct {
 	exitLevels      map[string]exitLevel    // symbol → active local SL/TP safety net
 	pos             *position.HandPositions // in-memory mirror of poslog
 	pendingOrderPos map[string]string       // orderID → positionID for fill/cancel attribution
+	// pendingCancels tracks bracket/OCO order IDs that helm itself initiated a cancel for.
+	// When OrderEventCanceled arrives, IDs in this set are normal cleanup (OCO sibling closed);
+	// IDs NOT in this set are external cancels (user closed position manually at exchange).
+	pendingCancels map[string]struct{}
 
 	// ── Observability ────────────────────────────────────────────────────────
-	health      HandHealth
-	activityLog ActivityRing
-	metrics     struct {
-		signalsReceived atomic.Int64
-		signalsFiltered atomic.Int64
-		signalsDropped  atomic.Int64 // non-urgent channel-full drops
-		tradesApproved  atomic.Int64
-		ordersPlaced    atomic.Int64
-		ordersFilled    atomic.Int64
-		ordersFailed    atomic.Int64
-		mu              sync.Mutex
-		totalPnL        decimal.Decimal
-		winCount        int64
-		lossCount       int64
+	health  HandHealth
+	metrics struct {
+		signalsReceived   atomic.Int64
+		signalsFiltered   atomic.Int64
+		signalsDropped    atomic.Int64 // non-urgent channel-full drops
+		tradesApproved    atomic.Int64
+		ordersPlaced      atomic.Int64
+		ordersFilled      atomic.Int64
+		ordersFailed      atomic.Int64
+		latestSignalLagMs atomic.Int64 // lag from signal GeneratedAt → hand receives; ms
+		mu                sync.Mutex
+		totalPnL          decimal.Decimal
+		totalCommission   decimal.Decimal
+		winCount          int64
+		lossCount         int64
 	}
 }
 

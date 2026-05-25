@@ -201,15 +201,17 @@ func spotAccountHandler(orderHandler func(exchange.OrderEvent), balanceHandler f
 				"exchange_ts", ts,
 			)
 			orderHandler(exchange.OrderEvent{
-				Type:      evType,
-				OrderID:   orderID,
-				TradeID:   strconv.FormatInt(ou.TradeId, 10),
-				Symbol:    ou.Symbol,
-				Side:      side,
-				Qty:       parseDecimal(ou.Volume),
-				FilledQty: qty,
-				FilledAvg: parseDecimal(ou.LatestPrice),
-				Timestamp: ts,
+				Type:            evType,
+				OrderID:         orderID,
+				TradeID:         strconv.FormatInt(ou.TradeId, 10),
+				Symbol:          ou.Symbol,
+				Side:            side,
+				Qty:             parseDecimal(ou.Volume),
+				FilledQty:       qty,
+				FilledAvg:       parseDecimal(ou.LatestPrice),
+				Commission:      parseDecimal(ou.FeeCost),
+				CommissionAsset: ou.FeeAsset,
+				Timestamp:       ts,
 			})
 		case "CANCELED", "EXPIRED", "REJECTED":
 			orderHandler(exchange.OrderEvent{
@@ -309,15 +311,16 @@ func (c *Client) streamFuturesOrdersOnce(ctx context.Context, fut *futures.Clien
 				"exchange_ts", ts,
 			)
 			orderHandler(exchange.OrderEvent{
-				Type:      evType,
-				OrderID:   orderID,
-				TradeID:   strconv.FormatInt(ou.TradeID, 10),
-				Symbol:    ou.Symbol,
-				Side:      side,
-				Qty:       parseDecimal(ou.OriginalQty),
-				FilledQty: qty,
-				FilledAvg: parseDecimal(ou.LastFilledPrice),
-				Timestamp: ts,
+				Type:       evType,
+				OrderID:    orderID,
+				TradeID:    strconv.FormatInt(ou.TradeID, 10),
+				Symbol:     ou.Symbol,
+				Side:       side,
+				Qty:        parseDecimal(ou.OriginalQty),
+				FilledQty:  qty,
+				FilledAvg:  parseDecimal(ou.LastFilledPrice),
+				Commission: parseDecimal(ou.Commission),
+				Timestamp:  ts,
 			})
 		case "CANCELED", "EXPIRED", "CALCULATED":
 			orderHandler(exchange.OrderEvent{
@@ -437,15 +440,16 @@ func (c *Client) streamDeliveryOrdersOnce(ctx context.Context, creds exchange.Cr
 				"exchange_ts", ts,
 			)
 			orderHandler(exchange.OrderEvent{
-				Type:      evType,
-				OrderID:   orderID,
-				TradeID:   strconv.FormatInt(ou.TradeID, 10),
-				Symbol:    ou.Symbol,
-				Side:      side,
-				Qty:       parseDecimal(ou.OriginalQty),
-				FilledQty: qty,
-				FilledAvg: parseDecimal(ou.LastFilledPrice),
-				Timestamp: ts,
+				Type:       evType,
+				OrderID:    orderID,
+				TradeID:    strconv.FormatInt(ou.TradeID, 10),
+				Symbol:     ou.Symbol,
+				Side:       side,
+				Qty:        parseDecimal(ou.OriginalQty),
+				FilledQty:  qty,
+				FilledAvg:  parseDecimal(ou.LastFilledPrice),
+				Commission: parseDecimal(ou.Commission),
+				Timestamp:  ts,
 			})
 		case "CANCELED", "EXPIRED", "CALCULATED":
 			orderHandler(exchange.OrderEvent{

@@ -167,9 +167,13 @@ services:
       HERALD_HTTP_ADDR: "0.0.0.0:8090"
       HERALD_DATA_DIR: /data
       HERALD_MAX_BACKTESTS: ${HERALD_MAX_BACKTESTS:-4}
-      HERALD_WARM_DAYS: ${HERALD_WARM_DAYS:-5}
+      # HERALD_WARM_BARS: M1 bars per symbol on startup (1 bar=1min). 0=skip.
+      # Default 2000 ≈ 33h; set lower for faster local starts.
+      HERALD_WARM_BARS: ${HERALD_WARM_BARS:-2000}
       HERALD_SYMBOLS_FILE: /config/symbols.yaml
       RUST_LOG: ${HERALD_RUST_LOG:-alm_herald=info,alm_ledger=info}
+      PYROSCOPE_URL: ${PYROSCOPE_URL:-}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-tempo:4317}
     volumes:
       # Parquet files live at mallow/data/ on the host;
       # mount at /data so HERALD_DATA_DIR=/data resolves correctly.
@@ -178,10 +182,11 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8090/health"]
-      interval: 10s
+      interval: 15s
       timeout: 5s
-      retries: 3
-      start_period: 20s
+      retries: 5
+      # gap-fill: 20 symbols × 13 TF × ~1s/call ≈ 4-5 min; allow 8 min for slow networks.
+      start_period: 480s
 
   helm:
     build:
@@ -279,20 +284,11 @@ services:
     command: ["-config.file=/etc/loki/config.yaml", "-config.expand-env=true"]
     volumes:
       - ./monitoring/loki-config.yaml:/etc/loki/config.yaml:ro
-      - loki-data:/loki   # index + cache only — chunks go to S3
+      - ./data/loki:/loki
     ports:
       - "3100:3100"
-    environment:
-      LOKI_S3_BUCKET: ${LOKI_S3_BUCKET}
-      LOKI_S3_BUCKET_REGION: ${LOKI_S3_BUCKET_REGION}
-      LOKI_S3_ACCESS_KEY: ${LOKI_S3_ACCESS_KEY}
-      LOKI_S3_SECRET_KEY: ${LOKI_S3_SECRET_KEY}
-      LOKI_S3_ENDPOINT: ${LOKI_S3_ENDPOINT}
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3100/ready | grep -q ready"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
+      disable: true
     restart: unless-stopped
 
   # Tempo — distributed tracing
@@ -370,7 +366,6 @@ volumes:
   postgres-data:
   redis-data:
   prometheus-data:
-  loki-data:
   tempo-data:
   grafana-data:
   pyroscope-data:

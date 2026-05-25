@@ -12,6 +12,31 @@ import (
 	"mallow/helm/internal/runtime/core/portfolio"
 )
 
+// MarkOrderFillPublished records an orderID whose trade.filled was already published
+// via the REST fill path (hand.applyFill, source != "ws").
+// Subsequent calls to Sync() skip transactions with this orderID to prevent
+// double-publishing the same fill with a different Nats-Msg-Id.
+func (r *HelmRuntime) MarkOrderFillPublished(orderID string) {
+	if orderID == "" {
+		return
+	}
+	r.processedOrderFillsMu.Lock()
+	r.processedOrderFills[orderID] = struct{}{}
+	r.processedOrderFillsMu.Unlock()
+}
+
+// hasOrderFillPublished returns true if trade.filled was already published for this orderID
+// via the REST fill path.
+func (r *HelmRuntime) hasOrderFillPublished(orderID string) bool {
+	if orderID == "" {
+		return false
+	}
+	r.processedOrderFillsMu.Lock()
+	_, ok := r.processedOrderFills[orderID]
+	r.processedOrderFillsMu.Unlock()
+	return ok
+}
+
 // HasProcessedTrade returns true if this TradeID was already applied in the current session.
 func (r *HelmRuntime) HasProcessedTrade(tradeID string) bool {
 	if tradeID == "" {
@@ -146,6 +171,12 @@ func (r *HelmRuntime) Sync(ctx context.Context, js nats.JetStreamContext) error 
 	if js != nil {
 		natsapi.PublishPortfolioSync(js, helmID, accountID, userID, snap.Cash, r.AvailableCash(), snap.Equity, natsPositions, natsPositionTxns, now)
 		for _, t := range newTxns {
+			// Skip fills already published by the REST fill path (hand.applyFill) to
+			// prevent duplicate trade.filled events — those used orderID as the dedup key
+			// while Sync() would use TradeID, resulting in two different Nats-Msg-Ids.
+			if r.hasOrderFillPublished(t.OrderID) {
+				continue
+			}
 			natsapi.PublishTradeFill(js, t)
 		}
 	}

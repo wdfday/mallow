@@ -85,6 +85,10 @@ type Intent struct {
 	Action     Action  // what to do
 	Urgency    Urgency // how fast
 	Confidence float64 // [0, 1] strategy's confidence in this trade
+	// Reason is populated when Action == ActionDoNothing — explains why the
+	// strategy chose not to act (e.g. "strength below min", "direction mismatch",
+	// or a Rhai-script-level explanation). Empty for all other actions.
+	Reason string
 }
 
 // ── Action ────────────────────────────────────────────────────────────────────

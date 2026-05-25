@@ -13,6 +13,7 @@ import (
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/infra/poslog"
+	"mallow/helm/internal/infra/tradelog"
 	"mallow/helm/internal/runtime/core/portfolio"
 	"mallow/helm/internal/runtime/core/risk"
 	"mallow/helm/internal/runtime/core/strategy"
@@ -80,6 +81,7 @@ type HelmRuntime struct {
 	// nil fields degrade gracefully: poslog events are lost, events go to slog only.
 	PosLog      poslog.Log            // JetStream WAL for position events
 	SnapshotLog perf.SnapshotLog      // cash+equity+positions snapshot after every fill (HELM_SNAPSHOTS)
+	TradeLog    tradelog.Log          // PostgreSQL trade records (completed round-trips)
 	nc          *nats.Conn            // NATS connection; used for portfolio.synced.* (nc.Publish path)
 	js          nats.JetStreamContext // JetStream context; publishes helm.events.* (durable, 7d)
 
@@ -87,6 +89,23 @@ type HelmRuntime struct {
 	// Prevents double-applying the same fill if RecoverGapFills runs more than once.
 	processedTradesMu sync.Mutex
 	processedTrades   map[string]struct{}
+
+	// ── REST-fill publish dedup ──────────────────────────────────────────────
+	// processedOrderFills tracks orderIDs for which trade.filled was already
+	// published via the REST fill path (applyFill, source != "ws").
+	// This prevents Sync() from re-publishing the same fill 5 min later with a
+	// different Nats-Msg-Id, which would create duplicate fill events for consumers.
+	processedOrderFillsMu sync.Mutex
+	processedOrderFills   map[string]struct{}
+
+	// ── Dust tracking ────────────────────────────────────────────────────────
+	// dustMu guards dustQty. Dust accumulates when a spot exit order is placed
+	// with qty truncated to the exchange lot-size step, leaving a sub-step residual
+	// in the wallet (e.g. 0.0944055 → sell 0.0944 → dust 0.0000055 ETH).
+	// checkPositionDesync uses this to distinguish genuine external closes from
+	// known dust residuals after a helm-initiated exit.
+	dustMu  sync.Mutex
+	dustQty map[string]decimal.Decimal // symbol → accumulated dust qty
 }
 
 // NewHelmRuntime creates a HelmRuntime and starts its circuit-breaker reset ticker.
@@ -101,22 +120,24 @@ func NewHelmRuntime(
 	createdAt time.Time,
 ) *HelmRuntime {
 	rt := &HelmRuntime{
-		HelmID:          orchID,
-		AccountID:       accountID,
-		UserID:          userID,
-		BrokerType:      brokerType,
-		CreatedAt:       createdAt,
-		Portfolio:       pf,
-		RiskMgr:         riskMgr,
-		Exchange:        ex,
-		Creds:           creds,
-		orderCh:         make(chan exchange.OrderEvent, 128),
-		orderHandMap:    make(map[string]string),
-		hands:           make(map[string]*Hand),
-		prices:          make(map[string]decimal.Decimal),
-		processedTrades: make(map[string]struct{}),
-		resetTicker:     time.NewTicker(1 * time.Minute),
-		stopCh:          make(chan struct{}),
+		HelmID:              orchID,
+		AccountID:           accountID,
+		UserID:              userID,
+		BrokerType:          brokerType,
+		CreatedAt:           createdAt,
+		Portfolio:           pf,
+		RiskMgr:             riskMgr,
+		Exchange:            ex,
+		Creds:               creds,
+		orderCh:             make(chan exchange.OrderEvent, 128),
+		orderHandMap:        make(map[string]string),
+		hands:               make(map[string]*Hand),
+		prices:              make(map[string]decimal.Decimal),
+		processedTrades:     make(map[string]struct{}),
+		processedOrderFills: make(map[string]struct{}),
+		dustQty:             make(map[string]decimal.Decimal),
+		resetTicker:         time.NewTicker(1 * time.Minute),
+		stopCh:              make(chan struct{}),
 	}
 	if lastSyncedAt != nil {
 		rt.lastSyncAtNano.Store(lastSyncedAt.UnixNano())
@@ -147,6 +168,7 @@ func (r *HelmRuntime) SetEventConn(nc *nats.Conn, js nats.JetStreamContext) {
 // publishes it to helm.events.{helmID} so clients receive a real-time activity stream.
 func (r *HelmRuntime) EmitEvent(ev natsapi.HelmEvent) {
 	ev.HelmID = r.HelmID.String()
+	ev.UserID = r.UserID.String()
 	ev.At = time.Now().UTC()
 
 	args := []any{"helm_id", r.HelmID, "code", ev.Code}

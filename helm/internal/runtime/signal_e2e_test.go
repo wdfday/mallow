@@ -31,6 +31,7 @@ import (
 	binanceact "mallow/helm/internal/infra/exchange/binance/act"
 	bybitact "mallow/helm/internal/infra/exchange/bybit/act"
 	okxact "mallow/helm/internal/infra/exchange/okx/act"
+	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/runtime"
 	"mallow/helm/internal/runtime/core/portfolio"
 	"mallow/helm/internal/runtime/core/risk"
@@ -40,37 +41,54 @@ import (
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-// fillNotify polls the hand activity ring and sends the first CodeOrderFilled entry.
-func fillNotify(hand *runtime.Hand, timeout time.Duration) <-chan runtime.ActivityEntry {
-	ch := make(chan runtime.ActivityEntry, 1)
-	deadline := time.Now().Add(timeout)
+// fillNotify subscribes to the hand event bus and sends the first CodeOrderFilled event.
+// Subscribe is created once before the goroutine loops — safe even with synchronous fills.
+func fillNotify(hand *runtime.Hand, timeout time.Duration) <-chan natsapi.HelmEvent {
+	events := hand.Subscribe(64) // create once, outside the loop
+	ch := make(chan natsapi.HelmEvent, 1)
 	go func() {
-		for time.Now().Before(deadline) {
-			for _, e := range hand.Activity() {
-				if e.Code == runtime.CodeOrderFilled {
-					ch <- e
+		deadline := time.After(timeout)
+		for {
+			select {
+			case ev, ok := <-events:
+				if !ok {
+					close(ch)
 					return
 				}
+				if ev.Code == runtime.CodeOrderFilled {
+					ch <- ev
+					return
+				}
+			case <-deadline:
+				close(ch)
+				return
 			}
-			time.Sleep(50 * time.Millisecond)
 		}
 	}()
 	return ch
 }
 
-// orderNotify polls the hand activity ring and sends the first CodeOrderPlaced or CodeOrderFailed entry.
-func orderNotify(hand *runtime.Hand, timeout time.Duration) <-chan runtime.ActivityEntry {
-	ch := make(chan runtime.ActivityEntry, 1)
-	deadline := time.Now().Add(timeout)
+// orderNotify subscribes to the hand event bus and sends the first CodeOrderPlaced or CodeOrderFailed event.
+func orderNotify(hand *runtime.Hand, timeout time.Duration) <-chan natsapi.HelmEvent {
+	events := hand.Subscribe(64) // create once, outside the loop
+	ch := make(chan natsapi.HelmEvent, 1)
 	go func() {
-		for time.Now().Before(deadline) {
-			for _, e := range hand.Activity() {
-				if e.Code == runtime.CodeOrderPlaced || e.Code == runtime.CodeOrderFailed {
-					ch <- e
+		deadline := time.After(timeout)
+		for {
+			select {
+			case ev, ok := <-events:
+				if !ok {
+					close(ch)
 					return
 				}
+				if ev.Code == runtime.CodeOrderPlaced || ev.Code == runtime.CodeOrderFailed {
+					ch <- ev
+					return
+				}
+			case <-deadline:
+				close(ch)
+				return
 			}
-			time.Sleep(50 * time.Millisecond)
 		}
 	}()
 	return ch
@@ -94,7 +112,9 @@ func newFixedQtyHand(rt *runtime.HelmRuntime, qty decimal.Decimal) *runtime.Hand
 		Mode:     tactics.SizingFixedQty,
 		FixedQty: qty,
 	})
-	return runtime.NewHand(uuid.New(), rt.HelmID, rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandRiskConfig{}, decimal.Zero)
+	h := runtime.NewHand(uuid.New(), rt.HelmID, rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandRiskConfig{}, decimal.Zero)
+	h.EnableEventSink()
+	return h
 }
 
 // longSig builds a long entry signal with strength 1.0.
@@ -143,41 +163,56 @@ func exitSig(symbol string) runtime.Signal {
 	}
 }
 
-// orderNotifyNew watches the hand's activity ring and sends the first
-// CodeOrderPlaced or CodeOrderFailed entry whose OrderID differs from excludeID.
-// Use after an entry order is placed to detect the subsequent exit order.
-func orderNotifyNew(hand *runtime.Hand, excludeID string, timeout time.Duration) <-chan runtime.ActivityEntry {
-	ch := make(chan runtime.ActivityEntry, 1)
-	deadline := time.Now().Add(timeout)
+// orderNotifyNew subscribes to the hand event bus and sends the first
+// CodeOrderPlaced or CodeOrderFailed event whose OrderID differs from excludeID.
+func orderNotifyNew(hand *runtime.Hand, excludeID string, timeout time.Duration) <-chan natsapi.HelmEvent {
+	events := hand.Subscribe(64)
+	ch := make(chan natsapi.HelmEvent, 1)
 	go func() {
-		for time.Now().Before(deadline) {
-			for _, e := range hand.Activity() {
-				if (e.Code == runtime.CodeOrderPlaced || e.Code == runtime.CodeOrderFailed) &&
-					e.OrderID != excludeID {
-					ch <- e
+		deadline := time.After(timeout)
+		for {
+			select {
+			case ev, ok := <-events:
+				if !ok {
+					close(ch)
 					return
 				}
+				if (ev.Code == runtime.CodeOrderPlaced || ev.Code == runtime.CodeOrderFailed) &&
+					ev.OrderID != excludeID {
+					ch <- ev
+					return
+				}
+			case <-deadline:
+				close(ch)
+				return
 			}
-			time.Sleep(50 * time.Millisecond)
 		}
 	}()
 	return ch
 }
 
-// fillNotifyOrder watches the hand's activity ring and sends the first
-// CodeOrderFilled entry whose OrderID matches targetID.
-func fillNotifyOrder(hand *runtime.Hand, targetID string, timeout time.Duration) <-chan runtime.ActivityEntry {
-	ch := make(chan runtime.ActivityEntry, 1)
-	deadline := time.Now().Add(timeout)
+// fillNotifyOrder subscribes to the hand event bus and sends the first
+// CodeOrderFilled event whose OrderID matches targetID.
+func fillNotifyOrder(hand *runtime.Hand, targetID string, timeout time.Duration) <-chan natsapi.HelmEvent {
+	events := hand.Subscribe(64)
+	ch := make(chan natsapi.HelmEvent, 1)
 	go func() {
-		for time.Now().Before(deadline) {
-			for _, e := range hand.Activity() {
-				if e.Code == runtime.CodeOrderFilled && e.OrderID == targetID {
-					ch <- e
+		deadline := time.After(timeout)
+		for {
+			select {
+			case ev, ok := <-events:
+				if !ok {
+					close(ch)
 					return
 				}
+				if ev.Code == runtime.CodeOrderFilled && ev.OrderID == targetID {
+					ch <- ev
+					return
+				}
+			case <-deadline:
+				close(ch)
+				return
 			}
-			time.Sleep(50 * time.Millisecond)
 		}
 	}()
 	return ch
@@ -429,25 +464,39 @@ func TestSignalToOrder_Alpaca(t *testing.T) {
 
 // ── Round-trip helpers ────────────────────────────────────────────────────────
 
-// waitFills polls until the hand's activity log contains at least n CodeOrderFilled entries.
+// waitFills subscribes to the hand event bus and waits until n CodeOrderFilled
+// events are received or timeout elapses.
+// NOTE: subscribe BEFORE delivering the signal to avoid missing synchronous fills.
+// Prefer waitFillsCh when subscribing before the signal delivery is required.
 func waitFills(hand *runtime.Hand, n int, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		var count int
-		for _, e := range hand.Activity() {
-			if e.Code == runtime.CodeOrderFilled {
-				count++
-			}
-		}
-		if count >= n {
-			return true
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	return false
+	return waitFillsCh(hand.Subscribe(64), n, timeout)
 }
 
-// logHandState dumps hand health, metrics, recent activity, and portfolio position.
+// waitFillsCh waits on a pre-created events channel until n CodeOrderFilled events
+// are received or timeout elapses. Use when you need to subscribe BEFORE delivering
+// the signal (e.g. to catch REST-immediate fills that fire synchronously).
+func waitFillsCh(events <-chan natsapi.HelmEvent, n int, timeout time.Duration) bool {
+	count := 0
+	deadline := time.After(timeout)
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				return count >= n
+			}
+			if ev.Code == runtime.CodeOrderFilled {
+				count++
+				if count >= n {
+					return true
+				}
+			}
+		case <-deadline:
+			return false
+		}
+	}
+}
+
+// logHandState dumps hand health, metrics, and portfolio position.
 func logHandState(t *testing.T, rt *runtime.HelmRuntime, hand *runtime.Hand, symbol string) {
 	t.Helper()
 	h := hand.Health()
@@ -458,13 +507,6 @@ func logHandState(t *testing.T, rt *runtime.HelmRuntime, hand *runtime.Hand, sym
 	t.Logf("metrics: signals=%d filtered=%d dropped=%d trades_approved=%d orders_placed=%d orders_filled=%d orders_failed=%d pnl=%s",
 		m.SignalsReceived, m.SignalsFiltered, m.SignalsDropped,
 		m.TradesApproved, m.OrdersPlaced, m.OrdersFilled, m.OrdersFailed, m.TotalPnL)
-	acts := hand.Activity()
-	t.Logf("activity (%d entries):", len(acts))
-	for _, e := range acts {
-		t.Logf("  [%s] code=%d sym=%s dir=%s side=%s qty=%s price=%s order_id=%s reason=%s",
-			e.At.Format("15:04:05.000"), e.Code, e.Symbol, e.Direction,
-			e.Side, e.Qty, e.Price, e.OrderID, e.Reason)
-	}
 	if pos := rt.Portfolio.GetPosition(symbol); pos != nil {
 		t.Logf("portfolio position: symbol=%s qty=%s avg_px=%s", pos.Symbol, pos.Qty, pos.AvgPrice)
 	} else {
@@ -508,6 +550,7 @@ func TestSignalRoundTrip_Binance(t *testing.T) {
 	}()
 
 	// Entry.
+	fillEvts1 := hand.Subscribe(64)
 	entryNotify := orderNotify(hand, 15*time.Second)
 	hand.DeliverSignal(longSig(symbol))
 	select {
@@ -524,7 +567,7 @@ func TestSignalRoundTrip_Binance(t *testing.T) {
 		t.Fatal("timeout waiting for entry order")
 	}
 
-	if !waitFills(hand, 1, 20*time.Second) {
+	if !waitFillsCh(fillEvts1, 1, 20*time.Second) {
 		t.Fatal("timeout waiting for entry fill")
 	}
 
@@ -535,6 +578,7 @@ func TestSignalRoundTrip_Binance(t *testing.T) {
 	t.Logf("position after entry: qty=%s avg_px=%s", pos.Qty, pos.AvgPrice)
 
 	// Exit.
+	fillEvts2 := hand.Subscribe(64)
 	exitNotify := orderNotifyNew(hand, hand.Orders()[0].ID, 15*time.Second)
 	hand.DeliverSignal(exitSig(symbol))
 	select {
@@ -548,7 +592,7 @@ func TestSignalRoundTrip_Binance(t *testing.T) {
 		t.Fatal("timeout waiting for exit order")
 	}
 
-	if !waitFills(hand, 2, 20*time.Second) {
+	if !waitFillsCh(fillEvts2, 2, 20*time.Second) {
 		t.Log("exit fill not confirmed within 20s — order may still be pending")
 	}
 
@@ -590,6 +634,7 @@ func TestSignalRoundTrip_OKX(t *testing.T) {
 	}()
 
 	// Entry.
+	fillEvts1 := hand.Subscribe(64)
 	entryNotify := orderNotify(hand, 15*time.Second)
 	hand.DeliverSignal(longSig(symbol))
 	select {
@@ -606,7 +651,7 @@ func TestSignalRoundTrip_OKX(t *testing.T) {
 		t.Fatal("timeout waiting for entry order")
 	}
 
-	if !waitFills(hand, 1, 20*time.Second) {
+	if !waitFillsCh(fillEvts1, 1, 20*time.Second) {
 		t.Fatal("timeout waiting for entry fill")
 	}
 
@@ -617,6 +662,7 @@ func TestSignalRoundTrip_OKX(t *testing.T) {
 	t.Logf("position after entry: qty=%s avg_px=%s", pos.Qty, pos.AvgPrice)
 
 	// Exit.
+	fillEvts2 := hand.Subscribe(64)
 	exitNotify := orderNotifyNew(hand, hand.Orders()[0].ID, 15*time.Second)
 	hand.DeliverSignal(exitSig(symbol))
 	select {
@@ -630,7 +676,7 @@ func TestSignalRoundTrip_OKX(t *testing.T) {
 		t.Fatal("timeout waiting for exit order")
 	}
 
-	if !waitFills(hand, 2, 20*time.Second) {
+	if !waitFillsCh(fillEvts2, 2, 20*time.Second) {
 		t.Log("exit fill not confirmed within 20s — order may still be pending")
 	}
 
@@ -674,6 +720,7 @@ func TestSignalRoundTrip_Bybit(t *testing.T) {
 	}()
 
 	// Entry.
+	fillEvts1 := hand.Subscribe(64)
 	entryNotify := orderNotify(hand, 15*time.Second)
 	hand.DeliverSignal(longSig(symbol))
 	select {
@@ -690,7 +737,7 @@ func TestSignalRoundTrip_Bybit(t *testing.T) {
 		t.Fatal("timeout waiting for entry order")
 	}
 
-	if !waitFills(hand, 1, 20*time.Second) {
+	if !waitFillsCh(fillEvts1, 1, 20*time.Second) {
 		t.Fatal("timeout waiting for entry fill")
 	}
 
@@ -701,6 +748,7 @@ func TestSignalRoundTrip_Bybit(t *testing.T) {
 	t.Logf("position after entry: qty=%s avg_px=%s", pos.Qty, pos.AvgPrice)
 
 	// Exit.
+	fillEvts2 := hand.Subscribe(64)
 	exitNotify := orderNotifyNew(hand, hand.Orders()[0].ID, 15*time.Second)
 	hand.DeliverSignal(exitSig(symbol))
 	select {
@@ -714,7 +762,7 @@ func TestSignalRoundTrip_Bybit(t *testing.T) {
 		t.Fatal("timeout waiting for exit order")
 	}
 
-	if !waitFills(hand, 2, 20*time.Second) {
+	if !waitFillsCh(fillEvts2, 2, 20*time.Second) {
 		t.Log("exit fill not confirmed within 20s — order may still be pending")
 	}
 
@@ -756,6 +804,7 @@ func TestSignalRoundTrip_Alpaca(t *testing.T) {
 	}()
 
 	// Entry.
+	fillEvts1 := hand.Subscribe(64)
 	entryNotify := orderNotify(hand, 15*time.Second)
 	hand.DeliverSignal(longSig(symbol))
 	select {
@@ -770,7 +819,7 @@ func TestSignalRoundTrip_Alpaca(t *testing.T) {
 		t.Fatal("timeout waiting for entry order")
 	}
 
-	if !waitFills(hand, 1, 30*time.Second) {
+	if !waitFillsCh(fillEvts1, 1, 30*time.Second) {
 		t.Log("entry fill not confirmed within 30s — market may be closed, cancelling")
 		cancelAllOrders(t, rt, hand)
 		return
@@ -783,6 +832,7 @@ func TestSignalRoundTrip_Alpaca(t *testing.T) {
 	t.Logf("position after entry: qty=%s avg_px=%s", pos.Qty, pos.AvgPrice)
 
 	// Exit.
+	fillEvts2 := hand.Subscribe(64)
 	exitNotify := orderNotifyNew(hand, hand.Orders()[0].ID, 15*time.Second)
 	hand.DeliverSignal(exitSig(symbol))
 	select {
@@ -796,7 +846,7 @@ func TestSignalRoundTrip_Alpaca(t *testing.T) {
 		t.Fatal("timeout waiting for exit order")
 	}
 
-	if !waitFills(hand, 2, 30*time.Second) {
+	if !waitFillsCh(fillEvts2, 2, 30*time.Second) {
 		t.Log("exit fill not confirmed within 30s")
 	}
 

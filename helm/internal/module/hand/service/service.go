@@ -50,6 +50,9 @@ func NewService(r domain.HandRepo, registry *runtime.Registry, herald heraldClie
 // after hydrateRuntimes in fx.go) so that registry.Get succeeds for each hand.
 func (s *Service) HydrateAll() {
 	for _, data := range s.repo.All() {
+		if data.Status.IsTerminal() {
+			continue // terminal hands live in DB only; fetched on-demand via GetSummary
+		}
 		bi, err := s.hydrate(data)
 		if err != nil {
 			slog.Warn("hand hydrate skipped", "id", data.ID, "err", err)

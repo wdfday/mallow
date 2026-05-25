@@ -84,6 +84,39 @@ restart service:
 sh service:
     {{dc}} exec {{service}} sh
 
+# ── Herald dev (local, hot-fix) ───────────────────────────────────────────────
+
+herald-dev:
+    cd almanac && \
+      NATS_URL="nats://signal_engine:signal-engine-dev@localhost:4222" \
+      HERALD_DATA_DIR="{{justfile_directory()}}/data" \
+      HERALD_HTTP_ADDR="0.0.0.0:8090" \
+      HERALD_WARM_BARS=500 \
+      HERALD_SYMBOLS_FILE="{{justfile_directory()}}/deployment/symbols.yaml" \
+      HERALD_DATABASE_URL="postgres://mallow:mallow-dev@localhost:5432/herald?sslmode=disable" \
+      RUST_LOG="herald=info,alm_engine=info,alm_strategy=info,tower_http=warn" \
+      cargo run --bin alm-herald
+
+herald-debug:
+    cd almanac && \
+      NATS_URL="nats://signal_engine:signal-engine-dev@localhost:4222" \
+      HERALD_DATA_DIR="{{justfile_directory()}}/data" \
+      HERALD_HTTP_ADDR="0.0.0.0:8090" \
+      HERALD_WARM_BARS=500 \
+      HERALD_SYMBOLS_FILE="{{justfile_directory()}}/deployment/symbols.yaml" \
+      HERALD_DATABASE_URL="postgres://mallow:mallow-dev@localhost:5432/herald?sslmode=disable" \
+      RUST_LOG="herald=debug,alm_engine=debug,alm_strategy=debug,alm_ledger=debug,tower_http=debug" \
+      cargo run --bin alm-herald
+
+# ── WASM ──────────────────────────────────────────────────────────────────────
+
+# Build alm-wasm (bundler target) and sync artifacts into mallow-client/vendor/alm-wasm
+# so Vercel can resolve the local link: dep when mallow-client is deployed from its own repo.
+build-wasm:
+    cd almanac/crates/alm-wasm && wasm-pack build --target bundler
+    rm -f almanac/crates/alm-wasm/pkg/.gitignore
+    cp -r almanac/crates/alm-wasm/pkg/. mallow-client/vendor/alm-wasm/
+
 # ── Specs ─────────────────────────────────────────────────────────────────────
 
 # Generate OpenAPI/Swagger specs for all (or specific) services → specs/

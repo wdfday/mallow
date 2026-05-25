@@ -117,6 +117,8 @@ func (r *DefaultReconciler) reconcileHand(
 	hp := position.ReplayHand(events, hand.pyramid, hand.maxUnits)
 
 	if hp.IsFlat() {
+		// No open position, but still restore historical PnL so realizedEquity() is correct.
+		hand.RestorePnL(events)
 		result.Phase = position.PhaseIdle
 		result.Action = ReconcileSkipped
 		return result
@@ -153,6 +155,10 @@ func (r *DefaultReconciler) reconcileHand(
 			hand.restorePosition(hp2, p.AvgPrice)
 		}
 	}
+
+	// Restore PnL counters from poslog history so realizedEquity() reflects all
+	// completed trades, not just the current open position.
+	hand.RestorePnL(events2)
 
 	return result
 }
@@ -241,6 +247,40 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 			return ReconcileFailed, err
 		}
 		return ReconcileCancelled, nil
+
+	case "partially_filled", "new", "accepted", "pending_new", "submitted":
+		// Order still open (possibly missed by the open-orders batch fetch due to a
+		// brief exchange inconsistency). Restore tracking so pollOrders keeps watching it.
+		orch.TrackOrder(orderID, hand.id.String())
+		hand.mu.Lock()
+		alreadyTracked := false
+		for _, o := range hand.orders {
+			if o.ID == orderID {
+				alreadyTracked = true
+				break
+			}
+		}
+		if !alreadyTracked {
+			remainingQty := leg.Qty.Sub(exOrder.FilledQty)
+			if !remainingQty.IsPositive() {
+				remainingQty = leg.Qty // defensive: treat as fully open if data is inconsistent
+			}
+			hand.orders = append(hand.orders, handdomain.Order{
+				ID:         orderID,
+				Symbol:     leg.Symbol,
+				Side:       leg.Side,
+				Qty:        remainingQty,
+				Status:     exOrder.Status,
+				FilledQty:  exOrder.FilledQty,
+				FilledAvg:  exOrder.FilledAvg,
+				SubmitTime: leg.OpenedAt,
+			})
+		}
+		hand.mu.Unlock()
+		slog.Info("reconcile: restored partially-open order for polling",
+			"hand_id", hand.id, "order_id", orderID, "status", exOrder.Status,
+			"filled_qty", exOrder.FilledQty, "original_qty", leg.Qty)
+		return ReconcileRestored, nil
 
 	default:
 		return ReconcileFailed, fmt.Errorf("unexpected order status %q for order %s", exOrder.Status, orderID)

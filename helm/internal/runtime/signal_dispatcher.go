@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"log/slog"
+	"sync/atomic"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -17,10 +18,25 @@ func msToTime(ms int64) time.Time {
 	return time.UnixMilli(ms).UTC()
 }
 
+// DispatcherMetrics holds NATS-level counters for the signal dispatcher.
+// All fields use sync/atomic and are safe for concurrent access.
+type DispatcherMetrics struct {
+	// SignalsTotal is the total number of SignalResponse payloads received from NATS.
+	SignalsTotal atomic.Int64
+	// SignalsMissingID counts payloads with an empty helm_id or hand_id — typically
+	// indicates a herald misconfiguration or a publish race during startup.
+	SignalsMissingID atomic.Int64
+	// SignalsNilPayload counts payloads where the inner Signal proto was nil.
+	SignalsNilPayload atomic.Int64
+	// SignalsDispatched counts signals successfully handed to RouteSignal.
+	SignalsDispatched atomic.Int64
+}
+
 // SignalDispatcher bridges the NATS "signals" subject into helm hand channels.
 // Both helm_id and hand_id are read from SignalResponse payload — subject is fixed "signals".
 type SignalDispatcher struct {
-	sink SignalSink
+	sink    SignalSink
+	Metrics DispatcherMetrics
 }
 
 func NewSignalDispatcher(sink SignalSink) *SignalDispatcher {
@@ -31,9 +47,12 @@ func NewSignalDispatcher(sink SignalSink) *SignalDispatcher {
 // receivedAt is the NATS server ingestion timestamp, used for TTL checks in each hand.
 // Called directly from the NATS subscription goroutine — must not block.
 func (d *SignalDispatcher) Dispatch(resp *engine.SignalResponse, receivedAt time.Time) {
+	d.Metrics.SignalsTotal.Add(1)
+
 	helmID := resp.HelmId
 	handID := resp.HandId
 	if helmID == "" || handID == "" {
+		d.Metrics.SignalsMissingID.Add(1)
 		slog.Warn("signal dispatcher: missing helm_id or hand_id in payload",
 			"helm_id", helmID, "hand_id", handID)
 		return
@@ -41,10 +60,15 @@ func (d *SignalDispatcher) Dispatch(resp *engine.SignalResponse, receivedAt time
 
 	sig := resp.Signal
 	if sig == nil {
+		d.Metrics.SignalsNilPayload.Add(1)
+		slog.Warn("signal dispatcher: nil signal payload", "helm_id", helmID, "hand_id", handID)
 		return
 	}
 	s := Signal{
-		Symbol:      sig.S,
+		// Strip exchange prefix ("binance:ETHUSDT" → "ETHUSDT") at the boundary
+		// where herald signals enter the helm domain. h.Symbol (from DB) is always
+		// the raw ticker, so this makes sig.Symbol match h.Symbol throughout.
+		Symbol:      stripExchangePrefix(sig.S),
 		Direction:   strategy.Direction(sig.Dir),
 		Strength:    sig.Strength,
 		ReceivedAt:  receivedAt,
@@ -83,5 +107,6 @@ func (d *SignalDispatcher) Dispatch(resp *engine.SignalResponse, receivedAt time
 		"pattern", s.PatternKind,
 		"urgent", s.IsUrgent(),
 	)
+	d.Metrics.SignalsDispatched.Add(1)
 	d.sink.RouteSignal(helmID, handID, s)
 }

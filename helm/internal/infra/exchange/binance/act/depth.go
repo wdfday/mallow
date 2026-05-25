@@ -11,7 +11,7 @@ import (
 	"mallow/helm/internal/infra/exchange"
 )
 
-// SubscribeDepth subscribes to BTCUSDT@depth5@100ms (or any symbol) and pushes
+// SubscribeDepth subscribes to BTCUSDT@depth10@100ms (or any symbol) and pushes
 // each snapshot into ring. Reconnects automatically on disconnection.
 // Returns immediately; the goroutine runs until ctx is cancelled.
 func (c *Client) SubscribeDepth(ctx context.Context, symbol string, ring *exchange.DepthRing) {

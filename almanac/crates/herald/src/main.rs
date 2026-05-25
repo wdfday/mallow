@@ -293,11 +293,11 @@ async fn main() -> Result<()> {
 
     if !sym_cfg.binance.is_empty() {
         info!(symbols = ?sym_cfg.binance, "starting Binance WebSocket ingester");
-        feed::binance::spawn(sym_cfg.binance.clone(), bar_tx.clone());
+        feed::binance::spawn(sym_cfg.binance.clone(), bar_tx.clone(), ledger.clone(), tf);
     }
     if !sym_cfg.okx.is_empty() {
         info!(symbols = ?sym_cfg.okx, "starting OKX WebSocket ingester");
-        feed::okx::spawn(sym_cfg.okx.clone(), bar_tx.clone());
+        feed::okx::spawn(sym_cfg.okx.clone(), bar_tx.clone(), ledger.clone(), tf);
     }
     if sym_cfg.binance.is_empty() && sym_cfg.okx.is_empty() {
         warn!("no symbols configured — herald will receive no live bars");
@@ -307,10 +307,17 @@ async fn main() -> Result<()> {
     // ── REST gap-fill ─────────────────────────────────────────────────────────
     // For the base TF (M1): close the gap from the last parquet bar to now.
     // For every other subscribed TF: fetch the last WINDOW_BARS bars directly.
-    // All symbols gap-fill in parallel (tokio::spawn) to minimise the window
-    // during which WS bars accumulate in the channel.
+    //
+    // OKX REST rate limit is 20 req/2s for public endpoints. Each symbol
+    // fetches one request per subscribed TF serially, so running all OKX
+    // symbols in parallel easily triggers 429s. We use a semaphore to cap
+    // concurrent OKX gap-fills at 3. Binance is more generous — run parallel.
     if !startup_symbols.is_empty() {
-        info!("starting REST gap-fill for {} symbol(s) (parallel)", startup_symbols.len());
+        // OKX: max 3 concurrent gap-fills
+        const OKX_CONCURRENCY: usize = 3;
+        let okx_sem = Arc::new(tokio::sync::Semaphore::new(OKX_CONCURRENCY));
+
+        info!("starting REST gap-fill for {} symbol(s)", startup_symbols.len());
         let gap_tasks: Vec<_> = startup_symbols.iter().map(|sym| {
             let ledger = ledger.clone();
             let sym = sym.clone();
@@ -319,7 +326,13 @@ async fn main() -> Result<()> {
             let (exchange_str, raw_sym) = crate::symbols::SymbolConfig::split_prefix(&sym);
             let exchange = if exchange_str == "okx" { Exchange::Okx } else { Exchange::Binance };
             let raw_sym = raw_sym.to_string();
+            let okx_sem = okx_sem.clone();
             tokio::spawn(async move {
+                let _permit = if matches!(exchange, Exchange::Okx) {
+                    Some(okx_sem.acquire_owned().await.expect("semaphore closed"))
+                } else {
+                    None
+                };
                 gap_fill_symbol(&ledger, tf, &sym, &raw_sym, exchange, base_from_ms, feed::SUBSCRIBE_TFS).await;
             })
         }).collect();

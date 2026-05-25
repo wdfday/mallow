@@ -14,7 +14,6 @@ import (
 // CreateForAccount ensures exactly one Helm exists for the given account and that its
 // runtime is spawned. Idempotent: if a Helm already exists for the account it re-spawns
 // the runtime (safe no-op if already running) and returns the existing record.
-// Called by the NATS helm.accounts.linked event handler.
 func (s *Service) CreateForAccount(req helmDto.CreateForAccountReq) (*domain.Helm, error) {
 	if req.UserID == uuid.Nil {
 		return nil, fmt.Errorf("user_id is required")
@@ -89,7 +88,7 @@ func (s *Service) DeleteForAccount(accountID uuid.UUID) error {
 	return s.repo.Delete(cfg.ID)
 }
 
-// Update patches an orchestrator config and refreshes live risk parameters.
+// Update patches a helm config and refreshes live risk parameters.
 func (s *Service) Update(id uuid.UUID, req helmDto.UpdateReq) (*domain.Helm, error) {
 	var updated *domain.Helm
 	if err := s.repo.Update(id, func(o *domain.Helm) error {
@@ -114,7 +113,7 @@ func (s *Service) Update(id uuid.UUID, req helmDto.UpdateReq) (*domain.Helm, err
 	return updated, nil
 }
 
-// Delete removes an orchestrator config and tears down its runtime.
+// Delete removes a helm config and tears down its runtime.
 func (s *Service) Delete(id uuid.UUID) error {
 	botIDs := s.spawner.Teardown(id)
 	if s.hands != nil {

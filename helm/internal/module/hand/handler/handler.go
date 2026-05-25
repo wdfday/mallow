@@ -6,27 +6,29 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
+	"mallow/helm/internal/infra/eventlog"
 	"mallow/helm/internal/module/hand/domain"
 	dto "mallow/helm/internal/module/hand/dto"
 	helmDto "mallow/helm/internal/module/helm/dto"
-	"mallow/helm/internal/runtime"
 	"mallow/helm/internal/shared"
 	pkgmw "mallow/pkg/middleware"
 )
 
 type Handler struct {
-	handMgr HandService
-	helmSvc HelmService
-	reg     RuntimeRegistry
+	handMgr  HandService
+	helmSvc  HelmService
+	reg      RuntimeRegistry
+	eventLog eventlog.Log // nil = eventlog not available (dev/test without DB)
 }
 
-func New(handMgr HandService, helmSvc HelmService, reg RuntimeRegistry) *Handler {
-	return &Handler{handMgr: handMgr, helmSvc: helmSvc, reg: reg}
+func New(handMgr HandService, helmSvc HelmService, reg RuntimeRegistry, evLog eventlog.Log) *Handler {
+	return &Handler{handMgr: handMgr, helmSvc: helmSvc, reg: reg, eventLog: evLog}
 }
 
 func callerUserID(c *gin.Context) (uuid.UUID, bool) {
@@ -59,19 +61,20 @@ func (h *Handler) resolveHelmID(userID uuid.UUID, accountID, helmID uuid.UUID) (
 }
 
 // checkHandOwner verifies that the hand's helm belongs to userID.
+// Works for both active (in-memory) and terminal (DB-only) hands.
 func (h *Handler) checkHandOwner(handIDStr string, userID uuid.UUID) (uuid.UUID, uuid.UUID, error) {
 	handID, err := uuid.Parse(handIDStr)
 	if err != nil {
 		return uuid.Nil, uuid.Nil, fmt.Errorf("invalid id")
 	}
-	bi, err := h.handMgr.Get(handID)
+	summary, err := h.handMgr.GetSummary(handID)
 	if err != nil {
 		return uuid.Nil, uuid.Nil, err
 	}
-	if err := h.helmSvc.CheckOwner(bi.Data.HelmID, userID); err != nil {
+	if err := h.helmSvc.CheckOwner(summary.HelmID, userID); err != nil {
 		return uuid.Nil, uuid.Nil, fmt.Errorf("not found")
 	}
-	return handID, bi.Data.HelmID, nil
+	return handID, summary.HelmID, nil
 }
 
 func (h *Handler) Register(rg *gin.RouterGroup) {
@@ -81,7 +84,6 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 		b.GET("", h.list)
 		b.GET("/:id", h.get)
 		b.PUT("/:id", h.update)
-		b.DELETE("/:id", h.delete)
 		b.GET("/:id/activity", h.activity)
 		b.GET("/:id/trades", h.trades)
 		b.POST("/:id/start", h.start)
@@ -342,17 +344,21 @@ func (h *Handler) get(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, _, err := h.checkHandOwner(c.Param("id"), userID)
+	handID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		shared.RespondWithError(c, http.StatusNotFound, "not found")
 		return
 	}
-	bi, err := h.handMgr.Get(id)
+	summary, err := h.handMgr.GetSummary(handID)
 	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, err.Error())
+		shared.RespondWithError(c, http.StatusNotFound, "not found")
 		return
 	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Hand retrieved successfully", bi.Summary())
+	if err := h.helmSvc.CheckOwner(summary.HelmID, userID); err != nil {
+		shared.RespondWithError(c, http.StatusNotFound, "not found")
+		return
+	}
+	shared.RespondWithSuccess(c, http.StatusOK, "Hand retrieved successfully", summary)
 }
 
 // update godoc
@@ -409,38 +415,6 @@ func (h *Handler) update(c *gin.Context) {
 }
 
 // delete godoc
-// @Summary Delete hand
-// @Tags hands
-// @Security BearerAuth
-// @Produce json
-// @Param id path string true "Hand ID"
-// @Success 200 {object} shared.SuccessResponse[dto.HandActionResp]
-// @Failure 400 {object} shared.ErrorResponse
-// @Failure 401 {object} shared.ErrorResponse
-// @Failure 403 {object} shared.ErrorResponse
-// @Failure 404 {object} shared.ErrorResponse
-// @Router /api/v1/hands/{id} [delete]
-func (h *Handler) delete(c *gin.Context) {
-	userID, ok := callerUserID(c)
-	if !ok {
-		return
-	}
-	id, helmID, err := h.checkHandOwner(c.Param("id"), userID)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "not found")
-		return
-	}
-	if _, err := h.helmSvc.Get(helmID); err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "helm not found")
-		return
-	}
-	if err := h.handMgr.Delete(id); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
-		return
-	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Hand deleted successfully", dto.HandActionResp{Status: "deleted", ID: id.String()})
-}
-
 // start godoc
 // @Summary Start hand
 // @Tags hands
@@ -645,27 +619,54 @@ func (h *Handler) release(c *gin.Context) {
 // @Router /metrics [get]
 // activity godoc
 // @Summary Get hand activity log
-// @Description Events from the HELM_EVENTS JetStream stream filtered by hand_id. Currently returns empty; JetStream query endpoint TBD.
+// @Description Persistent events for this hand from PostgreSQL, newest first. Supports ?limit= (default 100) and ?before= (RFC3339 cursor for pagination).
 // @Tags hands
 // @Security BearerAuth
 // @Produce json
 // @Param id path string true "Hand ID"
-// @Success 200 {object} shared.SuccessResponse[[]runtime.ActivityEntry]
+// @Param limit query int false "Max events to return" default(100)
+// @Param before query string false "Return events before this RFC3339 timestamp (pagination cursor)"
+// @Success 200 {object} shared.SuccessResponse[[]eventlog.Event]
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 404 {object} shared.ErrorResponse
+// @Failure 503 {object} shared.ErrorResponse
 // @Router /api/v1/hands/{id}/activity [get]
 func (h *Handler) activity(c *gin.Context) {
 	userID, ok := callerUserID(c)
 	if !ok {
 		return
 	}
-	_, _, err := h.checkHandOwner(c.Param("id"), userID)
+	handID, helmID, err := h.checkHandOwner(c.Param("id"), userID)
 	if err != nil {
 		shared.RespondWithError(c, http.StatusNotFound, "not found")
 		return
 	}
-	// TODO: query HELM_EVENTS JetStream, filter by hand_id, page by ?after=&limit=
-	shared.RespondWithSuccess(c, http.StatusOK, "Activity retrieved", []runtime.ActivityEntry{})
+	if h.eventLog == nil {
+		shared.RespondWithError(c, http.StatusServiceUnavailable, "activity log not available")
+		return
+	}
+
+	limit, _ := strconv.Atoi(c.Query("limit"))
+	f := eventlog.Filter{
+		HelmID: helmID,
+		HandID: &handID,
+		Limit:  limit,
+	}
+	if beforeStr := c.Query("before"); beforeStr != "" {
+		if t, err := time.Parse(time.RFC3339, beforeStr); err == nil {
+			f.Before = t
+		}
+	}
+
+	events, err := h.eventLog.Query(c.Request.Context(), f)
+	if err != nil {
+		shared.RespondWithError(c, http.StatusInternalServerError, "failed to query activity log")
+		return
+	}
+	if events == nil {
+		events = []eventlog.Event{}
+	}
+	shared.RespondWithSuccess(c, http.StatusOK, "Activity retrieved", events)
 }
 
 // trades godoc
@@ -784,6 +785,8 @@ func (h *Handler) Metrics(c *gin.Context) {
 			out.WriteString(formatMetric("helm_hand_pnl", m.TotalPnL.InexactFloat64(), handLabels))
 			out.WriteString(formatMetric("helm_hand_wins", float64(m.WinCount), handLabels))
 			out.WriteString(formatMetric("helm_hand_losses", float64(m.LossCount), handLabels))
+			out.WriteString(formatMetric("helm_hand_signal_lag_last_ms", float64(m.LatestSignalLagMs), handLabels))
+			out.WriteString(formatMetric("helm_hand_signal_queue_depth", float64(m.SignalQueueDepth), handLabels))
 
 			runningVal := 0.0
 			if handSummary.Status != "stopped" && handSummary.Status != "error" {
@@ -819,6 +822,17 @@ func (h *Handler) Metrics(c *gin.Context) {
 	out.WriteString(formatMetric("helm_total_cash", totalCash.InexactFloat64(), nil))
 	out.WriteString(formatMetric("helm_running_hands", float64(len(h.handMgr.RunningHands())), nil))
 	out.WriteString(formatMetric("helm_active_runtimes", float64(len(runtimes)), nil))
+
+	// Signal dispatcher & routing metrics
+	ds := h.reg.DispatchStats()
+	out.WriteString(formatMetric("helm_dispatch_route_no_helm_total", float64(ds.RouteNoHelm), nil))
+	out.WriteString(formatMetric("helm_dispatch_route_no_hand_total", float64(ds.RouteNoHand), nil))
+
+	ns := h.reg.NATSStats()
+	out.WriteString(formatMetric("helm_nats_signals_total", float64(ns.SignalsTotal), nil))
+	out.WriteString(formatMetric("helm_nats_signals_dispatched_total", float64(ns.SignalsDispatched), nil))
+	out.WriteString(formatMetric("helm_nats_signals_missing_id_total", float64(ns.SignalsMissingID), nil))
+	out.WriteString(formatMetric("helm_nats_signals_nil_payload_total", float64(ns.SignalsNilPayload), nil))
 
 	c.String(http.StatusOK, out.String())
 }

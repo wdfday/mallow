@@ -53,14 +53,26 @@ func spotCreateToResult(side exchange.OrderSide, r *gobinance.CreateOrderRespons
 	if filledQty.IsPositive() {
 		filledAvg = quoteQty.Div(filledQty)
 	}
+	// Sum commission across all partial fills; take commissionAsset from the first fill.
+	// All fills for a single order share the same commissionAsset.
+	var totalCommission decimal.Decimal
+	var commissionAsset string
+	for _, f := range r.Fills {
+		totalCommission = totalCommission.Add(parseDecimal(f.Commission))
+		if commissionAsset == "" {
+			commissionAsset = f.CommissionAsset
+		}
+	}
 	return &exchange.OrderResult{
-		ID:        r.Symbol + ":" + strconv.FormatInt(r.OrderID, 10),
-		Symbol:    r.Symbol,
-		Side:      side,
-		Status:    strings.ToLower(string(r.Status)),
-		Qty:       parseDecimal(r.OrigQuantity),
-		FilledQty: filledQty,
-		FilledAvg: filledAvg,
+		ID:              r.Symbol + ":" + strconv.FormatInt(r.OrderID, 10),
+		Symbol:          r.Symbol,
+		Side:            side,
+		Status:          strings.ToLower(string(r.Status)),
+		Qty:             parseDecimal(r.OrigQuantity),
+		FilledQty:       filledQty,
+		FilledAvg:       filledAvg,
+		Commission:      totalCommission,
+		CommissionAsset: commissionAsset,
 	}
 }
 

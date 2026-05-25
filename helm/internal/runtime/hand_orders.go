@@ -31,7 +31,7 @@ func (h *Hand) pollOrders(ctx context.Context) {
 	for _, o := range pending {
 		result, err := h.helmRuntime.Exchange.GetOrder(ctx, h.helmRuntime.Creds, o.ID)
 		if err != nil {
-			slog.Warn("bot: poll order failed", "order_id", o.ID, "err", err)
+			slog.Warn("hand: poll order failed", "order_id", o.ID, "err", err)
 			continue
 		}
 		h.mu.Lock()
@@ -58,7 +58,7 @@ func (h *Hand) pollOrders(ctx context.Context) {
 			}
 			h.seenFills[result.ID] = struct{}{}
 			h.mu.Unlock()
-			h.applyFill(ctx, result.ID, result.Symbol, side, result.FilledQty, result.FilledAvg, "poll")
+			h.applyFill(ctx, result.ID, result.Symbol, side, result.FilledQty, result.FilledAvg, decimal.Zero, "poll")
 
 		case "new", "accepted", "submitted", "pending_new":
 			// Limit order timeout: cancel (and optionally re-place) if it hasn't filled
@@ -85,9 +85,9 @@ func (h *Hand) pollOrders(ctx context.Context) {
 				remaining := o.Qty.Sub(result.FilledQty)
 				if remaining.IsPositive() && remaining.Div(o.Qty).LessThan(decimal.NewFromFloat(0.02)) {
 					if err := h.helmRuntime.Exchange.CancelOrder(ctx, h.helmRuntime.Creds, o.ID); err != nil {
-						slog.Warn("bot: cancel partial remainder failed", "order_id", o.ID, "err", err)
+						slog.Warn("hand: cancel partial remainder failed", "order_id", o.ID, "err", err)
 					} else {
-						slog.Info("bot: cancelled dust remainder on partial fill",
+						slog.Info("hand: cancelled dust remainder on partial fill",
 							"order_id", o.ID, "filled", result.FilledQty, "original", o.Qty)
 						h.helmRuntime.EmitEvent(natsapi.HelmEvent{
 							HandID:  h.id.String(),
@@ -107,7 +107,7 @@ func (h *Hand) pollOrders(ctx context.Context) {
 					if _, seen := h.seenFills[result.ID]; !seen {
 						h.seenFills[result.ID] = struct{}{}
 						h.mu.Unlock()
-						h.applyFill(ctx, result.ID, result.Symbol, side, result.FilledQty, result.FilledAvg, "partial_cancel")
+						h.applyFill(ctx, result.ID, result.Symbol, side, result.FilledQty, result.FilledAvg, decimal.Zero, "partial_cancel")
 					} else {
 						h.mu.Unlock()
 					}
@@ -115,16 +115,7 @@ func (h *Hand) pollOrders(ctx context.Context) {
 			}
 
 		case "cancelled", "rejected", "expired":
-			h.helmRuntime.EmitEvent(natsapi.HelmEvent{
-				HandID:  h.id.String(),
-				Code:    CodeOrderCancelled,
-				Symbol:  result.Symbol,
-				OrderID: o.ID,
-				Side:    string(result.Side),
-				Reason:  result.Status,
-				Msg:     "order: " + result.Status,
-			})
-			h.activityLog.push(ActivityEntry{At: time.Now(), Code: CodeOrderCancelled, Symbol: result.Symbol, OrderID: o.ID, Side: string(result.Side), Reason: result.Status})
+			// publishAndApply first so h.pos is consistent when observers see the event.
 			h.mu.RLock()
 			posID := h.pendingOrderPos[o.ID]
 			h.mu.RUnlock()
@@ -143,8 +134,41 @@ func (h *Hand) pollOrders(ctx context.Context) {
 					At:         time.Now().UTC(),
 				})
 			}
+			// Terminal: remove from routing map so cancelled orders don't accumulate.
+			h.helmRuntime.RemoveOrderTracking(o.ID)
+			slog.Info("order: "+result.Status,
+				"hand_id", h.id,
+				"symbol", result.Symbol,
+				"order_id", o.ID,
+				"side", result.Side,
+				"status", result.Status,
+			)
+			h.emitEvent(natsapi.HelmEvent{
+				Code:    CodeOrderCancelled,
+				Symbol:  result.Symbol,
+				OrderID: o.ID,
+				Side:    string(result.Side),
+				Reason:  result.Status,
+				Msg:     "order: " + result.Status,
+			})
 		}
 	}
+
+	// Compact h.orders: prune terminal entries so the slice doesn't grow unboundedly.
+	// Runs after all pending orders are processed — no information is lost.
+	h.mu.Lock()
+	n := 0
+	for _, o := range h.orders {
+		switch o.Status {
+		case "filled", "cancelled", "rejected", "expired":
+			// terminal — drop
+		default:
+			h.orders[n] = o
+			n++
+		}
+	}
+	h.orders = h.orders[:n]
+	h.mu.Unlock()
 }
 
 // handleLimitTimeout cancels a stale limit order and, depending on LimitFallback,
@@ -159,7 +183,7 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 	h.mu.RUnlock()
 
 	if cancelErr := h.helmRuntime.Exchange.CancelOrder(ctx, h.helmRuntime.Creds, o.ID); cancelErr != nil {
-		slog.Warn("bot: limit timeout cancel failed", "order_id", o.ID, "err", cancelErr)
+		slog.Warn("hand: limit timeout cancel failed", "order_id", o.ID, "err", cancelErr)
 		return
 	}
 
@@ -174,7 +198,7 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 		if _, seen := h.seenFills[o.ID]; !seen {
 			h.seenFills[o.ID] = struct{}{}
 			h.mu.Unlock()
-			h.applyFill(ctx, o.ID, polled.Symbol, side, alreadyFilledQty, polled.FilledAvg, "limit_timeout_partial")
+			h.applyFill(ctx, o.ID, polled.Symbol, side, alreadyFilledQty, polled.FilledAvg, decimal.Zero, "limit_timeout_partial")
 		} else {
 			h.mu.Unlock()
 		}
@@ -201,7 +225,7 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 	}
 
 	remainingQty := o.Qty.Sub(alreadyFilledQty)
-	slog.Info("bot: limit order timed out", "order_id", o.ID, "age", age,
+	slog.Info("hand: limit order timed out", "order_id", o.ID, "age", age,
 		"filled", alreadyFilledQty, "remaining", remainingQty, "fallback", h.limitFallback)
 
 	h.helmRuntime.EmitEvent(natsapi.HelmEvent{
@@ -222,10 +246,10 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 			Qty:    remainingQty,
 		})
 		if err != nil {
-			slog.Error("bot: limit fallback market order failed", "order_id", o.ID, "err", err)
+			slog.Error("hand: limit fallback market order failed", "order_id", o.ID, "err", err)
 			return
 		}
-		slog.Info("bot: limit fallback market placed", "new_order_id", result.ID, "qty", remainingQty)
+		slog.Info("hand: limit fallback market placed", "new_order_id", result.ID, "qty", remainingQty)
 		h.helmRuntime.EmitEvent(natsapi.HelmEvent{
 			HandID:  h.id.String(),
 			Code:    CodeOrderLimitFallback,
@@ -286,7 +310,7 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 			h.mu.Lock()
 			h.seenFills[result.ID] = struct{}{}
 			h.mu.Unlock()
-			h.applyFill(ctx, result.ID, o.Symbol, string(o.Side), result.FilledQty, result.FilledAvg, "limit_fallback")
+			h.applyFill(ctx, result.ID, o.Symbol, string(o.Side), result.FilledQty, result.FilledAvg, decimal.Zero, "limit_fallback")
 		}
 	}
 }
@@ -310,4 +334,37 @@ func isLotSizeError(err error) bool {
 		}
 	}
 	return false
+}
+
+// isInsufficientBalanceError returns true for exchange errors indicating the
+// account does not have enough of the base asset to fill a SELL order.
+// Binance: code=-2010. OKX: "insufficient balance". Generic fallback.
+func isInsufficientBalanceError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, kw := range []string{
+		"insufficient balance", "insufficient funds",
+		"code=-2010", // Binance spot
+		"51008",      // OKX insufficient balance
+	} {
+		if strings.Contains(msg, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// spotBaseAsset extracts the base asset from a spot symbol by stripping common
+// quote assets (USDT, BTC, ETH, BNB, USDC, BUSD, TUSD, FDUSD).
+// "ETHUSDT" → "ETH", "BTCUSDT" → "BTC", "ETHBTC" → "ETH".
+// Returns the full symbol unchanged if no known quote asset suffix is found.
+func spotBaseAsset(symbol string) string {
+	for _, quote := range []string{"USDT", "USDC", "BUSD", "TUSD", "FDUSD", "BTC", "ETH", "BNB"} {
+		if strings.HasSuffix(symbol, quote) && len(symbol) > len(quote) {
+			return symbol[:len(symbol)-len(quote)]
+		}
+	}
+	return symbol
 }

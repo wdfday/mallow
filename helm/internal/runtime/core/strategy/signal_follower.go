@@ -1,5 +1,7 @@
 package strategy
 
+import "fmt"
+
 // SignalFollower is the canonical Strategy for Rhai-script-driven hands.
 // It maps herald's direction signal directly to a trade action, applying only
 // a minimum-strength filter on entries. All execution hints (StopPrice,
@@ -45,6 +47,7 @@ func (s *SignalFollower) Evaluate(sig Signal) Intent {
 	// Weak entry signals are filtered.
 	if sig.Strength < s.minStrength {
 		intent.Action = ActionDoNothing
+		intent.Reason = fmt.Sprintf("strength %.2f below min %.2f", sig.Strength, s.minStrength)
 		return intent
 	}
 
@@ -55,6 +58,7 @@ func (s *SignalFollower) Evaluate(sig Signal) Intent {
 		intent.Action = ActionEnterShort
 	default:
 		intent.Action = ActionDoNothing
+		intent.Reason = fmt.Sprintf("unrecognised direction %q", sig.Direction)
 	}
 
 	switch {

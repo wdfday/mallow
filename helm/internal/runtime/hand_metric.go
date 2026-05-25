@@ -12,16 +12,40 @@ import (
 
 // HandMetrics tracks trading behavior counters.
 type HandMetrics struct {
-	SignalsReceived int64           `json:"signals_received"`
-	SignalsFiltered int64           `json:"signals_filtered"`
-	SignalsDropped  int64           `json:"signals_dropped"` // non-urgent signals lost due to full channel
-	TradesApproved  int64           `json:"trades_approved"`
-	OrdersPlaced    int64           `json:"orders_placed"`
-	OrdersFilled    int64           `json:"orders_filled"`
-	OrdersFailed    int64           `json:"orders_failed"`
-	TotalPnL        decimal.Decimal `json:"total_pnl"`
-	WinCount        int64           `json:"win_count"`
-	LossCount       int64           `json:"loss_count"`
+	SignalsReceived   int64           `json:"signals_received"`
+	SignalsFiltered   int64           `json:"signals_filtered"`
+	SignalsDropped    int64           `json:"signals_dropped"` // non-urgent signals lost due to full channel
+	TradesApproved    int64           `json:"trades_approved"`
+	OrdersPlaced      int64           `json:"orders_placed"`
+	OrdersFilled      int64           `json:"orders_filled"`
+	OrdersFailed      int64           `json:"orders_failed"`
+	TotalPnL          decimal.Decimal `json:"total_pnl"`
+	TotalCommission   decimal.Decimal `json:"total_commission"`
+	WinCount          int64           `json:"win_count"`
+	LossCount         int64           `json:"loss_count"`
+	LatestSignalLagMs int64           `json:"latest_signal_lag_ms"` // end-to-end lag of the last signal processed
+	SignalQueueDepth  int             `json:"signal_queue_depth"`   // pending signals in the hand channel
+}
+
+// MetricsView converts live HandMetrics into the domain DTO.
+// Call this before removing the hand from memory to snapshot its final state.
+func (h *Hand) MetricsView() handdomain.HandMetricsView {
+	m := h.Metrics()
+	return handdomain.HandMetricsView{
+		SignalsReceived:   m.SignalsReceived,
+		SignalsFiltered:   m.SignalsFiltered,
+		SignalsDropped:    m.SignalsDropped,
+		TradesApproved:    m.TradesApproved,
+		OrdersPlaced:      m.OrdersPlaced,
+		OrdersFilled:      m.OrdersFilled,
+		OrdersFailed:      m.OrdersFailed,
+		TotalPnL:          m.TotalPnL,
+		TotalCommission:   m.TotalCommission,
+		WinCount:          m.WinCount,
+		LossCount:         m.LossCount,
+		LatestSignalLagMs: m.LatestSignalLagMs,
+		SignalQueueDepth:  m.SignalQueueDepth,
+	}
 }
 
 // ── HandRef ───────────────────────────────────────────────────────────────────
@@ -58,15 +82,19 @@ func (b *HandRef) Summary() handdomain.HandSummary {
 	}
 
 	mv := handdomain.HandMetricsView{
-		SignalsReceived: m.SignalsReceived,
-		SignalsFiltered: m.SignalsFiltered,
-		TradesApproved:  m.TradesApproved,
-		OrdersPlaced:    m.OrdersPlaced,
-		OrdersFilled:    m.OrdersFilled,
-		OrdersFailed:    m.OrdersFailed,
-		TotalPnL:        m.TotalPnL,
-		WinCount:        m.WinCount,
-		LossCount:       m.LossCount,
+		SignalsReceived:   m.SignalsReceived,
+		SignalsFiltered:   m.SignalsFiltered,
+		SignalsDropped:    m.SignalsDropped,
+		TradesApproved:    m.TradesApproved,
+		OrdersPlaced:      m.OrdersPlaced,
+		OrdersFilled:      m.OrdersFilled,
+		OrdersFailed:      m.OrdersFailed,
+		TotalPnL:          m.TotalPnL,
+		TotalCommission:   m.TotalCommission,
+		WinCount:          m.WinCount,
+		LossCount:         m.LossCount,
+		LatestSignalLagMs: m.LatestSignalLagMs,
+		SignalQueueDepth:  m.SignalQueueDepth,
 	}
 
 	return handdomain.HandSummary{
@@ -86,8 +114,9 @@ func (b *HandRef) Summary() handdomain.HandSummary {
 		Metrics:          mv,
 		Futures:          b.Data.Futures,
 		CreatedAt:        b.Data.CreatedAt,
-		DeployedCapital:  b.Runner.DeployedCapital(),
 		AllocatedCapital: b.Data.AllocatedCapital,
+		DeployedCapital:  b.Runner.DeployedCapital(),
+		AvailableCash:    b.Runner.AvailableCash(),
 		SignalTTLSec:     b.Data.SignalTTLSec,
 	}
 }

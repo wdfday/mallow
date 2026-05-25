@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/natsapi"
+	"mallow/helm/internal/infra/poslog"
 	"mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/runtime/core/strategy"
 	"mallow/helm/internal/runtime/core/tactics"
@@ -69,6 +71,7 @@ func NewHand(
 		exitLevels:      make(map[string]exitLevel),
 		pos:             position.NewHandPositions(pyramid, maxUnits),
 		pendingOrderPos: make(map[string]string),
+		pendingCancels:  make(map[string]struct{}),
 		health:          HandHealth{Status: "stopped"},
 	}
 }
@@ -167,6 +170,47 @@ func (h *Hand) restorePosition(hp *position.HandPositions, currentPrice decimal.
 		}
 	}
 	h.mu.Unlock()
+}
+
+// RestorePnL rebuilds metrics.totalPnL and related counters from poslog history.
+// Called once on startup after restorePosition so realizedEquity() reflects
+// all completed trades, not just the current open position.
+// events must be the full ReplayHand result for this hand.
+func (h *Hand) RestorePnL(events []poslog.Event) {
+	var totalPnL decimal.Decimal
+	var totalCommission decimal.Decimal
+	var wins, losses int64
+
+	for _, e := range events {
+		if e.Kind != poslog.KindPositionClosed {
+			continue
+		}
+		var p poslog.PositionClosedPayload
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			continue
+		}
+		pnl, _ := decimal.NewFromString(p.RealizedPnL)
+		totalPnL = totalPnL.Add(pnl)
+		if pnl.IsPositive() {
+			wins++
+		} else if pnl.IsNegative() {
+			losses++
+		}
+	}
+
+	h.metrics.mu.Lock()
+	h.metrics.totalPnL = totalPnL
+	h.metrics.totalCommission = totalCommission
+	h.metrics.winCount = wins
+	h.metrics.lossCount = losses
+	h.metrics.mu.Unlock()
+
+	slog.Info("hand: PnL restored from poslog",
+		"hand_id", h.id,
+		"total_pnl", totalPnL,
+		"wins", wins,
+		"losses", losses,
+	)
 }
 
 // applyFuturesLeverage calls SetLeverage on the exchange if the hand is configured

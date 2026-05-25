@@ -13,6 +13,27 @@ import (
 
 func (s *Service) Get(id uuid.UUID) (*runtime.HandRef, error) { return s.getOrLoad(id) }
 
+// GetSummary returns the HandSummary for any hand, including terminal ones stored only in DB.
+func (s *Service) GetSummary(id uuid.UUID) (*domain.HandSummary, error) {
+	s.mu.RLock()
+	bi, ok := s.hands[id]
+	s.mu.RUnlock()
+	if ok {
+		s := bi.Summary()
+		return &s, nil
+	}
+	// Not in memory — may be a terminal hand; read directly from DB.
+	data, err := s.repo.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	if !data.Status.IsTerminal() {
+		return nil, fmt.Errorf("hand %q not found in runtime", id)
+	}
+	s2 := data.SummaryFromDB()
+	return &s2, nil
+}
+
 func (s *Service) GetHand(id uuid.UUID) *runtime.Hand {
 	bi, err := s.getOrLoad(id)
 	if err != nil {

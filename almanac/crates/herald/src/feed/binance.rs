@@ -5,9 +5,11 @@
 //! - `closed = false` → forming bar (updated on every trade tick)
 //! - `closed = true`  → confirmed bar (emitted once at candle close)
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use alm_core::Timeframe;
+use alm_ledger::Ledger;
 use futures::{SinkExt, StreamExt};
 use metrics::{counter, gauge};
 use serde::Deserialize;
@@ -15,6 +17,7 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, info, warn};
 
 use super::{BarEvent, BarTx, SUBSCRIBE_TFS};
+use super::rest::{gap_fill_symbol, Exchange};
 
 const WS_BASE: &str = "wss://stream.binance.com:9443/stream";
 const RECONNECT: Duration = Duration::from_secs(5);
@@ -22,7 +25,10 @@ const RECONNECT: Duration = Duration::from_secs(5);
 /// Spawn a task that streams klines for `symbols` across all [`SUBSCRIBE_TFS`].
 /// Sends [`BarEvent`]s to `tx`. Reconnects automatically on disconnect.
 /// Task exits when `tx` is dropped (receiver gone).
-pub fn spawn(symbols: Vec<String>, tx: BarTx) {
+/// Spawn a task that streams klines for `symbols` across all [`SUBSCRIBE_TFS`].
+/// Sends [`BarEvent`]s to `tx`. Reconnects automatically on disconnect.
+/// On each reconnect, runs a REST gap-fill to bridge the missed bars.
+pub fn spawn(symbols: Vec<String>, tx: BarTx, ledger: Arc<Ledger>, tf: Timeframe) {
     if symbols.is_empty() {
         return;
     }
@@ -48,6 +54,19 @@ pub fn spawn(symbols: Vec<String>, tx: BarTx) {
         loop {
             if !first {
                 counter!("herald_feed_reconnects_total", "source" => "binance").increment(1);
+                // Bridge the gap caused by the disconnect before resuming WS.
+                info!(symbols = symbols.len(), "binance: reconnect gap-fill");
+                let tasks: Vec<_> = symbols.iter().map(|sym| {
+                    let live_sym = format!("binance:{}", sym.to_uppercase());
+                    let last_ts = ledger.with_state(&live_sym, tf, |s| s.last_ts).flatten();
+                    let base_from_ms = last_ts.map(|ts| ts + tf.duration_ms());
+                    let ledger = ledger.clone();
+                    let sym = sym.clone();
+                    async move {
+                        gap_fill_symbol(&ledger, tf, &format!("binance:{}", sym.to_uppercase()), &sym, Exchange::Binance, base_from_ms, SUBSCRIBE_TFS).await;
+                    }
+                }).collect();
+                futures::future::join_all(tasks).await;
             }
             first = false;
             match run_once(&url, &tx).await {

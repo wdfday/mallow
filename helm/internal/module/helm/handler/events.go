@@ -11,6 +11,7 @@ import (
 
 	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/shared"
+	pkgmw "mallow/pkg/middleware"
 )
 
 // events godoc
@@ -27,6 +28,16 @@ func (h *Handler) events(c *gin.Context) {
 	helmID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		shared.RespondWithError(c, http.StatusBadRequest, "invalid id")
+		return
+	}
+
+	userID, err := uuid.Parse(pkgmw.UserID(c))
+	if err != nil {
+		shared.RespondWithError(c, http.StatusUnauthorized, "invalid user")
+		return
+	}
+	if err := h.svc.CheckOwner(helmID, userID); err != nil {
+		shared.RespondWithError(c, http.StatusNotFound, "not found")
 		return
 	}
 

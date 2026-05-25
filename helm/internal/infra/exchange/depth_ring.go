@@ -11,15 +11,12 @@ import (
 // (h & depthRingMask) instead of modulo (h % cap), avoiding a division
 // instruction on every read/write.
 //
-// Why 512: at @depth5@100ms each update arrives every 100ms.
+// Why 16: at @depth5@100ms each update arrives every 100ms.
 //
-//	512 entries ≈ 51 seconds of history.
-//
-// That is more than enough to warm up any indicator (RSI-14 needs 14,
-// MACD needs 26, Bollinger 20, etc.). 256 would also work; 512 costs
-// ~180 KB of stack-allocated array (512 × ~360 B per L2Snapshot) which
-// is negligible — so we round up for safety.
-const depthRingCap = 512
+//	16 entries ≈ 1.6 seconds of history — enough to see the last few
+//	book states for spread/slippage estimation without wasting memory.
+//	Must be a power of two for the bitmask wrap to work.
+const depthRingCap = 16
 const depthRingMask = depthRingCap - 1
 
 // DepthRing is a fixed-capacity ring buffer of L2Snapshot.

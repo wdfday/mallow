@@ -18,7 +18,7 @@ run:
 # Hot-reload with air
 dev:
     NATS_URL=nats://gateway:${NATS_PASS_GATEWAY:-gateway-dev}@localhost:4222 \
-    ~/.go/bin/air
+    ~/go/bin/air
 
 # Run tests
 test:

@@ -41,8 +41,37 @@ type Hand struct {
 	// "cancel" = do nothing. "market" = re-place as market order.
 	LimitFallback LimitFallback
 
+	// FinalMetrics is populated on Kill/Release and persisted to DB.
+	// Nil for active hands; non-nil for terminal hands (killed/released).
+	FinalMetrics *HandMetricsView
+
 	CreatedAt time.Time
 	UpdatedAt time.Time
+}
+
+// SummaryFromDB builds a HandSummary from the domain entity alone (no runner).
+// Used for terminal hands that are no longer in memory.
+func (h *Hand) SummaryFromDB() HandSummary {
+	var metrics HandMetricsView
+	if h.FinalMetrics != nil {
+		metrics = *h.FinalMetrics
+	}
+	return HandSummary{
+		ID:               h.ID,
+		Name:             h.Name,
+		Type:             h.Type,
+		Market:           h.Market,
+		HelmID:           h.HelmID,
+		Strategy:         h.Strategy,
+		Position:         h.Position,
+		Risk:             h.Risk,
+		Symbols:          []string(h.Symbols),
+		Status:           h.Status,
+		Running:          false,
+		AllocatedCapital: h.AllocatedCapital,
+		Metrics:          metrics,
+		CreatedAt:        h.CreatedAt,
+	}
 }
 
 // ApplyConfig copies mutable config fields from a HandConfig onto the hand.

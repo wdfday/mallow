@@ -152,6 +152,7 @@ func newBinanceHand(env *binanceTestEnv) *runtime.Hand {
 	hand := runtime.NewHand(uuid.New(), env.rt.HelmID, env.rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandRiskConfig{}, decimal.Zero)
 	hand.Symbol = "BTCUSDT"
 	hand.StrategyName = "signal_follower"
+	hand.EnableEventSink()
 	return hand
 }
 
@@ -247,10 +248,6 @@ func TestBinance_AbsoluteSLTP(t *testing.T) {
 			t.Fatalf("entry order failed: %s", e.Reason)
 		}
 	case <-time.After(20 * time.Second):
-		for _, e := range hand.Activity() {
-			t.Logf("activity: code=%d symbol=%s direction=%s reason=%q order_id=%s",
-				e.Code, e.Symbol, e.Direction, e.Reason, e.OrderID)
-		}
 		t.Fatal("timeout: entry order not placed within 20s")
 	}
 
@@ -381,6 +378,7 @@ func TestBinance_PyramidAndKill(t *testing.T) {
 	)
 	hand.Symbol = symbol
 	hand.StrategyName = "signal_follower"
+	hand.EnableEventSink()
 
 	hand.Start()
 	defer func() {

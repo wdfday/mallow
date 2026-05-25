@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/infra/poslog"
@@ -34,6 +36,13 @@ func (h *Hand) cancelExitOrders(_ context.Context, symbol string, skipOrderID st
 	if len(ids) == 0 {
 		return
 	}
+	// Mark as helm-initiated cancels BEFORE launching goroutine.
+	// When OrderEventCanceled arrives for these IDs, the handler checks
+	// pendingCancels to distinguish helm-side cleanup from external closes.
+	// Caller holds h.mu so this write is safe.
+	for _, id := range ids {
+		h.pendingCancels[id] = struct{}{}
+	}
 	// Capture hand context under existing lock (caller already holds h.mu).
 	handCtx := h.ctx
 	go func() {
@@ -41,9 +50,9 @@ func (h *Hand) cancelExitOrders(_ context.Context, symbol string, skipOrderID st
 		defer cancel()
 		for _, id := range ids {
 			if err := h.helmRuntime.Exchange.CancelOrder(cancelCtx, h.helmRuntime.Creds, id); err != nil {
-				slog.Warn("bot: cancel exit order failed", "hand_id", h.id, "symbol", symbol, "order_id", id, "err", err)
+				slog.Warn("hand: cancel exit order failed", "hand_id", h.id, "symbol", symbol, "order_id", id, "err", err)
 			} else {
-				slog.Info("bot: exit order cancelled", "hand_id", h.id, "symbol", symbol, "order_id", id)
+				slog.Info("hand: exit order cancelled", "hand_id", h.id, "symbol", symbol, "order_id", id)
 			}
 		}
 	}()
@@ -54,9 +63,9 @@ func (h *Hand) cancelExitOrders(_ context.Context, symbol string, skipOrderID st
 func (h *Hand) flattenPositions(ctx context.Context) {
 	for _, leg := range h.pos.ActiveLegs() {
 		if leg.Phase == position.PhaseEntering {
-			slog.Info("bot: kill flattening pending entry order", "hand_id", h.id, "symbol", leg.Symbol, "order_id", leg.PendingOrderID)
+			slog.Info("hand: kill flattening pending entry order", "hand_id", h.id, "symbol", leg.Symbol, "order_id", leg.PendingOrderID)
 			if err := h.helmRuntime.Exchange.CancelOrder(ctx, h.helmRuntime.Creds, leg.PendingOrderID); err != nil {
-				slog.Error("bot: kill cancel pending entry order failed", "hand_id", h.id, "symbol", leg.Symbol, "order_id", leg.PendingOrderID, "err", err)
+				slog.Error("hand: kill cancel pending entry order failed", "hand_id", h.id, "symbol", leg.Symbol, "order_id", leg.PendingOrderID, "err", err)
 			}
 
 			payload, _ := json.Marshal(poslog.OrderCancelledPayload{
@@ -76,9 +85,9 @@ func (h *Hand) flattenPositions(ctx context.Context) {
 		}
 
 		if leg.Phase == position.PhaseAdding {
-			slog.Info("bot: kill flattening pending add order", "hand_id", h.id, "symbol", leg.Symbol, "order_id", leg.PendingOrderID)
+			slog.Info("hand: kill flattening pending add order", "hand_id", h.id, "symbol", leg.Symbol, "order_id", leg.PendingOrderID)
 			if err := h.helmRuntime.Exchange.CancelOrder(ctx, h.helmRuntime.Creds, leg.PendingOrderID); err != nil {
-				slog.Error("bot: kill cancel pending add order failed", "hand_id", h.id, "symbol", leg.Symbol, "order_id", leg.PendingOrderID, "err", err)
+				slog.Error("hand: kill cancel pending add order failed", "hand_id", h.id, "symbol", leg.Symbol, "order_id", leg.PendingOrderID, "err", err)
 			}
 
 			payload, _ := json.Marshal(poslog.OrderCancelledPayload{
@@ -110,10 +119,10 @@ func (h *Hand) flattenPositions(ctx context.Context) {
 			Qty:    qty,
 		})
 		if err != nil {
-			slog.Error("bot: kill flatten failed", "hand_id", h.id, "symbol", leg.Symbol, "err", err)
+			slog.Error("hand: kill flatten failed", "hand_id", h.id, "symbol", leg.Symbol, "err", err)
 			continue
 		}
-		slog.Info("bot: kill flatten order placed", "hand_id", h.id, "symbol", leg.Symbol,
+		slog.Info("hand: kill flatten order placed", "hand_id", h.id, "symbol", leg.Symbol,
 			"side", closeSide, "qty", qty, "order_id", result.ID)
 		h.metrics.ordersPlaced.Add(1)
 
@@ -165,9 +174,110 @@ func (h *Hand) flattenPositions(ctx context.Context) {
 			h.mu.Lock()
 			h.seenFills[result.ID] = struct{}{}
 			h.mu.Unlock()
-			h.applyFill(ctx, result.ID, leg.Symbol, closeSideStr, result.FilledQty, result.FilledAvg, "kill")
+			h.applyFill(ctx, result.ID, leg.Symbol, closeSideStr, result.FilledQty, result.FilledAvg, decimal.Zero, "kill")
 		}
 	}
+}
+
+// HandleExitOrderCanceled is called when the exchange fires OrderEventCanceled for
+// a bracket/OCO order ID that was tracked by this hand.
+//
+// Two cases:
+//  1. Helm-initiated cancel (cancelExitOrders marked the ID in pendingCancels):
+//     → normal OCO sibling cleanup; just clear pendingCancels entry and return.
+//  2. External cancel (ID not in pendingCancels):
+//     → user closed the position manually at the exchange; the bracket order was
+//     cancelled by Binance as a side-effect. Emit KindPositionClosed so the leg
+//     is cleared from poslog + in-memory state immediately, without waiting for restart.
+func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
+	h.mu.Lock()
+	// Case 1: helm-initiated — normal cleanup.
+	if _, helmCancelled := h.pendingCancels[orderID]; helmCancelled {
+		delete(h.pendingCancels, orderID)
+		h.mu.Unlock()
+		return
+	}
+	// Case 2: external cancel — find the leg that owns this order ID.
+	var affectedLeg *position.LegState
+	var affectedSymbol string
+	for sym, lv := range h.exitLevels {
+		for _, id := range lv.ExchangeOrderIDs {
+			if id == orderID {
+				affectedSymbol = sym
+				break
+			}
+		}
+		if affectedSymbol != "" {
+			break
+		}
+	}
+	// Also search active legs for the matching symbol.
+	if affectedSymbol != "" {
+		for _, leg := range h.pos.ActiveLegs() {
+			if leg.Symbol == affectedSymbol {
+				affectedLeg = leg
+				break
+			}
+		}
+	}
+	h.mu.Unlock()
+
+	if affectedLeg == nil {
+		// Order ID not associated with any active leg — ignore.
+		return
+	}
+
+	slog.Warn("hand: external position close detected via bracket order cancel",
+		"hand_id", h.id,
+		"symbol", affectedSymbol,
+		"order_id", orderID,
+		"position_id", affectedLeg.PositionID,
+	)
+	h.emitEvent(natsapi.HelmEvent{
+		Code:   CodePositionExtClosed,
+		Symbol: affectedSymbol,
+		Reason: fmt.Sprintf("bracket order %s cancelled by exchange (not helm-initiated)", orderID),
+		Msg:    "hand: position externally closed — user manual exit detected",
+	})
+
+	now := time.Now().UTC()
+	cp := poslog.PositionClosedPayload{
+		OrderID:     affectedLeg.PositionID,
+		Symbol:      affectedLeg.Symbol,
+		Side:        affectedLeg.Side,
+		Qty:         affectedLeg.Qty.Abs().String(),
+		EntryPrice:  affectedLeg.EntryPrice.String(),
+		EntryAt:     affectedLeg.OpenedAt,
+		ClosePrice:  decimal.Zero.String(), // unknown — user exited at unknown price
+		RealizedPnL: decimal.Zero.String(),
+		Source:      "external",
+	}
+	payload, _ := json.Marshal(cp)
+
+	// Emit KindPositionClosed so the leg is cleared from poslog + in-memory state.
+	// Deterministic dedup ID — safe to replay on restart.
+	h.publishAndApply(ctx, poslog.Event{
+		ID:         h.id.String() + "_extcancel_" + affectedLeg.PositionID,
+		HandID:     h.id.String(),
+		HelmID:     h.helmID.String(),
+		PositionID: affectedLeg.PositionID,
+		Kind:       poslog.KindPositionClosed,
+		Payload:    payload,
+		At:         now,
+	})
+
+	// Remove from shared portfolio. We don't call ReportFill (which adjusts cash)
+	// because the exit price is unknown — just drop the position from the aggregate view.
+	// Cash accuracy will be restored on the next Sync() from the exchange account.
+	h.helmRuntime.Portfolio.RemovePosition(affectedSymbol)
+
+	// Write trade record with price=0 so trade history reflects the event.
+	h.appendTradeRecord(ctx, cp, decimal.Zero, now)
+
+	// Clear local exit level tracking for this symbol.
+	h.mu.Lock()
+	delete(h.exitLevels, affectedSymbol)
+	h.mu.Unlock()
 }
 
 // releasePositions emits KindPositionOrphaned for every open leg and clears local
@@ -236,7 +346,7 @@ func (h *Hand) checkExits() {
 
 		// Guard against external close desync: if the portfolio no longer holds
 		// this symbol but exitLevels still has an entry, the position was closed
-		// outside the bot (manual trade or another hand). Firing a close order
+		// outside the hand (manual trade or another hand). Firing a close order
 		// against a flat position would open a reverse position on futures margin.
 		// Clean up the stale level and pause the hand so a human can review.
 		if pos := h.helmRuntime.Portfolio.GetPosition(sym); pos == nil {
@@ -245,18 +355,11 @@ func (h *Hand) checkExits() {
 			h.mu.Unlock()
 			slog.Warn("exit monitor: portfolio flat but exitLevels present — external close detected, pausing hand",
 				"hand_id", h.id, "symbol", sym)
-			h.helmRuntime.EmitEvent(natsapi.HelmEvent{
-				HandID: h.id.String(),
+			h.emitEvent(natsapi.HelmEvent{
 				Code:   CodeHandAutoPaused,
 				Symbol: sym,
 				Reason: "external close detected: portfolio flat but local exit level present",
 				Msg:    "hand: auto-paused due to position desync",
-			})
-			h.activityLog.push(ActivityEntry{
-				At:     time.Now(),
-				Code:   CodeHandAutoPaused,
-				Symbol: sym,
-				Reason: "external close detected: portfolio flat but local exit level present",
 			})
 			h.Pause()
 			continue
@@ -266,21 +369,13 @@ func (h *Hand) checkExits() {
 			"reason", reason, "price", price,
 			"stop_loss", el.StopLoss, "take_profit", el.TakeProfit)
 
-		h.helmRuntime.EmitEvent(natsapi.HelmEvent{
-			HandID:    h.id.String(),
+		h.emitEvent(natsapi.HelmEvent{
 			Code:      CodeOrderExitTriggered,
 			Symbol:    sym,
 			Direction: string(strategy.DirExit),
 			Price:     price,
 			Reason:    fmt.Sprintf("exit monitor %s triggered (SL: %s, TP: %s)", reason, el.StopLoss, el.TakeProfit),
 			Msg:       "order: local exit trigger activated",
-		})
-		h.activityLog.push(ActivityEntry{
-			At:        time.Now(),
-			Code:      CodeOrderExitTriggered,
-			Symbol:    sym,
-			Direction: string(strategy.DirExit),
-			Reason:    fmt.Sprintf("exit monitor %s triggered at price %s (SL: %s, TP: %s)", reason, price, el.StopLoss, el.TakeProfit),
 		})
 
 		// Delete exitLevels only after signal is successfully enqueued.
@@ -293,5 +388,142 @@ func (h *Hand) checkExits() {
 		default:
 			slog.Warn("exit monitor: urgent channel full, will retry next tick", "hand_id", h.id, "symbol", sym)
 		}
+	}
+}
+
+// checkBracketOrders polls the exchange status of active OCO/bracket order IDs
+// stored in exitLevels. Called every pollTicker tick (5s) alongside checkExits.
+//
+// If a bracket order is no longer active (cancelled/filled) at the exchange and
+// helm did not initiate the cancel (not in pendingCancels), the position was
+// externally closed — user manual exit or exchange-side close. This covers the
+// gap where the WS OrderEventCanceled is missed (restart, brief disconnect, etc.).
+func (h *Hand) checkBracketOrders(ctx context.Context) {
+	h.mu.RLock()
+	type check struct {
+		symbol string
+		id     string
+	}
+	var checks []check
+	for sym, lv := range h.exitLevels {
+		if len(lv.ExchangeOrderIDs) == 0 {
+			continue
+		}
+		// Skip IDs already marked as helm-initiated cancels.
+		for _, id := range lv.ExchangeOrderIDs {
+			if _, pending := h.pendingCancels[id]; !pending {
+				checks = append(checks, check{symbol: sym, id: id})
+				break // one ID per symbol is enough
+			}
+		}
+	}
+	h.mu.RUnlock()
+
+	for _, c := range checks {
+		result, err := h.helmRuntime.Exchange.GetOrder(ctx, h.helmRuntime.Creds, c.id)
+		if err != nil {
+			slog.Debug("checkBracketOrders: GetOrder failed (transient?)",
+				"hand_id", h.id, "symbol", c.symbol, "order_id", c.id, "err", err)
+			continue
+		}
+		switch result.Status {
+		case "canceled", "cancelled", "expired", "rejected":
+			slog.Info("checkBracketOrders: bracket order cancelled externally — position likely closed",
+				"hand_id", h.id, "symbol", c.symbol, "order_id", c.id, "status", result.Status)
+			h.HandleExitOrderCanceled(ctx, c.id)
+		}
+		// "filled" = exchange-side SL/TP triggered; fill event arrives via WS/poll.
+	}
+}
+
+// checkPositionDesync is a fallback detector for the no-bracket case (no SL/TP placed at
+// exchange). It compares each active poslog leg's qty against the shared Portfolio, which is
+// authoritative-overwritten by Sync() every SYNC_INTERVAL from the exchange REST API.
+//
+// If Portfolio.Qty < leg.Qty (exchange holds less than the hand thinks), the position was
+// partially or fully closed externally — user manual exit, margin call, exchange liquidation.
+// In all such cases the leg is buried: KindPositionClosed is emitted and the leg is cleared.
+// Partial-close granularity is intentionally not tracked (too complex, unknown fill price);
+// the whole leg is treated as gone.
+//
+// Limitations:
+//   - Detection latency = SYNC_INTERVAL (default 5 min) after Sync() overwrites Portfolio.
+//   - Multi-hand same-symbol: Portfolio qty is aggregate across all hands under this helm.
+//     A false-positive can fire if another hand's entry fill arrives between Sync ticks.
+//     This is the known "multi-hand same-symbol" gap (tracked in BUGS_AND_EDGE_CASES.md).
+//   - Legs in PhaseEntering / PhaseAdding / PhaseExiting are skipped to avoid triggering
+//     on normal order lifecycle races.
+func (h *Hand) checkPositionDesync(ctx context.Context) {
+	h.mu.RLock()
+	legs := h.pos.ActiveLegs()
+	h.mu.RUnlock()
+
+	for _, leg := range legs {
+		// Only check fully-open legs — pending orders are fine.
+		if leg.Phase != position.PhaseOpen {
+			continue
+		}
+		legQty := leg.Qty.Abs()
+		pos := h.helmRuntime.Portfolio.GetPosition(leg.Symbol)
+		exchangeQty := decimal.Zero
+		if pos != nil {
+			exchangeQty = pos.Qty.Abs()
+		}
+		// Portfolio holds at least as much as the leg → no desync.
+		if exchangeQty.GreaterThanOrEqual(legQty) {
+			continue
+		}
+		// Check if the shortfall is just known dust from a truncated exit order.
+		// e.g. leg=0.0944055, sold=0.0944, dust=0.0000055 → exchange shows 0.0000055 → skip.
+		shortfall := legQty.Sub(exchangeQty)
+		if dust := h.helmRuntime.GetDust(leg.Symbol); shortfall.LessThanOrEqual(dust) {
+			slog.Debug("checkPositionDesync: shortfall within known dust — skipping",
+				"hand_id", h.id, "symbol", leg.Symbol,
+				"shortfall", shortfall, "dust", dust,
+			)
+			continue
+		}
+		// Exchange holds less than the leg (beyond known dust) → external close detected.
+		slog.Warn("checkPositionDesync: portfolio qty < leg qty — external close suspected",
+			"hand_id", h.id, "symbol", leg.Symbol, "position_id", leg.PositionID,
+			"leg_qty", legQty, "exchange_qty", exchangeQty,
+		)
+		h.emitEvent(natsapi.HelmEvent{
+			Code:   CodePositionExtClosed,
+			Symbol: leg.Symbol,
+			Reason: fmt.Sprintf("exchange qty %s < leg qty %s after sync — external close suspected", exchangeQty, legQty),
+			Msg:    "hand: position externally closed — detected via portfolio desync",
+		})
+
+		now := time.Now().UTC()
+		cp := poslog.PositionClosedPayload{
+			OrderID:     leg.PositionID,
+			Symbol:      leg.Symbol,
+			Side:        leg.Side,
+			Qty:         leg.Qty.Abs().String(),
+			EntryPrice:  leg.EntryPrice.String(),
+			EntryAt:     leg.OpenedAt,
+			ClosePrice:  decimal.Zero.String(), // unknown — synced price not available per-fill
+			RealizedPnL: decimal.Zero.String(),
+			Source:      "external",
+		}
+		payload, _ := json.Marshal(cp)
+		h.publishAndApply(ctx, poslog.Event{
+			ID:         h.id.String() + "_desync_" + leg.PositionID,
+			HandID:     h.id.String(),
+			HelmID:     h.helmID.String(),
+			PositionID: leg.PositionID,
+			Kind:       poslog.KindPositionClosed,
+			Payload:    payload,
+			At:         now,
+		})
+		// Portfolio already updated by Sync() — no need to call RemovePosition.
+		// If partial close, portfolio still has exchangeQty; removing is wrong.
+		// Let the next Sync() or WS fill settle the remainder.
+		h.appendTradeRecord(ctx, cp, decimal.Zero, now)
+
+		h.mu.Lock()
+		delete(h.exitLevels, leg.Symbol)
+		h.mu.Unlock()
 	}
 }

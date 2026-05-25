@@ -131,6 +131,7 @@ func Migrate(db *gorm.DB) error {
 		`UPDATE hands
 			SET position = position - 'order_type' - 'limit_timeout_sec' - 'limit_fallback'
 			WHERE position ? 'order_type' OR position ? 'limit_timeout_sec' OR position ? 'limit_fallback'`,
+		`ALTER TABLE hands ADD COLUMN IF NOT EXISTS final_metrics JSONB`,
 	}
 	for _, s := range stmts {
 		if err := db.Exec(s).Error; err != nil {

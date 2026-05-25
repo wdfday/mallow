@@ -8,10 +8,11 @@ import (
 
 // HandSummary is a lightweight snapshot of a hand for logging and monitoring.
 type HandSummary struct {
-	ID      string
-	Symbol  string
-	Status  string
-	Metrics HandMetrics
+	ID           string
+	Symbol       string
+	Status       string
+	StrategyName string
+	Metrics      HandMetrics
 }
 
 // AddHand registers a hand with this runtime.
@@ -59,10 +60,11 @@ func (r *HelmRuntime) HandSummaries() []HandSummary {
 	out := make([]HandSummary, 0, len(r.hands))
 	for _, h := range r.hands {
 		out = append(out, HandSummary{
-			ID:      h.id.String(),
-			Symbol:  h.Symbol,
-			Status:  h.Health().Status,
-			Metrics: h.Metrics(),
+			ID:           h.id.String(),
+			Symbol:       h.Symbol,
+			Status:       h.Health().Status,
+			StrategyName: h.StrategyName,
+			Metrics:      h.Metrics(),
 		})
 	}
 	return out

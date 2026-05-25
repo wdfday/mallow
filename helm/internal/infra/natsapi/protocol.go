@@ -75,6 +75,9 @@ const (
 	SubjOrchPositions = "helm.helms.positions"
 	SubjOrchTrades    = "helm.helms.trades"
 	SubjOrchOrders    = "helm.helms.orders"
+	// SubjOrchStats returns a live stats snapshot of all runtimes + hands.
+	// No caller_user_id required (aggregate view, no per-user filtering).
+	SubjOrchStats = "helm.helms.stats"
 
 	// Account lifecycle events (published by helm broker module).
 	SubjAccountLinked   = "helm.accounts.linked"   // triggers auto-create helm
@@ -239,18 +242,23 @@ func PublishPortfolioSync(js nats.JetStreamContext, orchID, accountID, userID st
 // lifecycle event. Clients subscribe to this subject for a real-time activity feed.
 // HandID is empty for helm-level events (pause, resume, sync, …).
 type HelmEvent struct {
-	HelmID    string          `json:"helm_id"`
-	HandID    string          `json:"hand_id,omitempty"`
-	At        time.Time       `json:"at"`
-	Code      int             `json:"code"`
-	Symbol    string          `json:"symbol,omitempty"`
-	Direction string          `json:"direction,omitempty"`
-	Side      string          `json:"side,omitempty"`
-	Qty       decimal.Decimal `json:"qty,omitzero"`
-	Price     decimal.Decimal `json:"price,omitzero"`
-	OrderID   string          `json:"order_id,omitempty"`
-	Reason    string          `json:"reason,omitempty"`
-	Msg       string          `json:"msg"`
+	HelmID          string          `json:"helm_id"`
+	HandID          string          `json:"hand_id,omitempty"`
+	UserID          string          `json:"user_id,omitempty"` // populated by EmitEvent; used by eventlog persister
+	At              time.Time       `json:"at"`
+	Code            int             `json:"code"`
+	Symbol          string          `json:"symbol,omitempty"`
+	Direction       string          `json:"direction,omitempty"`
+	Side            string          `json:"side,omitempty"`
+	Qty             decimal.Decimal `json:"qty,omitzero"`
+	Price           decimal.Decimal `json:"price,omitzero"`
+	OrderID         string          `json:"order_id,omitempty"`
+	Reason          string          `json:"reason,omitempty"`
+	Msg             string          `json:"msg"`
+	PnL             decimal.Decimal `json:"pnl,omitzero"`
+	AvailableCash   decimal.Decimal `json:"available_cash,omitzero"`
+	DeployedCapital decimal.Decimal `json:"deployed_capital,omitzero"`
+	Equity          decimal.Decimal `json:"equity,omitzero"`
 }
 
 // PublishHelmEvent publishes a HelmEvent to the HELM_EVENTS JetStream stream
@@ -260,8 +268,10 @@ func PublishHelmEvent(js nats.JetStreamContext, helmID string, ev HelmEvent) {
 	subj := fmt.Sprintf(SubjHelmEvents, helmID)
 	msg := nats.NewMsg(subj)
 	msg.Data = data
-	// Dedup key: helm + code + ts-ms so burst retries within 1 min don't duplicate.
-	msg.Header.Set(nats.MsgIdHdr, fmt.Sprintf("%s-%d-%d", helmID, ev.Code, ev.At.UnixMilli()))
+	// Dedup key: helm + hand (empty string for helm-level events) + code + ts-ms.
+	// hand_id is included so two hands under the same helm emitting the same code
+	// at the same millisecond are NOT deduplicated by JetStream.
+	msg.Header.Set(nats.MsgIdHdr, fmt.Sprintf("%s-%s-%d-%d", helmID, ev.HandID, ev.Code, ev.At.UnixMilli()))
 	if _, err := js.PublishMsg(msg); err != nil {
 		slog.Warn("helm event: jetstream publish failed", "helm_id", helmID, "code", ev.Code, "err", err)
 	}

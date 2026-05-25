@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/shopspring/decimal"
+
 	"mallow/helm/internal/infra/exchange"
 )
 
@@ -55,6 +57,16 @@ func (c *Client) GetAccount(ctx context.Context, creds exchange.Credentials) (*A
 		AccountType: acct.AccountType,
 		Balances:    balances,
 	}, nil
+}
+
+// GetFreeBalance implements exchange.SpotBalanceFetcher.
+// Returns the free (available) balance of the given asset.
+func (c *Client) GetFreeBalance(ctx context.Context, creds exchange.Credentials, asset string) (decimal.Decimal, error) {
+	b, err := c.GetBalance(ctx, creds, asset)
+	if err != nil {
+		return decimal.Zero, err
+	}
+	return decimal.NewFromFloat(b.Free), nil
 }
 
 // GetBalance returns the balance for a specific asset.

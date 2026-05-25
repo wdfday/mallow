@@ -381,6 +381,60 @@ func TestReconcile_ExitingPhase_OrderStillOpen(t *testing.T) {
 	}
 }
 
+// Scenario 10: entry order partially_filled (not in open-orders batch but GetOrder returns
+// "partially_filled") → ReconcileRestored; order restored into hand.orders for pollOrders.
+func TestReconcile_PartiallyFilledOrder_Restored(t *testing.T) {
+	const orderID = "ord1"
+	log := &fakePosLog{
+		events: []poslog.Event{recPlaced(orderID, orderID, "BTCUSDT", "buy", false)},
+	}
+	// Not in openOrders (missed by batch fetch), but GetOrder says partially_filled.
+	ex := &fakeExchange{
+		openOrders: map[string]exchange.OrderResult{}, // empty batch fetch
+		positions:  map[string]exchange.PositionResult{},
+		orderByID: map[string]exchange.OrderResult{
+			orderID: {
+				ID:        orderID,
+				Status:    "partially_filled",
+				Symbol:    "BTCUSDT",
+				FilledQty: decimal.NewFromFloat(0.05),
+				FilledAvg: decimal.NewFromFloat(30100),
+			},
+		},
+	}
+	rt := buildRuntime(ex, log)
+	hand := addHand(rt, false, 1)
+
+	results := runtime.NewReconciler(log).Reconcile(context.Background(), rt)
+
+	if len(results) != 1 {
+		t.Fatalf("want 1 result, got %d", len(results))
+	}
+	if results[0].Action != runtime.ReconcileRestored {
+		t.Fatalf("want ReconcileRestored, got %s", results[0].Action)
+	}
+	// No poslog events should be emitted for a still-open order.
+	if ids := log.publishedIDs(); len(ids) != 0 {
+		t.Fatalf("want no published events, got %v", ids)
+	}
+	// Order should be tracked in the helm orderHandMap for future WS routing.
+	if !rt.HasOrderTracking(orderID) {
+		t.Error("expected order to be tracked in orderHandMap after partial-fill restore")
+	}
+	// Order should be in hand.orders so pollOrders can keep watching it.
+	orders := hand.Orders()
+	found := false
+	for _, o := range orders {
+		if o.ID == orderID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected order to be in hand.orders after partial-fill restore")
+	}
+}
+
 // Scenario 9: close order was filled while app was down → emit order_filled.
 func TestReconcile_ExitingPhase_CloseFilled(t *testing.T) {
 	log := &fakePosLog{

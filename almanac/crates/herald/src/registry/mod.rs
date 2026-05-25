@@ -395,14 +395,20 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
             "symbol" => symbol.to_string(),
         ).increment(emitted.len() as u64);
 
-        for (hand_id, helm_id, signal) in emitted {
+        // Signal timestamp = bar close time (t0 + tf_duration), not bar open.
+        // Signals are evaluated after a bar closes, so the logical event time
+        // is the close of the candle, not its open.
+        // `close_ts` was computed above for the freshness gate — reuse it here.
+        for (hand_id, helm_id, mut signal) in emitted {
+            signal.timestamp = close_ts;
             debug!(
                 hand_id = %hand_id, helm_id = %helm_id,
                 %symbol, direction = ?signal.direction, strength = signal.strength,
+                bar_open_ts = outcome.ts, signal_ts = close_ts,
                 "forwarding signal to publisher"
             );
             let _ = self.signal_tx.send(HandSignal {
-                hand_id, helm_id, bar_ts: outcome.ts, signal,
+                hand_id, helm_id, bar_ts: close_ts, signal,
             });
         }
     }

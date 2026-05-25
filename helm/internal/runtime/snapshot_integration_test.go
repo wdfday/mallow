@@ -110,6 +110,7 @@ func addIntegrationHandEx(rt *runtime.HelmRuntime, symbol string, qty decimal.De
 	)
 	h.Symbol = symbol
 	h.StrategyName = "signal_follower"
+	h.EnableEventSink()
 	rt.AddHand(h)
 	return h
 }
@@ -820,15 +821,9 @@ func TestSnapshotIntegration_Binance_Pyramid(t *testing.T) {
 	}
 }
 
-// countFills returns the number of CodeOrderFilled entries in the hand's activity ring.
+// countFills returns the number of orders filled so far via hand metrics.
 func countFills(hand *runtime.Hand) int {
-	count := 0
-	for _, e := range hand.Activity() {
-		if e.Code == runtime.CodeOrderFilled {
-			count++
-		}
-	}
-	return count
+	return int(hand.Metrics().OrdersFilled)
 }
 
 // ── Binance Pyramid Round-Trip (entry → pyramid entry → exit) ────────────────

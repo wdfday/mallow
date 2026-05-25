@@ -80,6 +80,7 @@ func (r *Registry) ResetHalt(id uuid.UUID) error {
 func (r *Registry) RouteSignal(helmID, handID string, sig Signal) {
 	id, err := uuid.Parse(helmID)
 	if err != nil {
+		r.routeNoHelm.Add(1)
 		slog.Warn("signal route: invalid helm_id", "helm_id", helmID, "hand_id", handID)
 		return
 	}
@@ -87,10 +88,60 @@ func (r *Registry) RouteSignal(helmID, handID string, sig Signal) {
 	helmRuntime := r.helmRuntimes[id]
 	r.mu.RUnlock()
 	if helmRuntime == nil {
+		r.routeNoHelm.Add(1)
 		slog.Warn("signal route: no helm found", "helm_id", helmID, "hand_id", handID)
 		return
 	}
 	if !helmRuntime.DispatchHandSignal(handID, sig) {
+		r.routeNoHand.Add(1)
 		slog.Warn("signal route: hand not found in helm", "helm_id", helmID, "hand_id", handID)
+	}
+}
+
+// DispatchStats is a point-in-time snapshot of registry-level signal routing errors.
+type DispatchStats struct {
+	RouteNoHelm int64 // signals where helm_id was not found (invalid UUID or unknown helm)
+	RouteNoHand int64 // signals where hand_id was not found in the resolved HelmRuntime
+}
+
+// DispatchStats returns a snapshot of routing error counters.
+func (r *Registry) DispatchStats() DispatchStats {
+	return DispatchStats{
+		RouteNoHelm: r.routeNoHelm.Load(),
+		RouteNoHand: r.routeNoHand.Load(),
+	}
+}
+
+// SetDispatcher wires the SignalDispatcher so its NATS-level counters can be
+// exported via NATSStats. Called from the app lifecycle after startup.
+func (r *Registry) SetDispatcher(d *SignalDispatcher) {
+	r.mu.Lock()
+	r.dispatcher = d
+	r.mu.Unlock()
+}
+
+// DispatcherSnapshot is a serializable point-in-time copy of DispatcherMetrics.
+// Uses plain int64 so the struct is safe to copy and return by value.
+type DispatcherSnapshot struct {
+	SignalsTotal      int64 `json:"signals_total"`
+	SignalsMissingID  int64 `json:"signals_missing_id"`
+	SignalsNilPayload int64 `json:"signals_nil_payload"`
+	SignalsDispatched int64 `json:"signals_dispatched"`
+}
+
+// NATSStats returns a snapshot of the NATS-level dispatcher counters.
+// Returns zeros if no dispatcher has been wired yet.
+func (r *Registry) NATSStats() DispatcherSnapshot {
+	r.mu.RLock()
+	d := r.dispatcher
+	r.mu.RUnlock()
+	if d == nil {
+		return DispatcherSnapshot{}
+	}
+	return DispatcherSnapshot{
+		SignalsTotal:      d.Metrics.SignalsTotal.Load(),
+		SignalsMissingID:  d.Metrics.SignalsMissingID.Load(),
+		SignalsNilPayload: d.Metrics.SignalsNilPayload.Load(),
+		SignalsDispatched: d.Metrics.SignalsDispatched.Load(),
 	}
 }

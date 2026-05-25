@@ -21,7 +21,7 @@ func (r *HelmRuntime) Cash() decimal.Decimal {
 //
 //	totalCash − Σ(allocated + cumPnL − deployed)  for each hand
 //
-// Each hand's "logical cash" is its remaining undeployed budget. Summing those
+// 's "logical cash" is its remaining undeployed budget. Summing those
 // and subtracting from total cash gives the portion not spoken-for by any hand.
 // All hands are required to have a positive AllocatedCapital.
 func (r *HelmRuntime) AvailableCash() decimal.Decimal {
@@ -48,9 +48,12 @@ func (r *HelmRuntime) AvailableCash() decimal.Decimal {
 }
 
 // PortfolioSummary returns the portfolio summary with available cash correctly adjusted.
+// OpenPositions is overridden with the true unit count (sum of active legs across all hands)
+// rather than the portfolio's symbol-deduped position map length.
 func (r *HelmRuntime) PortfolioSummary() portfolio.Summary {
 	s := r.Portfolio.Summary()
 	s.AvailableCash = r.AvailableCash()
+	s.OpenPositions = r.OpenUnitCount()
 	return s
 }
 
@@ -65,7 +68,7 @@ func (r *HelmRuntime) Trades() []portfolio.Trade {
 }
 
 // EquityCurve returns the time-series equity log recorded since startup.
-// Each point is a (timestamp, equity) pair snapshotted after every fill.
+// Each point is a (timestamp, equity) pair snapshot after every fill.
 func (r *HelmRuntime) EquityCurve() []portfolio.EquityPoint {
 	return r.Portfolio.EquityCurve()
 }

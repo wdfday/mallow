@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"database/sql"
 	"log/slog"
 
 	"github.com/gin-gonic/gin"
@@ -13,8 +14,10 @@ import (
 	"mallow/helm/internal/config"
 	"mallow/helm/internal/infra"
 	"mallow/helm/internal/infra/engine"
+	"mallow/helm/internal/infra/eventlog"
 	"mallow/helm/internal/infra/perflog"
 	"mallow/helm/internal/infra/poslog"
+	"mallow/helm/internal/infra/tradelog"
 	accountmodule "mallow/helm/internal/module/account"
 	accountHandler "mallow/helm/internal/module/account/handler"
 	accountrepo "mallow/helm/internal/module/account/repository"
@@ -57,6 +60,13 @@ var Module = fx.Options(
 	// Position event log (JetStream-backed; nil-safe when NATS unavailable)
 	fx.Provide(newPosLog),
 
+	// Event log — PostgreSQL-backed persistent activity store
+	fx.Provide(newEventLog),
+	fx.Provide(newEventLogPersister),
+
+	// Trade log — PostgreSQL-backed completed trade records
+	fx.Provide(newTradeLog),
+
 	// Repositories — Postgres required (POSTGRES_URL must be set)
 	fx.Provide(newHelmRepo),
 	fx.Provide(newBotRepo),
@@ -81,9 +91,11 @@ var Module = fx.Options(
 
 	// Lifecycle hooks (order matters)
 	fx.Invoke(runMigrations),
+	fx.Invoke(startEventLogPersister),
 	fx.Invoke(wireHandLifecycle),
 	fx.Invoke(wireSyncStore),
 	fx.Invoke(wirePosLog),
+	fx.Invoke(wireTradeLog),
 	fx.Invoke(hydrateRuntimes), // helm runtimes must be ready before hands are hydrated
 	fx.Invoke(hydrateHands),    // depends on hydrateRuntimes having run first
 	fx.Invoke(subscribeHeraldReady),
@@ -109,7 +121,13 @@ func runMigrations(db *gorm.DB) error {
 	if err := helmrepo.Migrate(db); err != nil {
 		return err
 	}
-	return handrepo.Migrate(db)
+	if err := handrepo.Migrate(db); err != nil {
+		return err
+	}
+	if err := eventlog.Migrate(db); err != nil {
+		return err
+	}
+	return tradelog.Migrate(db)
 }
 
 func newHelmRepo(db *gorm.DB) orchdomain.HelmRepo {
@@ -140,8 +158,30 @@ func newOrchHandler(
 	return orchhandler.New(svc, handMgr, reg, nc, fillLog, snapshotLog, posLog)
 }
 
-func newHandHandler(handMgr *service.Service, helmSvc *orchservice.Service, reg *runtime.Registry) *handhandler.Handler {
-	return handhandler.New(handMgr, helmSvc, reg)
+func newHandHandler(handMgr *service.Service, helmSvc *orchservice.Service, reg *runtime.Registry, evLog eventlog.Log) *handhandler.Handler {
+	return handhandler.New(handMgr, helmSvc, reg, evLog)
+}
+
+func newEventLog(db *sql.DB) eventlog.Log {
+	return eventlog.New(db)
+}
+
+func newEventLogPersister(js nats.JetStreamContext, db *sql.DB) *eventlog.Persister {
+	return eventlog.NewPersister(js, db)
+}
+
+func startEventLogPersister(lc fx.Lifecycle, p *eventlog.Persister) {
+	ctx, cancel := context.WithCancel(context.Background())
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			go p.Run(ctx)
+			return nil
+		},
+		OnStop: func(_ context.Context) error {
+			cancel()
+			return nil
+		},
+	})
 }
 
 func newAccountHandler(
@@ -186,6 +226,15 @@ func wirePosLog(reg *runtime.Registry, log poslog.Log) {
 	if log != nil {
 		reg.SetPosLog(log)
 	}
+}
+
+func newTradeLog(db *sql.DB) tradelog.Log {
+	return tradelog.New(db)
+}
+
+// wireTradeLog injects the trade log into the registry so all runtimes (current and future) receive it.
+func wireTradeLog(reg *runtime.Registry, log tradelog.Log) {
+	reg.SetTradeLog(log)
 }
 
 // wireHandLifecycle injects the hand lifecycle port into orchservice.Service (breaks init cycle).

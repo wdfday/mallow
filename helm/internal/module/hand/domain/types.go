@@ -13,10 +13,18 @@ import (
 type HandStatus string
 
 const (
-	HandStatusStopped HandStatus = "stopped"
-	HandStatusRunning HandStatus = "running"
-	HandStatusPaused  HandStatus = "paused"
+	HandStatusStopped  HandStatus = "stopped"
+	HandStatusRunning  HandStatus = "running"
+	HandStatusPaused   HandStatus = "paused"
+	HandStatusKilled   HandStatus = "killed"   // terminal: positions flattened, capital returned
+	HandStatusReleased HandStatus = "released" // terminal: positions orphaned, capital returned
 )
+
+// IsTerminal reports whether the status is a permanent end-state.
+// Terminal hands cannot be started, restarted, or paused — they exist for record-keeping only.
+func (s HandStatus) IsTerminal() bool {
+	return s == HandStatusKilled || s == HandStatusReleased
+}
 
 // HandType defines the operation mode of a hand.
 type HandType string

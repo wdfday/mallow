@@ -116,6 +116,12 @@ type OrderResult struct {
 	Qty       decimal.Decimal
 	FilledQty decimal.Decimal
 	FilledAvg decimal.Decimal
+	// Commission is the total fee charged for this fill.
+	// CommissionAsset identifies the asset the fee was taken from (e.g. "ETH", "BNB", "USDT").
+	// When CommissionAsset == base asset of Symbol (e.g. "ETH" for "ETHUSDT"), the
+	// actual received qty is FilledQty - Commission, not FilledQty.
+	Commission      decimal.Decimal
+	CommissionAsset string
 }
 
 // PositionResult is a position currently held at the exchange.

@@ -10,6 +10,7 @@ import (
 
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/poslog"
+	"mallow/helm/internal/infra/tradelog"
 	helmdomain "mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/runtime/position"
 )
@@ -118,8 +119,9 @@ func (h *Hand) publishOrderPlaced(
 
 // publishOrderFilled emits KindOrderFilled to the durable poslog.
 // pnl is the realized PnL for closing fills (zero for entry fills).
+// commission is the fee paid for this fill (may be zero when exchange doesn't report it).
 // closeSource identifies what triggered the close (e.g. "signal", "sl", "tp", "kill").
-func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, price, pnl decimal.Decimal, source, closeSource string) {
+func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, price, pnl, commission decimal.Decimal, source, closeSource string) {
 	h.mu.RLock()
 	positionID := h.pendingOrderPos[orderID]
 	var isBracketExit bool
@@ -176,6 +178,7 @@ func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, pric
 			Payload:    closedPayload,
 			At:         time.Now().UTC(),
 		})
+		h.appendTradeRecord(ctx, cp, commission, time.Now().UTC())
 		return
 	}
 
@@ -196,6 +199,7 @@ func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, pric
 	})
 
 	if isClosingFill {
+		now := time.Now().UTC()
 		cp := poslog.PositionClosedPayload{
 			OrderID:     positionID,
 			ClosePrice:  price.String(),
@@ -217,7 +221,38 @@ func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, pric
 			PositionID: positionID,
 			Kind:       poslog.KindPositionClosed,
 			Payload:    closedPayload,
-			At:         time.Now().UTC(),
+			At:         now,
 		})
+		h.appendTradeRecord(ctx, cp, commission, now)
 	}
+}
+
+// appendTradeRecord writes a completed trade to the PostgreSQL trade log.
+// No-ops when TradeLog is not configured.
+func (h *Hand) appendTradeRecord(ctx context.Context, cp poslog.PositionClosedPayload, commission decimal.Decimal, exitAt time.Time) {
+	tl := h.helmRuntime.TradeLog
+	if tl == nil {
+		return
+	}
+	entryPrice, _ := decimal.NewFromString(cp.EntryPrice)
+	exitPrice, _ := decimal.NewFromString(cp.ClosePrice)
+	qty, _ := decimal.NewFromString(cp.Qty)
+	pnl, _ := decimal.NewFromString(cp.RealizedPnL)
+
+	tl.Append(ctx, tradelog.TradeRecord{
+		HandID:     h.id,
+		HelmID:     h.helmID,
+		UserID:     h.helmRuntime.UserID,
+		Symbol:     cp.Symbol,
+		Side:       cp.Side,
+		EntryPrice: entryPrice,
+		ExitPrice:  exitPrice,
+		Qty:        qty,
+		PnL:        pnl,
+		Commission: commission,
+		Source:     cp.Source,
+		Strategy:   h.StrategyName,
+		EntryAt:    cp.EntryAt,
+		ExitAt:     exitAt,
+	})
 }

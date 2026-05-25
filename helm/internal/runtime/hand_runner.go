@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/pprof"
+	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -56,6 +57,8 @@ func (h *Hand) runLoop(ctx context.Context) {
 		case <-pollTicker.C:
 			h.pollOrders(ctx)
 			h.checkExits()
+			h.checkBracketOrders(ctx)
+			h.checkPositionDesync(ctx)
 		case <-staleTicker.C:
 			h.checkStale()
 		case <-ctx.Done():
@@ -73,17 +76,10 @@ func (h *Hand) checkStale() {
 	if time.Since(*h.health.LastSignalAt) > 5*time.Minute {
 		if h.health.Status != HealthStale {
 			h.health.Status = HealthStale
-			h.helmRuntime.EmitEvent(natsapi.HelmEvent{
-				HandID: h.id.String(),
+			h.emitEvent(natsapi.HelmEvent{
 				Code:   CodeHandStale,
 				Reason: "no signal received in > 5 minutes",
 				Msg:    "hand: signal feed stale",
-			})
-			h.activityLog.push(ActivityEntry{
-				At:     time.Now(),
-				Code:   CodeHandStale,
-				Symbol: h.Symbol,
-				Reason: "no signal received in > 5 minutes",
 			})
 		}
 	}
@@ -112,27 +108,50 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 	h.metrics.signalsReceived.Add(1)
 
 	dispatchLag := signalAt.Sub(sig.ReceivedAt).Truncate(time.Millisecond)
-	h.helmRuntime.EmitEvent(natsapi.HelmEvent{
-		HandID:    h.id.String(),
+	// Track end-to-end lag: GeneratedAt (herald emitted) → now (hand processes).
+	// Falls back to NATS delivery lag (ReceivedAt → now) when GeneratedAt is zero.
+	if !sig.GeneratedAt.IsZero() {
+		h.metrics.latestSignalLagMs.Store(signalAt.Sub(sig.GeneratedAt).Milliseconds())
+	} else if dispatchLag > 0 {
+		h.metrics.latestSignalLagMs.Store(dispatchLag.Milliseconds())
+	}
+	receivedReason := fmt.Sprintf("lag=%s strength=%.2f", dispatchLag, sig.Strength)
+	if sig.Reason != "" {
+		receivedReason += " herald=" + sig.Reason
+	}
+	slog.Debug("signal: hand received",
+		"hand_id", h.id,
+		"symbol", sig.Symbol,
+		"direction", sig.Direction,
+		"strength", sig.Strength,
+		"lag", dispatchLag,
+		"herald_reason", sig.Reason,
+	)
+	h.emitEvent(natsapi.HelmEvent{
 		Code:      CodeSignalReceived,
 		Symbol:    sig.Symbol,
 		Direction: string(sig.Direction),
-		Reason:    fmt.Sprintf("lag=%s", dispatchLag),
+		Reason:    receivedReason,
 		Msg:       "signal: hand received",
 	})
-	h.activityLog.push(ActivityEntry{At: signalAt, Code: CodeSignalReceived, Symbol: sig.Symbol, Direction: string(sig.Direction)})
 
 	filtered := func(code int, reason string) {
 		h.metrics.signalsFiltered.Add(1)
-		h.helmRuntime.EmitEvent(natsapi.HelmEvent{
-			HandID:    h.id.String(),
+		slog.Debug("signal: filtered",
+			"hand_id", h.id,
+			"symbol", sig.Symbol,
+			"direction", sig.Direction,
+			"strength", sig.Strength,
+			"code", code,
+			"reason", reason,
+		)
+		h.emitEvent(natsapi.HelmEvent{
 			Code:      code,
 			Symbol:    sig.Symbol,
 			Direction: string(sig.Direction),
 			Reason:    reason,
 			Msg:       "signal: filtered",
 		})
-		h.activityLog.push(ActivityEntry{At: time.Now(), Code: code, Symbol: sig.Symbol, Direction: string(sig.Direction), Reason: reason})
 	}
 
 	if !sig.IsUrgent() && h.signalTTL > 0 && !sig.ReceivedAt.IsZero() && time.Since(sig.ReceivedAt) > h.signalTTL {
@@ -164,8 +183,25 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 
 	intent := h.strategy.Evaluate(sig)
 
+	slog.Debug("signal: strategy evaluated",
+		"hand_id", h.id,
+		"symbol", sig.Symbol,
+		"direction", sig.Direction,
+		"action", intent.Action,
+		"reason", intent.Reason,
+	)
+
 	if intent.Action == strategy.ActionDoNothing {
-		filtered(CodeSignalDoNothing, fmt.Sprintf("strength %.2f below min", sig.Strength))
+		reason := intent.Reason
+		if reason == "" {
+			// Fallback: forward herald's own reason if strategy didn't set one.
+			if sig.Reason != "" {
+				reason = sig.Reason
+			} else {
+				reason = "strategy: do_nothing"
+			}
+		}
+		filtered(CodeSignalDoNothing, reason)
 		return
 	}
 
@@ -215,21 +251,55 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		}
 	}
 
+	// Per-hand qty from poslog — used by tactician for exit/scale-out sizing.
+	// Summing Qty across active legs gives the correct per-hand position size,
+	// regardless of how many other hands on this helm trade the same symbol.
+	h.mu.RLock()
+	var handPosQty decimal.Decimal
+	for _, leg := range h.pos.ActiveLegs() {
+		if leg.Symbol == sig.Symbol {
+			handPosQty = handPosQty.Add(leg.Qty)
+		}
+	}
+	h.mu.RUnlock()
+
 	reply := h.helmRuntime.ProcessTrade(ctx, TradeProposal{
 		HandID:         h.id.String(),
 		Symbol:         sig.Symbol,
 		Intent:         intent,
 		ATR:            sig.ATR,
 		EquityOverride: h.realizedEquity(),
+		PositionQty:    handPosQty,
 	}, h.tactician)
 
+	slog.Debug("signal: process trade result",
+		"hand_id", h.id,
+		"symbol", sig.Symbol,
+		"approved", reply.Approved,
+		"side", reply.Side,
+		"qty", reply.Qty,
+		"sl", reply.StopLoss,
+		"tp", reply.TakeProfit,
+		"reason", reply.Reason,
+	)
+
 	if !reply.Approved {
+		slog.Warn("signal: trade rejected",
+			"hand_id", h.id,
+			"symbol", sig.Symbol,
+			"action", intent.Action,
+			"reason", reply.Reason,
+		)
 		filtered(CodeSignalRejected, reply.Reason)
 		h.mu.RLock()
 		activeCount := h.pos.ActiveCount()
 		h.mu.RUnlock()
 		if activeCount == 0 && reply.Reason == "tactics: zero quantity after sizing" {
-			slog.Warn("hand has no active positions and insufficient capital to size a single trade — pausing hand", "hand_id", h.id, "reason", reply.Reason)
+			slog.Warn("hand: no open positions and cannot size entry — auto-pausing",
+				"hand_id", h.id,
+				"symbol", sig.Symbol,
+				"reason", reply.Reason,
+			)
 			h.Pause()
 		}
 		return
@@ -281,16 +351,46 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		}
 	}
 
-	result, err := h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, exchange.OrderRequest{
+	orderQty := reply.Qty
+	// Spot exchanges enforce LOT_SIZE step = 0.0001 for most pairs (e.g. ETHUSDT).
+	// Truncate to 4 decimal places so qty is always a valid multiple of the step.
+	// Futures use ReduceOnly and have their own precision — skip truncation there.
+	if !isFutures {
+		orderQty = orderQty.Truncate(4)
+		// Record sub-step dust so checkPositionDesync doesn't mistake the residual
+		// (qty - orderQty) for an external close. Cleared when a new position opens.
+		if dust := reply.Qty.Sub(orderQty); dust.IsPositive() {
+			h.helmRuntime.RecordDust(sig.Symbol, dust)
+		}
+	}
+	orderReq := exchange.OrderRequest{
 		Symbol:     sig.Symbol,
 		Side:       exchange.OrderSide(reply.Side),
 		Type:       orderType,
 		TIF:        exchange.TimeInForce(reply.TIF),
-		Qty:        reply.Qty,
+		Qty:        orderQty,
 		QuoteQty:   reply.QuoteQty,
 		Price:      limitPrice,
 		ReduceOnly: isFutures && isExitOrder,
-	})
+	}
+	result, err := h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, orderReq)
+	// ── Insufficient-balance retry (spot SELL exit only) ──────────────────────
+	// When fee was paid in base asset, poslog may hold gross qty while the wallet
+	// holds net (gross - fee). Query actual free balance and retry once.
+	if err != nil && isExitOrder && reply.Side == "sell" && !isFutures &&
+		isInsufficientBalanceError(err) {
+		if bf, ok := h.helmRuntime.Exchange.(exchange.SpotBalanceFetcher); ok {
+			baseAsset := spotBaseAsset(sig.Symbol)
+			if freeQty, balErr := bf.GetFreeBalance(ctx, h.helmRuntime.Creds, baseAsset); balErr == nil && freeQty.IsPositive() {
+				slog.Warn("order: insufficient balance on exit — retrying with actual free balance",
+					"hand_id", h.id, "symbol", sig.Symbol,
+					"attempted_qty", reply.Qty, "free_qty", freeQty,
+				)
+				orderReq.Qty = freeQty.Truncate(4)
+				result, err = h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, orderReq)
+			}
+		}
+	}
 	if err != nil {
 		h.metrics.ordersFailed.Add(1)
 		h.mu.Lock()
@@ -298,8 +398,15 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		h.health.LastError = err.Error()
 		h.health.Status = HealthError
 		h.mu.Unlock()
-		h.helmRuntime.EmitEvent(natsapi.HelmEvent{
-			HandID:    h.id.String(),
+		slog.Error("order: placement failed",
+			"hand_id", h.id,
+			"symbol", sig.Symbol,
+			"side", reply.Side,
+			"qty", reply.Qty,
+			"order_type", orderType,
+			"err", err,
+		)
+		h.emitEvent(natsapi.HelmEvent{
 			Code:      CodeOrderFailed,
 			Symbol:    sig.Symbol,
 			Direction: string(sig.Direction),
@@ -308,7 +415,6 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 			Reason:    err.Error(),
 			Msg:       "order: placement failed",
 		})
-		h.activityLog.push(ActivityEntry{At: time.Now(), Code: CodeOrderFailed, Symbol: sig.Symbol, Direction: string(sig.Direction), Side: reply.Side, Qty: reply.Qty, Reason: err.Error()})
 		// Auto-pause when a sizing/lot constraint causes a persistent entry failure.
 		// Only pause if this hand has no open position — if we already hold a position
 		// the failure is on a scale-in or exit, which should not pause the hand.
@@ -320,18 +426,11 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 			h.mu.RUnlock()
 			if flat {
 				h.Pause()
-				h.helmRuntime.EmitEvent(natsapi.HelmEvent{
-					HandID: h.id.String(),
+				h.emitEvent(natsapi.HelmEvent{
 					Code:   CodeHandAutoPaused,
 					Symbol: sig.Symbol,
 					Reason: fmt.Sprintf("lot/notional constraint — %s", err.Error()),
 					Msg:    "hand: auto-paused due to sizing constraint",
-				})
-				h.activityLog.push(ActivityEntry{
-					At:     time.Now(),
-					Code:   CodeHandAutoPaused,
-					Symbol: sig.Symbol,
-					Reason: fmt.Sprintf("lot/notional constraint — %s", err.Error()),
 				})
 			}
 		}
@@ -354,6 +453,11 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 
 	// Publish order_placed to the durable position event log.
 	isExitIntent := intent.Action == strategy.ActionExitLong || intent.Action == strategy.ActionExitShort
+	// On entry: clear dust residual from the previous trade for this symbol.
+	// The old dust no longer matters once a new position is opened.
+	if !isExitIntent {
+		h.helmRuntime.ClearDust(sig.Symbol)
+	}
 	h.publishOrderPlaced(ctx, result.ID, sig.Symbol, reply, limitPrice, orderType, isExitIntent, sig.PatternKind)
 
 	now := time.Now().UTC()
@@ -378,24 +482,40 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 	}
 	h.mu.Unlock()
 
-	h.helmRuntime.EmitEvent(natsapi.HelmEvent{
-		HandID:  h.id.String(),
+	placedLatency := time.Since(signalAt).Truncate(time.Millisecond)
+	placedReason := fmt.Sprintf("status=%s type=%s latency=%s", result.Status, orderType, placedLatency)
+	slog.Info("order: placed",
+		"hand_id", h.id,
+		"symbol", sig.Symbol,
+		"side", reply.Side,
+		"qty", orderedQty,
+		"order_type", orderType,
+		"order_id", order.ID,
+		"status", result.Status,
+		"latency", placedLatency,
+	)
+	h.emitEvent(natsapi.HelmEvent{
 		Code:    CodeOrderPlaced,
 		Symbol:  sig.Symbol,
 		Side:    reply.Side,
 		Qty:     orderedQty,
 		Price:   limitPrice,
 		OrderID: order.ID,
-		Reason:  fmt.Sprintf("status=%s latency=%s", result.Status, time.Since(signalAt).Truncate(time.Millisecond)),
+		Reason:  placedReason,
 		Msg:     "order: placed",
 	})
-	h.activityLog.push(ActivityEntry{At: time.Now(), Code: CodeOrderPlaced, Symbol: sig.Symbol, Side: reply.Side, Qty: orderedQty, Price: limitPrice, OrderID: order.ID})
 	if result.Status == "filled" {
 		// Synchronous fill from REST response. Mark as seen so the WS event
 		// that will arrive shortly does not double-apply.
 		h.mu.Lock()
 		h.seenFills[result.ID] = struct{}{}
 		h.mu.Unlock()
-		h.applyFill(ctx, result.ID, sig.Symbol, reply.Side, result.FilledQty, result.FilledAvg, "rest")
+		// Adjust for base-asset commission: same logic as handleWsFill.
+		restQty := result.FilledQty
+		if reply.Side == "buy" && result.Commission.IsPositive() && result.CommissionAsset != "" &&
+			strings.HasPrefix(result.Symbol, result.CommissionAsset) {
+			restQty = restQty.Sub(result.Commission)
+		}
+		h.applyFill(ctx, result.ID, sig.Symbol, reply.Side, restQty, result.FilledAvg, result.Commission, "rest")
 	}
 }

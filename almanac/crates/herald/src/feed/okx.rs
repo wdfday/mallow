@@ -5,9 +5,11 @@
 //! - `row[8] == "0"` → forming bar  (`closed = false`)
 //! - `row[8] == "1"` → confirmed bar (`closed = true`)
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use alm_core::Timeframe;
+use alm_ledger::Ledger;
 use futures::{SinkExt, StreamExt};
 use metrics::{counter, gauge};
 use serde::{Deserialize, Serialize};
@@ -15,14 +17,17 @@ use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, info, warn};
 
 use super::{BarEvent, BarTx, SUBSCRIBE_TFS};
+use super::rest::{gap_fill_symbol, Exchange};
 
 const WS_URL: &str = "wss://ws.okx.com:8443/ws/v5/business";
 const RECONNECT: Duration = Duration::from_secs(5);
 const PING_INTERVAL: Duration = Duration::from_secs(25);
+const RECONNECT_GAP_FILL_CONCURRENCY: usize = 3;
 
 /// Spawn a task that streams candlesticks for `symbols` across all
 /// [`SUBSCRIBE_TFS`]. Sends [`BarEvent`]s to `tx`. Auto-reconnects.
-pub fn spawn(symbols: Vec<String>, tx: BarTx) {
+/// On each reconnect, runs a REST gap-fill to bridge the missed bars.
+pub fn spawn(symbols: Vec<String>, tx: BarTx, ledger: Arc<Ledger>, tf: Timeframe) {
     if symbols.is_empty() {
         return;
     }
@@ -31,6 +36,22 @@ pub fn spawn(symbols: Vec<String>, tx: BarTx) {
         loop {
             if !first {
                 counter!("herald_feed_reconnects_total", "source" => "okx").increment(1);
+                // Bridge the gap caused by the disconnect before resuming WS.
+                info!(symbols = symbols.len(), "okx: reconnect gap-fill");
+                let sem = Arc::new(tokio::sync::Semaphore::new(RECONNECT_GAP_FILL_CONCURRENCY));
+                let tasks: Vec<_> = symbols.iter().map(|sym| {
+                    let live_sym = format!("okx:{sym}");
+                    let last_ts = ledger.with_state(&live_sym, tf, |s| s.last_ts).flatten();
+                    let base_from_ms = last_ts.map(|ts| ts + tf.duration_ms());
+                    let ledger = ledger.clone();
+                    let sym = sym.clone();
+                    let sem = sem.clone();
+                    async move {
+                        let _permit = sem.acquire_owned().await.expect("semaphore closed");
+                        gap_fill_symbol(&ledger, tf, &format!("okx:{sym}"), &sym, Exchange::Okx, base_from_ms, SUBSCRIBE_TFS).await;
+                    }
+                }).collect();
+                futures::future::join_all(tasks).await;
             }
             first = false;
             match run_once(&symbols, &tx).await {

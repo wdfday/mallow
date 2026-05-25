@@ -105,6 +105,7 @@ func addAllocatedHand(rt *runtime.HelmRuntime, symbol string, qty, allocatedCap 
 	)
 	h.Symbol = symbol
 	h.StrategyName = "signal_follower"
+	h.EnableEventSink()
 	rt.AddHand(h)
 	return h
 }
@@ -262,19 +263,7 @@ func TestSnapshot_RoundTrip_EntryThenExit(t *testing.T) {
 	// Exit signal (urgent).
 	hand.DeliverSignal(exitSig(symbol))
 	// Wait for second fill.
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		fills := 0
-		for _, e := range hand.Activity() {
-			if e.Code == runtime.CodeOrderFilled {
-				fills++
-			}
-		}
-		if fills >= 2 {
-			break
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+	waitCode(hand, runtime.CodeOrderFilled, 3*time.Second)
 
 	// Wait for ≥4 snapshots (entry helm + entry hand + exit helm + exit hand).
 	if !snapLog.waitN(4, 3*time.Second) {

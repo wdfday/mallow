@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,6 +13,7 @@ import (
 
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/poslog"
+	"mallow/helm/internal/infra/tradelog"
 	helmdomain "mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/runtime/perf"
 )
@@ -63,6 +65,14 @@ type Registry struct {
 	syncStore   SyncStore
 	posLog      poslog.Log       // nil when NATS unavailable
 	snapshotLog perf.SnapshotLog // nil when NATS unavailable
+	tradeLog    tradelog.Log     // nil when Postgres unavailable
+
+	// Routing error counters — incremented in RouteSignal, exported via DispatchStats.
+	routeNoHelm atomic.Int64 // helm_id not found in registry
+	routeNoHand atomic.Int64 // hand_id not found in the resolved HelmRuntime
+
+	// dispatcher is wired via SetDispatcher after startup; nil before wiring.
+	dispatcher *SignalDispatcher
 }
 
 // NewRegistry creates an empty Registry.
@@ -102,9 +112,21 @@ func (r *Registry) SetSnapshotLog(log perf.SnapshotLog) {
 	r.mu.Unlock()
 }
 
+// SetTradeLog injects the PostgreSQL trade log. Propagated to all already-spawned runtimes.
+func (r *Registry) SetTradeLog(log tradelog.Log) {
+	r.mu.Lock()
+	r.tradeLog = log
+	for _, rt := range r.helmRuntimes {
+		rt.TradeLog = log
+	}
+	r.mu.Unlock()
+}
+
 // SetRuntime stores the NATS connection, JetStream context, and run context.
 // Called from the app lifecycle OnStart, after the connection is established.
 // js is cached here so fill processors never call nc.JetStream() per event.
+// Also propagates nc/js to all already-spawned runtimes (hydrated before startup)
+// so their EmitEvent calls publish to NATS instead of slog-only.
 func (r *Registry) SetRuntime(ctx context.Context, nc *nats.Conn) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -117,6 +139,9 @@ func (r *Registry) SetRuntime(ctx context.Context, nc *nats.Conn) {
 	r.nc = nc
 	r.js = js
 	r.runCtx = ctx
+	for _, rt := range r.helmRuntimes {
+		rt.SetEventConn(nc, js)
+	}
 	r.mu.Unlock()
 }
 

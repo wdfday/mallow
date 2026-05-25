@@ -17,6 +17,16 @@ import (
 // Lifecycle — called by Registry on behalf of user actions
 // ---------------------------------------------------------------------------
 
+// emitEvent publishes a behavioral event via HelmRuntime (slog + JetStream + eventlog persister)
+// and, when the test event bus is active, broadcasts a copy to all subscribers.
+func (h *Hand) emitEvent(ev natsapi.HelmEvent) {
+	ev.HandID = h.id.String()
+	h.helmRuntime.EmitEvent(ev)
+	if h.eventBus != nil {
+		h.eventBus.publish(ev)
+	}
+}
+
 // Start spawns the bot's run-loop goroutine.
 func (h *Hand) Start() {
 	h.mu.Lock()
@@ -33,8 +43,7 @@ func (h *Hand) Start() {
 	h.health.StartedAt = new(time.Now().UTC())
 	go h.run(ctx)
 	slog.Info("hand started", "hand_id", h.id, "exchange", h.helmRuntime.Exchange.Name())
-	h.helmRuntime.EmitEvent(natsapi.HelmEvent{HandID: h.id.String(), Code: CodeHandStarted, Msg: "hand: started"})
-	h.activityLog.push(ActivityEntry{At: time.Now(), Code: CodeHandStarted, Symbol: h.Symbol, Reason: "hand run-loop started"})
+	h.emitEvent(natsapi.HelmEvent{Code: CodeHandStarted, Msg: "hand: started"})
 }
 
 // Stop cancels the run-loop and waits for it to exit.
@@ -58,8 +67,7 @@ func (h *Hand) Stop() {
 		<-done
 	}
 	slog.Info("hand stopped", "hand_id", h.id)
-	h.helmRuntime.EmitEvent(natsapi.HelmEvent{HandID: h.id.String(), Code: CodeHandStopped, Msg: "hand: stopped"})
-	h.activityLog.push(ActivityEntry{At: time.Now(), Code: CodeHandStopped, Symbol: h.Symbol, Reason: "hand run-loop stopped"})
+	h.emitEvent(natsapi.HelmEvent{Code: CodeHandStopped, Msg: "hand: stopped"})
 }
 
 // Pause suspends signal processing without stopping the run-loop goroutine.
@@ -70,8 +78,7 @@ func (h *Hand) Pause() {
 	h.health.Status = HealthPaused
 	h.mu.Unlock()
 	slog.Info("hand paused", "hand_id", h.id)
-	h.helmRuntime.EmitEvent(natsapi.HelmEvent{HandID: h.id.String(), Code: CodeHandPaused, Msg: "hand: paused"})
-	h.activityLog.push(ActivityEntry{At: time.Now(), Code: CodeHandPaused, Symbol: h.Symbol, Reason: "hand manually paused via API"})
+	h.emitEvent(natsapi.HelmEvent{Code: CodeHandPaused, Msg: "hand: paused"})
 }
 
 // Resume re-enables signal processing after a Pause.
@@ -83,16 +90,14 @@ func (h *Hand) Resume() {
 	}
 	h.mu.Unlock()
 	slog.Info("hand resumed", "hand_id", h.id)
-	h.helmRuntime.EmitEvent(natsapi.HelmEvent{HandID: h.id.String(), Code: CodeHandResumed, Msg: "hand: resumed"})
-	h.activityLog.push(ActivityEntry{At: time.Now(), Code: CodeHandResumed, Symbol: h.Symbol, Reason: "hand manually resumed via API"})
+	h.emitEvent(natsapi.HelmEvent{Code: CodeHandResumed, Msg: "hand: resumed"})
 }
 
 // Kill stops the hand and immediately closes all open positions via market orders.
 // Use for emergency shutdown when you must exit the exchange immediately.
 func (h *Hand) Kill(ctx context.Context) {
 	slog.Warn("hand: kill initiated — flattening all positions", "hand_id", h.id)
-	h.helmRuntime.EmitEvent(natsapi.HelmEvent{HandID: h.id.String(), Code: CodeHandKilled, Reason: "flattening all positions", Msg: "hand: killed"})
-	h.activityLog.push(ActivityEntry{At: time.Now(), Code: CodeHandKilled, Symbol: h.Symbol, Reason: "hand killed — flattening positions"})
+	h.emitEvent(natsapi.HelmEvent{Code: CodeHandKilled, Reason: "flattening all positions", Msg: "hand: killed"})
 	h.mu.Lock()
 	h.paused = true
 	h.health.Status = HealthKilled
@@ -119,8 +124,7 @@ func (h *Hand) Kill(ctx context.Context) {
 // exchange-side SL/TP already placed.
 func (h *Hand) Release(ctx context.Context) {
 	slog.Info("hand: release — orphaning open positions", "hand_id", h.id)
-	h.helmRuntime.EmitEvent(natsapi.HelmEvent{HandID: h.id.String(), Code: CodeHandReleased, Reason: "positions orphaned at exchange", Msg: "hand: released"})
-	h.activityLog.push(ActivityEntry{At: time.Now(), Code: CodeHandReleased, Symbol: h.Symbol, Reason: "hand released — positions orphaned"})
+	h.emitEvent(natsapi.HelmEvent{Code: CodeHandReleased, Reason: "positions orphaned at exchange", Msg: "hand: released"})
 	h.mu.Lock()
 	h.paused = true
 	h.health.Status = HealthReleased
@@ -193,18 +197,25 @@ func (h *Hand) Health() HandHealth {
 // Metrics returns a snapshot of the hand's trading counters and P&L.
 func (h *Hand) Metrics() HandMetrics {
 	h.metrics.mu.Lock()
-	defer h.metrics.mu.Unlock()
+	pnl := h.metrics.totalPnL
+	commission := h.metrics.totalCommission
+	wins := h.metrics.winCount
+	losses := h.metrics.lossCount
+	h.metrics.mu.Unlock()
 	return HandMetrics{
-		SignalsReceived: h.metrics.signalsReceived.Load(),
-		SignalsFiltered: h.metrics.signalsFiltered.Load(),
-		SignalsDropped:  h.metrics.signalsDropped.Load(),
-		TradesApproved:  h.metrics.tradesApproved.Load(),
-		OrdersPlaced:    h.metrics.ordersPlaced.Load(),
-		OrdersFilled:    h.metrics.ordersFilled.Load(),
-		OrdersFailed:    h.metrics.ordersFailed.Load(),
-		TotalPnL:        h.metrics.totalPnL,
-		WinCount:        h.metrics.winCount,
-		LossCount:       h.metrics.lossCount,
+		SignalsReceived:   h.metrics.signalsReceived.Load(),
+		SignalsFiltered:   h.metrics.signalsFiltered.Load(),
+		SignalsDropped:    h.metrics.signalsDropped.Load(),
+		TradesApproved:    h.metrics.tradesApproved.Load(),
+		OrdersPlaced:      h.metrics.ordersPlaced.Load(),
+		OrdersFilled:      h.metrics.ordersFilled.Load(),
+		OrdersFailed:      h.metrics.ordersFailed.Load(),
+		TotalPnL:          pnl,
+		TotalCommission:   commission,
+		WinCount:          wins,
+		LossCount:         losses,
+		LatestSignalLagMs: h.metrics.latestSignalLagMs.Load(),
+		SignalQueueDepth:  len(h.Signals),
 	}
 }
 
@@ -282,14 +293,19 @@ func (h *Hand) EnqueueFill(ev exchange.OrderEvent) {
 // RecordDrop increments the dropped-signal counter. Called by the dispatcher.
 func (h *Hand) RecordDrop() { h.metrics.signalsDropped.Add(1) }
 
-// recordActivity pushes an entry into the in-memory activity ring.
-// The ring holds the last activityRingSize events for test observability and
-// the recent-activity UI chip; durable history lives in HELM_EVENTS JetStream.
-func (h *Hand) recordActivity(e ActivityEntry) { h.activityLog.push(e) }
+// EnableEventSink initialises the test event bus. Call before Start().
+// Multiple goroutines can call Subscribe() independently and each receives
+// a full copy of every event (broadcast, not competing consumers).
+func (h *Hand) EnableEventSink() {
+	h.eventBus = &handEventBus{}
+}
 
-// Activity returns a snapshot of recent activity entries, oldest-first.
-// The ring holds at most activityRingSize (20) entries; older events are evicted.
-func (h *Hand) Activity() []ActivityEntry { return h.activityLog.Snapshot() }
+// Subscribe registers a new subscriber channel on the test event bus.
+// Each subscriber receives its own copy of every event — safe for concurrent test helpers.
+// Panics if EnableEventSink was not called first.
+func (h *Hand) Subscribe(chanCap int) <-chan natsapi.HelmEvent {
+	return h.eventBus.subscribe(chanCap)
+}
 
 // DeployedCapital returns the notional capital currently committed in open
 // positions: sum(leg.Qty × leg.EntryPrice) across all active legs.
@@ -308,4 +324,14 @@ func (h *Hand) AllocatedCapital() decimal.Decimal {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.allocatedCap
+}
+
+// AvailableCash returns USDT liquid for this hand — not locked in open positions.
+// = realizedEquity (allocated + cumPnL) - deployedCapital (entry cost of open legs).
+func (h *Hand) AvailableCash() decimal.Decimal {
+	avail := h.realizedEquity().Sub(h.DeployedCapital())
+	if avail.IsNegative() {
+		return decimal.Zero
+	}
+	return avail
 }

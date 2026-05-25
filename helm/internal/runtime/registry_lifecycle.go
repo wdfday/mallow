@@ -81,6 +81,7 @@ func (r *Registry) Spawn(cfg *helmdomain.Helm, exchCfg helmdomain.ExchangeConfig
 	r.mu.RLock()
 	rt.PosLog = r.posLog
 	rt.SnapshotLog = r.snapshotLog
+	rt.TradeLog = r.tradeLog
 	rt.SetEventConn(r.nc, r.js)
 	r.mu.RUnlock()
 
@@ -90,7 +91,7 @@ func (r *Registry) Spawn(cfg *helmdomain.Helm, exchCfg helmdomain.ExchangeConfig
 	r.mu.RUnlock()
 	if ms != nil {
 		// Price is still per-helm: each account has its own portfolio that tracks
-		// unrealised P&L from price ticks.
+		// unrealized P&L from price ticks.
 		ms.AddPriceHandler(rt.UpdatePrice)
 	}
 

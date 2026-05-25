@@ -22,6 +22,7 @@ type HelmService interface {
 // HandService is the full hand management interface used by this handler.
 type HandService interface {
 	Get(id uuid.UUID) (*runtime.HandRef, error)
+	GetSummary(id uuid.UUID) (*domain.HandSummary, error)
 	List() []domain.HandSummary
 	ListByHelm(helmID uuid.UUID) []domain.HandSummary
 	Create(cfg domain.HandConfig) (*runtime.HandRef, error)
@@ -42,4 +43,9 @@ type HandService interface {
 type RuntimeRegistry interface {
 	Get(id uuid.UUID) (*runtime.HelmRuntime, error)
 	All() []*runtime.HelmRuntime
+	// DispatchStats returns registry-level signal routing error counts.
+	DispatchStats() runtime.DispatchStats
+	// NATSStats returns NATS-level dispatcher counters (total, missing IDs, nil payloads).
+	// Returns zero values if no dispatcher has been wired.
+	NATSStats() runtime.DispatcherSnapshot
 }

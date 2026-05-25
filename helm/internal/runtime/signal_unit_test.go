@@ -32,6 +32,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
+	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/module/hand/domain"
 	helmdomain "mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/runtime"
@@ -158,33 +159,93 @@ func addSimHand(rt *runtime.HelmRuntime, symbol string, qty float64, signalTTL t
 	)
 	h.Symbol = symbol
 	h.StrategyName = "signal_follower"
+	h.EnableEventSink()
 	rt.AddHand(h)
 	return h
 }
 
-// waitCode polls the activity ring until an entry with the given code appears
-// or the timeout expires. Returns the entry and true on success.
-func waitCode(h *runtime.Hand, code int, timeout time.Duration) (runtime.ActivityEntry, bool) {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		for _, e := range h.Activity() {
-			if e.Code == code {
-				return e, true
+// waitCode subscribes to the hand event bus and waits until an event with the
+// given code appears or the timeout expires. Returns the event and true on success.
+// IMPORTANT: call before delivering the trigger signal to avoid missing fast events.
+func waitCode(h *runtime.Hand, code int, timeout time.Duration) (natsapi.HelmEvent, bool) {
+	events := h.Subscribe(64) // subscribe once, outside the loop
+	deadline := time.After(timeout)
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				return natsapi.HelmEvent{}, false
 			}
+			if ev.Code == code {
+				return ev, true
+			}
+		case <-deadline:
+			return natsapi.HelmEvent{}, false
 		}
-		time.Sleep(5 * time.Millisecond)
 	}
-	return runtime.ActivityEntry{}, false
 }
 
 // mustWaitCode fails the test if the code does not appear within the timeout.
-func mustWaitCode(t *testing.T, h *runtime.Hand, code int, timeout time.Duration) runtime.ActivityEntry {
+// Creates a new subscription — call before delivering the trigger signal.
+func mustWaitCode(t *testing.T, h *runtime.Hand, code int, timeout time.Duration) natsapi.HelmEvent {
 	t.Helper()
 	e, ok := waitCode(h, code, timeout)
 	if !ok {
 		t.Fatalf("timeout waiting for activity code %d", code)
 	}
 	return e
+}
+
+// waitCodeCh waits on a pre-created events channel for the given code.
+// Use when you need to subscribe BEFORE delivering the trigger signal.
+func waitCodeCh(events <-chan natsapi.HelmEvent, code int, timeout time.Duration) (natsapi.HelmEvent, bool) {
+	deadline := time.After(timeout)
+	for {
+		select {
+		case ev, ok := <-events:
+			if !ok {
+				return natsapi.HelmEvent{}, false
+			}
+			if ev.Code == code {
+				return ev, true
+			}
+		case <-deadline:
+			return natsapi.HelmEvent{}, false
+		}
+	}
+}
+
+// mustWaitCodeCh is like mustWaitCode but uses a pre-created events channel.
+func mustWaitCodeCh(t *testing.T, events <-chan natsapi.HelmEvent, code int, timeout time.Duration) natsapi.HelmEvent {
+	t.Helper()
+	e, ok := waitCodeCh(events, code, timeout)
+	if !ok {
+		t.Fatalf("timeout waiting for activity code %d", code)
+	}
+	return e
+}
+
+// mustWaitCodes subscribes once, delivers fn (if non-nil), then waits for each
+// code in order using the same channel. Use when multiple events fire in rapid
+// succession from the same goroutine (e.g. synchronous sim fills).
+//
+//	events, deliver := mustWaitCodes(t, h, simWait, CodeOrderPlaced, CodeOrderFilled)
+//	deliver()  // call AFTER subscribe; events already buffered
+func mustWaitCodesSetup(t *testing.T, h *runtime.Hand, timeout time.Duration, codes ...int) (<-chan natsapi.HelmEvent, func() []natsapi.HelmEvent) {
+	t.Helper()
+	events := h.Subscribe(128)
+	return events, func() []natsapi.HelmEvent {
+		t.Helper()
+		out := make([]natsapi.HelmEvent, len(codes))
+		for i, code := range codes {
+			e, ok := waitCodeCh(events, code, timeout)
+			if !ok {
+				t.Fatalf("timeout waiting for activity code %d", code)
+			}
+			out[i] = e
+		}
+		return out
+	}
 }
 
 // noCode asserts that a given code does NOT appear within the timeout.
@@ -237,10 +298,10 @@ func TestSignal_LongEntry_OrderPlacedAndFilled(t *testing.T) {
 	h.Start()
 	defer h.Stop()
 
+	events, waitAll := mustWaitCodesSetup(t, h, simWait, runtime.CodeOrderPlaced, runtime.CodeOrderFilled)
+	_ = events
 	h.DeliverSignal(longSignalFor(symbol))
-
-	mustWaitCode(t, h, runtime.CodeOrderPlaced, simWait)
-	mustWaitCode(t, h, runtime.CodeOrderFilled, simWait)
+	waitAll()
 
 	if sim.placedCount() != 1 {
 		t.Fatalf("expected 1 order placed, got %d", sim.placedCount())
@@ -268,36 +329,20 @@ func TestSignal_RoundTrip_EntryThenExit(t *testing.T) {
 	h.Start()
 	defer h.Stop()
 
-	// Entry.
+	// Entry — subscribe before delivering so synchronous sim fills are captured.
+	entryCh := h.Subscribe(64)
 	h.DeliverSignal(longSignalFor(symbol))
-	mustWaitCode(t, h, runtime.CodeOrderFilled, simWait)
+	mustWaitCodeCh(t, entryCh, runtime.CodeOrderFilled, simWait)
 
 	pos := rt.Portfolio.GetPosition(symbol)
 	if pos == nil || !pos.Qty.IsPositive() {
 		t.Fatal("position should be open after entry fill")
 	}
 
-	// Exit.
+	// Exit — new subscription for the second fill.
+	exitCh := h.Subscribe(64)
 	h.DeliverSignal(exitSignalFor(symbol))
-	// Wait for a second fill (exit order).
-	deadline := time.Now().Add(simWait)
-	var exitFill bool
-	for time.Now().Before(deadline) {
-		var fills int
-		for _, e := range h.Activity() {
-			if e.Code == runtime.CodeOrderFilled {
-				fills++
-			}
-		}
-		if fills >= 2 {
-			exitFill = true
-			break
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if !exitFill {
-		t.Fatal("timeout waiting for exit fill")
-	}
+	mustWaitCodeCh(t, exitCh, runtime.CodeOrderFilled, simWait)
 
 	if sim.placedCount() != 2 {
 		t.Fatalf("expected 2 orders (entry + exit), got %d", sim.placedCount())
@@ -322,8 +367,9 @@ func TestSignal_ShortEntry(t *testing.T) {
 	h.Start()
 	defer h.Stop()
 
+	shortCh := h.Subscribe(64)
 	h.DeliverSignal(shortSignalFor(symbol))
-	mustWaitCode(t, h, runtime.CodeOrderFilled, simWait)
+	mustWaitCodeCh(t, shortCh, runtime.CodeOrderFilled, simWait)
 
 	if sim.placed0().Side != exchange.Sell {
 		t.Errorf("expected sell side for short entry, got %s", sim.placed0().Side)
@@ -346,9 +392,10 @@ func TestSignal_Stale_Dropped(t *testing.T) {
 
 	stale := longSignalFor(symbol)
 	stale.ReceivedAt = time.Now().Add(-1 * time.Minute)
+	staleCh := h.Subscribe(64)
 	h.DeliverSignal(stale)
 
-	mustWaitCode(t, h, runtime.CodeSignalStale, simWait)
+	mustWaitCodeCh(t, staleCh, runtime.CodeSignalStale, simWait)
 	noCode(t, h, runtime.CodeOrderPlaced, simWait)
 
 	if sim.placedCount() != 0 {
@@ -370,9 +417,10 @@ func TestSignal_PausedHand_Dropped(t *testing.T) {
 	defer h.Stop()
 
 	h.Pause()
+	pausedHandCh := h.Subscribe(64)
 	h.DeliverSignal(longSignalFor(symbol))
 
-	mustWaitCode(t, h, runtime.CodeSignalHandPaused, simWait)
+	mustWaitCodeCh(t, pausedHandCh, runtime.CodeSignalHandPaused, simWait)
 	noCode(t, h, runtime.CodeOrderPlaced, simWait)
 }
 
@@ -390,9 +438,10 @@ func TestSignal_PausedHelm_Dropped(t *testing.T) {
 	defer h.Stop()
 
 	rt.Pause()
+	pausedHelmCh := h.Subscribe(64)
 	h.DeliverSignal(longSignalFor(symbol))
 
-	mustWaitCode(t, h, runtime.CodeSignalHelmPaused, simWait)
+	mustWaitCodeCh(t, pausedHelmCh, runtime.CodeSignalHelmPaused, simWait)
 	noCode(t, h, runtime.CodeOrderPlaced, simWait)
 }
 
@@ -412,9 +461,10 @@ func TestSignal_LowStrength_DoNothing(t *testing.T) {
 
 	weak := longSignalFor(symbol)
 	weak.Strength = 0.3
+	weakCh := h.Subscribe(64)
 	h.DeliverSignal(weak)
 
-	mustWaitCode(t, h, runtime.CodeSignalDoNothing, simWait)
+	mustWaitCodeCh(t, weakCh, runtime.CodeSignalDoNothing, simWait)
 	noCode(t, h, runtime.CodeOrderPlaced, simWait)
 }
 
@@ -433,12 +483,14 @@ func TestSignal_MaxUnits_SecondEntryBlocked(t *testing.T) {
 	defer h.Stop()
 
 	// First entry — should succeed.
+	entry1Ch := h.Subscribe(64)
 	h.DeliverSignal(longSignalFor(symbol))
-	mustWaitCode(t, h, runtime.CodeOrderFilled, simWait)
+	mustWaitCodeCh(t, entry1Ch, runtime.CodeOrderFilled, simWait)
 
 	// Second entry — should be blocked by MaxUnits.
+	maxUnitsCh := h.Subscribe(64)
 	h.DeliverSignal(longSignalFor(symbol))
-	mustWaitCode(t, h, runtime.CodeSignalMaxUnits, simWait)
+	mustWaitCodeCh(t, maxUnitsCh, runtime.CodeSignalMaxUnits, simWait)
 
 	if sim.placedCount() != 1 {
 		t.Errorf("expected exactly 1 order (second entry blocked), got %d", sim.placedCount())
@@ -465,12 +517,14 @@ func TestSignal_MaxPositions_SecondHandBlocked(t *testing.T) {
 	defer h2.Stop()
 
 	// h1 opens a position.
+	h1FilledCh := h1.Subscribe(64)
 	h1.DeliverSignal(longSignalFor(sym1))
-	mustWaitCode(t, h1, runtime.CodeOrderFilled, simWait)
+	mustWaitCodeCh(t, h1FilledCh, runtime.CodeOrderFilled, simWait)
 
 	// h2 tries to enter — MaxPositions cap reached → rejected.
+	h2RejectedCh := h2.Subscribe(64)
 	h2.DeliverSignal(longSignalFor(sym2))
-	mustWaitCode(t, h2, runtime.CodeSignalRejected, simWait)
+	mustWaitCodeCh(t, h2RejectedCh, runtime.CodeSignalRejected, simWait)
 
 	if sim.placedCount() != 1 {
 		t.Errorf("expected exactly 1 order placed total, got %d", sim.placedCount())
@@ -493,9 +547,10 @@ func TestSignal_ExitLevelsPopulated_AfterFill(t *testing.T) {
 	sig := longSignalFor(symbol)
 	sig.StopPrice = decimal.NewFromFloat(48_000)   // absolute SL
 	sig.TargetPrice = decimal.NewFromFloat(55_000) // absolute TP
+	slTpCh := h.Subscribe(64)
 	h.DeliverSignal(sig)
 
-	mustWaitCode(t, h, runtime.CodeOrderFilled, simWait)
+	mustWaitCodeCh(t, slTpCh, runtime.CodeOrderFilled, simWait)
 
 	// Verify an exit order was NOT placed yet (no ExitOrderPlacer on simExchange)
 	// but the hand registered the exit levels (detectable via the Position's exit levels).
@@ -543,15 +598,22 @@ func TestSignal_InsufficientCapital_AutoPause(t *testing.T) {
 	)
 	h.Symbol = symbol
 	h.StrategyName = "signal_follower"
+	h.EnableEventSink()
 	rt.AddHand(h)
 
 	rt.UpdatePrice(symbol, decimal.NewFromFloat(50_000))
 	h.Start()
 	defer h.Stop()
 
+	// Pre-subscribe before delivering the signal so fast synchronous events
+	// (rejection + auto-pause happen in the same goroutine turn) are not missed.
+	rejectedCh := h.Subscribe(64)
+	pausedCh := h.Subscribe(64)
 	h.DeliverSignal(longSignalFor(symbol))
 
-	mustWaitCode(t, h, runtime.CodeSignalRejected, simWait)
+	mustWaitCodeCh(t, rejectedCh, runtime.CodeSignalRejected, simWait)
+	// Wait for the auto-pause event which follows the rejection.
+	mustWaitCodeCh(t, pausedCh, runtime.CodeHandPaused, simWait)
 
 	if !h.IsPaused() {
 		t.Fatal("expected hand to be paused after failing to size entry trade due to insufficient capital")

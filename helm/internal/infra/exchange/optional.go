@@ -80,13 +80,15 @@ type OrderEvent struct {
 	// TradeID is the exchange-assigned fill ID for this specific fill event.
 	// Unique per partial fill — used as the dedup key for investment transactions.
 	// Empty for live and canceled events; set to orderID+"_open" / orderID+"_cancel" by the publisher.
-	TradeID   string
-	Symbol    string
-	Side      OrderSide
-	Qty       decimal.Decimal // original submitted qty; populated on live events
-	FilledQty decimal.Decimal // this-event fill qty; zero for live/canceled
-	FilledAvg decimal.Decimal // this-event fill price; zero for live/canceled
-	Timestamp time.Time
+	TradeID         string
+	Symbol          string
+	Side            OrderSide
+	Qty             decimal.Decimal // original submitted qty; populated on live events
+	FilledQty       decimal.Decimal // this-event fill qty; zero for live/canceled
+	FilledAvg       decimal.Decimal // this-event fill price; zero for live/canceled
+	Commission      decimal.Decimal // fee charged for this fill; zero when not provided by exchange
+	CommissionAsset string          // asset the fee was taken from: "ETH", "BNB", "USDT", etc.
+	Timestamp       time.Time
 }
 
 // AccountStreamer is optionally implemented by exchanges that support private
@@ -105,12 +107,21 @@ type PriceFetcher interface {
 	GetCurrentPrice(ctx context.Context, creds Credentials, symbol string) (decimal.Decimal, error)
 }
 
+// ── Spot balance fetch ────────────────────────────────────────────────────────
+
+// SpotBalanceFetcher is optionally implemented by spot exchanges.
+// Used as a fallback when a SELL exit fails with insufficient balance:
+// query the actual free balance of the base asset and retry with that qty.
+type SpotBalanceFetcher interface {
+	GetFreeBalance(ctx context.Context, creds Credentials, asset string) (decimal.Decimal, error)
+}
+
 // ── Market data streaming ─────────────────────────────────────────────────────
 
 // MarketStreamer is a shared, broker-level WebSocket client for live market data.
 // One instance per broker type, shared across all helms of that broker.
 type MarketStreamer interface {
-	// Subscribe streams live prices for the given symbols until ctx is cancelled.
+	// Subscribe streams live prices for the given symbols until ctx is canceled.
 	Subscribe(ctx context.Context, symbols []string) error
 	// AddPriceHandler registers a callback fired on each live trade price.
 	AddPriceHandler(h func(symbol string, price decimal.Decimal))

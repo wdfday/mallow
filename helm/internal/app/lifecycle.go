@@ -12,6 +12,8 @@ import (
 	"github.com/shopspring/decimal"
 	"go.uber.org/fx"
 
+	"google.golang.org/protobuf/proto"
+
 	"mallow/helm/internal/config"
 	"mallow/helm/internal/infra/engine"
 	"mallow/helm/internal/infra/marketdata"
@@ -48,8 +50,10 @@ func startNATSAPI(
 	})
 }
 
-// subscribeSignals wires NATS signal subscription → runtime SignalDispatcher.
-func subscribeSignals(lc fx.Lifecycle, sc *engine.SignalClient, dispatcher *runtime.SignalDispatcher) {
+// subscribeSignals wires NATS signal subscription → runtime SignalDispatcher
+// and registers the dispatcher with the Registry for metrics export.
+func subscribeSignals(lc fx.Lifecycle, sc *engine.SignalClient, dispatcher *runtime.SignalDispatcher, reg *runtime.Registry) {
+	reg.SetDispatcher(dispatcher)
 	var sub interface{ Drain() error }
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
@@ -251,6 +255,30 @@ func runOrchestrator(
 			reg.RecoverGapFills(ctx, nc)
 			reg.StartFillStreaming(runCtx, nc)
 			reg.StartPollingSync(runCtx, nc, cfg.Runtime.SyncInterval)
+
+			// Subscribe to herald bar closes (bars.* NATS subject) to keep
+			// the per-helm price cache warm. This is the primary price source
+			// when no dedicated market-data listener is configured.
+			// Each bar carries the close price of the just-confirmed candle;
+			// the symbol already has the exchange prefix (e.g. "binance:ETHUSDT").
+			if _, err := nc.Subscribe(engine.SubjBarsPrefix+"*", func(msg *nats.Msg) {
+				var bar engine.BarMsg
+				if err := proto.Unmarshal(msg.Data, &bar); err != nil {
+					return
+				}
+				if bar.C <= 0 {
+					return
+				}
+				price := decimal.NewFromFloat(bar.C)
+				symbol := bar.S
+				for _, rt := range reg.All() {
+					rt.UpdatePrice(symbol, price)
+				}
+			}); err != nil {
+				slog.Warn("bars price feed subscribe failed", "err", err)
+			} else {
+				slog.Info("bars price feed subscribed", "subject", engine.SubjBarsPrefix+"*")
+			}
 
 			if cfg.MarketData.Source != "none" && cfg.MarketData.Source != "" {
 				listener, err := buildMarketDataListener(cfg)

@@ -68,17 +68,31 @@ type SyncedPosition struct {
 }
 
 // Summary is a one-call snapshot of key portfolio metrics for API responses.
+// Field semantics (see docs/metrics-and-reports.md for canonical definitions):
+//
+//	Cash             — free quote balance at the broker (decreased by entries, increased by exits)
+//	Equity           — Cash + Σ position.Qty × position.CurrentPrice (MtM total)
+//	DeployedCapital  — Σ position.Qty × position.AvgPrice (entry-cost basis of open positions)
+//	UnrealizedPnL    — Σ position.UnrealizedPnL (MtM delta from entry)
+//	RealizedPnL      — Σ closed-trade PnL since inception (gross, no fees)
+//	AvailableCash    — alias of Cash, kept for backward-compat (FE should prefer Cash)
+//
+// Hand-allocation aware fields (AllocatedToHands / UnallocatedCapital) are NOT
+// included here — they belong at the helm/handler layer where hand state lives.
 type Summary struct {
-	InitialCapital decimal.Decimal `json:"initial_capital"`
-	Cash           decimal.Decimal `json:"cash"`
-	AvailableCash  decimal.Decimal `json:"available_cash"`
-	Equity         decimal.Decimal `json:"equity"`
-	TotalReturn    float64         `json:"total_return_pct"`
-	CurrentDD      float64         `json:"current_drawdown_pct"`
-	MaxDD          float64         `json:"max_drawdown_pct"`
-	WinRate        float64         `json:"win_rate_pct"`
-	TotalTrades    int             `json:"total_trades"`
-	OpenPositions  int             `json:"open_positions"`
-	DailyPnL       decimal.Decimal `json:"daily_pnl"`
-	Positions      []Position      `json:"positions"`
+	InitialCapital  decimal.Decimal `json:"initial_capital"`
+	Cash            decimal.Decimal `json:"cash"`
+	AvailableCash   decimal.Decimal `json:"available_cash"` // deprecated alias of Cash
+	Equity          decimal.Decimal `json:"equity"`
+	DeployedCapital decimal.Decimal `json:"deployed_capital"`
+	UnrealizedPnL   decimal.Decimal `json:"unrealized_pnl"`
+	RealizedPnL     decimal.Decimal `json:"realized_pnl"`
+	TotalReturn     float64         `json:"total_return_pct"`
+	CurrentDD       float64         `json:"current_drawdown_pct"`
+	MaxDD           float64         `json:"max_drawdown_pct"`
+	WinRate         float64         `json:"win_rate_pct"`
+	TotalTrades     int             `json:"total_trades"`
+	OpenPositions   int             `json:"open_positions"`
+	DailyPnL        decimal.Decimal `json:"daily_pnl"`
+	Positions       []Position      `json:"positions"`
 }

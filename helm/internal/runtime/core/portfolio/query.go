@@ -2,6 +2,29 @@ package portfolio
 
 import "github.com/shopspring/decimal"
 
+// RealizedPnL returns the sum of PnL from all completed round-trip trades.
+func (p *Portfolio) RealizedPnL() decimal.Decimal {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	total := decimal.Zero
+	for i := range p.trades {
+		total = total.Add(p.trades[i].PnL)
+	}
+	return total
+}
+
+// UnrealizedPnL returns the mark-to-market PnL of all currently open positions.
+// Requires UpdatePrice to have been called with current market prices.
+func (p *Portfolio) UnrealizedPnL() decimal.Decimal {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	total := decimal.Zero
+	for _, pos := range p.positions {
+		total = total.Add(pos.UnrealizedPnL)
+	}
+	return total
+}
+
 // Cash returns the current cash balance.
 func (p *Portfolio) Cash() decimal.Decimal {
 	p.mu.RLock()
@@ -83,18 +106,36 @@ func (p *Portfolio) Summary() Summary {
 		totalReturn = v
 	}
 
+	// Derived aggregates over current positions.
+	deployed := decimal.Zero
+	unrealized := decimal.Zero
+	for _, pos := range p.positions {
+		if pos.AvgPrice.IsPositive() {
+			deployed = deployed.Add(pos.Qty.Abs().Mul(pos.AvgPrice))
+		}
+		unrealized = unrealized.Add(pos.UnrealizedPnL)
+	}
+	// Realized PnL = Σ closed-trade PnL (since helm hydrate / restart).
+	realized := decimal.Zero
+	for i := range p.trades {
+		realized = realized.Add(p.trades[i].PnL)
+	}
+
 	return Summary{
-		InitialCapital: p.initialCapital,
-		Cash:           p.cash,
-		AvailableCash:  p.cash,
-		Equity:         eq,
-		TotalReturn:    totalReturn,
-		CurrentDD:      dd,
-		MaxDD:          p.maxDrawdownLocked() * 100,
-		WinRate:        p.winRateLocked() * 100,
-		TotalTrades:    len(p.trades),
-		OpenPositions:  len(p.positions),
-		DailyPnL:       p.dailyPnLLocked(),
-		Positions:      positions,
+		InitialCapital:  p.initialCapital,
+		Cash:            p.cash,
+		AvailableCash:   p.cash, // deprecated alias
+		Equity:          eq,
+		DeployedCapital: deployed,
+		UnrealizedPnL:   unrealized,
+		RealizedPnL:     realized,
+		TotalReturn:     totalReturn,
+		CurrentDD:       dd,
+		MaxDD:           p.maxDrawdownLocked() * 100,
+		WinRate:         p.winRateLocked() * 100,
+		TotalTrades:     len(p.trades),
+		OpenPositions:   len(p.positions),
+		DailyPnL:        p.dailyPnLLocked(),
+		Positions:       positions,
 	}
 }

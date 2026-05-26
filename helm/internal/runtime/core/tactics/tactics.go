@@ -27,6 +27,10 @@ type MarketContext struct {
 	Spread      float64         `json:"spread"`       // bid-ask spread; currently always 0 (not wired to L2)
 	Volume      float64         `json:"volume"`       // recent volume; currently always 0
 	PositionQty decimal.Decimal `json:"position_qty"` // current open position size (0 if flat)
+	// AvailableBudget is the per-hand cap on entry notional. When positive the
+	// tactician clamps qty so qty*price ≤ AvailableBudget. Zero = no cap (legacy /
+	// shared-pool hands rely on helm-level risk guards instead).
+	AvailableBudget decimal.Decimal `json:"available_budget,omitzero"`
 }
 
 // ── ExecutionPlan ─────────────────────────────────────────────────────────────
@@ -113,10 +117,6 @@ const (
 // Translated from domain.PositionConfig by runtime.BuildHandComponents.
 type SizingConfig struct {
 	Mode SizingMode `json:"mode"`
-
-	// AllocatedCapital is the hand's fixed capital budget in quote currency (e.g. USDT).
-	// Zero → use full account equity.
-	AllocatedCapital decimal.Decimal `json:"allocated_capital,omitempty"`
 
 	// Per-trade unit: how much capital to deploy in a single entry.
 	// UnitCapital (fixed) takes priority over UnitPct.

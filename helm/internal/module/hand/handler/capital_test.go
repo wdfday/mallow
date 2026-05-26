@@ -9,7 +9,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
-	"mallow/helm/internal/module/hand/domain"
+	handdomain "mallow/helm/internal/module/hand/domain"
 )
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -19,8 +19,8 @@ func botID(name string) uuid.UUID {
 	return uuid.NewSHA1(uuid.NameSpaceDNS, []byte(name))
 }
 
-func botSummaryUSD(id uuid.UUID, allocated float64) domain.HandSummary {
-	return domain.HandSummary{
+func botSummaryUSD(id uuid.UUID, allocated float64) handdomain.HandSummary {
+	return handdomain.HandSummary{
 		ID:               id,
 		AllocatedCapital: decimal.NewFromFloat(allocated),
 	}
@@ -33,7 +33,7 @@ func posUSD(v float64) decimal.Decimal {
 // ── No allocation requested — always passes ───────────────────────────────────
 
 func TestCheckCapitalAllocation_NoAllocation_Passes(t *testing.T) {
-	bots := []domain.HandSummary{
+	bots := []handdomain.HandSummary{
 		botSummaryUSD(botID("bot1"), 5_000),
 	}
 	if overflow, _ := checkCapitalAllocation(10_000, bots, decimal.Zero, ""); overflow != nil {
@@ -44,7 +44,7 @@ func TestCheckCapitalAllocation_NoAllocation_Passes(t *testing.T) {
 // ── Fixed-USD allocation ─────────────────────────────────────────────────────
 
 func TestCheckCapitalAllocation_USD_WithinBudget(t *testing.T) {
-	bots := []domain.HandSummary{
+	bots := []handdomain.HandSummary{
 		botSummaryUSD(botID("bot1"), 3_000),
 		botSummaryUSD(botID("bot2"), 3_000),
 	}
@@ -55,7 +55,7 @@ func TestCheckCapitalAllocation_USD_WithinBudget(t *testing.T) {
 }
 
 func TestCheckCapitalAllocation_USD_ExceedsBudget(t *testing.T) {
-	bots := []domain.HandSummary{
+	bots := []handdomain.HandSummary{
 		botSummaryUSD(botID("bot1"), 6_000),
 		botSummaryUSD(botID("bot2"), 3_000),
 	}
@@ -67,7 +67,7 @@ func TestCheckCapitalAllocation_USD_ExceedsBudget(t *testing.T) {
 }
 
 func TestCheckCapitalAllocation_USD_ExceedsBudget_HasSuggestions(t *testing.T) {
-	bots := []domain.HandSummary{
+	bots := []handdomain.HandSummary{
 		botSummaryUSD(botID("bot1"), 6_000), // deployed=0, reducible=6000
 		botSummaryUSD(botID("bot2"), 3_000), // deployed=0, reducible=3000
 	}
@@ -83,7 +83,7 @@ func TestCheckCapitalAllocation_USD_ExceedsBudget_HasSuggestions(t *testing.T) {
 func TestCheckCapitalAllocation_USD_ExceedsBudget_NoSuggestions_WhenFullyDeployed(t *testing.T) {
 	b1 := botSummaryUSD(botID("bot1"), 6_000)
 	b1.DeployedCapital = decimal.NewFromFloat(6_000) // fully deployed, can't reduce
-	bots := []domain.HandSummary{b1, botSummaryUSD(botID("bot2"), 3_000)}
+	bots := []handdomain.HandSummary{b1, botSummaryUSD(botID("bot2"), 3_000)}
 	overflow, _ := checkCapitalAllocation(10_000, bots, posUSD(2_000), "")
 	if overflow == nil {
 		t.Fatal("expected overflow")
@@ -97,7 +97,7 @@ func TestCheckCapitalAllocation_USD_ExceedsBudget_NoSuggestions_WhenFullyDeploye
 }
 
 func TestCheckCapitalAllocation_USD_ExactBudget_Passes(t *testing.T) {
-	bots := []domain.HandSummary{
+	bots := []handdomain.HandSummary{
 		botSummaryUSD(botID("bot1"), 5_000),
 	}
 	// Exactly 5 000 remaining — requesting exactly 5 000 should pass.
@@ -107,7 +107,7 @@ func TestCheckCapitalAllocation_USD_ExactBudget_Passes(t *testing.T) {
 }
 
 func TestCheckCapitalAllocation_USD_ExcludesUpdatedBot(t *testing.T) {
-	bots := []domain.HandSummary{
+	bots := []handdomain.HandSummary{
 		botSummaryUSD(botID("bot1"), 7_000), // currently allocated 7 000
 		botSummaryUSD(botID("bot2"), 2_000),
 	}
@@ -120,7 +120,7 @@ func TestCheckCapitalAllocation_USD_ExcludesUpdatedBot(t *testing.T) {
 }
 
 func TestCheckCapitalAllocation_USD_ExcludedBot_StillExceedsTotal(t *testing.T) {
-	bots := []domain.HandSummary{
+	bots := []handdomain.HandSummary{
 		botSummaryUSD(botID("bot1"), 5_000),
 		botSummaryUSD(botID("bot2"), 4_000),
 	}
@@ -141,7 +141,7 @@ func TestCheckCapitalAllocation_ZeroAlloc_NoBots_Passes(t *testing.T) {
 }
 
 func TestCheckCapitalAllocation_EmptyExistingBots_USD_Passes(t *testing.T) {
-	if overflow, _ := checkCapitalAllocation(10_000, []domain.HandSummary{}, posUSD(9_999), ""); overflow != nil {
+	if overflow, _ := checkCapitalAllocation(10_000, []handdomain.HandSummary{}, posUSD(9_999), ""); overflow != nil {
 		t.Fatalf("expected nil when no other hands exist, got %v", overflow.Error)
 	}
 }

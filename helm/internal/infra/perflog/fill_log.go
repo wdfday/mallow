@@ -2,12 +2,11 @@ package perflog
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
+	"database/sql"
 	"fmt"
 	"time"
 
-	"github.com/nats-io/nats.go"
+	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/runtime/perf"
@@ -15,65 +14,73 @@ import (
 
 const fillStream = "TRADE_FILLS"
 
-// FillPage is one cursor page of fill results from the TRADE_FILLS stream.
+// FillPage is one cursor page of fill results.
 type FillPage struct {
 	Fills   []natsapi.TransactionMsg `json:"fills"`
 	Next    time.Time                `json:"next"`
 	HasMore bool                     `json:"has_more"`
 }
 
-// FillLog queries the TRADE_FILLS JetStream stream by account_id.
+// FillLog queries the PostgreSQL `fills` table (populated by FillPersister).
 type FillLog struct {
-	js nats.JetStreamContext
+	db *sql.DB
 }
 
-func NewFillLog(js nats.JetStreamContext) (*FillLog, error) {
-	if _, err := js.StreamInfo(fillStream); err != nil {
-		return nil, fmt.Errorf("stream %s not found: %w", fillStream, err)
-	}
-	return &FillLog{js: js}, nil
+func NewFillLog(db *sql.DB) *FillLog {
+	return &FillLog{db: db}
 }
 
+// Query returns fills for accountID ordered newest-first.
 func (l *FillLog) Query(ctx context.Context, accountID string, page perf.Page) (FillPage, error) {
 	limit := page.Limit
 	if limit <= 0 {
 		limit = 200
 	}
 
-	subj := fmt.Sprintf(natsapi.SubjTradeFilled, accountID)
-	opts := []nats.SubOpt{nats.OrderedConsumer(), nats.Context(ctx)}
-	if page.After.IsZero() {
-		opts = append(opts, nats.DeliverAll())
-	} else {
-		opts = append(opts, nats.StartTime(page.After))
+	args := []any{accountID, limit + 1}
+	where := "account_id = $1"
+	if !page.After.IsZero() {
+		where += " AND filled_at < $3"
+		args = append(args, page.After)
 	}
 
-	sub, err := l.js.SubscribeSync(subj, opts...)
+	rows, err := l.db.QueryContext(ctx,
+		`SELECT trade_id, order_id, helm_id, account_id, user_id, hand_id,
+			symbol, side, kind, qty, avg_price, fee, filled_at
+		 FROM fills
+		 WHERE `+where+`
+		 ORDER BY filled_at DESC
+		 LIMIT $2`,
+		args...,
+	)
 	if err != nil {
-		return FillPage{}, fmt.Errorf("fill_log subscribe %q: %w", subj, err)
+		return FillPage{}, fmt.Errorf("fills query: %w", err)
 	}
-	defer sub.Unsubscribe()
+	defer rows.Close()
 
 	var fills []natsapi.TransactionMsg
-	for len(fills) < limit+1 {
-		msg, err := sub.NextMsg(500 * time.Millisecond)
-		if err != nil {
-			if errors.Is(err, nats.ErrTimeout) {
-				break
-			}
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				return FillPage{}, ctx.Err()
-			}
-			return FillPage{}, fmt.Errorf("fill_log recv: %w", err)
+	for rows.Next() {
+		var (
+			f               natsapi.TransactionMsg
+			orderID         sql.NullString
+			handID          sql.NullString
+			qty, price, fee sql.NullString
+		)
+		if err := rows.Scan(
+			&f.TradeID, &orderID, &f.HelmID, &f.AccountID, &f.UserID, &handID,
+			&f.Symbol, &f.Side, &f.Kind, &qty, &price, &fee, &f.FilledAt,
+		); err != nil {
+			return FillPage{}, fmt.Errorf("fills scan: %w", err)
 		}
-		var txn natsapi.TransactionMsg
-		if jsonErr := json.Unmarshal(msg.Data, &txn); jsonErr == nil {
-			fills = append(fills, txn)
-		}
-		meta, _ := msg.Metadata()
-		if meta != nil && meta.NumPending == 0 {
-			break
-		}
+		f.OrderID = orderID.String
+		f.HandID = handID.String
+		f.Qty = decimalOrZeroStr(qty.String)
+		f.AvgPrice = decimalOrZeroStr(price.String)
+		f.Fee = decimalOrZeroStr(fee.String)
+		fills = append(fills, f)
+	}
+	if err := rows.Err(); err != nil {
+		return FillPage{}, fmt.Errorf("fills rows: %w", err)
 	}
 
 	hasMore := len(fills) > limit
@@ -85,4 +92,12 @@ func (l *FillLog) Query(ctx context.Context, accountID string, page perf.Page) (
 		next = fills[len(fills)-1].FilledAt
 	}
 	return FillPage{Fills: fills, Next: next, HasMore: hasMore}, nil
+}
+
+func decimalOrZeroStr(s string) decimal.Decimal {
+	if s == "" {
+		return decimal.Zero
+	}
+	d, _ := decimal.NewFromString(s)
+	return d
 }

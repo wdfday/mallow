@@ -41,7 +41,7 @@ func (l *jsTradeLog) Append(ctx context.Context, t perf.TradeRecord) error {
 	msg.Data = data
 	// Dedup key: hand + entry + exit timestamps — natural round-trip identity.
 	msg.Header.Set(nats.MsgIdHdr, fmt.Sprintf("%s-%d-%d",
-		t.HandID, t.EntryTS.UnixMilli(), t.ExitTS.UnixMilli()))
+		t.HandID, t.EntryAt.UnixMilli(), t.ExitAt.UnixMilli()))
 	_, err = l.js.PublishMsg(msg, nats.Context(ctx))
 	return err
 }
@@ -79,7 +79,7 @@ func (l *jsTradeLog) Query(ctx context.Context, handID string, page perf.Page) (
 	}
 	var next time.Time
 	if hasMore {
-		next = trades[len(trades)-1].ExitTS
+		next = trades[len(trades)-1].ExitAt
 	}
 	return perf.TradeLogPage{Trades: trades, Next: next, HasMore: hasMore}, nil
 }

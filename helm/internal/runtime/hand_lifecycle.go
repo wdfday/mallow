@@ -111,14 +111,13 @@ func BuildHandComponents(b *domain.Hand) (strategy.Strategy, *tactics.Tactician)
 	}
 
 	sc := tactics.SizingConfig{
-		Mode:             sizingMode,
-		AllocatedCapital: b.AllocatedCapital,
-		UnitCapital:      b.Position.UnitCapital,
-		UnitPct:          b.Position.UnitPct,
-		RiskPerTradePct:  b.Position.RiskPerTradePct,
-		MaxPositionPct:   b.Position.MaxPositionPct,
-		FixedQty:         b.Position.FixedQty,
-		FixedQuoteQty:    b.Position.FixedQuoteQty,
+		Mode:            sizingMode,
+		UnitCapital:     b.Position.UnitCapital,
+		UnitPct:         b.Position.UnitPct,
+		RiskPerTradePct: b.Position.RiskPerTradePct,
+		MaxPositionPct:  b.Position.MaxPositionPct,
+		FixedQty:        b.Position.FixedQty,
+		FixedQuoteQty:   b.Position.FixedQuoteQty,
 	}
 	tact := tactics.New(sc)
 
@@ -172,15 +171,48 @@ func (h *Hand) restorePosition(hp *position.HandPositions, currentPrice decimal.
 	h.mu.Unlock()
 }
 
-// RestorePnL rebuilds metrics.totalPnL and related counters from poslog history.
-// Called once on startup after restorePosition so realizedEquity() reflects
-// all completed trades, not just the current open position.
-// events must be the full ReplayHand result for this hand.
-func (h *Hand) RestorePnL(events []poslog.Event) {
-	var totalPnL decimal.Decimal
-	var totalCommission decimal.Decimal
-	var wins, losses int64
+// RestorePnL rebuilds metrics.totalPnL/totalCommission/winCount/lossCount from
+// the JetStream trade log (HELM_TRADES). This is authoritative because the trade
+// log contains entry+exit commission for every closed round-trip.
+// Falls back to poslog events when the trade log is unavailable (nil or empty).
+func (h *Hand) RestorePnL(ctx context.Context, events []poslog.Event) {
+	if tl := h.helmRuntime.TradeLog; tl != nil {
+		trades, err := tl.Since(ctx, h.id.String(), time.Time{})
+		if err == nil && len(trades) > 0 {
+			var totalPnL, totalCommission decimal.Decimal
+			var wins, losses int64
+			for _, t := range trades {
+				pnl, _ := decimal.NewFromString(t.GrossPnL)
+				comm, _ := decimal.NewFromString(t.Commission)
+				totalPnL = totalPnL.Add(pnl)
+				totalCommission = totalCommission.Add(comm)
+				if pnl.IsPositive() {
+					wins++
+				} else if pnl.IsNegative() {
+					losses++
+				}
+			}
+			h.metrics.mu.Lock()
+			h.metrics.totalPnL = totalPnL
+			h.metrics.totalCommission = totalCommission
+			h.metrics.winCount = wins
+			h.metrics.lossCount = losses
+			h.metrics.mu.Unlock()
+			slog.Info("hand: PnL restored from trade log",
+				"hand_id", h.id, "trades", len(trades),
+				"total_pnl", totalPnL, "total_commission", totalCommission,
+				"wins", wins, "losses", losses,
+			)
+			return
+		}
+		if err != nil {
+			slog.Warn("hand: trade log unavailable, falling back to poslog", "hand_id", h.id, "err", err)
+		}
+	}
 
+	// Fallback: poslog PositionClosed events (commission may be zero for old events).
+	var totalPnL, totalCommission decimal.Decimal
+	var wins, losses int64
 	for _, e := range events {
 		if e.Kind != poslog.KindPositionClosed {
 			continue
@@ -196,20 +228,19 @@ func (h *Hand) RestorePnL(events []poslog.Event) {
 		} else if pnl.IsNegative() {
 			losses++
 		}
+		commission, _ := decimal.NewFromString(p.Commission)
+		totalCommission = totalCommission.Add(commission)
 	}
-
 	h.metrics.mu.Lock()
 	h.metrics.totalPnL = totalPnL
 	h.metrics.totalCommission = totalCommission
 	h.metrics.winCount = wins
 	h.metrics.lossCount = losses
 	h.metrics.mu.Unlock()
-
-	slog.Info("hand: PnL restored from poslog",
+	slog.Info("hand: PnL restored from poslog (fallback)",
 		"hand_id", h.id,
-		"total_pnl", totalPnL,
-		"wins", wins,
-		"losses", losses,
+		"total_pnl", totalPnL, "total_commission", totalCommission,
+		"wins", wins, "losses", losses,
 	)
 }
 

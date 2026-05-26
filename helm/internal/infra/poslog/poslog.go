@@ -115,8 +115,24 @@ type PositionClosedPayload struct {
 	EntryAt     time.Time `json:"entry_at"`
 	ClosePrice  string    `json:"close_price"`
 	RealizedPnL string    `json:"realized_pnl"`
-	// Source: "signal" | "sl" | "tp" | "time_stop" | "external" | "kill"
-	Source string `json:"source"`
+	// ExitReason: "signal" | "sl" | "tp" | "time_stop" | "external" | "kill" | "bracket_exit".
+	// (Wire tag kept as "source" for backward compat with already-published events.)
+	ExitReason string `json:"source"`
+	// PatternKind: technical pattern that triggered entry (optional). Carried
+	// forward from the leg's opening OrderPlaced so the trade record can attribute
+	// PnL by pattern without an extra cross-event lookup.
+	PatternKind string `json:"pattern_kind,omitempty"`
+	// StopLoss / TakeProfit prices active at time of close (zero = none).
+	StopLossPrice   string `json:"stop_loss_price,omitempty"`
+	TakeProfitPrice string `json:"take_profit_price,omitempty"`
+	// EntryOrderID = leg's opening order_id (= PositionID).
+	// ExitOrderID  = the closing fill's order_id.
+	EntryOrderID string `json:"entry_order_id,omitempty"`
+	ExitOrderID  string `json:"exit_order_id,omitempty"`
+	// NEntries: how many fills opened/added to the leg (1 for non-pyramid).
+	NEntries int `json:"n_entries,omitempty"`
+	// Commission paid on the closing fill (may be zero when exchange doesn't report it).
+	Commission string `json:"commission,omitempty"`
 }
 
 // Event is one entry in the position log.

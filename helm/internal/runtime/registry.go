@@ -13,7 +13,6 @@ import (
 
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/poslog"
-	"mallow/helm/internal/infra/tradelog"
 	helmdomain "mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/runtime/perf"
 )
@@ -65,7 +64,7 @@ type Registry struct {
 	syncStore   SyncStore
 	posLog      poslog.Log       // nil when NATS unavailable
 	snapshotLog perf.SnapshotLog // nil when NATS unavailable
-	tradeLog    tradelog.Log     // nil when Postgres unavailable
+	tradeLog    perf.TradeLog    // JetStream HELM_TRADES — drained into PG by TradePersister
 
 	// Routing error counters — incremented in RouteSignal, exported via DispatchStats.
 	routeNoHelm atomic.Int64 // helm_id not found in registry
@@ -112,8 +111,9 @@ func (r *Registry) SetSnapshotLog(log perf.SnapshotLog) {
 	r.mu.Unlock()
 }
 
-// SetTradeLog injects the PostgreSQL trade log. Propagated to all already-spawned runtimes.
-func (r *Registry) SetTradeLog(log tradelog.Log) {
+// SetTradeLog injects the JetStream trade log. Propagated to all already-spawned runtimes.
+// Persistence to PostgreSQL is handled out-of-band by TradePersister.
+func (r *Registry) SetTradeLog(log perf.TradeLog) {
 	r.mu.Lock()
 	r.tradeLog = log
 	for _, rt := range r.helmRuntimes {

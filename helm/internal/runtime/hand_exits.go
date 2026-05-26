@@ -250,7 +250,7 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 		EntryAt:     affectedLeg.OpenedAt,
 		ClosePrice:  decimal.Zero.String(), // unknown — user exited at unknown price
 		RealizedPnL: decimal.Zero.String(),
-		Source:      "external",
+		ExitReason:  "external",
 	}
 	payload, _ := json.Marshal(cp)
 
@@ -505,7 +505,7 @@ func (h *Hand) checkPositionDesync(ctx context.Context) {
 			EntryAt:     leg.OpenedAt,
 			ClosePrice:  decimal.Zero.String(), // unknown — synced price not available per-fill
 			RealizedPnL: decimal.Zero.String(),
-			Source:      "external",
+			ExitReason:  "external",
 		}
 		payload, _ := json.Marshal(cp)
 		h.publishAndApply(ctx, poslog.Event{

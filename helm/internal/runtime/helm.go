@@ -13,7 +13,6 @@ import (
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/infra/poslog"
-	"mallow/helm/internal/infra/tradelog"
 	"mallow/helm/internal/runtime/core/portfolio"
 	"mallow/helm/internal/runtime/core/risk"
 	"mallow/helm/internal/runtime/core/strategy"
@@ -81,7 +80,7 @@ type HelmRuntime struct {
 	// nil fields degrade gracefully: poslog events are lost, events go to slog only.
 	PosLog      poslog.Log            // JetStream WAL for position events
 	SnapshotLog perf.SnapshotLog      // cash+equity+positions snapshot after every fill (HELM_SNAPSHOTS)
-	TradeLog    tradelog.Log          // PostgreSQL trade records (completed round-trips)
+	TradeLog    perf.TradeLog         // JetStream HELM_TRADES — closed round-trip trades; TradePersister drains into PG
 	nc          *nats.Conn            // NATS connection; used for portfolio.synced.* (nc.Publish path)
 	js          nats.JetStreamContext // JetStream context; publishes helm.events.* (durable, 7d)
 

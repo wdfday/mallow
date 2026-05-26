@@ -223,5 +223,6 @@ func setMeta(hand *runtime.Hand, b *domain.Hand) {
 		hand.Symbol = b.Symbols[0]
 	}
 	hand.StrategyName = "script"
+	hand.Timeframe = b.Strategy.Timeframe
 	hand.CapitalPct = b.Position.MaxPositionPct
 }

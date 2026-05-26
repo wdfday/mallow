@@ -10,8 +10,8 @@ import (
 
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/poslog"
-	"mallow/helm/internal/infra/tradelog"
 	helmdomain "mallow/helm/internal/module/helm/domain"
+	"mallow/helm/internal/runtime/perf"
 	"mallow/helm/internal/runtime/position"
 )
 
@@ -156,10 +156,13 @@ func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, pric
 
 	if isBracketExit {
 		cp := poslog.PositionClosedPayload{
-			OrderID:     positionID,
-			ClosePrice:  price.String(),
-			RealizedPnL: pnl.String(),
-			Source:      closeSource,
+			OrderID:      positionID,
+			ClosePrice:   price.String(),
+			RealizedPnL:  pnl.String(),
+			ExitReason:   closeSource,
+			EntryOrderID: positionID,
+			ExitOrderID:  orderID,
+			Commission:   decimalToString(commission),
 		}
 		if hasSnap {
 			cp.Symbol = snap.Symbol
@@ -167,6 +170,14 @@ func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, pric
 			cp.Qty = qty.String() // fill qty, not leg's accumulated qty
 			cp.EntryPrice = snap.EntryPrice.String()
 			cp.EntryAt = snap.OpenedAt
+			cp.PatternKind = snap.PatternKind
+			if snap.StopLoss.IsPositive() {
+				cp.StopLossPrice = snap.StopLoss.String()
+			}
+			if snap.TakeProfit.IsPositive() {
+				cp.TakeProfitPrice = snap.TakeProfit.String()
+			}
+			cp.NEntries = snap.NEntries
 		}
 		closedPayload, _ := json.Marshal(cp)
 		h.publishAndApply(ctx, poslog.Event{
@@ -201,10 +212,13 @@ func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, pric
 	if isClosingFill {
 		now := time.Now().UTC()
 		cp := poslog.PositionClosedPayload{
-			OrderID:     positionID,
-			ClosePrice:  price.String(),
-			RealizedPnL: pnl.String(),
-			Source:      closeSource,
+			OrderID:      positionID,
+			ClosePrice:   price.String(),
+			RealizedPnL:  pnl.String(),
+			ExitReason:   closeSource,
+			EntryOrderID: positionID,
+			ExitOrderID:  orderID,
+			Commission:   decimalToString(commission),
 		}
 		if hasSnap {
 			cp.Symbol = snap.Symbol
@@ -212,6 +226,14 @@ func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, pric
 			cp.Qty = qty.String() // fill qty, not leg's accumulated qty
 			cp.EntryPrice = snap.EntryPrice.String()
 			cp.EntryAt = snap.OpenedAt
+			cp.PatternKind = snap.PatternKind
+			if snap.StopLoss.IsPositive() {
+				cp.StopLossPrice = snap.StopLoss.String()
+			}
+			if snap.TakeProfit.IsPositive() {
+				cp.TakeProfitPrice = snap.TakeProfit.String()
+			}
+			cp.NEntries = snap.NEntries
 		}
 		closedPayload, _ := json.Marshal(cp)
 		h.publishAndApply(ctx, poslog.Event{
@@ -227,32 +249,72 @@ func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, pric
 	}
 }
 
-// appendTradeRecord writes a completed trade to the PostgreSQL trade log.
+// appendTradeRecord publishes a completed round-trip trade to the HELM_TRADES
+// JetStream stream. A TradePersister drains the stream into PostgreSQL.
+//
+// JetStream acts as a durable buffer: if the persister or PG is down briefly,
+// trades queue up in NATS instead of being lost (which the previous direct-PG
+// goroutine path could not guarantee).
+//
 // No-ops when TradeLog is not configured.
 func (h *Hand) appendTradeRecord(ctx context.Context, cp poslog.PositionClosedPayload, commission decimal.Decimal, exitAt time.Time) {
 	tl := h.helmRuntime.TradeLog
 	if tl == nil {
 		return
 	}
-	entryPrice, _ := decimal.NewFromString(cp.EntryPrice)
-	exitPrice, _ := decimal.NewFromString(cp.ClosePrice)
-	qty, _ := decimal.NewFromString(cp.Qty)
-	pnl, _ := decimal.NewFromString(cp.RealizedPnL)
+	rec := perf.TradeRecord{
+		HelmID:          h.helmID.String(),
+		HandID:          h.id.String(),
+		UserID:          h.helmRuntime.UserID.String(),
+		Symbol:          cp.Symbol,
+		Side:            cp.Side,
+		Qty:             cp.Qty,
+		Timeframe:       h.Timeframe,
+		EntryPrice:      cp.EntryPrice,
+		ExitPrice:       cp.ClosePrice,
+		EntryAt:         cp.EntryAt,
+		ExitAt:          exitAt,
+		GrossPnL:        cp.RealizedPnL,
+		Commission:      decimalToString(commission),
+		StopLossPrice:   cp.StopLossPrice,
+		TakeProfitPrice: cp.TakeProfitPrice,
+		PlannedRisk:     plannedRisk(cp.Qty, cp.EntryPrice, cp.StopLossPrice),
+		EntryOrderID:    cp.EntryOrderID,
+		ExitOrderID:     cp.ExitOrderID,
+		NEntries:        cp.NEntries,
+		ExitReason:      cp.ExitReason,
+		Strategy:        h.StrategyName,
+		PatternKind:     cp.PatternKind,
+	}
+	if err := tl.Append(ctx, rec); err != nil {
+		slog.Warn("trade_log: publish failed", "hand_id", h.id, "err", err)
+	}
+}
 
-	tl.Append(ctx, tradelog.TradeRecord{
-		HandID:     h.id,
-		HelmID:     h.helmID,
-		UserID:     h.helmRuntime.UserID,
-		Symbol:     cp.Symbol,
-		Side:       cp.Side,
-		EntryPrice: entryPrice,
-		ExitPrice:  exitPrice,
-		Qty:        qty,
-		PnL:        pnl,
-		Commission: commission,
-		Source:     cp.Source,
-		Strategy:   h.StrategyName,
-		EntryAt:    cp.EntryAt,
-		ExitAt:     exitAt,
-	})
+// decimalToString returns "" for the zero value so the JSON wire format omits
+// the field (matching the omitzero hints on TradeRecord).
+func decimalToString(d decimal.Decimal) string {
+	if d.IsZero() {
+		return ""
+	}
+	return d.String()
+}
+
+// plannedRisk computes the dollar risk implied at entry: qty × |entry − stop_loss|.
+// Returns "" when any input is missing — PG sees NULL and r_multiple stays NULL.
+func plannedRisk(qtyStr, entryStr, stopStr string) string {
+	if qtyStr == "" || entryStr == "" || stopStr == "" {
+		return ""
+	}
+	qty, err1 := decimal.NewFromString(qtyStr)
+	entry, err2 := decimal.NewFromString(entryStr)
+	stop, err3 := decimal.NewFromString(stopStr)
+	if err1 != nil || err2 != nil || err3 != nil {
+		return ""
+	}
+	risk := entry.Sub(stop).Abs().Mul(qty.Abs())
+	if !risk.IsPositive() {
+		return ""
+	}
+	return risk.String()
 }

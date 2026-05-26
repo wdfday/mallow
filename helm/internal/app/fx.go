@@ -22,6 +22,7 @@ import (
 	accountHandler "mallow/helm/internal/module/account/handler"
 	accountrepo "mallow/helm/internal/module/account/repository"
 	accountservice "mallow/helm/internal/module/account/service"
+	analyticsservice "mallow/helm/internal/module/analytics/service"
 	brokermodule "mallow/helm/internal/module/broker"
 	brokerHandler "mallow/helm/internal/module/broker/handler"
 	brokerepo "mallow/helm/internal/module/broker/repository"
@@ -64,8 +65,20 @@ var Module = fx.Options(
 	fx.Provide(newEventLog),
 	fx.Provide(newEventLogPersister),
 
-	// Trade log — PostgreSQL-backed completed trade records
-	fx.Provide(newTradeLog),
+	// Snapshot persister — NATS → batch PG writer for equity_snapshots
+	fx.Provide(newSnapshotPersister),
+
+	// Trade persister — NATS HELM_TRADES → batch PG writer for trades
+	fx.Provide(newTradePersister),
+	// Fill persister — NATS TRADE_FILLS → batch PG writer for fills
+	fx.Provide(newFillPersister),
+	// tradelog.Log — read-only PG view of the trades table, consumed by handlers
+	fx.Provide(newTradelogReader),
+	// Snapshot reader — PG-backed read for equity_snapshots (curve + lag)
+	fx.Provide(newSnapshotReader),
+	// Analytics service — read-only KPI / curve / trade list
+	fx.Provide(newStatsRunner),
+	fx.Provide(newAnalyticsService),
 
 	// Repositories — Postgres required (POSTGRES_URL must be set)
 	fx.Provide(newHelmRepo),
@@ -92,6 +105,9 @@ var Module = fx.Options(
 	// Lifecycle hooks (order matters)
 	fx.Invoke(runMigrations),
 	fx.Invoke(startEventLogPersister),
+	fx.Invoke(startSnapshotPersister),
+	fx.Invoke(startTradePersister),
+	fx.Invoke(startFillPersister),
 	fx.Invoke(wireHandLifecycle),
 	fx.Invoke(wireSyncStore),
 	fx.Invoke(wirePosLog),
@@ -127,7 +143,13 @@ func runMigrations(db *gorm.DB) error {
 	if err := eventlog.Migrate(db); err != nil {
 		return err
 	}
-	return tradelog.Migrate(db)
+	if err := tradelog.Migrate(db); err != nil {
+		return err
+	}
+	if err := perflog.MigrateFills(db); err != nil {
+		return err
+	}
+	return perflog.MigrateSnapshots(db)
 }
 
 func newHelmRepo(db *gorm.DB) orchdomain.HelmRepo {
@@ -154,12 +176,17 @@ func newOrchHandler(
 	fillLog *perflog.FillLog,
 	snapshotLog perf.SnapshotLog,
 	posLog poslog.Log,
+	analytics *analyticsservice.Service,
 ) *orchhandler.Handler {
-	return orchhandler.New(svc, handMgr, reg, nc, fillLog, snapshotLog, posLog)
+	return orchhandler.New(svc, handMgr, reg, nc, fillLog, snapshotLog, posLog, analytics)
 }
 
-func newHandHandler(handMgr *service.Service, helmSvc *orchservice.Service, reg *runtime.Registry, evLog eventlog.Log) *handhandler.Handler {
-	return handhandler.New(handMgr, helmSvc, reg, evLog)
+func newTradelogReader(db *sql.DB) tradelog.Log {
+	return tradelog.New(db)
+}
+
+func newHandHandler(handMgr *service.Service, helmSvc *orchservice.Service, reg *runtime.Registry, evLog eventlog.Log, analytics *analyticsservice.Service) *handhandler.Handler {
+	return handhandler.New(handMgr, helmSvc, reg, evLog, analytics)
 }
 
 func newEventLog(db *sql.DB) eventlog.Log {
@@ -168,6 +195,24 @@ func newEventLog(db *sql.DB) eventlog.Log {
 
 func newEventLogPersister(js nats.JetStreamContext, db *sql.DB) *eventlog.Persister {
 	return eventlog.NewPersister(js, db)
+}
+
+func newSnapshotPersister(js nats.JetStreamContext, db *sql.DB) *perflog.SnapshotPersister {
+	return perflog.NewSnapshotPersister(js, db)
+}
+
+func startSnapshotPersister(lc fx.Lifecycle, p *perflog.SnapshotPersister) {
+	ctx, cancel := context.WithCancel(context.Background())
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			go p.Run(ctx)
+			return nil
+		},
+		OnStop: func(_ context.Context) error {
+			cancel()
+			return nil
+		},
+	})
 }
 
 func startEventLogPersister(lc fx.Lifecycle, p *eventlog.Persister) {
@@ -228,13 +273,45 @@ func wirePosLog(reg *runtime.Registry, log poslog.Log) {
 	}
 }
 
-func newTradeLog(db *sql.DB) tradelog.Log {
-	return tradelog.New(db)
+// wireTradeLog injects the JetStream perf.TradeLog into the registry so all
+// runtimes (current and future) publish completed trades to HELM_TRADES.
+// Trades are drained into Postgres asynchronously by TradePersister.
+func wireTradeLog(reg *runtime.Registry, log perf.TradeLog) {
+	reg.SetTradeLog(log)
 }
 
-// wireTradeLog injects the trade log into the registry so all runtimes (current and future) receive it.
-func wireTradeLog(reg *runtime.Registry, log tradelog.Log) {
-	reg.SetTradeLog(log)
+func newTradePersister(js nats.JetStreamContext, db *sql.DB) *perflog.TradePersister {
+	return perflog.NewTradePersister(js, db)
+}
+
+func newSnapshotReader(db *sql.DB) perflog.SnapshotReader {
+	return perflog.NewSnapshotReader(db)
+}
+
+func newStatsRunner(db *sql.DB) analyticsservice.StatsRunner {
+	return analyticsservice.NewPostgresStatsRunner(db)
+}
+
+func newAnalyticsService(
+	trades tradelog.Log,
+	snapshots perflog.SnapshotReader,
+	stats analyticsservice.StatsRunner,
+) *analyticsservice.Service {
+	return analyticsservice.New(trades, snapshots, stats)
+}
+
+func startTradePersister(lc fx.Lifecycle, p *perflog.TradePersister) {
+	ctx, cancel := context.WithCancel(context.Background())
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			go p.Run(ctx)
+			return nil
+		},
+		OnStop: func(_ context.Context) error {
+			cancel()
+			return nil
+		},
+	})
 }
 
 // wireHandLifecycle injects the hand lifecycle port into orchservice.Service (breaks init cycle).
@@ -295,4 +372,22 @@ func hydrateRuntimes(repo orchdomain.HelmRepo, reg *runtime.Registry, brokerSvc 
 // Must run AFTER hydrateRuntimes so that helm runtimes exist in the registry.
 func hydrateHands(svc *service.Service) {
 	svc.HydrateAll()
+}
+
+func newFillPersister(js nats.JetStreamContext, db *sql.DB) *perflog.FillPersister {
+	return perflog.NewFillPersister(js, db)
+}
+
+func startFillPersister(lc fx.Lifecycle, p *perflog.FillPersister) {
+	ctx, cancel := context.WithCancel(context.Background())
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			go p.Run(ctx)
+			return nil
+		},
+		OnStop: func(_ context.Context) error {
+			cancel()
+			return nil
+		},
+	})
 }

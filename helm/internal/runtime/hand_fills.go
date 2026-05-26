@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/natsapi"
+	"mallow/helm/internal/infra/poslog"
 	helmdomain "mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/runtime/perf"
 	"mallow/helm/internal/runtime/position"
@@ -65,27 +67,37 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 	// On close fill: pendingExits[orderID] will not exist — this block is a no-op.
 	var resolvedEl exitLevel
 	var hasExitBracket bool
+	// offsetResolved flags an IsOffset entry whose absolute SL/TP we just computed.
+	// We need to persist these back into LegState (via KindSLUpdated) after the leg
+	// has transitioned to PhaseOpen, otherwise the leg's StopLoss/TakeProfit stay
+	// zero — which corrupts LegSnapshot, the trade record's planned_risk, and
+	// reconcile-on-restart.
+	var offsetResolved bool
 	h.mu.Lock()
 	if pending, ok := h.pendingExits[orderID]; ok {
 		delete(h.pendingExits, orderID)
 		resolved := exitLevel{Side: pending.Side}
 		if pending.IsOffset {
-			// Use the portfolio's weighted average cost as the reference price for
-			// offset resolution. When the order had multiple partial fills, the
-			// portfolio AvgPrice reflects the true blended entry cost; the raw fill
-			// price passed here is only the last-trade price (Binance LatestPrice).
-			refPrice := price
-			if pos := h.helmRuntime.Portfolio.GetPosition(symbol); pos != nil && pos.AvgPrice.IsPositive() {
-				refPrice = pos.AvgPrice
-			}
-			if refPrice.IsPositive() {
+			// Resolve offset against THIS fill's average price (FilledAvg of the
+			// current order), not the position's blended cost. This gives the
+			// trend-following pyramid behaviour the user expects:
+			//
+			//   add 1 fill @ 100, offset −5 → SL = 95
+			//   add 2 fill @ 110, offset −5 → SL = 105   ← raised with the new add
+			//
+			// (Using the blended avg would lock SL near the original entry, defeating
+			// the protective ratchet that pyramid users want.)
+			// For non-pyramid first entries this collapses to the entry fill price,
+			// matching the previous behaviour.
+			if price.IsPositive() {
 				if !pending.StopOffset.IsZero() {
-					resolved.StopLoss = refPrice.Add(pending.StopOffset)
+					resolved.StopLoss = price.Add(pending.StopOffset)
 				}
 				if !pending.TakeProfitOffset.IsZero() {
-					resolved.TakeProfit = refPrice.Add(pending.TakeProfitOffset)
+					resolved.TakeProfit = price.Add(pending.TakeProfitOffset)
 				}
 			}
+			offsetResolved = true
 		} else {
 			resolved.StopLoss = pending.StopLoss
 			resolved.TakeProfit = pending.TakeProfit
@@ -255,22 +267,60 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 	// so that observers (tests, SSE clients) see a consistent DeployedCapital.
 	h.publishOrderFilled(ctx, orderID, qty, price, closePnL, commission, source, closeSource)
 
+	// ── 5.5. Persist resolved IsOffset SL/TP into the leg ───────────────────
+	// For offset entries the OrderPlaced poslog carried zero SL/TP (fill price
+	// unknown at placement). Now that we've resolved absolute levels, emit
+	// KindSLUpdated so:
+	//   1. LegState.{StopLoss,TakeProfit} reflect the absolute prices — picked up by
+	//      LegSnapshot → PositionClosedPayload → trade record's planned_risk + r_multiple.
+	//   2. Poslog replay on restart restores the resolved levels independently of
+	//      whether the bracket-order goroutine succeeded.
+	// Must run AFTER publishOrderFilled so the leg is in PhaseOpen (applySLUpdated requires it).
+	if offsetResolved && !isClosingFill && posID != "" &&
+		(resolvedEl.StopLoss.IsPositive() || resolvedEl.TakeProfit.IsPositive()) {
+		var newSL, newTP string
+		if resolvedEl.StopLoss.IsPositive() {
+			newSL = resolvedEl.StopLoss.String()
+		}
+		if resolvedEl.TakeProfit.IsPositive() {
+			newTP = resolvedEl.TakeProfit.String()
+		}
+		payload, _ := json.Marshal(poslog.SLUpdatedPayload{
+			OrderID: posID,
+			NewSL:   newSL,
+			NewTP:   newTP,
+			Reason:  "offset_resolved",
+		})
+		h.publishAndApply(ctx, poslog.Event{
+			ID:         posID + "_sl_resolved_" + orderID,
+			HandID:     h.id.String(),
+			HelmID:     h.helmID.String(),
+			PositionID: posID,
+			Kind:       poslog.KindSLUpdated,
+			Payload:    payload,
+			At:         time.Now().UTC(),
+		})
+	}
+
 	// ── 6. REST-path fill publish ─────────────────────────────────────────────
-	// The WS path (registry_fills.go) already calls natsapi.PublishTradeFill and
-	// RemoveOrderTracking before routing fills to this hand.
-	// For all other sources we publish here so consumers get near-realtime fills
-	// instead of waiting ~5 min for the next periodic Sync().
-	// MarkOrderFillPublished prevents Sync() from re-publishing with a different
-	// Nats-Msg-Id (which would cause duplicate fill events for consumers).
+	// source="ws"  → registry_fills.go already published with real exchange TradeID.
+	// source="rest" → WS echo will arrive ~100ms later and publish with real TradeID.
+	//                 If WS doesn't arrive, helm_sync.go picks it up (same real TradeID
+	//                 → JetStream dedup by Nats-Msg-Id catches the sync re-publish).
+	//                 So we skip publish here to avoid the synthetic orderID "ack" event.
+	// other sources (poll, kill, …) → no WS echo expected; publish now so consumers
+	//                 get near-realtime fills. MarkOrderFillPublished blocks Sync() re-publish.
 	if source != "ws" {
 		h.helmRuntime.RemoveOrderTracking(orderID)
+	}
+	if source != "ws" && source != "rest" {
 		if h.helmRuntime.js != nil {
 			natsapi.PublishTradeFill(h.helmRuntime.js, natsapi.TransactionMsg{
 				HelmID:    h.helmID.String(),
 				AccountID: h.helmRuntime.AccountID.String(),
 				UserID:    h.helmRuntime.UserID.String(),
 				HandID:    h.id.String(),
-				TradeID:   orderID, // synthetic dedup key; REST path has no exchange TradeID
+				TradeID:   orderID,
 				OrderID:   orderID,
 				Kind:      "fill",
 				Symbol:    symbol,
@@ -344,10 +394,17 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 }
 
 // handSnapshot builds a hand-level Snapshot from active leg state.
-// For hands with allocated capital, equity and cash are computed from closed P&L
-// and open position cost basis — no live price needed.
-// For hands without allocated capital (shared-pool), equity/cash are left zero;
-// the FE derives mark-to-market from the helm-level portfolio snapshot instead.
+// All fields are always populated.
+//
+// Accounting (capital isolation view):
+//
+//	deployedCap   = Σ leg.Qty × leg.EntryPrice  (capital locked in open legs)
+//	unrealizedPnL = Σ MtM(leg) using lastKnownPrice
+//	equity        = allocatedCap + realizedPnL + unrealizedPnL
+//	cash          = allocatedCap + realizedPnL − deployedCap   (free budget; never negative)
+//
+// For shared-pool hands (allocatedCap = 0) "cash" loses budget meaning and reduces to
+// (realizedPnL − deployedCap), which represents net liquid contribution to the pool.
 func (h *Hand) handSnapshot(ts time.Time) perf.Snapshot {
 	h.mu.RLock()
 	legs := h.pos.ActiveLegs()
@@ -355,11 +412,12 @@ func (h *Hand) handSnapshot(ts time.Time) perf.Snapshot {
 	h.mu.RUnlock()
 
 	h.metrics.mu.Lock()
-	totalPnL := h.metrics.totalPnL
+	realizedPnL := h.metrics.totalPnL
 	h.metrics.mu.Unlock()
 
 	entries := make([]perf.PositionEntry, 0, len(legs))
-	invested := decimal.Zero
+	unrealizedPnL := decimal.Zero
+	deployedCap := decimal.Zero
 	for _, leg := range legs {
 		entries = append(entries, perf.PositionEntry{
 			Symbol:   leg.Symbol,
@@ -367,22 +425,39 @@ func (h *Hand) handSnapshot(ts time.Time) perf.Snapshot {
 			Qty:      leg.Qty,
 			AvgPrice: leg.EntryPrice,
 		})
-		invested = invested.Add(leg.EntryPrice.Mul(leg.Qty))
+		if leg.EntryPrice.IsPositive() {
+			deployedCap = deployedCap.Add(leg.Qty.Abs().Mul(leg.EntryPrice))
+		}
+		curPrice := h.helmRuntime.lastKnownPrice(leg.Symbol)
+		if curPrice.IsPositive() && leg.EntryPrice.IsPositive() {
+			var legUnrealized decimal.Decimal
+			if leg.Side == "buy" {
+				legUnrealized = curPrice.Sub(leg.EntryPrice).Mul(leg.Qty.Abs())
+			} else {
+				legUnrealized = leg.EntryPrice.Sub(curPrice).Mul(leg.Qty.Abs())
+			}
+			unrealizedPnL = unrealizedPnL.Add(legUnrealized)
+		}
 	}
 
-	var equity, cash decimal.Decimal
-	if allocatedCap.IsPositive() {
-		equity = allocatedCap.Add(totalPnL)
-		cash = equity.Sub(invested)
+	equity := allocatedCap.Add(realizedPnL).Add(unrealizedPnL)
+	cash := allocatedCap.Add(realizedPnL).Sub(deployedCap)
+	if allocatedCap.IsPositive() && cash.IsNegative() {
+		// Allocated hand should never report negative cash — clamp to zero so the
+		// FE equity curve stays interpretable. Negative cash indicates the
+		// capital-isolation cap leaked (shouldn't happen with budgetQty clamp).
+		cash = decimal.Zero
 	}
 
 	return perf.Snapshot{
-		HelmID:    h.helmID.String(),
-		HandID:    h.id.String(),
-		TS:        ts,
-		Cash:      cash,
-		Equity:    equity,
-		Positions: entries,
+		HelmID:        h.helmID.String(),
+		HandID:        h.id.String(),
+		TS:            ts,
+		Cash:          cash,
+		Equity:        equity,
+		RealizedPnL:   realizedPnL,
+		UnrealizedPnL: unrealizedPnL,
+		Positions:     entries,
 	}
 }
 

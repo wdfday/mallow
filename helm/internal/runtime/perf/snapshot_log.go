@@ -18,21 +18,25 @@ type PositionEntry struct {
 }
 
 // Snapshot is an immutable point-in-time record of portfolio state.
-// Recorded after every fill (helm-level) or bar close (hand-level).
+// Recorded after every fill.
 //
-// HandID="": helm-level snapshot (cash + equity + all positions).
-// HandID set: hand-level snapshot (equity + legs owned by this hand; Cash is zero).
+// HandID="": helm-level snapshot (full account view).
+// HandID set: hand-level snapshot (legs owned by this hand only).
 //
-// Prices in Positions are NOT pre-multiplied — the frontend applies its own
-// current prices to compute equity at any timeframe. Equity here is the
-// mark-to-market value at snapshot time (cash + sum(qty * current_price)).
+// Equity = Cash + open-position mark-to-market.
+// RealizedPnL = sum of all closed-trade PnL since inception.
+// UnrealizedPnL = mark-to-market delta of currently open positions from their entry price.
+// All four numeric fields are always populated. For shared-pool hands (no AllocatedCapital),
+// Equity = realizedPnL + unrealizedPnL (net contribution); Cash = realizedPnL (liquid portion).
 type Snapshot struct {
-	HelmID    string          `json:"helm_id"`
-	HandID    string          `json:"hand_id,omitempty"` // empty = helm-level
-	TS        time.Time       `json:"ts"`
-	Cash      decimal.Decimal `json:"cash,omitzero"`   // helm-level only (quote free balance)
-	Equity    decimal.Decimal `json:"equity,omitzero"` // mark-to-market at TS
-	Positions []PositionEntry `json:"positions"`
+	HelmID        string          `json:"helm_id"`
+	HandID        string          `json:"hand_id,omitempty"` // empty = helm-level
+	TS            time.Time       `json:"ts"`
+	Cash          decimal.Decimal `json:"cash,omitzero"`           // free quote balance (helm) or liquid within budget (hand)
+	Equity        decimal.Decimal `json:"equity,omitzero"`         // Cash + open-position MtM; zero for shared-pool hands
+	RealizedPnL   decimal.Decimal `json:"realized_pnl,omitzero"`   // sum of closed-trade PnL
+	UnrealizedPnL decimal.Decimal `json:"unrealized_pnl,omitzero"` // open-position MtM delta from entry
+	Positions     []PositionEntry `json:"positions"`
 }
 
 // SnapshotLog is the append-only store for per-helm and per-hand portfolio snapshots.

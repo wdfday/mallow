@@ -1,6 +1,7 @@
 package infra
 
 import (
+	"database/sql"
 	"log/slog"
 
 	natsgo "github.com/nats-io/nats.go"
@@ -38,7 +39,7 @@ func newEncryptionService(cfg *config.Config) (*internalService.EncryptionServic
 func newSnapshotLog(js natsgo.JetStreamContext) perf.SnapshotLog {
 	l, err := perflog.NewSnapshotLog(js)
 	if err != nil {
-		slog.Warn("snapshot_log: JetStream init failed — portfolio snapshots will not be persisted", "err", err)
+		slog.Warn("snapshot_log: JetStream init failed — equity snapshots will not be persisted", "err", err)
 		return nil
 	}
 	return l
@@ -53,11 +54,6 @@ func newTradeLog(js natsgo.JetStreamContext) perf.TradeLog {
 	return l
 }
 
-func newFillLog(js natsgo.JetStreamContext) *perflog.FillLog {
-	l, err := perflog.NewFillLog(js)
-	if err != nil {
-		slog.Warn("fill_log: JetStream init failed — fill records will not be persisted", "err", err)
-		return nil
-	}
-	return l
+func newFillLog(db *sql.DB) *perflog.FillLog {
+	return perflog.NewFillLog(db)
 }

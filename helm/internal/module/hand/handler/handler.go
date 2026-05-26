@@ -13,7 +13,9 @@ import (
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/eventlog"
-	"mallow/helm/internal/module/hand/domain"
+	"mallow/helm/internal/module/analytics/domain"
+	analyticsservice "mallow/helm/internal/module/analytics/service"
+	handdomain "mallow/helm/internal/module/hand/domain"
 	dto "mallow/helm/internal/module/hand/dto"
 	helmDto "mallow/helm/internal/module/helm/dto"
 	"mallow/helm/internal/shared"
@@ -21,14 +23,15 @@ import (
 )
 
 type Handler struct {
-	handMgr  HandService
-	helmSvc  HelmService
-	reg      RuntimeRegistry
-	eventLog eventlog.Log // nil = eventlog not available (dev/test without DB)
+	handMgr   HandService
+	helmSvc   HelmService
+	reg       RuntimeRegistry
+	eventLog  eventlog.Log // nil = eventlog not available (dev/test without DB)
+	analytics *analyticsservice.Service
 }
 
-func New(handMgr HandService, helmSvc HelmService, reg RuntimeRegistry, evLog eventlog.Log) *Handler {
-	return &Handler{handMgr: handMgr, helmSvc: helmSvc, reg: reg, eventLog: evLog}
+func New(handMgr HandService, helmSvc HelmService, reg RuntimeRegistry, evLog eventlog.Log, analytics *analyticsservice.Service) *Handler {
+	return &Handler{handMgr: handMgr, helmSvc: helmSvc, reg: reg, eventLog: evLog, analytics: analytics}
 }
 
 func callerUserID(c *gin.Context) (uuid.UUID, bool) {
@@ -86,6 +89,8 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 		b.PUT("/:id", h.update)
 		b.GET("/:id/activity", h.activity)
 		b.GET("/:id/trades", h.trades)
+		b.GET("/:id/stats", h.stats)
+		b.GET("/:id/equity", h.equity)
 		b.POST("/:id/start", h.start)
 		b.POST("/:id/stop", h.stop)
 		b.POST("/:id/restart", h.restart)
@@ -108,9 +113,16 @@ type CapitalSuggestion struct {
 	SuggestedTarget decimal.Decimal `json:"suggested_target"` // allocated - min(reducibleBy, shortage)
 }
 
-// CapitalOverflow is returned (as JSON body) when a new or updated hand would
-// exceed the helm's available capital. It carries actionable suggestions so the
-// caller knows exactly which hands can be reduced and by how much.
+// CapitalOverflow is returned (as the 422 JSON body) when a new or updated hand
+// would exceed the helm's unallocated capital. It carries actionable suggestions
+// so the caller knows exactly which hands can be reduced and by how much.
+//
+// Field meanings (all in the helm's quote currency, see docs/metrics-and-reports.md):
+//
+//	helm_equity      = Portfolio.Equity()                                         — broker truth
+//	total_allocated  = Σ existing_hand.AllocatedCapital (excluding the hand being updated)
+//	requested        = the AllocatedCapital being created / updated to
+//	available        = helm_cash − total_allocated                                — i.e. UnallocatedCapital
 type CapitalOverflow struct {
 	Error       string              `json:"error"`
 	HelmEquity  float64             `json:"helm_equity"`
@@ -120,40 +132,58 @@ type CapitalOverflow struct {
 	Suggestions []CapitalSuggestion `json:"suggestions"`
 }
 
-// checkCapitalAllocation validates that adding newPos to a Helm doesn't exceed
-// the available capital (live portfolio equity). excludeHandID is the hand being
-// updated (skip its existing allocation); pass "" when creating a new hand.
+// checkCapitalAllocation validates that the requested allocation fits inside
+// the helm's unallocated capital budget.
 //
-// Returns (*CapitalOverflow, nil) when capital is insufficient — the caller should
-// respond with 422 and the overflow payload so the client can act on suggestions.
-// Returns (nil, nil) when allocation is valid.
+// Inputs:
+//
+//	helmEquity        — `rt.Portfolio.Summary().Cash` (liquid broker cash)
+//	existing          — current allocations across all hands on the helm
+//	allocatedCapital  — the AllocatedCapital being requested (create or update target)
+//	excludeHandID     — pass the current hand's ID when updating so we don't
+//	                    double-count its existing allocation; pass "" when creating
+//
+// Skipped when `allocatedCapital` is zero (shared-pool hand — no per-hand budget).
+//
+// Returns (*CapitalOverflow, nil) on insufficient budget; (nil, nil) when valid.
 func checkCapitalAllocation(
-	totalCapital float64,
-	existing []domain.HandSummary,
+	helmEquity float64,
+	existing []handdomain.HandSummary,
 	allocatedCapital decimal.Decimal,
 	excludeHandID string,
 ) (*CapitalOverflow, error) {
-	// ── Fixed-USD allocation check ──────────────────────────────────────────
-	if allocatedCapital.IsPositive() {
-		var used float64
-		for _, b := range existing {
-			if b.ID.String() == excludeHandID {
-				continue
-			}
-			used += b.AllocatedCapital.InexactFloat64()
+	if !allocatedCapital.IsPositive() {
+		// Shared-pool hand or zero alloc — nothing to validate.
+		return nil, nil
+	}
+	var used float64
+	for _, b := range existing {
+		if b.ID.String() == excludeHandID {
+			continue
 		}
-		available := totalCapital - used
-		requesting := allocatedCapital.InexactFloat64()
-		if requesting > available {
-			shortage := requesting - available
-			return buildOverflow(
-				fmt.Sprintf("insufficient capital: requesting %.2f but only %.2f available", requesting, available),
-				totalCapital, used, requesting, available, shortage, existing, excludeHandID,
-			), nil
+		// Use AvailableCash: reflects actual cash owned by the hand after PnL/commission.
+		// Consistent with the unallocated_capital formula shown in the UI.
+		avail := b.AvailableCash.InexactFloat64()
+		if avail > 0 {
+			used += avail
 		}
 	}
-
-	return nil, nil
+	available := helmEquity - used
+	if available < 0 {
+		// Pre-existing skew: total alloc already exceeds equity. Clamp the
+		// reported "available" to 0 so the error message is intelligible.
+		available = 0
+	}
+	requesting := allocatedCapital.InexactFloat64()
+	if requesting <= available {
+		return nil, nil
+	}
+	shortage := requesting - available
+	return buildOverflow(
+		fmt.Sprintf("insufficient unallocated capital: requesting %.2f but only %.2f available "+
+			"(helm equity %.2f, already allocated %.2f)", requesting, available, helmEquity, used),
+		helmEquity, used, requesting, available, shortage, existing, excludeHandID,
+	), nil
 }
 
 // buildOverflow assembles a CapitalOverflow with sorted suggestions.
@@ -161,7 +191,7 @@ func checkCapitalAllocation(
 func buildOverflow(
 	msg string,
 	helmEquity, usedAbs, requesting, available, shortage float64,
-	existing []domain.HandSummary,
+	existing []handdomain.HandSummary,
 	excludeHandID string,
 ) *CapitalOverflow {
 	var suggestions []CapitalSuggestion
@@ -215,7 +245,7 @@ func buildOverflow(
 // @Accept json
 // @Produce json
 // @Param request body dto.CreateHandReq true "Hand create request"
-// @Success 201 {object} shared.SuccessResponse[domain.HandSummary]
+// @Success 201 {object} shared.SuccessResponse[handdomain.HandSummary]
 // @Failure 400 {object} shared.ErrorResponse
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 403 {object} shared.ErrorResponse
@@ -256,7 +286,7 @@ func (h *Handler) create(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusBadRequest, "helm runtime not available")
 		return
 	}
-	if overflow, _ := checkCapitalAllocation(rt.Portfolio.Summary().Equity.InexactFloat64(), h.handMgr.ListByHelm(helmID), cfg.AllocatedCapital, ""); overflow != nil {
+	if overflow, _ := checkCapitalAllocation(rt.Portfolio.Summary().Cash.InexactFloat64(), h.handMgr.ListByHelm(helmID), cfg.AllocatedCapital, ""); overflow != nil {
 		c.JSON(http.StatusUnprocessableEntity, overflow)
 		return
 	}
@@ -275,7 +305,7 @@ func (h *Handler) create(c *gin.Context) {
 // @Produce json
 // @Param helm_id query string false "Filter by helm ID"
 // @Param account_id query string false "Filter by account ID"
-// @Success 200 {object} shared.SuccessResponse[[]domain.HandSummary]
+// @Success 200 {object} shared.SuccessResponse[[]handdomain.HandSummary]
 // @Failure 400 {object} shared.ErrorResponse
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 404 {object} shared.ErrorResponse
@@ -319,12 +349,12 @@ func (h *Handler) list(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	var hands []domain.HandSummary
+	var hands []handdomain.HandSummary
 	for _, o := range helms {
 		hands = append(hands, h.handMgr.ListByHelm(o.ID)...)
 	}
 	if hands == nil {
-		hands = []domain.HandSummary{}
+		hands = []handdomain.HandSummary{}
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Hands retrieved successfully", hands)
 }
@@ -335,7 +365,7 @@ func (h *Handler) list(c *gin.Context) {
 // @Security BearerAuth
 // @Produce json
 // @Param id path string true "Hand ID"
-// @Success 200 {object} shared.SuccessResponse[domain.HandSummary]
+// @Success 200 {object} shared.SuccessResponse[handdomain.HandSummary]
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/hands/{id} [get]
@@ -369,7 +399,7 @@ func (h *Handler) get(c *gin.Context) {
 // @Produce json
 // @Param id path string true "Hand ID"
 // @Param request body dto.UpdateHandReq true "Hand update request"
-// @Success 200 {object} shared.SuccessResponse[domain.HandSummary]
+// @Success 200 {object} shared.SuccessResponse[handdomain.HandSummary]
 // @Failure 400 {object} shared.ErrorResponse
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 404 {object} shared.ErrorResponse
@@ -400,7 +430,7 @@ func (h *Handler) update(c *gin.Context) {
 			shared.RespondWithError(c, http.StatusBadRequest, "helm runtime not available")
 			return
 		}
-		if overflow, _ := checkCapitalAllocation(rt.Portfolio.Summary().Equity.InexactFloat64(), h.handMgr.ListByHelm(helmID), patch.AllocatedCapital, id.String()); overflow != nil {
+		if overflow, _ := checkCapitalAllocation(rt.Portfolio.Summary().Cash.InexactFloat64(), h.handMgr.ListByHelm(helmID), patch.AllocatedCapital, id.String()); overflow != nil {
 			c.JSON(http.StatusUnprocessableEntity, overflow)
 			return
 		}
@@ -681,6 +711,105 @@ func (h *Handler) activity(c *gin.Context) {
 // @Failure 400 {object} shared.ErrorResponse
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/hands/{id}/trades [get]
+// stats returns aggregated KPIs over closed trades for a hand.
+// @Summary Per-hand KPIs
+// @Tags hands
+// @Security BearerAuth
+// @Produce json
+// @Param id path string true "Hand ID"
+// @Param period query string false "Preset: 24h|7d|30d|mtd|ytd|all"
+// @Param after  query string false "RFC3339 inclusive lower bound"
+// @Param before query string false "RFC3339 exclusive upper bound"
+// @Success 200 {object} shared.SuccessResponse[helmDto.StatsResp]
+// @Router /api/v1/hands/{id}/stats [get]
+func (h *Handler) stats(c *gin.Context) {
+	userID, ok := callerUserID(c)
+	if !ok {
+		return
+	}
+	id, _, err := h.checkHandOwner(c.Param("id"), userID)
+	if err != nil {
+		shared.RespondWithError(c, http.StatusNotFound, "not found")
+		return
+	}
+	result, err := h.analytics.ComputeStats(c.Request.Context(), analyticsservice.StatsParams{
+		Scope:  domain.Scope{UserID: userID, HandID: &id},
+		Period: parseHandPeriod(c),
+	})
+	if err != nil {
+		shared.RespondWithError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	shared.RespondWithSuccess(c, http.StatusOK, "Stats retrieved", helmDto.StatsToResp(result.Stats, result.Metadata))
+}
+
+// equity returns the forward-filled equity curve for a hand.
+// @Summary Per-hand equity curve
+// @Tags hands
+// @Security BearerAuth
+// @Produce json
+// @Param id path string true "Hand ID"
+// @Param period query string false "Preset: 24h|7d|30d|mtd|ytd|all"
+// @Param resolution query string false "Bucket size: 1m|5m|15m|1h|4h|1d (default 1m)"
+// @Success 200 {object} shared.SuccessResponse[helmDto.EquityPageResp]
+// @Router /api/v1/hands/{id}/equity [get]
+func (h *Handler) equity(c *gin.Context) {
+	userID, ok := callerUserID(c)
+	if !ok {
+		return
+	}
+	id, helmID, err := h.checkHandOwner(c.Param("id"), userID)
+	if err != nil {
+		shared.RespondWithError(c, http.StatusNotFound, "not found")
+		return
+	}
+	res := domain.Resolution(c.DefaultQuery("resolution", string(domain.Res1m)))
+	result, err := h.analytics.EquityCurve(c.Request.Context(), analyticsservice.EquityCurveParams{
+		Scope:      domain.Scope{UserID: userID, HelmID: &helmID, HandID: &id},
+		Period:     parseHandPeriod(c),
+		Resolution: res,
+	})
+	if err != nil {
+		shared.RespondWithError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	resp := helmDto.EquityPageResp{
+		Points:   make([]helmDto.EquityPointResp, 0, len(result.Points)),
+		Limit:    len(result.Points),
+		Metadata: helmDto.MetadataResp(result.Metadata),
+	}
+	for _, p := range result.Points {
+		resp.Points = append(resp.Points, helmDto.EquityPointResp{
+			HandID:        id.String(),
+			TS:            p.TS,
+			Equity:        p.Equity.InexactFloat64(),
+			Cash:          p.Cash.InexactFloat64(),
+			RealizedPnL:   p.RealizedPnL.InexactFloat64(),
+			UnrealizedPnL: p.UnrealizedPnL.InexactFloat64(),
+		})
+	}
+	shared.RespondWithSuccess(c, http.StatusOK, "Equity retrieved", resp)
+}
+
+// parseHandPeriod mirrors the helm-side parsePeriod but lives in the hand
+// package so handlers stay decoupled from each other.
+func parseHandPeriod(c *gin.Context) domain.Period {
+	p := domain.Period{Preset: domain.PeriodPreset(c.Query("period"))}
+	if afterStr := c.Query("after"); afterStr != "" {
+		if t, err := time.Parse(time.RFC3339, afterStr); err == nil {
+			p.After = t
+		}
+	}
+	if beforeStr := c.Query("before"); beforeStr != "" {
+		if t, err := time.Parse(time.RFC3339, beforeStr); err == nil {
+			p.Before = t
+		}
+	}
+	return p
+}
+
+// trades returns closed round-trip trades for a hand. Delegates to the analytics
+// service (PostgreSQL-backed, full analytical fields). See docs/metrics-and-reports.md §4.
 func (h *Handler) trades(c *gin.Context) {
 	userID, ok := callerUserID(c)
 	if !ok {
@@ -691,33 +820,38 @@ func (h *Handler) trades(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusNotFound, "not found")
 		return
 	}
-	bi, err := h.handMgr.Get(id)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, err.Error())
-		return
-	}
-	rt, err := h.reg.Get(bi.Data.HelmID)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "helm runtime not active")
-		return
-	}
-
-	cursor, _ := strconv.ParseUint(c.DefaultQuery("cursor", "0"), 10, 64)
 	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
-	if limit < 1 || limit > 500 {
-		limit = 100
+	period := domain.Period{Preset: domain.PeriodPreset(c.Query("period"))}
+	if afterStr := c.Query("after"); afterStr != "" {
+		if t, perr := time.Parse(time.RFC3339, afterStr); perr == nil {
+			period.After = t
+		}
 	}
-
-	if rt.PosLog == nil {
-		shared.RespondWithError(c, http.StatusServiceUnavailable, "poslog unavailable")
+	if beforeStr := c.Query("before"); beforeStr != "" {
+		if t, perr := time.Parse(time.RFC3339, beforeStr); perr == nil {
+			period.Before = t
+		}
+	}
+	result, err := h.analytics.ListTrades(c.Request.Context(), analyticsservice.ListTradesParams{
+		Scope:  domain.Scope{UserID: userID, HandID: &id},
+		Period: period,
+		Limit:  limit,
+	})
+	if err != nil {
+		shared.RespondWithError(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	page, posErr := rt.PosLog.TradesPaged(c.Request.Context(), bi.Data.HelmID.String(), id.String(), cursor, limit)
-	if posErr != nil {
-		shared.RespondWithError(c, http.StatusInternalServerError, posErr.Error())
-		return
+	resp := helmDto.TradesPageResp{
+		Trades:   make([]helmDto.TradeResp, 0, len(result.Trades)),
+		HasMore:  result.HasMore,
+		Next:     result.Next,
+		Limit:    limit,
+		Metadata: helmDto.MetadataResp(result.Metadata),
 	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Trades retrieved", helmDto.PoslogPageToResp(page, limit))
+	for _, r := range result.Trades {
+		resp.Trades = append(resp.Trades, helmDto.TradelogToResp(r))
+	}
+	shared.RespondWithSuccess(c, http.StatusOK, "Trades retrieved", resp)
 }
 
 func (h *Handler) Metrics(c *gin.Context) {
@@ -864,7 +998,7 @@ func formatFloat(f float64) string {
 // @Produce json
 // @Param id path string true "Hand ID"
 // @Param request body dto.AllocateCapitalReq true "Capital allocation request"
-// @Success 200 {object} shared.SuccessResponse[domain.HandSummary]
+// @Success 200 {object} shared.SuccessResponse[handdomain.HandSummary]
 // @Failure 400 {object} shared.ErrorResponse
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 422 {object} shared.CapitalOverflow
@@ -907,7 +1041,7 @@ func (h *Handler) allocateCapital(c *gin.Context) {
 		return
 	}
 
-	if overflow, _ := checkCapitalAllocation(rt.Portfolio.Summary().Equity.InexactFloat64(), h.handMgr.ListByHelm(helmID), newCapital, id.String()); overflow != nil {
+	if overflow, _ := checkCapitalAllocation(rt.Portfolio.Summary().Cash.InexactFloat64(), h.handMgr.ListByHelm(helmID), newCapital, id.String()); overflow != nil {
 		c.JSON(http.StatusUnprocessableEntity, overflow)
 		return
 	}

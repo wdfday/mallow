@@ -162,7 +162,7 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 	}
 
 	h.mu.Lock()
-	h.health.LastSignalAt = timePtr(time.Now().UTC())
+	h.health.LastSignalAt = new(time.Now().UTC())
 	if h.health.Status == HealthStale {
 		h.health.Status = HealthRunning
 	}
@@ -263,13 +263,27 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 	}
 	h.mu.RUnlock()
 
+	// Capital isolation:
+	//   - Allocated hand (allocatedCap > 0): override equity with hand's own
+	//     realized equity so sizing tracks the hand's PnL, not the shared pool.
+	//     Also pass AvailableBudget so the tactician can hard-clamp qty to the
+	//     remaining budget (allocated + cumPnL − deployedCapital).
+	//   - Shared-pool hand (allocatedCap = 0): leave both zero so the tactician
+	//     falls back to portfolio equity and is bounded only by helm-level risk.
+	var equityOverride, availableBudget decimal.Decimal
+	if h.AllocatedCapital().IsPositive() {
+		equityOverride = h.realizedEquity()
+		availableBudget = h.AvailableCash()
+	}
+
 	reply := h.helmRuntime.ProcessTrade(ctx, TradeProposal{
-		HandID:         h.id.String(),
-		Symbol:         sig.Symbol,
-		Intent:         intent,
-		ATR:            sig.ATR,
-		EquityOverride: h.realizedEquity(),
-		PositionQty:    handPosQty,
+		HandID:          h.id.String(),
+		Symbol:          sig.Symbol,
+		Intent:          intent,
+		ATR:             sig.ATR,
+		EquityOverride:  equityOverride,
+		AvailableBudget: availableBudget,
+		PositionQty:     handPosQty,
 	}, h.tactician)
 
 	slog.Debug("signal: process trade result",
@@ -476,7 +490,7 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 	}
 	h.mu.Lock()
 	h.orders = append(h.orders, order)
-	h.health.LastOrderAt = timePtr(now)
+	h.health.LastOrderAt = new(now)
 	if h.health.Status == HealthError {
 		h.health.Status = HealthRunning
 	}

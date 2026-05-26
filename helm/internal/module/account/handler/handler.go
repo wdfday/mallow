@@ -204,7 +204,9 @@ func (h *Handler) portfolio(c *gin.Context) {
 	if !ok {
 		return
 	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Portfolio retrieved successfully", helmdto.PortfolioToResp(rt.PortfolioSummary()))
+	hands := h.handMgr.ListByHelm(rt.HelmID)
+	shared.RespondWithSuccess(c, http.StatusOK, "Portfolio retrieved successfully",
+		helmdto.PortfolioToResp(rt.PortfolioSummary(), helmdto.SumAllocatedCapital(hands), helmdto.SumAvailableCash(hands)))
 }
 
 // positions godoc
@@ -270,15 +272,13 @@ func (h *Handler) trades(c *gin.Context) {
 	if hasMore {
 		all = all[:limit]
 	}
-	var next uint64
-	if hasMore && len(all) > 0 {
-		next = all[len(all)-1].Cursor + 1
-	}
 	resp := helmdto.TradesPageResp{
 		Trades:  make([]helmdto.TradeResp, 0, len(all)),
-		Next:    next,
 		HasMore: hasMore,
 		Limit:   limit,
+	}
+	if hasMore && len(all) > 0 {
+		resp.Next = strconv.FormatUint(all[len(all)-1].Cursor+1, 10)
 	}
 	for _, t := range all {
 		resp.Trades = append(resp.Trades, helmdto.TradeRecordToResp(t))

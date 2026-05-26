@@ -85,6 +85,7 @@ type Hand struct {
 	// ── Display metadata (set by service layer, read-only after Start) ────────
 	Symbol       string
 	StrategyName string
+	Timeframe    string // bar timeframe the strategy runs on (M1/M5/H1/...); used for trade attribution
 	CapitalPct   float64
 	WasRunning   bool // pre-pause state; read by Resume to decide whether to restart
 
@@ -130,8 +131,8 @@ type Hand struct {
 func (h *Hand) ID() uuid.UUID { return h.id }
 
 // realizedEquity returns the hand's capital base for sizing: AllocatedCapital
-// plus all closed PnL so far. Capped at zero — a hand that has blown through
-// its allocation stops trading via the zero-quantity guard in ProcessTrade.
+// plus net closed PnL (after commissions). Capped at zero — a hand that has
+// blown through its allocation stops trading via the zero-quantity guard.
 func (h *Hand) realizedEquity() decimal.Decimal {
 	h.mu.RLock()
 	allocatedCap := h.allocatedCap
@@ -139,9 +140,10 @@ func (h *Hand) realizedEquity() decimal.Decimal {
 
 	h.metrics.mu.Lock()
 	pnl := h.metrics.totalPnL
+	commission := h.metrics.totalCommission
 	h.metrics.mu.Unlock()
 
-	realized := allocatedCap.Add(pnl)
+	realized := allocatedCap.Add(pnl).Sub(commission)
 	if realized.IsPositive() {
 		return realized
 	}

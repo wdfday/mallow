@@ -98,6 +98,7 @@ func TestPoslog_E2E(t *testing.T) {
 	hand := runtime.NewHand(uuid.New(), helmID, rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandRiskConfig{}, decimal.Zero)
 	hand.Symbol = "BTCUSDT"
 	hand.StrategyName = "signal_follower"
+	hand.EnableEventSink()
 	hand.Start()
 	defer hand.Stop()
 
@@ -250,6 +251,7 @@ func TestTradeRoundTrip_E2E(t *testing.T) {
 	hand := runtime.NewHand(uuid.New(), helmID, rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandRiskConfig{}, decimal.Zero)
 	hand.Symbol = "BTCUSDT"
 	hand.StrategyName = "signal_follower"
+	hand.EnableEventSink()
 	hand.Start()
 	defer hand.Stop()
 
@@ -341,7 +343,7 @@ func TestTradeRoundTrip_E2E(t *testing.T) {
 	}
 	t.Logf("position_closed: symbol=%s side=%s qty=%s entry=%s exit=%s pnl=%s source=%s",
 		closedPayload.Symbol, closedPayload.Side, closedPayload.Qty,
-		closedPayload.EntryPrice, closedPayload.ClosePrice, closedPayload.RealizedPnL, closedPayload.Source)
+		closedPayload.EntryPrice, closedPayload.ClosePrice, closedPayload.RealizedPnL, closedPayload.ExitReason)
 
 	if closedPayload.Symbol == "" {
 		t.Error("position_closed.Symbol is empty (pre-enrichment event?)")

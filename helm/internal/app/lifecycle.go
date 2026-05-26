@@ -250,6 +250,13 @@ func runOrchestrator(
 			// Step 2.5: Start all hydrated hands now that position state is reconciled.
 			handSvc.StartAllHydrated()
 
+			// Step 2.6: Emit a baseline snapshot per helm + per hand so the FE
+			// equity curve has a fresh datapoint right after restart instead of
+			// staying frozen at the last pre-shutdown record until the next fill.
+			for _, rt := range reg.All() {
+				rt.EmitBaselineSnapshots(ctx)
+			}
+
 			// Steps 3–6.
 			reg.ReconcileAllOrders(ctx)
 			reg.RecoverGapFills(ctx, nc)

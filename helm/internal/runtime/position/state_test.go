@@ -74,7 +74,7 @@ func mkPositionClosed(positionID string, pnl decimal.Decimal) poslog.Event {
 		OrderID:     positionID,
 		ClosePrice:  "0",
 		RealizedPnL: pnl.String(),
-		Source:      "external",
+		ExitReason:  "external",
 	}
 	b, _ := json.Marshal(p)
 	return poslog.Event{

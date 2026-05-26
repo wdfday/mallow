@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -12,76 +11,67 @@ import (
 )
 
 // TradeRecord is a completed round-trip trade (entry → exit).
+// Mirrors all analytical columns of the `trades` table, including the
+// PG GENERATED ones (net_pnl, holding_seconds, r_multiple).
 type TradeRecord struct {
 	ID         uuid.UUID
 	HandID     uuid.UUID
 	HelmID     uuid.UUID
 	UserID     uuid.UUID
 	Symbol     string
-	Side       string // entry side: "buy" (long) or "sell" (short)
+	Side       string
+	Timeframe  string
 	EntryPrice decimal.Decimal
 	ExitPrice  decimal.Decimal
 	Qty        decimal.Decimal
-	PnL        decimal.Decimal
-	Commission decimal.Decimal
-	Source     string // signal / sl / tp / kill / bracket_exit
-	Strategy   string
-	EntryAt    time.Time
-	ExitAt     time.Time
+	PnL        decimal.Decimal // gross PnL = (exit-entry)*qty
+	Commission decimal.Decimal // total entry+exit fees
+	NetPnL     decimal.Decimal // PG GENERATED = PnL − Commission
+
+	StopLossPrice   decimal.Decimal
+	TakeProfitPrice decimal.Decimal
+	PlannedRisk     decimal.Decimal // qty × |entry − SL|
+	RMultiple       decimal.Decimal // PG GENERATED = net_pnl / planned_risk
+
+	EntryOrderID   string
+	ExitOrderID    string
+	NEntries       int
+	HoldingSeconds int // PG GENERATED
+
+	Source      string // exit reason: signal / sl / tp / kill / bracket_exit / external / release
+	Strategy    string
+	PatternKind string
+	RegimeState string
+
+	EntryAt time.Time
+	ExitAt  time.Time
 }
 
 // Filter constrains a Query call.
 type Filter struct {
-	HandID *uuid.UUID // nil = all hands for the helm
-	HelmID *uuid.UUID // nil = all helms for the user
-	UserID uuid.UUID  // required
-	After  time.Time  // zero = no lower bound
-	Before time.Time  // zero = no upper bound
-	Limit  int        // 0 = default (100)
+	HandID *uuid.UUID
+	HelmID *uuid.UUID
+	UserID uuid.UUID
+	After  time.Time
+	Before time.Time
+	Limit  int
 }
 
-// Log persists and queries completed trades.
+// Log is the read-only view of the trades table for handlers/FE queries.
+//
+// Writes go through the JetStream HELM_TRADES path: hand → perf.TradeLog →
+// TradePersister → PostgreSQL `trades`. Direct PG inserts from this package
+// are deliberately removed so the durable buffer absorbs PG outages.
 type Log interface {
-	// Append writes a trade record. Fire-and-forget: errors are logged, not returned.
-	Append(ctx context.Context, rec TradeRecord)
-	// Query returns trades matching the filter, newest first.
 	Query(ctx context.Context, f Filter) ([]TradeRecord, error)
 }
 
-// postgresLog is the production implementation backed by PostgreSQL.
 type postgresLog struct {
 	db *sql.DB
 }
 
-// New returns a Log backed by the given *sql.DB.
 func New(db *sql.DB) Log {
 	return &postgresLog{db: db}
-}
-
-// Append inserts a single trade row. Runs in a goroutine to stay non-blocking.
-// On dedup conflict (same hand_id + entry_at + exit_at) the row is silently skipped.
-func (l *postgresLog) Append(ctx context.Context, rec TradeRecord) {
-	go func() {
-		_, err := l.db.ExecContext(ctx, `
-			INSERT INTO trades
-				(hand_id, helm_id, user_id, symbol, side,
-				 entry_price, exit_price, qty, pnl, commission,
-				 source, strategy, entry_at, exit_at)
-			VALUES
-				($1, $2, $3, $4, $5,
-				 $6, $7, $8, $9, $10,
-				 $11, $12, $13, $14)
-			ON CONFLICT (hand_id, entry_at, exit_at) DO NOTHING`,
-			rec.HandID, rec.HelmID, rec.UserID, rec.Symbol, rec.Side,
-			nullDecimal(rec.EntryPrice), nullDecimal(rec.ExitPrice),
-			nullDecimal(rec.Qty), nullDecimal(rec.PnL), rec.Commission.String(),
-			nullStr(rec.Source), nullStr(rec.Strategy),
-			nullTime(rec.EntryAt), rec.ExitAt,
-		)
-		if err != nil {
-			slog.Error("tradelog: append failed", "hand_id", rec.HandID, "err", err)
-		}
-	}()
 }
 
 // Query returns trades matching the filter, ordered by exit_at DESC.
@@ -116,10 +106,13 @@ func (l *postgresLog) Query(ctx context.Context, f Filter) ([]TradeRecord, error
 	}
 
 	rows, err := l.db.QueryContext(ctx,
-		"SELECT id, hand_id, helm_id, user_id, symbol, side,"+
-			" entry_price, exit_price, qty, pnl, commission,"+
-			" source, strategy, entry_at, exit_at, created_at"+
-			" FROM trades WHERE "+where+" ORDER BY exit_at DESC LIMIT $2",
+		`SELECT id, hand_id, helm_id, user_id, symbol, side, timeframe,
+			entry_price, exit_price, qty, pnl, commission, net_pnl,
+			stop_loss_price, take_profit_price, planned_risk, r_multiple,
+			entry_order_id, exit_order_id, n_entries, holding_seconds,
+			source, strategy, pattern_kind, regime_state,
+			entry_at, exit_at
+		FROM trades WHERE `+where+` ORDER BY exit_at DESC LIMIT $2`,
 		args...,
 	)
 	if err != nil {
@@ -130,35 +123,50 @@ func (l *postgresLog) Query(ctx context.Context, f Filter) ([]TradeRecord, error
 	var out []TradeRecord
 	for rows.Next() {
 		var r TradeRecord
-		var entryPrice, exitPrice, qty, pnl, commission sql.NullString
-		var source, strategy sql.NullString
-		var entryAt sql.NullTime
-		var createdAt time.Time
+		var (
+			timeframe                                  sql.NullString
+			entryPrice, exitPrice, qty                 sql.NullString
+			pnl, commission, netPnL                    sql.NullString
+			slPrice, tpPrice, plannedRisk, rMultiple   sql.NullString
+			entryOrderID, exitOrderID                  sql.NullString
+			nEntries, holdingSeconds                   sql.NullInt32
+			source, strategy, patternKind, regimeState sql.NullString
+			entryAt                                    sql.NullTime
+		)
 
 		if err := rows.Scan(
-			&r.ID, &r.HandID, &r.HelmID, &r.UserID, &r.Symbol, &r.Side,
-			&entryPrice, &exitPrice, &qty, &pnl, &commission,
-			&source, &strategy, &entryAt, &r.ExitAt, &createdAt,
+			&r.ID, &r.HandID, &r.HelmID, &r.UserID, &r.Symbol, &r.Side, &timeframe,
+			&entryPrice, &exitPrice, &qty, &pnl, &commission, &netPnL,
+			&slPrice, &tpPrice, &plannedRisk, &rMultiple,
+			&entryOrderID, &exitOrderID, &nEntries, &holdingSeconds,
+			&source, &strategy, &patternKind, &regimeState,
+			&entryAt, &r.ExitAt,
 		); err != nil {
 			return nil, err
 		}
-		if entryPrice.Valid {
-			r.EntryPrice, _ = decimal.NewFromString(entryPrice.String)
+		r.Timeframe = timeframe.String
+		r.EntryPrice = decimalOrZero(entryPrice)
+		r.ExitPrice = decimalOrZero(exitPrice)
+		r.Qty = decimalOrZero(qty)
+		r.PnL = decimalOrZero(pnl)
+		r.Commission = decimalOrZero(commission)
+		r.NetPnL = decimalOrZero(netPnL)
+		r.StopLossPrice = decimalOrZero(slPrice)
+		r.TakeProfitPrice = decimalOrZero(tpPrice)
+		r.PlannedRisk = decimalOrZero(plannedRisk)
+		r.RMultiple = decimalOrZero(rMultiple)
+		r.EntryOrderID = entryOrderID.String
+		r.ExitOrderID = exitOrderID.String
+		if nEntries.Valid {
+			r.NEntries = int(nEntries.Int32)
 		}
-		if exitPrice.Valid {
-			r.ExitPrice, _ = decimal.NewFromString(exitPrice.String)
-		}
-		if qty.Valid {
-			r.Qty, _ = decimal.NewFromString(qty.String)
-		}
-		if pnl.Valid {
-			r.PnL, _ = decimal.NewFromString(pnl.String)
-		}
-		if commission.Valid {
-			r.Commission, _ = decimal.NewFromString(commission.String)
+		if holdingSeconds.Valid {
+			r.HoldingSeconds = int(holdingSeconds.Int32)
 		}
 		r.Source = source.String
 		r.Strategy = strategy.String
+		r.PatternKind = patternKind.String
+		r.RegimeState = regimeState.String
 		if entryAt.Valid {
 			r.EntryAt = entryAt.Time
 		}
@@ -167,19 +175,13 @@ func (l *postgresLog) Query(ctx context.Context, f Filter) ([]TradeRecord, error
 	return out, rows.Err()
 }
 
-// ── helpers ──────────────────────────────────────────────────────────────────
-
-func nullStr(s string) sql.NullString {
-	return sql.NullString{String: s, Valid: s != ""}
-}
-
-func nullDecimal(d decimal.Decimal) sql.NullString {
-	if d.IsZero() {
-		return sql.NullString{}
+func decimalOrZero(s sql.NullString) decimal.Decimal {
+	if !s.Valid {
+		return decimal.Zero
 	}
-	return sql.NullString{String: d.String(), Valid: true}
-}
-
-func nullTime(t time.Time) sql.NullTime {
-	return sql.NullTime{Time: t, Valid: !t.IsZero()}
+	d, err := decimal.NewFromString(s.String)
+	if err != nil {
+		return decimal.Zero
+	}
+	return d
 }

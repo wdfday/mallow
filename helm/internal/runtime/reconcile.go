@@ -118,7 +118,7 @@ func (r *DefaultReconciler) reconcileHand(
 
 	if hp.IsFlat() {
 		// No open position, but still restore historical PnL so realizedEquity() is correct.
-		hand.RestorePnL(events)
+		hand.RestorePnL(ctx, events)
 		result.Phase = position.PhaseIdle
 		result.Action = ReconcileSkipped
 		return result
@@ -158,7 +158,7 @@ func (r *DefaultReconciler) reconcileHand(
 
 	// Restore PnL counters from poslog history so realizedEquity() reflects all
 	// completed trades, not just the current open position.
-	hand.RestorePnL(events2)
+	hand.RestorePnL(ctx, events2)
 
 	return result
 }
@@ -361,7 +361,7 @@ func (r *DefaultReconciler) emitExternalClose(
 		OrderID:     leg.PendingOrderID,
 		ClosePrice:  decimal.Zero.String(),
 		RealizedPnL: decimal.Zero.String(),
-		Source:      "external",
+		ExitReason:  "external",
 	})
 	return r.log.Publish(ctx, poslog.Event{
 		// Deterministic ID: reconciler may run multiple times for the same leg

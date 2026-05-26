@@ -1,23 +1,23 @@
-use crate::Wma;
+use crate::{Smma};
 
 #[derive(Debug, Clone)]
 pub struct AlligatorValue {
-    /// Jaw (blue): WMA(13) of median price — shifted 8 forward in display.
+    /// Jaw (blue): SMMA(13) of median price — shifted 8 forward in display.
     pub jaw: f64,
-    /// Teeth (red): WMA(8) of median price — shifted 5 forward.
+    /// Teeth (red): SMMA(8) of median price — shifted 5 forward.
     pub teeth: f64,
-    /// Lips (green): WMA(5) of median price — shifted 3 forward.
+    /// Lips (green): SMMA(5) of median price — shifted 3 forward.
     pub lips: f64,
     /// `true` when Lips > Teeth > Jaw (bullish spread / alligator eating upward).
     pub bullish: bool,
 }
 
-/// Williams Alligator — ba đường WMA mô phỏng hành vi của cá sấu.
+/// Williams Alligator — ba đường SMMA mô phỏng hành vi của cá sấu.
 ///
 /// Được Bill Williams phát triển. Ba đường đặt tên theo "cơ quan" của cá sấu:
-/// - **Jaw** (hàm): WMA(13) của median price, shift 8 bar về tương lai trong chart
-/// - **Teeth** (răng): WMA(8), shift 5 bar
-/// - **Lips** (môi): WMA(5), shift 3 bar
+/// - **Jaw** (hàm): SMMA(13) của median price, shift 8 bar về tương lai trong chart
+/// - **Teeth** (răng): SMMA(8), shift 5 bar
+/// - **Lips** (môi): SMMA(5), shift 3 bar
 ///
 /// Metaphor: "Cá sấu ăn" khi ba đường mở rộng ra và theo thứ tự (Lips > Teeth > Jaw
 /// trong uptrend). "Cá sấu ngủ" khi ba đường đan chéo nhau — không trade.
@@ -32,13 +32,13 @@ pub struct AlligatorValue {
 /// - **Lips cắt ra ngoài Teeth**: báo hiệu sắp có trend mới
 ///
 /// # Warmup
-/// Vì cascade WMA, warmup ≈ jaw_period + (teeth−1) + (lips−1).
+/// Vì cascade SMMA, warmup ≈ jaw_period + (teeth−1) + (lips−1).
 /// Ví dụ default(13,8,5): 13 + 7 + 4 = 24 bar.
 #[derive(Clone)]
 pub struct Alligator {
-    jaw: Wma,
-    teeth: Wma,
-    lips: Wma,
+    jaw: Smma,
+    teeth: Smma,
+    lips: Smma,
     jaw_period: usize,
     teeth_period: usize,
     lips_period: usize,
@@ -48,9 +48,9 @@ impl Alligator {
     /// Standard Williams periods: jaw=13, teeth=8, lips=5.
     pub fn new(jaw_period: usize, teeth_period: usize, lips_period: usize) -> Self {
         Self {
-            jaw: Wma::new(jaw_period),
-            teeth: Wma::new(teeth_period),
-            lips: Wma::new(lips_period),
+            jaw: Smma::new(jaw_period),
+            teeth: Smma::new(teeth_period),
+            lips: Smma::new(lips_period),
             jaw_period,
             teeth_period,
             lips_period,
@@ -63,7 +63,7 @@ impl Alligator {
 
     pub fn update(&mut self, high: f64, low: f64) -> Option<AlligatorValue> {
         let median = (high + low) / 2.0;
-        // Feed all three WMAs independently — avoids cascade short-circuit where lips/teeth
+        // Feed all three SMMAs independently — avoids cascade short-circuit where lips/teeth
         // would miss early bars while jaw is still warming up.
         let jaw_v   = self.jaw.update(median);
         let teeth_v = self.teeth.update(median);
@@ -76,9 +76,9 @@ impl Alligator {
     }
 
     pub fn reset(&mut self) {
-        self.jaw = Wma::new(self.jaw_period);
-        self.teeth = Wma::new(self.teeth_period);
-        self.lips = Wma::new(self.lips_period);
+        self.jaw = Smma::new(self.jaw_period);
+        self.teeth = Smma::new(self.teeth_period);
+        self.lips = Smma::new(self.lips_period);
     }
 }
 

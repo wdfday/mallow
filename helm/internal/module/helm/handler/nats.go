@@ -326,7 +326,8 @@ func (h *NATSHandler) portfolio(msg *nats.Msg) {
 		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
 		return
 	}
-	_ = msg.Respond(natsapi.ReplyOK(helmDto.PortfolioToResp(rt.PortfolioSummary())))
+	hands := h.handMgr.ListByHelm(rt.HelmID)
+	_ = msg.Respond(natsapi.ReplyOK(helmDto.PortfolioToResp(rt.PortfolioSummary(), helmDto.SumAllocatedCapital(hands), helmDto.SumAvailableCash(hands))))
 }
 
 func (h *NATSHandler) positions(msg *nats.Msg) {

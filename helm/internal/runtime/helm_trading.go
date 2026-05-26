@@ -27,6 +27,10 @@ type TradeProposal struct {
 	// Hands with AllocatedCapital pass their realized equity (allocated + cumPnL)
 	// so position sizes compound with the hand's actual performance.
 	EquityOverride decimal.Decimal
+	// AvailableBudget, when positive, is the hand's hard cap on per-entry notional —
+	// the tactician clamps qty so qty*price ≤ AvailableBudget. Zero disables the cap.
+	// Set only for allocated hands; shared-pool hands rely on helm-level risk guards.
+	AvailableBudget decimal.Decimal
 	// PositionQty is the per-hand qty from poslog (h.pos.ActiveLegs), not net portfolio.
 	// Used by the tactician to size exits and scale-outs correctly when multiple hands
 	// share the same symbol on this helm.
@@ -102,9 +106,10 @@ func (r *HelmRuntime) ProcessTrade(
 	}
 	tact.UpdateEquity(equity)
 	plan := tact.Plan(proposal.Intent, tactics.MarketContext{
-		Price:       price,
-		ATR:         proposal.ATR,
-		PositionQty: posQty,
+		Price:           price,
+		ATR:             proposal.ATR,
+		PositionQty:     posQty,
+		AvailableBudget: proposal.AvailableBudget,
 	})
 
 	if !plan.Qty.IsPositive() && !plan.QuoteQty.IsPositive() {
@@ -202,7 +207,7 @@ func (r *HelmRuntime) ReportFill(fill helmdomain.FillReport) {
 	}
 }
 
-// helmSnapshot builds a helm-level PortfolioSnapshot from current portfolio state.
+// helmSnapshot builds a helm-level Snapshot from current portfolio state.
 // Caller must hold tradeMu (or otherwise ensure portfolio is not being written concurrently).
 func (r *HelmRuntime) helmSnapshot(ts time.Time) *perf.Snapshot {
 	rawPos := r.Portfolio.Positions()
@@ -220,11 +225,49 @@ func (r *HelmRuntime) helmSnapshot(ts time.Time) *perf.Snapshot {
 		})
 	}
 	return &perf.Snapshot{
-		HelmID:    r.HelmID.String(),
-		TS:        ts,
-		Cash:      r.Portfolio.Cash(),
-		Equity:    r.Portfolio.Equity(),
-		Positions: entries,
+		HelmID:        r.HelmID.String(),
+		TS:            ts,
+		Cash:          r.Portfolio.Cash(),
+		Equity:        r.Portfolio.Equity(),
+		RealizedPnL:   r.Portfolio.RealizedPnL(),
+		UnrealizedPnL: r.Portfolio.UnrealizedPnL(),
+		Positions:     entries,
+	}
+}
+
+// EmitBaselineSnapshots writes one snapshot per hand and one helm-level snapshot
+// using the state restored by reconcile + RestorePnL. Called once at end of startup
+// so the FE equity curve has a fresh data point right after restart rather than
+// staying frozen at the last pre-shutdown snapshot until the next fill.
+func (r *HelmRuntime) EmitBaselineSnapshots(ctx context.Context) {
+	if r.SnapshotLog == nil {
+		return
+	}
+	now := time.Now().UTC()
+
+	r.mu.RLock()
+	hands := make([]*Hand, 0, len(r.hands))
+	for _, h := range r.hands {
+		hands = append(hands, h)
+	}
+	r.mu.RUnlock()
+
+	for _, h := range hands {
+		snap := h.handSnapshot(now)
+		if err := r.SnapshotLog.Append(ctx, snap); err != nil {
+			slog.Warn("snapshot_log: baseline hand snapshot failed",
+				"helm_id", r.HelmID, "hand_id", h.id, "err", err)
+		}
+	}
+
+	r.tradeMu.Lock()
+	helmSnap := r.helmSnapshot(now)
+	r.tradeMu.Unlock()
+	if helmSnap != nil {
+		if err := r.SnapshotLog.Append(ctx, *helmSnap); err != nil {
+			slog.Warn("snapshot_log: baseline helm snapshot failed",
+				"helm_id", r.HelmID, "err", err)
+		}
 	}
 }
 

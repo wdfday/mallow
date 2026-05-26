@@ -168,7 +168,11 @@ func spotAccountHandler(orderHandler func(exchange.OrderEvent), balanceHandler f
 			side = exchange.Sell
 		}
 		ts := time.UnixMilli(ou.TransactionTime).UTC()
-		orderID := strconv.FormatInt(ou.Id, 10)
+		// Prefix with symbol to match the "SYMBOL:numericID" format used by spot
+		// PlaceOrder REST responses (types.go spotCreateToResult). Without this,
+		// WS fill routing via orderHandMap always misses — hand tracked the prefixed
+		// key, WS looked up the raw key — causing every fill to be treated as manual.
+		orderID := ou.Symbol + ":" + strconv.FormatInt(ou.Id, 10)
 
 		switch ou.ExecutionType {
 		case "NEW":

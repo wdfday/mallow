@@ -60,6 +60,10 @@ func (t *Tactician) Plan(intent strategy.Intent, ctx MarketContext) ExecutionPla
 			intent.Action == strategy.ActionEnterShort ||
 			intent.Action == strategy.ActionScaleIn) {
 		plan.QuoteQty = t.sizing.FixedQuoteQty
+		// Capital isolation: clamp QuoteQty to AvailableBudget for entries.
+		if ctx.AvailableBudget.IsPositive() && plan.QuoteQty.GreaterThan(ctx.AvailableBudget) {
+			plan.QuoteQty = ctx.AvailableBudget
+		}
 	} else {
 		plan.Qty = t.size(intent, ctx)
 	}
@@ -135,6 +139,16 @@ func (t *Tactician) size(intent strategy.Intent, ctx MarketContext) decimal.Deci
 		qty = maxQty
 	}
 
+	// Capital isolation cap: for allocated hands, never deploy more than the
+	// remaining budget (allocatedCap + cumPnL − deployedCapital).
+	// AvailableBudget is zero for shared-pool hands → no cap applies.
+	if ctx.AvailableBudget.IsPositive() {
+		budgetQty := ctx.AvailableBudget.Div(ctx.Price)
+		if qty.GreaterThan(budgetQty) {
+			qty = budgetQty
+		}
+	}
+
 	if qty.IsNegative() {
 		return decimal.Zero
 	}
@@ -142,11 +156,10 @@ func (t *Tactician) size(intent strategy.Intent, ctx MarketContext) decimal.Deci
 }
 
 // allocatedEquity returns the capital budget for this hand.
-// AllocatedCapital (fixed USDT) takes priority; zero means full account equity.
+// totalEquity is always set by ProcessTrade via UpdateEquity before Plan is called:
+//   - hands with an allocated budget receive realizedEquity (allocatedCap + closedPnL)
+//   - shared-pool hands receive Portfolio.Equity()
 func (t *Tactician) allocatedEquity() decimal.Decimal {
-	if t.sizing.AllocatedCapital.IsPositive() {
-		return t.sizing.AllocatedCapital
-	}
 	return t.totalEquity
 }
 

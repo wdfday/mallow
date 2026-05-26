@@ -2,7 +2,6 @@ package handler
 
 import (
 	"net/http"
-	"sort"
 	"strconv"
 	"time"
 
@@ -12,12 +11,36 @@ import (
 
 	"mallow/helm/internal/infra/perflog"
 	"mallow/helm/internal/infra/poslog"
+	"mallow/helm/internal/module/analytics/domain"
+	analyticsservice "mallow/helm/internal/module/analytics/service"
 	dto "mallow/helm/internal/module/helm/dto"
 	"mallow/helm/internal/runtime"
 	"mallow/helm/internal/runtime/perf"
 	"mallow/helm/internal/shared"
 	pkgmw "mallow/pkg/middleware"
 )
+
+// parsePeriod extracts an analytics Period from query params.
+// Supports:
+//
+//	period=24h|7d|30d|mtd|ytd|all   (preset)
+//	after=RFC3339, before=RFC3339   (explicit bounds; either or both)
+//
+// Empty inputs → zero Period (means "all").
+func parsePeriod(c *gin.Context) domain.Period {
+	p := domain.Period{Preset: domain.PeriodPreset(c.Query("period"))}
+	if afterStr := c.Query("after"); afterStr != "" {
+		if t, err := time.Parse(time.RFC3339, afterStr); err == nil {
+			p.After = t
+		}
+	}
+	if beforeStr := c.Query("before"); beforeStr != "" {
+		if t, err := time.Parse(time.RFC3339, beforeStr); err == nil {
+			p.Before = t
+		}
+	}
+	return p
+}
 
 type Handler struct {
 	svc         HelmService
@@ -27,6 +50,7 @@ type Handler struct {
 	fillLog     *perflog.FillLog
 	snapshotLog perf.SnapshotLog
 	posLog      poslog.Log
+	analytics   *analyticsservice.Service
 }
 
 func New(
@@ -37,6 +61,7 @@ func New(
 	fillLog *perflog.FillLog,
 	snapshotLog perf.SnapshotLog,
 	posLog poslog.Log,
+	analytics *analyticsservice.Service,
 ) *Handler {
 	return &Handler{
 		svc:         svc,
@@ -46,6 +71,7 @@ func New(
 		fillLog:     fillLog,
 		snapshotLog: snapshotLog,
 		posLog:      posLog,
+		analytics:   analytics,
 	}
 }
 
@@ -88,6 +114,7 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 		o.GET("/:id/fills", h.fills)
 		o.GET("/:id/snapshots", h.snapshots)
 		o.GET("/:id/equity", h.equity)
+		o.GET("/:id/stats", h.stats)
 		o.GET("/:id/orders", h.orders)
 		o.GET("/:id/events", h.events)
 
@@ -479,7 +506,9 @@ func (h *Handler) portfolio(c *gin.Context) {
 	if rt == nil {
 		return
 	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Portfolio retrieved successfully", dto.PortfolioToResp(rt.PortfolioSummary()))
+	hands := h.handMgr.ListByHelm(rt.HelmID)
+	shared.RespondWithSuccess(c, http.StatusOK, "Portfolio retrieved successfully",
+		dto.PortfolioToResp(rt.PortfolioSummary(), dto.SumAllocatedCapital(hands), dto.SumAvailableCash(hands)))
 }
 
 // positions godoc
@@ -505,13 +534,13 @@ func (h *Handler) positions(c *gin.Context) {
 }
 
 // trades godoc
-// @Summary List closed trades for a helm (all hands, JetStream-backed)
+// @Summary List closed trades for a helm (PostgreSQL-backed, all analytical fields)
 // @Tags helms
 // @Security BearerAuth
 // @Produce json
 // @Param id path string true "Helm ID"
-// @Param cursor query int false "JetStream sequence cursor (0 = from start)"
-// @Param limit query int false "Page size" default(100)
+// @Param before query string false "RFC3339 exit_at cursor (exclusive); omit for newest"
+// @Param limit query int false "Page size (max 500)" default(100)
 // @Success 200 {object} shared.SuccessResponse[dto.TradesPageResp]
 // @Failure 400 {object} shared.ErrorResponse
 // @Failure 404 {object} shared.ErrorResponse
@@ -531,45 +560,25 @@ func (h *Handler) trades(c *gin.Context) {
 		return
 	}
 	_, limit := parsePage(c)
-	cursorStr := c.DefaultQuery("cursor", "0")
-	cursor, _ := strconv.ParseUint(cursorStr, 10, 64)
-
-	if h.posLog == nil {
-		shared.RespondWithError(c, http.StatusServiceUnavailable, "trade log unavailable")
-		return
-	}
-
-	helm, err := h.svc.Get(id)
+	period := parsePeriod(c)
+	result, err := h.analytics.ListTrades(c.Request.Context(), analyticsservice.ListTradesParams{
+		Scope:  domain.Scope{UserID: userID, HelmID: &id},
+		Period: period,
+		Limit:  limit,
+	})
 	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, err.Error())
+		shared.RespondWithError(c, http.StatusInternalServerError, err.Error())
 		return
-	}
-	// Fan-out: query each hand's trades then merge by ExitAt.
-	hands := h.handMgr.ListByHelm(id)
-	var all []poslog.TradeRecord
-	for _, hs := range hands {
-		page, qErr := h.posLog.TradesPaged(c.Request.Context(), helm.ID.String(), hs.ID.String(), cursor, limit)
-		if qErr == nil {
-			all = append(all, page.Trades...)
-		}
-	}
-	sort.Slice(all, func(i, j int) bool { return all[i].ExitAt.Before(all[j].ExitAt) })
-	hasMore := len(all) > limit
-	if hasMore {
-		all = all[:limit]
-	}
-	var next uint64
-	if hasMore && len(all) > 0 {
-		next = all[len(all)-1].Cursor + 1
 	}
 	resp := dto.TradesPageResp{
-		Trades:  make([]dto.TradeResp, 0, len(all)),
-		Next:    next,
-		HasMore: hasMore,
-		Limit:   limit,
+		Trades:   make([]dto.TradeResp, 0, len(result.Trades)),
+		HasMore:  result.HasMore,
+		Next:     result.Next,
+		Limit:    limit,
+		Metadata: dto.MetadataResp(result.Metadata),
 	}
-	for _, t := range all {
-		resp.Trades = append(resp.Trades, dto.TradeRecordToResp(t))
+	for _, r := range result.Trades {
+		resp.Trades = append(resp.Trades, dto.TradelogToResp(r))
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Trades retrieved successfully", resp)
 }
@@ -645,6 +654,45 @@ func (h *Handler) fills(c *gin.Context) {
 // @Success 200 {object} shared.SuccessResponse[dto.SnapshotPageResp]
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/snapshots [get]
+// stats godoc
+// @Summary Aggregated KPIs over closed trades for a helm
+// @Tags helms
+// @Security BearerAuth
+// @Produce json
+// @Param id path string true "Helm ID"
+// @Param period query string false "Preset: 24h|7d|30d|mtd|ytd|all"
+// @Param after query string false "RFC3339 inclusive lower bound (overrides preset.after)"
+// @Param before query string false "RFC3339 exclusive upper bound (overrides preset.before)"
+// @Success 200 {object} shared.SuccessResponse[dto.StatsResp]
+// @Failure 404 {object} shared.ErrorResponse
+// @Router /api/v1/helms/{id}/stats [get]
+func (h *Handler) stats(c *gin.Context) {
+	userID, ok := callerUserID(c)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		shared.RespondWithError(c, http.StatusBadRequest, "invalid id")
+		return
+	}
+	if err := h.svc.CheckOwner(id, userID); err != nil {
+		shared.RespondWithError(c, http.StatusNotFound, "not found")
+		return
+	}
+	result, err := h.analytics.ComputeStats(c.Request.Context(), analyticsservice.StatsParams{
+		Scope:  domain.Scope{UserID: userID, HelmID: &id},
+		Period: parsePeriod(c),
+	})
+	if err != nil {
+		shared.RespondWithError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	shared.RespondWithSuccess(c, http.StatusOK, "Stats retrieved successfully", dto.StatsToResp(result.Stats, result.Metadata))
+}
+
+// snapshots returns raw equity_snapshots rows for the helm (PG-backed, no bucketing).
+// FE that needs an evenly-spaced curve should call /equity instead.
 func (h *Handler) snapshots(c *gin.Context) {
 	userID, ok := callerUserID(c)
 	if !ok {
@@ -659,18 +707,17 @@ func (h *Handler) snapshots(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusNotFound, "not found")
 		return
 	}
-	if h.snapshotLog == nil {
-		shared.RespondWithError(c, http.StatusServiceUnavailable, "portfolio log unavailable")
-		return
-	}
 	_, limit := parsePage(c)
-	page := perf.Page{Limit: limit}
-	if afterStr := c.Query("after"); afterStr != "" {
-		if t, tErr := time.Parse(time.RFC3339, afterStr); tErr == nil {
-			page.After = t
+	params := analyticsservice.ListSnapshotsParams{
+		Scope: domain.Scope{UserID: userID, HelmID: &id},
+		Limit: limit,
+	}
+	if beforeStr := c.Query("before"); beforeStr != "" {
+		if t, perr := time.Parse(time.RFC3339, beforeStr); perr == nil {
+			params.Before = t
 		}
 	}
-	result, err := h.snapshotLog.Query(c.Request.Context(), id.String(), "", page)
+	result, err := h.analytics.ListSnapshots(c.Request.Context(), params)
 	if err != nil {
 		shared.RespondWithError(c, http.StatusInternalServerError, err.Error())
 		return
@@ -678,13 +725,12 @@ func (h *Handler) snapshots(c *gin.Context) {
 	resp := dto.SnapshotPageResp{
 		Snapshots: make([]dto.SnapshotResp, 0, len(result.Snapshots)),
 		HasMore:   result.HasMore,
+		Next:      result.Next,
 		Limit:     limit,
-	}
-	if result.HasMore {
-		resp.Next = result.Next.UTC().Format(time.RFC3339)
+		Metadata:  dto.MetadataResp(result.Metadata),
 	}
 	for _, s := range result.Snapshots {
-		resp.Snapshots = append(resp.Snapshots, dto.SnapshotToResp(s))
+		resp.Snapshots = append(resp.Snapshots, dto.SnapshotRowToResp(s))
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Snapshots retrieved successfully", resp)
 }
@@ -700,6 +746,8 @@ func (h *Handler) snapshots(c *gin.Context) {
 // @Success 200 {object} shared.SuccessResponse[dto.EquityPageResp]
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/equity [get]
+// equity returns a forward-filled equity curve for the helm. Backed by the
+// analytics service (PG `equity_snapshots`); resolution defaults to 1m.
 func (h *Handler) equity(c *gin.Context) {
 	userID, ok := callerUserID(c)
 	if !ok {
@@ -714,45 +762,29 @@ func (h *Handler) equity(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusNotFound, "not found")
 		return
 	}
-	if h.snapshotLog == nil {
-		shared.RespondWithError(c, http.StatusServiceUnavailable, "equity log unavailable")
+	res := domain.Resolution(c.DefaultQuery("resolution", string(domain.Res1m)))
+	result, err := h.analytics.EquityCurve(c.Request.Context(), analyticsservice.EquityCurveParams{
+		Scope:      domain.Scope{UserID: userID, HelmID: &id},
+		Period:     parsePeriod(c),
+		Resolution: res,
+	})
+	if err != nil {
+		shared.RespondWithError(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	_, limit := parsePage(c)
-	page := perf.Page{Limit: limit}
-	if afterStr := c.Query("after"); afterStr != "" {
-		if t, tErr := time.Parse(time.RFC3339, afterStr); tErr == nil {
-			page.After = t
-		}
-	}
-	// Fan-out across all hands, merge by TS.
-	hands := h.handMgr.ListByHelm(id)
-	var all []perf.Snapshot
-	for _, hs := range hands {
-		result, qErr := h.snapshotLog.Query(c.Request.Context(), id.String(), hs.ID.String(), page)
-		if qErr == nil {
-			all = append(all, result.Snapshots...)
-		}
-	}
-	sort.Slice(all, func(i, j int) bool { return all[i].TS.Before(all[j].TS) })
-	hasMore := len(all) > limit
-	if hasMore {
-		all = all[:limit]
-	}
 	resp := dto.EquityPageResp{
-		Points:  make([]dto.EquityPointResp, 0, len(all)),
-		HasMore: hasMore,
-		Limit:   limit,
+		Points:   make([]dto.EquityPointResp, 0, len(result.Points)),
+		HasMore:  false, // bucket grid is bounded by period
+		Limit:    len(result.Points),
+		Metadata: dto.MetadataResp(result.Metadata),
 	}
-	if hasMore && len(all) > 0 {
-		resp.Next = all[len(all)-1].TS.UTC().Format(time.RFC3339)
-	}
-	for _, p := range all {
+	for _, p := range result.Points {
 		resp.Points = append(resp.Points, dto.EquityPointResp{
-			HandID: p.HandID,
-			TS:     p.TS,
-			Equity: p.Equity.InexactFloat64(),
-			Cash:   p.Cash.InexactFloat64(),
+			TS:            p.TS,
+			Equity:        p.Equity.InexactFloat64(),
+			Cash:          p.Cash.InexactFloat64(),
+			RealizedPnL:   p.RealizedPnL.InexactFloat64(),
+			UnrealizedPnL: p.UnrealizedPnL.InexactFloat64(),
 		})
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Equity retrieved successfully", resp)

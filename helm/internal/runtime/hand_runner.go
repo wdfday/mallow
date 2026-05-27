@@ -70,19 +70,6 @@ func (h *Hand) runLoop(ctx context.Context) {
 func (h *Hand) checkStale() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	if !h.running || h.health.LastSignalAt == nil {
-		return
-	}
-	if time.Since(*h.health.LastSignalAt) > 5*time.Minute {
-		if h.health.Status != HealthStale {
-			h.health.Status = HealthStale
-			h.emitEvent(natsapi.HelmEvent{
-				Code:   CodeHandStale,
-				Reason: "no signal received in > 5 minutes",
-				Msg:    "hand: signal feed stale",
-			})
-		}
-	}
 
 	// Trim seenFills: remove entries for orders that have reached a terminal state
 	// (filled/canceled/rejected/expired). Terminal orders are never re-polled, so
@@ -163,9 +150,6 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 
 	h.mu.Lock()
 	h.health.LastSignalAt = new(time.Now().UTC())
-	if h.health.Status == HealthStale {
-		h.health.Status = HealthRunning
-	}
 	h.mu.Unlock()
 
 	if h.helmRuntime.IsPaused() {

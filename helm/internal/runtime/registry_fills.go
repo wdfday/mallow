@@ -115,7 +115,11 @@ func (r *Registry) applyFill(nc *nats.Conn, js nats.JetStreamContext, rt *HelmRu
 	helmID := rt.HelmID.String()
 
 	// Resolve botID from the order tracking map before the fill removes the record.
+	// "manual" is a sentinel for orders placed outside the bot — not a real hand UUID.
 	botID := rt.PendingOrderHandID(ev.OrderID)
+	if botID == "manual" {
+		botID = ""
+	}
 
 	slog.Info("exchange: fill processing",
 		"helm_id", rt.HelmID,

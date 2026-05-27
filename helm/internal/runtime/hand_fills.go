@@ -412,7 +412,7 @@ func (h *Hand) handSnapshot(ts time.Time) perf.Snapshot {
 	h.mu.RUnlock()
 
 	h.metrics.mu.Lock()
-	realizedPnL := h.metrics.totalPnL
+	realizedPnL := h.metrics.totalPnL.Sub(h.metrics.totalCommission)
 	h.metrics.mu.Unlock()
 
 	entries := make([]perf.PositionEntry, 0, len(legs))

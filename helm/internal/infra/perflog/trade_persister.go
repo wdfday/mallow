@@ -207,6 +207,28 @@ func nullableText(s string) any {
 	return s
 }
 
+// nullableUUID returns nil if s is empty or not a valid UUID string.
+// Prevents sentinel values like "manual" from hitting UUID-typed columns.
+func nullableUUID(s string) any {
+	if s == "" {
+		return nil
+	}
+	// UUID canonical form: 8-4-4-4-12 hex chars
+	if len(s) != 36 {
+		return nil
+	}
+	for i, c := range s {
+		if i == 8 || i == 13 || i == 18 || i == 23 {
+			if c != '-' {
+				return nil
+			}
+		} else if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return nil
+		}
+	}
+	return s
+}
+
 func nullableTime(t time.Time) any {
 	if t.IsZero() {
 		return nil

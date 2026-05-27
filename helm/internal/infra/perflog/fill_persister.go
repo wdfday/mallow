@@ -48,7 +48,12 @@ func (p *FillPersister) Run(ctx context.Context) {
 		slog.Error("fill persister: subscribe failed", "err", err)
 		return
 	}
-	defer sub.Unsubscribe() //nolint:errcheck
+	defer func(sub *nats.Subscription) {
+		err := sub.Unsubscribe()
+		if err != nil {
+
+		}
+	}(sub) //nolint:errcheck
 
 	slog.Info("fill persister: started — trade.filled.> → postgres")
 
@@ -124,7 +129,7 @@ func (p *FillPersister) insertBatch(ctx context.Context, recs []natsapi.Transact
 			r.HelmID,
 			r.AccountID,
 			r.UserID,
-			nullableText(r.HandID),
+			nullableUUID(r.HandID),
 			r.Symbol,
 			r.Side,
 			r.Kind,

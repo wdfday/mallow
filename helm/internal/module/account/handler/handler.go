@@ -440,10 +440,12 @@ func (h *Handler) equity(c *gin.Context) {
 	}
 	for _, p := range all {
 		resp.Points = append(resp.Points, helmdto.EquityPointResp{
-			HandID: p.HandID,
-			TS:     p.TS,
-			Equity: p.Equity.InexactFloat64(),
-			Cash:   p.Cash.InexactFloat64(),
+			HandID:        p.HandID,
+			TS:            p.TS,
+			Equity:        p.Equity.InexactFloat64(),
+			Cash:          p.Cash.InexactFloat64(),
+			RealizedPnL:   p.RealizedPnL.InexactFloat64(),
+			UnrealizedPnL: p.UnrealizedPnL.InexactFloat64(),
 		})
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Equity retrieved successfully", resp)

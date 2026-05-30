@@ -10,6 +10,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/module/analytics/domain"
+	"mallow/helm/internal/readmodel"
 )
 
 // SnapshotReader reads from the PostgreSQL `equity_snapshots` table.
@@ -23,7 +24,7 @@ type SnapshotReader interface {
 
 	// List returns raw snapshot rows ordered ts DESC. Unlike EquityCurve, no
 	// bucketing or forward-fill — useful for audit / debug views.
-	List(ctx context.Context, helmID uuid.UUID, handID *uuid.UUID, before time.Time, limit int) ([]SnapshotRow, error)
+	List(ctx context.Context, helmID uuid.UUID, handID *uuid.UUID, before time.Time, limit int) ([]readmodel.SnapshotRow, error)
 
 	// Latest returns the most recent snapshot at-or-before `at`.
 	// Used for "current equity" displays without scanning the full curve.
@@ -32,20 +33,6 @@ type SnapshotReader interface {
 	// PersisterLag returns the staleness of the persister: the time delta between
 	// now and the most recent row's ts. Used by analytics.Metadata.
 	PersisterLag(ctx context.Context, helmID uuid.UUID) (time.Duration, error)
-}
-
-// SnapshotRow is one raw snapshot row from `equity_snapshots`. Lossless mirror
-// of the table schema (positions JSONB is exposed as raw bytes — callers decode
-// when needed).
-type SnapshotRow struct {
-	HelmID        uuid.UUID
-	HandID        *uuid.UUID // nil for helm-level snapshots
-	TS            time.Time
-	Cash          decimal.Decimal
-	Equity        decimal.Decimal
-	RealizedPnL   decimal.Decimal
-	UnrealizedPnL decimal.Decimal
-	PositionsJSON []byte
 }
 
 type pgSnapshotReader struct {
@@ -140,7 +127,7 @@ func (r *pgSnapshotReader) List(
 	handID *uuid.UUID,
 	before time.Time,
 	limit int,
-) ([]SnapshotRow, error) {
+) ([]readmodel.SnapshotRow, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
@@ -167,9 +154,9 @@ func (r *pgSnapshotReader) List(
 	}
 	defer rows.Close()
 
-	out := make([]SnapshotRow, 0, limit)
+	out := make([]readmodel.SnapshotRow, 0, limit)
 	for rows.Next() {
-		var s SnapshotRow
+		var s readmodel.SnapshotRow
 		var handIDNS sql.NullString
 		var cash, equity, realized, unrealized sql.NullString
 		if err := rows.Scan(&s.HelmID, &handIDNS, &s.TS, &cash, &equity, &realized, &unrealized, &s.PositionsJSON); err != nil {

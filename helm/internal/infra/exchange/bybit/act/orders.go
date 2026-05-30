@@ -27,6 +27,7 @@ func (c *Client) PlaceOrder(ctx context.Context, creds exchange.Credentials, req
 		Side:        toBybitSide(req.Side),
 		OrderType:   orderType,
 		Qty:         req.Qty.String(),
+		OrderLinkId: req.ClientOrderID,
 		TimeInForce: bybitTIF(req.TIF),
 		ReduceOnly:  req.ReduceOnly,
 	}
@@ -49,11 +50,12 @@ func (c *Client) PlaceOrder(ctx context.Context, creds exchange.Credentials, req
 	}
 
 	return &exchange.OrderResult{
-		ID:     resp.Result.OrderID,
-		Symbol: req.Symbol,
-		Side:   req.Side,
-		Status: "submitted",
-		Qty:    req.Qty,
+		ID:            resp.Result.OrderID,
+		ClientOrderID: resp.Result.OrderLinkId,
+		Symbol:        req.Symbol,
+		Side:          req.Side,
+		Status:        "submitted",
+		Qty:           req.Qty,
 	}, nil
 }
 
@@ -67,6 +69,25 @@ func (c *Client) GetOrder(ctx context.Context, creds exchange.Credentials, order
 	}
 	if resp.RetCode != 0 || len(resp.Result.List) == 0 {
 		return nil, fmt.Errorf("bybit get order: code=%d msg=%s", resp.RetCode, resp.RetMsg)
+	}
+	return orderDetailToResult(&resp.Result.List[0]), nil
+}
+
+// GetOrderByClientOrderID looks up an order by orderLinkId (the Bybit clOrdId) on the
+// category matching market (futures → linear, otherwise spot). Returns nil when no such
+// order exists or the lookup fails. See CLIENT_ORDER_ID.md.
+func (c *Client) GetOrderByClientOrderID(ctx context.Context, creds exchange.Credentials, _ string, market exchange.MarketKind, clid string) (*exchange.OrderResult, error) {
+	category := "spot"
+	if market == exchange.MarketFutures {
+		category = "linear"
+	}
+	body := map[string]string{"category": category, "orderLinkId": clid}
+	var resp apiResponse[orderListResult]
+	if err := c.doSigned(ctx, creds, "GET", "/v5/order/realtime", body, &resp); err != nil {
+		return nil, nil
+	}
+	if resp.RetCode != 0 || len(resp.Result.List) == 0 {
+		return nil, nil
 	}
 	return orderDetailToResult(&resp.Result.List[0]), nil
 }

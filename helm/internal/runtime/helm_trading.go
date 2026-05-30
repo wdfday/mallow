@@ -90,6 +90,8 @@ func (r *HelmRuntime) ProcessTrade(
 	wasHalted := r.RiskMgr.IsHalted()
 	if ok, reason := r.RiskMgr.Validate(proposal.Intent, proposal.HandID); !ok {
 		if !wasHalted && r.RiskMgr.IsHalted() {
+			// Risk manager just tripped — emit event to helm.events.{helmID}.
+			// eventlog.Persister consumes that stream and updates helms.status = 'halted'.
 			r.EmitEvent(natsapi.HelmEvent{
 				Code:   CodeHelmHalted,
 				Reason: reason,
@@ -183,28 +185,26 @@ func (r *HelmRuntime) ReportFill(fill helmdomain.FillReport) {
 		Price:      fill.Price,
 		Commission: fill.Commission,
 	})
+
+	// After a SELL fill, if the remaining position qty is ≤ the recorded dust
+	// (sub-lot residual from lot-size truncation before placing the exit order),
+	// the remaining position is untradeable. Remove it so the portfolio stays flat.
+	if fill.Side == "sell" {
+		if dust := r.GetDust(fill.Symbol); dust.IsPositive() {
+			if pos := r.Portfolio.GetPosition(fill.Symbol); pos != nil && !pos.Qty.GreaterThan(dust) {
+				r.Portfolio.RemovePosition(fill.Symbol)
+			}
+		}
+	}
+
 	// Record an equity data point so RiskMgr can evaluate maxDrawdown on the next trade.
 	r.Portfolio.RecordEquity(now)
 
-	// Snapshot while still under tradeMu so cash+positions are consistent.
-	// Published async below so NATS I/O does not block the lock.
-	var snap *perf.Snapshot
-	if r.SnapshotLog != nil {
-		snap = r.helmSnapshot(now)
-	}
-
 	r.tradeMu.Unlock()
 
-	// Append snapshot async: JetStream publish is slow relative to trade decisions.
-	if snap != nil {
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := r.SnapshotLog.Append(ctx, *snap); err != nil {
-				slog.Warn("snapshot_log: helm snapshot append failed", "helm_id", r.HelmID, "err", err)
-			}
-		}()
-	}
+	// Hint to the snapshot loop: a fill just landed, flush within snapshotDebounce.
+	// This is a timing hint only — snapshot correctness does not depend on it.
+	r.MarkSnapshotDirty()
 }
 
 // helmSnapshot builds a helm-level Snapshot from current portfolio state.
@@ -235,40 +235,27 @@ func (r *HelmRuntime) helmSnapshot(ts time.Time) *perf.Snapshot {
 	}
 }
 
-// EmitBaselineSnapshots writes one snapshot per hand and one helm-level snapshot
-// using the state restored by reconcile + RestorePnL. Called once at end of startup
-// so the FE equity curve has a fresh data point right after restart rather than
-// staying frozen at the last pre-shutdown snapshot until the next fill.
-func (r *HelmRuntime) EmitBaselineSnapshots(ctx context.Context) {
-	if r.SnapshotLog == nil {
-		return
-	}
-	now := time.Now().UTC()
+// MarkSnapshotDirty hints to the SnapshotWorker that a fill just occurred.
+// The worker will flush a snapshot within snapshotDebounce (500ms).
+// This is a timing hint only — snapshot correctness does not depend on it.
+func (r *HelmRuntime) MarkSnapshotDirty() {
+	r.snapshotDirty.Store(1)
+}
 
-	r.mu.RLock()
-	hands := make([]*Hand, 0, len(r.hands))
-	for _, h := range r.hands {
-		hands = append(hands, h)
-	}
-	r.mu.RUnlock()
-
-	for _, h := range hands {
-		snap := h.handSnapshot(now)
-		if err := r.SnapshotLog.Append(ctx, snap); err != nil {
-			slog.Warn("snapshot_log: baseline hand snapshot failed",
-				"helm_id", r.HelmID, "hand_id", h.id, "err", err)
-		}
-	}
-
+// BuildSnapshot returns the current helm-level portfolio snapshot.
+// Acquires tradeMu so cash+positions are consistent.
+// Called by SnapshotWorker; safe from any goroutine.
+func (r *HelmRuntime) BuildSnapshot(ts time.Time) *perf.Snapshot {
 	r.tradeMu.Lock()
-	helmSnap := r.helmSnapshot(now)
+	snap := r.helmSnapshot(ts)
 	r.tradeMu.Unlock()
-	if helmSnap != nil {
-		if err := r.SnapshotLog.Append(ctx, *helmSnap); err != nil {
-			slog.Warn("snapshot_log: baseline helm snapshot failed",
-				"helm_id", r.HelmID, "err", err)
-		}
-	}
+	return snap
+}
+
+// HelmStringID returns the helm ID as a string for use in NATS subjects.
+// Implements perflog.SnapshotEmitter.
+func (r *HelmRuntime) HelmStringID() string {
+	return r.HelmID.String()
 }
 
 // ── Dust management ───────────────────────────────────────────────────────────

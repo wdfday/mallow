@@ -17,11 +17,12 @@ import (
 // Alpaca order IDs are plain UUIDs — no compound encoding needed.
 func mapOrder(o *alpacasdk.Order) *exchange.OrderResult {
 	result := &exchange.OrderResult{
-		ID:        o.ID,
-		Symbol:    o.Symbol,
-		Side:      exchange.OrderSide(o.Side),
-		Status:    o.Status,
-		FilledQty: o.FilledQty,
+		ID:            o.ID,
+		ClientOrderID: o.ClientOrderID,
+		Symbol:        o.Symbol,
+		Side:          exchange.OrderSide(o.Side),
+		Status:        o.Status,
+		FilledQty:     o.FilledQty,
 	}
 	if o.FilledAvgPrice != nil {
 		result.FilledAvg = *o.FilledAvgPrice

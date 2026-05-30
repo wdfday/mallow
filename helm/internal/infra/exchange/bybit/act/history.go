@@ -30,14 +30,16 @@ func (c *Client) FilledOrders(ctx context.Context, creds exchange.Credentials, _
 			side = "sell"
 		}
 		all = append(all, exchange.AccountTransaction{
-			TradeID:  e.ExecID,
-			OrderID:  e.OrderID,
-			Symbol:   e.Symbol,
-			Side:     side,
-			Qty:      parseDecimal(e.ExecQty),
-			AvgPrice: parseDecimal(e.ExecPrice),
-			Fee:      parseDecimal(e.ExecFee),
-			FilledAt: time.UnixMilli(tsMs).UTC(),
+			TradeID:       e.ExecID,
+			OrderID:       e.OrderID,
+			ClientOrderID: e.OrderLinkId,
+			Symbol:        e.Symbol,
+			Side:          side,
+			Qty:           parseDecimal(e.ExecQty),
+			AvgPrice:      parseDecimal(e.ExecPrice),
+			Fee:           parseDecimal(e.ExecFee),
+			FeeAsset:      e.FeeCurrency,
+			FilledAt:      time.UnixMilli(tsMs).UTC(),
 		})
 	}
 	return all, nil

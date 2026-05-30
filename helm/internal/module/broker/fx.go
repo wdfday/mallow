@@ -8,6 +8,7 @@ import (
 	"go.uber.org/fx"
 	"gorm.io/gorm"
 
+	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/natsapi"
 	accountRepo "mallow/helm/internal/module/account/repository"
 	"mallow/helm/internal/module/broker/client/alpaca"
@@ -105,6 +106,16 @@ func (a *helmCreatorAdapter) AutoCreateForAccount(ctx context.Context, req servi
 
 func (a *helmCreatorAdapter) AutoDeleteForAccount(_ context.Context, accountID uuid.UUID) error {
 	return a.svc.DeleteForAccount(accountID)
+}
+
+func (a *helmCreatorAdapter) RotateCredsForAccount(_ context.Context, accountID uuid.UUID, req service2.HelmAutoCreateReq) error {
+	creds := exchange.Credentials{
+		APIKey:     req.APIKey,
+		APISecret:  req.APISecret,
+		Passphrase: req.Passphrase,
+		AccountType: exchange.AccountType(req.AccountType),
+	}
+	return a.svc.RotateCredsForAccount(accountID, creds)
 }
 
 func provideBrokerConnectionHandler(

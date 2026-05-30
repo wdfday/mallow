@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 
+	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/module/helm/domain"
 	helmDto "mallow/helm/internal/module/helm/dto"
 )
@@ -31,13 +31,15 @@ func (s *Service) CreateForAccount(req helmDto.CreateForAccountReq) (*domain.Hel
 		exchCfg.AccountType = domain.AccountType(req.Creds.AccountType)
 	}
 
-	// Idempotency: if a Helm already exists for this account, ensure its runtime
-	// is running and return the existing record instead of creating a duplicate.
+	// Idempotency: if a Helm already exists for this account, re-spawn its runtime
+	// only if it was previously active (not disabled). Returns the existing record.
 	if existing, err := s.repo.GetByAccountID(req.AccountID); err == nil {
-		if spawnErr := s.spawner.Spawn(existing, exchCfg, decimal.Zero); spawnErr != nil {
-			return existing, fmt.Errorf("re-spawn existing runtime: %w", spawnErr)
+		if existing.Status != domain.HelmStatusDisabled {
+			if spawnErr := s.spawner.Spawn(existing, exchCfg); spawnErr != nil {
+				return existing, fmt.Errorf("re-spawn existing runtime: %w", spawnErr)
+			}
+			s.spawner.SyncOne(existing.ID)
 		}
-		s.spawner.SyncOne(existing.ID)
 		return existing, nil
 	}
 
@@ -56,19 +58,27 @@ func (s *Service) CreateForAccount(req helmDto.CreateForAccountReq) (*domain.Hel
 		AccountType: string(exchCfg.AccountType),
 		Portfolio:   req.Portfolio,
 		Risk:        req.Risk,
-		Enabled:     false,
-		Status:      "active",
+		Status:      domain.HelmStatusDisabled,
 		CreatedAt:   time.Now().UTC(),
 		UpdatedAt:   time.Now().UTC(),
 	}
 	if err := s.repo.Save(cfg); err != nil {
 		return nil, fmt.Errorf("save helm: %w", err)
 	}
-	if err := s.spawner.Spawn(cfg, exchCfg, decimal.Zero); err != nil {
-		return cfg, fmt.Errorf("spawn runtime (config saved): %w", err)
-	}
-	s.spawner.SyncOne(cfg.ID)
+	// New helms start disabled — user enables explicitly via /enable.
+	// No runtime spawn here; Enable() will spawn + sync.
 	return cfg, nil
+}
+
+// RotateCredsForAccount updates credentials for the helm linked to accountID
+// and reconnects the WS stream without interrupting running hands.
+func (s *Service) RotateCredsForAccount(accountID uuid.UUID, newCreds exchange.Credentials) error {
+	cfg, err := s.repo.GetByAccountID(accountID)
+	if err != nil {
+		return fmt.Errorf("helm not found for account %s: %w", accountID, err)
+	}
+	s.spawner.RotateCreds(cfg.ID, newCreds)
+	return nil
 }
 
 // DeleteForAccount tears down and removes the orchestrator linked to accountID.

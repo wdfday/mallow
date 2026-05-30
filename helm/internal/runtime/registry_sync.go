@@ -7,48 +7,29 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
-
-	"mallow/helm/internal/infra/exchange"
 )
 
-// persistSyncTime writes the runtime's lastSyncAt to the store (best-effort, logs on error).
-func (r *Registry) persistSyncTime(rt *HelmRuntime) {
-	r.mu.RLock()
-	ss := r.syncStore
-	r.mu.RUnlock()
-	if ss == nil {
-		return
-	}
-	if err := ss.UpdateLastSyncedAt(rt.HelmID, rt.LastSyncAt()); err != nil {
-		slog.Warn("registry: persist last_synced_at failed", "helm_id", rt.HelmID, "err", err)
-	}
-}
-
 // StartPollingSync starts a background goroutine that periodically syncs all runtimes
-// whose exchange implements AccountSyncer. Used as fallback for disabled helms
-// (no WebSocket streaming) and as a catch-up for enabled ones.
-// An immediate catch-up pass fires first (covers the gap since last_synced_at on respawn),
-// then the periodic ticker takes over.
-func (r *Registry) StartPollingSync(ctx context.Context, nc *nats.Conn, interval time.Duration) {
+// whose exchange implements AccountSyncer. An immediate catch-up pass fires first
+// (covers the gap since last_synced_at on respawn), then a ticker takes over.
+func (r *Registry) StartPollingSync(ctx context.Context, _ *nats.Conn, interval time.Duration) {
 	syncAll := func() {
 		r.mu.RLock()
 		rts := make([]*HelmRuntime, 0, len(r.helmRuntimes))
 		for _, rt := range r.helmRuntimes {
 			rts = append(rts, rt)
 		}
-		js := r.js
 		r.mu.RUnlock()
 		for _, rt := range rts {
-			if err := rt.Sync(ctx, js); err != nil {
+			if err := rt.Sync(ctx); err != nil {
 				slog.Warn("registry: poll sync failed", "helm_id", rt.HelmID, "err", err)
 			} else {
-				r.persistSyncTime(rt)
+				rt.persistSyncTime()
 			}
 		}
 	}
 
 	go func() {
-		// Immediate catch-up: cover the gap from last_synced_at → now on respawn.
 		slog.Info("registry: startup sync pass running")
 		syncAll()
 		slog.Info("registry: startup sync pass done")
@@ -67,10 +48,8 @@ func (r *Registry) StartPollingSync(ctx context.Context, nc *nats.Conn, interval
 	slog.Info("registry: polling sync started", "interval", interval)
 }
 
-// ReconcileAllOrders fetches open orders from the exchange for each runtime
-// and re-tracks any that are missing from the in-memory orderbook.
-// Call this after SpawnAll + StartFillStreaming so the fill processor is ready
-// to handle fills that arrive for reconciled orders.
+// ReconcileAllOrders re-tracks open orders for all runtimes after restart.
+// Call after SpawnAll + StartFillStreaming so the fill processor is ready.
 func (r *Registry) ReconcileAllOrders(ctx context.Context) {
 	r.mu.RLock()
 	rts := make([]*HelmRuntime, 0, len(r.helmRuntimes))
@@ -80,100 +59,29 @@ func (r *Registry) ReconcileAllOrders(ctx context.Context) {
 	r.mu.RUnlock()
 
 	for _, rt := range rts {
-		r.reconcileOrders(ctx, rt)
+		rt.ReconcileOrders(ctx)
 	}
 }
 
-// RecoverGapFills fetches filled order history from each exchange that implements
-// HistoryFetcher, covering the window [since, now) where:
-//   - since = LastSyncAt()  when the helm has been synced before (crash recovery)
-//   - since = CreatedAt     when LastSyncAt is zero (first startup after helm creation)
-//
-// Fills that occurred BEFORE the helm was created are never applied — they belong
-// to the account's prior history, not this helm's portfolio.
-// Call this after ReconcileAllOrders but before starting WS streaming.
-func (r *Registry) RecoverGapFills(ctx context.Context, nc *nats.Conn) {
+// RecoverGapFills applies fills missed during downtime for all runtimes.
+// Call after ReconcileAllOrders but before StartFillStreaming.
+func (r *Registry) RecoverGapFills(ctx context.Context, _ *nats.Conn) {
 	r.mu.RLock()
 	rts := make([]*HelmRuntime, 0, len(r.helmRuntimes))
 	for _, rt := range r.helmRuntimes {
 		rts = append(rts, rt)
 	}
-	js := r.js
 	r.mu.RUnlock()
 
 	for _, rt := range rts {
-		historian, ok := rt.Exchange.(exchange.HistoryFetcher)
-		if !ok {
-			continue
-		}
-
-		// Determine the lower-bound for gap recovery:
-		//   lastSyncAt  → set after every successful Sync; use after crash/restart
-		//   CreatedAt   → helm just created, no prior sync; only recover fills since creation
-		//   zero        → should not happen, but skip to be safe
-		var since time.Time
-		if lastSync := rt.LastSyncAt(); !lastSync.IsZero() {
-			since = lastSync
-		} else if !rt.CreatedAt.IsZero() {
-			since = rt.CreatedAt
-		} else {
-			slog.Warn("gap recovery: skipping helm with no createdAt or lastSyncAt",
-				"helm_id", rt.HelmID)
-			continue
-		}
-
-		now := time.Now().UTC()
-		if now.Sub(since) < 5*time.Second {
-			continue // restarted too recently, nothing to recover
-		}
-
-		// Pass nil symbols — fetch all instruments. Symbol hints are no longer available
-		// from the tracking map (orderID→handID only) without a separate symbol index.
-		var symbols []string
-
-		slog.Info("gap recovery: fetching fill history",
-			"helm_id", rt.HelmID, "from", since, "to", now, "symbols", len(symbols))
-
-		fills, err := historian.FilledOrders(ctx, rt.Creds, symbols, since, now)
-		if err != nil {
-			slog.Error("gap recovery: fetch failed", "helm_id", rt.HelmID, "err", err)
-			continue
-		}
-		if len(fills) == 0 {
-			slog.Info("gap recovery: no fills in gap", "helm_id", rt.HelmID)
-			continue
-		}
-
-		applied := 0
-		for _, txn := range fills {
-			// Dedup: skip if this trade was already processed (poslog has it).
-			if rt.HasProcessedTrade(txn.TradeID) {
-				continue
-			}
-			ev := exchange.OrderEvent{
-				Type:      exchange.OrderEventFilled,
-				OrderID:   txn.OrderID,
-				TradeID:   txn.TradeID,
-				Symbol:    txn.Symbol,
-				Side:      exchange.OrderSide(txn.Side),
-				FilledQty: txn.Qty,
-				FilledAvg: txn.AvgPrice,
-				Timestamp: txn.FilledAt,
-			}
-			r.applyFill(nc, js, rt, ev)
-			applied++
-		}
-		slog.Info("gap recovery: fills applied",
-			"helm_id", rt.HelmID, "total", len(fills), "applied", applied, "skipped", len(fills)-applied)
+		rt.RecoverGapFills(ctx)
 	}
 }
 
-// SyncOne satisfies RuntimeSpawner — triggers an async one-shot sync for the given helm.
+// SyncOne triggers an async one-shot sync for the given helm.
 func (r *Registry) SyncOne(id uuid.UUID) {
 	r.mu.RLock()
 	ctx := r.runCtx
-	js := r.js
-	_ = r.nc
 	r.mu.RUnlock()
 	if ctx == nil {
 		ctx = context.Background()
@@ -183,44 +91,10 @@ func (r *Registry) SyncOne(id uuid.UUID) {
 		return
 	}
 	go func() {
-		if err := rt.Sync(ctx, js); err != nil {
+		if err := rt.Sync(ctx); err != nil {
 			slog.Warn("registry: sync failed", "helm_id", id, "err", err)
 			return
 		}
-		r.persistSyncTime(rt)
+		rt.persistSyncTime()
 	}()
-}
-
-func (r *Registry) reconcileOrders(ctx context.Context, rt *HelmRuntime) {
-	reconciler, ok := rt.Exchange.(exchange.OrderReconciler)
-	if !ok {
-		return
-	}
-	// Fetch all open orders (symbol="" = all instruments).
-	orders, err := reconciler.GetPendingOrders(ctx, rt.Creds, "")
-	if err != nil {
-		slog.Warn("reconcile orders: fetch failed",
-			"helm_id", rt.HelmID, "err", err)
-		return
-	}
-	if len(orders) == 0 {
-		return
-	}
-
-	recovered := 0
-	for _, o := range orders {
-		// Skip orders already tracked (hand placed them before reconcile ran).
-		if rt.HasOrderTracking(o.ID) {
-			continue
-		}
-		// handID unknown after crash — fill routing will fall back to REST poll.
-		rt.TrackOrder(o.ID, "")
-		recovered++
-	}
-	if recovered > 0 {
-		slog.Info("reconcile orders: recovered pending orders",
-			"helm_id", rt.HelmID,
-			"recovered", recovered,
-			"total_open", len(orders))
-	}
 }

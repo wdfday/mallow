@@ -36,7 +36,6 @@ func (r *GORMHelmRepo) Save(o *domain.Helm) error {
 		AccountType:     o.AccountType,
 		PortfolioConfig: pfJSON,
 		RiskConfig:      riskJSON,
-		Enabled:         o.Enabled,
 		Status:          string(o.Status),
 		LastSyncedAt:    o.LastSyncedAt,
 		CreatedAt:       o.CreatedAt,
@@ -98,6 +97,7 @@ func (r *GORMHelmRepo) UpdateLastSyncedAt(id uuid.UUID, t time.Time) error {
 	})
 }
 
+
 func (r *GORMHelmRepo) Delete(id uuid.UUID) error {
 	res := r.db.Delete(&helmModel{}, "id = ?", id.String())
 	if res.Error != nil {
@@ -126,8 +126,7 @@ type helmModel struct {
 	AccountType     string     `gorm:"column:account_type;not null;default:''"`
 	PortfolioConfig []byte     `gorm:"column:portfolio_config;type:jsonb;not null;default:'{}'"`
 	RiskConfig      []byte     `gorm:"column:risk_config;type:jsonb;not null;default:'{}'"`
-	Enabled         bool       `gorm:"column:enabled;not null;default:false"`
-	Status          string     `gorm:"column:status;not null;default:active"`
+	Status          string     `gorm:"column:status;not null;default:disabled"`
 	LastSyncedAt    *time.Time `gorm:"column:last_synced_at"`
 	CreatedAt       time.Time  `gorm:"column:created_at;not null;autoCreateTime"`
 	UpdatedAt       time.Time  `gorm:"column:updated_at;not null;autoUpdateTime"`
@@ -157,7 +156,6 @@ func modelToDomain(m *helmModel) (*domain.Helm, error) {
 		Name:         m.Name,
 		BrokerType:   m.BrokerType,
 		AccountType:  m.AccountType,
-		Enabled:      m.Enabled,
 		Status:       domain.HelmStatus(m.Status),
 		LastSyncedAt: m.LastSyncedAt,
 		CreatedAt:    m.CreatedAt,

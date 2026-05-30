@@ -7,6 +7,22 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+// Per-surface order DTOs.
+//
+// An order is observed across four exchange surfaces, each with a deliberately distinct
+// shape — they are NOT merged into one fat type, because each carries a different field
+// subset and a union would be mostly-optional and lossy:
+//
+//	OrderResult         — REST PlaceOrder / GetOrder result   (status, filled qty/avg, commission)
+//	AccountTransaction  — REST sync / trade-history fill       (trade id, fee, filled_at)
+//	WsFillEvent         — private WS fill push                 (incremental qty, partial flag)
+//	OrderLifecycleEvent — private WS ack / cancel push         (no fill data)
+//
+// INVARIANT: all four carry the order-identity pair { exchange order id, ClientOrderID }.
+// When adding or changing an identity-related field, change it on ALL FOUR so routing and
+// attribution stay consistent. The ClidSurfaces contract (see ClidCapable) declares which
+// of these surfaces actually echo the clid per venue. See CLIENT_ORDER_ID.md.
+
 // ── Account sync ──────────────────────────────────────────────────────────────
 
 // ExchangePosition is a position as reported by the exchange REST API.
@@ -25,14 +41,19 @@ type AssetBalance struct {
 
 // AccountTransaction is a single filled order as returned by the exchange REST API.
 type AccountTransaction struct {
-	TradeID  string // exchange fill/trade ID — dedup key; empty if exchange doesn't provide one
-	OrderID  string
-	Symbol   string
-	Side     string // "buy" | "sell"
-	Qty      decimal.Decimal
-	AvgPrice decimal.Decimal
-	Fee      decimal.Decimal
-	FilledAt time.Time
+	TradeID string // exchange fill/trade ID — dedup key; empty if exchange doesn't provide one
+	OrderID string
+	// ClientOrderID is the caller-supplied clOrdId echoed by the exchange, when available.
+	// Lets the REST-sync path attribute a fill to its hand via the clid (race-free key),
+	// the same as the WS path. Empty when the exchange's trade record omits it.
+	ClientOrderID string
+	Symbol        string
+	Side          string // "buy" | "sell"
+	Qty           decimal.Decimal
+	AvgPrice      decimal.Decimal
+	Fee           decimal.Decimal
+	FeeAsset      string // asset the fee was charged in (e.g. "ETH", "USDT"); empty = unknown
+	FilledAt      time.Time
 }
 
 // AccountSnapshot is the current account state fetched from the exchange REST API.
@@ -60,43 +81,131 @@ type BalanceEvent struct {
 	At    time.Time
 }
 
-// ── Order event streaming ─────────────────────────────────────────────────────
+// ── Order lifecycle event streaming ──────────────────────────────────────────
 
-// OrderEventType classifies a private WS order lifecycle event.
-type OrderEventType string
+// OrderLifecycleEventType classifies a private WS order lifecycle event (not a fill).
+type OrderLifecycleEventType string
 
 const (
-	OrderEventLive        OrderEventType = "live"         // order acknowledged by exchange
-	OrderEventPartialFill OrderEventType = "partial_fill" // partial fill received
-	OrderEventFilled      OrderEventType = "filled"       // fully filled
-	OrderEventCanceled    OrderEventType = "canceled"     // canceled or rejected
+	// OrderLifecycleEventLive is emitted when an order is acknowledged by the exchange (NEW/accepted).
+	OrderLifecycleEventLive OrderLifecycleEventType = "live"
+	// OrderLifecycleEventCanceled is emitted when an order is canceled, rejected, or expired.
+	OrderLifecycleEventCanceled OrderLifecycleEventType = "canceled"
 )
 
-// OrderEvent is received from the exchange private WebSocket on every order
-// state change. FilledQty/FilledAvg are zero for live and canceled events.
-type OrderEvent struct {
-	Type    OrderEventType
+// OrderLifecycleEvent is received from the exchange private WebSocket when an
+// order is acknowledged (live) or canceled/rejected. It carries no fill data.
+// See WsFillEvent for fill notifications.
+type OrderLifecycleEvent struct {
+	Type OrderLifecycleEventType
+	// OrderID is the exchange-assigned id.
 	OrderID string
-	// TradeID is the exchange-assigned fill ID for this specific fill event.
-	// Unique per partial fill — used as the dedup key for investment transactions.
-	// Empty for live and canceled events; set to orderID+"_open" / orderID+"_cancel" by the publisher.
-	TradeID         string
+	// ClientOrderID is the caller-supplied clOrdId echoed back by the exchange.
+	// Empty for orders placed without one (manual orders, bracket orders, legacy path).
+	ClientOrderID string
+	Symbol        string
+	Side          OrderSide
+	Qty           decimal.Decimal // original submitted qty
+	Timestamp     time.Time
+}
+
+// ── Fill event streaming ──────────────────────────────────────────────────────
+
+// WsFillEvent is a single fill notification from the exchange private WebSocket.
+// FilledQty is ALWAYS incremental (this-fill qty only), never cumulative.
+// Adapters that receive cumulative qty from the exchange (e.g. Alpaca) compute
+// the delta internally before emitting this event — callers may rely on the
+// incremental contract without additional bookkeeping.
+type WsFillEvent struct {
+	OrderID string
+	// ClientOrderID is the caller-supplied clOrdId echoed back by the exchange.
+	// When non-empty it is the canonical routing key (set before the order was placed,
+	// so it is always known by the time the fill arrives). Empty for bracket/manual
+	// orders and adapters that do not yet map it — those fall back to OrderID routing.
+	ClientOrderID   string
+	TradeID         string // exchange fill ID; unique per partial fill
 	Symbol          string
 	Side            OrderSide
-	Qty             decimal.Decimal // original submitted qty; populated on live events
-	FilledQty       decimal.Decimal // this-event fill qty; zero for live/canceled
-	FilledAvg       decimal.Decimal // this-event fill price; zero for live/canceled
-	Commission      decimal.Decimal // fee charged for this fill; zero when not provided by exchange
-	CommissionAsset string          // asset the fee was taken from: "ETH", "BNB", "USDT", etc.
+	Partial         bool            // true = partial fill; false = fully filled
+	FilledQty       decimal.Decimal // INCREMENTAL: qty filled in this specific fill event only
+	FilledAvg       decimal.Decimal // avg price of this fill event
+	Commission      decimal.Decimal // fee charged; zero when not provided by exchange
+	CommissionAsset string          // e.g. "ETH", "BNB", "USDT"
 	Timestamp       time.Time
 }
 
+// ClidSurfaces declares which exchange surfaces echo the caller-supplied client order id
+// (clOrdId) back to us. Routing and REST-sync attribution use the clid wherever it is
+// echoed; a surface that doesn't echo falls back to the exchange order id.
+//
+// Every adapter that sends a clid in PlaceOrder MUST declare its echo surfaces (via
+// ClidCapable) so a missing one is visible in code + caught by the conformance test,
+// rather than degrading to a silent attribution gap. WS and OrderQuery are REQUIRED for
+// clid routing to function at all; TradeHistory is optional (e.g. Binance's spot trade
+// list omits clOrdId, so REST-sync attribution there falls back to the exchange id).
+// See CLIENT_ORDER_ID.md.
+type ClidSurfaces struct {
+	WS           bool // private WS order/fill stream echoes clid
+	OrderQuery   bool // GetOrder / GetOrderByClientOrderID / ListOpenOrders echo clid
+	TradeHistory bool // REST sync / trade-history echoes clid
+}
+
+// ClidCapable is implemented by adapters that support client order ids. It pairs with
+// ClientOrderQuerier: an adapter that can query by clid must also declare where the clid
+// is echoed. ClidSurfaces must not deref adapter state (callable on a nil receiver) so the
+// conformance test can inspect the declaration without live credentials.
+type ClidCapable interface {
+	ClidSurfaces() ClidSurfaces
+}
+
+// ClientOrderQuerier is optionally implemented by exchanges that can look up an order
+// by the caller-supplied client order id (clOrdId). Used to recover from an ambiguous
+// PlaceOrder failure (timeout / network drop) — query whether the order actually landed
+// instead of blindly assuming it did not. See CLIENT_ORDER_ID.md.
+type ClientOrderQuerier interface {
+	// GetOrderByClientOrderID returns the order matching clientOrderID, or nil when the
+	// exchange has no such order (or the lookup itself fails — callers treat nil as
+	// "could not confirm"). symbol is required by venues that key lookups by instrument
+	// (Binance, OKX); market selects the spot vs futures endpoint/category for venues
+	// that segregate them (Binance, Bybit). Alpaca ignores both.
+	GetOrderByClientOrderID(ctx context.Context, creds Credentials, symbol string, market MarketKind, clientOrderID string) (*OrderResult, error)
+}
+
 // AccountStreamer is optionally implemented by exchanges that support private
-// WebSocket streaming for account order lifecycle events.
-// balanceHandler is optional (nil = ignore balance events); exchanges that do
-// not push balance updates on the same connection may ignore it entirely.
+// WebSocket streaming for account order and fill events.
+//
+//   - onLifecycle is called for order ack (live) and cancel/reject events.
+//     May be nil if the caller only cares about fills.
+//   - onFill is called for each fill event (partial or fully filled).
+//     WsFillEvent.FilledQty is always incremental — adapters handle the delta internally.
+//     May be nil if the caller only cares about lifecycle events.
+//   - onBalance is called on balance-change events (deposits, withdrawals, fee deductions).
+//     May be nil; exchanges that do not push balance events on this connection ignore it.
 type AccountStreamer interface {
-	StreamOrders(ctx context.Context, creds Credentials, orderHandler func(OrderEvent), balanceHandler func(BalanceEvent)) error
+	StreamOrders(
+		ctx context.Context,
+		creds Credentials,
+		onLifecycle func(OrderLifecycleEvent),
+		onFill func(WsFillEvent),
+		onBalance func(BalanceEvent),
+	) error
+}
+
+// ── Legacy fill channel streaming ────────────────────────────────────────────
+
+// FillStreamer is optionally implemented by exchanges that expose a fill-event
+// channel via SubscribeFills. It is NOT used by the live trading runtime —
+// AccountStreamer.StreamOrders is the canonical live path.
+//
+// FillStreamer is retained for integration tests and tooling that need a simple
+// channel-based fill source without the full two-callback StreamOrders API.
+// Each adapter implements it by bridging over StreamOrders internally.
+type FillStreamer interface {
+	// SubscribeFills opens a WebSocket subscription to fill events for the account.
+	// The returned channel is closed when ctx is cancelled.
+	// Callers should NOT call both SubscribeFills and StartFillStreaming on the same
+	// account — that opens two parallel WS connections and produces duplicate events.
+	SubscribeFills(ctx context.Context, creds Credentials) (<-chan FillEvent, error)
 }
 
 // ── Price fetch ───────────────────────────────────────────────────────────────

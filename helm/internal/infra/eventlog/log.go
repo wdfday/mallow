@@ -4,48 +4,21 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/natsapi"
+	"mallow/helm/internal/readmodel"
 )
 
-// Event is a persisted helm/hand behavioral event.
-// Mirrors natsapi.HelmEvent but with a typed user_id for DB queries.
-type Event struct {
-	ID        int64           `json:"id"`
-	At        time.Time       `json:"at"`
-	HelmID    uuid.UUID       `json:"helm_id"`
-	HandID    *uuid.UUID      `json:"hand_id,omitempty"`
-	UserID    uuid.UUID       `json:"user_id"`
-	Code      int             `json:"code"`
-	Symbol    string          `json:"symbol,omitempty"`
-	Direction string          `json:"direction,omitempty"`
-	Side      string          `json:"side,omitempty"`
-	Qty       decimal.Decimal `json:"qty,omitempty"`
-	Price     decimal.Decimal `json:"price,omitempty"`
-	OrderID   string          `json:"order_id,omitempty"`
-	Reason    string          `json:"reason,omitempty"`
-	Msg       string          `json:"msg,omitempty"`
-}
-
-// Filter constrains a Query call.
-type Filter struct {
-	HelmID uuid.UUID  // required
-	HandID *uuid.UUID // nil = all hands for the helm
-	After  time.Time  // zero = no lower bound
-	Before time.Time  // zero = no upper bound
-	Limit  int        // 0 = default (100)
-}
-
 // Log is the interface for persisting and querying helm/hand events.
+// Record/filter shapes live in internal/readmodel; this package only does IO.
 type Log interface {
 	// Append writes a single event. Non-blocking: errors are logged, not returned.
 	Append(ctx context.Context, helmID uuid.UUID, userID uuid.UUID, ev natsapi.HelmEvent)
 	// Query returns events matching the filter, newest first.
-	Query(ctx context.Context, f Filter) ([]Event, error)
+	Query(ctx context.Context, f readmodel.EventFilter) ([]readmodel.EventRecord, error)
 }
 
 // postgresLog is the production implementation backed by PostgreSQL.
@@ -96,7 +69,7 @@ func (l *postgresLog) Append(ctx context.Context, helmID uuid.UUID, userID uuid.
 }
 
 // Query returns events matching the filter, ordered by at DESC.
-func (l *postgresLog) Query(ctx context.Context, f Filter) ([]Event, error) {
+func (l *postgresLog) Query(ctx context.Context, f readmodel.EventFilter) ([]readmodel.EventRecord, error) {
 	limit := f.Limit
 	if limit <= 0 {
 		limit = 100
@@ -131,9 +104,9 @@ func (l *postgresLog) Query(ctx context.Context, f Filter) ([]Event, error) {
 	}
 	defer rows.Close()
 
-	var out []Event
+	var out []readmodel.EventRecord
 	for rows.Next() {
-		var e Event
+		var e readmodel.EventRecord
 		var handID sql.NullString
 		var symbol, direction, side, orderID, reason, msg sql.NullString
 		var qty, price sql.NullString

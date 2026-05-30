@@ -34,10 +34,16 @@ func New(initialCapital decimal.Decimal) *Portfolio {
 
 // equityLocked computes equity without acquiring the lock.
 // Caller must hold at least p.mu.RLock.
+//
+// Only long (positive Qty) positions contribute to equity. Negative Qty entries
+// are transient phantom shorts used to absorb out-of-order WS fills; they should
+// not reduce equity below cash (proceeds were already credited to cash).
 func (p *Portfolio) equityLocked() decimal.Decimal {
 	mv := decimal.Zero
 	for _, pos := range p.positions {
-		mv = mv.Add(pos.Qty.Mul(pos.CurrentPrice))
+		if pos.Qty.IsPositive() {
+			mv = mv.Add(pos.Qty.Mul(pos.CurrentPrice))
+		}
 	}
 	return p.cash.Add(mv)
 }

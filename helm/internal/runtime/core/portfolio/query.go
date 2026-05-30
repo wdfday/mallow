@@ -39,14 +39,18 @@ func (p *Portfolio) Equity() decimal.Decimal {
 	return p.equityLocked()
 }
 
-// Positions returns a snapshot of all open positions.
+// Positions returns a snapshot of all open long positions.
+// Negative-Qty entries (transient phantom shorts absorbing out-of-order fills)
+// are excluded — they are bookkeeping state, not real open exposure.
 func (p *Portfolio) Positions() []Position {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	result := make([]Position, 0, len(p.positions))
 	for _, pos := range p.positions {
-		result = append(result, *pos)
+		if pos.Qty.IsPositive() {
+			result = append(result, *pos)
+		}
 	}
 	return result
 }
@@ -57,7 +61,7 @@ func (p *Portfolio) GetPosition(symbol string) *Position {
 	defer p.mu.RUnlock()
 
 	pos, ok := p.positions[symbol]
-	if !ok {
+	if !ok || !pos.Qty.IsPositive() {
 		return nil
 	}
 	cp := *pos
@@ -91,7 +95,9 @@ func (p *Portfolio) Summary() Summary {
 
 	positions := make([]Position, 0, len(p.positions))
 	for _, pos := range p.positions {
-		positions = append(positions, *pos)
+		if pos.Qty.IsPositive() {
+			positions = append(positions, *pos)
+		}
 	}
 
 	eq := p.equityLocked()
@@ -107,11 +113,15 @@ func (p *Portfolio) Summary() Summary {
 	}
 
 	// Derived aggregates over current positions.
+	// Negative-Qty entries are transient phantom shorts — exclude from all aggregates.
 	deployed := decimal.Zero
 	unrealized := decimal.Zero
 	for _, pos := range p.positions {
+		if !pos.Qty.IsPositive() {
+			continue
+		}
 		if pos.AvgPrice.IsPositive() {
-			deployed = deployed.Add(pos.Qty.Abs().Mul(pos.AvgPrice))
+			deployed = deployed.Add(pos.Qty.Mul(pos.AvgPrice))
 		}
 		unrealized = unrealized.Add(pos.UnrealizedPnL)
 	}
@@ -134,7 +144,7 @@ func (p *Portfolio) Summary() Summary {
 		MaxDD:           p.maxDrawdownLocked() * 100,
 		WinRate:         p.winRateLocked() * 100,
 		TotalTrades:     len(p.trades),
-		OpenPositions:   len(p.positions),
+		OpenPositions:   len(positions),
 		DailyPnL:        p.dailyPnLLocked(),
 		Positions:       positions,
 	}

@@ -88,12 +88,9 @@ const (
 	SubjHandCreate  = "helm.hands.create"
 	SubjHandUpdate  = "helm.hands.update"
 	SubjHandDelete  = "helm.hands.delete"
-	SubjHandStart   = "helm.hands.start"
-	SubjHandStop    = "helm.hands.stop"
-	SubjHandRestart = "helm.hands.restart"
-	SubjHandPause   = "helm.hands.pause"
-	SubjHandResume  = "helm.hands.resume"
-	SubjHandKill    = "helm.hands.kill"
+	SubjHandStart = "helm.hands.start"
+	SubjHandStop  = "helm.hands.stop"
+	SubjHandKill  = "helm.hands.kill"
 
 	// JetStream subjects — all retained for audit / query.
 	// Format with account_id: fmt.Sprintf(SubjTradeFilled, accountID)

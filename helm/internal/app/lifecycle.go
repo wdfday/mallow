@@ -25,7 +25,6 @@ import (
 	handservice "mallow/helm/internal/module/hand/service"
 	orchhandler "mallow/helm/internal/module/helm/handler"
 	"mallow/helm/internal/runtime"
-	"mallow/helm/internal/runtime/perf"
 )
 
 // startNATSAPI subscribes per-module NATS request/reply handlers on start, drains on stop.
@@ -214,7 +213,6 @@ func runOrchestrator(
 	reg *runtime.Registry,
 	nc *nats.Conn,
 	posLog poslog.Log,
-	snapshotLog perf.SnapshotLog,
 	handSvc *handservice.Service,
 ) {
 	srv := &http.Server{Addr: cfg.Server.APIAddr, Handler: ginEngine}
@@ -226,7 +224,6 @@ func runOrchestrator(
 			cancel = c
 
 			reg.SetRuntime(runCtx, nc)
-			reg.SetSnapshotLog(snapshotLog)
 
 			// Step 2: Reconcile hand positions from poslog WAL vs exchange.
 			// Runs synchronously so every hand is fully restored before signals arrive.
@@ -250,11 +247,10 @@ func runOrchestrator(
 			// Step 2.5: Start all hydrated hands now that position state is reconciled.
 			handSvc.StartAllHydrated()
 
-			// Step 2.6: Emit a baseline snapshot per helm + per hand so the FE
-			// equity curve has a fresh datapoint right after restart instead of
-			// staying frozen at the last pre-shutdown record until the next fill.
+			// Step 2.6: Mark all runtimes dirty so SnapshotWorker emits a fresh
+			// equity snapshot shortly after startup (within its heartbeat window).
 			for _, rt := range reg.All() {
-				rt.EmitBaselineSnapshots(ctx)
+				rt.MarkSnapshotDirty()
 			}
 
 			// Steps 3–6.

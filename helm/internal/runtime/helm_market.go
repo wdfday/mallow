@@ -72,16 +72,32 @@ func (r *HelmRuntime) LatestL2(symbol string) (exchange.L2Snapshot, bool) {
 	return r.getL2(symbol)
 }
 
-// EnqueueOrderEvent drops a broker order event into the runtime's channel non-blocking.
-func (r *HelmRuntime) EnqueueOrderEvent(ev exchange.OrderEvent) {
+// EnqueueLifecycleEvent drops a broker order lifecycle event (ack/cancel) into
+// the runtime's lifecycle channel, non-blocking (drops on full with an error log).
+func (r *HelmRuntime) EnqueueLifecycleEvent(ev exchange.OrderLifecycleEvent) {
 	select {
-	case r.orderCh <- ev:
+	case r.lifecycleCh <- ev:
 	default:
-		slog.Error("order channel full, dropping event",
+		slog.Error("lifecycle channel full, dropping event",
 			"helm_id", r.HelmID,
 			"type", ev.Type,
 			"order_id", ev.OrderID,
 			"symbol", ev.Symbol,
+		)
+	}
+}
+
+// EnqueueWsFill drops a WS fill event into the runtime's fill channel, non-blocking.
+// Drops on full — the REST poll fallback will catch the fill within 5s.
+func (r *HelmRuntime) EnqueueWsFill(ev exchange.WsFillEvent) {
+	select {
+	case r.wsFillCh <- ev:
+	default:
+		slog.Error("ws fill channel full, dropping fill — REST poll will recover",
+			"helm_id", r.HelmID,
+			"order_id", ev.OrderID,
+			"symbol", ev.Symbol,
+			"qty", ev.FilledQty,
 		)
 	}
 }

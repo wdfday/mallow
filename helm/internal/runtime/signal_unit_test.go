@@ -12,12 +12,12 @@ package runtime_test
 //	2. Full round-trip: entry fill → exit signal → position closed
 //	3. Short entry → position with negative qty
 //	4. Stale signal (ReceivedAt past TTL) → CodeSignalStale, no order
-//	5. Paused hand → CodeSignalHandPaused, no order
-//	6. Paused helm (runtime) → CodeSignalHelmPaused, no order
-//	7. Signal strength below min → CodeSignalDoNothing, no order
-//	8. MaxUnits reached → CodeSignalMaxUnits on second entry
-//	9. Risk gate MaxPositions → CodeSignalRejected when helm cap hit
-//	10. Entry with SL/TP → exitLevels populated after fill
+//	5. Paused helm (runtime) → CodeSignalHelmPaused, no order
+//	6. Signal strength below min → CodeSignalDoNothing, no order
+//	7. MaxUnits reached → CodeSignalMaxUnits on second entry
+//	8. Risk gate MaxPositions → CodeSignalRejected when helm cap hit
+//	9. Entry with SL/TP → exitLevels populated after fill
+//	10. Insufficient capital (zero qty) → CodeHandAutoStopped, hand stops
 //
 // go test -v -run TestSignal ./internal/runtime/ -count=1
 
@@ -116,12 +116,6 @@ func (s *simExchange) ListOpenOrders(_ context.Context, _ exchange.Credentials, 
 
 func (s *simExchange) ListPositions(_ context.Context, _ exchange.Credentials) ([]exchange.PositionResult, error) {
 	return nil, nil
-}
-
-func (s *simExchange) SubscribeFills(_ context.Context, _ exchange.Credentials) (<-chan exchange.FillEvent, error) {
-	ch := make(chan exchange.FillEvent)
-	close(ch)
-	return ch, nil
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -403,30 +397,9 @@ func TestSignal_Stale_Dropped(t *testing.T) {
 	}
 }
 
-// ── Scenario 5: paused hand → CodeSignalHandPaused ───────────────────────────
+// ── Scenario 5: paused runtime (helm) → CodeSignalHelmPaused ─────────────────
 
-func TestSignal_PausedHand_Dropped(t *testing.T) {
-	const symbol = "BTCUSDT"
-	sim := newSim(50_000)
-	rt := buildSimRuntime(sim, 100_000, 10)
-	defer rt.Stop()
-
-	h := addSimHand(rt, symbol, 0.001, 0, 0.3, 1)
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(50_000))
-	h.Start()
-	defer h.Stop()
-
-	h.Pause()
-	pausedHandCh := h.Subscribe(64)
-	h.DeliverSignal(longSignalFor(symbol))
-
-	mustWaitCodeCh(t, pausedHandCh, runtime.CodeSignalHandPaused, simWait)
-	noCode(t, h, runtime.CodeOrderPlaced, simWait)
-}
-
-// ── Scenario 6: paused runtime (helm) → CodeSignalHelmPaused ─────────────────
-
-func TestSignal_PausedHelm_Dropped(t *testing.T) {
+func TestSignal_PausedHelm_Dropped(t *testing.T) { //nolint:unused // scenario 5
 	const symbol = "BTCUSDT"
 	sim := newSim(50_000)
 	rt := buildSimRuntime(sim, 100_000, 10)
@@ -581,7 +554,7 @@ func (s *stubZeroQtyPlanner) Plan(intent strategy.Intent, ctx tactics.MarketCont
 
 func (s *stubZeroQtyPlanner) UpdateEquity(equity decimal.Decimal) {}
 
-func TestSignal_InsufficientCapital_AutoPause(t *testing.T) {
+func TestSignal_InsufficientCapital_AutoStop(t *testing.T) {
 	const symbol = "BTCUSDT"
 	sim := newSim(50_000)
 	rt := buildSimRuntime(sim, 100_000, 10)
@@ -606,17 +579,19 @@ func TestSignal_InsufficientCapital_AutoPause(t *testing.T) {
 	defer h.Stop()
 
 	// Pre-subscribe before delivering the signal so fast synchronous events
-	// (rejection + auto-pause happen in the same goroutine turn) are not missed.
+	// (rejection + auto-stop happen in the same goroutine turn) are not missed.
 	rejectedCh := h.Subscribe(64)
-	pausedCh := h.Subscribe(64)
+	stoppedCh := h.Subscribe(64)
 	h.DeliverSignal(longSignalFor(symbol))
 
 	mustWaitCodeCh(t, rejectedCh, runtime.CodeSignalRejected, simWait)
-	// Wait for the auto-pause event which follows the rejection.
-	mustWaitCodeCh(t, pausedCh, runtime.CodeHandPaused, simWait)
+	// Wait for the auto-stop event which follows the rejection.
+	mustWaitCodeCh(t, stoppedCh, runtime.CodeHandAutoStopped, simWait)
 
-	if !h.IsPaused() {
-		t.Fatal("expected hand to be paused after failing to size entry trade due to insufficient capital")
+	// Give the async Stop() goroutine time to run.
+	time.Sleep(50 * time.Millisecond)
+	if h.IsRunning() {
+		t.Fatal("expected hand to be stopped after failing to size entry trade due to insufficient capital")
 	}
 }
 

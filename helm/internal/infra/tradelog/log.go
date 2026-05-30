@@ -4,66 +4,24 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
+
+	"mallow/helm/internal/readmodel"
 )
 
-// TradeRecord is a completed round-trip trade (entry → exit).
-// Mirrors all analytical columns of the `trades` table, including the
-// PG GENERATED ones (net_pnl, holding_seconds, r_multiple).
-type TradeRecord struct {
-	ID         uuid.UUID
-	HandID     uuid.UUID
-	HelmID     uuid.UUID
-	UserID     uuid.UUID
-	Symbol     string
-	Side       string
-	Timeframe  string
-	EntryPrice decimal.Decimal
-	ExitPrice  decimal.Decimal
-	Qty        decimal.Decimal
-	PnL        decimal.Decimal // gross PnL = (exit-entry)*qty
-	Commission decimal.Decimal // total entry+exit fees
-	NetPnL     decimal.Decimal // PG GENERATED = PnL − Commission
-
-	StopLossPrice   decimal.Decimal
-	TakeProfitPrice decimal.Decimal
-	PlannedRisk     decimal.Decimal // qty × |entry − SL|
-	RMultiple       decimal.Decimal // PG GENERATED = net_pnl / planned_risk
-
-	EntryOrderID   string
-	ExitOrderID    string
-	NEntries       int
-	HoldingSeconds int // PG GENERATED
-
-	Source      string // exit reason: signal / sl / tp / kill / bracket_exit / external / release
-	Strategy    string
-	PatternKind string
-	RegimeState string
-
-	EntryAt time.Time
-	ExitAt  time.Time
-}
-
-// Filter constrains a Query call.
-type Filter struct {
-	HandID *uuid.UUID
-	HelmID *uuid.UUID
-	UserID uuid.UUID
-	After  time.Time
-	Before time.Time
-	Limit  int
-}
-
 // Log is the read-only view of the trades table for handlers/FE queries.
+// Record/filter shapes live in internal/readmodel; this package only does IO.
 //
 // Writes go through the JetStream HELM_TRADES path: hand → perf.TradeLog →
 // TradePersister → PostgreSQL `trades`. Direct PG inserts from this package
 // are deliberately removed so the durable buffer absorbs PG outages.
 type Log interface {
-	Query(ctx context.Context, f Filter) ([]TradeRecord, error)
+	Query(ctx context.Context, f readmodel.TradeFilter) ([]readmodel.TradeRecord, error)
+	// SumHandPnL returns aggregate PnL metrics for one hand in a single query.
+	// Used by RestorePnL on startup instead of draining the full JetStream history.
+	SumHandPnL(ctx context.Context, handID uuid.UUID) (totalPnL, totalCommission decimal.Decimal, wins, losses int64, err error)
 }
 
 type postgresLog struct {
@@ -75,7 +33,7 @@ func New(db *sql.DB) Log {
 }
 
 // Query returns trades matching the filter, ordered by exit_at DESC.
-func (l *postgresLog) Query(ctx context.Context, f Filter) ([]TradeRecord, error) {
+func (l *postgresLog) Query(ctx context.Context, f readmodel.TradeFilter) ([]readmodel.TradeRecord, error) {
 	limit := f.Limit
 	if limit <= 0 {
 		limit = 100
@@ -120,9 +78,9 @@ func (l *postgresLog) Query(ctx context.Context, f Filter) ([]TradeRecord, error
 	}
 	defer rows.Close()
 
-	var out []TradeRecord
+	var out []readmodel.TradeRecord
 	for rows.Next() {
-		var r TradeRecord
+		var r readmodel.TradeRecord
 		var (
 			timeframe                                  sql.NullString
 			entryPrice, exitPrice, qty                 sql.NullString
@@ -173,6 +131,26 @@ func (l *postgresLog) Query(ctx context.Context, f Filter) ([]TradeRecord, error
 		out = append(out, r)
 	}
 	return out, rows.Err()
+}
+
+// SumHandPnL returns aggregate PnL, commission, win/loss counts for a hand.
+// Single index scan on hand_id — O(1) from PG perspective.
+func (l *postgresLog) SumHandPnL(ctx context.Context, handID uuid.UUID) (totalPnL, totalCommission decimal.Decimal, wins, losses int64, err error) {
+	row := l.db.QueryRowContext(ctx, `
+		SELECT
+			COALESCE(SUM(pnl), 0),
+			COALESCE(SUM(commission), 0),
+			COUNT(CASE WHEN pnl > 0 THEN 1 END),
+			COUNT(CASE WHEN pnl < 0 THEN 1 END)
+		FROM trades
+		WHERE hand_id = $1`, handID)
+	var pnlStr, commStr string
+	if err = row.Scan(&pnlStr, &commStr, &wins, &losses); err != nil {
+		return
+	}
+	totalPnL, _ = decimal.NewFromString(pnlStr)
+	totalCommission, _ = decimal.NewFromString(commStr)
+	return
 }
 
 func decimalOrZero(s sql.NullString) decimal.Decimal {

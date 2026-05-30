@@ -52,8 +52,13 @@ type SignalMsg struct {
 	// the volatility position-sizing mode. Zero when the strategy does not use ATR.
 	Atr *float64 `protobuf:"fixed64,12,opt,name=atr,proto3,oneof" json:"atr,omitempty"`
 	// Pattern metadata (populated by pattern_breakout strategy only).
-	PatternKind   *string  `protobuf:"bytes,7,opt,name=pattern_kind,json=patternKind,proto3,oneof" json:"pattern_kind,omitempty"`
-	Confidence    *float64 `protobuf:"fixed64,8,opt,name=confidence,proto3,oneof" json:"confidence,omitempty"`
+	PatternKind *string  `protobuf:"bytes,7,opt,name=pattern_kind,json=patternKind,proto3,oneof" json:"pattern_kind,omitempty"`
+	Confidence  *float64 `protobuf:"fixed64,8,opt,name=confidence,proto3,oneof" json:"confidence,omitempty"`
+	// Trailing-stop fraction from the running peak (long) / trough (short).
+	// E.g. 0.05 = exit after a 5% retrace from the best price seen in-position.
+	TrailingStopPct *float64 `protobuf:"fixed64,13,opt,name=trailing_stop_pct,json=trailingStopPct,proto3,oneof" json:"trailing_stop_pct,omitempty"`
+	// Time-based exit: force-close after this many bars in position.
+	MaxBarsHeld   *int64 `protobuf:"varint,14,opt,name=max_bars_held,json=maxBarsHeld,proto3,oneof" json:"max_bars_held,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -172,6 +177,20 @@ func (x *SignalMsg) GetConfidence() float64 {
 	return 0
 }
 
+func (x *SignalMsg) GetTrailingStopPct() float64 {
+	if x != nil && x.TrailingStopPct != nil {
+		return *x.TrailingStopPct
+	}
+	return 0
+}
+
+func (x *SignalMsg) GetMaxBarsHeld() int64 {
+	if x != nil && x.MaxBarsHeld != nil {
+		return *x.MaxBarsHeld
+	}
+	return 0
+}
+
 // One hand emits at most one signal per bar.
 type SignalResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -237,7 +256,7 @@ var File_signal_proto protoreflect.FileDescriptor
 
 const file_signal_proto_rawDesc = "" +
 	"\n" +
-	"\fsignal.proto\x12\x06market\"\xca\x03\n" +
+	"\fsignal.proto\x12\x06market\"\xcc\x04\n" +
 	"\tSignalMsg\x12\f\n" +
 	"\x01t\x18\x01 \x01(\x03R\x01t\x12\f\n" +
 	"\x01s\x18\x02 \x01(\tR\x01s\x12\x10\n" +
@@ -254,7 +273,9 @@ const file_signal_proto_rawDesc = "" +
 	"\fpattern_kind\x18\a \x01(\tH\x06R\vpatternKind\x88\x01\x01\x12#\n" +
 	"\n" +
 	"confidence\x18\b \x01(\x01H\aR\n" +
-	"confidence\x88\x01\x01B\b\n" +
+	"confidence\x88\x01\x01\x12/\n" +
+	"\x11trailing_stop_pct\x18\r \x01(\x01H\bR\x0ftrailingStopPct\x88\x01\x01\x12'\n" +
+	"\rmax_bars_held\x18\x0e \x01(\x03H\tR\vmaxBarsHeld\x88\x01\x01B\b\n" +
 	"\x06_priceB\x0f\n" +
 	"\r_target_priceB\r\n" +
 	"\v_stop_priceB\f\n" +
@@ -263,7 +284,9 @@ const file_signal_proto_rawDesc = "" +
 	"\a_reasonB\x06\n" +
 	"\x04_atrB\x0f\n" +
 	"\r_pattern_kindB\r\n" +
-	"\v_confidence\"m\n" +
+	"\v_confidenceB\x14\n" +
+	"\x12_trailing_stop_pctB\x10\n" +
+	"\x0e_max_bars_held\"m\n" +
 	"\x0eSignalResponse\x12)\n" +
 	"\x06signal\x18\x01 \x01(\v2\x11.market.SignalMsgR\x06signal\x12\x17\n" +
 	"\ahelm_id\x18\x02 \x01(\tR\x06helmId\x12\x17\n" +

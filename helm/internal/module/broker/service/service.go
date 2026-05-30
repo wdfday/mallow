@@ -41,10 +41,21 @@ type BrokerConnectionService interface {
 	// TestConnection verifies the broker credentials are still valid.
 	TestConnection(ctx context.Context, id uuid.UUID, userID uuid.UUID) error
 
+	// RotateKey validates the new credentials with the broker, replaces the stored
+	// key/secret/passphrase atomically, and triggers a helm runtime respawn.
+	RotateKey(ctx context.Context, id uuid.UUID, userID uuid.UUID, req *RotateKeyRequest) (*domain.BrokerConnection, error)
+
 	// GetCredentialsByAccountID looks up the broker connection for accountID,
 	// decrypts the credentials, and returns a CredentialsFetchResp ready for
 	// spawning a helm runtime. Replaces the old NATS investment.accounts.credentials round-trip.
 	GetCredentialsByAccountID(ctx context.Context, accountID string) (natsapi.CredentialsFetchResp, error)
+}
+
+// RotateKeyRequest carries the new plaintext credentials for a key rotation.
+type RotateKeyRequest struct {
+	APIKey     string
+	APISecret  string
+	Passphrase *string // nil for exchanges that don't use a passphrase
 }
 
 // UpdateBrokerConnectionRequest is the request to update a broker connection.

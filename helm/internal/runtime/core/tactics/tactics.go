@@ -118,6 +118,11 @@ const (
 type SizingConfig struct {
 	Mode SizingMode `json:"mode"`
 
+	// StrengthSizing: when true (default), fixed_fractional scales the unit by
+	// signal confidence; when false, it deploys the full unit (confidence = 1.0).
+	// Other modes ignore strength regardless.
+	StrengthSizing bool `json:"strength_sizing"`
+
 	// Per-trade unit: how much capital to deploy in a single entry.
 	// UnitCapital (fixed) takes priority over UnitPct.
 	// Both zero → fall back to MaxPositionPct × allocatedEquity.

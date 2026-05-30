@@ -96,9 +96,6 @@ func (s *stubExchange) PlaceOrder(ctx context.Context, creds exchange.Credential
 		FilledAvg: decimal.NewFromFloat(100.0),
 	}, nil
 }
-func (s *stubExchange) SubscribeFills(ctx context.Context, creds exchange.Credentials) (<-chan exchange.FillEvent, error) {
-	return nil, nil
-}
 func (s *stubExchange) ListPositions(ctx context.Context, creds exchange.Credentials) ([]exchange.PositionResult, error) {
 	return nil, nil
 }
@@ -138,7 +135,7 @@ func TestKillAndRelease_FreesMemory(t *testing.T) {
 	exchCfg := helmdomain.ExchangeConfig{
 		BrokerType: "stub",
 	}
-	err := reg.Spawn(hCfg, exchCfg, decimal.NewFromFloat(10000))
+	err := reg.Spawn(hCfg, exchCfg)
 	if err != nil {
 		t.Fatalf("failed to spawn helm runtime: %v", err)
 	}
@@ -253,7 +250,7 @@ func TestAllocateCapital_DynamicScale(t *testing.T) {
 		Status:    "running",
 	}
 	exchCfg := helmdomain.ExchangeConfig{BrokerType: "stub"}
-	if err := reg.Spawn(hCfg, exchCfg, decimal.NewFromFloat(10000)); err != nil {
+	if err := reg.Spawn(hCfg, exchCfg); err != nil {
 		t.Fatalf("failed to spawn: %v", err)
 	}
 

@@ -1,18 +1,20 @@
 package service
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 
+	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/module/helm/domain"
 )
 
 // RuntimeSpawner is the port for managing runtime lifecycle.
 type RuntimeSpawner interface {
-	// Spawn creates a runtime for cfg. exchCfg and capital are transient — never stored to DB.
-	Spawn(cfg *domain.Helm, exchCfg domain.ExchangeConfig, capital decimal.Decimal) error
+	// Spawn creates a runtime for cfg. exchCfg is transient — never stored to DB.
+	// Initial capital is always zero; first sync updates it from the exchange.
+	Spawn(cfg *domain.Helm, exchCfg domain.ExchangeConfig) error
 	Teardown(id uuid.UUID) []string
 	Pause(id uuid.UUID) (wasRunning []string, err error)
 	Resume(id uuid.UUID) (toRestart []string, err error)
@@ -22,6 +24,15 @@ type RuntimeSpawner interface {
 	UpdateRiskConfig(id uuid.UUID, portfolio domain.PortfolioConfig, risk domain.RiskConfig) error
 	// SyncOne triggers an async portfolio sync for the given orchestrator (fire-and-forget).
 	SyncOne(id uuid.UUID)
+	// RotateCreds updates credentials in-place and reconnects the WS stream.
+	// Running hands are not interrupted.
+	RotateCreds(id uuid.UUID, newCreds exchange.Credentials)
+}
+
+// CredentialFetcher fetches decrypted exchange credentials for a given account.
+// Implemented by broker/service.BrokerConnectionService.
+type CredentialFetcher interface {
+	GetCredentialsByAccountID(ctx context.Context, accountID string) (domain.ExchangeConfig, error)
 }
 
 // HandLifecycle is the port for cascading start/stop/kill to hands.
@@ -42,6 +53,7 @@ type Service struct {
 	repo    domain.HelmRepo
 	spawner RuntimeSpawner
 	hands   HandLifecycle
+	creds   CredentialFetcher
 }
 
 // New creates a Service.
@@ -52,6 +64,11 @@ func New(repo domain.HelmRepo, spawner RuntimeSpawner) *Service {
 // SetHandLifecycle injects the HandLifecycle port (breaks init cycle: hand.Service → Registry → Service).
 func (s *Service) SetHandLifecycle(bl HandLifecycle) {
 	s.hands = bl
+}
+
+// SetCredentialFetcher injects the credential-fetching port used by Enable to spawn runtimes.
+func (s *Service) SetCredentialFetcher(cf CredentialFetcher) {
+	s.creds = cf
 }
 
 // Get returns a single orchestrator config.

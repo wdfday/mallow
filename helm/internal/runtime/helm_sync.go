@@ -3,24 +3,31 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
-
-	nats "github.com/nats-io/nats.go"
 
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/runtime/core/portfolio"
 )
 
+// maxProcessedOrderFills caps the processedOrderFills map to prevent unbounded growth.
+// At reset, all entries are cleared — a brief window where Sync() could re-publish a
+// fill is acceptable because it requires 10k fills between two 5-minute Sync() cycles,
+// which never happens on a signal-following bot.
+const maxProcessedOrderFills = 10_000
+
 // MarkOrderFillPublished records an orderID whose trade.filled was already published
-// via the REST fill path (hand.applyFill, source != "ws").
-// Subsequent calls to Sync() skip transactions with this orderID to prevent
-// double-publishing the same fill with a different Nats-Msg-Id.
+// via the WS fill path. Subsequent calls to Sync() skip transactions with this orderID
+// to prevent double-publishing the same fill with a different Nats-Msg-Id.
 func (r *HelmRuntime) MarkOrderFillPublished(orderID string) {
 	if orderID == "" {
 		return
 	}
 	r.processedOrderFillsMu.Lock()
+	if len(r.processedOrderFills) >= maxProcessedOrderFills {
+		r.processedOrderFills = make(map[string]struct{}, maxProcessedOrderFills)
+	}
 	r.processedOrderFills[orderID] = struct{}{}
 	r.processedOrderFillsMu.Unlock()
 }
@@ -51,8 +58,6 @@ func (r *HelmRuntime) HasProcessedTrade(tradeID string) bool {
 // MarkTradeProcessed records a TradeID so duplicate gap recovery fills are skipped.
 // The map is bounded to maxProcessedTrades entries; when exceeded it is reset
 // to prevent unbounded memory growth on long-running bots.
-// This is safe to reset because the map is only a session-level dedup guard —
-// gap recovery runs once at startup, not continuously.
 const maxProcessedTrades = 50_000
 
 func (r *HelmRuntime) MarkTradeProcessed(tradeID string) {
@@ -89,9 +94,19 @@ func (r *HelmRuntime) storeSyncAt(t time.Time) {
 	}
 }
 
-// Sync fetches current account state from the exchange REST API, updates the in-memory
-// portfolio, and publishes a portfolio.synced event to NATS.
-func (r *HelmRuntime) Sync(ctx context.Context, js nats.JetStreamContext) error {
+// persistSyncTime writes the runtime's lastSyncAt to the store (best-effort, logs on error).
+func (r *HelmRuntime) persistSyncTime() {
+	if r.syncStore == nil {
+		return
+	}
+	if err := r.syncStore.UpdateLastSyncedAt(r.HelmID, r.LastSyncAt()); err != nil {
+		slog.Warn("runtime: persist last_synced_at failed", "helm_id", r.HelmID, "err", err)
+	}
+}
+
+// Sync fetches current account state from the exchange REST API, updates the
+// in-memory portfolio, and publishes a portfolio.synced event to NATS.
+func (r *HelmRuntime) Sync(ctx context.Context) error {
 	syncer, ok := r.Exchange.(exchange.AccountSyncer)
 	if !ok {
 		return nil
@@ -139,10 +154,16 @@ func (r *HelmRuntime) Sync(ctx context.Context, js nats.JetStreamContext) error 
 	accountID := r.AccountID.String()
 	userID := r.UserID.String()
 	for _, t := range snap.Transactions {
+		// Best-effort: resolve which hand placed this order via its clid (falls back to
+		// exchange id when the venue's trade record omits the clOrdId, e.g. Binance).
+		// Works only while the order is still tracked in orderHandMap (slow/gap fills);
+		// returns "" for orders already cleared — omitempty hides it from JSON.
+		handID := r.PendingOrderHandID(canonOrderKey(t.ClientOrderID, t.OrderID))
 		msg := natsapi.TransactionMsg{
 			HelmID:    helmID,
 			AccountID: accountID,
 			UserID:    userID,
+			HandID:    handID,
 			TradeID:   t.TradeID,
 			OrderID:   t.OrderID,
 			Kind:      "fill",
@@ -168,17 +189,114 @@ func (r *HelmRuntime) Sync(ctx context.Context, js nats.JetStreamContext) error 
 		Msg:    "helm: portfolio synced from exchange",
 	})
 
-	if js != nil {
-		natsapi.PublishPortfolioSync(js, helmID, accountID, userID, snap.Cash, r.AvailableCash(), snap.Equity, natsPositions, natsPositionTxns, now)
+	if r.js != nil {
+		natsapi.PublishPortfolioSync(r.js, helmID, accountID, userID, snap.Cash, r.AvailableCash(), snap.Equity, natsPositions, natsPositionTxns, now)
 		for _, t := range newTxns {
-			// Skip fills already published by the REST fill path (hand.applyFill) to
-			// prevent duplicate trade.filled events — those used orderID as the dedup key
-			// while Sync() would use TradeID, resulting in two different Nats-Msg-Ids.
+			// Skip fills already published by the REST fill path to prevent duplicates.
 			if r.hasOrderFillPublished(t.OrderID) {
 				continue
 			}
-			natsapi.PublishTradeFill(js, t)
+			natsapi.PublishTradeFill(r.js, t)
 		}
 	}
 	return nil
+}
+
+// ReconcileOrders fetches open orders from the exchange and re-tracks any that are
+// missing from the in-memory orderbook (lost across restarts).
+// Call after SpawnAll + StartFillStreaming so the fill processor is ready.
+func (r *HelmRuntime) ReconcileOrders(ctx context.Context) {
+	reconciler, ok := r.Exchange.(exchange.OrderReconciler)
+	if !ok {
+		return
+	}
+	orders, err := reconciler.GetPendingOrders(ctx, r.Creds, "")
+	if err != nil {
+		slog.Warn("reconcile orders: fetch failed", "helm_id", r.HelmID, "err", err)
+		return
+	}
+	if len(orders) == 0 {
+		return
+	}
+
+	recovered := 0
+	for _, o := range orders {
+		// Track by clid when the exchange echoes ours (race-free key shared with WS fills),
+		// else by exchange id. handID unknown after crash — fill routing falls back to REST poll.
+		key := canonOrderKey(o.ClientOrderID, o.ID)
+		if r.HasOrderTracking(key) {
+			continue
+		}
+		r.TrackOrder(key, "")
+		recovered++
+	}
+	if recovered > 0 {
+		slog.Info("reconcile orders: recovered pending orders",
+			"helm_id", r.HelmID,
+			"recovered", recovered,
+			"total_open", len(orders))
+	}
+}
+
+// RecoverGapFills fetches filled order history from the exchange covering the window
+// [since, now), where since = LastSyncAt (crash recovery) or CreatedAt (first boot).
+// Applies fills missed during downtime so portfolio state is correct on restart.
+// Call after ReconcileOrders but before StartFillStreaming.
+func (r *HelmRuntime) RecoverGapFills(ctx context.Context) {
+	historian, ok := r.Exchange.(exchange.HistoryFetcher)
+	if !ok {
+		return
+	}
+
+	var since time.Time
+	if lastSync := r.LastSyncAt(); !lastSync.IsZero() {
+		since = lastSync
+	} else if !r.CreatedAt.IsZero() {
+		since = r.CreatedAt
+	} else {
+		slog.Warn("gap recovery: skipping helm with no createdAt or lastSyncAt",
+			"helm_id", r.HelmID)
+		return
+	}
+
+	now := time.Now().UTC()
+	if now.Sub(since) < 5*time.Second {
+		return // restarted too recently, nothing to recover
+	}
+
+	slog.Info("gap recovery: fetching fill history",
+		"helm_id", r.HelmID, "from", since, "to", now)
+
+	// Pass nil symbols — fetch all instruments.
+	fills, err := historian.FilledOrders(ctx, r.Creds, nil, since, now)
+	if err != nil {
+		slog.Error("gap recovery: fetch failed", "helm_id", r.HelmID, "err", err)
+		return
+	}
+	if len(fills) == 0 {
+		slog.Info("gap recovery: no fills in gap", "helm_id", r.HelmID)
+		return
+	}
+
+	applied := 0
+	for _, txn := range fills {
+		if r.HasProcessedTrade(txn.TradeID) {
+			continue
+		}
+		r.applyWsFill(exchange.WsFillEvent{
+			OrderID:         txn.OrderID,
+			TradeID:         txn.TradeID,
+			Symbol:          txn.Symbol,
+			Side:            exchange.OrderSide(txn.Side),
+			Partial:         false,
+			FilledQty:       txn.Qty,
+			FilledAvg:       txn.AvgPrice,
+			Commission:      txn.Fee,
+			CommissionAsset: txn.FeeAsset,
+			Timestamp:       txn.FilledAt,
+		})
+		applied++
+	}
+	slog.Info("gap recovery: fills applied",
+		"helm_id", r.HelmID, "total", len(fills), "applied", applied, "skipped", len(fills)-applied)
 }

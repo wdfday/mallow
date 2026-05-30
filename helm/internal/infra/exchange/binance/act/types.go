@@ -65,6 +65,7 @@ func spotCreateToResult(side exchange.OrderSide, r *gobinance.CreateOrderRespons
 	}
 	return &exchange.OrderResult{
 		ID:              r.Symbol + ":" + strconv.FormatInt(r.OrderID, 10),
+		ClientOrderID:   r.ClientOrderID,
 		Symbol:          r.Symbol,
 		Side:            side,
 		Status:          strings.ToLower(string(r.Status)),
@@ -85,13 +86,14 @@ func spotGetToResult(orderID string, r *gobinance.Order) *exchange.OrderResult {
 		filledAvg = quoteQty.Div(filledQty)
 	}
 	return &exchange.OrderResult{
-		ID:        orderID,
-		Symbol:    r.Symbol,
-		Side:      binanceSide(r.Side),
-		Status:    strings.ToLower(string(r.Status)),
-		Qty:       parseDecimal(r.OrigQuantity),
-		FilledQty: filledQty,
-		FilledAvg: filledAvg,
+		ID:            orderID,
+		ClientOrderID: r.ClientOrderID,
+		Symbol:        r.Symbol,
+		Side:          binanceSide(r.Side),
+		Status:        strings.ToLower(string(r.Status)),
+		Qty:           parseDecimal(r.OrigQuantity),
+		FilledQty:     filledQty,
+		FilledAvg:     filledAvg,
 	}
 }
 
@@ -100,12 +102,13 @@ func spotGetToResult(orderID string, r *gobinance.Order) *exchange.OrderResult {
 // futures GetOrder accepts symbol + orderID separately).
 func futuresCreateToResult(side exchange.OrderSide, r *futures.CreateOrderResponse) *exchange.OrderResult {
 	return &exchange.OrderResult{
-		ID:        strconv.FormatInt(r.OrderID, 10),
-		Symbol:    r.Symbol,
-		Side:      side,
-		Status:    strings.ToLower(string(r.Status)),
-		Qty:       parseDecimal(r.OrigQuantity),
-		FilledQty: parseDecimal(r.ExecutedQuantity),
+		ID:            strconv.FormatInt(r.OrderID, 10),
+		ClientOrderID: r.ClientOrderID,
+		Symbol:        r.Symbol,
+		Side:          side,
+		Status:        strings.ToLower(string(r.Status)),
+		Qty:           parseDecimal(r.OrigQuantity),
+		FilledQty:     parseDecimal(r.ExecutedQuantity),
 	}
 }
 

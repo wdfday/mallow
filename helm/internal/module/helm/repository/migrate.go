@@ -15,8 +15,7 @@ func Migrate(db *gorm.DB) error {
 			account_id      UUID NOT NULL UNIQUE,
 			name            TEXT NOT NULL,
 			risk_config     JSONB NOT NULL DEFAULT '{}',
-			enabled         BOOLEAN NOT NULL DEFAULT FALSE,
-			status          TEXT NOT NULL DEFAULT 'active',
+			status          TEXT NOT NULL DEFAULT 'disabled',
 			created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 			updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 		)`,
@@ -25,6 +24,7 @@ func Migrate(db *gorm.DB) error {
 		`ALTER TABLE helms ADD COLUMN IF NOT EXISTS portfolio_config  JSONB NOT NULL DEFAULT '{}'`,
 		`ALTER TABLE helms ADD COLUMN IF NOT EXISTS broker_type       TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE helms ADD COLUMN IF NOT EXISTS account_type TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE helms DROP COLUMN IF EXISTS enabled`,
 		// Move sizing fields from risk_config → portfolio_config (idempotent).
 		`UPDATE helms
 			SET

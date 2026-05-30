@@ -20,11 +20,12 @@ type ExchangeActionMetricsResp struct {
 
 // ExchangeWSMetricsResp holds real-time WS stream health stats.
 type ExchangeWSMetricsResp struct {
-	StreamStarts  int64   `json:"stream_starts"`
-	StreamErrors  int64   `json:"stream_errors"`
-	OrderEvents   int64   `json:"order_events"`
-	BalanceEvents int64   `json:"balance_events"`
-	IdleSec       float64 `json:"idle_sec"` // seconds since last WS event; 0 = never received
+	StreamStarts    int64   `json:"stream_starts"`
+	StreamErrors    int64   `json:"stream_errors"`
+	LifecycleEvents int64   `json:"lifecycle_events"`
+	FillEvents      int64   `json:"fill_events"`
+	BalanceEvents   int64   `json:"balance_events"`
+	IdleSec         float64 `json:"idle_sec"` // seconds since last WS event; 0 = never received
 }
 
 // ExchangeMetricsResp is the full exchange instrumentation snapshot.
@@ -66,11 +67,12 @@ func MetricsSnapshotToResp(s exchange.MetricsSnapshot) ExchangeMetricsResp {
 		SyncAccount: mapActionSnapshot(s.SyncAccount),
 		PingLastMs:  s.PingLastMs,
 		WS: ExchangeWSMetricsResp{
-			StreamStarts:  s.WS.StreamStarts,
-			StreamErrors:  s.WS.StreamErrors,
-			OrderEvents:   s.WS.OrderEvents,
-			BalanceEvents: s.WS.BalanceEvents,
-			IdleSec:       s.WS.IdleSec,
+			StreamStarts:    s.WS.StreamStarts,
+			StreamErrors:    s.WS.StreamErrors,
+			LifecycleEvents: s.WS.LifecycleEvents,
+			FillEvents:      s.WS.FillEvents,
+			BalanceEvents:   s.WS.BalanceEvents,
+			IdleSec:         s.WS.IdleSec,
 		},
 	}
 }

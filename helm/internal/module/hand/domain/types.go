@@ -15,13 +15,12 @@ type HandStatus string
 const (
 	HandStatusStopped  HandStatus = "stopped"
 	HandStatusRunning  HandStatus = "running"
-	HandStatusPaused   HandStatus = "paused"
 	HandStatusKilled   HandStatus = "killed"   // terminal: positions flattened, capital returned
 	HandStatusReleased HandStatus = "released" // terminal: positions orphaned, capital returned
 )
 
 // IsTerminal reports whether the status is a permanent end-state.
-// Terminal hands cannot be started, restarted, or paused — they exist for record-keeping only.
+// Terminal hands cannot be started or killed again — they exist for record-keeping only.
 func (s HandStatus) IsTerminal() bool {
 	return s == HandStatusKilled || s == HandStatusReleased
 }
@@ -136,6 +135,14 @@ type PositionConfig struct {
 	// SizeMode selects the sizing algorithm. Defaults to fixed_fractional.
 	SizeMode SizeMode `json:"size_mode,omitempty"`
 
+	// StrengthSizing controls whether signal strength (Confidence) scales the
+	// position size. nil/true (default) → fixed_fractional scales by confidence;
+	// false → strength is computed by the strategy but the entry is sized at full
+	// unit allocation (confidence treated as 1.0). Mirrors the backtest request's
+	// `strength_sizing`. Only affects fixed_fractional — the other modes ignore
+	// strength regardless. Pointer so existing hands (nil) keep current behaviour.
+	StrengthSizing *bool `json:"strength_sizing,omitempty"`
+
 	// ── Sizing params — only the one matching SizeMode is read ──────────────
 
 	// RiskPerTradePct: fraction of allocated capital risked per trade.
@@ -193,19 +200,19 @@ type HandRiskConfig struct {
 	// 0 disables all edge-degradation checks below.
 	WindowTrades int `json:"window_trades,omitempty"`
 
-	// MaxTotalLossPct pauses the hand when sum(PnL over window) / AllocatedCapital
-	// drops below -X. e.g. 0.05 = pause when the window's cumulative loss exceeds 5%.
+	// MaxTotalLossPct auto-stops the hand when sum(PnL over window) / AllocatedCapital
+	// drops below -X. e.g. 0.05 = stop when the window's cumulative loss exceeds 5%.
 	MaxTotalLossPct float64 `json:"max_total_loss_pct,omitempty"`
 
-	// MaxAvgLossPct pauses the hand when avg(PnL over window) / AllocatedCapital
+	// MaxAvgLossPct auto-stops the hand when avg(PnL over window) / AllocatedCapital
 	// drops below -X. Catches consistent small losses even if the total is modest.
 	MaxAvgLossPct float64 `json:"max_avg_loss_pct,omitempty"`
 
-	// MaxSingleLossPct pauses the hand when any single trade in the window
+	// MaxSingleLossPct auto-stops the hand when any single trade in the window
 	// lost more than X of AllocatedCapital. Guards against blow-up trades.
 	MaxSingleLossPct float64 `json:"max_single_loss_pct,omitempty"`
 
-	// MaxConsecLoss pauses the hand after N consecutive losing trades.
+	// MaxConsecLoss auto-stops the hand after N consecutive losing trades.
 	// Resets to 0 on any winning trade.
 	MaxConsecLoss int `json:"max_consec_loss,omitempty"`
 }

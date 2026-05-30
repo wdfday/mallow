@@ -14,12 +14,11 @@ import (
 	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/infra/poslog"
 	helmdomain "mallow/helm/internal/module/helm/domain"
-	"mallow/helm/internal/runtime/perf"
 	"mallow/helm/internal/runtime/position"
 )
 
-// handleWsFill processes a fully-filled OrderEvent received via the WS path.
-func (h *Hand) handleWsFill(ctx context.Context, ev exchange.OrderEvent) {
+// handleWsFill processes a fully-filled WsFillEvent received via the WS path.
+func (h *Hand) handleWsFill(ctx context.Context, ev exchange.WsFillEvent) {
 	h.mu.Lock()
 	if _, seen := h.seenFills[ev.OrderID]; seen {
 		// REST-immediate path already handled this fill — skip to avoid double-apply.
@@ -34,22 +33,29 @@ func (h *Hand) handleWsFill(ctx context.Context, ev exchange.OrderEvent) {
 		side = "sell"
 	}
 	qty := ev.FilledQty
+	commission := ev.Commission
 	// On Binance spot BUY, when the fee is paid in the base asset (e.g. "ETH" for ETHUSDT),
 	// Binance deducts it from the received base qty. The wallet holds FilledQty - Commission,
 	// not FilledQty. Record the net qty so exit orders don't exceed the actual balance.
+	// Also normalize the commission to quote currency (commission × fill_price) so that
+	// entry + exit fees can be summed consistently for the trade record.
 	if side == "buy" && ev.Commission.IsPositive() && ev.CommissionAsset != "" &&
 		strings.HasPrefix(ev.Symbol, ev.CommissionAsset) {
 		qty = qty.Sub(ev.Commission)
 		// Truncate to 4 decimal places so the qty fits exchange lot size step (0.0001).
 		// Rounding down avoids insufficient-balance on exit; the dust is negligible.
 		qty = qty.Truncate(4)
+		// Convert base-asset fee → quote equivalent for consistent two-trip accounting.
+		if ev.FilledAvg.IsPositive() {
+			commission = ev.Commission.Mul(ev.FilledAvg)
+		}
 		slog.Debug("fill: base-asset fee deducted from qty",
 			"hand_id", h.id, "symbol", ev.Symbol,
-			"commission_asset", ev.CommissionAsset, "commission", ev.Commission,
-			"gross_qty", ev.FilledQty, "net_qty", qty,
+			"commission_asset", ev.CommissionAsset, "commission_base", ev.Commission,
+			"commission_quote", commission, "gross_qty", ev.FilledQty, "net_qty", qty,
 		)
 	}
-	h.applyFill(ctx, ev.OrderID, ev.Symbol, side, qty, ev.FilledAvg, ev.Commission, "ws")
+	h.applyFill(ctx, ev.OrderID, ev.Symbol, side, qty, ev.FilledAvg, commission, "ws")
 }
 
 // applyFill is the single authority for all fill side-effects:
@@ -73,7 +79,12 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 	// zero — which corrupts LegSnapshot, the trade record's planned_risk, and
 	// reconcile-on-restart.
 	var offsetResolved bool
+	// posIDForBracket: the leg's PositionID, captured here (before publishOrderFilled
+	// deletes it from pendingOrderPos) and forwarded to the bracket goroutine so it
+	// can write the KindBracketPlaced poslog event with the correct subject/positionID.
+	var posIDForBracket string
 	h.mu.Lock()
+	posIDForBracket = h.pendingOrderPos[orderID]
 	if pending, ok := h.pendingExits[orderID]; ok {
 		delete(h.pendingExits, orderID)
 		resolved := exitLevel{Side: pending.Side}
@@ -132,7 +143,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 			handCtx := h.ctx
 			h.mu.RUnlock()
 
-			go func(el exitLevel) {
+			go func(el exitLevel, posID string) {
 				// Retry loop: spot exchanges may return "insufficient balance" briefly after
 				// a fill if the asset has not yet settled into the available balance.
 				// Retries up to 5× with linear backoff (1s, 2s … 5s = 15s total).
@@ -184,7 +195,11 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 					h.exitLevels[symbol] = lv
 				}
 				h.mu.Unlock()
-			}(resolvedEl)
+				// Persist bracket order IDs to poslog so they survive a restart.
+				if posID != "" {
+					h.publishBracketPlaced(handCtx, posID, symbol, result.OrderIDs)
+				}
+			}(resolvedEl, posIDForBracket)
 		}
 	}
 
@@ -320,7 +335,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 				AccountID: h.helmRuntime.AccountID.String(),
 				UserID:    h.helmRuntime.UserID.String(),
 				HandID:    h.id.String(),
-				TradeID:   orderID,
+				TradeID:   "",      // no exchange trade ID on poll/timeout paths; dedup falls back to helmID+orderID
 				OrderID:   orderID,
 				Kind:      "fill",
 				Symbol:    symbol,
@@ -379,87 +394,8 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 		Equity:          equity,
 	})
 
-	// ── 6. Hand-level snapshot ───────────────────────────────────────────────
-	// Publish leg state + equity so the FE can reconstruct per-hand equity curves.
-	if h.helmRuntime.SnapshotLog != nil {
-		snap := h.handSnapshot(time.Now().UTC())
-		go func() {
-			sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := h.helmRuntime.SnapshotLog.Append(sctx, snap); err != nil {
-				slog.Warn("snapshot_log: hand snapshot append failed", "hand_id", h.id, "err", err)
-			}
-		}()
-	}
 }
 
-// handSnapshot builds a hand-level Snapshot from active leg state.
-// All fields are always populated.
-//
-// Accounting (capital isolation view):
-//
-//	deployedCap   = Σ leg.Qty × leg.EntryPrice  (capital locked in open legs)
-//	unrealizedPnL = Σ MtM(leg) using lastKnownPrice
-//	equity        = allocatedCap + realizedPnL + unrealizedPnL
-//	cash          = allocatedCap + realizedPnL − deployedCap   (free budget; never negative)
-//
-// For shared-pool hands (allocatedCap = 0) "cash" loses budget meaning and reduces to
-// (realizedPnL − deployedCap), which represents net liquid contribution to the pool.
-func (h *Hand) handSnapshot(ts time.Time) perf.Snapshot {
-	h.mu.RLock()
-	legs := h.pos.ActiveLegs()
-	allocatedCap := h.allocatedCap
-	h.mu.RUnlock()
-
-	h.metrics.mu.Lock()
-	realizedPnL := h.metrics.totalPnL.Sub(h.metrics.totalCommission)
-	h.metrics.mu.Unlock()
-
-	entries := make([]perf.PositionEntry, 0, len(legs))
-	unrealizedPnL := decimal.Zero
-	deployedCap := decimal.Zero
-	for _, leg := range legs {
-		entries = append(entries, perf.PositionEntry{
-			Symbol:   leg.Symbol,
-			Side:     leg.Side,
-			Qty:      leg.Qty,
-			AvgPrice: leg.EntryPrice,
-		})
-		if leg.EntryPrice.IsPositive() {
-			deployedCap = deployedCap.Add(leg.Qty.Abs().Mul(leg.EntryPrice))
-		}
-		curPrice := h.helmRuntime.lastKnownPrice(leg.Symbol)
-		if curPrice.IsPositive() && leg.EntryPrice.IsPositive() {
-			var legUnrealized decimal.Decimal
-			if leg.Side == "buy" {
-				legUnrealized = curPrice.Sub(leg.EntryPrice).Mul(leg.Qty.Abs())
-			} else {
-				legUnrealized = leg.EntryPrice.Sub(curPrice).Mul(leg.Qty.Abs())
-			}
-			unrealizedPnL = unrealizedPnL.Add(legUnrealized)
-		}
-	}
-
-	equity := allocatedCap.Add(realizedPnL).Add(unrealizedPnL)
-	cash := allocatedCap.Add(realizedPnL).Sub(deployedCap)
-	if allocatedCap.IsPositive() && cash.IsNegative() {
-		// Allocated hand should never report negative cash — clamp to zero so the
-		// FE equity curve stays interpretable. Negative cash indicates the
-		// capital-isolation cap leaked (shouldn't happen with budgetQty clamp).
-		cash = decimal.Zero
-	}
-
-	return perf.Snapshot{
-		HelmID:        h.helmID.String(),
-		HandID:        h.id.String(),
-		TS:            ts,
-		Cash:          cash,
-		Equity:        equity,
-		RealizedPnL:   realizedPnL,
-		UnrealizedPnL: unrealizedPnL,
-		Positions:     entries,
-	}
-}
 
 // checkEdgeRisk evaluates the per-hand sliding-window edge-degradation guard.
 // Called after every closing fill from the run-loop goroutine (no extra lock needed
@@ -543,13 +479,13 @@ func (h *Hand) checkEdgeRisk(pnl decimal.Decimal) {
 		return
 	}
 
-	// ── 6. Auto-pause ─────────────────────────────────────────────────────────
-	slog.Warn("hand: edge degradation detected — auto-pausing",
+	// ── 6. Auto-stop ──────────────────────────────────────────────────────────
+	slog.Warn("hand: edge degradation detected — auto-stopping",
 		"hand_id", h.id, "reason", breachReason)
-	h.Pause()
 	h.emitEvent(natsapi.HelmEvent{
-		Code:   CodeHandAutoPaused,
+		Code:   CodeHandAutoStopped,
 		Reason: "edge risk: " + breachReason,
-		Msg:    "hand: auto-paused — edge degradation",
+		Msg:    "hand: auto-stopped — edge degradation",
 	})
+	go h.Stop()
 }

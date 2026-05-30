@@ -48,36 +48,6 @@ func (s *Service) Stop(id uuid.UUID) error {
 	})
 }
 
-func (s *Service) Pause(id uuid.UUID) error {
-	bi, err := s.getOrLoad(id)
-	if err != nil {
-		return err
-	}
-	if !bi.Runner.IsRunning() {
-		return fmt.Errorf("hand %q is not running", id)
-	}
-	bi.Runner.Pause()
-	return s.repo.Update(id, func(d *domain.Hand) error {
-		d.Status = domain.HandStatusPaused
-		return nil
-	})
-}
-
-func (s *Service) Resume(id uuid.UUID) error {
-	bi, err := s.getOrLoad(id)
-	if err != nil {
-		return err
-	}
-	if !bi.Runner.IsRunning() {
-		return fmt.Errorf("hand %q is not running", id)
-	}
-	bi.Runner.Resume()
-	return s.repo.Update(id, func(d *domain.Hand) error {
-		d.Status = domain.HandStatusRunning
-		return nil
-	})
-}
-
 func (s *Service) Kill(ctx context.Context, id uuid.UUID) error {
 	bi, err := s.getOrLoad(id)
 	if err != nil {
@@ -93,6 +63,7 @@ func (s *Service) Kill(ctx context.Context, id uuid.UUID) error {
 	}
 	s.mu.Lock()
 	delete(s.hands, id)
+	s.terminated[id] = bi.Data // keep for List() — no DB round-trip needed
 	s.mu.Unlock()
 
 	return s.repo.Update(id, func(d *domain.Hand) error {
@@ -117,36 +88,12 @@ func (s *Service) Release(ctx context.Context, id uuid.UUID) error {
 	}
 	s.mu.Lock()
 	delete(s.hands, id)
+	s.terminated[id] = bi.Data // keep for List() — no DB round-trip needed
 	s.mu.Unlock()
 
 	return s.repo.Update(id, func(d *domain.Hand) error {
 		d.Status = domain.HandStatusReleased
 		d.FinalMetrics = &finalMetrics
-		return nil
-	})
-}
-
-// Restart stops then starts a hand (re-registers with herald).
-func (s *Service) Restart(id uuid.UUID) error {
-	bi, err := s.getOrLoad(id)
-	if err != nil {
-		return err
-	}
-	if bi.Data.Status.IsTerminal() {
-		return fmt.Errorf("hand %q is %s — terminal hands cannot be restarted", id, bi.Data.Status)
-	}
-	s.heraldDeregister(id)
-	bi.Runner.Stop()
-	if rt, _ := s.registry.Get(bi.Data.HelmID); rt != nil && rt.IsPaused() {
-		return fmt.Errorf("helm %q is paused — resume it first", bi.Data.HelmID)
-	}
-	if err := s.heraldRegister(id, bi.Data); err != nil {
-		return fmt.Errorf("hand restart: %w", err)
-	}
-	bi.Runner.Start()
-	bi.Data.Status = domain.HandStatusRunning
-	return s.repo.Update(id, func(d *domain.Hand) error {
-		d.Status = domain.HandStatusRunning
 		return nil
 	})
 }

@@ -30,8 +30,7 @@ type Helm struct {
 	AccountType  string          `json:"account_type"`   // spot | futures_usdm | futures_coinm | unified
 	Portfolio    PortfolioConfig `json:"portfolio"`      // capital allocation at account level
 	Risk         RiskConfig      `json:"risk"`           // circuit-breakers / drawdown guards
-	Enabled      bool            `json:"enabled"`        // user toggle — gates hand create/delete
-	Status       HelmStatus      `json:"status"`         // active | paused | halted | disabled (runtime state)
+	Status       HelmStatus      `json:"status"`         // active | paused | halted | disabled
 	LastSyncedAt *time.Time      `json:"last_synced_at"` // persisted after each successful REST sync
 	CreatedAt    time.Time       `json:"created_at"`
 	UpdatedAt    time.Time       `json:"updated_at"`

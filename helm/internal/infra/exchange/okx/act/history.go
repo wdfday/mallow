@@ -35,14 +35,16 @@ func (c *Client) FilledOrders(ctx context.Context, creds exchange.Credentials, _
 				fee = fee.Neg()
 			}
 			all = append(all, exchange.AccountTransaction{
-				TradeID:  f.TradeID,
-				OrderID:  f.OrdID,
-				Symbol:   f.InstID,
-				Side:     f.Side,
-				Qty:      parseDecimal(f.FillSz),
-				AvgPrice: parseDecimal(f.FillPx),
-				Fee:      fee,
-				FilledAt: time.UnixMilli(tsMs).UTC(),
+				TradeID:       f.TradeID,
+				OrderID:       f.OrdID,
+				ClientOrderID: f.ClOrdID,
+				Symbol:        f.InstID,
+				Side:          f.Side,
+				Qty:           parseDecimal(f.FillSz),
+				AvgPrice:      parseDecimal(f.FillPx),
+				Fee:           fee,
+				FeeAsset:      f.FeeCcy,
+				FilledAt:      time.UnixMilli(tsMs).UTC(),
 			})
 		}
 	}

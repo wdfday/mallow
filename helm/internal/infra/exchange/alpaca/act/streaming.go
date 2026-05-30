@@ -12,14 +12,25 @@ import (
 )
 
 // StreamOrders implements exchange.AccountStreamer.
-// balanceHandler is ignored — Alpaca does not push balance updates on the trade-updates stream.
-func (c *Client) StreamOrders(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent), _ func(exchange.BalanceEvent)) error {
+// onBalance is ignored — Alpaca does not push balance updates on the trade-updates stream.
+func (c *Client) StreamOrders(
+	ctx context.Context,
+	creds exchange.Credentials,
+	onLifecycle func(exchange.OrderLifecycleEvent),
+	onFill func(exchange.WsFillEvent),
+	_ func(exchange.BalanceEvent),
+) error {
 	slog.Info("alpaca: starting order stream")
-	go c.streamOrdersLoop(ctx, creds, handler)
+	go c.streamOrdersLoop(ctx, creds, onLifecycle, onFill)
 	return nil
 }
 
-func (c *Client) streamOrdersLoop(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent)) {
+func (c *Client) streamOrdersLoop(
+	ctx context.Context,
+	creds exchange.Credentials,
+	onLifecycle func(exchange.OrderLifecycleEvent),
+	onFill func(exchange.WsFillEvent),
+) {
 	bo := exchange.Backoff{Min: 2 * time.Second, Max: 60 * time.Second, Factor: 2.0, Jitter: true}
 	attempt := 0
 	for {
@@ -27,8 +38,14 @@ func (c *Client) streamOrdersLoop(ctx context.Context, creds exchange.Credential
 			return
 		}
 		start := time.Now()
+		// lastCumFilled tracks cumulative FilledQty per order to compute the
+		// incremental delta on each WS update. Alpaca sends cumulative totals;
+		// WsFillEvent.FilledQty must always be incremental.
+		// Reset on each reconnect so stale deltas from the previous connection
+		// are never carried forward.
+		lastCumFilled := make(map[string]decimal.Decimal)
 		err := c.newSDK(creds).StreamTradeUpdates(ctx, func(tu alpacasdk.TradeUpdate) {
-			handleTradeUpdate(tu, handler)
+			handleTradeUpdate(tu, lastCumFilled, onLifecycle, onFill)
 		}, alpacasdk.StreamTradeUpdatesRequest{})
 		if ctx.Err() != nil {
 			return
@@ -47,7 +64,18 @@ func (c *Client) streamOrdersLoop(ctx context.Context, creds exchange.Credential
 	}
 }
 
-func handleTradeUpdate(tu alpacasdk.TradeUpdate, handler func(exchange.OrderEvent)) {
+// handleTradeUpdate converts an Alpaca TradeUpdate to the appropriate typed event.
+//
+// Alpaca sends CUMULATIVE FilledQty (tu.Order.FilledQty) for both partial_fill and
+// fill events — this violates the WsFillEvent.FilledQty incremental contract.
+// We track the cumulative total per order in lastCumFilled and emit only the delta.
+// lastCumFilled is keyed by orderID and reset on each reconnect.
+func handleTradeUpdate(
+	tu alpacasdk.TradeUpdate,
+	lastCumFilled map[string]decimal.Decimal,
+	onLifecycle func(exchange.OrderLifecycleEvent),
+	onFill func(exchange.WsFillEvent),
+) {
 	side := exchange.Buy
 	if string(tu.Order.Side) == "sell" {
 		side = exchange.Sell
@@ -60,52 +88,65 @@ func handleTradeUpdate(tu alpacasdk.TradeUpdate, handler func(exchange.OrderEven
 
 	switch tu.Event {
 	case "new", "pending_new", "accepted":
-		handler(exchange.OrderEvent{
-			Type:      exchange.OrderEventLive,
-			OrderID:   tu.Order.ID,
-			TradeID:   tu.Order.ID + "_open",
-			Symbol:    tu.Order.Symbol,
-			Side:      side,
-			Qty:       origQty,
-			Timestamp: ts,
-		})
+		if onLifecycle != nil {
+			onLifecycle(exchange.OrderLifecycleEvent{
+				Type:          exchange.OrderLifecycleEventLive,
+				OrderID:       tu.Order.ID,
+				ClientOrderID: tu.Order.ClientOrderID,
+				Symbol:        tu.Order.Symbol,
+				Side:          side,
+				Qty:           origQty,
+				Timestamp:     ts,
+			})
+		}
 	case "fill", "partial_fill":
-		evType := exchange.OrderEventPartialFill
-		if tu.Event == "fill" {
-			evType = exchange.OrderEventFilled
+		if onFill == nil {
+			return
 		}
 		var avg decimal.Decimal
 		if tu.Order.FilledAvgPrice != nil {
 			avg = *tu.Order.FilledAvgPrice
 		}
-		qty := tu.Order.FilledQty
-		if !qty.IsPositive() {
+		// tu.Order.FilledQty is CUMULATIVE — compute the incremental delta.
+		cumQty := tu.Order.FilledQty
+		prev := lastCumFilled[tu.Order.ID]
+		delta := cumQty.Sub(prev)
+		if !delta.IsPositive() {
+			// Already applied (reconnect replay or duplicate) — skip.
 			return
+		}
+		lastCumFilled[tu.Order.ID] = cumQty
+		if tu.Event == "fill" {
+			// Terminal — cleanup tracking for this order.
+			delete(lastCumFilled, tu.Order.ID)
 		}
 		tradeID := tu.ExecutionID
 		if tradeID == "" {
 			tradeID = tu.Order.ID + "_fill"
 		}
-		handler(exchange.OrderEvent{
-			Type:      evType,
-			OrderID:   tu.Order.ID,
-			TradeID:   tradeID,
-			Symbol:    tu.Order.Symbol,
-			Side:      side,
-			Qty:       origQty,
-			FilledQty: qty,
-			FilledAvg: avg,
-			Timestamp: ts,
+		onFill(exchange.WsFillEvent{
+			OrderID:       tu.Order.ID,
+			ClientOrderID: tu.Order.ClientOrderID,
+			TradeID:       tradeID,
+			Symbol:        tu.Order.Symbol,
+			Side:          side,
+			Partial:       tu.Event == "partial_fill",
+			FilledQty:     delta, // INCREMENTAL
+			FilledAvg:     avg,
+			Timestamp:     ts,
 		})
 	case "canceled", "expired", "replaced", "rejected":
-		handler(exchange.OrderEvent{
-			Type:      exchange.OrderEventCanceled,
-			OrderID:   tu.Order.ID,
-			TradeID:   tu.Order.ID + "_cancel",
-			Symbol:    tu.Order.Symbol,
-			Side:      side,
-			Qty:       origQty,
-			Timestamp: ts,
-		})
+		delete(lastCumFilled, tu.Order.ID) // cleanup
+		if onLifecycle != nil {
+			onLifecycle(exchange.OrderLifecycleEvent{
+				Type:          exchange.OrderLifecycleEventCanceled,
+				OrderID:       tu.Order.ID,
+				ClientOrderID: tu.Order.ClientOrderID,
+				Symbol:        tu.Order.Symbol,
+				Side:          side,
+				Qty:           origQty,
+				Timestamp:     ts,
+			})
+		}
 	}
 }

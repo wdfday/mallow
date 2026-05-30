@@ -63,12 +63,13 @@ func (c *Client) SyncAccount(_ context.Context, creds exchange.Credentials, sinc
 			avg = *o.FilledAvgPrice
 		}
 		txns = append(txns, exchange.AccountTransaction{
-			OrderID:  o.ID,
-			Symbol:   o.Symbol,
-			Side:     string(o.Side),
-			Qty:      o.FilledQty,
-			AvgPrice: avg,
-			FilledAt: *o.FilledAt,
+			OrderID:       o.ID,
+			ClientOrderID: o.ClientOrderID,
+			Symbol:        o.Symbol,
+			Side:          string(o.Side),
+			Qty:           o.FilledQty,
+			AvgPrice:      avg,
+			FilledAt:      *o.FilledAt,
 		})
 	}
 

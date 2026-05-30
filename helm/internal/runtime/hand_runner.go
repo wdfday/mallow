@@ -71,10 +71,10 @@ func (h *Hand) checkStale() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	// Trim seenFills: remove entries for orders that have reached a terminal state
-	// (filled/canceled/rejected/expired). Terminal orders are never re-polled, so
-	// their seenFills entries serve no purpose and would grow unboundedly.
-	if len(h.seenFills) > 100 {
+	// Trim seenFills and partialApplied: remove entries for orders that have reached
+	// a terminal state (filled/canceled/rejected/expired). Terminal orders are never
+	// re-polled, so these entries serve no purpose and would grow unboundedly.
+	if len(h.seenFills) > 100 || len(h.partialApplied) > 50 {
 		live := make(map[string]struct{}, len(h.orders))
 		for _, o := range h.orders {
 			switch o.Status {
@@ -85,6 +85,14 @@ func (h *Hand) checkStale() {
 		for id := range h.seenFills {
 			if _, stillLive := live[id]; !stillLive {
 				delete(h.seenFills, id)
+			}
+		}
+		// partialApplied entries should be consumed (deleted) when the order reaches a
+		// terminal state in pollOrders. This is a safety net for edge cases where the
+		// order was removed from h.orders without going through the normal terminal path.
+		for id := range h.partialApplied {
+			if _, stillLive := live[id]; !stillLive {
+				delete(h.partialApplied, id)
 			}
 		}
 	}
@@ -154,10 +162,6 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 
 	if h.helmRuntime.IsPaused() {
 		filtered(CodeSignalHelmPaused, "helm paused")
-		return
-	}
-	if h.IsPaused() {
-		filtered(CodeSignalHandPaused, "hand paused")
 		return
 	}
 	if !h.limiter.Allow() {
@@ -293,16 +297,40 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		activeCount := h.pos.ActiveCount()
 		h.mu.RUnlock()
 		if activeCount == 0 && reply.Reason == "tactics: zero quantity after sizing" {
-			slog.Warn("hand: no open positions and cannot size entry — auto-pausing",
+			slog.Warn("hand: no open positions and cannot size entry — auto-stopping",
 				"hand_id", h.id,
 				"symbol", sig.Symbol,
 				"reason", reply.Reason,
 			)
-			h.Pause()
+			h.emitEvent(natsapi.HelmEvent{
+				Code:   CodeHandAutoStopped,
+				Symbol: sig.Symbol,
+				Reason: reply.Reason,
+				Msg:    "hand: auto-stopped — cannot size entry with zero open positions",
+			})
+			go h.Stop()
 		}
 		return
 	}
 	h.metrics.tradesApproved.Add(1)
+
+	// Inject a default SL for entry orders that have no explicit stop loss.
+	// Prevents naked entries while still letting the user omit sl in their script.
+	// Applied before publishOrderPlaced so the poslog payload captures the injected level.
+	if isEntry && reply.StopLoss.IsZero() && sig.StopPrice.IsZero() {
+		entryPrice := h.helmRuntime.lastKnownPrice(sig.Symbol)
+		if entryPrice.IsPositive() {
+			reply.StopLoss = computeDefaultSL(reply.Side, entryPrice, sig.ATR)
+			slog.Info("hand: default SL injected",
+				"hand_id", h.id,
+				"symbol", sig.Symbol,
+				"side", reply.Side,
+				"sl", reply.StopLoss,
+				"atr", sig.ATR,
+				"entry_price", entryPrice,
+			)
+		}
+	}
 
 	// Build pending exit level: resolved post-fill from actual fill price.
 	// Exchange-side bracket orders (PlaceExitOrders) are placed in applyFill
@@ -361,16 +389,40 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 			h.helmRuntime.RecordDust(sig.Symbol, dust)
 		}
 	}
-	orderReq := exchange.OrderRequest{
-		Symbol:     sig.Symbol,
-		Side:       exchange.OrderSide(reply.Side),
-		Type:       orderType,
-		TIF:        exchange.TimeInForce(reply.TIF),
-		Qty:        orderQty,
-		QuoteQty:   reply.QuoteQty,
-		Price:      limitPrice,
-		ReduceOnly: isFutures && isExitOrder,
+	// If truncation rounded the qty to zero, the entire position is sub-step dust.
+	// Close the poslog leg without placing an exchange order — the tiny remainder
+	// stays in the helm-level portfolio (not the hand's concern).
+	if isExitOrder && !isFutures && orderQty.IsZero() {
+		slog.Info("order: exit qty rounded to zero — dust exit (no exchange order placed)",
+			"hand_id", h.id, "symbol", sig.Symbol, "original_qty", reply.Qty)
+		h.emitEvent(natsapi.HelmEvent{
+			Code:   CodeOrderDustExit,
+			Symbol: sig.Symbol,
+			Qty:    reply.Qty,
+			Reason: fmt.Sprintf("exit qty %s rounds to zero after truncation — dust_exit", reply.Qty),
+			Msg:    "order: sub-step dust exit — poslog closed without exchange sell",
+		})
+		h.helmRuntime.RecordDust(sig.Symbol, reply.Qty)
+		lastPrice := h.helmRuntime.lastKnownPrice(sig.Symbol)
+		h.closeLegAsDust(ctx, sig.Symbol, reply.Side, reply.Qty, lastPrice)
+		return
 	}
+	// Generate the client order id and track it BEFORE placing the order, so a WS
+	// fill that races ahead of the REST response still routes to this hand via the
+	// clid (the exchange does not know it yet, but we already do). See CLIENT_ORDER_ID.md.
+	clid := newClientOrderID()
+	orderReq := exchange.OrderRequest{
+		Symbol:        sig.Symbol,
+		Side:          exchange.OrderSide(reply.Side),
+		Type:          orderType,
+		TIF:           exchange.TimeInForce(reply.TIF),
+		Qty:           orderQty,
+		QuoteQty:      reply.QuoteQty,
+		Price:         limitPrice,
+		ReduceOnly:    isFutures && isExitOrder,
+		ClientOrderID: clid,
+	}
+	h.trackOrder(clid)
 	result, err := h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, orderReq)
 	// ── Insufficient-balance retry (spot SELL exit only) ──────────────────────
 	// When fee was paid in base asset, poslog may hold gross qty while the wallet
@@ -389,7 +441,17 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 			}
 		}
 	}
+	// Ambiguous failure (timeout / network): the order may have landed. Ask the exchange
+	// by clid before giving up — if it exists, treat the placement as successful.
 	if err != nil {
+		if recovered := h.recoverAmbiguousPlace(ctx, sig.Symbol, clid, err); recovered != nil {
+			result, err = recovered, nil
+		}
+	}
+	if err != nil {
+		// Order never reached the exchange — drop the pre-placement clid tracking so it
+		// doesn't linger in the routing map.
+		h.helmRuntime.RemoveOrderTracking(clid)
 		h.metrics.ordersFailed.Add(1)
 		h.mu.Lock()
 		h.health.LastErrorAt = timePtr(time.Now().UTC())
@@ -414,23 +476,42 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 			Msg:       "order: placement failed",
 		})
 		// Auto-pause when a sizing/lot constraint causes a persistent entry failure.
-		// Only pause if this hand has no open position — if we already hold a position
-		// the failure is on a scale-in or exit, which should not pause the hand.
+		// Only stop if this hand has no open position — if we already hold a position
+		// the failure is on a scale-in or exit, which should not stop the hand.
 		// Use h.pos (per-hand) not Portfolio.GetPosition (net helm) so that another
-		// hand holding the same symbol does not suppress the auto-pause.
+		// hand holding the same symbol does not suppress the auto-stop.
 		if isLotSizeError(err) && !isExitOrder {
 			h.mu.RLock()
 			flat := h.pos.ActiveCount() == 0
 			h.mu.RUnlock()
 			if flat {
-				h.Pause()
 				h.emitEvent(natsapi.HelmEvent{
-					Code:   CodeHandAutoPaused,
+					Code:   CodeHandAutoStopped,
 					Symbol: sig.Symbol,
 					Reason: fmt.Sprintf("lot/notional constraint — %s", err.Error()),
-					Msg:    "hand: auto-paused due to sizing constraint",
+					Msg:    "hand: auto-stopped due to sizing constraint",
 				})
+				go h.Stop()
 			}
+		}
+		// Lot-size error on an EXIT order: qty is below the exchange minimum.
+		// Close the poslog position without placing an exchange order — the unsold
+		// dust stays in the helm portfolio (not the hand's concern). Prevents an
+		// infinite retry loop where checkExits keeps firing for a tiny position
+		// that can never be sold.
+		if isLotSizeError(err) && isExitOrder && !isFutures {
+			slog.Warn("order: exit qty below exchange minimum — dust exit (poslog closed without sell)",
+				"hand_id", h.id, "symbol", sig.Symbol, "qty", orderQty, "err", err)
+			h.emitEvent(natsapi.HelmEvent{
+				Code:   CodeOrderDustExit,
+				Symbol: sig.Symbol,
+				Qty:    orderQty,
+				Reason: fmt.Sprintf("exit qty %s below exchange minimum (%s) — dust_exit", orderQty, err.Error()),
+				Msg:    "order: dust exit — position too small for exchange sell",
+			})
+			h.helmRuntime.RecordDust(sig.Symbol, orderQty)
+			lastPrice := h.helmRuntime.lastKnownPrice(sig.Symbol)
+			h.closeLegAsDust(ctx, sig.Symbol, reply.Side, orderQty, lastPrice)
 		}
 		return
 	}
@@ -441,7 +522,9 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 	if !orderedQty.IsPositive() {
 		orderedQty = result.Qty
 	}
-	h.trackOrder(result.ID)
+	// The order is already tracked by its clid (before placement) — the single, race-free
+	// routing key. WS fills, REST sync and reconcile all resolve via the clid that the
+	// exchange echoes back, so no exchange-id alias is needed. See CLIENT_ORDER_ID.md.
 
 	if pending.StopLoss.IsPositive() || pending.TakeProfit.IsPositive() || pending.IsOffset {
 		h.mu.Lock()
@@ -456,21 +539,22 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 	if !isExitIntent {
 		h.helmRuntime.ClearDust(sig.Symbol)
 	}
-	h.publishOrderPlaced(ctx, result.ID, sig.Symbol, reply, limitPrice, orderType, isExitIntent, sig.PatternKind)
+	h.publishOrderPlaced(ctx, result.ID, clid, sig.Symbol, reply, limitPrice, orderType, isExitIntent, sig.PatternKind)
 
 	now := time.Now().UTC()
 	order := handdomain.Order{
-		HandId:     h.id.String(),
-		HelmId:     h.helmID.String(),
-		ID:         result.ID,
-		Symbol:     sig.Symbol,
-		Side:       reply.Side,
-		Qty:        orderedQty,
-		Type:       string(orderType),
-		Status:     result.Status,
-		FilledQty:  result.FilledQty,
-		FilledAvg:  result.FilledAvg,
-		SubmitTime: now,
+		HandId:        h.id.String(),
+		HelmId:        h.helmID.String(),
+		ID:            result.ID,
+		ClientOrderID: clid,
+		Symbol:        sig.Symbol,
+		Side:          reply.Side,
+		Qty:           orderedQty,
+		Type:          string(orderType),
+		Status:        result.Status,
+		FilledQty:     result.FilledQty,
+		FilledAvg:     result.FilledAvg,
+		SubmitTime:    now,
 	}
 	h.mu.Lock()
 	h.orders = append(h.orders, order)
@@ -516,4 +600,21 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		}
 		h.applyFill(ctx, result.ID, sig.Symbol, reply.Side, restQty, result.FilledAvg, result.Commission, "rest")
 	}
+}
+
+// computeDefaultSL returns a stop-loss price to use when the signal provides none.
+// ATR×5 offset is preferred; falls back to 8% fixed when ATR is zero.
+func computeDefaultSL(side string, entryPrice, atr decimal.Decimal) decimal.Decimal {
+	if atr.IsPositive() {
+		offset := atr.Mul(decimal.NewFromInt(5))
+		if side == "buy" {
+			return entryPrice.Sub(offset)
+		}
+		return entryPrice.Add(offset)
+	}
+	pct := decimal.NewFromFloat(0.08)
+	if side == "buy" {
+		return entryPrice.Mul(decimal.NewFromInt(1).Sub(pct))
+	}
+	return entryPrice.Mul(decimal.NewFromInt(1).Add(pct))
 }

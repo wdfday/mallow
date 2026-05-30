@@ -23,11 +23,12 @@ func (c *Client) PlaceOrder(_ context.Context, creds exchange.Credentials, req e
 
 	qty := req.Qty
 	sdkReq := alpacasdk.PlaceOrderRequest{
-		Symbol:      req.Symbol,
-		Qty:         &qty,
-		Side:        alpacasdk.Side(req.Side),
-		Type:        orderType,
-		TimeInForce: tif,
+		Symbol:        req.Symbol,
+		Qty:           &qty,
+		Side:          alpacasdk.Side(req.Side),
+		Type:          orderType,
+		TimeInForce:   tif,
+		ClientOrderID: req.ClientOrderID,
 	}
 
 	if orderType == alpacasdk.Limit && req.Price.IsPositive() {
@@ -49,6 +50,17 @@ func (c *Client) GetOrder(_ context.Context, creds exchange.Credentials, orderID
 	order, err := c.newSDK(creds).GetOrder(orderID)
 	if err != nil {
 		return nil, fmt.Errorf("alpaca get order: %w", err)
+	}
+	return mapOrder(order), nil
+}
+
+// GetOrderByClientOrderID looks up an order by its client_order_id. symbol/market are
+// unused — Alpaca client order ids are account-unique across its single equities venue.
+// Returns nil when not found or on lookup failure. See CLIENT_ORDER_ID.md.
+func (c *Client) GetOrderByClientOrderID(_ context.Context, creds exchange.Credentials, _ string, _ exchange.MarketKind, clid string) (*exchange.OrderResult, error) {
+	order, err := c.newSDK(creds).GetOrderByClientOrderID(clid)
+	if err != nil || order == nil {
+		return nil, nil
 	}
 	return mapOrder(order), nil
 }

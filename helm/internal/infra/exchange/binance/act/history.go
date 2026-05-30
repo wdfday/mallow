@@ -49,6 +49,7 @@ func (c *Client) FilledOrders(ctx context.Context, creds exchange.Credentials, s
 				Qty:      parseDecimal(t.Quantity),
 				AvgPrice: parseDecimal(t.Price),
 				Fee:      parseDecimal(t.Commission),
+				FeeAsset: t.CommissionAsset,
 				FilledAt: time.UnixMilli(t.Time).UTC(),
 			})
 		}
@@ -85,6 +86,7 @@ func (c *Client) FilledOrders(ctx context.Context, creds exchange.Credentials, s
 				Qty:      parseDecimal(t.Quantity),
 				AvgPrice: parseDecimal(t.Price),
 				Fee:      parseDecimal(t.Commission),
+				FeeAsset: t.CommissionAsset,
 				FilledAt: time.UnixMilli(t.Time).UTC(),
 			})
 		}

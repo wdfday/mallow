@@ -36,27 +36,23 @@ func (r *HelmRuntime) Pause() []string {
 	r.paused = true
 	var wasRunning []string
 	for id, hand := range r.hands {
-		hand.WasRunning = hand.IsRunning()
-		if hand.WasRunning {
+		if hand.IsRunning() {
 			wasRunning = append(wasRunning, id)
 		}
 	}
+	r.pausedHands = wasRunning
 	r.EmitEvent(natsapi.HelmEvent{Code: CodeHelmPaused, Msg: "helm: paused"})
 	return wasRunning
 }
 
-// Resume unpauses the runtime. Returns IDs of hands that should be restarted.
+// Resume unpauses the runtime. Returns IDs of hands that should be restarted
+// (those that were running when the helm was paused).
 func (r *HelmRuntime) Resume() []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.paused = false
-	var toRestart []string
-	for id, hand := range r.hands {
-		if hand.WasRunning {
-			hand.WasRunning = false
-			toRestart = append(toRestart, id)
-		}
-	}
+	toRestart := r.pausedHands
+	r.pausedHands = nil
 	r.EmitEvent(natsapi.HelmEvent{Code: CodeHelmResumed, Msg: "helm: resumed"})
 	return toRestart
 }

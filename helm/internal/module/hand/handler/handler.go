@@ -3,9 +3,7 @@ package handler
 import (
 	"fmt"
 	"net/http"
-	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -18,6 +16,7 @@ import (
 	handdomain "mallow/helm/internal/module/hand/domain"
 	dto "mallow/helm/internal/module/hand/dto"
 	helmDto "mallow/helm/internal/module/helm/dto"
+	"mallow/helm/internal/readmodel"
 	"mallow/helm/internal/shared"
 	pkgmw "mallow/pkg/middleware"
 )
@@ -93,9 +92,6 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 		b.GET("/:id/equity", h.equity)
 		b.POST("/:id/start", h.start)
 		b.POST("/:id/stop", h.stop)
-		b.POST("/:id/restart", h.restart)
-		b.POST("/:id/pause", h.pause)
-		b.POST("/:id/resume", h.resume)
 		b.POST("/:id/kill", h.kill)
 		b.POST("/:id/release", h.release)
 		b.POST("/:id/allocate-capital", h.allocateCapital)
@@ -161,11 +157,9 @@ func checkCapitalAllocation(
 		if b.ID.String() == excludeHandID {
 			continue
 		}
-		// Use AvailableCash: reflects actual cash owned by the hand after PnL/commission.
-		// Consistent with the unallocated_capital formula shown in the UI.
-		avail := b.AvailableCash.InexactFloat64()
-		if avail > 0 {
-			used += avail
+		alloc := b.AllocatedCapital.InexactFloat64()
+		if alloc > 0 {
+			used += alloc
 		}
 	}
 	available := helmEquity - used
@@ -316,6 +310,10 @@ func (h *Handler) list(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// ?live=true → only return hands currently wired into a HelmRuntime.
+	// Terminal (killed/released) hands are excluded; the client caches them locally.
+	liveOnly := c.Query("live") == "true"
+
 	if helmStr := c.Query("helm_id"); helmStr != "" {
 		helmID, err := uuid.Parse(helmStr)
 		if err != nil {
@@ -326,7 +324,13 @@ func (h *Handler) list(c *gin.Context) {
 			shared.RespondWithError(c, http.StatusNotFound, "helm not found")
 			return
 		}
-		shared.RespondWithSuccess(c, http.StatusOK, "Hands retrieved successfully", h.handMgr.ListByHelm(helmID))
+		var result []handdomain.HandSummary
+		if liveOnly {
+			result = h.handMgr.ListByHelmLive(helmID)
+		} else {
+			result = h.handMgr.ListByHelm(helmID)
+		}
+		shared.RespondWithSuccess(c, http.StatusOK, "Hands retrieved successfully", result)
 		return
 	}
 	if accountStr := c.Query("account_id"); accountStr != "" {
@@ -340,10 +344,16 @@ func (h *Handler) list(c *gin.Context) {
 			shared.RespondWithError(c, http.StatusNotFound, "helm not found")
 			return
 		}
-		shared.RespondWithSuccess(c, http.StatusOK, "Hands retrieved successfully", h.handMgr.ListByHelm(helm.ID))
+		var result []handdomain.HandSummary
+		if liveOnly {
+			result = h.handMgr.ListByHelmLive(helm.ID)
+		} else {
+			result = h.handMgr.ListByHelm(helm.ID)
+		}
+		shared.RespondWithSuccess(c, http.StatusOK, "Hands retrieved successfully", result)
 		return
 	}
-	// Without helmestrator_id filter, list all hands the user can access.
+	// Without helm_id/account_id filter, list all hands the user can access.
 	helms, err := h.helmSvc.ListByUser(userID)
 	if err != nil {
 		shared.RespondWithError(c, http.StatusInternalServerError, err.Error())
@@ -351,7 +361,11 @@ func (h *Handler) list(c *gin.Context) {
 	}
 	var hands []handdomain.HandSummary
 	for _, o := range helms {
-		hands = append(hands, h.handMgr.ListByHelm(o.ID)...)
+		if liveOnly {
+			hands = append(hands, h.handMgr.ListByHelmLive(o.ID)...)
+		} else {
+			hands = append(hands, h.handMgr.ListByHelm(o.ID)...)
+		}
 	}
 	if hands == nil {
 		hands = []handdomain.HandSummary{}
@@ -501,90 +515,6 @@ func (h *Handler) stop(c *gin.Context) {
 	shared.RespondWithSuccess(c, http.StatusOK, "Hand stopped successfully", dto.HandActionResp{Status: "stopped", ID: id.String()})
 }
 
-// restart godoc
-// @Summary Restart hand — stop then start (re-registers with signal herald)
-// @Tags hands
-// @Security BearerAuth
-// @Produce json
-// @Param id path string true "Hand ID"
-// @Success 200 {object} shared.SuccessResponse[dto.HandActionResp]
-// @Failure 400 {object} shared.ErrorResponse
-// @Failure 401 {object} shared.ErrorResponse
-// @Failure 404 {object} shared.ErrorResponse
-// @Router /api/v1/hands/{id}/restart [post]
-func (h *Handler) restart(c *gin.Context) {
-	userID, ok := callerUserID(c)
-	if !ok {
-		return
-	}
-	id, _, err := h.checkHandOwner(c.Param("id"), userID)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "not found")
-		return
-	}
-	if err := h.handMgr.Restart(id); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
-		return
-	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Hand restarted successfully", dto.HandActionResp{Status: "running", ID: id.String()})
-}
-
-// pause godoc
-// @Summary Pause hand
-// @Tags hands
-// @Security BearerAuth
-// @Produce json
-// @Param id path string true "Hand ID"
-// @Success 200 {object} shared.SuccessResponse[dto.HandActionResp]
-// @Failure 400 {object} shared.ErrorResponse
-// @Failure 401 {object} shared.ErrorResponse
-// @Failure 404 {object} shared.ErrorResponse
-// @Router /api/v1/hands/{id}/pause [post]
-func (h *Handler) pause(c *gin.Context) {
-	userID, ok := callerUserID(c)
-	if !ok {
-		return
-	}
-	id, _, err := h.checkHandOwner(c.Param("id"), userID)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "not found")
-		return
-	}
-	if err := h.handMgr.Pause(id); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
-		return
-	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Hand paused successfully", dto.HandActionResp{Status: "paused", ID: id.String()})
-}
-
-// resume godoc
-// @Summary Resume hand
-// @Tags hands
-// @Security BearerAuth
-// @Produce json
-// @Param id path string true "Hand ID"
-// @Success 200 {object} shared.SuccessResponse[dto.HandActionResp]
-// @Failure 400 {object} shared.ErrorResponse
-// @Failure 401 {object} shared.ErrorResponse
-// @Failure 404 {object} shared.ErrorResponse
-// @Router /api/v1/hands/{id}/resume [post]
-func (h *Handler) resume(c *gin.Context) {
-	userID, ok := callerUserID(c)
-	if !ok {
-		return
-	}
-	id, _, err := h.checkHandOwner(c.Param("id"), userID)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "not found")
-		return
-	}
-	if err := h.handMgr.Resume(id); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
-		return
-	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Hand resumed successfully", dto.HandActionResp{Status: "running", ID: id.String()})
-}
-
 // kill godoc
 // @Summary Kill hand — stop and flatten all positions
 // @Tags hands
@@ -677,7 +607,7 @@ func (h *Handler) activity(c *gin.Context) {
 	}
 
 	limit, _ := strconv.Atoi(c.Query("limit"))
-	f := eventlog.Filter{
+	f := readmodel.EventFilter{
 		HelmID: helmID,
 		HandID: &handID,
 		Limit:  limit,
@@ -694,7 +624,7 @@ func (h *Handler) activity(c *gin.Context) {
 		return
 	}
 	if events == nil {
-		events = []eventlog.Event{}
+		events = []readmodel.EventRecord{}
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Activity retrieved", events)
 }
@@ -854,140 +784,11 @@ func (h *Handler) trades(c *gin.Context) {
 	shared.RespondWithSuccess(c, http.StatusOK, "Trades retrieved", resp)
 }
 
+// Metrics serves the Prometheus exposition. The text rendering lives in
+// renderPrometheus (metrics_render.go); this handler is just the HTTP adapter.
 func (h *Handler) Metrics(c *gin.Context) {
-	runtimes := h.reg.All()
 	c.Header("Content-Type", "text/plain; version=0.0.4")
-
-	var totalEquity, totalCash decimal.Decimal
-	var out strings.Builder
-
-	for _, rt := range runtimes {
-		s := rt.Portfolio.Summary()
-		totalEquity = totalEquity.Add(s.Equity)
-		totalCash = totalCash.Add(s.Cash)
-
-		// Helm-level labels
-		hLabels := map[string]string{
-			"helm_id":    rt.HelmID.String(),
-			"account_id": rt.AccountID.String(),
-		}
-
-		out.WriteString(formatMetric("helm_equity", s.Equity.InexactFloat64(), hLabels))
-		out.WriteString(formatMetric("helm_cash", s.Cash.InexactFloat64(), hLabels))
-		out.WriteString(formatMetric("helm_drawdown_pct", s.CurrentDD, hLabels))
-		out.WriteString(formatMetric("helm_max_drawdown_pct", s.MaxDD, hLabels))
-		out.WriteString(formatMetric("helm_daily_pnl", s.DailyPnL.InexactFloat64(), hLabels))
-		out.WriteString(formatMetric("helm_win_rate_pct", s.WinRate, hLabels))
-		out.WriteString(formatMetric("helm_total_trades", float64(s.TotalTrades), hLabels))
-		out.WriteString(formatMetric("helm_open_positions_count", float64(s.OpenPositions), hLabels))
-
-		haltedVal := 0.0
-		if rt.RiskMgr.IsHalted() {
-			haltedVal = 1.0
-		}
-		out.WriteString(formatMetric("helm_halted", haltedVal, hLabels))
-
-		// Position-level metrics
-		for _, pos := range s.Positions {
-			pLabels := map[string]string{
-				"helm_id":    rt.HelmID.String(),
-				"account_id": rt.AccountID.String(),
-				"symbol":     pos.Symbol,
-			}
-			out.WriteString(formatMetric("helm_position_qty", pos.Qty.InexactFloat64(), pLabels))
-			out.WriteString(formatMetric("helm_position_unrealized_pnl", pos.UnrealizedPnL.InexactFloat64(), pLabels))
-			out.WriteString(formatMetric("helm_position_market_value", pos.MarketValue.InexactFloat64(), pLabels))
-		}
-
-		// Hand-level metrics
-		for _, handSummary := range rt.HandSummaries() {
-			handLabels := map[string]string{
-				"helm_id":    rt.HelmID.String(),
-				"account_id": rt.AccountID.String(),
-				"hand_id":    handSummary.ID,
-				"symbol":     handSummary.Symbol,
-			}
-
-			m := handSummary.Metrics
-			out.WriteString(formatMetric("helm_hand_signals_received", float64(m.SignalsReceived), handLabels))
-			out.WriteString(formatMetric("helm_hand_signals_filtered", float64(m.SignalsFiltered), handLabels))
-			out.WriteString(formatMetric("helm_hand_signals_dropped", float64(m.SignalsDropped), handLabels))
-			out.WriteString(formatMetric("helm_hand_trades_approved", float64(m.TradesApproved), handLabels))
-			out.WriteString(formatMetric("helm_hand_orders_placed", float64(m.OrdersPlaced), handLabels))
-			out.WriteString(formatMetric("helm_hand_orders_filled", float64(m.OrdersFilled), handLabels))
-			out.WriteString(formatMetric("helm_hand_orders_failed", float64(m.OrdersFailed), handLabels))
-			out.WriteString(formatMetric("helm_hand_pnl", m.TotalPnL.InexactFloat64(), handLabels))
-			out.WriteString(formatMetric("helm_hand_wins", float64(m.WinCount), handLabels))
-			out.WriteString(formatMetric("helm_hand_losses", float64(m.LossCount), handLabels))
-			out.WriteString(formatMetric("helm_hand_signal_lag_last_ms", float64(m.LatestSignalLagMs), handLabels))
-			out.WriteString(formatMetric("helm_hand_signal_queue_depth", float64(m.SignalQueueDepth), handLabels))
-
-			runningVal := 0.0
-			if handSummary.Status != "stopped" && handSummary.Status != "error" {
-				runningVal = 1.0
-			}
-			out.WriteString(formatMetric("helm_hand_running_status", runningVal, handLabels))
-		}
-
-		// Exchange latency & error metrics (populated by MeteredExchange wrapper)
-		if snap := rt.ExchangeSnapshot(); snap != nil {
-			exLabels := map[string]string{
-				"helm_id":    rt.HelmID.String(),
-				"account_id": rt.AccountID.String(),
-				"exchange":   snap.Name,
-			}
-			out.WriteString(formatMetric("helm_exchange_place_order_calls_total", float64(snap.PlaceOrder.Calls), exLabels))
-			out.WriteString(formatMetric("helm_exchange_place_order_errors_total", float64(snap.PlaceOrder.Errors), exLabels))
-			out.WriteString(formatMetric("helm_exchange_place_order_latency_avg_ms", snap.PlaceOrder.AvgMs, exLabels))
-			out.WriteString(formatMetric("helm_exchange_place_order_latency_max_ms", snap.PlaceOrder.MaxMs, exLabels))
-			out.WriteString(formatMetric("helm_exchange_get_order_calls_total", float64(snap.GetOrder.Calls), exLabels))
-			out.WriteString(formatMetric("helm_exchange_get_order_errors_total", float64(snap.GetOrder.Errors), exLabels))
-			out.WriteString(formatMetric("helm_exchange_get_order_latency_avg_ms", snap.GetOrder.AvgMs, exLabels))
-			out.WriteString(formatMetric("helm_exchange_get_order_latency_max_ms", snap.GetOrder.MaxMs, exLabels))
-			out.WriteString(formatMetric("helm_exchange_cancel_order_calls_total", float64(snap.CancelOrder.Calls), exLabels))
-			out.WriteString(formatMetric("helm_exchange_cancel_order_errors_total", float64(snap.CancelOrder.Errors), exLabels))
-			out.WriteString(formatMetric("helm_exchange_cancel_order_latency_avg_ms", snap.CancelOrder.AvgMs, exLabels))
-			out.WriteString(formatMetric("helm_exchange_ping_last_ms", snap.PingLastMs, exLabels))
-		}
-	}
-
-	// Global/summary metrics
-	out.WriteString(formatMetric("helm_total_equity", totalEquity.InexactFloat64(), nil))
-	out.WriteString(formatMetric("helm_total_cash", totalCash.InexactFloat64(), nil))
-	out.WriteString(formatMetric("helm_running_hands", float64(len(h.handMgr.RunningHands())), nil))
-	out.WriteString(formatMetric("helm_active_runtimes", float64(len(runtimes)), nil))
-
-	// Signal dispatcher & routing metrics
-	ds := h.reg.DispatchStats()
-	out.WriteString(formatMetric("helm_dispatch_route_no_helm_total", float64(ds.RouteNoHelm), nil))
-	out.WriteString(formatMetric("helm_dispatch_route_no_hand_total", float64(ds.RouteNoHand), nil))
-
-	ns := h.reg.NATSStats()
-	out.WriteString(formatMetric("helm_nats_signals_total", float64(ns.SignalsTotal), nil))
-	out.WriteString(formatMetric("helm_nats_signals_dispatched_total", float64(ns.SignalsDispatched), nil))
-	out.WriteString(formatMetric("helm_nats_signals_missing_id_total", float64(ns.SignalsMissingID), nil))
-	out.WriteString(formatMetric("helm_nats_signals_nil_payload_total", float64(ns.SignalsNilPayload), nil))
-
-	c.String(http.StatusOK, out.String())
-}
-
-func formatMetric(name string, val float64, labels map[string]string) string {
-	if len(labels) == 0 {
-		return name + " " + formatFloat(val) + "\n"
-	}
-	var parts []string
-	for k, v := range labels {
-		parts = append(parts, fmt.Sprintf("%s=%q", k, v))
-	}
-	sort.Strings(parts)
-	return fmt.Sprintf("%s{%s} %s\n", name, strings.Join(parts, ","), formatFloat(val))
-}
-
-func formatFloat(f float64) string {
-	if f == float64(int64(f)) {
-		return fmt.Sprintf("%d", int64(f))
-	}
-	return fmt.Sprintf("%g", f)
+	c.String(http.StatusOK, renderPrometheus(h.reg, len(h.handMgr.RunningHands())))
 }
 
 // allocateCapital godoc

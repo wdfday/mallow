@@ -46,6 +46,7 @@ func (h *BrokerConnectionHandler) RegisterRoutes(router *gin.Engine) {
 		protected.POST("/:id/activate", h.Activate)
 		protected.POST("/:id/deactivate", h.Deactivate)
 		protected.POST("/:id/test", h.TestConnection)
+		protected.POST("/:id/rotate-key", h.RotateKey)
 		protected.POST("/:id/rebroker", h.ReBroker)
 	}
 }
@@ -262,6 +263,35 @@ func (h *BrokerConnectionHandler) TestConnection(c *gin.Context) {
 		return
 	}
 	shared.RespondWithSuccessNoData(c, http.StatusOK, "Connection test successful")
+}
+
+func (h *BrokerConnectionHandler) RotateKey(c *gin.Context) {
+	userID, err := getUserIDFromContext(c)
+	if err != nil {
+		shared.RespondWithError(c, http.StatusUnauthorized, err.Error())
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		shared.RespondWithError(c, http.StatusBadRequest, "invalid connection ID")
+		return
+	}
+	var req dto.RotateKeyRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	conn, err := h.service.RotateKey(c.Request.Context(), id, userID, &service.RotateKeyRequest{
+		APIKey:     req.APIKey,
+		APISecret:  req.APISecret,
+		Passphrase: req.Passphrase,
+	})
+	if err != nil {
+		h.logger.Error("Failed to rotate broker key", "conn_id", id, "error", err)
+		shared.HandleError(c, err)
+		return
+	}
+	shared.RespondWithSuccess(c, http.StatusOK, "API key rotated successfully", dto.ToBrokerConnectionResponse(conn))
 }
 
 func (h *BrokerConnectionHandler) ReBroker(c *gin.Context) {

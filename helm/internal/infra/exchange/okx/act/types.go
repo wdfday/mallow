@@ -51,10 +51,11 @@ type okxEnvelope struct {
 // placeOrderReq is the body for POST /api/v5/trade/order.
 type placeOrderReq struct {
 	InstID     string `json:"instId"`
-	TdMode     string `json:"tdMode"`  // cash | cross | isolated
-	Side       string `json:"side"`    // buy | sell
-	OrdType    string `json:"ordType"` // market | limit | post_only | fok | ioc
-	Sz         string `json:"sz"`      // order size in base currency (or quote for market buy)
+	TdMode     string `json:"tdMode"`            // cash | cross | isolated
+	Side       string `json:"side"`              // buy | sell
+	OrdType    string `json:"ordType"`           // market | limit | post_only | fok | ioc
+	Sz         string `json:"sz"`                // order size in base currency (or quote for market buy)
+	ClOrdID    string `json:"clOrdId,omitempty"` // caller client order id (clOrdId); echoed back on WS + queries
 	Px         string `json:"px,omitempty"`
 	TgtCcy     string `json:"tgtCcy,omitempty"`     // base_ccy (spot market buy in base qty)
 	ReduceOnly bool   `json:"reduceOnly,omitempty"` // futures only
@@ -87,9 +88,10 @@ type algoOrderReq struct {
 type placeOrderResp struct {
 	okxEnvelope
 	Data []struct {
-		OrdID string `json:"ordId"`
-		SCode string `json:"sCode"` // per-order error code; "0" = success
-		SMsg  string `json:"sMsg"`
+		OrdID   string `json:"ordId"`
+		ClOrdID string `json:"clOrdId"`
+		SCode   string `json:"sCode"` // per-order error code; "0" = success
+		SMsg    string `json:"sMsg"`
 	} `json:"data"`
 }
 
@@ -113,6 +115,7 @@ type getOrderResp struct {
 // orderData is a single order record returned by the OKX order endpoints.
 type orderData struct {
 	OrdID     string `json:"ordId"`
+	ClOrdID   string `json:"clOrdId"`
 	InstID    string `json:"instId"`
 	Side      string `json:"side"`      // "buy" | "sell"
 	State     string `json:"state"`     // "live" | "partially_filled" | "filled" | "canceled"
@@ -135,11 +138,13 @@ type okxFill struct {
 	InstID  string `json:"instId"` // e.g. "BTC-USDT"
 	TradeID string `json:"tradeId"`
 	OrdID   string `json:"ordId"`
-	Side    string `json:"side"` // "buy" | "sell"
+	ClOrdID string `json:"clOrdId"` // caller client order id, echoed by fills-history
+	Side    string `json:"side"`    // "buy" | "sell"
 	FillSz  string `json:"fillSz"`
 	FillPx  string `json:"fillPx"`
-	Fee     string `json:"fee"` // negative value (cost); negate to get absolute fee
-	TS      string `json:"ts"`  // Unix millisecond timestamp as string
+	Fee     string `json:"fee"`    // negative value (cost); negate to get absolute fee
+	FeeCcy  string `json:"feeCcy"` // fee currency; e.g. "BTC", "USDT"
+	TS      string `json:"ts"`     // Unix millisecond timestamp as string
 }
 
 // ── Converters: OKX native → internal ────────────────────────────────────────
@@ -147,13 +152,14 @@ type okxFill struct {
 // orderDataToResult converts an OKX orderData record to exchange.OrderResult.
 func orderDataToResult(d *orderData) *exchange.OrderResult {
 	return &exchange.OrderResult{
-		ID:        d.InstID + ":" + d.OrdID,
-		Symbol:    d.InstID,
-		Side:      exchange.OrderSide(d.Side),
-		Status:    mapOrderStatus(d.State),
-		Qty:       parseDecimal(d.Sz),
-		FilledQty: parseDecimal(d.AccFillSz),
-		FilledAvg: parseDecimal(d.AvgPx),
+		ID:            d.InstID + ":" + d.OrdID,
+		ClientOrderID: d.ClOrdID,
+		Symbol:        d.InstID,
+		Side:          exchange.OrderSide(d.Side),
+		Status:        mapOrderStatus(d.State),
+		Qty:           parseDecimal(d.Sz),
+		FilledQty:     parseDecimal(d.AccFillSz),
+		FilledAvg:     parseDecimal(d.AvgPx),
 	}
 }
 

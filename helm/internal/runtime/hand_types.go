@@ -18,7 +18,6 @@ type Signal = strategy.Signal
 const (
 	HealthRunning  = "running"
 	HealthStopped  = "stopped"
-	HealthPaused   = "paused"
 	HealthStale    = "stale"    // no signal received for >5 min; run-loop still active
 	HealthError    = "error"    // last order failed; clears on next successful order
 	HealthKilled   = "killed"   // Kill() called; positions flattened
@@ -52,7 +51,7 @@ const (
 	// Signal filtered codes — signal was received but not acted on.
 	CodeSignalStale       = 10001 // arrived more than signalMaxAge after dispatch
 	CodeSignalHelmPaused  = 10002 // helm-level cascade pause active
-	CodeSignalHandPaused  = 10003 // this hand is individually paused
+	// 10003 reserved (was CodeSignalHandPaused — hand-level pause removed)
 	CodeSignalRateLimited = 10004 // exceeded per-second order rate limit
 	CodeSignalDoNothing   = 10005 // strategy evaluated to no-action (e.g. strength below min)
 	CodeSignalMaxUnits    = 10006 // position count already at maxUnits cap
@@ -70,13 +69,12 @@ const (
 	CodeOrderCancelled     = 10107 // order cancelled / rejected / expired (detected via poll)
 	CodeOrderExitTriggered = 10108 // local stop-loss or take-profit safety net triggered
 	CodeOrderExitPlaced    = 10109 // safety net exit orders (SL/TP bracket) submitted to exchange
+	CodeOrderDustExit      = 10110 // exit qty below exchange minimum — poslog closed without selling; dust stays at helm level
 
 	// Hand lifecycle codes.
-	CodeHandAutoPaused    = 10200 // hand auto-paused due to persistent sizing failure or edge risk
+	CodeHandAutoStopped   = 10200 // hand auto-stopped due to persistent sizing failure or edge risk
 	CodeHandStarted       = 10201 // hand run-loop started
 	CodeHandStopped       = 10202 // hand run-loop stopped (clean shutdown)
-	CodeHandPaused        = 10203 // hand manually paused via API
-	CodeHandResumed       = 10204 // hand manually resumed via API
 	CodeHandKilled        = 10205 // hand killed — all positions flattened at market
 	CodeHandReleased      = 10206 // hand released — open positions orphaned (left live at exchange)
 	CodeHandStale         = 10207 // signal feed silent > stale threshold

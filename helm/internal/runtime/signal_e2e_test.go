@@ -553,10 +553,12 @@ func TestSignalRoundTrip_Binance(t *testing.T) {
 	fillEvts1 := hand.Subscribe(64)
 	entryNotify := orderNotify(hand, 15*time.Second)
 	hand.DeliverSignal(longSig(symbol))
+	var entryOrderID string
 	select {
 	case entry := <-entryNotify:
 		t.Logf("entry: code=%d order_id=%s qty=%s price=%s reason=%s",
 			entry.Code, entry.OrderID, entry.Qty, entry.Price, entry.Reason)
+		entryOrderID = entry.OrderID
 		if entry.Code == runtime.CodeOrderFailed {
 			if isBalanceError(entry.Reason) {
 				t.Skipf("sandbox needs top-up: %s", entry.Reason)
@@ -577,9 +579,10 @@ func TestSignalRoundTrip_Binance(t *testing.T) {
 	}
 	t.Logf("position after entry: qty=%s avg_px=%s", pos.Qty, pos.AvgPrice)
 
-	// Exit.
+	// Exit. Use the captured entryOrderID instead of hand.Orders()[0].ID —
+	// pollOrders prunes filled orders from h.orders, so the slice may be empty.
 	fillEvts2 := hand.Subscribe(64)
-	exitNotify := orderNotifyNew(hand, hand.Orders()[0].ID, 15*time.Second)
+	exitNotify := orderNotifyNew(hand, entryOrderID, 15*time.Second)
 	hand.DeliverSignal(exitSig(symbol))
 	select {
 	case entry := <-exitNotify:
@@ -637,10 +640,12 @@ func TestSignalRoundTrip_OKX(t *testing.T) {
 	fillEvts1 := hand.Subscribe(64)
 	entryNotify := orderNotify(hand, 15*time.Second)
 	hand.DeliverSignal(longSig(symbol))
+	var entryOrderID string
 	select {
 	case entry := <-entryNotify:
 		t.Logf("entry: code=%d order_id=%s qty=%s price=%s reason=%s",
 			entry.Code, entry.OrderID, entry.Qty, entry.Price, entry.Reason)
+		entryOrderID = entry.OrderID
 		if entry.Code == runtime.CodeOrderFailed {
 			if isBalanceError(entry.Reason) {
 				t.Skipf("sandbox needs top-up: %s", entry.Reason)
@@ -661,9 +666,9 @@ func TestSignalRoundTrip_OKX(t *testing.T) {
 	}
 	t.Logf("position after entry: qty=%s avg_px=%s", pos.Qty, pos.AvgPrice)
 
-	// Exit.
+	// Exit. Use captured entryOrderID — pollOrders prunes filled orders from h.orders.
 	fillEvts2 := hand.Subscribe(64)
-	exitNotify := orderNotifyNew(hand, hand.Orders()[0].ID, 15*time.Second)
+	exitNotify := orderNotifyNew(hand, entryOrderID, 15*time.Second)
 	hand.DeliverSignal(exitSig(symbol))
 	select {
 	case entry := <-exitNotify:
@@ -723,10 +728,12 @@ func TestSignalRoundTrip_Bybit(t *testing.T) {
 	fillEvts1 := hand.Subscribe(64)
 	entryNotify := orderNotify(hand, 15*time.Second)
 	hand.DeliverSignal(longSig(symbol))
+	var entryOrderID string
 	select {
 	case entry := <-entryNotify:
 		t.Logf("entry: code=%d order_id=%s qty=%s price=%s reason=%s",
 			entry.Code, entry.OrderID, entry.Qty, entry.Price, entry.Reason)
+		entryOrderID = entry.OrderID
 		if entry.Code == runtime.CodeOrderFailed {
 			if isBalanceError(entry.Reason) {
 				t.Skipf("sandbox needs top-up: %s", entry.Reason)
@@ -747,9 +754,9 @@ func TestSignalRoundTrip_Bybit(t *testing.T) {
 	}
 	t.Logf("position after entry: qty=%s avg_px=%s", pos.Qty, pos.AvgPrice)
 
-	// Exit.
+	// Exit. Use captured entryOrderID — pollOrders prunes filled orders from h.orders.
 	fillEvts2 := hand.Subscribe(64)
-	exitNotify := orderNotifyNew(hand, hand.Orders()[0].ID, 15*time.Second)
+	exitNotify := orderNotifyNew(hand, entryOrderID, 15*time.Second)
 	hand.DeliverSignal(exitSig(symbol))
 	select {
 	case entry := <-exitNotify:
@@ -807,10 +814,12 @@ func TestSignalRoundTrip_Alpaca(t *testing.T) {
 	fillEvts1 := hand.Subscribe(64)
 	entryNotify := orderNotify(hand, 15*time.Second)
 	hand.DeliverSignal(longSig(symbol))
+	var entryOrderID string
 	select {
 	case entry := <-entryNotify:
 		t.Logf("entry: code=%d order_id=%s qty=%s price=%s reason=%s",
 			entry.Code, entry.OrderID, entry.Qty, entry.Price, entry.Reason)
+		entryOrderID = entry.OrderID
 		if entry.Code == runtime.CodeOrderFailed {
 			t.Logf("entry not placed (market may be closed): %s", entry.Reason)
 			return
@@ -831,9 +840,9 @@ func TestSignalRoundTrip_Alpaca(t *testing.T) {
 	}
 	t.Logf("position after entry: qty=%s avg_px=%s", pos.Qty, pos.AvgPrice)
 
-	// Exit.
+	// Exit. Use captured entryOrderID — pollOrders prunes filled orders from h.orders.
 	fillEvts2 := hand.Subscribe(64)
-	exitNotify := orderNotifyNew(hand, hand.Orders()[0].ID, 15*time.Second)
+	exitNotify := orderNotifyNew(hand, entryOrderID, 15*time.Second)
 	hand.DeliverSignal(exitSig(symbol))
 	select {
 	case entry := <-exitNotify:

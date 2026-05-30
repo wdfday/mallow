@@ -56,6 +56,7 @@ type createOrderReq struct {
 	Side          string `json:"side"`      // Buy | Sell
 	OrderType     string `json:"orderType"` // Market | Limit
 	Qty           string `json:"qty"`
+	OrderLinkId   string `json:"orderLinkId,omitempty"` // caller client order id; echoed on WS + queries
 	Price         string `json:"price,omitempty"`
 	TimeInForce   string `json:"timeInForce"`
 	ReduceOnly    bool   `json:"reduceOnly,omitempty"`
@@ -77,7 +78,8 @@ type cancelOrderReq struct {
 
 // createOrderResult is the result field for POST /v5/order/create.
 type createOrderResult struct {
-	OrderID string `json:"orderId"`
+	OrderID     string `json:"orderId"`
+	OrderLinkId string `json:"orderLinkId"`
 }
 
 // orderListResult is the result field for GET /v5/order/realtime and /v5/order/history.
@@ -88,6 +90,7 @@ type orderListResult struct {
 // orderDetail is a single order record returned by the Bybit order endpoints.
 type orderDetail struct {
 	OrderID     string `json:"orderId"`
+	OrderLinkId string `json:"orderLinkId"`
 	Symbol      string `json:"symbol"`
 	Side        string `json:"side"`        // "Buy" | "Sell"
 	OrderStatus string `json:"orderStatus"` // "New" | "PartiallyFilled" | "Filled" | "Cancelled"
@@ -176,14 +179,16 @@ type execListResult struct {
 
 // bybitExecution is a single execution record from the execution/list endpoint.
 type bybitExecution struct {
-	OrderID   string `json:"orderId"`
-	ExecID    string `json:"execId"`
-	Symbol    string `json:"symbol"`
-	Side      string `json:"side"` // "Buy" | "Sell"
-	ExecQty   string `json:"execQty"`
-	ExecPrice string `json:"execPrice"`
-	ExecFee   string `json:"execFee"`
-	ExecTime  string `json:"execTime"` // Unix ms string
+	OrderID     string `json:"orderId"`
+	OrderLinkId string `json:"orderLinkId"` // caller client order id, echoed by execution/list
+	ExecID      string `json:"execId"`
+	Symbol      string `json:"symbol"`
+	Side        string `json:"side"` // "Buy" | "Sell"
+	ExecQty     string `json:"execQty"`
+	ExecPrice   string `json:"execPrice"`
+	ExecFee     string `json:"execFee"`
+	FeeCurrency string `json:"feeCurrency"` // fee asset; e.g. "BTC", "USDT"
+	ExecTime    string `json:"execTime"`    // Unix ms string
 }
 
 // ── WebSocket types ───────────────────────────────────────────────────────────
@@ -193,6 +198,7 @@ type bybitOrderEvent struct {
 	Topic string `json:"topic"`
 	Data  []struct {
 		OrderID     string `json:"orderId"`
+		OrderLinkId string `json:"orderLinkId"`
 		Symbol      string `json:"symbol"`
 		Side        string `json:"side"`        // "Buy" | "Sell"
 		OrderStatus string `json:"orderStatus"` // "New" | "PartiallyFilled" | "Filled" | "Cancelled" | "Rejected"
@@ -201,6 +207,8 @@ type bybitOrderEvent struct {
 		Qty         string `json:"qty"`
 		ExecQty     string `json:"execQty"`
 		ExecPrice   string `json:"execPrice"`
+		ExecFee     string `json:"execFee"`     // fee for this fill leg
+		FeeCurrency string `json:"feeCurrency"` // fee asset; e.g. "BTC", "USDT"
 		UpdatedTime string `json:"updatedTime"` // Unix ms string
 	} `json:"data"`
 }
@@ -210,13 +218,14 @@ type bybitOrderEvent struct {
 // orderDetailToResult converts a Bybit orderDetail record to exchange.OrderResult.
 func orderDetailToResult(o *orderDetail) *exchange.OrderResult {
 	return &exchange.OrderResult{
-		ID:        o.OrderID,
-		Symbol:    o.Symbol,
-		Side:      exchange.OrderSide(mapSide(o.Side)),
-		Status:    mapOrderStatus(o.OrderStatus),
-		FilledQty: parseDecimal(o.CumExecQty),
-		FilledAvg: parseDecimal(o.AvgPrice),
-		Qty:       parseDecimal(o.Qty),
+		ID:            o.OrderID,
+		ClientOrderID: o.OrderLinkId,
+		Symbol:        o.Symbol,
+		Side:          exchange.OrderSide(mapSide(o.Side)),
+		Status:        mapOrderStatus(o.OrderStatus),
+		FilledQty:     parseDecimal(o.CumExecQty),
+		FilledAvg:     parseDecimal(o.AvgPrice),
+		Qty:           parseDecimal(o.Qty),
 	}
 }
 

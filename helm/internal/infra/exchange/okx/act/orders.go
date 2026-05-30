@@ -32,6 +32,7 @@ func (c *Client) PlaceOrder(ctx context.Context, creds exchange.Credentials, req
 		Side:       side,
 		OrdType:    ordType,
 		Sz:         req.Qty.String(),
+		ClOrdID:    req.ClientOrderID,
 		ReduceOnly: req.ReduceOnly,
 	}
 
@@ -58,11 +59,12 @@ func (c *Client) PlaceOrder(ctx context.Context, creds exchange.Credentials, req
 	}
 
 	return &exchange.OrderResult{
-		ID:     instID + ":" + resp.Data[0].OrdID,
-		Symbol: req.Symbol,
-		Side:   req.Side,
-		Status: "submitted",
-		Qty:    req.Qty,
+		ID:            instID + ":" + resp.Data[0].OrdID,
+		ClientOrderID: resp.Data[0].ClOrdID,
+		Symbol:        req.Symbol,
+		Side:          req.Side,
+		Status:        "submitted",
+		Qty:           req.Qty,
 	}, nil
 }
 
@@ -80,6 +82,21 @@ func (c *Client) GetOrder(ctx context.Context, creds exchange.Credentials, order
 	r := orderDataToResult(&resp.Data[0])
 	r.ID = orderID
 	return r, nil
+}
+
+// GetOrderByClientOrderID looks up an order by clOrdId + instId. OKX's unified order
+// endpoint covers spot and derivatives alike, so market is unused. Returns nil when no
+// such order exists or the lookup fails. See CLIENT_ORDER_ID.md.
+func (c *Client) GetOrderByClientOrderID(ctx context.Context, creds exchange.Credentials, symbol string, _ exchange.MarketKind, clid string) (*exchange.OrderResult, error) {
+	path := fmt.Sprintf("/api/v5/trade/order?clOrdId=%s&instId=%s", clid, symbol)
+	var resp getOrderResp
+	if err := c.doRequest(ctx, creds, http.MethodGet, path, nil, &resp); err != nil {
+		return nil, nil
+	}
+	if resp.Code != "0" || len(resp.Data) == 0 {
+		return nil, nil
+	}
+	return orderDataToResult(&resp.Data[0]), nil
 }
 
 // CancelOrder cancels a pending order by "instId:ordId" encoded ID.

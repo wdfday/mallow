@@ -59,6 +59,13 @@ func (p *Persister) Run(ctx context.Context) {
 	slog.Info("eventlog persister: stopped")
 }
 
+// Event codes that require side-effects beyond inserting into helm_events.
+// Defined locally to avoid importing the runtime package (circular dep).
+const (
+	codeHelmHalted   = 10303
+	codeHelmUnhalted = 10304
+)
+
 func (p *Persister) handleMsg(msg *nats.Msg) {
 	var ev natsapi.HelmEvent
 	if err := json.Unmarshal(msg.Data, &ev); err != nil {
@@ -86,7 +93,17 @@ func (p *Persister) handleMsg(msg *nats.Msg) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	_, err = p.db.ExecContext(ctx, `
+	// Wrap insert + optional status update in a single transaction so both
+	// succeed or both fail — avoids a window where the event is persisted but
+	// the helms.status update is missed on a mid-handler crash.
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		slog.Warn("eventlog persister: begin tx failed — will retry", "helm_id", ev.HelmID, "err", err)
+		_ = msg.Nak()
+		return
+	}
+
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO helm_events
 			(at, helm_id, hand_id, user_id, code, symbol, direction, side, qty, price, order_id, reason, msg)
 		VALUES
@@ -107,9 +124,43 @@ func (p *Persister) handleMsg(msg *nats.Msg) {
 		nullStr(ev.Msg),
 	)
 	if err != nil {
+		_ = tx.Rollback()
 		slog.Warn("eventlog persister: insert failed — will retry", "helm_id", ev.HelmID, "code", ev.Code, "err", err)
 		_ = msg.Nak()
 		return
 	}
+
+	// Side-effect: sync halted/active status to helms table so FE reflects the
+	// correct state and survives process restarts without a runtime query.
+	// Runs inside the same transaction — either both land or neither does.
+	switch ev.Code {
+	case codeHelmHalted:
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE helms SET status = 'halted', updated_at = now() WHERE id = $1 AND status = 'active'`,
+			helmID,
+		); err != nil {
+			_ = tx.Rollback()
+			slog.Warn("eventlog persister: failed to persist halted status — will retry", "helm_id", ev.HelmID, "err", err)
+			_ = msg.Nak()
+			return
+		}
+	case codeHelmUnhalted:
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE helms SET status = 'active', updated_at = now() WHERE id = $1 AND status = 'halted'`,
+			helmID,
+		); err != nil {
+			_ = tx.Rollback()
+			slog.Warn("eventlog persister: failed to persist unhalted status — will retry", "helm_id", ev.HelmID, "err", err)
+			_ = msg.Nak()
+			return
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		slog.Warn("eventlog persister: commit failed — will retry", "helm_id", ev.HelmID, "err", err)
+		_ = msg.Nak()
+		return
+	}
+
 	_ = msg.Ack()
 }

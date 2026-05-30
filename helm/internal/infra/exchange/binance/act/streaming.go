@@ -64,14 +64,20 @@ var wsMu sync.Mutex
 //   - AccountSpot (default) → spot user-data stream
 //
 // Each account type gets exactly one stream — no cross-contamination of events.
-func (c *Client) StreamOrders(ctx context.Context, creds exchange.Credentials, orderHandler func(exchange.OrderEvent), balanceHandler func(exchange.BalanceEvent)) error {
+func (c *Client) StreamOrders(
+	ctx context.Context,
+	creds exchange.Credentials,
+	onLifecycle func(exchange.OrderLifecycleEvent),
+	onFill func(exchange.WsFillEvent),
+	onBalance func(exchange.BalanceEvent),
+) error {
 	switch creds.AccountType {
 	case exchange.AccountFuturesUSDM:
-		go c.streamFuturesOrders(ctx, c.newFut(creds), orderHandler)
+		go c.streamFuturesOrders(ctx, c.newFut(creds), onLifecycle, onFill)
 	case exchange.AccountFuturesCOINM:
-		go c.streamDeliveryOrders(ctx, creds, orderHandler)
+		go c.streamDeliveryOrders(ctx, creds, onLifecycle, onFill)
 	default: // AccountSpot
-		go c.streamSpotOrders(ctx, creds, orderHandler, balanceHandler)
+		go c.streamSpotOrders(ctx, creds, onLifecycle, onFill, onBalance)
 	}
 	slog.Info("binance: order streaming started", "account_type", creds.AccountType)
 	return nil
@@ -79,7 +85,13 @@ func (c *Client) StreamOrders(ctx context.Context, creds exchange.Credentials, o
 
 // ── Spot ──────────────────────────────────────────────────────────────────────
 
-func (c *Client) streamSpotOrders(ctx context.Context, creds exchange.Credentials, orderHandler func(exchange.OrderEvent), balanceHandler func(exchange.BalanceEvent)) {
+func (c *Client) streamSpotOrders(
+	ctx context.Context,
+	creds exchange.Credentials,
+	onLifecycle func(exchange.OrderLifecycleEvent),
+	onFill func(exchange.WsFillEvent),
+	onBalance func(exchange.BalanceEvent),
+) {
 	bo := exchange.Backoff{Min: 5 * time.Second, Max: 5 * time.Minute, Factor: 2.0, Jitter: true}
 	attempt := 0
 	for {
@@ -87,7 +99,7 @@ func (c *Client) streamSpotOrders(ctx context.Context, creds exchange.Credential
 			return
 		}
 		start := time.Now()
-		err := c.streamSpotOrdersOnce(ctx, creds, orderHandler, balanceHandler)
+		err := c.streamSpotOrdersOnce(ctx, creds, onLifecycle, onFill, onBalance)
 		if ctx.Err() != nil {
 			return
 		}
@@ -111,12 +123,18 @@ func (c *Client) streamSpotOrders(ctx context.Context, creds exchange.Credential
 
 // streamSpotOrdersOnce uses WsUserDataServeSignature (HMAC, no listen key).
 // WsUserDataServe (listen-key) is deprecated and returns 410 — always use signature auth.
-func (c *Client) streamSpotOrdersOnce(ctx context.Context, creds exchange.Credentials, orderHandler func(exchange.OrderEvent), balanceHandler func(exchange.BalanceEvent)) error {
+func (c *Client) streamSpotOrdersOnce(
+	ctx context.Context,
+	creds exchange.Credentials,
+	onLifecycle func(exchange.OrderLifecycleEvent),
+	onFill func(exchange.WsFillEvent),
+	onBalance func(exchange.BalanceEvent),
+) error {
 	wsMu.Lock()
 	gobinance.UseDemo = c.paper
 	doneC, stopC, err := gobinance.WsUserDataServeSignature(
 		creds.APIKey, creds.APISecret, "HMAC", 0,
-		spotAccountHandler(orderHandler, balanceHandler),
+		spotAccountHandler(onLifecycle, onFill, onBalance),
 		func(err error) { slog.Warn("binance: spot ws error", "err", err) },
 	)
 	gobinance.UseDemo = false
@@ -135,7 +153,11 @@ func (c *Client) streamSpotOrdersOnce(ctx context.Context, creds exchange.Creden
 
 // spotAccountHandler dispatches both order lifecycle events and balance-change
 // events arriving on the same Binance USER_DATA WebSocket stream.
-func spotAccountHandler(orderHandler func(exchange.OrderEvent), balanceHandler func(exchange.BalanceEvent)) gobinance.WsUserDataHandler {
+func spotAccountHandler(
+	onLifecycle func(exchange.OrderLifecycleEvent),
+	onFill func(exchange.WsFillEvent),
+	onBalance func(exchange.BalanceEvent),
+) gobinance.WsUserDataHandler {
 	return func(event *gobinance.WsUserDataEvent) {
 		if rawJSON, err := json.Marshal(event); err == nil {
 			slog.Info("binance: raw spot ws event", "raw", string(rawJSON))
@@ -144,13 +166,13 @@ func spotAccountHandler(orderHandler func(exchange.OrderEvent), balanceHandler f
 		}
 		switch event.Event {
 		case gobinance.UserDataEventTypeOutboundAccountPosition:
-			if balanceHandler == nil {
+			if onBalance == nil {
 				return
 			}
 			at := time.Now().UTC()
 			for _, b := range event.AccountUpdate.WsAccountUpdates {
 				free := parseDecimal(b.Free)
-				balanceHandler(exchange.BalanceEvent{
+				onBalance(exchange.BalanceEvent{
 					Asset: b.Asset,
 					Free:  free,
 					At:    at,
@@ -176,19 +198,20 @@ func spotAccountHandler(orderHandler func(exchange.OrderEvent), balanceHandler f
 
 		switch ou.ExecutionType {
 		case "NEW":
-			orderHandler(exchange.OrderEvent{
-				Type:      exchange.OrderEventLive,
-				OrderID:   orderID,
-				TradeID:   orderID + "_open",
-				Symbol:    ou.Symbol,
-				Side:      side,
-				Qty:       parseDecimal(ou.Volume),
-				Timestamp: ts,
-			})
+			if onLifecycle != nil {
+				onLifecycle(exchange.OrderLifecycleEvent{
+					Type:          exchange.OrderLifecycleEventLive,
+					OrderID:       orderID,
+					ClientOrderID: ou.ClientOrderId,
+					Symbol:        ou.Symbol,
+					Side:          side,
+					Qty:           parseDecimal(ou.Volume),
+					Timestamp:     ts,
+				})
+			}
 		case "TRADE":
-			evType := exchange.OrderEventPartialFill
-			if ou.Status == "FILLED" {
-				evType = exchange.OrderEventFilled
+			if onFill == nil {
+				return
 			}
 			qty := parseDecimal(ou.LatestVolume)
 			if !qty.IsPositive() {
@@ -204,13 +227,13 @@ func spotAccountHandler(orderHandler func(exchange.OrderEvent), balanceHandler f
 				"status", ou.Status,
 				"exchange_ts", ts,
 			)
-			orderHandler(exchange.OrderEvent{
-				Type:            evType,
+			onFill(exchange.WsFillEvent{
 				OrderID:         orderID,
+				ClientOrderID:   ou.ClientOrderId,
 				TradeID:         strconv.FormatInt(ou.TradeId, 10),
 				Symbol:          ou.Symbol,
 				Side:            side,
-				Qty:             parseDecimal(ou.Volume),
+				Partial:         ou.Status != "FILLED",
 				FilledQty:       qty,
 				FilledAvg:       parseDecimal(ou.LatestPrice),
 				Commission:      parseDecimal(ou.FeeCost),
@@ -218,22 +241,29 @@ func spotAccountHandler(orderHandler func(exchange.OrderEvent), balanceHandler f
 				Timestamp:       ts,
 			})
 		case "CANCELED", "EXPIRED", "REJECTED":
-			orderHandler(exchange.OrderEvent{
-				Type:      exchange.OrderEventCanceled,
-				OrderID:   orderID,
-				TradeID:   orderID + "_cancel",
-				Symbol:    ou.Symbol,
-				Side:      side,
-				Qty:       parseDecimal(ou.Volume),
-				Timestamp: ts,
-			})
+			if onLifecycle != nil {
+				onLifecycle(exchange.OrderLifecycleEvent{
+					Type:          exchange.OrderLifecycleEventCanceled,
+					OrderID:       orderID,
+					ClientOrderID: ou.ClientOrderId,
+					Symbol:        ou.Symbol,
+					Side:          side,
+					Qty:           parseDecimal(ou.Volume),
+					Timestamp:     ts,
+				})
+			}
 		}
 	}
 }
 
 // ── Futures ───────────────────────────────────────────────────────────────────
 
-func (c *Client) streamFuturesOrders(ctx context.Context, fut *futures.Client, orderHandler func(exchange.OrderEvent)) {
+func (c *Client) streamFuturesOrders(
+	ctx context.Context,
+	fut *futures.Client,
+	onLifecycle func(exchange.OrderLifecycleEvent),
+	onFill func(exchange.WsFillEvent),
+) {
 	bo := exchange.Backoff{Min: 5 * time.Second, Max: 5 * time.Minute, Factor: 2.0, Jitter: true}
 	attempt := 0
 	for {
@@ -241,7 +271,7 @@ func (c *Client) streamFuturesOrders(ctx context.Context, fut *futures.Client, o
 			return
 		}
 		start := time.Now()
-		err := c.streamFuturesOrdersOnce(ctx, fut, orderHandler)
+		err := c.streamFuturesOrdersOnce(ctx, fut, onLifecycle, onFill)
 		if ctx.Err() != nil {
 			return
 		}
@@ -259,7 +289,12 @@ func (c *Client) streamFuturesOrders(ctx context.Context, fut *futures.Client, o
 	}
 }
 
-func (c *Client) streamFuturesOrdersOnce(ctx context.Context, fut *futures.Client, orderHandler func(exchange.OrderEvent)) error {
+func (c *Client) streamFuturesOrdersOnce(
+	ctx context.Context,
+	fut *futures.Client,
+	onLifecycle func(exchange.OrderLifecycleEvent),
+	onFill func(exchange.WsFillEvent),
+) error {
 	listenKey, err := fut.NewStartUserStreamService().Do(ctx)
 	if err != nil {
 		return fmt.Errorf("start futures user stream: %w", err)
@@ -286,19 +321,20 @@ func (c *Client) streamFuturesOrdersOnce(ctx context.Context, fut *futures.Clien
 
 		switch ou.ExecutionType {
 		case "NEW":
-			orderHandler(exchange.OrderEvent{
-				Type:      exchange.OrderEventLive,
-				OrderID:   orderID,
-				TradeID:   orderID + "_open",
-				Symbol:    ou.Symbol,
-				Side:      side,
-				Qty:       parseDecimal(ou.OriginalQty),
-				Timestamp: ts,
-			})
+			if onLifecycle != nil {
+				onLifecycle(exchange.OrderLifecycleEvent{
+					Type:          exchange.OrderLifecycleEventLive,
+					OrderID:       orderID,
+					ClientOrderID: ou.ClientOrderID,
+					Symbol:        ou.Symbol,
+					Side:          side,
+					Qty:           parseDecimal(ou.OriginalQty),
+					Timestamp:     ts,
+				})
+			}
 		case "TRADE":
-			evType := exchange.OrderEventPartialFill
-			if ou.Status == futures.OrderStatusTypeFilled {
-				evType = exchange.OrderEventFilled
+			if onFill == nil {
+				return
 			}
 			qty := parseDecimal(ou.LastFilledQty)
 			if !qty.IsPositive() {
@@ -314,28 +350,30 @@ func (c *Client) streamFuturesOrdersOnce(ctx context.Context, fut *futures.Clien
 				"status", ou.Status,
 				"exchange_ts", ts,
 			)
-			orderHandler(exchange.OrderEvent{
-				Type:       evType,
-				OrderID:    orderID,
-				TradeID:    strconv.FormatInt(ou.TradeID, 10),
-				Symbol:     ou.Symbol,
-				Side:       side,
-				Qty:        parseDecimal(ou.OriginalQty),
-				FilledQty:  qty,
-				FilledAvg:  parseDecimal(ou.LastFilledPrice),
-				Commission: parseDecimal(ou.Commission),
-				Timestamp:  ts,
+			onFill(exchange.WsFillEvent{
+				OrderID:       orderID,
+				ClientOrderID: ou.ClientOrderID,
+				TradeID:       strconv.FormatInt(ou.TradeID, 10),
+				Symbol:        ou.Symbol,
+				Side:          side,
+				Partial:       ou.Status != futures.OrderStatusTypeFilled,
+				FilledQty:     qty,
+				FilledAvg:     parseDecimal(ou.LastFilledPrice),
+				Commission:    parseDecimal(ou.Commission),
+				Timestamp:     ts,
 			})
 		case "CANCELED", "EXPIRED", "CALCULATED":
-			orderHandler(exchange.OrderEvent{
-				Type:      exchange.OrderEventCanceled,
-				OrderID:   orderID,
-				TradeID:   orderID + "_cancel",
-				Symbol:    ou.Symbol,
-				Side:      side,
-				Qty:       parseDecimal(ou.OriginalQty),
-				Timestamp: ts,
-			})
+			if onLifecycle != nil {
+				onLifecycle(exchange.OrderLifecycleEvent{
+					Type:          exchange.OrderLifecycleEventCanceled,
+					OrderID:       orderID,
+					ClientOrderID: ou.ClientOrderID,
+					Symbol:        ou.Symbol,
+					Side:          side,
+					Qty:           parseDecimal(ou.OriginalQty),
+					Timestamp:     ts,
+				})
+			}
 		}
 	}, func(err error) {
 		slog.Warn("binance: futures ws error", "err", err)
@@ -366,7 +404,12 @@ func (c *Client) streamFuturesOrdersOnce(ctx context.Context, fut *futures.Clien
 
 // ── COINM Delivery ────────────────────────────────────────────────────────────
 
-func (c *Client) streamDeliveryOrders(ctx context.Context, creds exchange.Credentials, orderHandler func(exchange.OrderEvent)) {
+func (c *Client) streamDeliveryOrders(
+	ctx context.Context,
+	creds exchange.Credentials,
+	onLifecycle func(exchange.OrderLifecycleEvent),
+	onFill func(exchange.WsFillEvent),
+) {
 	bo := exchange.Backoff{Min: 5 * time.Second, Max: 5 * time.Minute, Factor: 2.0, Jitter: true}
 	attempt := 0
 	for {
@@ -374,7 +417,7 @@ func (c *Client) streamDeliveryOrders(ctx context.Context, creds exchange.Creden
 			return
 		}
 		start := time.Now()
-		err := c.streamDeliveryOrdersOnce(ctx, creds, orderHandler)
+		err := c.streamDeliveryOrdersOnce(ctx, creds, onLifecycle, onFill)
 		if ctx.Err() != nil {
 			return
 		}
@@ -392,7 +435,12 @@ func (c *Client) streamDeliveryOrders(ctx context.Context, creds exchange.Creden
 	}
 }
 
-func (c *Client) streamDeliveryOrdersOnce(ctx context.Context, creds exchange.Credentials, orderHandler func(exchange.OrderEvent)) error {
+func (c *Client) streamDeliveryOrdersOnce(
+	ctx context.Context,
+	creds exchange.Credentials,
+	onLifecycle func(exchange.OrderLifecycleEvent),
+	onFill func(exchange.WsFillEvent),
+) error {
 	del := c.newDelivery(creds)
 	listenKey, err := del.NewStartUserStreamService().Do(ctx)
 	if err != nil {
@@ -415,19 +463,19 @@ func (c *Client) streamDeliveryOrdersOnce(ctx context.Context, creds exchange.Cr
 
 		switch ou.ExecutionType {
 		case "NEW":
-			orderHandler(exchange.OrderEvent{
-				Type:      exchange.OrderEventLive,
-				OrderID:   orderID,
-				TradeID:   orderID + "_open",
-				Symbol:    ou.Symbol,
-				Side:      side,
-				Qty:       parseDecimal(ou.OriginalQty),
-				Timestamp: ts,
-			})
+			if onLifecycle != nil {
+				onLifecycle(exchange.OrderLifecycleEvent{
+					Type:      exchange.OrderLifecycleEventLive,
+					OrderID:   orderID,
+					Symbol:    ou.Symbol,
+					Side:      side,
+					Qty:       parseDecimal(ou.OriginalQty),
+					Timestamp: ts,
+				})
+			}
 		case "TRADE":
-			evType := exchange.OrderEventPartialFill
-			if ou.Status == delivery.OrderStatusTypeFilled {
-				evType = exchange.OrderEventFilled
+			if onFill == nil {
+				return
 			}
 			qty := parseDecimal(ou.LastFilledQty)
 			if !qty.IsPositive() {
@@ -443,28 +491,28 @@ func (c *Client) streamDeliveryOrdersOnce(ctx context.Context, creds exchange.Cr
 				"status", ou.Status,
 				"exchange_ts", ts,
 			)
-			orderHandler(exchange.OrderEvent{
-				Type:       evType,
+			onFill(exchange.WsFillEvent{
 				OrderID:    orderID,
 				TradeID:    strconv.FormatInt(ou.TradeID, 10),
 				Symbol:     ou.Symbol,
 				Side:       side,
-				Qty:        parseDecimal(ou.OriginalQty),
+				Partial:    ou.Status != delivery.OrderStatusTypeFilled,
 				FilledQty:  qty,
 				FilledAvg:  parseDecimal(ou.LastFilledPrice),
 				Commission: parseDecimal(ou.Commission),
 				Timestamp:  ts,
 			})
 		case "CANCELED", "EXPIRED", "CALCULATED":
-			orderHandler(exchange.OrderEvent{
-				Type:      exchange.OrderEventCanceled,
-				OrderID:   orderID,
-				TradeID:   orderID + "_cancel",
-				Symbol:    ou.Symbol,
-				Side:      side,
-				Qty:       parseDecimal(ou.OriginalQty),
-				Timestamp: ts,
-			})
+			if onLifecycle != nil {
+				onLifecycle(exchange.OrderLifecycleEvent{
+					Type:      exchange.OrderLifecycleEventCanceled,
+					OrderID:   orderID,
+					Symbol:    ou.Symbol,
+					Side:      side,
+					Qty:       parseDecimal(ou.OriginalQty),
+					Timestamp: ts,
+				})
+			}
 		}
 	}, func(err error) {
 		slog.Warn("binance: delivery ws error", "err", err)

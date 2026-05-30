@@ -82,39 +82,3 @@ func (c *Client) ListPositions(ctx context.Context, creds exchange.Credentials) 
 
 	return results, nil
 }
-
-// SubscribeFills opens a fill stream by bridging StreamOrders.
-// The returned channel is closed when ctx is cancelled.
-func (c *Client) SubscribeFills(ctx context.Context, creds exchange.Credentials) (<-chan exchange.FillEvent, error) {
-	ch := make(chan exchange.FillEvent, 64)
-
-	send := func(fill exchange.FillEvent) {
-		defer func() { recover() }() //nolint:errcheck
-		select {
-		case ch <- fill:
-		case <-ctx.Done():
-		}
-	}
-
-	if err := c.StreamOrders(ctx, creds, func(ev exchange.OrderEvent) {
-		if ev.Type != exchange.OrderEventFilled && ev.Type != exchange.OrderEventPartialFill {
-			return
-		}
-		send(exchange.FillEvent{
-			OrderID:   ev.OrderID,
-			Symbol:    ev.Symbol,
-			Side:      ev.Side,
-			FilledQty: ev.FilledQty,
-			FillPrice: ev.FilledAvg,
-			Timestamp: ev.Timestamp,
-		})
-	}, nil); err != nil {
-		return nil, fmt.Errorf("okx subscribe fills: %w", err)
-	}
-
-	go func() {
-		<-ctx.Done()
-		close(ch)
-	}()
-	return ch, nil
-}

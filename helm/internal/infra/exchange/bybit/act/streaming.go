@@ -25,9 +25,15 @@ const (
 
 // StreamOrders implements exchange.AccountStreamer.
 // Connects to Bybit private WebSocket, authenticates, subscribes to the "order"
-// topic, and calls handler on each order lifecycle event. Reconnects automatically.
-// balanceHandler is ignored — Bybit wallet updates arrive on a separate topic not yet subscribed.
-func (c *Client) StreamOrders(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent), _ func(exchange.BalanceEvent)) error {
+// topic, and calls handlers on each event. Reconnects automatically.
+// onBalance is ignored — Bybit wallet updates arrive on a separate topic not yet subscribed.
+func (c *Client) StreamOrders(
+	ctx context.Context,
+	creds exchange.Credentials,
+	onLifecycle func(exchange.OrderLifecycleEvent),
+	onFill func(exchange.WsFillEvent),
+	_ func(exchange.BalanceEvent),
+) error {
 	go func() {
 		bo := exchange.Backoff{Min: 2 * time.Second, Max: 60 * time.Second, Factor: 2.0, Jitter: true}
 		attempt := 0
@@ -36,7 +42,7 @@ func (c *Client) StreamOrders(ctx context.Context, creds exchange.Credentials, h
 				return
 			}
 			start := time.Now()
-			err := c.streamOrdersOnce(ctx, creds, handler)
+			err := c.streamOrdersOnce(ctx, creds, onLifecycle, onFill)
 			if ctx.Err() != nil {
 				return
 			}
@@ -57,7 +63,12 @@ func (c *Client) StreamOrders(ctx context.Context, creds exchange.Credentials, h
 	return nil
 }
 
-func (c *Client) streamOrdersOnce(ctx context.Context, creds exchange.Credentials, handler func(exchange.OrderEvent)) error {
+func (c *Client) streamOrdersOnce(
+	ctx context.Context,
+	creds exchange.Credentials,
+	onLifecycle func(exchange.OrderLifecycleEvent),
+	onFill func(exchange.WsFillEvent),
+) error {
 	wsURL := bybitPrivateWSURL
 	if c.paper {
 		wsURL = bybitPrivateWSPaperURL
@@ -109,7 +120,7 @@ func (c *Client) streamOrdersOnce(ctx context.Context, creds exchange.Credential
 			}
 		case msg := <-msgs:
 			slog.Info("bybit: raw ws message", "raw", string(msg))
-			c.handleBybitMessage(msg, handler)
+			c.handleBybitMessage(msg, onLifecycle, onFill)
 		}
 	}
 }
@@ -153,7 +164,11 @@ func wsAuth(conn *websocket.Conn, creds exchange.Credentials) error {
 	return nil
 }
 
-func (c *Client) handleBybitMessage(msg []byte, handler func(exchange.OrderEvent)) {
+func (c *Client) handleBybitMessage(
+	msg []byte,
+	onLifecycle func(exchange.OrderLifecycleEvent),
+	onFill func(exchange.WsFillEvent),
+) {
 	var ev bybitOrderEvent
 	if err := json.Unmarshal(msg, &ev); err != nil {
 		return
@@ -173,19 +188,20 @@ func (c *Client) handleBybitMessage(msg []byte, handler func(exchange.OrderEvent
 
 		switch d.ExecType {
 		case "New":
-			handler(exchange.OrderEvent{
-				Type:      exchange.OrderEventLive,
-				OrderID:   d.OrderID,
-				TradeID:   d.OrderID + "_open",
-				Symbol:    d.Symbol,
-				Side:      side,
-				Qty:       parseDecimal(d.Qty),
-				Timestamp: ts,
-			})
+			if onLifecycle != nil {
+				onLifecycle(exchange.OrderLifecycleEvent{
+					Type:          exchange.OrderLifecycleEventLive,
+					OrderID:       d.OrderID,
+					ClientOrderID: d.OrderLinkId,
+					Symbol:        d.Symbol,
+					Side:          side,
+					Qty:           parseDecimal(d.Qty),
+					Timestamp:     ts,
+				})
+			}
 		case "Trade":
-			evType := exchange.OrderEventPartialFill
-			if d.OrderStatus == "Filled" {
-				evType = exchange.OrderEventFilled
+			if onFill == nil {
+				continue
 			}
 			execQty := parseDecimal(d.ExecQty)
 			if !execQty.IsPositive() {
@@ -195,27 +211,29 @@ func (c *Client) handleBybitMessage(msg []byte, handler func(exchange.OrderEvent
 			if tradeID == "" {
 				tradeID = d.OrderID + "_" + d.UpdatedTime
 			}
-			handler(exchange.OrderEvent{
-				Type:      evType,
-				OrderID:   d.OrderID,
-				TradeID:   tradeID,
-				Symbol:    d.Symbol,
-				Side:      side,
-				Qty:       parseDecimal(d.Qty),
-				FilledQty: execQty,
-				FilledAvg: parseDecimal(d.ExecPrice),
-				Timestamp: ts,
+			onFill(exchange.WsFillEvent{
+				OrderID:         d.OrderID,
+				ClientOrderID:   d.OrderLinkId,
+				TradeID:         tradeID,
+				Symbol:          d.Symbol,
+				Side:            side,
+				Partial:         d.OrderStatus != "Filled",
+				FilledQty:       execQty,
+				FilledAvg:       parseDecimal(d.ExecPrice),
+				Commission:      parseDecimal(d.ExecFee),
+				CommissionAsset: d.FeeCurrency,
+				Timestamp:       ts,
 			})
 		default:
-			if d.OrderStatus == "Cancelled" || d.OrderStatus == "Rejected" {
-				handler(exchange.OrderEvent{
-					Type:      exchange.OrderEventCanceled,
-					OrderID:   d.OrderID,
-					TradeID:   d.OrderID + "_cancel",
-					Symbol:    d.Symbol,
-					Side:      side,
-					Qty:       parseDecimal(d.Qty),
-					Timestamp: ts,
+			if (d.OrderStatus == "Cancelled" || d.OrderStatus == "Rejected") && onLifecycle != nil {
+				onLifecycle(exchange.OrderLifecycleEvent{
+					Type:          exchange.OrderLifecycleEventCanceled,
+					OrderID:       d.OrderID,
+					ClientOrderID: d.OrderLinkId,
+					Symbol:        d.Symbol,
+					Side:          side,
+					Qty:           parseDecimal(d.Qty),
+					Timestamp:     ts,
 				})
 			}
 		}

@@ -118,12 +118,6 @@ func (f *fakeExchange) ListPositions(_ context.Context, _ exchange.Credentials) 
 	return out, nil
 }
 
-func (f *fakeExchange) SubscribeFills(_ context.Context, _ exchange.Credentials) (<-chan exchange.FillEvent, error) {
-	ch := make(chan exchange.FillEvent)
-	close(ch)
-	return ch, nil
-}
-
 // ── builder helpers ────────────────────────────────────────────────────────────
 
 func buildRuntime(ex exchange.Exchange, log poslog.Log) *runtime.HelmRuntime {

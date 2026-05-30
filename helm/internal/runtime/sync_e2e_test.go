@@ -117,7 +117,7 @@ func TestSync_E2E(t *testing.T) {
 	defer cancel()
 
 	t.Log("running Sync()...")
-	if err := rt.Sync(ctx, nil); err != nil {
+	if err := rt.Sync(ctx); err != nil {
 		t.Fatalf("Sync: %v", err)
 	}
 
@@ -171,7 +171,7 @@ func TestSync_E2E(t *testing.T) {
 
 	// ── Second Sync: only new transactions should be forwarded ─────────────────
 	t.Log("running second Sync() — should skip already-seen transactions...")
-	if err := rt.Sync(ctx, nil); err != nil {
+	if err := rt.Sync(ctx); err != nil {
 		t.Fatalf("second Sync: %v", err)
 	}
 

@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"time"
@@ -10,14 +11,45 @@ import (
 	"mallow/helm/internal/module/helm/domain"
 )
 
-// Enable marks an orchestrator as enabled and triggers an immediate portfolio sync.
+// Enable marks an orchestrator as enabled, spawns its runtime if it is not already
+// in the registry, and triggers an initial portfolio sync.
+//
+// Flow:
+//  1. Persist Enabled=true in DB.
+//  2. If a CredentialFetcher is wired, fetch exchange credentials and spawn the runtime
+//     (no-op if it already exists — Registry.Spawn is idempotent).
+//  3. Fire-and-forget SyncOne so portfolio state is refreshed from the exchange.
 func (s *Service) Enable(id uuid.UUID) error {
+	// 1. Persist status=active.
 	if err := s.repo.Update(id, func(o *domain.Helm) error {
-		o.Enabled = true
+		o.Status = domain.HelmStatusActive
 		return nil
 	}); err != nil {
 		return err
 	}
+
+	// 2. Spawn runtime if credentials are available and runtime is not yet live.
+	if s.creds != nil {
+		cfg, err := s.repo.Get(id)
+		if err != nil {
+			slog.Warn("helm enable: could not load config for spawn", "helm_id", id, "err", err)
+		} else {
+			exchCfg, err := s.creds.GetCredentialsByAccountID(context.Background(), cfg.AccountID.String())
+			if err != nil {
+				slog.Warn("helm enable: could not fetch credentials for spawn", "helm_id", id, "err", err)
+			} else {
+				// BrokerType is authoritative from the helm config (not the credentials resp).
+				exchCfg.BrokerType = cfg.BrokerType
+				if spawnErr := s.spawner.Spawn(cfg, exchCfg); spawnErr != nil {
+					slog.Error("helm enable: spawn failed", "helm_id", id, "err", spawnErr)
+				} else {
+					slog.Info("helm enable: runtime spawned", "helm_id", id)
+				}
+			}
+		}
+	}
+
+	// 3. Sync portfolio from exchange (no-op if runtime not in registry).
 	s.spawner.SyncOne(id)
 	return nil
 }
@@ -83,7 +115,6 @@ func (s *Service) Disable(id uuid.UUID) error {
 
 	// Step 3: persist immediately so restarts do not re-spawn this helm.
 	if err := s.repo.Update(id, func(o *domain.Helm) error {
-		o.Enabled = false
 		o.Status = domain.HelmStatusDisabled
 		return nil
 	}); err != nil {

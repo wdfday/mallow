@@ -118,6 +118,14 @@ type ReBrokerRequest struct {
 	AccountID uuid.UUID `json:"account_id" binding:"required"`
 }
 
+// RotateKeyRequest is the body for POST /broker-connections/{id}/rotate-key.
+// Validates the new credentials with the broker before persisting.
+type RotateKeyRequest struct {
+	APIKey     string  `json:"api_key" binding:"required"`
+	APISecret  string  `json:"api_secret" binding:"required"`
+	Passphrase *string `json:"passphrase,omitempty"` // required for OKX
+}
+
 type ListBrokerConnectionsQuery struct {
 	BrokerType *string `form:"broker_type"`
 	Status     *string `form:"status"`

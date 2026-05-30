@@ -69,25 +69,23 @@ func (r *DefaultReconciler) Reconcile(ctx context.Context, orch *HelmRuntime) []
 	orch.mu.RUnlock()
 
 	// Batch-fetch open orders and positions once per reconcile run.
+	// On failure, nil is passed to reconcileHand — flat hands are still reconciled
+	// correctly (they need no exchange data); hands with active legs are marked failed
+	// individually rather than failing the entire batch.
 	exchangeOrders, errOrders := r.fetchOpenOrders(ctx, orch)
 	exchangePositions, errPositions := r.fetchPositions(ctx, orch)
-
-	results := make([]HandReconcileResult, 0, len(hands))
-	if errOrders != nil || errPositions != nil {
-		combinedErr := fmt.Errorf("exchange fetch failed: orders_err=%v, positions_err=%v", errOrders, errPositions)
-		for _, hand := range hands {
-			results = append(results, HandReconcileResult{
-				HandID: hand.id.String(),
-				Action: ReconcileFailed,
-				Err:    combinedErr,
-			})
-			slog.Error("reconcile failed due to exchange API error", "hand_id", hand.id, "err", combinedErr)
-		}
-		return results
+	if errOrders != nil {
+		slog.Error("reconcile: ListOpenOrders failed — hands with pending orders will be marked failed",
+			"helm_id", orch.HelmID, "err", errOrders)
+	}
+	if errPositions != nil {
+		slog.Error("reconcile: ListPositions failed — hands with open legs will be marked failed",
+			"helm_id", orch.HelmID, "err", errPositions)
 	}
 
+	results := make([]HandReconcileResult, 0, len(hands))
 	for _, hand := range hands {
-		res := r.reconcileHand(ctx, orch, hand, exchangeOrders, exchangePositions)
+		res := r.reconcileHand(ctx, orch, hand, exchangeOrders, exchangePositions, errOrders, errPositions)
 		results = append(results, res)
 		if res.Err != nil {
 			slog.Error("reconcile failed", "hand_id", hand.id, "err", res.Err)
@@ -102,8 +100,9 @@ func (r *DefaultReconciler) reconcileHand(
 	ctx context.Context,
 	helmRuntime *HelmRuntime,
 	hand *Hand,
-	openOrders map[string]exchange.OrderResult,
-	positions map[string]exchange.PositionResult,
+	openOrders map[string]exchange.OrderResult, // nil when ListOpenOrders failed
+	positions map[string]exchange.PositionResult, // nil when ListPositions failed
+	errOrders, errPositions error,
 ) HandReconcileResult {
 	result := HandReconcileResult{HandID: hand.id.String()}
 
@@ -127,7 +126,7 @@ func (r *DefaultReconciler) reconcileHand(
 	// Reconcile each active leg independently.
 	var lastAction ReconcileAction
 	for _, leg := range hp.ActiveLegs() {
-		action, err := r.reconcileLeg(ctx, helmRuntime, hand, leg, openOrders, positions)
+		action, err := r.reconcileLeg(ctx, helmRuntime, hand, leg, openOrders, positions, errOrders, errPositions)
 		if err != nil {
 			result.Action = ReconcileFailed
 			result.Err = err
@@ -164,6 +163,8 @@ func (r *DefaultReconciler) reconcileHand(
 }
 
 // reconcileLeg handles one active leg: checks pending orders or confirms open positions.
+// errOrders/errPositions are the errors from the batch fetch; nil maps mean that fetch failed.
+// Each leg fails independently — other legs/hands are not affected.
 func (r *DefaultReconciler) reconcileLeg(
 	ctx context.Context,
 	helmRuntime *HelmRuntime,
@@ -171,12 +172,19 @@ func (r *DefaultReconciler) reconcileLeg(
 	leg *position.LegState,
 	openOrders map[string]exchange.OrderResult,
 	positions map[string]exchange.PositionResult,
+	errOrders, errPositions error,
 ) (ReconcileAction, error) {
 	switch leg.Phase {
 	case position.PhaseEntering, position.PhaseAdding, position.PhaseExiting:
+		if openOrders == nil {
+			return ReconcileFailed, fmt.Errorf("reconcile: pending order %s cannot be checked — ListOpenOrders failed: %w", leg.PendingOrderID, errOrders)
+		}
 		return r.reconcilePendingOrder(ctx, helmRuntime, hand, leg, openOrders)
 
 	case position.PhaseOpen:
+		if positions == nil {
+			return ReconcileFailed, fmt.Errorf("reconcile: open leg %s cannot be confirmed — ListPositions failed: %w", leg.PositionID, errPositions)
+		}
 		return r.reconcileOpenLeg(ctx, helmRuntime, hand, leg, positions)
 
 	default:
@@ -198,6 +206,11 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 	if exOrder, stillOpen := openOrders[orderID]; stillOpen {
 		// Restore order tracking map so that future WS fill events can be routed to this hand.
 		orch.TrackOrder(orderID, hand.id.String())
+		// If the exchange echoes our clid, restore clid routing too — WS fills carry the
+		// clid and would otherwise route as orphan after a restart. See CLIENT_ORDER_ID.md.
+		if isOurClid(exOrder.ClientOrderID) {
+			orch.TrackOrder(exOrder.ClientOrderID, hand.id.String())
+		}
 
 		// Restore order into hand.orders so that pollOrders can check its status.
 		// Use remaining qty (original − already filled) to avoid double-counting
@@ -252,6 +265,9 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 		// Order still open (possibly missed by the open-orders batch fetch due to a
 		// brief exchange inconsistency). Restore tracking so pollOrders keeps watching it.
 		orch.TrackOrder(orderID, hand.id.String())
+		if isOurClid(exOrder.ClientOrderID) {
+			orch.TrackOrder(exOrder.ClientOrderID, hand.id.String())
+		}
 		hand.mu.Lock()
 		alreadyTracked := false
 		for _, o := range hand.orders {

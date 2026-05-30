@@ -9,11 +9,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 
+	"mallow/helm/internal/infra/orderlog"
 	"mallow/helm/internal/infra/perflog"
 	"mallow/helm/internal/infra/poslog"
 	"mallow/helm/internal/module/analytics/domain"
 	analyticsservice "mallow/helm/internal/module/analytics/service"
 	dto "mallow/helm/internal/module/helm/dto"
+	"mallow/helm/internal/readmodel"
 	"mallow/helm/internal/runtime"
 	"mallow/helm/internal/runtime/perf"
 	"mallow/helm/internal/shared"
@@ -43,14 +45,14 @@ func parsePeriod(c *gin.Context) domain.Period {
 }
 
 type Handler struct {
-	svc         HelmService
-	handMgr     HandManager
-	reg         *runtime.Registry
-	nc          *nats.Conn
-	fillLog     *perflog.FillLog
-	snapshotLog perf.SnapshotLog
-	posLog      poslog.Log
-	analytics   *analyticsservice.Service
+	svc       HelmService
+	handMgr   HandManager
+	reg       *runtime.Registry
+	nc        *nats.Conn
+	fillLog   *perflog.FillLog
+	posLog    poslog.Log
+	orderLog  orderlog.Log
+	analytics *analyticsservice.Service
 }
 
 func New(
@@ -59,19 +61,19 @@ func New(
 	reg *runtime.Registry,
 	nc *nats.Conn,
 	fillLog *perflog.FillLog,
-	snapshotLog perf.SnapshotLog,
 	posLog poslog.Log,
+	orderLog orderlog.Log,
 	analytics *analyticsservice.Service,
 ) *Handler {
 	return &Handler{
-		svc:         svc,
-		handMgr:     handMgr,
-		reg:         reg,
-		nc:          nc,
-		fillLog:     fillLog,
-		snapshotLog: snapshotLog,
-		posLog:      posLog,
-		analytics:   analytics,
+		svc:       svc,
+		handMgr:   handMgr,
+		reg:       reg,
+		nc:        nc,
+		fillLog:   fillLog,
+		posLog:    posLog,
+		orderLog:  orderLog,
+		analytics: analytics,
 	}
 }
 
@@ -116,6 +118,7 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 		o.GET("/:id/equity", h.equity)
 		o.GET("/:id/stats", h.stats)
 		o.GET("/:id/orders", h.orders)
+		o.GET("/:id/orders/history", h.ordersHistory)
 		o.GET("/:id/events", h.events)
 
 		ex := o.Group("/:id/exchange")
@@ -251,9 +254,11 @@ func (h *Handler) get(c *gin.Context) {
 	hands := h.handMgr.ListByHelm(id)
 	rt, rtErr := h.reg.Get(id)
 	paused := false
+	halted := false
 	var lastSyncAt *time.Time
 	if rtErr == nil {
 		paused = rt.IsPaused()
+		halted = rt.IsHalted()
 		if t := rt.LastSyncAt(); !t.IsZero() {
 			lastSyncAt = &t
 		}
@@ -264,6 +269,7 @@ func (h *Handler) get(c *gin.Context) {
 		Hands:      hands,
 		Running:    rtErr == nil,
 		Paused:     paused,
+		Halted:     halted,
 		LastSyncAt: lastSyncAt,
 	})
 }
@@ -820,4 +826,106 @@ func (h *Handler) orders(c *gin.Context) {
 		}
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Orders retrieved successfully", allOrders)
+}
+
+// orderHistoryResp is the JSON shape for a persisted order lifecycle record.
+type orderHistoryResp struct {
+	ExchangeOrderID string `json:"exchange_order_id"`
+	ClientOrderID   string `json:"client_order_id,omitempty"`
+	HandID          string `json:"hand_id,omitempty"`
+	PositionID      string `json:"position_id,omitempty"`
+	Symbol          string `json:"symbol"`
+	Side            string `json:"side,omitempty"`
+	OrderType       string `json:"order_type,omitempty"`
+	Qty             string `json:"qty,omitempty"`
+	Price           string `json:"price,omitempty"`
+	Status          string `json:"status"`
+	FilledQty       string `json:"filled_qty,omitempty"`
+	FilledPrice     string `json:"filled_price,omitempty"`
+	IsClose         bool   `json:"is_close"`
+	PatternKind     string `json:"pattern_kind,omitempty"`
+	Reason          string `json:"reason,omitempty"`
+	PlacedAt        string `json:"placed_at,omitempty"`
+	UpdatedAt       string `json:"updated_at"`
+}
+
+// ordersHistory returns the durable order lifecycle history from the orders table,
+// projected from the poslog by the orders persister. Distinct from /orders which
+// returns only the in-memory live order list.
+//
+// @Summary List persisted order history for a helm
+// @Tags helms
+// @Produce json
+// @Param id path string true "Helm ID"
+// @Param hand_id query string false "filter by hand"
+// @Param status query string false "filter by status (placed|filled|cancelled)"
+// @Param limit query int false "max rows (default 100)"
+// @Success 200 {object} shared.SuccessResponse
+// @Failure 404 {object} shared.ErrorResponse
+// @Router /api/v1/helms/{id}/orders/history [get]
+func (h *Handler) ordersHistory(c *gin.Context) {
+	userID, ok := callerUserID(c)
+	if !ok {
+		return
+	}
+	rt := h.requireOwnedRuntime(c, userID)
+	if rt == nil {
+		return
+	}
+	if h.orderLog == nil {
+		shared.RespondWithSuccess(c, http.StatusOK, "Order history unavailable", []orderHistoryResp{})
+		return
+	}
+
+	f := readmodel.OrderFilter{
+		HelmID: rt.HelmID,
+		HandID: c.Query("hand_id"),
+		Status: c.Query("status"),
+	}
+	if v := c.Query("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			f.Limit = n
+		}
+	}
+
+	records, err := h.orderLog.Query(c.Request.Context(), f)
+	if err != nil {
+		shared.RespondWithError(c, http.StatusInternalServerError, "Failed to query order history: "+err.Error())
+		return
+	}
+
+	out := make([]orderHistoryResp, 0, len(records))
+	for _, r := range records {
+		resp := orderHistoryResp{
+			ExchangeOrderID: r.ExchangeOrderID,
+			ClientOrderID:   r.ClientOrderID,
+			HandID:          r.HandID,
+			PositionID:      r.PositionID,
+			Symbol:          r.Symbol,
+			Side:            r.Side,
+			OrderType:       r.OrderType,
+			Status:          r.Status,
+			IsClose:         r.IsClose,
+			PatternKind:     r.PatternKind,
+			Reason:          r.Reason,
+			UpdatedAt:       r.UpdatedAt.Format(time.RFC3339),
+		}
+		if r.Qty.IsPositive() {
+			resp.Qty = r.Qty.String()
+		}
+		if r.Price.IsPositive() {
+			resp.Price = r.Price.String()
+		}
+		if r.FilledQty.IsPositive() {
+			resp.FilledQty = r.FilledQty.String()
+		}
+		if r.FilledPrice.IsPositive() {
+			resp.FilledPrice = r.FilledPrice.String()
+		}
+		if !r.PlacedAt.IsZero() {
+			resp.PlacedAt = r.PlacedAt.Format(time.RFC3339)
+		}
+		out = append(out, resp)
+	}
+	shared.RespondWithSuccess(c, http.StatusOK, "Order history retrieved successfully", out)
 }

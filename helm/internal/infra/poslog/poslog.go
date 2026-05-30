@@ -50,13 +50,21 @@ const (
 	// On replay, this event removes the leg from HandPositions so the hand never
 	// reclaims it on restart.
 	KindPositionOrphaned Kind = "position_orphaned"
+
+	// KindBracketPlaced is written after exchange-side SL/TP bracket orders are placed
+	// successfully. Persists the order IDs so cancelExitOrders and checkBracketOrders
+	// can cancel the sibling after a restart.
+	KindBracketPlaced Kind = "bracket_placed"
 )
 
 // OrderPlacedPayload carries order intent. SL/TP here are the signal's values —
 // for pyramid adds they will replace the existing leg's levels on fill.
 type OrderPlacedPayload struct {
-	OrderID      string `json:"order_id"`
-	Symbol       string `json:"symbol"`
+	OrderID string `json:"order_id"`
+	// ClientOrderID is the mallow-generated clOrdId (empty for bracket/legacy orders).
+	// The orders persister keys the orders table on this when present. See CLIENT_ORDER_ID.md.
+	ClientOrderID string `json:"client_order_id,omitempty"`
+	Symbol        string `json:"symbol"`
 	Side         string `json:"side"`       // "buy" | "sell"
 	Qty          string `json:"qty"`        // decimal string
 	Price        string `json:"price"`      // "0" for market orders
@@ -94,6 +102,13 @@ type SLUpdatedPayload struct {
 	NewSL   string `json:"new_sl"`
 	NewTP   string `json:"new_tp,omitempty"`
 	Reason  string `json:"reason"` // "trailing" | "manual"
+}
+
+// BracketPlacedPayload records the exchange order IDs for SL/TP bracket orders placed
+// after an entry fill. Replayed on restart to restore ExchangeOrderIDs in exitLevels.
+type BracketPlacedPayload struct {
+	Symbol   string   `json:"symbol"`
+	OrderIDs []string `json:"order_ids"`
 }
 
 // PositionOrphanedPayload records that a hand released a leg without closing it.

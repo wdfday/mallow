@@ -29,4 +29,8 @@ type HelmCreator interface {
 
 	// AutoDeleteForAccount tears down and removes the Helm for a delinked account.
 	AutoDeleteForAccount(ctx context.Context, accountID uuid.UUID) error
+
+	// RotateCredsForAccount updates the in-flight credentials for the Helm linked
+	// to accountID and reconnects the WS stream without interrupting running hands.
+	RotateCredsForAccount(ctx context.Context, accountID uuid.UUID, req HelmAutoCreateReq) error
 }

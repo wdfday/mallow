@@ -32,16 +32,23 @@ type Service struct {
 	registry helmRegistry
 	herald   heraldClient // nil when NATS unavailable (dev/test)
 
-	mu    sync.RWMutex
+	mu sync.RWMutex
+	// hands holds all currently active (non-terminal) hands wired into a HelmRuntime.
 	hands map[uuid.UUID]*runtime.HandRef
+	// terminated holds a snapshot of hands that have been removed from the live map
+	// during this process lifetime (killed, released, cascade-stopped, purged). It is
+	// also seeded from DB on startup so that hands from previous sessions are visible
+	// without hitting the database on every List() call.
+	terminated map[uuid.UUID]*domain.Hand
 }
 
 func NewService(r domain.HandRepo, registry *runtime.Registry, herald heraldClient) *Service {
 	return &Service{
-		repo:     r,
-		registry: registry,
-		herald:   herald,
-		hands:    make(map[uuid.UUID]*runtime.HandRef),
+		repo:       r,
+		registry:   registry,
+		herald:     herald,
+		hands:      make(map[uuid.UUID]*runtime.HandRef),
+		terminated: make(map[uuid.UUID]*domain.Hand),
 	}
 }
 
@@ -49,9 +56,15 @@ func NewService(r domain.HandRepo, registry *runtime.Registry, herald heraldClie
 // in-memory cache. Must be called AFTER helm runtimes are registered (i.e.
 // after hydrateRuntimes in fx.go) so that registry.Get succeeds for each hand.
 func (s *Service) HydrateAll() {
-	for _, data := range s.repo.All() {
+	all := s.repo.All()
+	live := 0
+	for _, data := range all {
 		if data.Status.IsTerminal() {
-			continue // terminal hands live in DB only; fetched on-demand via GetSummary
+			// Seed terminated map so List() never needs a DB round-trip after startup.
+			s.mu.Lock()
+			s.terminated[data.ID] = data
+			s.mu.Unlock()
+			continue
 		}
 		bi, err := s.hydrate(data)
 		if err != nil {
@@ -61,8 +74,9 @@ func (s *Service) HydrateAll() {
 		s.mu.Lock()
 		s.hands[data.ID] = bi
 		s.mu.Unlock()
+		live++
 	}
-	slog.Info("hands hydrated", "count", len(s.repo.All()))
+	slog.Info("hands hydrated", "live", live, "terminated", len(all)-live, "total", len(all))
 }
 
 func (s *Service) hydrate(data *domain.Hand) (*runtime.HandRef, error) {
@@ -102,6 +116,11 @@ func (s *Service) getOrLoad(id uuid.UUID) (*runtime.HandRef, error) {
 	data, err := s.repo.Get(id)
 	if err != nil {
 		return nil, err
+	}
+	// Terminal hands (killed/released) are removed from memory after their lifecycle
+	// ends. Do not re-hydrate them — they must not re-enter the runtime.
+	if data.Status.IsTerminal() {
+		return nil, fmt.Errorf("hand %q is %s — terminal hands cannot be modified", id, data.Status)
 	}
 	bi, err = s.hydrate(data)
 	if err != nil {

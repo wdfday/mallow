@@ -52,13 +52,31 @@ func (h *Hand) pollOrders(ctx context.Context) {
 			}
 			h.mu.Lock()
 			if _, seen := h.seenFills[result.ID]; seen {
-				// WS or REST-immediate path already applied this fill.
+				// WS full-fill or REST-immediate path already applied this order.
 				h.mu.Unlock()
 				break
 			}
+			h.mu.Unlock()
+			// Guard against WS-orphan race: WS may have processed this fill before
+			// PlaceOrder returned (labeling the order "manual"), updating the portfolio
+			// already. Skip to prevent a double-apply and duplicate JetStream publish.
+			if h.helmRuntime.hasOrderFillPublished(result.ID) {
+				h.mu.Lock()
+				delete(h.partialApplied, result.ID)
+				h.mu.Unlock()
+				break
+			}
+			// GetOrder returns cumulative FilledQty. Deduct any qty already applied
+			// by the WS partial-fill path (registry → rt.ReportFill + MarkPartialApplied)
+			// so we only apply the remaining delta — no double-count.
+			h.mu.Lock()
+			netQty := result.FilledQty.Sub(h.partialApplied[result.ID])
+			delete(h.partialApplied, result.ID)
 			h.seenFills[result.ID] = struct{}{}
 			h.mu.Unlock()
-			h.applyFill(ctx, result.ID, result.Symbol, side, result.FilledQty, result.FilledAvg, decimal.Zero, "poll")
+			if netQty.IsPositive() {
+				h.applyFill(ctx, result.ID, result.Symbol, side, netQty, result.FilledAvg, decimal.Zero, "poll")
+			}
 
 		case "new", "accepted", "submitted", "pending_new":
 			// Limit order timeout: cancel (and optionally re-place) if it hasn't filled
@@ -105,9 +123,15 @@ func (h *Hand) pollOrders(ctx context.Context) {
 					}
 					h.mu.Lock()
 					if _, seen := h.seenFills[result.ID]; !seen {
+						// Same cumulative-deduct as the "filled" case: GetOrder returns
+						// total filled qty; subtract what the WS partial path already applied.
+						netQty := result.FilledQty.Sub(h.partialApplied[result.ID])
+						delete(h.partialApplied, result.ID)
 						h.seenFills[result.ID] = struct{}{}
 						h.mu.Unlock()
-						h.applyFill(ctx, result.ID, result.Symbol, side, result.FilledQty, result.FilledAvg, decimal.Zero, "partial_cancel")
+						if netQty.IsPositive() {
+							h.applyFill(ctx, result.ID, result.Symbol, side, netQty, result.FilledAvg, decimal.Zero, "partial_cancel")
+						}
 					} else {
 						h.mu.Unlock()
 					}
@@ -158,10 +182,15 @@ func (h *Hand) pollOrders(ctx context.Context) {
 	// Runs after all pending orders are processed — no information is lost.
 	h.mu.Lock()
 	n := 0
+	var terminalKeys []string
 	for _, o := range h.orders {
 		switch o.Status {
 		case "filled", "cancelled", "rejected", "expired":
-			// terminal — drop
+			// terminal — drop, and collect routing keys to release after the lock.
+			if o.ClientOrderID != "" {
+				terminalKeys = append(terminalKeys, o.ClientOrderID)
+			}
+			terminalKeys = append(terminalKeys, o.ID)
 		default:
 			h.orders[n] = o
 			n++
@@ -169,6 +198,12 @@ func (h *Hand) pollOrders(ctx context.Context) {
 	}
 	h.orders = h.orders[:n]
 	h.mu.Unlock()
+	// Release any lingering clid/exchange-id routing entries for terminal orders.
+	// WS full-fills already clean these; this catches poll/REST-immediate-only fills
+	// so the routing map never accumulates stale entries.
+	for _, k := range terminalKeys {
+		h.helmRuntime.RemoveOrderTracking(k)
+	}
 }
 
 // handleLimitTimeout cancels a stale limit order and, depending on LimitFallback,
@@ -187,22 +222,30 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 		return
 	}
 
-	alreadyFilledQty := polled.FilledQty
-	if alreadyFilledQty.IsPositive() {
-		// Apply partial fill before re-placing remainder.
+	cumFilledQty := polled.FilledQty
+	if cumFilledQty.IsPositive() {
+		// Apply the delta that hasn't been applied yet. polled.FilledQty is cumulative
+		// (from GetOrder REST); WS partials may have already applied some of it via
+		// registry → rt.ReportFill + MarkPartialApplied.
 		side := "buy"
 		if polled.Side == exchange.Sell {
 			side = "sell"
 		}
 		h.mu.Lock()
 		if _, seen := h.seenFills[o.ID]; !seen {
+			netQty := cumFilledQty.Sub(h.partialApplied[o.ID])
+			delete(h.partialApplied, o.ID)
 			h.seenFills[o.ID] = struct{}{}
 			h.mu.Unlock()
-			h.applyFill(ctx, o.ID, polled.Symbol, side, alreadyFilledQty, polled.FilledAvg, decimal.Zero, "limit_timeout_partial")
+			if netQty.IsPositive() {
+				h.applyFill(ctx, o.ID, polled.Symbol, side, netQty, polled.FilledAvg, decimal.Zero, "limit_timeout_partial")
+			}
 		} else {
 			h.mu.Unlock()
 		}
 	}
+	// alreadyFilledQty is used below to compute the remaining qty for the fallback order.
+	alreadyFilledQty := cumFilledQty
 
 	// Publish KindOrderCancelled for the original limit so:
 	// 1. pendingOrderPos[o.ID] is cleared (pollOrders won't re-publish on next cycle)
@@ -313,6 +356,52 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 			h.applyFill(ctx, result.ID, o.Symbol, string(o.Side), result.FilledQty, result.FilledAvg, decimal.Zero, "limit_fallback")
 		}
 	}
+}
+
+// recoverAmbiguousPlace handles a PlaceOrder failure that does NOT clearly mean the
+// order was rejected — a timeout or network drop, where the order may or may not have
+// reached the exchange. Because we generated and tracked the clid before placing, we can
+// ask the exchange whether an order with that clid exists. If it does, the placement
+// actually succeeded and we return its result so the caller treats it as placed (keeping
+// the clid tracked) rather than untracking and re-entering. Returns nil when the error is
+// a clear reject, the exchange can't query by clid, or no such order exists.
+func (h *Hand) recoverAmbiguousPlace(ctx context.Context, symbol, clid string, placeErr error) *exchange.OrderResult {
+	if !exchange.IsAmbiguousPlaceError(placeErr) {
+		return nil
+	}
+	q, ok := h.helmRuntime.Exchange.(exchange.ClientOrderQuerier)
+	if !ok {
+		return nil
+	}
+	market := exchange.MarketSpot
+	if h.helmRuntime.Creds.AccountType == exchange.AccountFuturesUSDM ||
+		h.helmRuntime.Creds.AccountType == exchange.AccountFuturesCOINM {
+		market = exchange.MarketFutures
+	}
+
+	// Poll a few times with backoff: after a timeout the order may still be propagating
+	// at the exchange, so an immediate lookup can falsely report "not found". A nil result
+	// is "not confirmed yet" — keep trying; a non-nil result is authoritative.
+	delays := []time.Duration{300 * time.Millisecond, 700 * time.Millisecond, 1500 * time.Millisecond}
+	for attempt, d := range delays {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(d):
+		}
+		qCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		res, err := q.GetOrderByClientOrderID(qCtx, h.helmRuntime.Creds, symbol, market, clid)
+		cancel()
+		if err != nil || res == nil {
+			continue
+		}
+		slog.Warn("order: ambiguous placement recovered via clid — order exists on exchange",
+			"hand_id", h.id, "symbol", symbol, "client_order_id", clid,
+			"order_id", res.ID, "status", res.Status, "attempt", attempt+1, "place_err", placeErr,
+		)
+		return res
+	}
+	return nil
 }
 
 // isLotSizeError returns true when the error is a persistent sizing constraint —

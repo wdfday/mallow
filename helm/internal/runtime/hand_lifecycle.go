@@ -64,8 +64,9 @@ func NewHand(
 		leverageApplied: make(map[string]bool),
 		Signals:         make(chan Signal, 1),
 		UrgentSignals:   make(chan Signal, 4),
-		fillCh:          make(chan exchange.OrderEvent, 8),
+		fillCh:          make(chan exchange.WsFillEvent, 8),
 		seenFills:       make(map[string]struct{}),
+		partialApplied:  make(map[string]decimal.Decimal),
 		orders:          make([]domain.Order, 0, 256),
 		pendingExits:    make(map[string]exitPending),
 		exitLevels:      make(map[string]exitLevel),
@@ -110,8 +111,13 @@ func BuildHandComponents(b *domain.Hand) (strategy.Strategy, *tactics.Tactician)
 		sizingMode = tactics.SizingPercentEquity
 	}
 
+	// StrengthSizing defaults to true (nil → confidence scales fixed_fractional sizing),
+	// matching herald's Option<bool> None→true semantics.
+	strengthSizing := b.Position.StrengthSizing == nil || *b.Position.StrengthSizing
+
 	sc := tactics.SizingConfig{
 		Mode:            sizingMode,
+		StrengthSizing:  strengthSizing,
 		UnitCapital:     b.Position.UnitCapital,
 		UnitPct:         b.Position.UnitPct,
 		RiskPerTradePct: b.Position.RiskPerTradePct,
@@ -141,9 +147,14 @@ func (h *Hand) restorePosition(hp *position.HandPositions, currentPrice decimal.
 	h.pos = hp
 
 	// Rebuild pending order → position mapping for legs still awaiting a fill.
+	// Also re-register into the HelmRuntime orderHandMap so that fill routing
+	// and trade.filled events carry the correct hand_id after restart.
+	// (ReconcileOrders tracks open orders with an empty handID because it only
+	// has exchange order IDs — this corrects those entries.)
 	for _, leg := range hp.ActiveLegs() {
 		if leg.HasPendingOrder() {
 			h.pendingOrderPos[leg.PendingOrderID] = leg.PositionID
+			h.helmRuntime.TrackOrder(leg.PendingOrderID, h.id.String())
 		}
 	}
 
@@ -151,31 +162,67 @@ func (h *Hand) restorePosition(hp *position.HandPositions, currentPrice decimal.
 	// Pyramid: SL/TP from pos (latest signal levels); non-pyramid: per-leg.
 	if h.pyramid {
 		if pos.StopLoss.IsPositive() || pos.TakeProfit.IsPositive() {
+			var bracketIDs []string
+			if pl := hp.PrimaryLeg(); pl != nil {
+				bracketIDs = pl.ExchangeOrderIDs
+			}
 			h.exitLevels[pos.Symbol] = exitLevel{
-				Side:       pos.Side,
-				StopLoss:   pos.StopLoss,
-				TakeProfit: pos.TakeProfit,
+				Side:             pos.Side,
+				StopLoss:         pos.StopLoss,
+				TakeProfit:       pos.TakeProfit,
+				ExchangeOrderIDs: bracketIDs,
 			}
 		}
 	} else {
 		for _, leg := range hp.ActiveLegs() {
 			if leg.StopLoss.IsPositive() || leg.TakeProfit.IsPositive() {
 				h.exitLevels[leg.Symbol] = exitLevel{
-					Side:       leg.Side,
-					StopLoss:   leg.StopLoss,
-					TakeProfit: leg.TakeProfit,
+					Side:             leg.Side,
+					StopLoss:         leg.StopLoss,
+					TakeProfit:       leg.TakeProfit,
+					ExchangeOrderIDs: leg.ExchangeOrderIDs,
 				}
 			}
+		}
+	}
+
+	// Re-register bracket order IDs in the helm's orderHandMap so fill routing and
+	// HandleExitOrderCanceled work correctly after restart.
+	for _, leg := range hp.ActiveLegs() {
+		for _, id := range leg.ExchangeOrderIDs {
+			h.helmRuntime.TrackOrder(id, h.id.String())
 		}
 	}
 	h.mu.Unlock()
 }
 
-// RestorePnL rebuilds metrics.totalPnL/totalCommission/winCount/lossCount from
-// the JetStream trade log (HELM_TRADES). This is authoritative because the trade
-// log contains entry+exit commission for every closed round-trip.
-// Falls back to poslog events when the trade log is unavailable (nil or empty).
+// RestorePnL rebuilds metrics.totalPnL/totalCommission/winCount/lossCount on startup.
+//
+// Priority:
+//  1. SQL aggregate (PnLSummer) — single query, preferred.
+//  2. JetStream drain (TradeLog.Since) — O(N trades), fallback when PnLSummer is nil.
+//  3. poslog PositionClosed events — last resort when both above are unavailable.
 func (h *Hand) RestorePnL(ctx context.Context, events []poslog.Event) {
+	// Fast path: single SQL aggregate query — no JetStream drain needed.
+	if ps := h.helmRuntime.PnLSummer; ps != nil {
+		totalPnL, totalCommission, wins, losses, err := ps.SumHandPnL(ctx, h.id)
+		if err == nil {
+			h.metrics.mu.Lock()
+			h.metrics.totalPnL = totalPnL
+			h.metrics.totalCommission = totalCommission
+			h.metrics.winCount = wins
+			h.metrics.lossCount = losses
+			h.metrics.mu.Unlock()
+			slog.Info("hand: PnL restored from postgres",
+				"hand_id", h.id,
+				"total_pnl", totalPnL, "total_commission", totalCommission,
+				"wins", wins, "losses", losses,
+			)
+			return
+		}
+		slog.Warn("hand: PnL SQL query failed, falling back to JetStream drain", "hand_id", h.id, "err", err)
+	}
+
 	if tl := h.helmRuntime.TradeLog; tl != nil {
 		trades, err := tl.Since(ctx, h.id.String(), time.Time{})
 		if err == nil && len(trades) > 0 {
@@ -198,7 +245,7 @@ func (h *Hand) RestorePnL(ctx context.Context, events []poslog.Event) {
 			h.metrics.winCount = wins
 			h.metrics.lossCount = losses
 			h.metrics.mu.Unlock()
-			slog.Info("hand: PnL restored from trade log",
+			slog.Info("hand: PnL restored from JetStream trade log",
 				"hand_id", h.id, "trades", len(trades),
 				"total_pnl", totalPnL, "total_commission", totalCommission,
 				"wins", wins, "losses", losses,
@@ -206,7 +253,7 @@ func (h *Hand) RestorePnL(ctx context.Context, events []poslog.Event) {
 			return
 		}
 		if err != nil {
-			slog.Warn("hand: trade log unavailable, falling back to poslog", "hand_id", h.id, "err", err)
+			slog.Warn("hand: JetStream trade log unavailable, falling back to poslog", "hand_id", h.id, "err", err)
 		}
 	}
 

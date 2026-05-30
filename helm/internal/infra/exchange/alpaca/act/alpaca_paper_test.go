@@ -383,10 +383,13 @@ func TestPaper_StreamOrders(t *testing.T) {
 	cx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	events := make(chan exchange.OrderEvent, 8)
-	if err := c.StreamOrders(cx, creds, func(e exchange.OrderEvent) {
-		events <- e
-	}, nil); err != nil {
+	fills := make(chan exchange.WsFillEvent, 8)
+	lifecycle := make(chan exchange.OrderLifecycleEvent, 8)
+	if err := c.StreamOrders(cx, creds,
+		func(e exchange.OrderLifecycleEvent) { lifecycle <- e },
+		func(e exchange.WsFillEvent) { fills <- e },
+		nil,
+	); err != nil {
 		t.Fatalf("StreamOrders: %v", err)
 	}
 	t.Log("order stream started — placing a market order to trigger events...")
@@ -397,9 +400,12 @@ func TestPaper_StreamOrders(t *testing.T) {
 	})
 
 	select {
-	case e := <-events:
-		t.Logf("event received: type=%s orderID=%s  symbol=%s  side=%s  qty=%s @ $%s",
-			e.Type, e.OrderID, e.Symbol, e.Side, e.FilledQty, e.FilledAvg)
+	case e := <-lifecycle:
+		t.Logf("lifecycle event: type=%s orderID=%s  symbol=%s  side=%s",
+			e.Type, e.OrderID, e.Symbol, e.Side)
+	case e := <-fills:
+		t.Logf("fill event: partial=%v orderID=%s  symbol=%s  side=%s  qty=%s @ $%s",
+			e.Partial, e.OrderID, e.Symbol, e.Side, e.FilledQty, e.FilledAvg)
 	case <-cx.Done():
 		t.Log("no event received within 15s")
 	}
@@ -475,17 +481,22 @@ func TestPaper_ListOpenOrders_Reconcile(t *testing.T) {
 	t.Logf("PASS: order absent after cancel (open orders remaining: %d)", len(ordersAfter))
 }
 
-// ── T04 · SubscribeFills ──────────────────────────────────────────────────────
+// ── T04 · StreamOrders (fills) ────────────────────────────────────────────────
 
 func TestPaper_SubscribeFills(t *testing.T) {
 	c, creds := paperClient(t)
 	cx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 
-	fills, err := c.SubscribeFills(cx, creds)
-	if err != nil {
-		t.Fatalf("SubscribeFills: %v", err)
-	}
+	fills := make(chan exchange.WsFillEvent, 64)
+	go func() {
+		_ = c.StreamOrders(cx, creds, nil, func(ev exchange.WsFillEvent) {
+			select {
+			case fills <- ev:
+			case <-cx.Done():
+			}
+		}, nil)
+	}()
 	t.Log("fill stream open — placing market order...")
 
 	time.Sleep(500 * time.Millisecond)
@@ -504,7 +515,7 @@ func TestPaper_SubscribeFills(t *testing.T) {
 	select {
 	case f := <-fills:
 		t.Logf("PASS fill: orderID=%s  symbol=%s  side=%s  qty=%s @ $%s  at=%s",
-			f.OrderID, f.Symbol, f.Side, f.FilledQty, f.FillPrice, f.Timestamp.Format(time.RFC3339))
+			f.OrderID, f.Symbol, f.Side, f.FilledQty, f.FilledAvg, f.Timestamp.Format(time.RFC3339))
 	case <-cx.Done():
 		t.Log("no fill event within 25s (paper may have delay outside market hours)")
 	}
@@ -762,17 +773,22 @@ func TestPaper_ConcurrentOrders(t *testing.T) {
 	}
 }
 
-// TestPaper_FillStreamIntegrity opens SubscribeFills, places 3 market orders
+// TestPaper_FillStreamIntegrity opens a fill stream via StreamOrders, places 3 market orders
 // 100 ms apart, and asserts all 3 FillEvents arrive without drops. Requires market hours.
 func TestPaper_FillStreamIntegrity(t *testing.T) {
 	c, creds := paperClient(t)
 	cx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	fills, err := c.SubscribeFills(cx, creds)
-	if err != nil {
-		t.Fatalf("SubscribeFills: %v", err)
-	}
+	fills := make(chan exchange.WsFillEvent, 64)
+	go func() {
+		_ = c.StreamOrders(cx, creds, nil, func(ev exchange.WsFillEvent) {
+			select {
+			case fills <- ev:
+			case <-cx.Done():
+			}
+		}, nil)
+	}()
 	t.Log("fill stream open — settling 500ms before orders...")
 	time.Sleep(500 * time.Millisecond)
 
@@ -799,7 +815,7 @@ func TestPaper_FillStreamIntegrity(t *testing.T) {
 		case f := <-fills:
 			received++
 			t.Logf("fill %d: orderID=%s  symbol=%s  qty=%s @ $%s",
-				received, f.OrderID, f.Symbol, f.FilledQty, f.FillPrice)
+				received, f.OrderID, f.Symbol, f.FilledQty, f.FilledAvg)
 		case <-deadline:
 			goto done
 		case <-cx.Done():
@@ -1063,7 +1079,7 @@ func TestPaper_CancelAllOrders(t *testing.T) {
 // ── Fill latency distribution ─────────────────────────────────────────────────
 
 // TestPaper_FillLatencyDist places 5 market orders and measures wall-clock
-// latency from PlaceOrder call to FillEvent on SubscribeFills.
+// latency from PlaceOrder call to WsFillEvent via StreamOrders.
 // Skips when market is closed. Prints p50/p95/max.
 func TestPaper_FillLatencyDist(t *testing.T) {
 	c, creds := paperClient(t)
@@ -1076,10 +1092,15 @@ func TestPaper_FillLatencyDist(t *testing.T) {
 	cx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	fills, err := c.SubscribeFills(cx, creds)
-	if err != nil {
-		t.Fatalf("SubscribeFills: %v", err)
-	}
+	fills := make(chan exchange.WsFillEvent, 64)
+	go func() {
+		_ = c.StreamOrders(cx, creds, nil, func(ev exchange.WsFillEvent) {
+			select {
+			case fills <- ev:
+			case <-cx.Done():
+			}
+		}, nil)
+	}()
 	t.Log("fill stream open — settling 500ms...")
 	time.Sleep(500 * time.Millisecond)
 

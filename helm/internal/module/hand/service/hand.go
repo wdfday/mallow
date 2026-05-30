@@ -13,25 +13,28 @@ import (
 
 func (s *Service) Get(id uuid.UUID) (*runtime.HandRef, error) { return s.getOrLoad(id) }
 
-// GetSummary returns the HandSummary for any hand, including terminal ones stored only in DB.
+// GetSummary returns the HandSummary for any hand, including terminal ones.
 func (s *Service) GetSummary(id uuid.UUID) (*domain.HandSummary, error) {
 	s.mu.RLock()
-	bi, ok := s.hands[id]
+	bi, inLive := s.hands[id]
+	term, inTerm := s.terminated[id]
 	s.mu.RUnlock()
-	if ok {
-		s := bi.Summary()
-		return &s, nil
+	if inLive {
+		sum := bi.Summary()
+		return &sum, nil
 	}
-	// Not in memory — may be a terminal hand; read directly from DB.
+	if inTerm {
+		sum := term.SummaryFromDB()
+		return &sum, nil
+	}
+	// Fallback: hand not seen this session (e.g. created before this process started
+	// but not yet loaded). This path is rare after a full HydrateAll.
 	data, err := s.repo.Get(id)
 	if err != nil {
 		return nil, err
 	}
-	if !data.Status.IsTerminal() {
-		return nil, fmt.Errorf("hand %q not found in runtime", id)
-	}
-	s2 := data.SummaryFromDB()
-	return &s2, nil
+	sum := data.SummaryFromDB()
+	return &sum, nil
 }
 
 func (s *Service) GetHand(id uuid.UUID) *runtime.Hand {
@@ -42,25 +45,61 @@ func (s *Service) GetHand(id uuid.UUID) *runtime.Hand {
 	return bi.Runner
 }
 
+// List returns all hands: live runtime hands + terminated (killed/released) from cache.
+// No DB call after startup — both maps are seeded in HydrateAll.
 func (s *Service) List() []domain.HandSummary {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
+	out := make([]domain.HandSummary, 0, len(s.hands)+len(s.terminated))
+	for _, bi := range s.hands {
+		out = append(out, bi.Summary())
+	}
+	for _, data := range s.terminated {
+		out = append(out, data.SummaryFromDB())
+	}
+	s.mu.RUnlock()
+	return out
+}
+
+// ListLive returns only hands currently wired into a HelmRuntime.
+// Terminal (killed/released) and cascade-stopped hands are excluded.
+// Use this for periodic background refreshes where terminals are cached client-side.
+func (s *Service) ListLive() []domain.HandSummary {
+	s.mu.RLock()
 	out := make([]domain.HandSummary, 0, len(s.hands))
 	for _, bi := range s.hands {
 		out = append(out, bi.Summary())
 	}
+	s.mu.RUnlock()
 	return out
 }
 
 func (s *Service) ListByHelm(orchID uuid.UUID) []domain.HandSummary {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	var out []domain.HandSummary
 	for _, bi := range s.hands {
 		if bi.Data.HelmID == orchID {
 			out = append(out, bi.Summary())
 		}
 	}
+	for _, data := range s.terminated {
+		if data.HelmID == orchID {
+			out = append(out, data.SummaryFromDB())
+		}
+	}
+	s.mu.RUnlock()
+	return out
+}
+
+// ListByHelmLive returns only live hands for a given helm.
+func (s *Service) ListByHelmLive(orchID uuid.UUID) []domain.HandSummary {
+	s.mu.RLock()
+	var out []domain.HandSummary
+	for _, bi := range s.hands {
+		if bi.Data.HelmID == orchID {
+			out = append(out, bi.Summary())
+		}
+	}
+	s.mu.RUnlock()
 	return out
 }
 
@@ -193,6 +232,7 @@ func (s *Service) Delete(id uuid.UUID) error {
 	}
 	s.mu.Lock()
 	delete(s.hands, id)
+	delete(s.terminated, id)
 	s.mu.Unlock()
 	slog.Info("hand deleted", "id", id)
 	return nil

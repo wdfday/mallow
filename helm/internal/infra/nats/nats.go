@@ -81,15 +81,6 @@ func NewJetStream(nc *nats.Conn) (nats.JetStreamContext, error) {
 			MaxAge:     7 * 24 * time.Hour,
 			Duplicates: 1 * time.Minute,
 		},
-		// HELM_SNAPSHOTS: portfolio state after every fill (replaces HELM_EQUITY + PORTFOLIO_SNAPSHOTS).
-		// Subjects: helm.snapshot.{helm_id} (helm-level), helm.snapshot.{helm_id}.{hand_id} (hand-level).
-		{
-			Name:       "HELM_SNAPSHOTS",
-			Subjects:   []string{"helm.snapshot.>"},
-			Storage:    nats.FileStorage,
-			MaxAge:     90 * 24 * time.Hour,
-			Duplicates: 5 * time.Minute,
-		},
 		// PORTFOLIO_SYNC: REST sync notifications (was fire-and-forget nc.Publish).
 		// 1 day retention so missed syncs are replayed on reconnect.
 		{
@@ -97,6 +88,17 @@ func NewJetStream(nc *nats.Conn) (nats.JetStreamContext, error) {
 			Subjects: []string{"portfolio.synced.>"},
 			Storage:  nats.MemoryStorage,
 			MaxAge:   24 * time.Hour,
+		},
+		// HELM_EQUITY: periodic helm-level portfolio snapshots (cash, equity, positions).
+		// Written by SnapshotWorker after fill bursts (debounced 500ms) and on a 60s heartbeat.
+		// Drained into equity_snapshots (PostgreSQL) by EquityPersister.
+		// 90 days retention; duplicates window prevents double-insert on persister restart.
+		{
+			Name:       "HELM_EQUITY",
+			Subjects:   []string{"helm.equity.>"},
+			Storage:    nats.FileStorage,
+			MaxAge:     90 * 24 * time.Hour,
+			Duplicates: 5 * time.Minute,
 		},
 	}
 	for _, cfg := range streams {
@@ -107,6 +109,7 @@ func NewJetStream(nc *nats.Conn) (nats.JetStreamContext, error) {
 
 	return js, nil
 }
+
 
 func ensureStream(js nats.JetStreamContext, cfg nats.StreamConfig) error {
 	_, err := js.AddStream(&cfg)

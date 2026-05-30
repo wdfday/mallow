@@ -31,12 +31,9 @@ func (h *NATSHandler) Subscribe(nc *nats.Conn) error {
 		natsapi.SubjHandCreate:  h.create,
 		natsapi.SubjHandUpdate:  h.update,
 		natsapi.SubjHandDelete:  h.delete,
-		natsapi.SubjHandStart:   h.start,
-		natsapi.SubjHandStop:    h.stop,
-		natsapi.SubjHandRestart: h.restart,
-		natsapi.SubjHandPause:   h.pause,
-		natsapi.SubjHandResume:  h.resume,
-		natsapi.SubjHandKill:    h.kill,
+		natsapi.SubjHandStart: h.start,
+		natsapi.SubjHandStop:  h.stop,
+		natsapi.SubjHandKill:  h.kill,
 	}
 	for subj, fn := range routes {
 		sub, err := nc.Subscribe(subj, fn)
@@ -227,32 +224,6 @@ func (h *NATSHandler) stop(msg *nats.Msg) {
 	_ = msg.Respond(natsapi.ReplyOK(handDto.HandActionResp{Status: "stopped", ID: id.String()}))
 }
 
-func (h *NATSHandler) pause(msg *nats.Msg) {
-	id, err := parseUUID(msg.Data)
-	if err != nil {
-		_ = msg.Respond(natsapi.ReplyErr("invalid json or id"))
-		return
-	}
-	if err := h.handMgr.Pause(id); err != nil {
-		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
-		return
-	}
-	_ = msg.Respond(natsapi.ReplyOK(handDto.HandActionResp{Status: "paused", ID: id.String()}))
-}
-
-func (h *NATSHandler) resume(msg *nats.Msg) {
-	id, err := parseUUID(msg.Data)
-	if err != nil {
-		_ = msg.Respond(natsapi.ReplyErr("invalid json or id"))
-		return
-	}
-	if err := h.handMgr.Resume(id); err != nil {
-		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
-		return
-	}
-	_ = msg.Respond(natsapi.ReplyOK(handDto.HandActionResp{Status: "running", ID: id.String()}))
-}
-
 func (h *NATSHandler) kill(msg *nats.Msg) {
 	caller := natsapi.ParseCaller(msg.Data)
 	id, err := parseUUID(msg.Data)
@@ -266,21 +237,6 @@ func (h *NATSHandler) kill(msg *nats.Msg) {
 	}
 	slog.Warn("nats: hand killed", "id", id, "caller_svc", caller.CallerSvc, "caller_user_id", caller.CallerUserID)
 	_ = msg.Respond(natsapi.ReplyOK(handDto.HandActionResp{Status: "stopped", ID: id.String()}))
-}
-
-func (h *NATSHandler) restart(msg *nats.Msg) {
-	caller := natsapi.ParseCaller(msg.Data)
-	id, err := parseUUID(msg.Data)
-	if err != nil {
-		_ = msg.Respond(natsapi.ReplyErr("invalid json or id"))
-		return
-	}
-	if err := h.handMgr.Restart(id); err != nil {
-		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
-		return
-	}
-	slog.Info("nats: hand restarted", "id", id, "caller_svc", caller.CallerSvc, "caller_user_id", caller.CallerUserID)
-	_ = msg.Respond(natsapi.ReplyOK(handDto.HandActionResp{Status: "running", ID: id.String()}))
 }
 
 func parseUUID(data []byte) (uuid.UUID, error) {

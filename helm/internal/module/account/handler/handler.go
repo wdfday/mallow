@@ -15,6 +15,7 @@ import (
 	"mallow/helm/internal/infra/poslog"
 	accountdto "mallow/helm/internal/module/account/dto"
 	accountservice "mallow/helm/internal/module/account/service"
+	analyticsdomain "mallow/helm/internal/module/analytics/domain"
 	helmdto "mallow/helm/internal/module/helm/dto"
 	"mallow/helm/internal/runtime"
 	"mallow/helm/internal/runtime/perf"
@@ -29,9 +30,9 @@ type Handler struct {
 	handMgr     HandLister
 	reg         *runtime.Registry
 	nc          *nats.Conn
-	fillLog     *perflog.FillLog
-	snapshotLog perf.SnapshotLog
-	posLog      poslog.Log
+	fillLog      *perflog.FillLog
+	snapshotReader perflog.SnapshotReader
+	posLog       poslog.Log
 	logger      *slog.Logger
 }
 
@@ -43,20 +44,20 @@ func NewHandler(
 	reg *runtime.Registry,
 	nc *nats.Conn,
 	fillLog *perflog.FillLog,
-	snapshotLog perf.SnapshotLog,
+	snapshotReader perflog.SnapshotReader,
 	posLog poslog.Log,
 	logger *slog.Logger,
 ) *Handler {
 	return &Handler{
-		service:     service,
-		helmSvc:     helmSvc,
-		handMgr:     handMgr,
-		reg:         reg,
-		nc:          nc,
-		fillLog:     fillLog,
-		snapshotLog: snapshotLog,
-		posLog:      posLog,
-		logger:      logger.With("component", "account.handler"),
+		service:        service,
+		helmSvc:        helmSvc,
+		handMgr:        handMgr,
+		reg:            reg,
+		nc:             nc,
+		fillLog:        fillLog,
+		snapshotReader: snapshotReader,
+		posLog:         posLog,
+		logger:         logger.With("component", "account.handler"),
 	}
 }
 
@@ -338,12 +339,12 @@ func (h *Handler) fills(c *gin.Context) {
 
 // snapshots godoc
 // @Summary List portfolio snapshots for an account
-// @Description Time-cursor pagination over PORTFOLIO_SNAPSHOTS JetStream stream.
+// @Description Cursor-based pagination over equity_snapshots (PostgreSQL). Helm-level snapshots only.
 // @Tags accounts
 // @Security BearerAuth
 // @Produce json
 // @Param id path string true "Account ID"
-// @Param after query string false "RFC3339 cursor (exclusive); omit for all"
+// @Param before query string false "RFC3339 cursor (exclusive); omit for newest-first"
 // @Param limit query int false "Page size" default(100)
 // @Success 200 {object} shared.SuccessResponse[helmdto.SnapshotPageResp]
 // @Failure 400 {object} shared.ErrorResponse
@@ -356,44 +357,45 @@ func (h *Handler) snapshots(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if h.snapshotLog == nil {
+	if h.snapshotReader == nil {
 		shared.RespondWithError(c, http.StatusServiceUnavailable, "portfolio log unavailable")
 		return
 	}
 	_, limit := parsePage(c)
-	page := perf.Page{Limit: limit}
-	if afterStr := c.Query("after"); afterStr != "" {
-		if t, tErr := time.Parse(time.RFC3339, afterStr); tErr == nil {
-			page.After = t
+	var before time.Time
+	if beforeStr := c.Query("before"); beforeStr != "" {
+		if t, tErr := time.Parse(time.RFC3339, beforeStr); tErr == nil {
+			before = t
 		}
 	}
-	result, err := h.snapshotLog.Query(c.Request.Context(), helmID.String(), "", page)
+	rows, err := h.snapshotReader.List(c.Request.Context(), helmID, nil, before, limit)
 	if err != nil {
 		shared.RespondWithError(c, http.StatusInternalServerError, err.Error())
 		return
 	}
 	resp := helmdto.SnapshotPageResp{
-		Snapshots: make([]helmdto.SnapshotResp, 0, len(result.Snapshots)),
-		HasMore:   result.HasMore,
+		Snapshots: make([]helmdto.SnapshotResp, 0, len(rows)),
+		HasMore:   len(rows) == limit,
 		Limit:     limit,
 	}
-	if result.HasMore {
-		resp.Next = result.Next.UTC().Format(time.RFC3339)
+	if resp.HasMore && len(rows) > 0 {
+		resp.Next = rows[len(rows)-1].TS.UTC().Format(time.RFC3339)
 	}
-	for _, s := range result.Snapshots {
-		resp.Snapshots = append(resp.Snapshots, helmdto.SnapshotToResp(s))
+	for _, r := range rows {
+		resp.Snapshots = append(resp.Snapshots, helmdto.SnapshotRowToResp(r))
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Snapshots retrieved successfully", resp)
 }
 
 // equity godoc
 // @Summary Equity curve for an account
-// @Description Time-cursor pagination over HELM_EQUITY JetStream stream, fan-out across all hands under the account's helm.
+// @Description Forward-filled equity curve bucketed by resolution, from equity_snapshots (PostgreSQL).
 // @Tags accounts
 // @Security BearerAuth
 // @Produce json
 // @Param id path string true "Account ID"
-// @Param after query string false "RFC3339 cursor (exclusive); omit for all"
+// @Param after query string false "RFC3339 start (inclusive); default 30 days ago"
+// @Param before query string false "RFC3339 end (inclusive); default now"
 // @Param limit query int false "Page size" default(200)
 // @Success 200 {object} shared.SuccessResponse[helmdto.EquityPageResp]
 // @Failure 400 {object} shared.ErrorResponse
@@ -406,41 +408,39 @@ func (h *Handler) equity(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if h.snapshotLog == nil {
+	if h.snapshotReader == nil {
 		shared.RespondWithError(c, http.StatusServiceUnavailable, "equity log unavailable")
 		return
 	}
 	_, limit := parsePage(c)
-	page := perf.Page{Limit: limit}
+	var after, before time.Time
 	if afterStr := c.Query("after"); afterStr != "" {
 		if t, tErr := time.Parse(time.RFC3339, afterStr); tErr == nil {
-			page.After = t
+			after = t
 		}
 	}
-	hands := h.handMgr.ListByHelm(helmID)
-	var all []perf.Snapshot
-	for _, hs := range hands {
-		result, qErr := h.snapshotLog.Query(c.Request.Context(), helmID.String(), hs.ID.String(), page)
-		if qErr == nil {
-			all = append(all, result.Snapshots...)
+	if beforeStr := c.Query("before"); beforeStr != "" {
+		if t, tErr := time.Parse(time.RFC3339, beforeStr); tErr == nil {
+			before = t
 		}
 	}
-	sort.Slice(all, func(i, j int) bool { return all[i].TS.Before(all[j].TS) })
-	hasMore := len(all) > limit
-	if hasMore {
-		all = all[:limit]
+	res := analyticsdomain.Resolution(c.DefaultQuery("resolution", string(analyticsdomain.Res1h)))
+	points, err := h.snapshotReader.EquityCurve(c.Request.Context(), helmID, nil, after, before, res)
+	if err != nil {
+		shared.RespondWithError(c, http.StatusInternalServerError, err.Error())
+		return
 	}
+	hasMore := len(points) == limit
 	resp := helmdto.EquityPageResp{
-		Points:  make([]helmdto.EquityPointResp, 0, len(all)),
+		Points:  make([]helmdto.EquityPointResp, 0, len(points)),
 		HasMore: hasMore,
 		Limit:   limit,
 	}
-	if hasMore && len(all) > 0 {
-		resp.Next = all[len(all)-1].TS.UTC().Format(time.RFC3339)
+	if hasMore && len(points) > 0 {
+		resp.Next = points[len(points)-1].TS.UTC().Format(time.RFC3339)
 	}
-	for _, p := range all {
+	for _, p := range points {
 		resp.Points = append(resp.Points, helmdto.EquityPointResp{
-			HandID:        p.HandID,
 			TS:            p.TS,
 			Equity:        p.Equity.InexactFloat64(),
 			Cash:          p.Cash.InexactFloat64(),

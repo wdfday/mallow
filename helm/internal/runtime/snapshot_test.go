@@ -1,17 +1,12 @@
 package runtime_test
 
-// snapshot_test.go — verifies the end-to-end snapshot logging flow:
-//   signal delivered → order placed → order filled →
-//     helm-level Snapshot appended (cash + equity + position)
-//     hand-level Snapshot appended (legs + equity from allocated cap)
+// snapshot_test.go — verifies BuildSnapshot returns correct helm-level state after fills.
 //
 // No NATS, no real exchange — all fakes.
 //
 // go test -v -run TestSnapshot ./internal/runtime/ -count=1
 
 import (
-	"context"
-	"sync"
 	"testing"
 	"time"
 
@@ -26,56 +21,11 @@ import (
 	"mallow/helm/internal/runtime/core/risk"
 	"mallow/helm/internal/runtime/core/strategy"
 	"mallow/helm/internal/runtime/core/tactics"
-	"mallow/helm/internal/runtime/perf"
 )
-
-// ── mockSnapshotLog ────────────────────────────────────────────────────────────
-
-type mockSnapshotLog struct {
-	mu  sync.Mutex
-	got []perf.Snapshot
-}
-
-func (m *mockSnapshotLog) Append(_ context.Context, s perf.Snapshot) error {
-	m.mu.Lock()
-	m.got = append(m.got, s)
-	m.mu.Unlock()
-	return nil
-}
-
-func (m *mockSnapshotLog) Query(_ context.Context, _, _ string, _ perf.Page) (perf.SnapshotPage, error) {
-	return perf.SnapshotPage{}, nil
-}
-
-func (m *mockSnapshotLog) Latest(_ context.Context, _, _ string, _ int) ([]perf.Snapshot, error) {
-	return nil, nil
-}
-
-func (m *mockSnapshotLog) snapshots() []perf.Snapshot {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]perf.Snapshot, len(m.got))
-	copy(out, m.got)
-	return out
-}
-
-func (m *mockSnapshotLog) waitN(n int, timeout time.Duration) bool {
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		m.mu.Lock()
-		got := len(m.got)
-		m.mu.Unlock()
-		if got >= n {
-			return true
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-	return false
-}
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-func buildSnapshotRuntime(ex *simExchange, capital float64, snapLog perf.SnapshotLog) *runtime.HelmRuntime {
+func buildSnapshotRuntime(ex *simExchange, capital float64) *runtime.HelmRuntime {
 	pf := portfolio.New(decimal.NewFromFloat(capital))
 	cfg := risk.Config{MaxPositions: 10, DailyLossLimitPct: 0.5, MaxDrawdownPct: 0.5}
 	rm := risk.New(cfg, pf)
@@ -84,12 +34,11 @@ func buildSnapshotRuntime(ex *simExchange, capital float64, snapLog perf.Snapsho
 		"sim", pf, rm, ex, exchange.Credentials{}, nil, time.Now(),
 	)
 	rm.SetUnitCounter(rt.OpenUnitCount)
-	rt.SnapshotLog = snapLog
 	return rt
 }
 
 // addAllocatedHand creates a Hand with FixedQty + an allocated capital budget,
-// so handSnapshot() computes meaningful cash and equity values.
+// so hand-level position sizing computes meaningful values.
 func addAllocatedHand(rt *runtime.HelmRuntime, symbol string, qty, allocatedCap float64) *runtime.Hand {
 	strat := strategy.NewSignalFollower(0.0)
 	tact := tactics.New(tactics.SizingConfig{
@@ -112,34 +61,29 @@ func addAllocatedHand(rt *runtime.HelmRuntime, symbol string, qty, allocatedCap 
 
 // ── tests ─────────────────────────────────────────────────────────────────────
 
-// TestSnapshot_SignalToFill_HelmAndHandSnapshot verifies that after a signal is
-// delivered and the order fills, both a helm-level and a hand-level snapshot are
-// appended to SnapshotLog with the correct positions and equity values.
-func TestSnapshot_SignalToFill_HelmAndHandSnapshot(t *testing.T) {
+// TestSnapshot_SignalToFill verifies that after a fill, BuildSnapshot returns
+// a helm-level snapshot with the correct positions, cash, and equity.
+func TestSnapshot_SignalToFill(t *testing.T) {
 	const (
-		symbol       = "BTCUSDT"
-		fillPrice    = 50_000.0
-		orderQty     = 0.01 // BTC
-		capital      = 100_000.0
-		allocatedCap = 5_000.0 // hand has its own budget
+		symbol    = "BTCUSDT"
+		fillPrice = 50_000.0
+		orderQty  = 0.01 // BTC
+		capital   = 100_000.0
+		allocCap  = 5_000.0
 	)
 
-	snapLog := &mockSnapshotLog{}
 	ex := newSim(fillPrice)
-	rt := buildSnapshotRuntime(ex, capital, snapLog)
+	rt := buildSnapshotRuntime(ex, capital)
 	defer rt.Stop()
 
-	// Seed price so ProcessTrade can size the order.
 	rt.UpdatePrice(symbol, decimal.NewFromFloat(fillPrice))
 
-	hand := addAllocatedHand(rt, symbol, orderQty, allocatedCap)
+	hand := addAllocatedHand(rt, symbol, orderQty, allocCap)
 	hand.Start()
 	defer hand.Stop()
 
-	// Deliver a long entry signal.
 	hand.DeliverSignal(longSignalFor(symbol))
 
-	// Wait for fill to appear in activity ring.
 	filled, ok := waitCode(hand, runtime.CodeOrderFilled, 2*time.Second)
 	if !ok {
 		t.Fatal("timeout: CodeOrderFilled did not appear within 2s")
@@ -147,34 +91,22 @@ func TestSnapshot_SignalToFill_HelmAndHandSnapshot(t *testing.T) {
 	t.Logf("fill: order_id=%s symbol=%s side=%s qty=%s price=%s",
 		filled.OrderID, filled.Symbol, filled.Side, filled.Qty, filled.Price)
 
-	// applyFill publishes snapshots via goroutines — give them time to land.
-	if !snapLog.waitN(2, 2*time.Second) {
-		t.Fatalf("timeout: expected ≥2 snapshots (helm + hand), got %d", len(snapLog.snapshots()))
+	// BuildSnapshot reads the in-memory portfolio state — no async needed.
+	snap := rt.BuildSnapshot(time.Now())
+	if snap == nil {
+		t.Fatal("BuildSnapshot returned nil")
+	}
+	t.Logf("helm snapshot: cash=%s equity=%s positions=%d", snap.Cash, snap.Equity, len(snap.Positions))
+
+	if snap.HelmID != rt.HelmID.String() {
+		t.Errorf("snapshot HelmID mismatch: want %s, got %s", rt.HelmID, snap.HelmID)
 	}
 
-	snaps := snapLog.snapshots()
-	t.Logf("total snapshots received: %d", len(snaps))
-
-	var helmSnap, handSnap *perf.Snapshot
-	for i := range snaps {
-		s := &snaps[i]
-		if s.HandID == "" {
-			helmSnap = s
-		} else if s.HandID == hand.ID().String() {
-			handSnap = s
-		}
-	}
-
-	// ── helm-level snapshot ───────────────────────────────────────────────────
-	if helmSnap == nil {
-		t.Fatal("no helm-level snapshot (HandID='') found")
-	}
-	t.Logf("helm snapshot: cash=%s equity=%s positions=%d", helmSnap.Cash, helmSnap.Equity, len(helmSnap.Positions))
-
-	if len(helmSnap.Positions) == 0 {
+	// Should have an open position.
+	if len(snap.Positions) == 0 {
 		t.Error("helm snapshot: expected ≥1 position after fill, got 0")
 	} else {
-		pos := helmSnap.Positions[0]
+		pos := snap.Positions[0]
 		if pos.Symbol != symbol {
 			t.Errorf("helm snapshot position symbol: want %s, got %s", symbol, pos.Symbol)
 		}
@@ -188,115 +120,64 @@ func TestSnapshot_SignalToFill_HelmAndHandSnapshot(t *testing.T) {
 	// Cash decreases by the cost of the position (qty × price).
 	cost := decimal.NewFromFloat(orderQty * fillPrice)
 	expectedCash := decimal.NewFromFloat(capital).Sub(cost)
-	if !helmSnap.Cash.Equal(expectedCash) {
-		t.Errorf("helm snapshot cash: want %s, got %s", expectedCash, helmSnap.Cash)
+	if !snap.Cash.Equal(expectedCash) {
+		t.Errorf("helm snapshot cash: want %s, got %s", expectedCash, snap.Cash)
 	}
 
-	// Equity ≈ cash + position value (mark-to-market at fill price).
-	expectedEquity := decimal.NewFromFloat(capital) // flat PnL at fill price
-	if !helmSnap.Equity.Equal(expectedEquity) {
-		t.Errorf("helm snapshot equity: want %s (unchanged at fill price), got %s", expectedEquity, helmSnap.Equity)
+	// Equity ≈ capital (flat PnL at fill price: cash + market value = initial capital).
+	expectedEquity := decimal.NewFromFloat(capital)
+	if !snap.Equity.Equal(expectedEquity) {
+		t.Errorf("helm snapshot equity: want %s (unchanged at fill price), got %s", expectedEquity, snap.Equity)
 	}
 
-	// ── hand-level snapshot ───────────────────────────────────────────────────
-	if handSnap == nil {
-		t.Fatal("no hand-level snapshot found")
-	}
-	t.Logf("hand snapshot: cash=%s equity=%s positions=%d", handSnap.Cash, handSnap.Equity, len(handSnap.Positions))
-
-	if len(handSnap.Positions) == 0 {
-		t.Error("hand snapshot: expected ≥1 position after fill, got 0")
-	} else {
-		pos := handSnap.Positions[0]
-		if pos.Symbol != symbol {
-			t.Errorf("hand snapshot position symbol: want %s, got %s", symbol, pos.Symbol)
-		}
-		t.Logf("hand position: symbol=%s qty=%s avg_price=%s", pos.Symbol, pos.Qty, pos.AvgPrice)
-	}
-
-	// Hand equity = allocatedCap + closedPnL (no closes yet → closedPnL=0).
-	expectedHandEquity := decimal.NewFromFloat(allocatedCap)
-	if !handSnap.Equity.Equal(expectedHandEquity) {
-		t.Errorf("hand snapshot equity: want %s (allocated cap, no closed trades), got %s",
-			expectedHandEquity, handSnap.Equity)
-	}
-
-	// Hand cash = equity - invested (invested = qty × fillPrice).
-	invested := decimal.NewFromFloat(orderQty * fillPrice)
-	expectedHandCash := expectedHandEquity.Sub(invested)
-	if !handSnap.Cash.Equal(expectedHandCash) {
-		t.Errorf("hand snapshot cash: want %s (equity - invested), got %s",
-			expectedHandCash, handSnap.Cash)
-	}
+	// MarkSnapshotDirty should set the flag (picked up by SnapshotWorker within 500ms).
+	rt.MarkSnapshotDirty()
 }
 
 // TestSnapshot_RoundTrip_EntryThenExit verifies that after an entry + exit fill,
-// both helm and hand snapshots reflect the closed position:
-// helm positions are empty, hand cash equals allocatedCap ± PnL.
+// the helm snapshot shows no open positions and equity is approximately restored.
 func TestSnapshot_RoundTrip_EntryThenExit(t *testing.T) {
 	const (
-		symbol       = "BTCUSDT"
-		fillPrice    = 50_000.0
-		orderQty     = 0.01
-		capital      = 100_000.0
-		allocatedCap = 5_000.0
+		symbol    = "BTCUSDT"
+		fillPrice = 50_000.0
+		orderQty  = 0.01
+		capital   = 100_000.0
+		allocCap  = 5_000.0
 	)
 
-	snapLog := &mockSnapshotLog{}
 	ex := newSim(fillPrice)
-	rt := buildSnapshotRuntime(ex, capital, snapLog)
+	rt := buildSnapshotRuntime(ex, capital)
 	defer rt.Stop()
 
-	// Seed price so ProcessTrade can size the order.
 	rt.UpdatePrice(symbol, decimal.NewFromFloat(fillPrice))
 
-	hand := addAllocatedHand(rt, symbol, orderQty, allocatedCap)
+	hand := addAllocatedHand(rt, symbol, orderQty, allocCap)
 	hand.Start()
 	defer hand.Stop()
 
-	// Entry signal.
+	// Entry.
 	hand.DeliverSignal(longSignalFor(symbol))
 	if _, ok := waitCode(hand, runtime.CodeOrderFilled, 2*time.Second); !ok {
 		t.Fatal("timeout: entry fill not observed")
 	}
 
-	// Exit signal (urgent).
+	// Exit.
 	hand.DeliverSignal(exitSig(symbol))
-	// Wait for second fill.
 	waitCode(hand, runtime.CodeOrderFilled, 3*time.Second)
 
-	// Wait for ≥4 snapshots (entry helm + entry hand + exit helm + exit hand).
-	if !snapLog.waitN(4, 3*time.Second) {
-		t.Logf("warning: expected ≥4 snapshots, got %d — continuing with partial check", len(snapLog.snapshots()))
+	snap := rt.BuildSnapshot(time.Now())
+	if snap == nil {
+		t.Fatal("BuildSnapshot returned nil after exit")
 	}
+	t.Logf("helm snapshot after exit: cash=%s equity=%s positions=%d",
+		snap.Cash, snap.Equity, len(snap.Positions))
 
-	snaps := snapLog.snapshots()
-	t.Logf("total snapshots: %d", len(snaps))
-	for i, s := range snaps {
-		handLabel := "helm"
-		if s.HandID != "" {
-			handLabel = "hand"
-		}
-		t.Logf("  [%d] %s ts=%s cash=%s equity=%s positions=%d",
-			i, handLabel, s.TS.Format("15:04:05.000"), s.Cash, s.Equity, len(s.Positions))
+	if len(snap.Positions) != 0 {
+		t.Errorf("after exit: helm snapshot positions: want 0, got %d", len(snap.Positions))
 	}
-
-	// After close: the last helm snapshot should have no positions.
-	var lastHelmSnap *perf.Snapshot
-	for i := range snaps {
-		if snaps[i].HandID == "" {
-			lastHelmSnap = &snaps[i]
-		}
-	}
-	if lastHelmSnap == nil {
-		t.Fatal("no helm snapshot found")
-	}
-	if len(lastHelmSnap.Positions) != 0 {
-		t.Errorf("after exit: helm snapshot positions: want 0, got %d", len(lastHelmSnap.Positions))
-	}
-	// Equity should still be ~capital (buy and sell at same price → flat PnL).
-	if !lastHelmSnap.Equity.Equal(decimal.NewFromFloat(capital)) {
-		t.Logf("helm equity after round-trip: %s (expected ~%v)", lastHelmSnap.Equity, capital)
+	// Equity should be ~capital (buy and sell at same price → flat PnL).
+	if !snap.Equity.Equal(decimal.NewFromFloat(capital)) {
+		t.Logf("helm equity after round-trip: %s (expected ~%v)", snap.Equity, capital)
 	}
 }
 
@@ -306,39 +187,37 @@ func TestSnapshot_RoundTrip_EntryThenExit(t *testing.T) {
 //   - Manual trades (fills with no Hand ID) do affect AvailableCash.
 func TestAvailableCash(t *testing.T) {
 	const (
-		symbol       = "BTCUSDT"
-		fillPrice    = 50_000.0
-		orderQty     = 0.01 // $500 cost
-		capital      = 10_000.0
-		allocatedCap = 3_000.0
+		symbol    = "BTCUSDT"
+		fillPrice = 50_000.0
+		orderQty  = 0.01 // $500 cost
+		capital   = 10_000.0
+		allocCap  = 3_000.0
 	)
 
 	ex := newSim(fillPrice)
-	rt := buildSnapshotRuntime(ex, capital, &mockSnapshotLog{})
+	rt := buildSnapshotRuntime(ex, capital)
 	defer rt.Stop()
 
-	// Initial State: total cash = 10,000, no hands
-	// Available cash should equal total cash since there are no active hands.
+	// Initial State: total cash = 10,000, no hands.
 	if !rt.AvailableCash().Equal(decimal.NewFromFloat(capital)) {
 		t.Errorf("expected available cash %f, got %s", capital, rt.AvailableCash())
 	}
 
-	// Seed price so ProcessTrade can size the order.
 	rt.UpdatePrice(symbol, decimal.NewFromFloat(fillPrice))
 
 	// Add hand with allocated capital: 3,000
 	// Available cash should be 10,000 - 3,000 = 7,000
-	hand := addAllocatedHand(rt, symbol, orderQty, allocatedCap)
+	hand := addAllocatedHand(rt, symbol, orderQty, allocCap)
 	hand.Start()
 	defer hand.Stop()
 
-	expectedAvailable := decimal.NewFromFloat(capital - allocatedCap)
+	expectedAvailable := decimal.NewFromFloat(capital - allocCap)
 	if !rt.AvailableCash().Equal(expectedAvailable) {
 		t.Errorf("expected available cash after allocation %s, got %s", expectedAvailable, rt.AvailableCash())
 	}
 
 	// Deliver a hand trade entry signal.
-	// This will buy BTC, decreasing total cash by $500 (to 9500), but hand deployed increases to $500.
+	// buy BTC: total cash decreases by $500 (to 9500), hand deployed = 500
 	// hand logical cash = allocated (3000) + PnL (0) - deployed (500) = 2500
 	// available cash = total cash (9500) - hand logical cash (2500) = 7000
 	hand.DeliverSignal(longSignalFor(symbol))
@@ -347,13 +226,12 @@ func TestAvailableCash(t *testing.T) {
 	}
 
 	if !rt.AvailableCash().Equal(expectedAvailable) {
-		t.Errorf("expected available cash after hand trade fill to remain %s, got %s", expectedAvailable, rt.AvailableCash())
+		t.Errorf("expected available cash after hand trade fill to remain %s, got %s",
+			expectedAvailable, rt.AvailableCash())
 	}
 
 	// Deliver a manual trade fill (no HandID).
-	// This simulates a manual buy order of $1000 filled.
-	// Total cash should decrease by 1000 to 8500.
-	// Since hand deployed capital is still 500, hand logical cash is still 2500.
+	// Manual buy of $1000: total cash decreases to 8500.
 	// available cash = total cash (8500) - hand logical cash (2500) = 6000
 	rt.ReportFill(helmdomain.FillReport{
 		HandID:    "", // manual
@@ -368,19 +246,16 @@ func TestAvailableCash(t *testing.T) {
 
 	expectedAvailableManual := expectedAvailable.Sub(decimal.NewFromFloat(1000))
 	if !rt.AvailableCash().Equal(expectedAvailableManual) {
-		t.Errorf("expected available cash after manual trade fill %s, got %s", expectedAvailableManual, rt.AvailableCash())
+		t.Errorf("expected available cash after manual trade fill %s, got %s",
+			expectedAvailableManual, rt.AvailableCash())
 	}
 
-	// Stop & Release / Kill the hand.
-	// Removing the hand should reclaim its remaining budget.
-	// The hand had 3000 allocated, 0 PnL, and 500 deployed. So logical cash is 2500.
-	// When killed, it is evicted from memory.
+	// Remove the hand — reclaims its allocated budget.
+	// Total cash = 8500. No active hands → available = total.
 	rt.RemoveHand(hand.ID().String())
 
-	// Once the hand is removed, the general pool cash should be the total cash minus any other active hands (0).
-	// Total cash is currently 8500. So available cash should be 8500.
-	// Note that since we manually added a fill, the position is not managed by any active hand, so it's manual.
 	if !rt.AvailableCash().Equal(rt.Cash()) {
-		t.Errorf("expected available cash after hand kill to equal total cash %s, got %s", rt.Cash(), rt.AvailableCash())
+		t.Errorf("expected available cash after hand removal to equal total cash %s, got %s",
+			rt.Cash(), rt.AvailableCash())
 	}
 }

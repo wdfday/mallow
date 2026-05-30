@@ -128,8 +128,12 @@ func (t *Tactician) size(intent strategy.Intent, ctx MarketContext) decimal.Deci
 		qty = unit.Div(ctx.Price)
 
 	default: // fixed_fractional
-		// Scale unit capital by signal confidence.
-		alloc := unit.Mul(decimal.NewFromFloat(intent.Confidence))
+		// Scale unit capital by signal confidence, unless StrengthSizing is off.
+		confidence := intent.Confidence
+		if !t.sizing.StrengthSizing {
+			confidence = 1.0
+		}
+		alloc := unit.Mul(decimal.NewFromFloat(confidence))
 		qty = alloc.Div(ctx.Price)
 	}
 

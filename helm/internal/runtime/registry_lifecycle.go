@@ -14,8 +14,9 @@ import (
 )
 
 // Spawn creates and registers a HelmRuntime for the given config.
-// exchCfg and capital are transient — sourced from broker module in helm, never persisted.
-func (r *Registry) Spawn(cfg *helmdomain.Helm, exchCfg helmdomain.ExchangeConfig, capital decimal.Decimal) error {
+// exchCfg is transient — sourced from the broker module, never persisted.
+// Initial capital starts at zero and is updated on the first portfolio sync.
+func (r *Registry) Spawn(cfg *helmdomain.Helm, exchCfg helmdomain.ExchangeConfig) error {
 	r.mu.RLock()
 	_, exists := r.helmRuntimes[cfg.ID]
 	r.mu.RUnlock()
@@ -29,7 +30,7 @@ func (r *Registry) Spawn(cfg *helmdomain.Helm, exchCfg helmdomain.ExchangeConfig
 		return fmt.Errorf("registry: create exchange for %q: %w", cfg.ID, err)
 	}
 
-	pf := portfolio.New(capital)
+	pf := portfolio.New(decimal.Zero)
 	riskCfg := risk.Config{
 		MaxPositions:      cfg.Portfolio.MaxPositions,
 		DailyLossLimitPct: cfg.Risk.DailyLossLimitPct,
@@ -80,8 +81,9 @@ func (r *Registry) Spawn(cfg *helmdomain.Helm, exchCfg helmdomain.ExchangeConfig
 
 	r.mu.RLock()
 	rt.PosLog = r.posLog
-	rt.SnapshotLog = r.snapshotLog
 	rt.TradeLog = r.tradeLog
+	rt.PnLSummer = r.pnlSummer
+	rt.syncStore = r.syncStore
 	rt.SetEventConn(r.nc, r.js)
 	r.mu.RUnlock()
 
@@ -98,21 +100,36 @@ func (r *Registry) Spawn(cfg *helmdomain.Helm, exchCfg helmdomain.ExchangeConfig
 	r.mu.Lock()
 	r.helmRuntimes[cfg.ID] = rt
 	ctx := r.runCtx
-	nc := r.nc
 	r.mu.Unlock()
 
 	slog.Info("runtime: spawned", "helm_id", cfg.ID, "account_id", cfg.AccountID, "broker", brokerType)
 
 	// If the app is already running (SetRuntime was called), start fill streaming immediately
 	// so hot-plugged helms (from accountLinked events) get WS fills right away.
-	if ctx != nil && nc != nil {
-		r.startFillStream(ctx, nc, rt)
+	if ctx != nil {
+		rt.StartFillStreaming(ctx)
 	}
 	return nil
 }
 
 // Teardown stops and removes the HelmRuntime for the given helm.
 // Returns hand IDs that were registered so the caller can stop them.
+// RotateCreds updates the credentials of a running HelmRuntime in-place and
+// reconnects the WS order stream. Running hands are not interrupted — REST calls
+// (PlaceOrder, GetOrder) pick up new credentials immediately; the WS stream
+// reconnects transparently. REST poll is the fill fallback during the brief gap.
+func (r *Registry) RotateCreds(id uuid.UUID, newCreds exchange.Credentials) {
+	r.mu.RLock()
+	rt, ok := r.helmRuntimes[id]
+	appCtx := r.runCtx
+	r.mu.RUnlock()
+	if !ok {
+		slog.Warn("rotate creds: runtime not found", "helm_id", id)
+		return
+	}
+	rt.RotateFillStream(appCtx, newCreds)
+}
+
 func (r *Registry) Teardown(id uuid.UUID) []string {
 	r.mu.Lock()
 	rt, ok := r.helmRuntimes[id]

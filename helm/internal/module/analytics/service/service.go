@@ -23,6 +23,7 @@ import (
 	"mallow/helm/internal/infra/perflog"
 	"mallow/helm/internal/infra/tradelog"
 	"mallow/helm/internal/module/analytics/domain"
+	"mallow/helm/internal/readmodel"
 )
 
 // Service is the read-only analytics API. Handlers call here instead of
@@ -50,7 +51,7 @@ func New(trades tradelog.Log, snapshots perflog.SnapshotReader, stats StatsRunne
 
 // ListTradesResult bundles trade rows with response Metadata.
 type ListTradesResult struct {
-	Trades   []tradelog.TradeRecord
+	Trades   []readmodel.TradeRecord
 	HasMore  bool
 	Next     string
 	Metadata domain.Metadata
@@ -74,7 +75,7 @@ func (s *Service) ListTrades(ctx context.Context, p ListTradesParams) (*ListTrad
 		limit = 100
 	}
 	period := p.Period.Resolve(time.Now().UTC())
-	filter := tradelog.Filter{
+	filter := readmodel.TradeFilter{
 		UserID: p.Scope.UserID,
 		HelmID: p.Scope.HelmID,
 		HandID: p.Scope.HandID,
@@ -166,7 +167,7 @@ type ListSnapshotsParams struct {
 
 // ListSnapshotsResult bundles raw snapshot rows with response Metadata.
 type ListSnapshotsResult struct {
-	Snapshots []perflog.SnapshotRow
+	Snapshots []readmodel.SnapshotRow
 	HasMore   bool
 	Next      string
 	Metadata  domain.Metadata

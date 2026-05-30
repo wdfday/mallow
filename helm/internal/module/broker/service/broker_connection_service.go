@@ -368,6 +368,86 @@ func (s *brokerConnectionService) Update(ctx context.Context, id, userID uuid.UU
 	return conn, nil
 }
 
+// RotateKey validates new credentials against the broker, replaces the stored
+// key/secret/passphrase, sets status to active, and respawns the helm runtime.
+func (s *brokerConnectionService) RotateKey(ctx context.Context, id, userID uuid.UUID, req *RotateKeyRequest) (*domain.BrokerConnection, error) {
+	conn, err := s.GetByID(ctx, id, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	bc, err := s.getBrokerClient(conn.BrokerType)
+	if err != nil {
+		return nil, err
+	}
+
+	newCreds := client.Credentials{
+		APIKey:      req.APIKey,
+		APISecret:   req.APISecret,
+		Passphrase:  req.Passphrase,
+		IsPaper:     conn.IsPaper,
+	}
+
+	// Validate before touching the DB — fail fast if the new key is bad.
+	if err := bc.Validate(ctx, newCreds); err != nil {
+		return nil, mapBrokerError("new credentials rejected by broker", err)
+	}
+
+	encKey, err := s.encrypt.Encrypt(req.APIKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt API key: %w", err)
+	}
+	encSecret, err := s.encrypt.Encrypt(req.APISecret)
+	if err != nil {
+		return nil, fmt.Errorf("failed to encrypt API secret: %w", err)
+	}
+	conn.APIKey = encKey
+	conn.APISecret = encSecret
+
+	if req.Passphrase != nil {
+		enc, err := s.encrypt.Encrypt(*req.Passphrase)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encrypt passphrase: %w", err)
+		}
+		conn.Passphrase = &enc
+	} else {
+		conn.Passphrase = nil
+	}
+
+	conn.Status = domain.BrokerConnectionStatusActive
+
+	if err := s.repo.Update(ctx, conn); err != nil {
+		return nil, fmt.Errorf("failed to save rotated credentials: %w", err)
+	}
+
+	// Update in-flight credentials and reconnect WS stream without interrupting hands.
+	accounts, _ := s.accountRepo.ListByUserID(ctx, conn.UserID.String(), accountDomain.ListAccountsFilter{})
+	pp := ""
+	if req.Passphrase != nil {
+		pp = *req.Passphrase
+	}
+	for i := range accounts {
+		if accounts[i].BrokerConnectionID != nil && *accounts[i].BrokerConnectionID == conn.ID {
+			rotateReq := HelmAutoCreateReq{
+				UserID:      conn.UserID,
+				AccountID:   accounts[i].ID,
+				AccountName: accounts[i].AccountName,
+				BrokerType:  string(conn.BrokerType),
+				AccountType: string(accounts[i].AccountType),
+				APIKey:      req.APIKey,
+				APISecret:   req.APISecret,
+				Passphrase:  pp,
+				Paper:       conn.IsPaper,
+			}
+			if err := s.helmCreator.RotateCredsForAccount(ctx, accounts[i].ID, rotateReq); err != nil {
+				slog.Warn("broker: helm creds rotate failed (non-fatal)", "account_id", accounts[i].ID, "err", err)
+			}
+		}
+	}
+
+	return conn, nil
+}
+
 // ReBroker changes the broker connection linked to an existing account.
 func (s *brokerConnectionService) ReBroker(ctx context.Context, accountID, newBrokerID, userID uuid.UUID) error {
 	account, err := s.accountRepo.GetByID(ctx, accountID.String())

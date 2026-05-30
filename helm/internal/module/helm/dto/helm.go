@@ -27,7 +27,6 @@ type HelmResp struct {
 	AccountType string             `json:"account_type"`
 	Portfolio   PortfolioConfigDTO `json:"portfolio"`
 	Risk        RiskConfigDTO      `json:"risk"`
-	Enabled     bool               `json:"enabled"`
 	Status      string             `json:"status"`
 	CreatedAt   time.Time          `json:"created_at"`
 	UpdatedAt   time.Time          `json:"updated_at"`
@@ -39,6 +38,10 @@ type HelmDetailResp struct {
 	Hands      []botdomain.HandSummary `json:"hands"`
 	Running    bool                    `json:"running"`
 	Paused     bool                    `json:"paused"`
+	// Halted is true when the runtime risk manager has tripped a circuit-breaker
+	// (max drawdown or daily loss limit). New entries are blocked; exits still pass.
+	// Authoritative from the runtime; also reflected in Status="halted" after DB persist.
+	Halted     bool                    `json:"halted"`
 	LastSyncAt *time.Time              `json:"last_sync_at,omitempty"`
 }
 
@@ -58,7 +61,6 @@ func HelmToResp(cfg *domain.Helm) HelmResp {
 		AccountType: cfg.AccountType,
 		Portfolio:   portfolioToDTO(cfg.Portfolio),
 		Risk:        riskToDTO(cfg.Risk),
-		Enabled:     cfg.Enabled,
 		Status:      string(cfg.Status),
 		CreatedAt:   cfg.CreatedAt,
 		UpdatedAt:   cfg.UpdatedAt,

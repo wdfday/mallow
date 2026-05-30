@@ -7,7 +7,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/nats-io/nats.go"
-	"github.com/shopspring/decimal"
 	"go.uber.org/fx"
 	"gorm.io/gorm"
 
@@ -15,6 +14,7 @@ import (
 	"mallow/helm/internal/infra"
 	"mallow/helm/internal/infra/engine"
 	"mallow/helm/internal/infra/eventlog"
+	"mallow/helm/internal/infra/orderlog"
 	"mallow/helm/internal/infra/perflog"
 	"mallow/helm/internal/infra/poslog"
 	"mallow/helm/internal/infra/tradelog"
@@ -64,9 +64,13 @@ var Module = fx.Options(
 	// Event log — PostgreSQL-backed persistent activity store
 	fx.Provide(newEventLog),
 	fx.Provide(newEventLogPersister),
+	// Orders persister — HELM_POSITIONS JetStream → orders table read model
+	fx.Provide(newOrdersPersister),
 
-	// Snapshot persister — NATS → batch PG writer for equity_snapshots
-	fx.Provide(newSnapshotPersister),
+	// Snapshot worker — debounced helm equity snapshots → HELM_EQUITY JetStream
+	fx.Provide(newSnapshotWorker),
+	// Equity persister — HELM_EQUITY JetStream → batch PG writer for equity_snapshots
+	fx.Provide(newEquityPersister),
 
 	// Trade persister — NATS HELM_TRADES → batch PG writer for trades
 	fx.Provide(newTradePersister),
@@ -74,6 +78,8 @@ var Module = fx.Options(
 	fx.Provide(newFillPersister),
 	// tradelog.Log — read-only PG view of the trades table, consumed by handlers
 	fx.Provide(newTradelogReader),
+	// orderlog.Log — read-only PG view of the orders table, consumed by handlers
+	fx.Provide(newOrderlogReader),
 	// Snapshot reader — PG-backed read for equity_snapshots (curve + lag)
 	fx.Provide(newSnapshotReader),
 	// Analytics service — read-only KPI / curve / trade list
@@ -105,13 +111,17 @@ var Module = fx.Options(
 	// Lifecycle hooks (order matters)
 	fx.Invoke(runMigrations),
 	fx.Invoke(startEventLogPersister),
-	fx.Invoke(startSnapshotPersister),
+	fx.Invoke(startOrdersPersister),
+	fx.Invoke(startSnapshotWorker),
+	fx.Invoke(startEquityPersister),
 	fx.Invoke(startTradePersister),
 	fx.Invoke(startFillPersister),
 	fx.Invoke(wireHandLifecycle),
+	fx.Invoke(wireCredentialFetcher),
 	fx.Invoke(wireSyncStore),
 	fx.Invoke(wirePosLog),
 	fx.Invoke(wireTradeLog),
+	fx.Invoke(wirePnLSummer),
 	fx.Invoke(hydrateRuntimes), // helm runtimes must be ready before hands are hydrated
 	fx.Invoke(hydrateHands),    // depends on hydrateRuntimes having run first
 	fx.Invoke(subscribeHeraldReady),
@@ -149,6 +159,9 @@ func runMigrations(db *gorm.DB) error {
 	if err := perflog.MigrateFills(db); err != nil {
 		return err
 	}
+	if err := orderlog.Migrate(db); err != nil {
+		return err
+	}
 	return perflog.MigrateSnapshots(db)
 }
 
@@ -174,11 +187,15 @@ func newOrchHandler(
 	reg *runtime.Registry,
 	nc *nats.Conn,
 	fillLog *perflog.FillLog,
-	snapshotLog perf.SnapshotLog,
 	posLog poslog.Log,
+	orderLog orderlog.Log,
 	analytics *analyticsservice.Service,
 ) *orchhandler.Handler {
-	return orchhandler.New(svc, handMgr, reg, nc, fillLog, snapshotLog, posLog, analytics)
+	return orchhandler.New(svc, handMgr, reg, nc, fillLog, posLog, orderLog, analytics)
+}
+
+func newOrderlogReader(db *sql.DB) orderlog.Log {
+	return orderlog.NewLog(db)
 }
 
 func newTradelogReader(db *sql.DB) tradelog.Log {
@@ -197,11 +214,47 @@ func newEventLogPersister(js nats.JetStreamContext, db *sql.DB) *eventlog.Persis
 	return eventlog.NewPersister(js, db)
 }
 
-func newSnapshotPersister(js nats.JetStreamContext, db *sql.DB) *perflog.SnapshotPersister {
-	return perflog.NewSnapshotPersister(js, db)
+func newOrdersPersister(js nats.JetStreamContext, db *sql.DB) *orderlog.Persister {
+	return orderlog.NewPersister(js, db)
 }
 
-func startSnapshotPersister(lc fx.Lifecycle, p *perflog.SnapshotPersister) {
+func startOrdersPersister(lc fx.Lifecycle, p *orderlog.Persister) {
+	ctx, cancel := context.WithCancel(context.Background())
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			go p.Run(ctx)
+			return nil
+		},
+		OnStop: func(_ context.Context) error {
+			cancel()
+			return nil
+		},
+	})
+}
+
+func newSnapshotWorker(reg *runtime.Registry, js nats.JetStreamContext) *perflog.SnapshotWorker {
+	return perflog.NewSnapshotWorker(reg, js)
+}
+
+func startSnapshotWorker(lc fx.Lifecycle, w *perflog.SnapshotWorker) {
+	ctx, cancel := context.WithCancel(context.Background())
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			go w.Run(ctx)
+			return nil
+		},
+		OnStop: func(_ context.Context) error {
+			cancel()
+			return nil
+		},
+	})
+}
+
+func newEquityPersister(js nats.JetStreamContext, db *sql.DB) *perflog.EquityPersister {
+	return perflog.NewEquityPersister(js, db)
+}
+
+func startEquityPersister(lc fx.Lifecycle, p *perflog.EquityPersister) {
 	ctx, cancel := context.WithCancel(context.Background())
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {
@@ -236,11 +289,11 @@ func newAccountHandler(
 	reg *runtime.Registry,
 	nc *nats.Conn,
 	fillLog *perflog.FillLog,
-	snapshotLog perf.SnapshotLog,
+	snapshotReader perflog.SnapshotReader,
 	posLog poslog.Log,
 	logger *slog.Logger,
 ) *accountHandler.Handler {
-	return accountHandler.NewHandler(svc, helmSvc, handMgr, reg, nc, fillLog, snapshotLog, posLog, logger)
+	return accountHandler.NewHandler(svc, helmSvc, handMgr, reg, nc, fillLog, snapshotReader, posLog, logger)
 }
 
 func newServer(orchH *orchhandler.Handler, handH *handhandler.Handler, accountH *accountHandler.Handler, brokerH *brokerHandler.BrokerConnectionHandler) *gin.Engine {
@@ -278,6 +331,12 @@ func wirePosLog(reg *runtime.Registry, log poslog.Log) {
 // Trades are drained into Postgres asynchronously by TradePersister.
 func wireTradeLog(reg *runtime.Registry, log perf.TradeLog) {
 	reg.SetTradeLog(log)
+}
+
+// wirePnLSummer injects the postgres tradelog reader as the PnLSummer so
+// RestorePnL uses a single SQL aggregate query instead of draining JetStream.
+func wirePnLSummer(reg *runtime.Registry, log tradelog.Log) {
+	reg.SetPnLSummer(log)
 }
 
 func newTradePersister(js nats.JetStreamContext, db *sql.DB) *perflog.TradePersister {
@@ -319,6 +378,12 @@ func wireHandLifecycle(helmSvc *orchservice.Service, handMgr *service.Service) {
 	helmSvc.SetHandLifecycle(handMgr)
 }
 
+// wireCredentialFetcher injects a CredentialFetcher adapter so Enable can re-spawn
+// a runtime that was torn down by a previous Disable call.
+func wireCredentialFetcher(helmSvc *orchservice.Service, brokerSvc brokerservice.BrokerConnectionService) {
+	helmSvc.SetCredentialFetcher(orchservice.BrokerCredentialAdapter{BrokerSvc: brokerSvc})
+}
+
 // wireSyncStore injects the HelmRepo as the SyncStore for last-sync persistence.
 func wireSyncStore(repo orchdomain.HelmRepo, reg *runtime.Registry) {
 	reg.SetSyncStore(repo)
@@ -352,7 +417,7 @@ func hydrateRuntimes(repo orchdomain.HelmRepo, reg *runtime.Registry, brokerSvc 
 			Passphrase:  creds.Passphrase,
 			Paper:       creds.Paper,
 		}
-		if err := reg.Spawn(cfg, exchCfg, decimal.Zero); err != nil {
+		if err := reg.Spawn(cfg, exchCfg); err != nil {
 			slog.Error("runtime: spawn failed", "helm_id", cfg.ID, "err", err)
 			continue
 		}

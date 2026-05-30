@@ -29,7 +29,7 @@ func (h *Hand) publishAndApply(ctx context.Context, e poslog.Event) {
 	if err := h.pos.Apply(e); err != nil {
 		slog.Warn("poslog in-memory apply failed", "hand_id", h.id, "event_id", e.ID, "err", err)
 	}
-	// Keep pendingOrderPos in sync.
+	// Keep pendingOrderPos in sync with poslog events.
 	switch e.Kind {
 	case poslog.KindOrderPlaced:
 		var p poslog.OrderPlacedPayload
@@ -54,7 +54,7 @@ func (h *Hand) publishAndApply(ctx context.Context, e poslog.Event) {
 // isExitIntent: true when closing a position (not opening or adding).
 func (h *Hand) publishOrderPlaced(
 	ctx context.Context,
-	orderID, symbol string,
+	orderID, clientOrderID, symbol string,
 	reply helmdomain.TradeReply,
 	limitPrice decimal.Decimal,
 	orderType exchange.OrderType,
@@ -94,9 +94,10 @@ func (h *Hand) publishOrderPlaced(
 	}
 
 	payload, _ := json.Marshal(poslog.OrderPlacedPayload{
-		OrderID:      orderID,
-		Symbol:       symbol,
-		Side:         reply.Side,
+		OrderID:       orderID,
+		ClientOrderID: clientOrderID,
+		Symbol:        symbol,
+		Side:          reply.Side,
 		Qty:          reply.Qty.String(),
 		Price:        priceStr,
 		OrderType:    orderTypeStr,
@@ -317,4 +318,31 @@ func plannedRisk(qtyStr, entryStr, stopStr string) string {
 		return ""
 	}
 	return risk.String()
+}
+
+// publishBracketPlaced writes KindBracketPlaced to the durable poslog so bracket
+// order IDs survive a restart. Called from within the PlaceExitOrders goroutine.
+// positionID is the leg's opening order_id (stable PositionID); orderIDs are the
+// exchange-returned SL/TP order IDs.
+func (h *Hand) publishBracketPlaced(ctx context.Context, positionID, symbol string, orderIDs []string) {
+	if len(orderIDs) == 0 {
+		return
+	}
+	payload, err := json.Marshal(poslog.BracketPlacedPayload{
+		Symbol:   symbol,
+		OrderIDs: orderIDs,
+	})
+	if err != nil {
+		slog.Error("publishBracketPlaced: marshal failed", "hand_id", h.id, "err", err)
+		return
+	}
+	h.publishAndApply(ctx, poslog.Event{
+		ID:         positionID + "_bracket_" + orderIDs[0],
+		HandID:     h.id.String(),
+		HelmID:     h.helmID.String(),
+		PositionID: positionID,
+		Kind:       poslog.KindBracketPlaced,
+		Payload:    payload,
+		At:         time.Now().UTC(),
+	})
 }

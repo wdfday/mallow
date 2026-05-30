@@ -1,8 +1,6 @@
 package runtime
 
 import (
-	"log/slog"
-
 	"mallow/helm/internal/infra/natsapi"
 )
 
@@ -92,11 +90,6 @@ func (r *HelmRuntime) DispatchHandSignal(handID string, sig Signal) bool {
 	r.mu.RUnlock()
 	if !ok {
 		return false
-	}
-	if hand.IsPaused() {
-		slog.Debug("runtime: hand paused, signal skipped",
-			"hand_id", handID, "symbol", sig.Symbol, "direction", sig.Direction)
-		return true
 	}
 	if r.IsHalted() && !sig.IsUrgent() {
 		r.EmitEvent(natsapi.HelmEvent{

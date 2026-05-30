@@ -8,12 +8,11 @@ import (
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/natsapi"
-	"mallow/helm/internal/infra/perflog"
 	"mallow/helm/internal/infra/poslog"
-	"mallow/helm/internal/infra/tradelog"
 	analyticsdomain "mallow/helm/internal/module/analytics/domain"
 	handdomain "mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/module/helm/domain"
+	"mallow/helm/internal/readmodel"
 	"mallow/helm/internal/runtime/core/portfolio"
 	"mallow/helm/internal/runtime/perf"
 )
@@ -267,7 +266,7 @@ func PoslogPageToResp(p poslog.TradesPage, limit int) TradesPageResp {
 
 // TradelogToResp converts a PG-backed tradelog.TradeRecord to TradeResp,
 // including all analytical columns (commission, planned_risk, r_multiple, …).
-func TradelogToResp(t tradelog.TradeRecord) TradeResp {
+func TradelogToResp(t readmodel.TradeRecord) TradeResp {
 	var pnlPct decimal.Decimal
 	cost := t.EntryPrice.Mul(t.Qty)
 	net := t.PnL.Sub(t.Commission)
@@ -383,13 +382,13 @@ func SnapshotToResp(s perf.PortfolioSnapshot) SnapshotResp {
 	for i, p := range s.Positions {
 		pos[i] = SnapshotPositionResp{Symbol: p.Symbol, Side: p.Side, Qty: p.Qty, AvgPrice: p.AvgPrice}
 	}
-	return SnapshotResp{HelmID: s.HelmID, HandID: s.HandID, TS: s.TS, Cash: s.Cash, Positions: pos}
+	return SnapshotResp{HelmID: s.HelmID, TS: s.TS, Cash: s.Cash, Positions: pos}
 }
 
 // SnapshotRowToResp converts a PG perflog.SnapshotRow into SnapshotResp.
 // Positions are decoded from JSONB; on decode failure the slice stays empty
 // (row is still returned so the audit view doesn't lose context).
-func SnapshotRowToResp(s perflog.SnapshotRow) SnapshotResp {
+func SnapshotRowToResp(s readmodel.SnapshotRow) SnapshotResp {
 	r := SnapshotResp{
 		HelmID:        s.HelmID.String(),
 		TS:            s.TS,

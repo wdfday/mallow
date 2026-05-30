@@ -77,6 +77,11 @@ type LegState struct {
 	// Committed to the leg on fill; discarded on cancel.
 	pendingAddSL decimal.Decimal
 	pendingAddTP decimal.Decimal
+
+	// ExchangeOrderIDs holds the exchange-side SL/TP bracket order IDs placed after an
+	// entry fill. Populated via KindBracketPlaced poslog events so they survive restarts.
+	// Used by cancelExitOrders to cancel the OCO sibling on position close.
+	ExchangeOrderIDs []string
 }
 
 // IsActive reports whether the leg has an open position or a pending order.
@@ -257,8 +262,13 @@ type HandPositions struct {
 	Pyramid  bool
 	MaxUnits int
 
-	legs        map[string]*LegState // PositionID → leg (includes closed legs for dedup)
-	RealizedPnL decimal.Decimal      // accumulated from all closed legs
+	// legs maps PositionID → leg for active legs only.
+	// Closed legs are evicted immediately when they transition to PhaseIdle so the map
+	// stays bounded regardless of how many trades the hand executes over its lifetime.
+	// Dedup for duplicate position_closed events is handled by the !exists early-return
+	// in applyPositionClosed — a missing leg and an idle leg are equivalent there.
+	legs        map[string]*LegState
+	RealizedPnL decimal.Decimal // accumulated from all closed legs
 }
 
 // NewHandPositions creates an empty HandPositions.
@@ -404,6 +414,18 @@ func (h *HandPositions) Apply(e poslog.Event) error {
 		return nil
 	}
 
+	// bracket_placed: persist exchange-side SL/TP order IDs so they survive restarts.
+	if e.Kind == poslog.KindBracketPlaced {
+		leg, ok := h.legs[e.PositionID]
+		if ok {
+			var p poslog.BracketPlacedPayload
+			if err := json.Unmarshal(e.Payload, &p); err == nil {
+				leg.ExchangeOrderIDs = p.OrderIDs
+			}
+		}
+		return nil
+	}
+
 	leg, exists := h.legs[e.PositionID]
 	if !exists {
 		// Only a new entry order_placed creates a new leg.
@@ -432,7 +454,7 @@ func (h *HandPositions) Apply(e poslog.Event) error {
 		return err
 	}
 
-	// Closing fill: leg transitioned Exiting → Idle; compute and accumulate PnL.
+	// Closing fill: leg transitioned Exiting → Idle; compute PnL and evict.
 	if e.Kind == poslog.KindOrderFilled && snapPhase == PhaseExiting && leg.Phase == PhaseIdle {
 		var p poslog.OrderFilledPayload
 		if err := json.Unmarshal(e.Payload, &p); err == nil {
@@ -440,6 +462,14 @@ func (h *HandPositions) Apply(e poslog.Event) error {
 			fillQty, _ := decimal.NewFromString(p.FillQty)
 			h.RealizedPnL = h.RealizedPnL.Add(computePnL(snapSide, snapEntryPrice, fillPrice, fillQty))
 		}
+		// Leg is fully closed — evict to keep map bounded.
+		delete(h.legs, e.PositionID)
+		return nil
+	}
+
+	// Entry cancel: leg never opened — evict immediately.
+	if e.Kind == poslog.KindOrderCancelled && snapPhase == PhaseEntering && leg.Phase == PhaseIdle {
+		delete(h.legs, e.PositionID)
 	}
 
 	return nil
@@ -448,17 +478,18 @@ func (h *HandPositions) Apply(e poslog.Event) error {
 func (h *HandPositions) applyPositionClosed(e poslog.Event) error {
 	leg, exists := h.legs[e.PositionID]
 	if !exists || leg.Phase == PhaseIdle {
-		// Already closed via order_filled, or never opened — no-op.
+		// Already closed via order_filled (leg evicted), or never opened — no-op.
 		return nil
 	}
-	// External close: use the authoritative PnL from the payload.
+	// External close (bracket fill, liquidation, manual): use authoritative PnL from payload.
 	var p poslog.PositionClosedPayload
 	if err := json.Unmarshal(e.Payload, &p); err != nil {
 		return err
 	}
 	pnl, _ := decimal.NewFromString(p.RealizedPnL)
 	h.RealizedPnL = h.RealizedPnL.Add(pnl)
-	leg.reset()
+	// Evict — leg is fully closed.
+	delete(h.legs, e.PositionID)
 	return nil
 }
 

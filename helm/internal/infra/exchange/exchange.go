@@ -77,6 +77,12 @@ type OrderRequest struct {
 	QuoteQty   decimal.Decimal // quote asset quantity (e.g. 1000 USDT); spot market buy only; mutually exclusive with Qty
 	Price      decimal.Decimal // only for limit orders
 	ReduceOnly bool            // futures only: close-only, never opens a position
+	// ClientOrderID is a caller-generated id (clOrdId) sent to the exchange. When set,
+	// it is the canonical correlation key for WS fill routing — known before the order
+	// reaches the exchange, so the WS-fill-before-REST-response race cannot occur.
+	// Adapters that support it forward it to the exchange; those that don't ignore it.
+	// Empty = let the exchange assign an id (legacy path). See CLIENT_ORDER_ID.md.
+	ClientOrderID string
 }
 
 // ExitOrderRequest carries bracket order parameters for post-fill SL/TP placement.
@@ -109,13 +115,16 @@ type ExitOrderPlacer interface {
 
 // OrderResult contains the result of an order operation.
 type OrderResult struct {
-	ID        string
-	Symbol    string
-	Side      OrderSide
-	Status    string
-	Qty       decimal.Decimal
-	FilledQty decimal.Decimal
-	FilledAvg decimal.Decimal
+	ID string
+	// ClientOrderID echoes back the caller-supplied clOrdId when the exchange returns it.
+	// Used by the REST poll path to dedup against WS fills on the same canonical key.
+	ClientOrderID string
+	Symbol        string
+	Side          OrderSide
+	Status        string
+	Qty           decimal.Decimal
+	FilledQty     decimal.Decimal
+	FilledAvg     decimal.Decimal
 	// Commission is the total fee charged for this fill.
 	// CommissionAsset identifies the asset the fee was taken from (e.g. "ETH", "BNB", "USDT").
 	// When CommissionAsset == base asset of Symbol (e.g. "ETH" for "ETHUSDT"), the
@@ -178,13 +187,6 @@ type Exchange interface {
 	// ListPositions returns all currently held positions for the account.
 	// Used by the reconciler to confirm PhaseOpen state is still accurate.
 	ListPositions(ctx context.Context, creds Credentials) ([]PositionResult, error)
-
-	// ── Live fill stream ─────────────────────────────────────────────────────
-
-	// SubscribeFills opens a WebSocket subscription to fill events for the account.
-	// The returned channel is closed when ctx is cancelled or the connection drops.
-	// Callers should reconnect on close. Fills arrive here before GetOrder polling.
-	SubscribeFills(ctx context.Context, creds Credentials) (<-chan FillEvent, error)
 }
 
 // Backoff manages reconnection intervals with exponential backoff and jitter.

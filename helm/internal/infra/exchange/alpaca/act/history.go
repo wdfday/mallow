@@ -42,13 +42,14 @@ func (c *Client) FilledOrders(ctx context.Context, creds exchange.Credentials, _
 			filledAt = o.FilledAt.UTC()
 		}
 		all = append(all, exchange.AccountTransaction{
-			TradeID:  o.ID,
-			OrderID:  o.ID,
-			Symbol:   o.Symbol,
-			Side:     side,
-			Qty:      o.FilledQty,
-			AvgPrice: *o.FilledAvgPrice,
-			FilledAt: filledAt,
+			TradeID:       o.ID,
+			OrderID:       o.ID,
+			ClientOrderID: o.ClientOrderID,
+			Symbol:        o.Symbol,
+			Side:          side,
+			Qty:           o.FilledQty,
+			AvgPrice:      *o.FilledAvgPrice,
+			FilledAt:      filledAt,
 		})
 	}
 	return all, nil

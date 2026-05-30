@@ -36,6 +36,9 @@ func (c *Client) placeSpotOrder(ctx context.Context, creds exchange.Credentials,
 		Symbol(req.Symbol).
 		Side(side).
 		Type(orderType)
+	if req.ClientOrderID != "" {
+		svc = svc.NewClientOrderID(req.ClientOrderID)
+	}
 	if req.QuoteQty.IsPositive() {
 		svc = svc.QuoteOrderQty(req.QuoteQty.String())
 	} else {
@@ -82,6 +85,9 @@ func (c *Client) placeFuturesOrder(ctx context.Context, creds exchange.Credentia
 		Type(orderType).
 		Quantity(req.Qty.String()).
 		ReduceOnly(req.ReduceOnly)
+	if req.ClientOrderID != "" {
+		svc = svc.NewClientOrderID(req.ClientOrderID)
+	}
 	if orderType == futures.OrderTypeLimit {
 		svc = svc.TimeInForce(binanceFuturesTIF(req.TIF)).Price(req.Price.String())
 	}
@@ -128,6 +134,38 @@ func (c *Client) GetOrder(ctx context.Context, creds exchange.Credentials, order
 		return nil, fmt.Errorf("binance get order: %w", err)
 	}
 	return spotGetToResult(orderID, resp), nil
+}
+
+// GetOrderByClientOrderID looks up an order by the caller-supplied clOrdId on the
+// endpoint matching market (futures → /fapi/, otherwise spot). Returns nil when no such
+// order exists or the lookup fails — the caller treats nil as "could not confirm".
+// See CLIENT_ORDER_ID.md.
+func (c *Client) GetOrderByClientOrderID(ctx context.Context, creds exchange.Credentials, symbol string, market exchange.MarketKind, clid string) (*exchange.OrderResult, error) {
+	if market == exchange.MarketFutures {
+		if c.paper {
+			return nil, nil // futures lookups unsupported on paper accounts
+		}
+		fresp, ferr := c.newFut(creds).NewGetOrderService().
+			Symbol(symbol).OrigClientOrderID(clid).Do(ctx)
+		if ferr != nil || fresp == nil {
+			return nil, nil
+		}
+		return &exchange.OrderResult{
+			ID:            strconv.FormatInt(fresp.OrderID, 10),
+			ClientOrderID: fresp.ClientOrderID,
+			Symbol:        fresp.Symbol,
+			Side:          exchange.OrderSide(strings.ToLower(string(fresp.Side))),
+			Status:        strings.ToLower(string(fresp.Status)),
+			Qty:           parseDecimal(fresp.OrigQuantity),
+			FilledQty:     parseDecimal(fresp.ExecutedQuantity),
+		}, nil
+	}
+	resp, err := c.newSpot(creds).NewGetOrderService().
+		Symbol(symbol).OrigClientOrderID(clid).Do(ctx)
+	if err != nil || resp == nil {
+		return nil, nil
+	}
+	return spotGetToResult(symbol+":"+strconv.FormatInt(resp.OrderID, 10), resp), nil
 }
 
 // CancelOrder cancels a spot order by "SYMBOL:numericID" encoded order ID.

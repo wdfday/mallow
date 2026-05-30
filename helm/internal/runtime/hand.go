@@ -68,10 +68,21 @@ type Hand struct {
 	// ── Inbound channels ─────────────────────────────────────────────────────
 	Signals       chan Signal              // buf=1, drain-replace; always latest non-urgent signal
 	UrgentSignals chan Signal              // buf=4; exit signals, never silently dropped
-	fillCh        chan exchange.OrderEvent // buf=8; WS fills routed from runOrderProcessor
+	fillCh        chan exchange.WsFillEvent // buf=8; WS full fills routed from runFillProcessor
 	eventBus      *handEventBus            // nil in production; non-nil only when EnableEventSink() is called (tests)
 
-	seenFills map[string]struct{} // dedup: WS-applied fills vs REST poll fallback
+	// seenFills marks orders whose fill has been fully applied to the portfolio
+	// (via WS full-fill, REST-immediate, or poll fallback). Checked by handleWsFill
+	// and pollOrders to prevent double-apply of the same order's total qty.
+	// Keyed by orderID. Set ONLY when the full fill is applied — never on partial fills.
+	seenFills map[string]struct{}
+
+	// partialApplied accumulates incremental fill qty that the exchange pushed via
+	// WS OrderEventPartialFill events and that the registry applied directly to the
+	// portfolio (rt.ReportFill). When the REST poll path later sees a cumulative
+	// FilledQty for the same order, it subtracts partialApplied to avoid double-counting.
+	// Keyed by orderID. Deleted when the order reaches a terminal state.
+	partialApplied map[string]decimal.Decimal
 
 	// ── Edge-risk guard ───────────────────────────────────────────────────────
 	// All fields written exclusively from the run-loop goroutine — no extra lock.
@@ -87,12 +98,10 @@ type Hand struct {
 	StrategyName string
 	Timeframe    string // bar timeframe the strategy runs on (M1/M5/H1/...); used for trade attribution
 	CapitalPct   float64
-	WasRunning   bool // pre-pause state; read by Resume to decide whether to restart
 
 	// ── Goroutine lifecycle ───────────────────────────────────────────────────
 	mu      sync.RWMutex
 	running bool
-	paused  bool
 	ctx     context.Context // cancelled by Stop()
 	cancel  context.CancelFunc
 	done    chan struct{} // closed when run-loop goroutine exits
@@ -102,7 +111,7 @@ type Hand struct {
 	pendingExits    map[string]exitPending  // orderID → raw SL/TP from signal; resolved on entry fill
 	exitLevels      map[string]exitLevel    // symbol → active local SL/TP safety net
 	pos             *position.HandPositions // in-memory mirror of poslog
-	pendingOrderPos map[string]string       // orderID → positionID for fill/cancel attribution
+	pendingOrderPos    map[string]string       // orderID → positionID for fill/cancel attribution
 	// pendingCancels tracks bracket/OCO order IDs that helm itself initiated a cancel for.
 	// When OrderEventCanceled arrives, IDs in this set are normal cleanup (OCO sibling closed);
 	// IDs NOT in this set are external cancels (user closed position manually at exchange).

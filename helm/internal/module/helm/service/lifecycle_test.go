@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/shopspring/decimal"
 
+	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/module/helm/service"
 )
@@ -117,7 +117,7 @@ type mockSpawner struct {
 	resetHaltErr   error
 }
 
-func (m *mockSpawner) Spawn(cfg *domain.Helm, _ domain.ExchangeConfig, _ decimal.Decimal) error {
+func (m *mockSpawner) Spawn(cfg *domain.Helm, _ domain.ExchangeConfig) error {
 	m.spawned = append(m.spawned, cfg.ID)
 	return nil
 }
@@ -151,6 +151,9 @@ func (m *mockSpawner) SyncOne(id uuid.UUID) {
 	m.syncedOne = append(m.syncedOne, id)
 }
 
+func (m *mockSpawner) RotateCreds(_ uuid.UUID, _ exchange.Credentials) {
+}
+
 type mockBotLifecycle struct {
 	stopped  []string
 	started  []string
@@ -173,7 +176,6 @@ func newOrch(id uuid.UUID, status domain.HelmStatus) *domain.Helm {
 		UserID:    uuid.New(),
 		AccountID: uuid.New(),
 		Name:      "test-orch",
-		Enabled:   true,
 		Status:    status,
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -191,11 +193,10 @@ func setup() (*service.Service, *mockSpawner, *mockBotLifecycle, *stubHelmRepo) 
 
 // ── Enable / Disable ─────────────────────────────────────────────────────────
 
-func TestEnable_SetsEnabledTrue(t *testing.T) {
+func TestEnable_SetsStatusActive(t *testing.T) {
 	svc, spawner, _, store := setup()
 	id := uuid.New()
-	orch := newOrch(id, domain.HelmStatusActive)
-	orch.Enabled = false
+	orch := newOrch(id, domain.HelmStatusDisabled)
 	_ = store.Save(orch)
 
 	if err := svc.Enable(id); err != nil {
@@ -203,8 +204,8 @@ func TestEnable_SetsEnabledTrue(t *testing.T) {
 	}
 
 	got, _ := store.Get(id)
-	if !got.Enabled {
-		t.Fatal("expected Enabled=true after Enable()")
+	if got.Status != domain.HelmStatusActive {
+		t.Fatalf("expected Status=active after Enable(), got %q", got.Status)
 	}
 	// SyncOne should be fired.
 	if len(spawner.syncedOne) != 1 || spawner.syncedOne[0] != id {
@@ -215,9 +216,7 @@ func TestEnable_SetsEnabledTrue(t *testing.T) {
 func TestDisable_PersistsDisabledAndKillsBots(t *testing.T) {
 	svc, spawner, bots, store := setup()
 	id := uuid.New()
-	orch := newOrch(id, domain.HelmStatusActive)
-	orch.Enabled = true
-	_ = store.Save(orch)
+	_ = store.Save(newOrch(id, domain.HelmStatusActive))
 
 	spawner.pauseResult = []string{"bot-x", "bot-y"}
 	spawner.teardownResult = []string{"bot-x", "bot-y"}
@@ -227,9 +226,6 @@ func TestDisable_PersistsDisabledAndKillsBots(t *testing.T) {
 	}
 
 	got, _ := store.Get(id)
-	if got.Enabled {
-		t.Fatal("expected Enabled=false after Disable()")
-	}
 	if got.Status != domain.HelmStatusDisabled {
 		t.Fatalf("expected status 'disabled', got %q", got.Status)
 	}

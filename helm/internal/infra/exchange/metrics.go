@@ -75,8 +75,11 @@ type WSMetrics struct {
 	// StreamErrors counts StreamOrders calls that returned a non-nil error.
 	StreamErrors atomic.Int64
 
-	// OrderEvents is the total number of order lifecycle events received via WS.
-	OrderEvents atomic.Int64
+	// LifecycleEvents is the total number of order lifecycle events (ack/cancel)
+	// received via WS.
+	LifecycleEvents atomic.Int64
+	// FillEvents is the total number of fill events (partial or full) received via WS.
+	FillEvents atomic.Int64
 	// BalanceEvents is the total number of balance-change events received via WS.
 	BalanceEvents atomic.Int64
 
@@ -163,8 +166,12 @@ func (m *MeteredExchange) ListPositions(ctx context.Context, creds Credentials) 
 	return m.inner.ListPositions(ctx, creds)
 }
 
+// SubscribeFills implements FillStreamer — delegates to inner if it implements FillStreamer.
 func (m *MeteredExchange) SubscribeFills(ctx context.Context, creds Credentials) (<-chan FillEvent, error) {
-	return m.inner.SubscribeFills(ctx, creds)
+	if s, ok := m.inner.(FillStreamer); ok {
+		return s.SubscribeFills(ctx, creds)
+	}
+	return nil, fmt.Errorf("exchange %q does not implement FillStreamer", m.Name())
 }
 
 // Ping measures HTTP round-trip latency to the exchange.
@@ -195,11 +202,12 @@ type MetricsSnapshot struct {
 
 // WSSnapshot is the serializable form of WSMetrics.
 type WSSnapshot struct {
-	StreamStarts  int64   `json:"stream_starts"`
-	StreamErrors  int64   `json:"stream_errors"`
-	OrderEvents   int64   `json:"order_events"`
-	BalanceEvents int64   `json:"balance_events"`
-	IdleSec       float64 `json:"idle_sec"` // seconds since last WS event (0 = never received)
+	StreamStarts    int64   `json:"stream_starts"`
+	StreamErrors    int64   `json:"stream_errors"`
+	LifecycleEvents int64   `json:"lifecycle_events"`
+	FillEvents      int64   `json:"fill_events"`
+	BalanceEvents   int64   `json:"balance_events"`
+	IdleSec         float64 `json:"idle_sec"` // seconds since last WS event (0 = never received)
 }
 
 // ActionSnapshot is a serializable point-in-time copy of ActionMetrics.
@@ -248,11 +256,12 @@ func (m *MeteredExchange) Snapshot() MetricsSnapshot {
 		SyncAccount: snapshotAction(&m.Metrics.SyncAccount),
 		PingLastMs:  float64(m.Metrics.PingLastNanos.Load()) / 1e6,
 		WS: WSSnapshot{
-			StreamStarts:  ws.StreamStarts.Load(),
-			StreamErrors:  ws.StreamErrors.Load(),
-			OrderEvents:   ws.OrderEvents.Load(),
-			BalanceEvents: ws.BalanceEvents.Load(),
-			IdleSec:       idleSec,
+			StreamStarts:    ws.StreamStarts.Load(),
+			StreamErrors:    ws.StreamErrors.Load(),
+			LifecycleEvents: ws.LifecycleEvents.Load(),
+			FillEvents:      ws.FillEvents.Load(),
+			BalanceEvents:   ws.BalanceEvents.Load(),
+			IdleSec:         idleSec,
 		},
 	}
 }
@@ -274,28 +283,45 @@ func (m *MeteredExchange) SyncAccount(ctx context.Context, creds Credentials, si
 }
 
 // StreamOrders implements AccountStreamer — wraps handlers to update WS metrics.
-func (m *MeteredExchange) StreamOrders(ctx context.Context, creds Credentials, orderHandler func(OrderEvent), balanceHandler func(BalanceEvent)) error {
+func (m *MeteredExchange) StreamOrders(
+	ctx context.Context,
+	creds Credentials,
+	onLifecycle func(OrderLifecycleEvent),
+	onFill func(WsFillEvent),
+	onBalance func(BalanceEvent),
+) error {
 	s, ok := m.inner.(AccountStreamer)
 	if !ok {
 		return fmt.Errorf("exchange %q does not implement AccountStreamer", m.Name())
 	}
 	m.Metrics.WS.StreamStarts.Add(1)
 
-	wrappedOrder := func(ev OrderEvent) {
-		m.Metrics.WS.OrderEvents.Add(1)
-		m.Metrics.WS.touchEvent()
-		orderHandler(ev)
+	var wrappedLifecycle func(OrderLifecycleEvent)
+	if onLifecycle != nil {
+		wrappedLifecycle = func(ev OrderLifecycleEvent) {
+			m.Metrics.WS.LifecycleEvents.Add(1)
+			m.Metrics.WS.touchEvent()
+			onLifecycle(ev)
+		}
+	}
+	var wrappedFill func(WsFillEvent)
+	if onFill != nil {
+		wrappedFill = func(ev WsFillEvent) {
+			m.Metrics.WS.FillEvents.Add(1)
+			m.Metrics.WS.touchEvent()
+			onFill(ev)
+		}
 	}
 	var wrappedBalance func(BalanceEvent)
-	if balanceHandler != nil {
+	if onBalance != nil {
 		wrappedBalance = func(ev BalanceEvent) {
 			m.Metrics.WS.BalanceEvents.Add(1)
 			m.Metrics.WS.touchEvent()
-			balanceHandler(ev)
+			onBalance(ev)
 		}
 	}
 
-	err := s.StreamOrders(ctx, creds, wrappedOrder, wrappedBalance)
+	err := s.StreamOrders(ctx, creds, wrappedLifecycle, wrappedFill, wrappedBalance)
 	if err != nil {
 		m.Metrics.WS.StreamErrors.Add(1)
 	}
@@ -341,6 +367,7 @@ func (m *MeteredExchange) SetLeverage(ctx context.Context, creds Credentials, sy
 var _ Exchange = (*MeteredExchange)(nil)
 var _ AccountSyncer = (*MeteredExchange)(nil)
 var _ AccountStreamer = (*MeteredExchange)(nil)
+var _ FillStreamer = (*MeteredExchange)(nil)
 var _ PriceFetcher = (*MeteredExchange)(nil)
 var _ OrderReconciler = (*MeteredExchange)(nil)
 var _ HistoryFetcher = (*MeteredExchange)(nil)

@@ -33,13 +33,14 @@ func (c *Client) ListOpenOrders(ctx context.Context, creds exchange.Credentials,
 			filledAvg = quoteQty.Div(filledQty)
 		}
 		results = append(results, exchange.OrderResult{
-			ID:        o.Symbol + ":" + strconv.FormatInt(o.OrderID, 10),
-			Symbol:    o.Symbol,
-			Side:      binanceSide(o.Side),
-			Status:    string(o.Status),
-			Qty:       parseDecimal(o.OrigQuantity),
-			FilledQty: filledQty,
-			FilledAvg: filledAvg,
+			ID:            o.Symbol + ":" + strconv.FormatInt(o.OrderID, 10),
+			ClientOrderID: o.ClientOrderID,
+			Symbol:        o.Symbol,
+			Side:          binanceSide(o.Side),
+			Status:        string(o.Status),
+			Qty:           parseDecimal(o.OrigQuantity),
+			FilledQty:     filledQty,
+			FilledAvg:     filledAvg,
 		})
 	}
 
@@ -55,12 +56,13 @@ func (c *Client) ListOpenOrders(ctx context.Context, creds exchange.Credentials,
 		} else {
 			for _, o := range futOrders {
 				results = append(results, exchange.OrderResult{
-					ID:        strconv.FormatInt(o.OrderID, 10),
-					Symbol:    o.Symbol,
-					Side:      exchange.OrderSide(string(o.Side)),
-					Status:    string(o.Status),
-					Qty:       parseDecimal(o.OrigQuantity),
-					FilledQty: parseDecimal(o.ExecutedQuantity),
+					ID:            strconv.FormatInt(o.OrderID, 10),
+					ClientOrderID: o.ClientOrderID,
+					Symbol:        o.Symbol,
+					Side:          exchange.OrderSide(string(o.Side)),
+					Status:        string(o.Status),
+					Qty:           parseDecimal(o.OrigQuantity),
+					FilledQty:     parseDecimal(o.ExecutedQuantity),
 				})
 			}
 		}
@@ -124,40 +126,4 @@ func (c *Client) ListPositions(ctx context.Context, creds exchange.Credentials) 
 	}
 
 	return results, nil
-}
-
-// SubscribeFills opens a fill stream by bridging StreamOrders.
-// The returned channel is closed when ctx is cancelled.
-func (c *Client) SubscribeFills(ctx context.Context, creds exchange.Credentials) (<-chan exchange.FillEvent, error) {
-	ch := make(chan exchange.FillEvent, 64)
-
-	send := func(fill exchange.FillEvent) {
-		defer func() { recover() }() //nolint:errcheck // guard against send on closed ch
-		select {
-		case ch <- fill:
-		case <-ctx.Done():
-		}
-	}
-
-	if err := c.StreamOrders(ctx, creds, func(ev exchange.OrderEvent) {
-		if ev.Type != exchange.OrderEventFilled && ev.Type != exchange.OrderEventPartialFill {
-			return
-		}
-		send(exchange.FillEvent{
-			OrderID:   ev.OrderID,
-			Symbol:    ev.Symbol,
-			Side:      ev.Side,
-			FilledQty: ev.FilledQty,
-			FillPrice: ev.FilledAvg,
-			Timestamp: ev.Timestamp,
-		})
-	}, nil); err != nil {
-		return nil, fmt.Errorf("binance subscribe fills: %w", err)
-	}
-
-	go func() {
-		<-ctx.Done()
-		close(ch)
-	}()
-	return ch, nil
 }

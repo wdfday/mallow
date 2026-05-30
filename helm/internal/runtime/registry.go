@@ -12,6 +12,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"mallow/helm/internal/infra/exchange"
+	"mallow/helm/internal/infra/perflog"
 	"mallow/helm/internal/infra/poslog"
 	helmdomain "mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/runtime/perf"
@@ -33,6 +34,7 @@ type MarketStreamerFactory interface {
 type SyncStore interface {
 	UpdateLastSyncedAt(id uuid.UUID, t time.Time) error
 }
+
 
 // SignalSink is the narrow interface consumed by SignalDispatcher.
 // Registry implements it; callers only see this interface.
@@ -58,13 +60,13 @@ type Registry struct {
 	streamerFactory MarketStreamerFactory
 
 	// nc, js, and runCtx are set once via SetRuntime after startup.
-	nc          *nats.Conn
-	js          nats.JetStreamContext
-	runCtx      context.Context
-	syncStore   SyncStore
-	posLog      poslog.Log       // nil when NATS unavailable
-	snapshotLog perf.SnapshotLog // nil when NATS unavailable
-	tradeLog    perf.TradeLog    // JetStream HELM_TRADES — drained into PG by TradePersister
+	nc        *nats.Conn
+	js        nats.JetStreamContext
+	runCtx    context.Context
+	syncStore SyncStore
+	posLog    poslog.Log    // nil when NATS unavailable
+	tradeLog  perf.TradeLog // JetStream HELM_TRADES — drained into PG by TradePersister
+	pnlSummer HandPnLSummer // postgres aggregate querier for RestorePnL
 
 	// Routing error counters — incremented in RouteSignal, exported via DispatchStats.
 	routeNoHelm atomic.Int64 // helm_id not found in registry
@@ -86,11 +88,16 @@ func NewRegistry(factory ExchangeFactory, streamerFactory MarketStreamerFactory)
 }
 
 // SetSyncStore injects the persistence port for last-sync timestamps (breaks init cycle).
+// Propagated to all already-spawned runtimes so hydrated helms persist sync times immediately.
 func (r *Registry) SetSyncStore(store SyncStore) {
 	r.mu.Lock()
 	r.syncStore = store
+	for _, rt := range r.helmRuntimes {
+		rt.syncStore = store
+	}
 	r.mu.Unlock()
 }
+
 
 // SetPosLog injects the position event log (breaks init cycle — called after NATS connects).
 func (r *Registry) SetPosLog(log poslog.Log) {
@@ -99,16 +106,31 @@ func (r *Registry) SetPosLog(log poslog.Log) {
 	r.mu.Unlock()
 }
 
-// SetSnapshotLog injects the portfolio snapshot log (breaks init cycle — called after NATS connects).
-// Also propagates to all already-spawned runtimes so runtimes created before startup
-// (e.g. during SpawnAll) get the log injected retroactively.
-func (r *Registry) SetSnapshotLog(log perf.SnapshotLog) {
-	r.mu.Lock()
-	r.snapshotLog = log
+// DirtyRuntimes returns runtimes that have been marked dirty since the last call.
+// Atomically claims (clears) the dirty flag, so each fill burst is flushed once.
+// Implements perflog.SnapshotSource.
+func (r *Registry) DirtyRuntimes() []perflog.SnapshotEmitter {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []perflog.SnapshotEmitter
 	for _, rt := range r.helmRuntimes {
-		rt.SnapshotLog = log
+		if rt.snapshotDirty.CompareAndSwap(1, 0) {
+			out = append(out, rt)
+		}
 	}
-	r.mu.Unlock()
+	return out
+}
+
+// AllRuntimes returns all live runtimes for the unconditional heartbeat sweep.
+// Implements perflog.SnapshotSource.
+func (r *Registry) AllRuntimes() []perflog.SnapshotEmitter {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	out := make([]perflog.SnapshotEmitter, 0, len(r.helmRuntimes))
+	for _, rt := range r.helmRuntimes {
+		out = append(out, rt)
+	}
+	return out
 }
 
 // SetTradeLog injects the JetStream trade log. Propagated to all already-spawned runtimes.
@@ -118,6 +140,17 @@ func (r *Registry) SetTradeLog(log perf.TradeLog) {
 	r.tradeLog = log
 	for _, rt := range r.helmRuntimes {
 		rt.TradeLog = log
+	}
+	r.mu.Unlock()
+}
+
+// SetPnLSummer injects the postgres PnL aggregate querier. Propagated to all runtimes.
+// Replaces the JetStream full-drain in RestorePnL with a single SQL query on startup.
+func (r *Registry) SetPnLSummer(ps HandPnLSummer) {
+	r.mu.Lock()
+	r.pnlSummer = ps
+	for _, rt := range r.helmRuntimes {
+		rt.PnLSummer = ps
 	}
 	r.mu.Unlock()
 }

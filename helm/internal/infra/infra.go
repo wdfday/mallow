@@ -15,7 +15,7 @@ import (
 	internalService "mallow/helm/internal/service"
 )
 
-// Module provides shared infra: NATS, Postgres, encryption, logger, and JetStream-backed perf logs.
+// Module provides shared infra: NATS, Postgres, encryption, logger, and perf logs.
 var Module = fx.Module("infra",
 	fx.Provide(infraNats.New),
 	fx.Provide(infraNats.NewJetStream),
@@ -23,7 +23,6 @@ var Module = fx.Module("infra",
 	fx.Provide(postgres.NewGORMDB),
 	fx.Provide(newEncryptionService),
 	fx.Provide(newLogger),
-	fx.Provide(fx.Annotate(newSnapshotLog, fx.As(new(perf.SnapshotLog)))),
 	fx.Provide(fx.Annotate(newTradeLog, fx.As(new(perf.TradeLog)))),
 	fx.Provide(newFillLog),
 )
@@ -34,15 +33,6 @@ func newLogger() *slog.Logger {
 
 func newEncryptionService(cfg *config.Config) (*internalService.EncryptionService, error) {
 	return internalService.NewEncryptionService(cfg.Infra.EncryptionKey)
-}
-
-func newSnapshotLog(js natsgo.JetStreamContext) perf.SnapshotLog {
-	l, err := perflog.NewSnapshotLog(js)
-	if err != nil {
-		slog.Warn("snapshot_log: JetStream init failed — equity snapshots will not be persisted", "err", err)
-		return nil
-	}
-	return l
 }
 
 func newTradeLog(js natsgo.JetStreamContext) perf.TradeLog {

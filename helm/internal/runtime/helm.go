@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,13 @@ import (
 	"mallow/helm/internal/runtime/core/strategy"
 	"mallow/helm/internal/runtime/perf"
 )
+
+// HandPnLSummer queries aggregate PnL metrics for a hand from PostgreSQL in one query.
+// Implemented by tradelog.Log; injected into HelmRuntime to avoid draining JetStream
+// history on every startup.
+type HandPnLSummer interface {
+	SumHandPnL(ctx context.Context, handID uuid.UUID) (totalPnL, totalCommission decimal.Decimal, wins, losses int64, err error)
+}
 
 // RiskManager is the interface for account-level risk controls.
 type RiskManager interface {
@@ -50,16 +58,29 @@ type HelmRuntime struct {
 	Creds     exchange.Credentials
 
 	// ── Hands ────────────────────────────────────────────────────────────────
-	mu     sync.RWMutex
-	hands  map[string]*Hand
-	paused bool
+	mu          sync.RWMutex
+	hands       map[string]*Hand
+	paused      bool
+	pausedHands []string // hand IDs that were running when helm was paused; restored on Resume
 
 	// ── Fill routing ─────────────────────────────────────────────────────────
-	// orderCh decouples the broker WS callback from NATS publishing.
-	// runOrderProcessor drains it; EnqueueOrderEvent is non-blocking (drops on full).
-	orderCh        chan exchange.OrderEvent
+	// lifecycleCh and wsFillCh decouple WS callbacks from NATS publishing.
+	// runOrderProcessor drains lifecycleCh; runFillProcessor drains wsFillCh.
+	// Both enqueue methods are non-blocking (drop on full with an error log).
+	lifecycleCh    chan exchange.OrderLifecycleEvent
+	wsFillCh       chan exchange.WsFillEvent
 	orderHandMap   map[string]string // orderID → handID; cleared on fill or cancel
 	orderHandMapMu sync.RWMutex
+
+	// fillRoute* count how WS fills resolved to a hand, for rollout observability of the
+	// client-order-id migration (see CLIENT_ORDER_ID.md):
+	//   clid   — routed via the mallow-generated client id (race-free path; the goal)
+	//   alias  — routed via the exchange-id alias (adapter didn't echo our clid, or bracket)
+	//   orphan — no owning hand (manual order, or a genuine routing miss)
+	// Exposed as helm_fill_route_total{route=...} on /metrics.
+	fillRouteClid   atomic.Int64
+	fillRouteAlias  atomic.Int64
+	fillRouteOrphan atomic.Int64
 
 	// ── Market data cache ────────────────────────────────────────────────────
 	lastSyncAtNano atomic.Int64 // UnixNano of last successful REST sync; 0 = never
@@ -74,15 +95,28 @@ type HelmRuntime struct {
 	tradeMu      sync.Mutex   // serialises ProcessTrade + ReportFill across all hands
 	requestCount atomic.Int64 // resets every minute via resetTicker goroutine
 	resetTicker  *time.Ticker
-	stopCh       chan struct{} // closed by Stop() to exit the resetTicker goroutine
+	stopCh       chan struct{} // closed by Stop() to exit background goroutines
+
+	// ── Snapshot hint ────────────────────────────────────────────────────────
+	// snapshotDirty is set to 1 by MarkSnapshotDirty() (called after fills)
+	// so the snapshot loop emits sooner than snapshotHeartbeat.
+	// The snapshot goroutine owns correctness; fills only provide a timing hint.
+	snapshotDirty atomic.Int32
 
 	// ── Durability ───────────────────────────────────────────────────────────
 	// nil fields degrade gracefully: poslog events are lost, events go to slog only.
-	PosLog      poslog.Log            // JetStream WAL for position events
-	SnapshotLog perf.SnapshotLog      // cash+equity+positions snapshot after every fill (HELM_SNAPSHOTS)
-	TradeLog    perf.TradeLog         // JetStream HELM_TRADES — closed round-trip trades; TradePersister drains into PG
-	nc          *nats.Conn            // NATS connection; used for portfolio.synced.* (nc.Publish path)
-	js          nats.JetStreamContext // JetStream context; publishes helm.events.* (durable, 7d)
+	PosLog    poslog.Log            // JetStream WAL for position events
+	TradeLog  perf.TradeLog         // JetStream HELM_TRADES — closed round-trip trades; TradePersister drains into PG
+	PnLSummer HandPnLSummer         // postgres aggregate query for RestorePnL; nil = fallback to JetStream drain
+	syncStore SyncStore             // persists last_synced_at after each successful portfolio sync
+	nc        *nats.Conn            // NATS connection; used for portfolio.synced.* (nc.Publish path)
+	js        nats.JetStreamContext // JetStream context; publishes helm.events.* (durable, 7d)
+
+	// ── WS fill stream lifecycle ─────────────────────────────────────────────
+	// fillStreamCancel cancels the per-runtime WS stream context so RotateCreds
+	// can disconnect and reconnect with new credentials without touching hands.
+	fillStreamMu     sync.Mutex
+	fillStreamCancel context.CancelFunc
 
 	// ── Gap-recovery dedup ───────────────────────────────────────────────────
 	// Prevents double-applying the same fill if RecoverGapFills runs more than once.
@@ -128,7 +162,8 @@ func NewHelmRuntime(
 		RiskMgr:             riskMgr,
 		Exchange:            ex,
 		Creds:               creds,
-		orderCh:             make(chan exchange.OrderEvent, 128),
+		lifecycleCh:         make(chan exchange.OrderLifecycleEvent, 128),
+		wsFillCh:            make(chan exchange.WsFillEvent, 256),
 		orderHandMap:        make(map[string]string),
 		hands:               make(map[string]*Hand),
 		prices:              make(map[string]decimal.Decimal),
@@ -152,6 +187,7 @@ func NewHelmRuntime(
 			}
 		}
 	}()
+
 	return rt
 }
 

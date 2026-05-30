@@ -43,7 +43,11 @@ func (h *Hand) Start() {
 	h.health.StartedAt = new(time.Now().UTC())
 	go h.run(ctx)
 	slog.Info("hand started", "hand_id", h.id, "exchange", h.helmRuntime.Exchange.Name())
-	h.emitEvent(natsapi.HelmEvent{Code: CodeHandStarted, Msg: "hand: started"})
+	h.emitEvent(natsapi.HelmEvent{
+		Code:   CodeHandStarted,
+		Msg:    "hand: started",
+		Reason: "if the strategy emits no stop_loss, a default will be applied (ATR×5; fallback 8% fixed)",
+	})
 }
 
 // Stop cancels the run-loop and waits for it to exit.
@@ -70,51 +74,19 @@ func (h *Hand) Stop() {
 	h.emitEvent(natsapi.HelmEvent{Code: CodeHandStopped, Msg: "hand: stopped"})
 }
 
-// Pause suspends signal processing without stopping the run-loop goroutine.
-// In-flight polls and fills continue to run; new signals are dropped.
-func (h *Hand) Pause() {
-	h.mu.Lock()
-	h.paused = true
-	h.health.Status = HealthPaused
-	h.mu.Unlock()
-	slog.Info("hand paused", "hand_id", h.id)
-	h.emitEvent(natsapi.HelmEvent{Code: CodeHandPaused, Msg: "hand: paused"})
-}
-
-// Resume re-enables signal processing after a Pause.
-func (h *Hand) Resume() {
-	h.mu.Lock()
-	if h.running {
-		h.paused = false
-		h.health.Status = HealthRunning
-	}
-	h.mu.Unlock()
-	slog.Info("hand resumed", "hand_id", h.id)
-	h.emitEvent(natsapi.HelmEvent{Code: CodeHandResumed, Msg: "hand: resumed"})
-}
-
 // Kill stops the hand and immediately closes all open positions via market orders.
 // Use for emergency shutdown when you must exit the exchange immediately.
 func (h *Hand) Kill(ctx context.Context) {
 	slog.Warn("hand: kill initiated — flattening all positions", "hand_id", h.id)
 	h.emitEvent(natsapi.HelmEvent{Code: CodeHandKilled, Reason: "flattening all positions", Msg: "hand: killed"})
 	h.mu.Lock()
-	h.paused = true
 	h.health.Status = HealthKilled
 	h.mu.Unlock()
 	h.flattenPositions(ctx)
 
-	// Publish final flat snapshot after kill
-	if h.helmRuntime.SnapshotLog != nil {
-		snap := h.handSnapshot(time.Now().UTC())
-		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := h.helmRuntime.SnapshotLog.Append(sctx, snap); err != nil {
-			slog.Warn("snapshot_log: hand snapshot append failed on kill", "hand_id", h.id, "err", err)
-		}
-		cancel()
-	}
-
 	h.Stop()
+	// Mark dirty so SnapshotWorker flushes the post-kill helm state promptly.
+	h.helmRuntime.MarkSnapshotDirty()
 	h.helmRuntime.RemoveHand(h.id.String())
 }
 
@@ -126,22 +98,13 @@ func (h *Hand) Release(ctx context.Context) {
 	slog.Info("hand: release — orphaning open positions", "hand_id", h.id)
 	h.emitEvent(natsapi.HelmEvent{Code: CodeHandReleased, Reason: "positions orphaned at exchange", Msg: "hand: released"})
 	h.mu.Lock()
-	h.paused = true
 	h.health.Status = HealthReleased
 	h.mu.Unlock()
 	h.releasePositions(ctx)
 
-	// Publish final flat snapshot after release
-	if h.helmRuntime.SnapshotLog != nil {
-		snap := h.handSnapshot(time.Now().UTC())
-		sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if err := h.helmRuntime.SnapshotLog.Append(sctx, snap); err != nil {
-			slog.Warn("snapshot_log: hand snapshot append failed on release", "hand_id", h.id, "err", err)
-		}
-		cancel()
-	}
-
 	h.Stop()
+	// Mark dirty so SnapshotWorker flushes the post-release helm state promptly.
+	h.helmRuntime.MarkSnapshotDirty()
 	h.helmRuntime.RemoveHand(h.id.String())
 }
 
@@ -161,13 +124,6 @@ func (h *Hand) IsRunning() bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.running
-}
-
-// IsPaused reports whether the hand is individually paused.
-func (h *Hand) IsPaused() bool {
-	h.mu.RLock()
-	defer h.mu.RUnlock()
-	return h.paused
 }
 
 // ---------------------------------------------------------------------------
@@ -269,24 +225,31 @@ func (h *Hand) activeUnitCount() int {
 	return h.pos.ActiveCount()
 }
 
-// MarkFillSeen records an orderID in seenFills without processing the fill.
-// Called by the registry when a partial fill is applied directly to the portfolio
-// (bypassing the hand run-loop), so pollOrders does not double-apply the same fill.
-func (h *Hand) MarkFillSeen(orderID string) {
+// MarkPartialApplied records the incremental qty that the registry applied to the
+// portfolio for a WS OrderEventPartialFill. This does NOT set seenFills — it
+// intentionally allows the subsequent WS OrderEventFilled event to proceed through
+// handleWsFill so that the final fill increment is applied and poslog is updated.
+//
+// The REST poll path (pollOrders "filled") deducts partialApplied from the cumulative
+// FilledQty returned by GetOrder to avoid double-counting.
+func (h *Hand) MarkPartialApplied(orderID string, qty decimal.Decimal) {
 	h.mu.Lock()
-	h.seenFills[orderID] = struct{}{}
+	h.partialApplied[orderID] = h.partialApplied[orderID].Add(qty)
 	h.mu.Unlock()
 }
 
-// EnqueueFill forwards a fully-filled WS OrderEvent to the hand's run-loop.
-// Non-blocking: if the buffer is full, the fill will be picked up by the REST
-// poll fallback instead. Called by the registry fill processor.
-func (h *Hand) EnqueueFill(ev exchange.OrderEvent) {
+// EnqueueFill forwards a fully-filled WsFillEvent to the hand's run-loop.
+// Non-blocking: returns true if the fill was enqueued, false if the buffer was full.
+// Callers MUST fall back to the orphan ReportFill path when false is returned so
+// the fill is never silently dropped. Called by the registry fill processor.
+func (h *Hand) EnqueueFill(ev exchange.WsFillEvent) bool {
 	select {
 	case h.fillCh <- ev:
+		return true
 	default:
-		slog.Warn("hand: fill channel full, REST poll will handle",
+		slog.Warn("hand: fill channel full, falling back to direct ReportFill",
 			"hand_id", h.id, "order_id", ev.OrderID)
+		return false
 	}
 }
 

@@ -112,6 +112,26 @@ func (h *Hand) flattenPositions(ctx context.Context) {
 			closeSideStr = "buy"
 		}
 		qty := leg.Qty.Abs()
+		// Spot exchanges enforce LOT_SIZE step (typically 0.0001 for most pairs).
+		// Truncate to 4 decimal places to avoid filter rejection on kill flatten.
+		// Futures use ReduceOnly and manage precision differently — skip truncation.
+		isFutures := h.helmRuntime.Creds.AccountType == exchange.AccountFuturesUSDM ||
+			h.helmRuntime.Creds.AccountType == exchange.AccountFuturesCOINM
+		if !isFutures {
+			qty = qty.Truncate(4)
+			// Record sub-step residual so ReportFill's dust-cleanup can remove the
+			// position after the fill without leaving an untradeable sliver.
+			if dust := leg.Qty.Abs().Sub(qty); dust.IsPositive() {
+				h.helmRuntime.RecordDust(leg.Symbol, dust)
+			}
+		}
+		if qty.IsZero() {
+			// Sub-step dust: record as dust and skip the exchange order.
+			h.helmRuntime.RecordDust(leg.Symbol, leg.Qty.Abs())
+			slog.Info("hand: kill flatten qty rounds to zero — dust exit (no exchange order)",
+				"hand_id", h.id, "symbol", leg.Symbol, "original_qty", leg.Qty.Abs())
+			continue
+		}
 		result, err := h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, exchange.OrderRequest{
 			Symbol: leg.Symbol,
 			Side:   closeSide,
@@ -353,15 +373,24 @@ func (h *Hand) checkExits() {
 			h.mu.Lock()
 			delete(h.exitLevels, sym)
 			h.mu.Unlock()
-			slog.Warn("exit monitor: portfolio flat but exitLevels present — external close detected, pausing hand",
+			slog.Warn("exit monitor: portfolio flat but exitLevels present — external close detected, stopping hand",
 				"hand_id", h.id, "symbol", sym)
 			h.emitEvent(natsapi.HelmEvent{
-				Code:   CodeHandAutoPaused,
+				Code:   CodeHandAutoStopped,
 				Symbol: sym,
 				Reason: "external close detected: portfolio flat but local exit level present",
-				Msg:    "hand: auto-paused due to position desync",
+				Msg:    "hand: auto-stopped due to position desync",
 			})
-			h.Pause()
+			go h.Stop()
+			continue
+		}
+
+		// Exchange-side bracket orders are active — they will close the position.
+		// Skip the local trigger to avoid double-closing (exchange SL fills first,
+		// then this fires and places a redundant sell against a flat position).
+		if len(el.ExchangeOrderIDs) > 0 {
+			slog.Debug("exit monitor: skipping local trigger — exchange-side orders active",
+				"hand_id", h.id, "symbol", sym, "exchange_orders", el.ExchangeOrderIDs)
 			continue
 		}
 
@@ -526,4 +555,59 @@ func (h *Hand) checkPositionDesync(ctx context.Context) {
 		delete(h.exitLevels, leg.Symbol)
 		h.mu.Unlock()
 	}
+}
+
+// closeLegAsDust closes the poslog position for symbol without placing an exchange
+// order. Used when an exit order is rejected because the qty is below the exchange's
+// minimum lot size — the unsold dust remains in the helm-level portfolio.
+//
+// Sequence:
+//  1. Registers a synthetic order ID in pendingOrderPos so applyFill can resolve the leg.
+//  2. Emits KindOrderPlaced(IsClose=true) → transitions leg PhaseOpen→PhaseExiting.
+//  3. Calls applyFill("dust_exit") → detects isClosingFill=true → emits KindPositionClosed.
+func (h *Hand) closeLegAsDust(ctx context.Context, symbol, side string, qty, price decimal.Decimal) {
+	h.mu.RLock()
+	var posID string
+	for _, leg := range h.pos.ActiveLegs() {
+		if leg.Symbol == symbol && (leg.Phase == position.PhaseOpen || leg.Phase == position.PhaseAdding) {
+			posID = leg.PositionID
+			break
+		}
+	}
+	h.mu.RUnlock()
+	if posID == "" {
+		return // already flat — nothing to close
+	}
+
+	dustID := fmt.Sprintf("dust_%s_%d", symbol, time.Now().UnixNano())
+
+	h.mu.Lock()
+	h.pendingOrderPos[dustID] = posID
+	// Clear the exit level so checkExits stops retrying.
+	delete(h.exitLevels, symbol)
+	h.mu.Unlock()
+
+	// Transition leg to PhaseExiting so applyFill detects isClosingFill.
+	placedPayload, _ := json.Marshal(poslog.OrderPlacedPayload{
+		OrderID:   dustID,
+		Symbol:    symbol,
+		Side:      side,
+		Qty:       qty.String(),
+		Price:     "0",
+		OrderType: "market",
+		IsClose:   true,
+	})
+	h.publishAndApply(ctx, poslog.Event{
+		ID:         dustID,
+		HandID:     h.id.String(),
+		HelmID:     h.helmID.String(),
+		PositionID: posID,
+		Kind:       poslog.KindOrderPlaced,
+		Payload:    placedPayload,
+		At:         time.Now().UTC(),
+	})
+
+	// Apply synthetic fill → emits KindPositionClosed + trade record.
+	// price=0 when last known price unavailable; PnL will be reported as zero.
+	h.applyFill(ctx, dustID, symbol, side, qty, price, decimal.Zero, "dust_exit")
 }

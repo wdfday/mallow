@@ -59,7 +59,6 @@ func (h *Hand) publishOrderPlaced(
 	limitPrice decimal.Decimal,
 	orderType exchange.OrderType,
 	isExitIntent bool,
-	patternKind string,
 ) {
 	// Determine pyramid add vs new leg vs close.
 	h.mu.RLock()
@@ -98,14 +97,13 @@ func (h *Hand) publishOrderPlaced(
 		ClientOrderID: clientOrderID,
 		Symbol:        symbol,
 		Side:          reply.Side,
-		Qty:          reply.Qty.String(),
-		Price:        priceStr,
-		OrderType:    orderTypeStr,
-		StopLoss:     reply.StopLoss.String(),
-		TakeProfit:   reply.TakeProfit.String(),
-		IsPyramidAdd: isPyramidAdd,
-		IsClose:      isClose,
-		PatternKind:  patternKind,
+		Qty:           reply.Qty.String(),
+		Price:         priceStr,
+		OrderType:     orderTypeStr,
+		StopLoss:      reply.StopLoss.String(),
+		TakeProfit:    reply.TakeProfit.String(),
+		IsPyramidAdd:  isPyramidAdd,
+		IsClose:       isClose,
 	})
 	h.publishAndApply(ctx, poslog.Event{
 		ID:         orderID,
@@ -171,7 +169,6 @@ func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, pric
 			cp.Qty = qty.String() // fill qty, not leg's accumulated qty
 			cp.EntryPrice = snap.EntryPrice.String()
 			cp.EntryAt = snap.OpenedAt
-			cp.PatternKind = snap.PatternKind
 			if snap.StopLoss.IsPositive() {
 				cp.StopLossPrice = snap.StopLoss.String()
 			}
@@ -227,7 +224,6 @@ func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, pric
 			cp.Qty = qty.String() // fill qty, not leg's accumulated qty
 			cp.EntryPrice = snap.EntryPrice.String()
 			cp.EntryAt = snap.OpenedAt
-			cp.PatternKind = snap.PatternKind
 			if snap.StopLoss.IsPositive() {
 				cp.StopLossPrice = snap.StopLoss.String()
 			}
@@ -285,7 +281,6 @@ func (h *Hand) appendTradeRecord(ctx context.Context, cp poslog.PositionClosedPa
 		NEntries:        cp.NEntries,
 		ExitReason:      cp.ExitReason,
 		Strategy:        h.StrategyName,
-		PatternKind:     cp.PatternKind,
 	}
 	if err := tl.Append(ctx, rec); err != nil {
 		slog.Warn("trade_log: publish failed", "hand_id", h.id, "err", err)

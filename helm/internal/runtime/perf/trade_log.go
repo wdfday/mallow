@@ -42,7 +42,6 @@ type TradeRecord struct {
 
 	ExitReason  string `json:"exit_reason,omitzero"`  // signal / sl / tp / kill / bracket_exit / external
 	Strategy    string `json:"strategy,omitzero"`     // strategy name
-	PatternKind string `json:"pattern_kind,omitzero"` // technical pattern at entry (optional)
 	RegimeState string `json:"regime_state,omitzero"` // regime tag at entry (optional)
 }
 

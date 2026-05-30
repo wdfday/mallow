@@ -110,9 +110,9 @@ func (p *Persister) upsertPlaced(ctx context.Context, e poslog.Event, pl poslog.
 	const q = `
 		INSERT INTO orders
 			(exchange_order_id, client_order_id, helm_id, hand_id, position_id,
-			 symbol, side, order_type, qty, price, status, is_close, pattern_kind,
+			 symbol, side, order_type, qty, price, status, is_close,
 			 placed_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'placed',$11,$12,$13,NOW())
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'placed',$11,$12,NOW())
 		ON CONFLICT (exchange_order_id) DO UPDATE SET
 			client_order_id = EXCLUDED.client_order_id,
 			position_id     = EXCLUDED.position_id,
@@ -122,7 +122,6 @@ func (p *Persister) upsertPlaced(ctx context.Context, e poslog.Event, pl poslog.
 			qty             = EXCLUDED.qty,
 			price           = EXCLUDED.price,
 			is_close        = EXCLUDED.is_close,
-			pattern_kind    = EXCLUDED.pattern_kind,
 			placed_at       = EXCLUDED.placed_at,
 			updated_at      = NOW()
 		WHERE orders.status NOT IN ('filled','cancelled')`
@@ -140,7 +139,6 @@ func (p *Persister) upsertPlaced(ctx context.Context, e poslog.Event, pl poslog.
 		nullableNumeric(pl.Qty),
 		nullableNumeric(pl.Price),
 		pl.IsClose,
-		nullableText(pl.PatternKind),
 		e.At,
 	)
 	return err

@@ -18,19 +18,17 @@ func newPort(capital float64) *portfolio.Portfolio {
 
 func entryIntent(sym string, strength float64) strategy.Intent {
 	return strategy.Intent{
-		Signal:     strategy.Signal{Symbol: sym, Direction: strategy.DirLong, Strength: strength},
-		Action:     strategy.ActionEnterLong,
-		Urgency:    strategy.UrgencyNormal,
-		Confidence: strength,
+		Signal:  strategy.Signal{Symbol: sym, Direction: strategy.DirLong, Strength: strength},
+		Action:  strategy.ActionEnterLong,
+		Urgency: strategy.UrgencyNormal,
 	}
 }
 
 func closeIntent(sym string) strategy.Intent {
 	return strategy.Intent{
-		Signal:     strategy.Signal{Symbol: sym, Direction: strategy.DirExit, Strength: 1.0},
-		Action:     strategy.ActionExitLong,
-		Urgency:    strategy.UrgencyImmediate,
-		Confidence: 1.0,
+		Signal:  strategy.Signal{Symbol: sym, Direction: strategy.DirExit, Strength: 1.0},
+		Action:  strategy.ActionExitLong,
+		Urgency: strategy.UrgencyImmediate,
 	}
 }
 

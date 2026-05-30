@@ -29,18 +29,12 @@ func (s *SignalFollower) Name() string { return "signal_follower" }
 // Evaluate translates a raw Signal into a structured Intent.
 // Exit signals are always passed through with Immediate urgency — they are never dropped.
 func (s *SignalFollower) Evaluate(sig Signal) Intent {
-	intent := Intent{
-		Signal:     sig,
-		Confidence: sig.Strength,
-	}
+	intent := Intent{Signal: sig}
 
 	// Exits always pass — never drop a close signal.
 	if sig.IsUrgent() {
 		intent.Action = s.exitAction(sig)
 		intent.Urgency = UrgencyImmediate
-		if intent.Confidence == 0 {
-			intent.Confidence = 1.0
-		}
 		return intent
 	}
 

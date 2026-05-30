@@ -59,7 +59,7 @@ func (t *Tactician) Plan(intent strategy.Intent, ctx MarketContext) ExecutionPla
 		(intent.Action == strategy.ActionEnterLong ||
 			intent.Action == strategy.ActionEnterShort ||
 			intent.Action == strategy.ActionScaleIn) {
-		plan.QuoteQty = t.sizing.FixedQuoteQty
+		plan.QuoteQty = t.sizing.FixedQuoteQty.Mul(strengthFactor(intent.Signal))
 		// Capital isolation: clamp QuoteQty to AvailableBudget for entries.
 		if ctx.AvailableBudget.IsPositive() && plan.QuoteQty.GreaterThan(ctx.AvailableBudget) {
 			plan.QuoteQty = ctx.AvailableBudget
@@ -104,41 +104,51 @@ func (t *Tactician) size(intent strategy.Intent, ctx MarketContext) decimal.Deci
 		return ctx.PositionQty.Abs().Div(decimal.NewFromInt(2))
 	}
 
-	unit := t.unitCapital()
 	var qty decimal.Decimal
 
 	switch t.sizing.Mode {
 	case SizingFixedQty:
 		// Fixed-qty bypasses all capital logic — return immediately without clamping.
-		return t.sizing.FixedQty
-
-	case SizingVolatility:
-		// Risk-parity: risk$ = RiskPerTradePct × unit; position size = risk$ / ATR.
-		// ATR comes from the signal (herald ledger); if zero the hand does not trade.
-		if ctx.ATR.IsPositive() {
-			riskDollar := unit.Mul(decimal.NewFromFloat(t.sizing.RiskPerTradePct))
-			qty = riskDollar.Div(ctx.ATR)
-		} else {
-			slog.Warn("tactics: volatility sizing skipped — signal carries no ATR",
-				"symbol", intent.Signal.Symbol, "price", ctx.Price)
-		}
+		// Scaled by signal strength like the other notional modes.
+		return t.sizing.FixedQty.Mul(strengthFactor(intent.Signal))
 
 	case SizingPercentEquity:
-		// Deploy full unit capital, ignoring signal confidence.
-		qty = unit.Div(ctx.Price)
+		// Notional sizing: deploy one unit of capital, scaled by signal strength.
+		// qty = unit * strength / price.
+		qty = t.unitCapital().Mul(strengthFactor(intent.Signal)).Div(ctx.Price)
 
-	default: // fixed_fractional
-		// Scale unit capital by signal confidence, unless StrengthSizing is off.
-		confidence := intent.Confidence
-		if !t.sizing.StrengthSizing {
-			confidence = 1.0
+	default: // fixed_fractional (Ralph Vince) and volatility
+		// NOTE: the risk-based modes deliberately do NOT scale by strength — their size
+		// is fixed by the risk fraction and the stop, not by conviction.
+		// Ralph Vince fixed fractional: risk a fixed fraction f of account equity per
+		// trade; position size = (f × equity) / risk-per-unit, where risk-per-unit is the
+		// stop distance per unit. This is NOT notional sizing — qty falls out of the stop:
+		// a wide stop → small qty, a tight stop → large qty (capped below).
+		//   fixed_fractional → stop from the signal's SL (|price − SL|), ATR as fallback.
+		//   volatility       → force ATR as the stop (pure volatility parity).
+		f := decimal.NewFromFloat(t.sizing.RiskPerTradePct)
+		if !f.IsPositive() {
+			slog.Warn("tactics: risk sizing skipped — risk_per_trade_pct not set",
+				"symbol", intent.Signal.Symbol)
+			return decimal.Zero
 		}
-		alloc := unit.Mul(decimal.NewFromFloat(confidence))
-		qty = alloc.Div(ctx.Price)
+		stopDist := t.stopDistance(intent.Signal, ctx)
+		if !stopDist.IsPositive() {
+			slog.Warn("tactics: risk sizing skipped — no stop distance (signal has no SL and no ATR)",
+				"symbol", intent.Signal.Symbol, "price", ctx.Price)
+			return decimal.Zero
+		}
+		qty = t.allocatedEquity().Mul(f).Div(stopDist)
 	}
 
-	// Clamp to one unit (never deploy more than one unit per entry).
-	maxQty := unit.Div(ctx.Price)
+	// Notional ceiling — Ralph Vince can demand a large position on a tight stop, so cap
+	// exposure at MaxPositionPct × equity (its documented meaning). Default 100% of equity
+	// when unset; spot cash + AvailableBudget clamp it further below.
+	capPct := decimal.NewFromInt(1)
+	if t.sizing.MaxPositionPct > 0 {
+		capPct = decimal.NewFromFloat(t.sizing.MaxPositionPct)
+	}
+	maxQty := t.allocatedEquity().Mul(capPct).Div(ctx.Price)
 	if qty.GreaterThan(maxQty) {
 		qty = maxQty
 	}
@@ -165,6 +175,40 @@ func (t *Tactician) size(intent strategy.Intent, ctx MarketContext) decimal.Deci
 //   - shared-pool hands receive Portfolio.Equity()
 func (t *Tactician) allocatedEquity() decimal.Decimal {
 	return t.totalEquity
+}
+
+// strengthFactor returns the signal's conviction in [0,1], used to scale the notional
+// sizing modes (percent_equity, fixed_qty, quote_qty). The risk-based modes
+// (fixed_fractional, volatility) ignore it. Zero/unset strength is treated as full (1.0).
+func strengthFactor(sig strategy.Signal) decimal.Decimal {
+	s := sig.Strength
+	if s <= 0 {
+		return decimal.NewFromInt(1)
+	}
+	if s > 1 {
+		s = 1
+	}
+	return decimal.NewFromFloat(s)
+}
+
+// stopDistance returns the per-unit risk (the stop distance) used by Ralph Vince
+// fixed-fractional sizing. fixed_fractional prefers the signal's stop loss — an absolute
+// SL (|price − SL|) or an offset SL (|offset|) — and falls back to ATR when the signal
+// carries no stop. volatility forces ATR (the pure volatility-parity variant). Returns
+// zero when neither a stop nor ATR is available (caller then skips the trade).
+func (t *Tactician) stopDistance(sig strategy.Signal, ctx MarketContext) decimal.Decimal {
+	if t.sizing.Mode != SizingVolatility {
+		if sig.IsOffset {
+			if d := sig.StopPrice.Abs(); d.IsPositive() {
+				return d
+			}
+		} else if sig.StopPrice.IsPositive() {
+			if d := ctx.Price.Sub(sig.StopPrice).Abs(); d.IsPositive() {
+				return d
+			}
+		}
+	}
+	return ctx.ATR // fallback for fixed_fractional; the forced stop for volatility
 }
 
 // unitCapital returns the capital deployed per single entry order.

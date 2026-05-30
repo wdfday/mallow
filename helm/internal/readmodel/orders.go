@@ -25,7 +25,6 @@ type OrderRecord struct {
 	FilledQty       decimal.Decimal
 	FilledPrice     decimal.Decimal
 	IsClose         bool
-	PatternKind     string
 	Reason          string
 	PlacedAt        time.Time
 	UpdatedAt       time.Time

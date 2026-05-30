@@ -89,23 +89,26 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 		delete(h.pendingExits, orderID)
 		resolved := exitLevel{Side: pending.Side}
 		if pending.IsOffset {
-			// Resolve offset against THIS fill's average price (FilledAvg of the
-			// current order), not the position's blended cost. This gives the
-			// trend-following pyramid behaviour the user expects:
-			//
-			//   add 1 fill @ 100, offset −5 → SL = 95
-			//   add 2 fill @ 110, offset −5 → SL = 105   ← raised with the new add
-			//
-			// (Using the blended avg would lock SL near the original entry, defeating
-			// the protective ratchet that pyramid users want.)
-			// For non-pyramid first entries this collapses to the entry fill price,
-			// matching the previous behaviour.
-			if price.IsPositive() {
+			// ── avg-anchor (pyramiding-design.md) ──
+			// Anchor offsets to the leg's blended avg entry AFTER this add, NOT this fill's
+			// price, so the SL/TP rebase tracks the merged cost (consistent with the avg-anchored
+			// add gate in hand_runner.go). The leg state here is pre-fill, so compute the post-add
+			// blended avg inline using the same qty/price publishOrderFilled feeds the leg → it
+			// matches the leg's EntryPrice exactly. First entry: leg qty 0 → anchor == fill price.
+			//   add 1 @ 100 (avg 100), offset -5 → SL = 95
+			//   add 2 @ 110 (avg 105), offset -5 → SL = 100   ← anchored to blended avg, not last fill
+			anchor := price
+			if snap, ok := h.pos.LegSnapshot(posIDForBracket); ok && snap.Qty.IsPositive() {
+				if newQty := snap.Qty.Add(qty); newQty.IsPositive() {
+					anchor = snap.Qty.Mul(snap.EntryPrice).Add(qty.Mul(price)).Div(newQty)
+				}
+			}
+			if anchor.IsPositive() {
 				if !pending.StopOffset.IsZero() {
-					resolved.StopLoss = price.Add(pending.StopOffset)
+					resolved.StopLoss = anchor.Add(pending.StopOffset)
 				}
 				if !pending.TakeProfitOffset.IsZero() {
-					resolved.TakeProfit = price.Add(pending.TakeProfitOffset)
+					resolved.TakeProfit = anchor.Add(pending.TakeProfitOffset)
 				}
 			}
 			offsetResolved = true
@@ -335,7 +338,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 				AccountID: h.helmRuntime.AccountID.String(),
 				UserID:    h.helmRuntime.UserID.String(),
 				HandID:    h.id.String(),
-				TradeID:   "",      // no exchange trade ID on poll/timeout paths; dedup falls back to helmID+orderID
+				TradeID:   "", // no exchange trade ID on poll/timeout paths; dedup falls back to helmID+orderID
 				OrderID:   orderID,
 				Kind:      "fill",
 				Symbol:    symbol,
@@ -395,7 +398,6 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 	})
 
 }
-
 
 // checkEdgeRisk evaluates the per-hand sliding-window edge-degradation guard.
 // Called after every closing fill from the run-loop goroutine (no extra lock needed

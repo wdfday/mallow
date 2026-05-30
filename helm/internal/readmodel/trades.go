@@ -37,7 +37,6 @@ type TradeRecord struct {
 
 	Source      string // exit reason: signal / sl / tp / kill / bracket_exit / external / release
 	Strategy    string
-	PatternKind string
 	RegimeState string
 
 	EntryAt time.Time

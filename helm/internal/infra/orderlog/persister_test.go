@@ -67,7 +67,7 @@ func TestPersister_OrderPlaced_Inserts(t *testing.T) {
 	mock.ExpectExec("INSERT INTO orders").
 		WithArgs(
 			"ex-1", "mlwabc123", helmID.String(), handID.String(), "ex-1",
-			"BTCUSDT", "buy", "market", "0.5", nil, false, nil, e.At,
+			"BTCUSDT", "buy", "market", "0.5", nil, false, e.At,
 		).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 

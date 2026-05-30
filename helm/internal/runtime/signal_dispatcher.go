@@ -89,12 +89,6 @@ func (d *SignalDispatcher) Dispatch(resp *engine.SignalResponse, receivedAt time
 	if sig.Atr != nil {
 		s.ATR = decimal.NewFromFloat(*sig.Atr)
 	}
-	if sig.PatternKind != nil {
-		s.PatternKind = *sig.PatternKind
-	}
-	if sig.Confidence != nil {
-		s.PatternConfidence = *sig.Confidence
-	}
 	if sig.Reason != nil {
 		s.Reason = *sig.Reason
 	}
@@ -104,7 +98,6 @@ func (d *SignalDispatcher) Dispatch(resp *engine.SignalResponse, receivedAt time
 		"symbol", s.Symbol,
 		"dir", s.Direction,
 		"strength", s.Strength,
-		"pattern", s.PatternKind,
 		"urgent", s.IsUrgent(),
 	)
 	d.Metrics.SignalsDispatched.Add(1)

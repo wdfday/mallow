@@ -8,57 +8,68 @@ import (
 	"mallow/helm/internal/runtime/core/strategy"
 )
 
-// enterIntent builds a fixed_fractional long entry with the given confidence.
-func enterIntent(confidence float64) strategy.Intent {
+// longIntent builds a long entry with the given signal strength.
+func longIntent(strength float64) strategy.Intent {
 	return strategy.Intent{
-		Signal:     strategy.Signal{Symbol: "BTCUSDT", Strength: confidence},
-		Action:     strategy.ActionEnterLong,
-		Urgency:    strategy.UrgencyImmediate,
-		Confidence: confidence,
+		Signal:  strategy.Signal{Symbol: "BTCUSDT", Strength: strength},
+		Action:  strategy.ActionEnterLong,
+		Urgency: strategy.UrgencyImmediate,
 	}
 }
 
-// TestStrengthSizingToggle verifies that fixed_fractional sizing scales by signal
-// confidence only when StrengthSizing is true; when false the entry is sized at the
-// full unit allocation regardless of confidence.
-func TestStrengthSizingToggle(t *testing.T) {
+// TestPercentEquityScalesByStrength verifies that the notional modes (percent_equity)
+// scale linearly with signal strength: strength 1.0 → full unit, 0.25 → quarter unit.
+func TestPercentEquityScalesByStrength(t *testing.T) {
 	ctx := MarketContext{Price: decimal.NewFromInt(100)}
 	equity := decimal.NewFromInt(10000)
 
-	newTact := func(apply bool) *Tactician {
-		tact := New(SizingConfig{
-			Mode:           SizingFixedFractional,
-			StrengthSizing: apply,
-			UnitPct:        0.10, // unit = 1000 → 10 base @ price 100
-		})
-		tact.UpdateEquity(equity)
-		return tact
-	}
+	tact := New(SizingConfig{
+		Mode:    SizingPercentEquity,
+		UnitPct: 0.10, // unit = 1000 → 10 base @ price 100
+	})
+	tact.UpdateEquity(equity)
 
-	on := newTact(true)
-	off := newTact(false)
+	full := tact.Plan(longIntent(1.0), ctx).Qty
+	weak := tact.Plan(longIntent(0.25), ctx).Qty
 
-	full := on.Plan(enterIntent(1.0), ctx).Qty
-	onWeak := on.Plan(enterIntent(0.25), ctx).Qty
-	offWeak := off.Plan(enterIntent(0.25), ctx).Qty
-
-	// Sanity: full allocation is 1000/100 = 10.
 	if !full.Equal(decimal.NewFromInt(10)) {
 		t.Fatalf("full allocation: want 10, got %s", full)
 	}
+	// 0.25 strength → 0.25 * 10 = 2.5.
+	if !weak.Equal(decimal.NewFromFloat(2.5)) {
+		t.Fatalf("weak strength: want 2.5, got %s", weak)
+	}
+}
 
-	// StrengthSizing on: weak confidence scales down (0.25 * 10 = 2.5).
-	if !onWeak.Equal(decimal.NewFromFloat(2.5)) {
-		t.Fatalf("strength_sizing on, weak: want 2.5, got %s", onWeak)
+// TestFixedFractionalIgnoresStrength verifies the Ralph Vince risk-based mode does NOT
+// scale by signal strength — size is fixed by the risk fraction and the stop distance.
+func TestFixedFractionalIgnoresStrength(t *testing.T) {
+	// Price 100, SL 90 → stop distance 10. Risk 1% of 10k equity = 100.
+	// qty = 100 / 10 = 10 (well under the MaxPositionPct cap of 100% → 100 units).
+	ctx := MarketContext{Price: decimal.NewFromInt(100)}
+	equity := decimal.NewFromInt(10000)
+
+	tact := New(SizingConfig{
+		Mode:            SizingFixedFractional,
+		RiskPerTradePct: 0.01,
+		MaxPositionPct:  1.0,
+	})
+	tact.UpdateEquity(equity)
+
+	intent := func(strength float64) strategy.Intent {
+		in := longIntent(strength)
+		in.Signal.StopPrice = decimal.NewFromInt(90)
+		return in
 	}
 
-	// StrengthSizing off: weak confidence ignored → full unit.
-	if !offWeak.Equal(full) {
-		t.Fatalf("strength_sizing off, weak: want %s (full), got %s", full, offWeak)
-	}
+	full := tact.Plan(intent(1.0), ctx).Qty
+	weak := tact.Plan(intent(0.25), ctx).Qty
 
-	// And the two must differ, proving the toggle has an effect.
-	if onWeak.Equal(offWeak) {
-		t.Fatalf("toggle had no effect: on=%s off=%s", onWeak, offWeak)
+	if !full.Equal(decimal.NewFromInt(10)) {
+		t.Fatalf("fixed_fractional size: want 10, got %s", full)
+	}
+	// Strength must NOT change the size for risk-based modes.
+	if !weak.Equal(full) {
+		t.Fatalf("fixed_fractional must ignore strength: full=%s weak=%s", full, weak)
 	}
 }

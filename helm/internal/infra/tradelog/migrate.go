@@ -15,7 +15,6 @@ import (
 //	net_pnl          — generated: pnl − commission (use this for KPI math)
 //	holding_seconds  — generated: exit_at − entry_at (NULL when entry_at is NULL)
 //	source           — exit reason: signal / sl / tp / kill / bracket_exit / external
-//	pattern_kind     — technical pattern that triggered entry (e.g. "bull_flag"); nullable
 //	regime_state     — market regime tag at entry (e.g. "trend_up"); nullable
 func Migrate(db *gorm.DB) error {
 	stmts := []string{
@@ -40,7 +39,6 @@ func Migrate(db *gorm.DB) error {
 		// Additive columns introduced for KPI / attribution. ALTER … IF NOT EXISTS
 		// keeps the migration idempotent.
 		`ALTER TABLE trades
-			ADD COLUMN IF NOT EXISTS pattern_kind      TEXT,
 			ADD COLUMN IF NOT EXISTS regime_state      TEXT,
 			ADD COLUMN IF NOT EXISTS timeframe         TEXT,
 			ADD COLUMN IF NOT EXISTS stop_loss_price   NUMERIC(20,8),
@@ -76,8 +74,6 @@ func Migrate(db *gorm.DB) error {
 			ON trades (user_id, exit_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_trades_strategy_exit
 			ON trades (strategy, exit_at DESC) WHERE strategy IS NOT NULL`,
-		`CREATE INDEX IF NOT EXISTS idx_trades_pattern_exit
-			ON trades (pattern_kind, exit_at DESC) WHERE pattern_kind IS NOT NULL`,
 		`CREATE INDEX IF NOT EXISTS idx_trades_timeframe_exit
 			ON trades (timeframe, exit_at DESC) WHERE timeframe IS NOT NULL`,
 		// Dedup index: same hand + entry + exit should not produce two rows.

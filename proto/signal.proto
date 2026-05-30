@@ -41,9 +41,12 @@ message SignalMsg {
   // the volatility position-sizing mode. Zero when the strategy does not use ATR.
   optional double atr          = 12;
 
-  // Pattern metadata (populated by pattern_breakout strategy only).
-  optional string pattern_kind = 7;
-  optional double confidence   = 8;
+  // Trailing-stop fraction from the running peak (long) / trough (short).
+  // E.g. 0.05 = exit after a 5% retrace from the best price seen in-position.
+  optional double trailing_stop_pct = 13;
+
+  // Time-based exit: force-close after this many bars in position.
+  optional int64  max_bars_held     = 14;
 }
 
 // One hand emits at most one signal per bar.

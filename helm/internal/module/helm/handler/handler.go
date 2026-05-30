@@ -843,7 +843,6 @@ type orderHistoryResp struct {
 	FilledQty       string `json:"filled_qty,omitempty"`
 	FilledPrice     string `json:"filled_price,omitempty"`
 	IsClose         bool   `json:"is_close"`
-	PatternKind     string `json:"pattern_kind,omitempty"`
 	Reason          string `json:"reason,omitempty"`
 	PlacedAt        string `json:"placed_at,omitempty"`
 	UpdatedAt       string `json:"updated_at"`
@@ -906,7 +905,6 @@ func (h *Handler) ordersHistory(c *gin.Context) {
 			OrderType:       r.OrderType,
 			Status:          r.Status,
 			IsClose:         r.IsClose,
-			PatternKind:     r.PatternKind,
 			Reason:          r.Reason,
 			UpdatedAt:       r.UpdatedAt.Format(time.RFC3339),
 		}

@@ -124,9 +124,8 @@ type Stats struct {
 
 	AvgHoldingSeconds int `json:"avg_holding_seconds"`
 
-	BySymbol  []GroupedKPI `json:"by_symbol,omitempty"`
-	ByPattern []GroupedKPI `json:"by_pattern,omitempty"`
-	ByExit    []GroupedKPI `json:"by_exit,omitempty"`
+	BySymbol []GroupedKPI `json:"by_symbol,omitempty"`
+	ByExit   []GroupedKPI `json:"by_exit,omitempty"`
 }
 
 // GroupedKPI is a per-group slice used for attribution.

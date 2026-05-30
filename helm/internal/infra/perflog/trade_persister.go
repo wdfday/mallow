@@ -119,7 +119,7 @@ func (p *TradePersister) insertBatch(ctx context.Context, recs []perf.TradeRecor
 		return nil
 	}
 
-	const cols = 23
+	const cols = 22
 	placeholders := make([]string, len(recs))
 	args := make([]any, 0, len(recs)*cols)
 
@@ -147,7 +147,6 @@ func (p *TradePersister) insertBatch(ctx context.Context, recs []perf.TradeRecor
 			nullableInt(r.NEntries),
 			nullableText(r.ExitReason),
 			nullableText(r.Strategy),
-			nullableText(r.PatternKind),
 			nullableText(r.RegimeState),
 			nullableTime(r.EntryAt),
 		)
@@ -160,7 +159,7 @@ func (p *TradePersister) insertBatch(ctx context.Context, recs []perf.TradeRecor
 		 entry_price, exit_price, qty, pnl, commission,
 		 stop_loss_price, take_profit_price, planned_risk,
 		 entry_order_id, exit_order_id, n_entries,
-		 source, strategy, pattern_kind, regime_state,
+		 source, strategy, regime_state,
 		 entry_at, exit_at)
 		VALUES ` + strings.Join(placeholders, ",") + `
 		ON CONFLICT (hand_id, entry_at, exit_at) DO NOTHING`

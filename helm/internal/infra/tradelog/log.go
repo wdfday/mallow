@@ -68,7 +68,7 @@ func (l *postgresLog) Query(ctx context.Context, f readmodel.TradeFilter) ([]rea
 			entry_price, exit_price, qty, pnl, commission, net_pnl,
 			stop_loss_price, take_profit_price, planned_risk, r_multiple,
 			entry_order_id, exit_order_id, n_entries, holding_seconds,
-			source, strategy, pattern_kind, regime_state,
+			source, strategy, regime_state,
 			entry_at, exit_at
 		FROM trades WHERE `+where+` ORDER BY exit_at DESC LIMIT $2`,
 		args...,
@@ -82,14 +82,14 @@ func (l *postgresLog) Query(ctx context.Context, f readmodel.TradeFilter) ([]rea
 	for rows.Next() {
 		var r readmodel.TradeRecord
 		var (
-			timeframe                                  sql.NullString
-			entryPrice, exitPrice, qty                 sql.NullString
-			pnl, commission, netPnL                    sql.NullString
-			slPrice, tpPrice, plannedRisk, rMultiple   sql.NullString
-			entryOrderID, exitOrderID                  sql.NullString
-			nEntries, holdingSeconds                   sql.NullInt32
-			source, strategy, patternKind, regimeState sql.NullString
-			entryAt                                    sql.NullTime
+			timeframe                                sql.NullString
+			entryPrice, exitPrice, qty               sql.NullString
+			pnl, commission, netPnL                  sql.NullString
+			slPrice, tpPrice, plannedRisk, rMultiple sql.NullString
+			entryOrderID, exitOrderID                sql.NullString
+			nEntries, holdingSeconds                 sql.NullInt32
+			source, strategy, regimeState            sql.NullString
+			entryAt                                  sql.NullTime
 		)
 
 		if err := rows.Scan(
@@ -97,7 +97,7 @@ func (l *postgresLog) Query(ctx context.Context, f readmodel.TradeFilter) ([]rea
 			&entryPrice, &exitPrice, &qty, &pnl, &commission, &netPnL,
 			&slPrice, &tpPrice, &plannedRisk, &rMultiple,
 			&entryOrderID, &exitOrderID, &nEntries, &holdingSeconds,
-			&source, &strategy, &patternKind, &regimeState,
+			&source, &strategy, &regimeState,
 			&entryAt, &r.ExitAt,
 		); err != nil {
 			return nil, err
@@ -123,7 +123,6 @@ func (l *postgresLog) Query(ctx context.Context, f readmodel.TradeFilter) ([]rea
 		}
 		r.Source = source.String
 		r.Strategy = strategy.String
-		r.PatternKind = patternKind.String
 		r.RegimeState = regimeState.String
 		if entryAt.Valid {
 			r.EntryAt = entryAt.Time

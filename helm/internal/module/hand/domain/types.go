@@ -126,8 +126,8 @@ const (
 //
 // Exactly one sizing param is active per SizeMode:
 //
-//	fixed_fractional → RiskPerTradePct
-//	volatility       → RiskPerTradePct  (ATR-scaled)
+//	fixed_fractional → RiskPerTradePct  (Ralph Vince: f×equity / stop; SL → ATR fallback)
+//	volatility       → RiskPerTradePct  (same, stop forced to ATR)
 //	percent_equity   → UnitCapital  (if set, USDT)  or  UnitPct  (fraction of allocated)
 //	fixed_qty        → FixedQty
 //	quote_qty        → FixedQuoteQty
@@ -135,18 +135,10 @@ type PositionConfig struct {
 	// SizeMode selects the sizing algorithm. Defaults to fixed_fractional.
 	SizeMode SizeMode `json:"size_mode,omitempty"`
 
-	// StrengthSizing controls whether signal strength (Confidence) scales the
-	// position size. nil/true (default) → fixed_fractional scales by confidence;
-	// false → strength is computed by the strategy but the entry is sized at full
-	// unit allocation (confidence treated as 1.0). Mirrors the backtest request's
-	// `strength_sizing`. Only affects fixed_fractional — the other modes ignore
-	// strength regardless. Pointer so existing hands (nil) keep current behaviour.
-	StrengthSizing *bool `json:"strength_sizing,omitempty"`
-
 	// ── Sizing params — only the one matching SizeMode is read ──────────────
 
-	// RiskPerTradePct: fraction of allocated capital risked per trade.
-	// Used by: fixed_fractional, volatility.  e.g. 0.01 = 1%.
+	// RiskPerTradePct: the fixed fraction f of equity risked per trade (Ralph Vince).
+	// Used by: fixed_fractional, volatility.  e.g. 0.01 = risk 1% of equity per trade.
 	RiskPerTradePct float64 `json:"risk_per_trade_pct,omitempty"`
 
 	// UnitCapital: fixed USDT amount per entry unit.

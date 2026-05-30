@@ -36,7 +36,6 @@ func Migrate(db *gorm.DB) error {
 			filled_qty        NUMERIC(36,18),
 			filled_price      NUMERIC(36,18),
 			is_close          BOOLEAN     NOT NULL DEFAULT FALSE,
-			pattern_kind      TEXT,
 			reason            TEXT,
 			placed_at         TIMESTAMPTZ,
 			updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()

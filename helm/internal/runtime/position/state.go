@@ -63,11 +63,6 @@ type LegState struct {
 
 	OpenedAt time.Time
 
-	// PatternKind: technical pattern that triggered the opening order (e.g. "bull_flag").
-	// Copied from OrderPlacedPayload on the opening order; preserved across pyramid adds.
-	// Used downstream by trade records for attribution.
-	PatternKind string
-
 	// entryCount is the number of fills that have opened or added to this leg.
 	// Initial entry = 1; each pyramid add increments by 1.
 	// Used by HandPositions.EntryCount() to enforce MaxUnits in pyramid mode.
@@ -144,7 +139,6 @@ func (l *LegState) applyOrderPlaced(e poslog.Event) error {
 		l.Side = p.Side
 		l.StopLoss = sl
 		l.TakeProfit = tp
-		l.PatternKind = p.PatternKind
 		l.Phase = PhaseEntering
 	}
 	return nil
@@ -366,15 +360,14 @@ func (h *HandPositions) LegSnapshot(positionID string) (LegSnapshot, bool) {
 		return LegSnapshot{}, false
 	}
 	return LegSnapshot{
-		Symbol:      leg.Symbol,
-		Side:        leg.Side,
-		Qty:         leg.Qty,
-		EntryPrice:  leg.EntryPrice,
-		StopLoss:    leg.StopLoss,
-		TakeProfit:  leg.TakeProfit,
-		OpenedAt:    leg.OpenedAt,
-		PatternKind: leg.PatternKind,
-		NEntries:    leg.entryCount,
+		Symbol:     leg.Symbol,
+		Side:       leg.Side,
+		Qty:        leg.Qty,
+		EntryPrice: leg.EntryPrice,
+		StopLoss:   leg.StopLoss,
+		TakeProfit: leg.TakeProfit,
+		OpenedAt:   leg.OpenedAt,
+		NEntries:   leg.entryCount,
 	}, true
 }
 
@@ -382,15 +375,14 @@ func (h *HandPositions) LegSnapshot(positionID string) (LegSnapshot, bool) {
 // Captured at the moment a closing event is recorded so the resulting trade
 // record can stand alone (no need to replay entry events).
 type LegSnapshot struct {
-	Symbol      string
-	Side        string
-	Qty         decimal.Decimal
-	EntryPrice  decimal.Decimal
-	StopLoss    decimal.Decimal // SL price active at time of close (zero = none)
-	TakeProfit  decimal.Decimal // TP price active at time of close (zero = none)
-	OpenedAt    time.Time
-	PatternKind string
-	NEntries    int // number of entry fills (1 for non-pyramid; 1 + adds for pyramid)
+	Symbol     string
+	Side       string
+	Qty        decimal.Decimal
+	EntryPrice decimal.Decimal
+	StopLoss   decimal.Decimal // SL price active at time of close (zero = none)
+	TakeProfit decimal.Decimal // TP price active at time of close (zero = none)
+	OpenedAt   time.Time
+	NEntries   int // number of entry fills (1 for non-pyramid; 1 + adds for pyramid)
 }
 
 // Apply dispatches a poslog event to the appropriate leg, creating it if needed.

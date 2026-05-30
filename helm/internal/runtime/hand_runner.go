@@ -239,6 +239,36 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		}
 	}
 
+	// Pyramiding price gate (avg-anchored): only ADD to an existing leg when it is winning —
+	// current price beyond the blended avg entry. Presses winners and blocks averaging-down even
+	// if the script re-signals on a flat/adverse bar (engine does not trust re-signal blindly).
+	// The anchor is the leg avg (not the last unit), matching the avg-anchored SL/TP rebase.
+	// First entry (flat) is never gated. Fail-closed: a missing price blocks the add.
+	// Scope: pyramid (merge) mode; independent-leg (OFF) gating is out of scope for now.
+	// See docs/pyramiding-design.md (avg-anchor decision). PARITY TODO: engine still gates on
+	// last_unit_price — migrate engine to avg to keep backtest ↔ live identical.
+	if isEntry && h.pyramid {
+		h.mu.RLock()
+		var legSide string
+		var legAvg, legQty decimal.Decimal
+		if leg := h.pos.PrimaryLeg(); leg != nil {
+			legSide, legAvg, legQty = leg.Side, leg.EntryPrice, leg.Qty
+		}
+		h.mu.RUnlock()
+		if legQty.IsPositive() {
+			px := h.helmRuntime.lastKnownPrice(sig.Symbol)
+			winning := px.IsPositive() &&
+				((legSide == "buy" && px.GreaterThan(legAvg)) ||
+					(legSide == "sell" && px.LessThan(legAvg)))
+			if !winning {
+				filtered(CodeSignalDoNothing, fmt.Sprintf(
+					"pyramid gate: price %s not beyond avg entry %s (%s) — leg not winning, add blocked",
+					px, legAvg, legSide))
+				return
+			}
+		}
+	}
+
 	// Per-hand qty from poslog — used by tactician for exit/scale-out sizing.
 	// Summing Qty across active legs gives the correct per-hand position size,
 	// regardless of how many other hands on this helm trade the same symbol.
@@ -539,7 +569,7 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 	if !isExitIntent {
 		h.helmRuntime.ClearDust(sig.Symbol)
 	}
-	h.publishOrderPlaced(ctx, result.ID, clid, sig.Symbol, reply, limitPrice, orderType, isExitIntent, sig.PatternKind)
+	h.publishOrderPlaced(ctx, result.ID, clid, sig.Symbol, reply, limitPrice, orderType, isExitIntent)
 
 	now := time.Now().UTC()
 	order := handdomain.Order{

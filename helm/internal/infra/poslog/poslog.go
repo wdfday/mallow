@@ -65,17 +65,14 @@ type OrderPlacedPayload struct {
 	// The orders persister keys the orders table on this when present. See CLIENT_ORDER_ID.md.
 	ClientOrderID string `json:"client_order_id,omitempty"`
 	Symbol        string `json:"symbol"`
-	Side         string `json:"side"`       // "buy" | "sell"
-	Qty          string `json:"qty"`        // decimal string
-	Price        string `json:"price"`      // "0" for market orders
-	OrderType    string `json:"order_type"` // "market" | "limit"
-	StopLoss     string `json:"stop_loss,omitempty"`
-	TakeProfit   string `json:"take_profit,omitempty"`
-	IsPyramidAdd bool   `json:"is_pyramid_add,omitempty"` // true → adding to existing leg
-	IsClose      bool   `json:"is_close,omitempty"`       // true → closing the leg
-	// PatternKind records which technical pattern triggered this order (e.g. "bull_flag").
-	// Empty when the signal was not pattern-based.
-	PatternKind string `json:"pattern_kind,omitempty"`
+	Side          string `json:"side"`       // "buy" | "sell"
+	Qty           string `json:"qty"`        // decimal string
+	Price         string `json:"price"`      // "0" for market orders
+	OrderType     string `json:"order_type"` // "market" | "limit"
+	StopLoss      string `json:"stop_loss,omitempty"`
+	TakeProfit    string `json:"take_profit,omitempty"`
+	IsPyramidAdd  bool   `json:"is_pyramid_add,omitempty"` // true → adding to existing leg
+	IsClose       bool   `json:"is_close,omitempty"`       // true → closing the leg
 }
 
 // OrderFilledPayload carries fill confirmation. For pyramid adds, SL/TP are
@@ -133,10 +130,6 @@ type PositionClosedPayload struct {
 	// ExitReason: "signal" | "sl" | "tp" | "time_stop" | "external" | "kill" | "bracket_exit".
 	// (Wire tag kept as "source" for backward compat with already-published events.)
 	ExitReason string `json:"source"`
-	// PatternKind: technical pattern that triggered entry (optional). Carried
-	// forward from the leg's opening OrderPlaced so the trade record can attribute
-	// PnL by pattern without an extra cross-event lookup.
-	PatternKind string `json:"pattern_kind,omitempty"`
 	// StopLoss / TakeProfit prices active at time of close (zero = none).
 	StopLossPrice   string `json:"stop_loss_price,omitempty"`
 	TakeProfitPrice string `json:"take_profit_price,omitempty"`

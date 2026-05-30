@@ -261,38 +261,38 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 	})
 
 	now := time.Now().UTC()
-	cp := poslog.PositionClosedPayload{
-		OrderID:     affectedLeg.PositionID,
-		Symbol:      affectedLeg.Symbol,
-		Side:        affectedLeg.Side,
-		Qty:         affectedLeg.Qty.Abs().String(),
-		EntryPrice:  affectedLeg.EntryPrice.String(),
-		EntryAt:     affectedLeg.OpenedAt,
-		ClosePrice:  decimal.Zero.String(), // unknown — user exited at unknown price
-		RealizedPnL: decimal.Zero.String(),
-		ExitReason:  "external",
-	}
-	payload, _ := json.Marshal(cp)
-
-	// Emit KindPositionClosed so the leg is cleared from poslog + in-memory state.
-	// Deterministic dedup ID — safe to replay on restart.
+	// Cancelling the bracket revokes the hand's mandate over this leg's capital — by
+	// contract the hand DISOWNS the leg rather than claiming a close. The position is
+	// left at the exchange (now the user's), so we emit KindPositionOrphaned, NOT
+	// KindPositionClosed: no realized PnL is booked and no round-trip trade is recorded
+	// (the outcome belongs to the user and is unknown). See ACTOR_MODEL.md / hand_exits.md.
+	//
+	// SCOPE: this disown contract carries SPOT semantics. On spot, a resting OCO sell locks
+	// the base balance, so cancelling it is a strong "user is taking over" signal. Futures
+	// brackets are reduce-only and do NOT lock margin, so a cancel there is a weak signal
+	// (likely a stop adjustment, not a takeover) — when futures support lands, this path must
+	// re-evaluate: re-place the bracket (restore protection) instead of disowning. Futures is
+	// out of scope today, so the simple unconditional disown is left as-is.
+	payload, _ := json.Marshal(poslog.PositionOrphanedPayload{
+		Symbol: affectedLeg.Symbol,
+		Source: "manual",
+	})
+	// Deterministic dedup ID — safe to replay on restart; the reconciler never reclaims an orphaned leg.
 	h.publishAndApply(ctx, poslog.Event{
 		ID:         h.id.String() + "_extcancel_" + affectedLeg.PositionID,
 		HandID:     h.id.String(),
 		HelmID:     h.helmID.String(),
 		PositionID: affectedLeg.PositionID,
-		Kind:       poslog.KindPositionClosed,
+		Kind:       poslog.KindPositionOrphaned,
 		Payload:    payload,
 		At:         now,
 	})
 
-	// Remove from shared portfolio. We don't call ReportFill (which adjusts cash)
-	// because the exit price is unknown — just drop the position from the aggregate view.
-	// Cash accuracy will be restored on the next Sync() from the exchange account.
+	// Drop the leg from the hand's view of the shared portfolio. We do NOT call ReportFill
+	// (no exit price / no PnL) and do NOT append a trade record — this is a disown, not a
+	// trade. If the position is still live at the exchange, the next Sync() re-surfaces it
+	// as an unattributed helm-level position.
 	h.helmRuntime.Portfolio.RemovePosition(affectedSymbol)
-
-	// Write trade record with price=0 so trade history reflects the event.
-	h.appendTradeRecord(ctx, cp, decimal.Zero, now)
 
 	// Clear local exit level tracking for this symbol.
 	h.mu.Lock()

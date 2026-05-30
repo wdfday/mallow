@@ -101,12 +101,6 @@ func (r *PostgresStatsRunner) RunStats(ctx context.Context, scope domain.Scope, 
 	}
 	stats.BySymbol = bySym
 
-	byPat, err := r.runGrouped(ctx, "pattern_kind", where, args)
-	if err != nil {
-		return stats, fmt.Errorf("by_pattern: %w", err)
-	}
-	stats.ByPattern = byPat
-
 	byExit, err := r.runGrouped(ctx, "source", where, args)
 	if err != nil {
 		return stats, fmt.Errorf("by_exit: %w", err)

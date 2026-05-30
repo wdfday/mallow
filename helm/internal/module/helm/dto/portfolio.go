@@ -109,7 +109,6 @@ type TradeResp struct {
 
 	ExitReason  string `json:"exit_reason,omitempty"` // signal/sl/tp/kill/bracket_exit/external/release
 	Strategy    string `json:"strategy,omitempty"`
-	PatternKind string `json:"pattern_kind,omitempty"`
 	RegimeState string `json:"regime_state,omitempty"`
 }
 
@@ -155,9 +154,8 @@ type StatsResp struct {
 
 	AvgHoldingSeconds int `json:"avg_holding_seconds"`
 
-	BySymbol  []GroupedKPIResp `json:"by_symbol,omitempty"`
-	ByPattern []GroupedKPIResp `json:"by_pattern,omitempty"`
-	ByExit    []GroupedKPIResp `json:"by_exit,omitempty"`
+	BySymbol []GroupedKPIResp `json:"by_symbol,omitempty"`
+	ByExit   []GroupedKPIResp `json:"by_exit,omitempty"`
 
 	Metadata AnalyticsMetaResp `json:"metadata,omitempty"`
 }
@@ -198,7 +196,6 @@ func StatsToResp(s analyticsdomain.Stats, m analyticsdomain.Metadata) StatsResp 
 		return out
 	}
 	r.BySymbol = convert(s.BySymbol)
-	r.ByPattern = convert(s.ByPattern)
 	r.ByExit = convert(s.ByExit)
 	return r
 }
@@ -303,7 +300,6 @@ func TradelogToResp(t readmodel.TradeRecord) TradeResp {
 		HoldingSeconds:  holding,
 		ExitReason:      t.Source,
 		Strategy:        t.Strategy,
-		PatternKind:     t.PatternKind,
 		RegimeState:     t.RegimeState,
 	}
 }

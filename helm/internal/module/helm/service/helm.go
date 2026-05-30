@@ -58,15 +58,20 @@ func (s *Service) CreateForAccount(req helmDto.CreateForAccountReq) (*domain.Hel
 		AccountType: string(exchCfg.AccountType),
 		Portfolio:   req.Portfolio,
 		Risk:        req.Risk,
-		Status:      domain.HelmStatusDisabled,
+		Status:      domain.HelmStatusActive,
 		CreatedAt:   time.Now().UTC(),
 		UpdatedAt:   time.Now().UTC(),
 	}
 	if err := s.repo.Save(cfg); err != nil {
 		return nil, fmt.Errorf("save helm: %w", err)
 	}
-	// New helms start disabled — user enables explicitly via /enable.
-	// No runtime spawn here; Enable() will spawn + sync.
+	// New helms are active by default → spawn the runtime immediately. Only an
+	// explicitly disabled helm is left un-spawned (Disable tears it down). Users
+	// who want it idle can disable it afterwards.
+	if spawnErr := s.spawner.Spawn(cfg, exchCfg); spawnErr != nil {
+		return cfg, fmt.Errorf("spawn new runtime: %w", spawnErr)
+	}
+	s.spawner.SyncOne(cfg.ID)
 	return cfg, nil
 }
 

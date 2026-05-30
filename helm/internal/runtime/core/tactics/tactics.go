@@ -89,8 +89,11 @@ const (
 type SizingMode string
 
 const (
-	// SizingFixedFractional scales unit capital by signal confidence.
-	// qty = (unit * confidence) / price
+	// SizingFixedFractional is Ralph Vince fixed fractional: risk a fixed fraction f of
+	// equity per trade, sized off the stop distance.
+	//   qty = (RiskPerTradePct * equity) / stopDistance
+	// stopDistance comes from the signal's SL (|price-SL| absolute, |offset| if IsOffset),
+	// falling back to ATR. Capped at MaxPositionPct * equity (default 100%).
 	SizingFixedFractional SizingMode = "fixed_fractional"
 
 	// SizingFixedQty uses a literal base-asset quantity, ignoring capital math.
@@ -101,13 +104,13 @@ const (
 	// Sets ExecutionPlan.QuoteQty; the exchange determines base qty at fill time.
 	SizingQuoteQty SizingMode = "quote_qty"
 
-	// SizingPercentEquity deploys unit capital without confidence scaling.
-	// qty = unit / price
+	// SizingPercentEquity is plain notional sizing: deploy one unit of capital.
+	// qty = unit / price   (unit = UnitCapital, or UnitPct/MaxPositionPct × equity)
 	SizingPercentEquity SizingMode = "percent_equity"
 
-	// SizingVolatility sizes by ATR-based risk parity.
-	// riskDollar = unit * RiskPerTradePct; qty = riskDollar / ATR
-	// Produces zero if the signal carries no ATR.
+	// SizingVolatility is fixed fractional with the stop forced to ATR (volatility parity):
+	//   qty = (RiskPerTradePct * equity) / ATR
+	// i.e. SizingFixedFractional that ignores the signal SL. Zero if the signal carries no ATR.
 	SizingVolatility SizingMode = "volatility"
 )
 
@@ -117,11 +120,6 @@ const (
 // Translated from domain.PositionConfig by runtime.BuildHandComponents.
 type SizingConfig struct {
 	Mode SizingMode `json:"mode"`
-
-	// StrengthSizing: when true (default), fixed_fractional scales the unit by
-	// signal confidence; when false, it deploys the full unit (confidence = 1.0).
-	// Other modes ignore strength regardless.
-	StrengthSizing bool `json:"strength_sizing"`
 
 	// Per-trade unit: how much capital to deploy in a single entry.
 	// UnitCapital (fixed) takes priority over UnitPct.

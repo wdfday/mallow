@@ -399,7 +399,10 @@ func hydrateRuntimes(repo orchdomain.HelmRepo, reg *runtime.Registry, brokerSvc 
 	}
 	spawned := 0
 	for _, cfg := range cfgs {
-		if cfg.Status == orchdomain.HelmStatusHalted || cfg.Status == orchdomain.HelmStatusDisabled {
+		// Spawn every helm except those explicitly disabled. Paused/halted helms
+		// are still spawned — Registry.Spawn restores their gated (paused) state so
+		// signal gating survives the restart without resuming trading.
+		if cfg.Status == orchdomain.HelmStatusDisabled {
 			continue
 		}
 		creds, err := brokerSvc.GetCredentialsByAccountID(context.Background(), cfg.AccountID.String())

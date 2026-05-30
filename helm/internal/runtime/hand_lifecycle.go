@@ -111,13 +111,8 @@ func BuildHandComponents(b *domain.Hand) (strategy.Strategy, *tactics.Tactician)
 		sizingMode = tactics.SizingPercentEquity
 	}
 
-	// StrengthSizing defaults to true (nil → confidence scales fixed_fractional sizing),
-	// matching herald's Option<bool> None→true semantics.
-	strengthSizing := b.Position.StrengthSizing == nil || *b.Position.StrengthSizing
-
 	sc := tactics.SizingConfig{
 		Mode:            sizingMode,
-		StrengthSizing:  strengthSizing,
 		UnitCapital:     b.Position.UnitCapital,
 		UnitPct:         b.Position.UnitPct,
 		RiskPerTradePct: b.Position.RiskPerTradePct,

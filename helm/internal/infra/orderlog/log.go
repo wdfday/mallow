@@ -31,7 +31,7 @@ func NewLog(db *sql.DB) Log {
 
 const orderCols = `exchange_order_id, client_order_id, helm_id, hand_id, position_id,
 	symbol, side, order_type, qty, price, status, filled_qty, filled_price,
-	is_close, pattern_kind, reason, placed_at, updated_at`
+	is_close, reason, placed_at, updated_at`
 
 // Query returns orders matching the filter, newest first (by placed_at).
 func (l *postgresLog) Query(ctx context.Context, f readmodel.OrderFilter) ([]readmodel.OrderRecord, error) {
@@ -106,15 +106,15 @@ type scanner interface {
 
 func scanOrder(s scanner) (readmodel.OrderRecord, error) {
 	var (
-		rec                                             readmodel.OrderRecord
-		clid, handID, posID, side, ordType, pat, reason sql.NullString
-		qty, price, filledQty, filledPrice              sql.NullString
-		placedAt                                        sql.NullTime
+		rec                                        readmodel.OrderRecord
+		clid, handID, posID, side, ordType, reason sql.NullString
+		qty, price, filledQty, filledPrice         sql.NullString
+		placedAt                                   sql.NullTime
 	)
 	if err := s.Scan(
 		&rec.ExchangeOrderID, &clid, &rec.HelmID, &handID, &posID,
 		&rec.Symbol, &side, &ordType, &qty, &price, &rec.Status, &filledQty, &filledPrice,
-		&rec.IsClose, &pat, &reason, &placedAt, &rec.UpdatedAt,
+		&rec.IsClose, &reason, &placedAt, &rec.UpdatedAt,
 	); err != nil {
 		return rec, err
 	}
@@ -123,7 +123,6 @@ func scanOrder(s scanner) (readmodel.OrderRecord, error) {
 	rec.PositionID = posID.String
 	rec.Side = side.String
 	rec.OrderType = ordType.String
-	rec.PatternKind = pat.String
 	rec.Reason = reason.String
 	rec.Qty = parseDec(qty.String)
 	rec.Price = parseDec(price.String)

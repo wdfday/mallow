@@ -17,7 +17,6 @@ type StrategyDTO = domain.StrategySpec
 // not here — they are first-class columns, not part of the position JSONB.
 type PositionDTO struct {
 	SizeMode        domain.SizeMode `json:"size_mode,omitempty" binding:"omitempty,oneof=fixed_fractional fixed_qty quote_qty percent_equity volatility"`
-	StrengthSizing  *bool           `json:"strength_sizing,omitempty"`
 	UnitCapital     float64         `json:"unit_capital,omitempty" binding:"omitempty,gte=0"`
 	UnitPct         float64         `json:"unit_pct,omitempty" binding:"omitempty,gt=0,lte=1"`
 	FixedQty        float64         `json:"fixed_qty,omitempty" binding:"omitempty,gt=0"`
@@ -51,7 +50,6 @@ func strategyToDomain(d StrategyDTO) domain.StrategySpec { return d }
 func positionToDomain(d PositionDTO) domain.PositionConfig {
 	return domain.PositionConfig{
 		SizeMode:        d.SizeMode,
-		StrengthSizing:  d.StrengthSizing,
 		UnitCapital:     decimal.NewFromFloat(d.UnitCapital),
 		UnitPct:         d.UnitPct,
 		FixedQty:        decimal.NewFromFloat(d.FixedQty),

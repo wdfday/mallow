@@ -66,10 +66,33 @@ type Hand struct {
 	leverageApplied   map[string]bool // symbols where SetLeverage has been called
 
 	// ── Inbound channels ─────────────────────────────────────────────────────
-	Signals       chan Signal               // buf=1, drain-replace; always latest non-urgent signal
-	UrgentSignals chan Signal               // buf=4; exit signals, never silently dropped
-	fillCh        chan exchange.WsFillEvent // buf=8; WS full fills routed from runFillProcessor
-	eventBus      *handEventBus             // nil in production; non-nil only when EnableEventSink() is called (tests)
+	Signals       chan Signal   // buf=1, drain-replace; always latest non-urgent signal
+	UrgentSignals chan Signal   // buf=4; exit signals, never silently dropped
+	eventBus      *handEventBus // nil in production; non-nil only when EnableEventSink() is called (tests)
+
+	// Fill mailbox — an UNBOUNDED queue, not a fixed channel. A WS fill must never be
+	// dropped (a dropped fill that falls back to a direct portfolio apply bypasses the
+	// hand's bracket/poslog/h.pos and silently desyncs it). EnqueueFill appends under
+	// fillMu and coalesce-signals fillSignal; the run loop drains the whole queue on each
+	// signal. Memory is bounded by drain speed — fast, since REST is off the actor loop.
+	fillMu     sync.Mutex
+	fillQueue  []exchange.WsFillEvent
+	fillSignal chan struct{} // buf=1; coalescing wakeup for the run loop
+
+	// pollCh carries the result of the off-loop REST poll batch (order + bracket states)
+	// back to the run loop. A goroutine does the pure-I/O fetch and sends; the run loop
+	// drains and applies on-loop — keeping the GetOrder fan-out off the actor loop so the
+	// fill mailbox never starves. pollInFlight (loop-owned, no lock) guards against
+	// overlapping batches.
+	pollCh       chan pollBatch
+	pollInFlight bool
+
+	// placeResultCh carries an entry/exit placement back to the run loop after its REST
+	// (PlaceOrder + retries) ran OFF the loop, so a slow placement never blocks fill
+	// processing — the WS fill (routed by the pre-tracked clid) is drained promptly and its
+	// bracket placed without waiting on the next order's REST. The loop applies the result
+	// (track order, poslog, or failure cleanup) on-loop, preserving the single-owner invariant.
+	placeResultCh chan *pendingPlace
 
 	// seenFills marks orders whose fill has been fully applied to the portfolio
 	// (via WS full-fill, REST-immediate, or poll fallback). Checked by handleWsFill

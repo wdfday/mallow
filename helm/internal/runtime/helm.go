@@ -67,10 +67,10 @@ type HelmRuntime struct {
 	// lifecycleCh and wsFillCh decouple WS callbacks from NATS publishing.
 	// runOrderProcessor drains lifecycleCh; runFillProcessor drains wsFillCh.
 	// Both enqueue methods are non-blocking (drop on full with an error log).
-	lifecycleCh    chan exchange.OrderLifecycleEvent
-	wsFillCh       chan exchange.WsFillEvent
-	orderHandMap   map[string]string // orderID → handID; cleared on fill or cancel
-	orderHandMapMu sync.RWMutex
+	lifecycleCh chan exchange.OrderLifecycleEvent
+	wsFillCh    chan exchange.WsFillEvent
+	// router owns the orderID→handID routing map (see helpers.go / orderRouter).
+	router *orderRouter
 
 	// fillRoute* count how WS fills resolved to a hand, for rollout observability of the
 	// client-order-id migration (see CLIENT_ORDER_ID.md):
@@ -84,12 +84,9 @@ type HelmRuntime struct {
 
 	// ── Market data cache ────────────────────────────────────────────────────
 	lastSyncAtNano atomic.Int64 // UnixNano of last successful REST sync; 0 = never
-	pricesMu       sync.RWMutex
-	prices         map[string]decimal.Decimal
-
-	// getL2 delegates L2 lookups to the registry's shared broker-level cache.
-	// Injected at Spawn(); nil = no L2 streamer connected (ok=false on all lookups).
-	getL2 func(symbol string) (exchange.L2Snapshot, bool)
+	// prices owns the last-trade cache + the registry-shared L2 lookup (see priceCache).
+	// Its getL2 is injected at Spawn(); nil = no L2 streamer connected.
+	prices *priceCache
 
 	// ── Trade gate (per-minute circuit breaker) ───────────────────────────────
 	tradeMu      sync.Mutex   // serialises ProcessTrade + ReportFill across all hands
@@ -122,27 +119,15 @@ type HelmRuntime struct {
 	fillStreamMu     sync.Mutex
 	fillStreamCancel context.CancelFunc
 
-	// ── Gap-recovery dedup ───────────────────────────────────────────────────
-	// Prevents double-applying the same fill if RecoverGapFills runs more than once.
-	processedTradesMu sync.Mutex
-	processedTrades   map[string]struct{}
-
-	// ── REST-fill publish dedup ──────────────────────────────────────────────
-	// processedOrderFills tracks orderIDs for which trade.filled was already
-	// published via the REST fill path (applyFill, source != "ws").
-	// This prevents Sync() from re-publishing the same fill 5 min later with a
-	// different Nats-Msg-Id, which would create duplicate fill events for consumers.
-	processedOrderFillsMu sync.Mutex
-	processedOrderFills   map[string]struct{}
+	// ── Fill idempotency ─────────────────────────────────────────────────────
+	// dedup owns the gap-recovery trade-id set and the REST-fill-published order-id set,
+	// preventing double-apply / double-publish of the same fill (see fillDedup).
+	dedup *fillDedup
 
 	// ── Dust tracking ────────────────────────────────────────────────────────
-	// dustMu guards dustQty. Dust accumulates when a spot exit order is placed
-	// with qty truncated to the exchange lot-size step, leaving a sub-step residual
-	// in the wallet (e.g. 0.0944055 → sell 0.0944 → dust 0.0000055 ETH).
-	// checkPositionDesync uses this to distinguish genuine external closes from
-	// known dust residuals after a helm-initiated exit.
-	dustMu  sync.Mutex
-	dustQty map[string]decimal.Decimal // symbol → accumulated dust qty
+	// dust owns the per-symbol sub-step residual left after a truncated spot exit order,
+	// so checkPositionDesync doesn't mistake it for an external close (see dustLedger).
+	dust *dustLedger
 }
 
 // NewHelmRuntime creates a HelmRuntime and starts its circuit-breaker reset ticker.
@@ -157,25 +142,24 @@ func NewHelmRuntime(
 	createdAt time.Time,
 ) *HelmRuntime {
 	rt := &HelmRuntime{
-		HelmID:              orchID,
-		AccountID:           accountID,
-		UserID:              userID,
-		BrokerType:          brokerType,
-		CreatedAt:           createdAt,
-		Portfolio:           pf,
-		RiskMgr:             riskMgr,
-		Exchange:            ex,
-		Creds:               creds,
-		lifecycleCh:         make(chan exchange.OrderLifecycleEvent, 128),
-		wsFillCh:            make(chan exchange.WsFillEvent, 256),
-		orderHandMap:        make(map[string]string),
-		hands:               make(map[string]*Hand),
-		prices:              make(map[string]decimal.Decimal),
-		processedTrades:     make(map[string]struct{}),
-		processedOrderFills: make(map[string]struct{}),
-		dustQty:             make(map[string]decimal.Decimal),
-		resetTicker:         time.NewTicker(1 * time.Minute),
-		stopCh:              make(chan struct{}),
+		HelmID:      orchID,
+		AccountID:   accountID,
+		UserID:      userID,
+		BrokerType:  brokerType,
+		CreatedAt:   createdAt,
+		Portfolio:   pf,
+		RiskMgr:     riskMgr,
+		Exchange:    ex,
+		Creds:       creds,
+		lifecycleCh: make(chan exchange.OrderLifecycleEvent, 128),
+		wsFillCh:    make(chan exchange.WsFillEvent, 256),
+		hands:       make(map[string]*Hand),
+		router:      newOrderRouter(),
+		prices:      newPriceCache(),
+		dedup:       newFillDedup(),
+		dust:        newDustLedger(),
+		resetTicker: time.NewTicker(1 * time.Minute),
+		stopCh:      make(chan struct{}),
 	}
 	if lastSyncedAt != nil {
 		rt.lastSyncAtNano.Store(lastSyncedAt.UnixNano())

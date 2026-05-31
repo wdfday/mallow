@@ -49,8 +49,8 @@ const (
 	CodeSignalReceived = 10000
 
 	// Signal filtered codes — signal was received but not acted on.
-	CodeSignalStale       = 10001 // arrived more than signalMaxAge after dispatch
-	CodeSignalHelmPaused  = 10002 // helm-level cascade pause active
+	CodeSignalStale      = 10001 // arrived more than signalMaxAge after dispatch
+	CodeSignalHelmPaused = 10002 // helm-level cascade pause active
 	// 10003 reserved (was CodeSignalHandPaused — hand-level pause removed)
 	CodeSignalRateLimited = 10004 // exceeded per-second order rate limit
 	CodeSignalDoNothing   = 10005 // strategy evaluated to no-action (e.g. strength below min)
@@ -70,6 +70,7 @@ const (
 	CodeOrderExitTriggered = 10108 // local stop-loss or take-profit safety net triggered
 	CodeOrderExitPlaced    = 10109 // safety net exit orders (SL/TP bracket) submitted to exchange
 	CodeOrderDustExit      = 10110 // exit qty below exchange minimum — poslog closed without selling; dust stays at helm level
+	CodeOrderExitFailed    = 10111 // exchange-side SL/TP bracket failed after retries — only the in-process local monitor protects the position
 
 	// Hand lifecycle codes.
 	CodeHandAutoStopped   = 10200 // hand auto-stopped due to persistent sizing failure or edge risk

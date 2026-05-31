@@ -72,10 +72,7 @@ func (r *HelmRuntime) ProcessTrade(
 			restSymbol := stripExchangePrefix(proposal.Symbol)
 			if p, err := pf.GetCurrentPrice(ctx, r.Creds, restSymbol); err == nil && p.IsPositive() {
 				price = p
-				r.pricesMu.Lock()
-				r.prices[proposal.Symbol] = p
-				r.prices[restSymbol] = p
-				r.pricesMu.Unlock()
+				r.prices.set(proposal.Symbol, p) // stores raw + prefix-stripped key
 			}
 		}
 	}
@@ -163,9 +160,7 @@ func (r *HelmRuntime) ReportFill(fill helmdomain.FillReport) {
 	// Fill price is the freshest known price; update cache so the next
 	// ProcessTrade sizing call doesn't fall back to a stale tick.
 	if fill.Price.IsPositive() {
-		r.pricesMu.Lock()
-		r.prices[fill.Symbol] = fill.Price
-		r.pricesMu.Unlock()
+		r.prices.set(fill.Symbol, fill.Price)
 	}
 
 	pfSide := portfolio.SideBuy
@@ -301,27 +296,12 @@ func (r *HelmRuntime) HelmStringID() string {
 // RecordDust adds qty to the known dust residual for symbol.
 // Called after a spot exit order is placed with truncated qty so the sub-step
 // remainder is not mistaken for an external close by checkPositionDesync.
-func (r *HelmRuntime) RecordDust(symbol string, qty decimal.Decimal) {
-	if qty.IsZero() || qty.IsNegative() {
-		return
-	}
-	r.dustMu.Lock()
-	r.dustQty[symbol] = r.dustQty[symbol].Add(qty)
-	r.dustMu.Unlock()
-}
+func (r *HelmRuntime) RecordDust(symbol string, qty decimal.Decimal) { r.dust.record(symbol, qty) }
 
 // ClearDust removes all recorded dust for symbol.
 // Called when a new position opens for the symbol (dust from the previous trade
 // is no longer relevant and should not suppress future desync detection).
-func (r *HelmRuntime) ClearDust(symbol string) {
-	r.dustMu.Lock()
-	delete(r.dustQty, symbol)
-	r.dustMu.Unlock()
-}
+func (r *HelmRuntime) ClearDust(symbol string) { r.dust.clear(symbol) }
 
 // GetDust returns the accumulated dust qty for symbol (zero if none recorded).
-func (r *HelmRuntime) GetDust(symbol string) decimal.Decimal {
-	r.dustMu.Lock()
-	defer r.dustMu.Unlock()
-	return r.dustQty[symbol]
-}
+func (r *HelmRuntime) GetDust(symbol string) decimal.Decimal { return r.dust.get(symbol) }

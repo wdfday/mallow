@@ -11,66 +11,24 @@ import (
 	"mallow/helm/internal/runtime/core/portfolio"
 )
 
-// maxProcessedOrderFills caps the processedOrderFills map to prevent unbounded growth.
-// At reset, all entries are cleared — a brief window where Sync() could re-publish a
-// fill is acceptable because it requires 10k fills between two 5-minute Sync() cycles,
-// which never happens on a signal-following bot.
-const maxProcessedOrderFills = 10_000
+// Fill idempotency delegates to fillDedup (see helpers.go).
 
 // MarkOrderFillPublished records an orderID whose trade.filled was already published
 // via the WS fill path. Subsequent calls to Sync() skip transactions with this orderID
 // to prevent double-publishing the same fill with a different Nats-Msg-Id.
-func (r *HelmRuntime) MarkOrderFillPublished(orderID string) {
-	if orderID == "" {
-		return
-	}
-	r.processedOrderFillsMu.Lock()
-	if len(r.processedOrderFills) >= maxProcessedOrderFills {
-		r.processedOrderFills = make(map[string]struct{}, maxProcessedOrderFills)
-	}
-	r.processedOrderFills[orderID] = struct{}{}
-	r.processedOrderFillsMu.Unlock()
-}
+func (r *HelmRuntime) MarkOrderFillPublished(orderID string) { r.dedup.markFillPublished(orderID) }
 
 // hasOrderFillPublished returns true if trade.filled was already published for this orderID
 // via the REST fill path.
 func (r *HelmRuntime) hasOrderFillPublished(orderID string) bool {
-	if orderID == "" {
-		return false
-	}
-	r.processedOrderFillsMu.Lock()
-	_, ok := r.processedOrderFills[orderID]
-	r.processedOrderFillsMu.Unlock()
-	return ok
+	return r.dedup.hasFillPublished(orderID)
 }
 
 // HasProcessedTrade returns true if this TradeID was already applied in the current session.
-func (r *HelmRuntime) HasProcessedTrade(tradeID string) bool {
-	if tradeID == "" {
-		return false
-	}
-	r.processedTradesMu.Lock()
-	_, ok := r.processedTrades[tradeID]
-	r.processedTradesMu.Unlock()
-	return ok
-}
+func (r *HelmRuntime) HasProcessedTrade(tradeID string) bool { return r.dedup.hasTrade(tradeID) }
 
 // MarkTradeProcessed records a TradeID so duplicate gap recovery fills are skipped.
-// The map is bounded to maxProcessedTrades entries; when exceeded it is reset
-// to prevent unbounded memory growth on long-running bots.
-const maxProcessedTrades = 50_000
-
-func (r *HelmRuntime) MarkTradeProcessed(tradeID string) {
-	if tradeID == "" {
-		return
-	}
-	r.processedTradesMu.Lock()
-	if len(r.processedTrades) >= maxProcessedTrades {
-		r.processedTrades = make(map[string]struct{}, maxProcessedTrades)
-	}
-	r.processedTrades[tradeID] = struct{}{}
-	r.processedTradesMu.Unlock()
-}
+func (r *HelmRuntime) MarkTradeProcessed(tradeID string) { r.dedup.markTrade(tradeID) }
 
 // LastSyncAt returns the timestamp of the most recent portfolio sync, or zero if never synced.
 func (r *HelmRuntime) LastSyncAt() time.Time {
@@ -138,13 +96,11 @@ func (r *HelmRuntime) Sync(ctx context.Context) error {
 	}
 	r.Portfolio.ApplySync(snap.Cash, pfPositions)
 
-	r.pricesMu.Lock()
 	for _, p := range snap.Positions {
 		if p.CurPrice.IsPositive() {
-			r.prices[p.Symbol] = p.CurPrice
+			r.prices.set(p.Symbol, p.CurPrice)
 		}
 	}
-	r.pricesMu.Unlock()
 
 	prevSyncAt := r.LastSyncAt()
 

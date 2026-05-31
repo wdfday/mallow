@@ -232,23 +232,18 @@ func (r *HelmRuntime) applyWsFill(ev exchange.WsFillEvent) {
 			r.mu.RUnlock()
 			if ok {
 				// Route to hand: hand.applyFill owns exit-level management, poslog,
-				// and metrics; it calls rt.ReportFill itself.
-				// Publish trade.filled here (before hand processes asynchronously via fillCh).
-				if hand.EnqueueFill(ev) {
-					// Successfully enqueued — hand will process asynchronously.
-					// Mark now so pollOrders REST fallback doesn't double-apply.
-					if r.js != nil {
-						natsapi.PublishTradeFill(r.js, r.tradeFillMsg(botID, ev))
-					}
-					r.MarkOrderFillPublished(ev.OrderID)
-					return
+				// and metrics; it calls rt.ReportFill itself. EnqueueFill never drops
+				// (unbounded mailbox), so the hand always processes its own fill.
+				// Publish trade.filled here (before the hand processes asynchronously).
+				hand.EnqueueFill(ev)
+				if r.js != nil {
+					natsapi.PublishTradeFill(r.js, r.tradeFillMsg(botID, ev))
 				}
-				// fillCh was full — fall through to direct ReportFill below so
-				// the fill is never lost. MarkOrderFillPublished will be set at the
-				// bottom of this function (in the r.js block) after ReportFill runs.
+				r.MarkOrderFillPublished(ev.OrderID)
+				return
 			}
 		}
-		// Orphan path (hand missing or fillCh full): apply fill directly to portfolio.
+		// Orphan path (no owning hand): apply fill directly to portfolio.
 		r.ReportFill(fillReport)
 	} else {
 		// Partial fill: order still open — keep routing info for subsequent fills.

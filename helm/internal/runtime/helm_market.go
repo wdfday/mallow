@@ -26,35 +26,14 @@ func (r *HelmRuntime) UpdatePrice(symbol string, price decimal.Decimal) {
 	if !price.IsPositive() {
 		return
 	}
-	stripped := stripExchangePrefix(symbol)
-	r.pricesMu.Lock()
-	r.prices[symbol] = price
-	if stripped != symbol {
-		r.prices[stripped] = price
-	}
-	r.pricesMu.Unlock()
+	r.prices.set(symbol, price)
 	r.Portfolio.UpdatePrice(symbol, price)
 }
 
 func (r *HelmRuntime) lastKnownPrice(symbol string) decimal.Decimal {
-	stripped := stripExchangePrefix(symbol)
-	r.pricesMu.RLock()
-	p := r.prices[symbol]
-	if !p.IsPositive() && stripped != symbol {
-		p = r.prices[stripped]
-	}
-	r.pricesMu.RUnlock()
-	if p.IsPositive() {
+	// priceCache covers the trade cache + L2 mid-price; the Portfolio is the final fallback.
+	if p := r.prices.get(symbol); p.IsPositive() {
 		return p
-	}
-	// Fallback: L2 mid-price (bid[0]+ask[0])/2 — more accurate than last trade
-	// when the trade price cache is cold.
-	if snap, ok := r.getL2(symbol); ok {
-		bid := snap.Bids[0].Price
-		ask := snap.Asks[0].Price
-		if bid.IsPositive() && ask.IsPositive() {
-			return bid.Add(ask).Div(decimal.NewFromInt(2))
-		}
 	}
 	if pos := r.Portfolio.GetPosition(symbol); pos != nil {
 		return pos.CurrentPrice
@@ -66,10 +45,7 @@ func (r *HelmRuntime) lastKnownPrice(symbol string) decimal.Decimal {
 // Delegates to the registry-level broker cache injected at Spawn().
 // ok=false when no L2 streamer is connected or no snapshot has been received yet.
 func (r *HelmRuntime) LatestL2(symbol string) (exchange.L2Snapshot, bool) {
-	if r.getL2 == nil {
-		return exchange.L2Snapshot{}, false
-	}
-	return r.getL2(symbol)
+	return r.prices.latestL2(symbol)
 }
 
 // EnqueueLifecycleEvent drops a broker order lifecycle event (ack/cancel) into

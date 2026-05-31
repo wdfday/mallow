@@ -72,7 +72,7 @@ func (r *Registry) Spawn(cfg *helmdomain.Helm, exchCfg helmdomain.ExchangeConfig
 
 	// Delegate L2 lookups to the registry's shared broker-level cache.
 	// Captured by value so the closure stays valid after Spawn returns.
-	rt.getL2 = func(symbol string) (exchange.L2Snapshot, bool) {
+	rt.prices.getL2 = func(symbol string) (exchange.L2Snapshot, bool) {
 		return r.LatestL2(brokerType, symbol)
 	}
 

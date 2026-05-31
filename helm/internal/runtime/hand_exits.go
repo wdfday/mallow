@@ -427,13 +427,21 @@ func (h *Hand) checkExits() {
 // helm did not initiate the cancel (not in pendingCancels), the position was
 // externally closed — user manual exit or exchange-side close. This covers the
 // gap where the WS OrderEventCanceled is missed (restart, brief disconnect, etc.).
-func (h *Hand) checkBracketOrders(ctx context.Context) {
+// bracketState pairs a bracket exit order with its freshly-fetched exchange status.
+// result is nil when err != nil. Produced by fetchBracketStates, consumed by applyBracketStates.
+type bracketState struct {
+	symbol string
+	id     string
+	result *exchange.OrderResult
+	err    error
+}
+
+// fetchBracketStates is the I/O phase: GetOrder for one live bracket leg per symbol.
+// Pure REST over a snapshot of exitLevels — no hand-state mutation — so it runs OFF the
+// actor loop alongside fetchPendingOrders. applyBracketStates handles the result on-loop.
+func (h *Hand) fetchBracketStates(ctx context.Context) []bracketState {
 	h.mu.RLock()
-	type check struct {
-		symbol string
-		id     string
-	}
-	var checks []check
+	var checks []bracketState
 	for sym, lv := range h.exitLevels {
 		if len(lv.ExchangeOrderIDs) == 0 {
 			continue
@@ -441,24 +449,32 @@ func (h *Hand) checkBracketOrders(ctx context.Context) {
 		// Skip IDs already marked as helm-initiated cancels.
 		for _, id := range lv.ExchangeOrderIDs {
 			if _, pending := h.pendingCancels[id]; !pending {
-				checks = append(checks, check{symbol: sym, id: id})
+				checks = append(checks, bracketState{symbol: sym, id: id})
 				break // one ID per symbol is enough
 			}
 		}
 	}
 	h.mu.RUnlock()
 
+	for i := range checks {
+		checks[i].result, checks[i].err = h.helmRuntime.Exchange.GetOrder(ctx, h.helmRuntime.Creds, checks[i].id)
+	}
+	return checks
+}
+
+// applyBracketStates is the state-mutation phase: runs ON the actor loop. A bracket gone
+// cancelled/expired externally means the position likely closed → HandleExitOrderCanceled.
+func (h *Hand) applyBracketStates(ctx context.Context, checks []bracketState) {
 	for _, c := range checks {
-		result, err := h.helmRuntime.Exchange.GetOrder(ctx, h.helmRuntime.Creds, c.id)
-		if err != nil {
+		if c.err != nil {
 			slog.Debug("checkBracketOrders: GetOrder failed (transient?)",
-				"hand_id", h.id, "symbol", c.symbol, "order_id", c.id, "err", err)
+				"hand_id", h.id, "symbol", c.symbol, "order_id", c.id, "err", c.err)
 			continue
 		}
-		switch result.Status {
+		switch c.result.Status {
 		case "canceled", "cancelled", "expired", "rejected":
 			slog.Info("checkBracketOrders: bracket order cancelled externally — position likely closed",
-				"hand_id", h.id, "symbol", c.symbol, "order_id", c.id, "status", result.Status)
+				"hand_id", h.id, "symbol", c.symbol, "order_id", c.id, "status", c.result.Status)
 			h.HandleExitOrderCanceled(ctx, c.id)
 		}
 		// "filled" = exchange-side SL/TP triggered; fill event arrives via WS/poll.

@@ -177,7 +177,21 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 						"attempt", attempt, "err", err)
 				}
 				if err != nil {
-					slog.Error("hand: place exit orders failed", "hand_id", h.id, "symbol", symbol, "err", err)
+					// Exchange-side bracket failed after all retries. The position is NOT
+					// unprotected: exitLevels[symbol] still holds the SL/TP with an EMPTY
+					// ExchangeOrderIDs, so the in-process checkExits monitor is automatically
+					// the active net (it fires a market close when price crosses, polled ≤5s).
+					// But the exchange-side guarantee is gone — escalate loudly so a human
+					// knows this position relies on the helm process staying up.
+					slog.Error("hand: place exit orders failed — position now relies on the local monitor only",
+						"hand_id", h.id, "symbol", symbol, "err", err)
+					h.helmRuntime.EmitEvent(natsapi.HelmEvent{
+						HandID: h.id.String(),
+						Code:   CodeOrderExitFailed,
+						Symbol: symbol,
+						Reason: fmt.Sprintf("stop_loss=%s take_profit=%s err=%s", el.StopLoss, el.TakeProfit, err),
+						Msg:    "order: exchange SL/TP bracket FAILED — local monitor is the only net",
+					})
 					return
 				}
 				slog.Info("hand: exit orders placed", "hand_id", h.id, "symbol", symbol, "order_ids", result.OrderIDs)

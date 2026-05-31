@@ -13,6 +13,7 @@ import (
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/natsapi"
 	handdomain "mallow/helm/internal/module/hand/domain"
+	helmdomain "mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/runtime/core/strategy"
 	"mallow/helm/internal/runtime/position"
 )
@@ -40,9 +41,19 @@ func (h *Hand) runLoop(ctx context.Context) {
 	defer staleTicker.Stop()
 
 	for {
+		// Priority drain: exit signals and fills jump ahead of the poll/bracket-state
+		// results. Fills-before-pollCh is a CORRECTNESS requirement: when an OCO take-profit
+		// fills, the exchange auto-cancels the paired stop-loss leg. If applyBracketStates
+		// (from pollCh) processes that cancelled SL before the TP fill is booked, the leg is
+		// disowned (orphaned, no PnL) instead of closed — losing the winning trade's PnL (#4).
+		// Draining fills first guarantees the close is booked, so the SL-cancel then finds the
+		// leg already gone and is correctly ignored.
 		select {
 		case sig := <-h.UrgentSignals:
 			h.handleSignal(ctx, sig)
+			continue
+		case <-h.fillSignal:
+			h.drainFills(ctx)
 			continue
 		default:
 		}
@@ -52,13 +63,35 @@ func (h *Hand) runLoop(ctx context.Context) {
 			h.handleSignal(ctx, sig)
 		case sig := <-h.Signals:
 			h.handleSignal(ctx, sig)
-		case ev := <-h.fillCh:
-			h.handleWsFill(ctx, ev)
+		case <-h.fillSignal:
+			h.drainFills(ctx)
+		case pp := <-h.placeResultCh:
+			// Off-loop order placement came back — record/poslog on success, clean up on
+			// failure, all on the loop (single-owner).
+			h.applyPlaceResult(ctx, pp)
+		case batch := <-h.pollCh:
+			// Off-loop poll batch came back — apply its state transitions on the loop.
+			h.pollInFlight = false
+			h.applyPolledOrders(ctx, batch.orders)
+			h.applyBracketStates(ctx, batch.brackets)
 		case <-pollTicker.C:
-			h.pollOrders(ctx)
-			h.checkExits()
-			h.checkBracketOrders(ctx)
-			h.checkPositionDesync(ctx)
+			// Fan out the order + bracket GetOrder calls OFF the loop so a slow poll can't
+			// starve the fill mailbox; one batch in flight at a time (pollInFlight guard).
+			if !h.pollInFlight {
+				h.pollInFlight = true
+				go func() {
+					batch := pollBatch{
+						orders:   h.fetchPendingOrders(ctx),
+						brackets: h.fetchBracketStates(ctx),
+					}
+					select {
+					case h.pollCh <- batch:
+					case <-ctx.Done():
+					}
+				}()
+			}
+			h.checkExits()             // mostly in-memory; conditional REST already off-loaded
+			h.checkPositionDesync(ctx) // in-memory portfolio compare, no REST
 		case <-staleTicker.C:
 			h.checkStale()
 		case <-ctx.Done():
@@ -453,31 +486,97 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		ClientOrderID: clid,
 	}
 	h.trackOrder(clid)
-	result, err := h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, orderReq)
+	// Place the order OFF the loop. The REST (PlaceOrder + balance-retry + ambiguous
+	// recovery) can take 100ms–2s; blocking the loop here would delay draining the fill
+	// mailbox and placing brackets for in-flight positions. The fill routes by the
+	// pre-tracked clid regardless of when the REST returns, so the result only comes back to
+	// the loop for bookkeeping (applyPlaceResult) via placeResultCh.
+	pp := &pendingPlace{
+		sig: sig, intent: intent, reply: reply, pending: pending, clid: clid,
+		orderReq: orderReq, orderType: orderType, limitPrice: limitPrice, orderQty: orderQty,
+		isFutures: isFutures, isExitOrder: isExitOrder, signalAt: signalAt,
+	}
+	go func() {
+		h.runPlaceREST(ctx, pp)
+		select {
+		case h.placeResultCh <- pp:
+		case <-ctx.Done():
+		}
+	}()
+}
+
+// pendingPlace carries an entry/exit placement across the off-loop REST boundary.
+// The run loop builds it (after sizing + clid tracking), a goroutine fills result/err via
+// runPlaceREST, and the loop finishes the bookkeeping via applyPlaceResult.
+type pendingPlace struct {
+	sig         Signal
+	intent      strategy.Intent
+	reply       helmdomain.TradeReply
+	pending     exitPending
+	clid        string
+	orderReq    exchange.OrderRequest
+	orderType   exchange.OrderType
+	limitPrice  decimal.Decimal
+	orderQty    decimal.Decimal
+	isFutures   bool
+	isExitOrder bool
+	signalAt    time.Time
+
+	result *exchange.OrderResult // set by runPlaceREST
+	err    error
+}
+
+// runPlaceREST is the I/O phase of an entry/exit: PlaceOrder plus the insufficient-balance
+// retry and the ambiguous-failure (clid) recovery. Pure REST — it mutates no hand state
+// (the clid was tracked on-loop before this runs) — so it executes OFF the actor loop.
+func (h *Hand) runPlaceREST(ctx context.Context, pp *pendingPlace) {
+	result, err := h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, pp.orderReq)
 	// ── Insufficient-balance retry (spot SELL exit only) ──────────────────────
 	// When fee was paid in base asset, poslog may hold gross qty while the wallet
 	// holds net (gross - fee). Query actual free balance and retry once.
-	if err != nil && isExitOrder && reply.Side == "sell" && !isFutures &&
+	if err != nil && pp.isExitOrder && pp.reply.Side == "sell" && !pp.isFutures &&
 		isInsufficientBalanceError(err) {
 		if bf, ok := h.helmRuntime.Exchange.(exchange.SpotBalanceFetcher); ok {
-			baseAsset := spotBaseAsset(sig.Symbol)
+			baseAsset := spotBaseAsset(pp.sig.Symbol)
 			if freeQty, balErr := bf.GetFreeBalance(ctx, h.helmRuntime.Creds, baseAsset); balErr == nil && freeQty.IsPositive() {
 				slog.Warn("order: insufficient balance on exit — retrying with actual free balance",
-					"hand_id", h.id, "symbol", sig.Symbol,
-					"attempted_qty", reply.Qty, "free_qty", freeQty,
+					"hand_id", h.id, "symbol", pp.sig.Symbol,
+					"attempted_qty", pp.reply.Qty, "free_qty", freeQty,
 				)
-				orderReq.Qty = freeQty.Truncate(4)
-				result, err = h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, orderReq)
+				pp.orderReq.Qty = freeQty.Truncate(4)
+				result, err = h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, pp.orderReq)
 			}
 		}
 	}
 	// Ambiguous failure (timeout / network): the order may have landed. Ask the exchange
 	// by clid before giving up — if it exists, treat the placement as successful.
 	if err != nil {
-		if recovered := h.recoverAmbiguousPlace(ctx, sig.Symbol, clid, err); recovered != nil {
+		if recovered := h.recoverAmbiguousPlace(ctx, pp.sig.Symbol, pp.clid, err); recovered != nil {
 			result, err = recovered, nil
 		}
 	}
+	pp.result = result
+	pp.err = err
+}
+
+// applyPlaceResult is the state-mutation phase of an entry/exit: it runs ON the actor loop
+// (single-owner) after runPlaceREST returned, recording the order / poslog on success or
+// cleaning up tracking + auto-pausing on failure.
+func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
+	sig := pp.sig
+	intent := pp.intent
+	reply := pp.reply
+	pending := pp.pending
+	clid := pp.clid
+	orderType := pp.orderType
+	limitPrice := pp.limitPrice
+	orderQty := pp.orderQty
+	isExitOrder := pp.isExitOrder
+	isFutures := pp.isFutures
+	signalAt := pp.signalAt
+	result := pp.result
+	err := pp.err
+
 	if err != nil {
 		// Order never reached the exchange — drop the pre-placement clid tracking so it
 		// doesn't linger in the routing map.

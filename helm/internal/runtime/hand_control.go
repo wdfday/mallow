@@ -238,18 +238,31 @@ func (h *Hand) MarkPartialApplied(orderID string, qty decimal.Decimal) {
 	h.mu.Unlock()
 }
 
-// EnqueueFill forwards a fully-filled WsFillEvent to the hand's run-loop.
-// Non-blocking: returns true if the fill was enqueued, false if the buffer was full.
-// Callers MUST fall back to the orphan ReportFill path when false is returned so
-// the fill is never silently dropped. Called by the registry fill processor.
+// EnqueueFill appends a fully-filled WsFillEvent to the hand's unbounded fill mailbox and
+// wakes the run loop. Non-blocking and NEVER drops — a hand must always see its own fills
+// (a dropped fill that falls back to a direct portfolio apply bypasses bracket/poslog/h.pos
+// and silently desyncs the hand). Returns true unconditionally; the bool is kept so callers
+// keep routing fills to the owning hand rather than the orphan path. Called by the registry
+// fill processor (a different goroutine than the run loop).
 func (h *Hand) EnqueueFill(ev exchange.WsFillEvent) bool {
+	h.fillMu.Lock()
+	h.fillQueue = append(h.fillQueue, ev)
+	h.fillMu.Unlock()
 	select {
-	case h.fillCh <- ev:
-		return true
-	default:
-		slog.Warn("hand: fill channel full, falling back to direct ReportFill",
-			"hand_id", h.id, "order_id", ev.OrderID)
-		return false
+	case h.fillSignal <- struct{}{}: // coalescing wakeup
+	default: // a wakeup is already pending; the drain will see this fill too
+	}
+	return true
+}
+
+// drainFills applies every queued fill in arrival order. Runs ON the run loop (single-owner).
+func (h *Hand) drainFills(ctx context.Context) {
+	h.fillMu.Lock()
+	batch := h.fillQueue
+	h.fillQueue = nil
+	h.fillMu.Unlock()
+	for _, ev := range batch {
+		h.handleWsFill(ctx, ev)
 	}
 }
 

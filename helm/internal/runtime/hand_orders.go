@@ -17,7 +17,27 @@ import (
 	"mallow/helm/internal/runtime/position"
 )
 
-func (h *Hand) pollOrders(ctx context.Context) {
+// polledOrder pairs an open order with its freshly-fetched exchange state.
+// result is nil when err != nil. Produced by fetchPendingOrders, consumed by applyPolledOrders.
+type polledOrder struct {
+	order  handdomain.Order
+	result *exchange.OrderResult
+	err    error
+}
+
+// pollBatch is the combined output of one off-loop REST poll: open-order states plus
+// bracket-order states. Fetched in a goroutine (pure I/O), applied on the run loop.
+type pollBatch struct {
+	orders   []polledOrder
+	brackets []bracketState
+}
+
+// fetchPendingOrders is the I/O phase of polling: GetOrder for every open order.
+// Pure REST — it only reads a snapshot of h.orders and never mutates hand state — so it runs
+// OFF the actor loop (in a goroutine) without racing the loop's own mutations. The run loop
+// applies the result on-loop via applyPolledOrders. Keeping the GetOrder fan-out off-loop is
+// what stops a slow poll from starving the fill mailbox (see runLoop / hand.fillSignal).
+func (h *Hand) fetchPendingOrders(ctx context.Context) []polledOrder {
 	h.mu.RLock()
 	var pending []handdomain.Order
 	for _, o := range h.orders {
@@ -28,12 +48,27 @@ func (h *Hand) pollOrders(ctx context.Context) {
 	}
 	h.mu.RUnlock()
 
+	out := make([]polledOrder, 0, len(pending))
 	for _, o := range pending {
 		result, err := h.helmRuntime.Exchange.GetOrder(ctx, h.helmRuntime.Creds, o.ID)
-		if err != nil {
-			slog.Warn("hand: poll order failed", "order_id", o.ID, "err", err)
+		out = append(out, polledOrder{order: o, result: result, err: err})
+	}
+	return out
+}
+
+// applyPolledOrders is the state-mutation phase: it runs ON the actor loop, so it shares the
+// single-owner invariant with handleSignal/handleWsFill. The occasional REST it still issues
+// (dust-remainder cancel, limit timeout) fires only for orders that actually changed — rare —
+// so it does not meaningfully block the loop. Race-tolerant against the WS path via the
+// existing seenFills / hasOrderFillPublished dedup guards.
+func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
+	for _, p := range polled {
+		o := p.order
+		if p.err != nil {
+			slog.Warn("hand: poll order failed", "order_id", o.ID, "err", p.err)
 			continue
 		}
+		result := p.result
 		h.mu.Lock()
 		for i := range h.orders {
 			if h.orders[i].ID == o.ID {

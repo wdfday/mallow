@@ -50,7 +50,7 @@ impl Cci {
     }
 
     pub fn description() -> &'static str {
-        "Commodity Channel Index — measures price deviation from its statistical mean in units of average deviation. +100/-100 thresholds mark breakout/reversal zones."
+        "Commodity Channel Index — measures price deviation from its statistical mean in units of average deviation. +100/-100 thresholds mark breakout/reversal zones. Outputs a single unbounded value centered around 0."
     }
 
     /// Feed a new bar and return CCI if enough data has been accumulated.

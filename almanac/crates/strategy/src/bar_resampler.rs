@@ -87,7 +87,7 @@ pub const SUPPORTED_MTF_CRYPTO: &[&str] = &[
 /// asset-class restrictions should validate against [`SUPPORTED_MTF_STOCK`]
 /// or [`SUPPORTED_MTF_CRYPTO`] before calling this function.
 ///
-/// Returns `None` for unrecognised strings (bad unit letter, non-numeric
+/// Returns `None` for unrecognized strings (bad unit letter, non-numeric
 /// suffix, or `n == 0`).
 pub fn parse_timeframe_ms(tf: &str) -> Option<i64> {
     let tf = tf.trim();

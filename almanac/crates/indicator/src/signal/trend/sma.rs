@@ -41,7 +41,7 @@ impl Sma {
     }
 
     pub fn description() -> &'static str {
-        "Simple Moving Average — unweighted mean of the last N closes. Baseline smoothing filter used in crossover and trend-detection systems."
+        "Simple Moving Average — unweighted mean of the last N closes. Baseline smoothing filter used in crossover and trend-detection systems. Outputs a single value (price scale)."
     }
 
     /// Feed một giá mới. Trả về `Some(sma)` sau khi đủ `period` bar.

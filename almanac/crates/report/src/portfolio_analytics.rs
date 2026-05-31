@@ -92,9 +92,11 @@ pub fn analyze(
         beta[i] = b;
 
         let strat_mean = metrics::mean(returns);
-        // Annualized alpha: (mean_daily_excess) × 252
-        let alpha_daily = strat_mean - b * bench_mean;
-        alpha_annualized[i] = alpha_daily * 252.0;
+        // Annualized alpha: per-bar excess × empirical bars/year. Derived from the
+        // symbol's own equity timestamps so it auto-adapts (stocks ≈252, crypto ≈365)
+        // instead of assuming a hardcoded 252 — matches report.rs / benchmark.rs.
+        let alpha_per_bar = strat_mean - b * bench_mean;
+        alpha_annualized[i] = alpha_per_bar * bars_per_year(&symbol_reports[i].2);
     }
 
     // ── Turnover ──────────────────────────────────────────────────────────────
@@ -135,6 +137,21 @@ pub fn analyze(
 }
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
+
+/// Empirical bars-per-year from an equity curve's timestamps.
+/// Auto-adapts to the data cadence (US stocks ≈252, crypto ≈365); falls back to 252.
+fn bars_per_year(ec: &[EquityPoint]) -> f64 {
+    if ec.len() < 2 {
+        return 252.0;
+    }
+    let span_ms = (ec[ec.len() - 1].timestamp - ec[0].timestamp) as f64;
+    let years = span_ms / (365.25 * 24.0 * 3600.0 * 1000.0);
+    if years > 1e-9 {
+        (ec.len() - 1) as f64 / years
+    } else {
+        252.0
+    }
+}
 
 fn variance(v: &[f64]) -> f64 {
     if v.len() < 2 {

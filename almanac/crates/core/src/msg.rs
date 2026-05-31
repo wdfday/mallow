@@ -36,31 +36,19 @@ impl From<&crate::signal::Signal> for SignalMsg {
             crate::signal::Direction::Short => "short",
             crate::signal::Direction::Exit => "exit",
         };
-        let (target_price, stop_price, pattern_kind, confidence) =
-            if let Some(ref p) = sig.pattern {
-                // Pattern fields take priority; fall back to signal top-level fields.
-                (
-                    p.target_price.or(sig.target_price),
-                    p.stop_price.or(sig.stop_price),
-                    Some(p.pattern_kind.clone()),
-                    Some(p.confidence),
-                )
-            } else {
-                (sig.target_price, sig.stop_price, None, None)
-            };
         Self {
             t: sig.timestamp,
             s: sig.symbol.clone(),
             dir: dir.into(),
             strength: sig.strength,
             price: sig.price,
-            target_price,
-            stop_price,
-            pattern_kind,
-            confidence,
+            target_price: sig.target_price,
+            stop_price: sig.stop_price,
             is_offset: if sig.is_offset { Some(true) } else { None },
             reason: sig.reason.clone(),
             atr: sig.atr,
+            trailing_stop_pct: sig.trailing_stop_pct,
+            max_bars_held: sig.max_bars_held.map(|v| v as i64),
         }
     }
 }

@@ -9,7 +9,7 @@ pub use request::{BacktestRequest, MtfBacktestRequest, MonteCarloConfig, ScriptB
 pub use response::{
     ActivityStats, BacktestResponse, BuyHoldBenchmarkResponse, CalendarStats, CapitalStats,
     CurvePoint, CurveStats, DistributionStats, DrawdownStats, ErrorResponse, ExcursionStats,
-    ExitReasonBreakdownResponse, LongShortStats, MonteCarloResponse, RegimeSummaryResponse,
-    RegimeTradeStatsResponse, ReturnStats, RiskAdjustedStats, TradeResponse, TradeStats,
-    WalkForwardResponse, WalkForwardWindowResponse,
+    ExitReasonBreakdownResponse, FillResponse, LongShortStats, MonteCarloResponse,
+    RegimeSummaryResponse, RegimeTradeStatsResponse, ReturnStats, RiskAdjustedStats,
+    TradeResponse, TradeStats, WalkForwardResponse, WalkForwardWindowResponse,
 };

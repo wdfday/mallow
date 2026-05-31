@@ -60,7 +60,7 @@ impl ChandelierExit {
     }
 
     pub fn description() -> &'static str {
-        "Chandelier Exit — long stop = highest high - ATR × multiplier; short stop = lowest low + ATR × multiplier. Prevents premature exits while locking in profits."
+        "Chandelier Exit — long stop = highest high - ATR × multiplier; short stop = lowest low + ATR × multiplier. Prevents premature exits while locking in profits. Outputs: `.long_stop` (default, long trailing stop), `.short_stop` (short trailing stop), `.atr` (ATR at this bar)."
     }
 
     /// Chandelier Exit(22, 3.0) — cấu hình LeBeau gốc.

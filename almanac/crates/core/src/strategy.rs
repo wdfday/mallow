@@ -93,29 +93,6 @@ pub trait Strategy: Send {
         None
     }
 
-    /// Candle-transform spec declared inside the strategy source (e.g. via a
-    /// `candle.transform("heiken_ashi")` directive at the top of a script
-    /// script). Returns `(kind, optional smooth_period)`.
-    ///
-    /// The engine builder reads this and lets the script-level setting
-    /// override the request-level `candle_type` field — strategy definition
-    /// wins over execution config.
-    ///
-    /// Default returns `None` — most strategies have no script-level directive.
-    fn script_candle_spec(&self) -> Option<(String, Option<usize>)> {
-        None
-    }
-
-    /// Whether this strategy applies its own candle transform inside `on_bar`.
-    ///
-    /// When `true`, the engine MUST pass raw bars and skip its own
-    /// `candle_transform` step — otherwise the bars would be transformed twice
-    /// (once by engine, once by strategy). ScriptStrategy returns `true` because
-    /// it owns its `candle.transform(...)` directive internally, so the same
-    /// transform applies in both backtest and live (registry) paths.
-    fn handles_candle_internally(&self) -> bool {
-        false
-    }
 }
 
 /// Blanket impl so `Box<dyn Strategy>` can be used as a concrete `Strategy`.
@@ -155,12 +132,6 @@ impl Strategy for Box<dyn Strategy> {
     }
     fn current_regime(&self) -> Option<&RegimeState> {
         (**self).current_regime()
-    }
-    fn script_candle_spec(&self) -> Option<(String, Option<usize>)> {
-        (**self).script_candle_spec()
-    }
-    fn handles_candle_internally(&self) -> bool {
-        (**self).handles_candle_internally()
     }
 }
 

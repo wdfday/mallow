@@ -77,7 +77,7 @@ impl Kst {
     }
 
     pub fn description() -> &'static str {
-        "Know Sure Thing — weighted sum of four different ROC smoothings. Designed for long-term trend identification with a signal line."
+        "Know Sure Thing — weighted sum of four different ROC smoothings. Designed for long-term trend identification with a signal line. Outputs: `.kst` (default, KST line), `.signal` (signal line), `.histogram` (KST minus signal)."
     }
 
     /// KST short-term (daily) — cấu hình Pring gốc.

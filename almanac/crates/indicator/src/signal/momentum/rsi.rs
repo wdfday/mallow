@@ -61,7 +61,7 @@ impl Rsi {
     }
 
     pub fn description() -> &'static str {
-        "Relative Strength Index — oscillator (0–100) comparing average gains to average losses over N bars. Above 70 = overbought; below 30 = oversold."
+        "Relative Strength Index — oscillator (0–100) comparing average gains to average losses over N bars. Above 70 = overbought; below 30 = oversold. Outputs a single 0–100 value."
     }
 
     /// Feed một giá đóng cửa. Trả về `Some(rsi)` sau `period + 1` bar.

@@ -100,7 +100,7 @@ impl KalmanFilter {
     }
 
     pub fn description() -> &'static str {
-        "Kalman Filter — Bayesian state estimator that tracks price (position) and velocity, adapting in real time to measurement noise. Produces a smooth price estimate and a velocity (trend direction/speed) output."
+        "Kalman Filter — Bayesian state estimator that tracks price (position) and velocity, adapting in real time to measurement noise. Outputs: `.value` (default, filtered price estimate), `.velocity` (trend slope per bar)."
     }
 
     /// Feed next price observation. Returns filtered `(value, velocity)` immediately.

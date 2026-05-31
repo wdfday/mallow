@@ -11,9 +11,9 @@ use crate::curve_compress::compress;
 use crate::types::{
     ActivityStats, BacktestRequest, BacktestResponse, BuyHoldBenchmarkResponse, CalendarStats,
     CapitalStats, CurvePoint, CurveStats, DistributionStats, DrawdownStats, ExcursionStats,
-    ExitReasonBreakdownResponse, LongShortStats, MonteCarloResponse, RegimeSummaryResponse,
-    RegimeTradeStatsResponse, ReturnStats, RiskAdjustedStats, TradeResponse, TradeStats,
-    WalkForwardResponse,
+    ExitReasonBreakdownResponse, FillResponse, LongShortStats, MonteCarloResponse,
+    RegimeSummaryResponse, RegimeTradeStatsResponse, ReturnStats, RiskAdjustedStats,
+    TradeResponse, TradeStats, WalkForwardResponse,
 };
 use alm_report::BacktestReport;
 
@@ -76,14 +76,34 @@ pub fn build(
             entry_time: ms_to_iso(t.entry_timestamp),
             exit_time: ms_to_iso(t.exit_timestamp),
             pnl: t.pnl,
+            // Per-trade pct fields are emitted as FRACTIONS (0.1 = 10%); the FE
+            // multiplies by 100 for display. Aggregate `*_pct` stay percentage-points.
             pnl_pct: t.pnl_pct,
             commission: t.commission,
-            mae_pct: t.mae_pct * 100.0,
-            mfe_pct: t.mfe_pct * 100.0,
+            mae_pct: t.mae_pct,
+            mfe_pct: t.mfe_pct,
             bars_held: t.bars_held,
             exit_reason: t.exit_reason.to_string(),
         })
         .collect();
+
+    // ── Fills (only when pyramiding is active — keeps normal responses lean) ───
+    let fills: Vec<FillResponse> = if req.max_units.unwrap_or(1) > 1 {
+        engine.portfolio.fills.iter().map(|f| {
+            let leg = f.symbol.split('#').nth(1).and_then(|s| s.parse::<usize>().ok())
+                .map(|n| n.saturating_sub(1)).unwrap_or(0);
+            FillResponse {
+                t: f.timestamp,
+                price: f.price,
+                qty: f.qty,
+                side: match f.side { Side::Buy => "buy".into(), Side::Sell => "sell".into() },
+                sym: f.symbol.clone(),
+                leg,
+            }
+        }).collect()
+    } else {
+        Vec::new()
+    };
 
     // ── Equity / drawdown curves ──────────────────────────────────────────────
     let equity_curve: Vec<CurvePoint> = engine
@@ -169,6 +189,7 @@ pub fn build(
         strategy: req.strategy,
         symbol,
         params,
+        fills,
         timeframe: report.timeframe.to_string(),
         bar_count,
         capital: CapitalStats {

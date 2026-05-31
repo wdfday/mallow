@@ -49,7 +49,7 @@ impl ElderRay {
     }
 
     pub fn description() -> &'static str {
-        "Elder Ray — separates price into bull power (high - EMA) and bear power (low - EMA). Used with a trend filter to confirm entries in Elder's Triple Screen system."
+        "Elder Ray — separates price into bull power (high - EMA) and bear power (low - EMA). Used with a trend filter to confirm entries in Elder's Triple Screen system. Outputs: `.bull_power` (default, high−EMA), `.bear_power` (low−EMA), `.ema` (trend EMA)."
     }
 
     pub fn update(&mut self, high: f64, low: f64, close: f64) -> Option<ElderRayValue> {

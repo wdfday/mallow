@@ -47,7 +47,7 @@ impl Tema {
     }
 
     pub fn description() -> &'static str {
-        "Triple EMA — three EMA passes for minimal lag. Aggressive smoothing that stays very close to current price in trending markets."
+        "Triple EMA — three EMA passes for minimal lag. Aggressive smoothing that stays very close to current price in trending markets. Outputs a single value (price scale)."
     }
 
     pub fn update(&mut self, close: f64) -> Option<f64> {

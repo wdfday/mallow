@@ -4,32 +4,27 @@ use crate::{Adx, Atr, Chop};
 
 /// Built-in regime detector — a reference implementation using ADX, Chop, ATR, and OBV.
 ///
-/// Produces a [`RegimeState`] with three dimensions, each carrying both a raw value
+/// Produces a [`RegimeState`] with two dimensions, each carrying both a raw value
 /// and a default status label. User-defined regime scripts can replace this entirely.
 ///
 /// | Dimension  | Indicator          | Status labels                    |
 /// |------------|--------------------|----------------------------------|
 /// | trend      | ADX + Chop         | "trending" / "ranging" / "neutral" |
 /// | volatility | ATR(short)/ATR(long) | "high" / "low" / "normal"       |
-/// | liquidity  | volume / SMA(vol)  | "high" / "low" / "normal"        |
 pub struct RegimeDetector {
     adx: Adx,
     chop: Chop,
     atr_short: Atr,
     atr_long: Atr,
-    vol_sma: crate::Sma,
     adx_period: usize,
     chop_period: usize,
     atr_short_period: usize,
     atr_long_period: usize,
-    vol_sma_period: usize,
     // Thresholds
     adx_threshold:  f64,
     chop_threshold: f64,
     vol_high_ratio: f64,
     vol_low_ratio:  f64,
-    liq_high_ratio: f64,
-    liq_low_ratio:  f64,
 }
 
 impl Default for RegimeDetector {
@@ -43,18 +38,14 @@ impl RegimeDetector {
             chop:      Chop::new(14),
             atr_short: Atr::new(14),
             atr_long:  Atr::new(50),
-            vol_sma:   crate::Sma::new(20),
             adx_period:       14,
             chop_period:      14,
             atr_short_period: 14,
             atr_long_period:  50,
-            vol_sma_period:   20,
             adx_threshold:  25.0,
             chop_threshold: 61.8,
             vol_high_ratio: 1.3,
             vol_low_ratio:  0.7,
-            liq_high_ratio: 1.5,
-            liq_low_ratio:  0.5,
         }
     }
 
@@ -78,7 +69,6 @@ impl RegimeDetector {
         let chop_val  = self.chop.update(bar.high, bar.low, bar.close);
         let atr_s_val = self.atr_short.update(bar.high, bar.low, bar.close);
         let atr_l_val = self.atr_long.update(bar.high, bar.low, bar.close);
-        let vol_ma    = self.vol_sma.update(bar.volume);
 
         let adx  = adx_val?.adx;
         let chop = chop_val?;
@@ -104,22 +94,9 @@ impl RegimeDetector {
             _ => ("normal", 1.0),
         };
 
-        // ── Liquidity ─────────────────────────────────────────────────────────
-        let (liq_status, liq_value) = match vol_ma {
-            Some(ma) if ma > f64::EPSILON => {
-                let ratio = bar.volume / ma;
-                let status = if ratio > self.liq_high_ratio { "high" }
-                             else if ratio < self.liq_low_ratio { "low" }
-                             else { "normal" };
-                (status, ratio)
-            }
-            _ => ("normal", 1.0),
-        };
-
         Some(RegimeState::new(
             RegimeDimension::new(trend_value, trend_status),
             RegimeDimension::new(vol_value,   vol_status),
-            RegimeDimension::new(liq_value,   liq_status),
         ))
     }
 
@@ -128,7 +105,6 @@ impl RegimeDetector {
         self.chop      = Chop::new(self.chop_period);
         self.atr_short = Atr::new(self.atr_short_period);
         self.atr_long  = Atr::new(self.atr_long_period);
-        self.vol_sma   = crate::Sma::new(self.vol_sma_period);
     }
 }
 

@@ -30,7 +30,7 @@ pub mod catalog;
 
 // ── Position sizing / risk managers ──────────────────────────────────────────
 pub mod risk;
-pub use risk::{AnySizer, AtrSizing, EqualWeight, FixedFractional, FixedQuantity, FixedUsd, KellySizing};
+pub use risk::{AnySizer, AtrSizing, EqualWeight, FixedFractional, FixedQuantity, FixedUsd, KellySizing, RiskFractional};
 
 // ── Concrete named strategies (58) ───────────────────────────────────────────
 pub mod named;

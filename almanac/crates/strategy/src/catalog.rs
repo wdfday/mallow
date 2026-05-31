@@ -3,6 +3,36 @@
 use serde::Serialize;
 use serde_json::Value;
 
+/// One indicator output field with its semantic type. Most fields are `"f64"`
+/// scalars; a handful (`bullish`, `bearish`, `above_cloud`, …) are `"bool"`
+/// flags encoded as `0.0`/`1.0` — they must be compared (`> 0.5`), never
+/// negated with `!` (Rhai has no `!` for `f64`).
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct OutputField {
+    pub name: &'static str,
+    /// `"f64"` (scalar) | `"bool"` (0/1 flag).
+    #[serde(rename = "type")]
+    pub type_: &'static str,
+}
+
+/// Serialize a list of output field names as `[{name, type}]`, deriving each
+/// field's semantic type from `alm_indicator::field_kind`.
+fn serialize_outputs<S>(outputs: &[&'static str], s: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    use serde::ser::SerializeSeq;
+    let mut seq = s.serialize_seq(Some(outputs.len()))?;
+    for &name in outputs {
+        seq.serialize_element(&OutputField {
+            name,
+            type_: alm_indicator::field_kind(name).as_str(),
+        })?;
+    }
+    seq.end()
+}
+
 /// A single parameter descriptor.
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
@@ -30,7 +60,11 @@ pub struct IndicatorMeta {
     pub description: &'static str,
     /// Constructor parameters accepted by `IndicatorBox::from_config`.
     pub params: Vec<ParamDef>,
-    /// Output field names returned in `IndicatorPoint.fields`.
+    /// Output fields returned in `IndicatorPoint.fields`, each tagged with its
+    /// semantic type (`f64` scalar vs `bool` 0/1 flag). Built statically from
+    /// the field-name list; serialized as `[{name, type}]`.
+    #[serde(serialize_with = "serialize_outputs")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Vec<OutputField>))]
     pub outputs: Vec<&'static str>,
 }
 
@@ -138,21 +172,27 @@ pub fn all() -> Vec<IndicatorMeta> {
         },
         IndicatorMeta {
             name: "adx", label: "Average Directional Index", category: "trend",
-            description: "Scalar trend-strength value on a 0–100 scale — above 25 indicates a strong trend. Use ind.dmi() for +DI/-DI directional lines.",
+            description: "Trend-strength on a 0–100 scale (primary `adx`; above 25 = strong trend), plus the +DI/-DI directional lines.",
             params: vec![p_int("period", 14)],
-            outputs: vec!["value"],
+            outputs: vec!["adx", "plus_di", "minus_di"],
         },
         IndicatorMeta {
             name: "dmi", label: "DMI (Directional Movement)", category: "trend",
             description: "Directional Movement Index — +DI vs −DI crossover signals trend direction changes.",
             params: vec![p_int("period", 14)],
-            outputs: vec!["plus_di", "minus_di", "dx"],
+            outputs: vec!["plus_di", "minus_di"],
         },
         IndicatorMeta {
             name: "aroon", label: "Aroon", category: "trend",
             description: "Measures how many bars ago the highest high / lowest low occurred to gauge trend age.",
             params: vec![p_int("period", 25)],
-            outputs: vec!["up", "down", "oscillator"],
+            outputs: vec!["up", "down"],
+        },
+        IndicatorMeta {
+            name: "aroon_osc", label: "Aroon Oscillator", category: "trend",
+            description: "Aroon Up − Aroon Down on a −100…+100 scale — positive = uptrend dominance, negative = downtrend.",
+            params: vec![p_int("period", 25)],
+            outputs: vec!["value"],
         },
         IndicatorMeta {
             name: "vortex", label: "Vortex Indicator", category: "trend",
@@ -164,13 +204,13 @@ pub fn all() -> Vec<IndicatorMeta> {
             name: "alligator", label: "Williams Alligator", category: "trend",
             description: "Three smoothed MAs (jaw/teeth/lips) that identify sleeping, awakening, and eating trend phases.",
             params: vec![p_int("jaw", 13), p_int("teeth", 8), p_int("lips", 5)],
-            outputs: vec!["jaw", "teeth", "lips", "bullish"],
+            outputs: vec!["jaw", "teeth", "lips", "bullish", "bearish"],
         },
         IndicatorMeta {
             name: "gmma", label: "Guppy MMMA", category: "trend",
             description: "Guppy Multiple MA — short-term vs long-term group averages reveal underlying trend structure.",
             params: vec![],
-            outputs: vec!["short_avg", "long_avg", "bullish"],
+            outputs: vec!["spread", "bullish", "short_0", "short_1", "short_2", "short_3", "short_4", "short_5", "long_0", "long_1", "long_2", "long_3", "long_4", "long_5"],
         },
         IndicatorMeta {
             name: "kdj", label: "KDJ", category: "trend",
@@ -282,13 +322,13 @@ pub fn all() -> Vec<IndicatorMeta> {
         IndicatorMeta {
             name: "kst", label: "Know Sure Thing", category: "momentum",
             description: "Weighted sum of multiple ROC signals — designed to identify major market cycle turns.",
-            params: vec![],
+            params: vec![p_int("signal", 9)],
             outputs: vec!["kst", "signal", "histogram"],
         },
         IndicatorMeta {
             name: "pmo", label: "Price Momentum Oscillator", category: "momentum",
             description: "Double-smoothed rate-of-change oscillator — more responsive than MACD for cycle timing.",
-            params: vec![],
+            params: vec![p_int("smooth1", 35), p_int("smooth2", 20), p_int("signal", 10)],
             outputs: vec!["pmo", "signal", "histogram"],
         },
         IndicatorMeta {
@@ -306,7 +346,7 @@ pub fn all() -> Vec<IndicatorMeta> {
         IndicatorMeta {
             name: "smi", label: "Stochastic Momentum Index", category: "momentum",
             description: "Refinement of the stochastic centred around zero — shows where close is relative to bar midpoint.",
-            params: vec![],
+            params: vec![p_int("period", 13), p_int("smooth1", 25), p_int("smooth2", 2), p_int("signal", 9)],
             outputs: vec!["smi", "signal"],
         },
         IndicatorMeta {
@@ -334,7 +374,7 @@ pub fn all() -> Vec<IndicatorMeta> {
         IndicatorMeta {
             name: "coppock", label: "Coppock Curve", category: "momentum",
             description: "Long-term momentum indicator originally designed to identify major bear market recoveries.",
-            params: vec![],
+            params: vec![p_int("short", 11), p_int("long", 14), p_int("wma", 10)],
             outputs: vec!["value"],
         },
         // ── Volatility ────────────────────────────────────────────────────────
@@ -342,7 +382,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             name: "atr", label: "Average True Range", category: "volatility",
             description: "Average of true range (max of high−low, |high−prev_close|, |low−prev_close|) — raw volatility.",
             params: vec![p_int("period", 14)],
-            outputs: vec!["atr"],
+            outputs: vec!["atr", "tr"],
         },
         IndicatorMeta {
             name: "bbands", label: "Bollinger Bands", category: "volatility",
@@ -426,7 +466,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             name: "ichimoku", label: "Ichimoku Cloud", category: "pattern",
             description: "Comprehensive Japanese trend system: tenkan/kijun cross, cloud (kumo), and chikou span.",
             params: vec![p_int("tenkan", 9), p_int("kijun", 26), p_int("senkou_b", 52)],
-            outputs: vec!["tenkan", "kijun", "senkou_a", "senkou_b", "chikou", "above_cloud"],
+            outputs: vec!["tenkan", "kijun", "senkou_a", "senkou_b", "chikou", "above_cloud", "below_cloud", "chikou_above", "chikou_below"],
         },
         IndicatorMeta {
             name: "parabolic_sar", label: "Parabolic SAR", category: "pattern",
@@ -445,6 +485,12 @@ pub fn all() -> Vec<IndicatorMeta> {
             description: "Five-bar pattern marking local swing highs (bearish fractal) and swing lows (bullish fractal).",
             params: vec![],
             outputs: vec!["bullish", "bearish", "fractal_high", "fractal_low"],
+        },
+        IndicatorMeta {
+            name: "elder_ray", label: "Elder Ray Index", category: "pattern",
+            description: "Separates price into bull power (high − EMA) and bear power (low − EMA) — used with a trend filter in Elder's Triple Screen.",
+            params: vec![p_int("period", 13)],
+            outputs: vec!["bull_power", "bear_power", "ema"],
         },
     ]
 }
@@ -553,3 +599,99 @@ pub fn auto_label(config: &serde_json::Map<String, Value>) -> String {
     parts.join("_")
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every catalog entry must serialize `outputs` as `[{name, type}]` and tag
+    /// bool-semantic fields as `"bool"`. Guards against the field-type info
+    /// silently regressing to plain name strings.
+    #[test]
+    fn outputs_serialize_with_field_types() {
+        let cat = all();
+        let st = cat.iter().find(|m| m.name == "supertrend").expect("supertrend in catalog");
+        let json = serde_json::to_value(st).unwrap();
+        let outputs = json["outputs"].as_array().expect("outputs is array");
+
+        let value = outputs.iter().find(|o| o["name"] == "value").expect("value field");
+        assert_eq!(value["type"], "f64", "value must be f64 scalar");
+
+        let bullish = outputs.iter().find(|o| o["name"] == "bullish").expect("bullish field");
+        assert_eq!(bullish["type"], "bool", "bullish must be a bool flag");
+    }
+
+    /// Field-type classification is consistent across the whole catalog: every
+    /// output named in `BOOL_FIELDS` serializes as `"bool"`, the rest as `"f64"`.
+    #[test]
+    fn every_output_type_matches_field_kind() {
+        for meta in all() {
+            let json = serde_json::to_value(&meta).unwrap();
+            for out in json["outputs"].as_array().unwrap() {
+                let name = out["name"].as_str().unwrap();
+                let want = alm_indicator::field_kind(name).as_str();
+                assert_eq!(out["type"], want, "{}.{} type mismatch", meta.name, name);
+            }
+        }
+    }
+
+    /// Catalog ↔ engine parity: what the FE sees (`GET /api/v1/indicators`) must
+    /// match what indicators actually produce. Three checks:
+    ///   1. Every catalog `name` is a real, buildable indicator type.
+    ///   2. Each entry's `outputs` exactly equals the indicator's `field_names()`
+    ///      (same names, same order) — otherwise the FE plots/labels the wrong fields.
+    ///   3. Coverage both ways: catalog names == `KNOWN_INDICATOR_TYPES` (no
+    ///      indicator missing from the FE, no phantom entry).
+    #[test]
+    fn catalog_matches_engine_indicators() {
+        use std::collections::{HashMap, HashSet};
+        use alm_indicator::IndicatorBox;
+        use crate::script::v1::indicator_json_config;
+        use crate::script::KNOWN_INDICATOR_TYPES;
+
+        // Some indicators reject certain periods via panic (e.g. coppock needs
+        // short < long). Try a few under a silenced hook; use the first that builds.
+        let candidate_periods = [11usize, 14, 20, 26, 34, 52];
+        let empty = HashMap::new();
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let build = |ty: &str| -> Option<IndicatorBox> {
+            candidate_periods.iter().find_map(|&p| {
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    IndicatorBox::from_config(&indicator_json_config(ty, p, &empty)).ok()
+                })).ok().flatten()
+            })
+        };
+
+        let mut unbuildable = Vec::new();
+        let mut output_mismatch = Vec::new();
+
+        for meta in all() {
+            match build(meta.name) {
+                None => unbuildable.push(meta.name),
+                Some(bx) => {
+                    let actual: Vec<&str> = bx.field_names().to_vec();
+                    if meta.outputs != actual {
+                        output_mismatch.push(format!(
+                            "{}: catalog {:?} != engine {:?}", meta.name, meta.outputs, actual));
+                    }
+                }
+            }
+        }
+        std::panic::set_hook(prev_hook);
+
+        let cat_names: HashSet<&str> = all().iter().map(|m| m.name).collect();
+        let known: HashSet<&str> = KNOWN_INDICATOR_TYPES.iter().copied().collect();
+        let missing_from_catalog: Vec<&str> = known.difference(&cat_names).copied().collect();
+        let phantom_in_catalog:   Vec<&str> = cat_names.difference(&known).copied().collect();
+
+        assert!(unbuildable.is_empty(),
+            "catalog names that don't build as indicators: {unbuildable:?}");
+        assert!(output_mismatch.is_empty(),
+            "catalog outputs ≠ field_names():\n  {}", output_mismatch.join("\n  "));
+        assert!(missing_from_catalog.is_empty(),
+            "indicators in KNOWN_INDICATOR_TYPES but missing from catalog (FE can't see them): {missing_from_catalog:?}");
+        assert!(phantom_in_catalog.is_empty(),
+            "catalog entries not in KNOWN_INDICATOR_TYPES (phantom): {phantom_in_catalog:?}");
+    }
+}

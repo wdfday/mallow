@@ -4,7 +4,21 @@
 //! single connection. Each push is forwarded as a [`BarEvent`]:
 //! - `row[8] == "0"` → forming bar  (`closed = false`)
 //! - `row[8] == "1"` → confirmed bar (`closed = true`)
+//!
+//! # OKX confirm delay
+//!
+//! OKX deliberately delays the `confirm=1` flag by ~30 seconds after the bar
+//! closes to allow late-arriving trades to be included. Waiting for it would
+//! send strategy signals 30s late.
+//!
+//! We apply an **auto-close** heuristic: when a forming bar arrives with a
+//! timestamp strictly greater than the previously tracked forming bar, the
+//! previous bar has definitively closed — we emit it as `closed=true`
+//! immediately (typically within 500ms of the bar boundary). OKX's delayed
+//! `confirm=1` is still forwarded but the ledger's dup-detection silently
+//! skips it (`Ok(None)` — out-of-order/dup).
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -95,6 +109,11 @@ async fn run_once(symbols: &[String], tx: &BarTx) -> anyhow::Result<()> {
     let mut ping_interval = tokio::time::interval(PING_INTERVAL);
     ping_interval.tick().await; // skip first immediate tick
 
+    // Per-session forming-bar tracker: "{instId}:{tf:?}" → (open_ts_ms, last_bar).
+    // Used to auto-close the previous bar as soon as a newer bar timestamp is seen,
+    // without waiting for OKX's ~30s delayed confirm=1.
+    let mut last_forming: HashMap<String, (i64, alm_core::Bar)> = HashMap::new();
+
     loop {
         tokio::select! {
             _ = ping_interval.tick() => {
@@ -117,7 +136,7 @@ async fn run_once(symbols: &[String], tx: &BarTx) -> anyhow::Result<()> {
 
                 match msg {
                     Message::Text(t) if t == "pong" => {}
-                    Message::Text(t) => handle_push(&t, tx, &mut write).await?,
+                    Message::Text(t) => handle_push(&t, tx, &mut write, &mut last_forming).await?,
                     Message::Ping(d) => { let _ = write.send(Message::Pong(d)).await; }
                     Message::Close(_) => return Err(anyhow::anyhow!("server closed")),
                     _ => {}
@@ -131,6 +150,7 @@ async fn handle_push(
     text: &str,
     tx: &BarTx,
     write: &mut (impl futures::Sink<Message> + Unpin),
+    last_forming: &mut HashMap<String, (i64, alm_core::Bar)>,
 ) -> anyhow::Result<()> {
     // Capture arrival time before JSON parse.
     let received_at_ms = super::now_ms();
@@ -150,7 +170,7 @@ async fn handle_push(
         if row.len() < 9 {
             continue;
         }
-        let closed = row[8] == "1";
+        let confirmed_by_okx = row[8] == "1";
         let ts: i64 = row[0].parse().unwrap_or(0);
         let bar = alm_core::Bar::new(
             ts,
@@ -161,13 +181,53 @@ async fn handle_push(
             parse_f64(&row[4]),
             parse_f64(&row[5]),
         );
-        if closed {
-            debug!(symbol = %bar.symbol, ?tf, close = bar.close, "okx: bar closed");
+
+        // Tracker key: one slot per (instId, tf) pair.
+        let key = format!("{}:{:?}", push.arg.inst_id, tf);
+
+        if confirmed_by_okx {
+            // OKX's official confirm (~30s late).  Clear the forming slot only
+            // when it still holds the same bar (low-volume case where confirm
+            // arrives before the next bar starts forming).
+            if matches!(last_forming.get(&key), Some((stored_ts, _)) if *stored_ts == ts) {
+                last_forming.remove(&key);
+            }
+            debug!(symbol = %bar.symbol, ?tf, close = bar.close, "okx: bar closed (exchange confirm)");
             counter!("herald_feed_bars_total", "source" => "okx", "symbol" => push.arg.inst_id.clone()).increment(1);
-        }
-        if tx.send(BarEvent { tf, bar, closed, received_at_ms }).is_err() {
-            let _ = write.close().await;
-            return Ok(());
+            // Ledger dedup (Ok(None)) handles the case where we already
+            // auto-closed this bar when the next bar started forming.
+            if tx.send(BarEvent { tf, bar, closed: true, received_at_ms }).is_err() {
+                let _ = write.close().await;
+                return Ok(());
+            }
+        } else {
+            // Forming bar.  If a newer timestamp arrives the previous bar is
+            // definitively closed — emit it immediately without waiting for
+            // OKX's delayed confirm=1.
+            if let Some((prev_ts, prev_bar)) = last_forming.remove(&key) {
+                if ts > prev_ts {
+                    let delay_ms = received_at_ms - (prev_ts + tf.duration_ms());
+                    debug!(
+                        symbol = %prev_bar.symbol, ?tf, close = prev_bar.close,
+                        delay_ms,
+                        "okx: bar auto-closed (next bar arrived)"
+                    );
+                    counter!("herald_feed_bars_total", "source" => "okx", "symbol" => push.arg.inst_id.clone()).increment(1);
+                    counter!("herald_feed_bars_auto_closed_total", "source" => "okx").increment(1);
+                    if tx.send(BarEvent { tf, bar: prev_bar, closed: true, received_at_ms }).is_err() {
+                        let _ = write.close().await;
+                        return Ok(());
+                    }
+                }
+                // ts == prev_ts: same bar, fall through to update stored entry.
+                // ts < prev_ts: out-of-order (shouldn't happen), discard old slot.
+            }
+            // Store the latest forming bar data and forward as live update.
+            last_forming.insert(key, (ts, bar.clone()));
+            if tx.send(BarEvent { tf, bar, closed: false, received_at_ms }).is_err() {
+                let _ = write.close().await;
+                return Ok(());
+            }
         }
     }
     Ok(())

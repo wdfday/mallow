@@ -25,12 +25,12 @@ use pyo3::exceptions::{PyKeyError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
-use alm_core::{Bar, exit::{ExitRules, IntraBarMode}, order::Side, portfolio::EquityPoint};
+use alm_core::{Bar, exit::IntraBarMode, order::Side, portfolio::EquityPoint};
 use alm_data::BarVecFeed;
 use alm_engine::Engine;
 use alm_indicator::{IndicatorBox, KalmanFilter};
 use alm_report::{BuyHoldBenchmark, monte_carlo as mc_run, portfolio_analyze, MonteCarloConfig};
-use alm_strategy::{build_strategy, catalog::STRATEGY_KEYS, AtrSizing, FixedFractional, KellySizing};
+use alm_strategy::{build_strategy, catalog::STRATEGY_KEYS, AtrSizing, FixedFractional, FixedQuantity, KellySizing};
 use serde_json::{json, Map, Value};
 
 // ── Internal helpers ──────────────────────────────────────────────────────────
@@ -267,32 +267,21 @@ fn report_to_pydict<'py>(
     Ok(out)
 }
 
-/// Parse optional `exit` dict → `ExitRules`.
+/// Parse optional `exit` dict → `IntraBarMode`.
+///
+/// Exit levels (SL/TP, trailing-stop, max-bars) now travel with each Signal
+/// emitted by the strategy/script — the engine only reads the intra-bar fill mode.
 ///
 /// Supported keys:
-/// - `sl`: fixed stop-loss fraction (e.g. 0.03)
-/// - `tp`: fixed take-profit fraction (e.g. 0.06)
-/// - `trailing_stop`: trailing stop fraction from peak (e.g. 0.05)
-/// - `max_bars`: time-based exit after N bars
 /// - `intra_bar_mode`: `"close_only"` (default) | `"pessimistic"` | `"ohlc_heuristic"`
-fn extract_exit_rules(exit: Option<&Bound<PyDict>>) -> PyResult<ExitRules> {
-    let Some(d) = exit else { return Ok(ExitRules::default()); };
-    let sl            = d.get_item("sl")?.and_then(|v| v.extract::<f64>().ok());
-    let tp            = d.get_item("tp")?.and_then(|v| v.extract::<f64>().ok());
-    let trailing_stop = d.get_item("trailing_stop")?.and_then(|v| v.extract::<f64>().ok());
-    let max_bars      = d.get_item("max_bars")?.and_then(|v| v.extract::<usize>().ok());
-    let intra_bar_mode = match d.get_item("intra_bar_mode")?.and_then(|v| v.extract::<String>().ok()).as_deref() {
+fn extract_intra_bar_mode(exit: Option<&Bound<PyDict>>) -> PyResult<IntraBarMode> {
+    let Some(d) = exit else { return Ok(IntraBarMode::default()); };
+    let mode = match d.get_item("intra_bar_mode")?.and_then(|v| v.extract::<String>().ok()).as_deref() {
         Some("pessimistic")    => IntraBarMode::Pessimistic,
         Some("ohlc_heuristic") => IntraBarMode::OhlcHeuristic,
         _                      => IntraBarMode::CloseOnly,
     };
-    Ok(ExitRules {
-        stop_loss_pct: sl,
-        take_profit_pct: tp,
-        trailing_stop_pct: trailing_stop,
-        max_bars_held: max_bars,
-        intra_bar_mode,
-    })
+    Ok(mode)
 }
 
 /// Compute exposure % = sum(trade durations) / total equity-curve span.
@@ -386,7 +375,8 @@ fn add_extra_fields<'py>(
 ///     All ``BacktestReport`` fields plus ``"equity_curve"``, ``"trades"``,
 ///     ``"pnl_pct"``, ``"indicator_series"``, ``"exposure_pct"``, ``"benchmark"``.
 #[pyfunction]
-#[pyo3(signature = (symbol, strategy, params, bars, initial_capital=10_000.0, commission_pct=0.001, slippage_pct=0.0005, lot_size=-1.0, sizing="fixed", sizing_params=None, next_bar=false, exit=None, risk_free_annual=0.04, strength_sizing=true))]
+#[pyo3(signature = (symbol, strategy, params, bars, initial_capital=10_000.0, commission_pct=0.001, slippage_pct=0.0005, lot_size=-1.0, sizing="fixed", sizing_params=None, next_bar=false, exit=None, risk_free_annual=0.04, strength_sizing=true, max_units=1, max_position_pct=0.0, pyramid=true))]
+#[allow(clippy::too_many_arguments)]
 fn run_backtest<'py>(
     py: Python<'py>,
     symbol: &str,
@@ -403,6 +393,9 @@ fn run_backtest<'py>(
     exit: Option<&Bound<'py, PyDict>>,
     risk_free_annual: f64,
     strength_sizing: bool,
+    max_units: usize,
+    max_position_pct: f64,
+    pyramid: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     let params_json = pydict_to_json(params)?;
     let bar_vec = extract_bars(symbol, bars)?;
@@ -416,7 +409,7 @@ fn run_backtest<'py>(
         lot_size
     };
 
-    let exit_rules = extract_exit_rules(exit)?;
+    let intra_bar_mode = extract_intra_bar_mode(exit)?;
 
     // Pre-extract close+ts for buy&hold benchmark (bar_vec moves into feed below)
     let bh_closes: Vec<f64>     = bar_vec.iter().map(|b| b.close).collect();
@@ -438,8 +431,12 @@ fn run_backtest<'py>(
             let mut feed = BarVecFeed::new(bar_vec, symbol.to_string());
             let mut engine =
                 Engine::sync(initial_capital, strat, $risk, commission_pct, slippage_pct)
-                    .with_exit_rules(exit_rules)
+                    .with_intra_bar_mode(intra_bar_mode)
                     .with_next_bar(next_bar);
+            if max_units > 1 {
+                engine = engine.with_pyramiding(max_units, max_position_pct);
+                if !pyramid { engine = engine.with_independent_legs(); }
+            }
             let report = engine.run(&mut feed, risk_free_annual);
 
             let ind_series  = engine.strategy.take_indicator_series();
@@ -473,6 +470,11 @@ fn run_backtest<'py>(
                 get_f("fraction", 0.5),
                 get_u("max_positions", 1),
             );
+            run_engine!(risk)
+        }
+        "fixed_qty" => {
+            // Fixed share quantity per entry — used for cross-framework parity tests.
+            let risk = FixedQuantity::new(get_f("qty", 1.0), get_u("max_positions", 1));
             run_engine!(risk)
         }
         _ => {
@@ -525,7 +527,7 @@ fn run_backtest<'py>(
 ///     Same as :func:`run_backtest`. ``indicator_series`` contains one entry
 ///     per ``plot()`` call: ``{"name": [{"t": ts_ms, "v": float}, ...]}``.
 #[pyfunction]
-#[pyo3(signature = (symbol, script, bars, initial_capital=10_000.0, commission_pct=0.001, slippage_pct=0.0005, lot_size=-1.0, sizing="fixed", sizing_params=None, next_bar=false, exit=None, risk_free_annual=0.04, strength_sizing=true))]
+#[pyo3(signature = (symbol, script, bars, initial_capital=10_000.0, commission_pct=0.001, slippage_pct=0.0005, lot_size=-1.0, sizing="fixed", sizing_params=None, next_bar=false, exit=None, risk_free_annual=0.04, strength_sizing=true, max_units=1, max_position_pct=0.0, pyramid=true))]
 #[allow(clippy::too_many_arguments)]
 fn run_script_backtest<'py>(
     py: Python<'py>,
@@ -542,6 +544,9 @@ fn run_script_backtest<'py>(
     exit: Option<&Bound<'py, PyDict>>,
     risk_free_annual: f64,
     strength_sizing: bool,
+    max_units: usize,
+    max_position_pct: f64,
+    pyramid: bool,
 ) -> PyResult<Bound<'py, PyDict>> {
     let params_json = json!({ "script": script });
     let bar_vec = extract_bars(symbol, bars)?;
@@ -554,7 +559,7 @@ fn run_script_backtest<'py>(
         lot_size
     };
 
-    let exit_rules = extract_exit_rules(exit)?;
+    let intra_bar_mode = extract_intra_bar_mode(exit)?;
     let bh_closes: Vec<f64>     = bar_vec.iter().map(|b| b.close).collect();
     let bh_timestamps: Vec<i64> = bar_vec.iter().map(|b| b.timestamp).collect();
 
@@ -574,8 +579,12 @@ fn run_script_backtest<'py>(
             let mut feed = BarVecFeed::new(bar_vec, symbol.to_string());
             let mut engine =
                 Engine::sync(initial_capital, strat, $risk, commission_pct, slippage_pct)
-                    .with_exit_rules(exit_rules)
+                    .with_intra_bar_mode(intra_bar_mode)
                     .with_next_bar(next_bar);
+            if max_units > 1 {
+                engine = engine.with_pyramiding(max_units, max_position_pct);
+                if !pyramid { engine = engine.with_independent_legs(); }
+            }
             let report = engine.run(&mut feed, risk_free_annual);
 
             let ind_series   = engine.strategy.take_indicator_series();
@@ -603,6 +612,10 @@ fn run_script_backtest<'py>(
             get_f("avg_win", 0.05),
             get_f("avg_loss", 0.02),
             get_f("fraction", 0.5),
+            get_u("max_positions", 1),
+        )),
+        "fixed_qty" => run_engine!(FixedQuantity::new(
+            get_f("qty", 1.0),
             get_u("max_positions", 1),
         )),
         _ => run_engine!(FixedFractional::new(0.95, 1)

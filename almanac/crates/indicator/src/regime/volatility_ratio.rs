@@ -47,7 +47,7 @@ impl VolatilityRatio {
     }
 
     pub fn description() -> &'static str {
-        "Volatility Ratio — compares the current true range to the N-bar ATR. Values > 1 indicate a volatility expansion (potential breakout); < 1 = compression."
+        "Volatility Ratio (Schwager) — current true range divided by the N-bar high-low range. Values near 1 indicate an explosive bar (potential breakout); near 0 = consolidation. Outputs a single value (>1 = expanding volatility)."
     }
 
     pub fn update(&mut self, high: f64, low: f64, close: f64) -> Option<f64> {

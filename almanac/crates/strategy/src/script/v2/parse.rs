@@ -8,7 +8,6 @@
 use anyhow::Result;
 use alm_core::Timeframe;
 use alm_indicator::IndicatorBox;
-use serde_json::json;
 use std::collections::HashMap;
 
 use super::feed_binding::FieldExtract;
@@ -20,6 +19,17 @@ pub(super) use crate::script::v1::{
     CandleDirective,
     DEFAULT_BUF_DEPTH,
     extract_max_lookback,
+};
+
+// Shared parser internals reused from v1 (single source of truth). v2 only
+// differs in producing `FieldExtract` instead of `IndicatorKind`; everything
+// else — canonical type names, positional param ordering, JSON config — is
+// identical and must not drift.
+use crate::script::v1::{
+    IndicatorKind,
+    map_indicator_type as v1_map_indicator_type,
+    positional_param_names,
+    indicator_json_config,
 };
 
 // ── IndicatorDecl ─────────────────────────────────────────────────────────────
@@ -56,23 +66,6 @@ pub(super) fn parse_timeframe_str(s: &str) -> Option<Timeframe> {
         "D1"  => Some(Timeframe::D1),
         "W1"  => Some(Timeframe::W1),
         _     => None,
-    }
-}
-
-// ── Positional parameter names per indicator type ─────────────────────────────
-
-/// Returns the ordered list of secondary parameter names for positional args.
-/// See v1's `positional_param_names` for rationale — kept in sync.
-fn positional_param_names(ind_type: &str) -> &'static [&'static str] {
-    match ind_type {
-        "macd"          => &["slow", "signal"],
-        "bbands"        => &["multiplier"],
-        "supertrend"    => &["multiplier"],
-        "stochastic"    => &["d_period"],
-        "stoch_rsi"     => &["smooth_d"],
-        "parabolic_sar" => &["step", "max"],
-        "kdj"           => &["k_period", "d_period"],
-        _               => &[],
     }
 }
 
@@ -143,121 +136,19 @@ pub(super) fn try_parse_indicator_line(line: &str) -> Option<IndicatorDecl> {
 
 // ── Type → (canonical_type, FieldExtract) ─────────────────────────────────────
 
+/// Wraps v1's canonical `map_indicator_type`, converting its `IndicatorKind`
+/// into v2's structurally-isomorphic `FieldExtract`. This guarantees the two
+/// script layers can never drift on canonical names or primary fields.
 fn map_indicator_type(type_str: &str) -> (String, FieldExtract) {
-    use FieldExtract::{Multi, Single};
-    match type_str {
-        // ── Single-output: Array<f64> ────────────────────────────────────────
-        "ema" | "sma" | "wma" | "hma" | "dema" | "tema" | "smma" | "kama" | "alma" |
-        "mcginley" | "lsma" | "vwma" | "rsi" | "cci" | "roc" | "mfi" | "mom" | "cmo" |
-        "dpo" | "rci" | "chop" | "williams" | "cmf" | "obv" | "vwap" | "ao" | "bop" |
-        "coppock" | "uo" | "tsi" =>
-            (type_str.to_string(), Single("value".to_string())),
-
-        "atr" => ("atr".to_string(), Single("atr".to_string())),
-
-        // ── Multi-output: Array<MEntry> ──────────────────────────────────────
-        "macd" => ("macd".to_string(), Multi { primary: "macd".to_string() }),
-        "adx"  => ("adx".to_string(),  Single("value".to_string())),
-        "dmi"  => ("dmi".to_string(),  Multi { primary: "plus_di".to_string() }),
-
-        "bbands"   => ("bbands".to_string(),   Multi { primary: "middle".to_string() }),
-        "keltner"  => ("keltner".to_string(),  Multi { primary: "middle".to_string() }),
-        "donchian" => ("donchian".to_string(), Multi { primary: "middle".to_string() }),
-
-        "stochastic" => ("stochastic".to_string(), Multi { primary: "k".to_string() }),
-        "stoch_rsi"  => ("stoch_rsi".to_string(),  Multi { primary: "k".to_string() }),
-        "kdj"        => ("kdj".to_string(),         Multi { primary: "k".to_string() }),
-
-        "supertrend"    => ("supertrend".to_string(),    Multi { primary: "value".to_string() }),
-        "parabolic_sar" => ("parabolic_sar".to_string(), Multi { primary: "sar".to_string() }),
-
-        "aroon"  => ("aroon".to_string(),  Multi { primary: "oscillator".to_string() }),
-        "vortex" => ("vortex".to_string(), Multi { primary: "plus_vi".to_string() }),
-
-        "trix" => ("trix".to_string(), Multi { primary: "trix".to_string() }),
-        "ppo"  => ("ppo".to_string(),  Multi { primary: "ppo".to_string() }),
-        "kst"  => ("kst".to_string(),  Multi { primary: "kst".to_string() }),
-        "pmo"  => ("pmo".to_string(),  Multi { primary: "pmo".to_string() }),
-        "rvi"  => ("rvi".to_string(),  Multi { primary: "rvi".to_string() }),
-        "smi"  => ("smi".to_string(),  Multi { primary: "smi".to_string() }),
-        "fisher" => ("fisher".to_string(), Multi { primary: "fisher".to_string() }),
-        "rwi"    => ("rwi".to_string(),    Multi { primary: "rwi_high".to_string() }),
-
-        "ichimoku"  => ("ichimoku".to_string(),  Multi { primary: "tenkan".to_string() }),
-        "alligator" => ("alligator".to_string(), Multi { primary: "teeth".to_string() }),
-        "gmma"   => ("gmma".to_string(),   Multi { primary: "long_avg".to_string() }),
-        "kalman" => ("kalman".to_string(), Multi { primary: "value".to_string() }),
-
-        "bull_bear_power"   => ("bull_bear_power".to_string(),   Multi { primary: "bull".to_string() }),
-        "chandelier_exit"   => ("chandelier_exit".to_string(),   Multi { primary: "long_stop".to_string() }),
-        "chande_kroll_stop" => ("chande_kroll_stop".to_string(), Multi { primary: "stop_long".to_string() }),
-        "william_fractal"   => ("william_fractal".to_string(),   Multi { primary: "bullish".to_string() }),
-        "chop_zone" => ("chop_zone".to_string(), Multi { primary: "zone".to_string() }),
-
-        other => (other.to_string(), Single("value".to_string())),
-    }
+    let (canonical, kind) = v1_map_indicator_type(type_str);
+    let extract = match kind {
+        IndicatorKind::Single(field) => FieldExtract::Single(field),
+        IndicatorKind::Multi(primary) => FieldExtract::Multi { primary },
+    };
+    (canonical, extract)
 }
 
 // ── JSON config / factory ─────────────────────────────────────────────────────
-
-pub(super) fn indicator_json_config(
-    ind_type: &str,
-    period: usize,
-    extra: &HashMap<String, f64>,
-) -> serde_json::Value {
-    macro_rules! p {
-        ($key:literal, $default:expr) => {
-            extra.get($key).copied().unwrap_or($default)
-        };
-    }
-    match ind_type {
-        "macd" => json!({
-            "type": "macd",
-            "fast": period,
-            "slow": p!("slow", 26.0) as u64,
-            "signal": p!("signal", 9.0) as u64,
-        }),
-        "bbands" => json!({
-            "type": "bbands",
-            "period": period,
-            "multiplier": p!("multiplier", 2.0),
-        }),
-        "stochastic" => json!({
-            "type": "stochastic",
-            "k_period": period,
-            "d_period": p!("d_period", 3.0) as u64,
-        }),
-        "stoch_rsi" => json!({
-            "type": "stoch_rsi",
-            "rsi_period": period,
-            "smooth_d": p!("smooth_d", 3.0) as u64,
-        }),
-        "supertrend" => json!({
-            "type": "supertrend",
-            "period": period,
-            "multiplier": p!("multiplier", 3.0),
-        }),
-        "parabolic_sar" => json!({
-            "type": "parabolic_sar",
-            "step": p!("step", 0.02),
-            "max":  p!("max", 0.2),
-        }),
-        "kdj" => json!({
-            "type": "kdj",
-            "period": period,
-            "k_period": p!("k_period", 3.0) as u64,
-            "d_period": p!("d_period", 3.0) as u64,
-        }),
-        "kama"    => json!({"type": "kama",    "er_period": period}),
-        "obv"     => json!({"type": "obv"}),
-        "vwap"    => json!({"type": "vwap"}),
-        "ao"      => json!({"type": "ao",      "fast": 5, "slow": 34}),
-        "bop"     => json!({"type": "bop"}),
-        "coppock" => json!({"type": "coppock"}),
-        "uo"      => json!({"type": "uo",      "fast": 7, "medium": 14, "slow": 28}),
-        t         => json!({"type": t, "period": period}),
-    }
-}
 
 pub(super) fn make_indicator_box(decl: &IndicatorDecl) -> Result<IndicatorBox> {
     IndicatorBox::from_config(&indicator_json_config(&decl.ind_type, decl.period, &decl.extra_params))

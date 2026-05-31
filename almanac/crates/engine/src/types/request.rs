@@ -51,6 +51,44 @@ pub struct BacktestRequest {
     /// Maximum simultaneous open positions (default: 1).
     pub max_positions: Option<usize>,
 
+    /// Whether `signal.strength` scales the position size (default: `true`).
+    /// Set `false` to compute strength in the script/strategy for display/logging
+    /// while every entry is sized at full allocation (strength treated as 1.0).
+    /// Only affects the `percent_equity` mode. Risk-based modes (`fixed_fractional`,
+    /// `volatility`) pin a fixed risk to the stop, so strength is ignored there to
+    /// preserve that invariant; fixed-USD / fixed-quantity are absolute.
+    pub strength_sizing: Option<bool>,
+    /// Explicit sizing mode, synced with helm `SizeMode` (canonical path; when unset,
+    /// the sizer is inferred from which `position_size_*` / `risk_per_trade_pct` field is set):
+    /// `fixed_fractional` (Ralph Vince — risk f% to the signal's stop) · `volatility` (risk f%
+    /// to an ATR stop) · `percent_equity` (% of equity) · `quote_qty` (USD) · `fixed_qty` (qty).
+    pub size_mode: Option<String>,
+
+    /// Volatility (ATR risk-parity) sizing — the backtest counterpart of helm's
+    /// `volatility` SizeMode. When set (and no fixed-qty / fixed-USD override is
+    /// present) the sizer becomes ATR-based: `qty = equity × risk_per_trade_pct /
+    /// (atr_multiplier × ATR)`. e.g. `0.01` = risk 1% of equity per trade.
+    pub risk_per_trade_pct: Option<f64>,
+
+    /// ATR stop-distance multiplier for volatility sizing (default: 2.0).
+    /// Only read when `risk_per_trade_pct` is set.
+    pub atr_multiplier: Option<f64>,
+
+    /// Pyramiding: max accumulated entry legs per symbol (default: 1 = off).
+    /// When >1, a same-direction signal while in-position adds a leg if price
+    /// advanced past the last leg; TP/SL re-base to the new leg. Mirrors helm `MaxUnits`.
+    pub max_units: Option<usize>,
+
+    /// Pyramiding: hard cap on total open exposure as a fraction of equity
+    /// (default: 0 = no cap). Mirrors helm `MaxPositionPct`.
+    pub max_position_pct: Option<f64>,
+
+    /// Pyramiding mode (only meaningful when `max_units > 1`). `true`/None (default)
+    /// = MERGE: legs collapse into one averaged position, TP/SL re-based to the last
+    /// leg. `false` = INDEPENDENT: each leg is its own position (`SYM#n`) with its own
+    /// entry / TP / SL / trade. Mirrors helm `Pyramid`.
+    pub pyramid: Option<bool>,
+
     /// Data source — selects which provider subdirectory to load bars from.
     /// Values: `"polygon"` (US stocks), `"bnb"` (Binance crypto),
     /// `"vci"` (VN stocks), `"okx"` (OKX crypto).
@@ -100,6 +138,21 @@ pub struct ScriptBacktestRequest {
     pub position_size_usd: Option<f64>,
     pub position_size_quantity: Option<f64>,
     pub max_positions: Option<usize>,
+    /// Whether `signal.strength` scales the position size (default: `true`).
+    /// See [`BacktestRequest::strength_sizing`].
+    pub strength_sizing: Option<bool>,
+    /// Explicit sizing mode synced with helm `SizeMode`. See [`BacktestRequest::size_mode`].
+    pub size_mode: Option<String>,
+    /// Volatility (ATR risk-parity) sizing. See [`BacktestRequest::risk_per_trade_pct`].
+    pub risk_per_trade_pct: Option<f64>,
+    /// ATR stop-distance multiplier for volatility sizing (default: 2.0).
+    pub atr_multiplier: Option<f64>,
+    /// Pyramiding: max accumulated legs (default 1 = off). Mirrors helm `MaxUnits`.
+    pub max_units: Option<usize>,
+    /// Pyramiding: exposure cap as fraction of equity (0 = none). Mirrors helm `MaxPositionPct`.
+    pub max_position_pct: Option<f64>,
+    /// Pyramiding mode: true/None = MERGE (averaged), false = INDEPENDENT legs. Mirrors helm `Pyramid`.
+    pub pyramid: Option<bool>,
 
     // ── Execution ────────────────────────────────────────────────────────────
     pub commission_pct: Option<f64>,
@@ -133,6 +186,13 @@ impl From<ScriptBacktestRequest> for BacktestRequest {
             position_size_usd: req.position_size_usd,
             position_size_quantity: req.position_size_quantity,
             max_positions: req.max_positions,
+            strength_sizing: req.strength_sizing,
+            size_mode: req.size_mode,
+            risk_per_trade_pct: req.risk_per_trade_pct,
+            atr_multiplier: req.atr_multiplier,
+            max_units: req.max_units,
+            max_position_pct: req.max_position_pct,
+            pyramid: req.pyramid,
             data_source: req.data_source,
             asset_type: req.asset_type,
             timeframe: req.timeframe,
@@ -182,6 +242,15 @@ pub struct MtfBacktestRequest {
     pub position_size_usd: Option<f64>,
     pub position_size_quantity: Option<f64>,
     pub max_positions: Option<usize>,
+    /// Whether `signal.strength` scales the position size (default: `true`).
+    /// See [`BacktestRequest::strength_sizing`].
+    pub strength_sizing: Option<bool>,
+    /// Explicit sizing mode synced with helm `SizeMode`. See [`BacktestRequest::size_mode`].
+    pub size_mode: Option<String>,
+    /// Volatility (ATR risk-parity) sizing. See [`BacktestRequest::risk_per_trade_pct`].
+    pub risk_per_trade_pct: Option<f64>,
+    /// ATR stop-distance multiplier for volatility sizing (default: 2.0).
+    pub atr_multiplier: Option<f64>,
 
     /// Data source for bar loading (same as [`BacktestRequest::data_source`]).
     pub data_source: Option<String>,

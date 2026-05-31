@@ -86,7 +86,7 @@ impl Kdj {
     }
 
     pub fn description() -> &'static str {
-        "KDJ — extension of Stochastic with a J line (3D - 2K) that leads K and D. Popular in Asian markets; J > 100 or < 0 flags extremes."
+        "KDJ — extension of Stochastic with a J line (3K - 2D) that leads K and D. Popular in Asian markets; J > 100 or < 0 flags extremes. Outputs: `.k` (default, smoothed RSV), `.d` (smoothed K), `.j` (3K − 2D, leading line)."
     }
 
     pub fn update(&mut self, high: f64, low: f64, close: f64) -> Option<KdjValue> {

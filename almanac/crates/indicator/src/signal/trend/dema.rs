@@ -41,7 +41,7 @@ impl Dema {
     }
 
     pub fn description() -> &'static str {
-        "Double EMA — applies EMA twice to reduce lag further than a single EMA. Useful for fast-trending systems where lag is costly."
+        "Double EMA — applies EMA twice to reduce lag further than a single EMA. Useful for fast-trending systems where lag is costly. Outputs a single value (price scale)."
     }
 
     pub fn update(&mut self, value: f64) -> Option<f64> {

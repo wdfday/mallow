@@ -18,15 +18,18 @@ pub struct RwiValue {
 ///
 /// # Công thức
 /// ```text
-/// ATR  = simple average của True Range trong period bar
+/// ATR_n = simple average của True Range trong n bar gần nhất (riêng cho từng n)
 ///
-/// RWI_High = max { (High[0] − Low[n]) / (ATR × √n) }   n ∈ [2..period]
+/// RWI_High = max { (High[0] − Low[n]) / (ATR_n × √n) }   n ∈ [2..period]
 ///   → highest high hiện tại so với lowest low n bar trước
-///   → chuẩn hóa bằng ATR × √n (expected random walk step size)
+///   → chuẩn hóa bằng ATR_n × √n (expected random walk step size cho lookback n)
 ///
-/// RWI_Low  = max { (High[n] − Low[0]) / (ATR × √n) }   n ∈ [2..period]
+/// RWI_Low  = max { (High[n] − Low[0]) / (ATR_n × √n) }   n ∈ [2..period]
 ///   → highest high n bar trước so với lowest low hiện tại
 /// ```
+/// Lưu ý: Poulos chuẩn hoá *mỗi* lookback `n` bằng ATR tính trên đúng `n` bar đó,
+/// không phải một ATR(period) cố định dùng chung — nếu không, denominator sai cho
+/// mọi n ≠ period.
 ///
 /// # Diễn giải
 /// - **RWI_High > 1.0**: upward movement lớn hơn random walk → genuine uptrend
@@ -63,7 +66,7 @@ impl Rwi {
     }
 
     pub fn description() -> &'static str {
-        "Random Walk Index — tests whether price movement exceeds the range expected for a random walk. RWI High > 1 = non-random uptrend; RWI Low > 1 = non-random downtrend."
+        "Random Walk Index — tests whether price movement exceeds the range expected for a random walk. RWI High > 1 = non-random uptrend; RWI Low > 1 = non-random downtrend. Outputs: `.rwi_high` (default, uptrend strength), `.rwi_low` (downtrend strength)."
     }
 
     pub fn update(&mut self, high: f64, low: f64, close: f64) -> Option<RwiValue> {
@@ -90,27 +93,36 @@ impl Rwi {
             return None;
         }
 
-        let atr: f64 = self.true_ranges.iter().sum::<f64>() / self.true_ranges.len() as f64;
-        if atr == 0.0 {
-            return None;
-        }
-
         let current_high = *self.highs.back().unwrap();
         let current_low = *self.lows.back().unwrap();
         let len = self.highs.len();
 
+        // Suffix-averaged ATR: atr_n[n] = mean of the n most recent true ranges.
+        let trs: Vec<f64> = self.true_ranges.iter().copied().collect();
+        let m = trs.len();
+        let mut atr_n = vec![0.0f64; self.period + 1];
+        let mut running = 0.0;
+        for n in 1..=self.period {
+            running += trs[m - n];
+            atr_n[n] = running / n as f64;
+        }
+
         let mut rwi_h = 0.0f64;
         let mut rwi_l = 0.0f64;
 
-        // n = lookback from 2 to period
+        // n = lookback from 2 to period; normalise each by its own ATR_n.
         for n in 2..=self.period {
+            let atr = atr_n[n];
+            if atr <= f64::EPSILON {
+                continue; // flat window — skip, avoids blow-up
+            }
             let idx = len - 1 - n; // index of bar n bars ago
             let past_high = self.highs[idx];
             let past_low = self.lows[idx];
-            let sqrt_n = (n as f64).sqrt();
+            let denom = atr * (n as f64).sqrt();
 
-            let rh = (current_high - past_low) / (atr * sqrt_n);
-            let rl = (past_high - current_low) / (atr * sqrt_n);
+            let rh = (current_high - past_low) / denom;
+            let rl = (past_high - current_low) / denom;
 
             rwi_h = rwi_h.max(rh);
             rwi_l = rwi_l.max(rl);

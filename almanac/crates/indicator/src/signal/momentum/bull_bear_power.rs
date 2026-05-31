@@ -49,7 +49,7 @@ impl BullBearPower {
     }
 
     pub fn description() -> &'static str {
-        "Elder Ray Bull/Bear Power — bull power = high minus EMA; bear power = low minus EMA. Both positive = bull market; both negative = bear market."
+        "Elder Ray Bull/Bear Power — bull power = high minus EMA; bear power = low minus EMA. Both positive = bull market; both negative = bear market. Outputs: `.bull` (default, bull power), `.bear` (bear power), `.ema` (baseline EMA)."
     }
 
     /// Elder dùng EMA(13) cho daily bars.

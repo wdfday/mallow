@@ -41,7 +41,7 @@ impl Mom {
     }
 
     pub fn description() -> &'static str {
-        "Momentum — raw price difference between current close and the close N bars ago. Simplest momentum measure; positive = bullish pressure."
+        "Momentum — raw price difference between current close and the close N bars ago. Simplest momentum measure; positive = bullish pressure. Outputs a single price-difference value."
     }
 
     /// Feed một giá mới. Trả về `Some(mom)` sau khi đủ `period + 1` bar.

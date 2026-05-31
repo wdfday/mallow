@@ -58,7 +58,7 @@ impl Mfi {
     }
 
     pub fn description() -> &'static str {
-        "Money Flow Index — volume-weighted RSI using typical price. Combines price momentum and volume to identify overbought/oversold conditions."
+        "Money Flow Index — volume-weighted RSI using typical price. Combines price momentum and volume to identify overbought/oversold conditions. Outputs a single 0–100 value."
     }
 
     pub fn update(&mut self, high: f64, low: f64, close: f64, volume: f64) -> Option<f64> {

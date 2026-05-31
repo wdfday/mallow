@@ -52,6 +52,9 @@ pub struct ParabolicSar {
     is_bullish: bool,
     prev_high: Option<f64>,
     prev_low: Option<f64>,
+    /// Bar t-2 high/low — Wilder clamps SAR against the TWO prior bars.
+    prev_high2: Option<f64>,
+    prev_low2: Option<f64>,
 }
 
 impl ParabolicSar {
@@ -66,11 +69,13 @@ impl ParabolicSar {
             is_bullish: true,
             prev_high: None,
             prev_low: None,
+            prev_high2: None,
+            prev_low2: None,
         }
     }
 
     pub fn description() -> &'static str {
-        "Parabolic SAR — trailing stop that accelerates as the trend matures. Dot above price = bearish; dot below = bullish. Flip signals trend reversal entries."
+        "Parabolic SAR — trailing stop that accelerates as the trend matures. Dot above price = bearish; dot below = bullish. Flip signals trend reversal entries. Outputs: `.sar` (default, stop level), `.bullish` (1.0 = bullish, 0.0 = bearish)."
     }
 
     pub fn update(&mut self, high: f64, low: f64, _close: f64) -> Option<SarValue> {
@@ -86,6 +91,8 @@ impl ParabolicSar {
             self.ep = Some(high);
             self.is_bullish = true;
             self.af = self.initial_af;
+            self.prev_high2 = Some(prev_high);
+            self.prev_low2 = Some(prev_low);
             self.prev_high = Some(high);
             self.prev_low = Some(low);
             return Some(SarValue { sar: self.sar.unwrap(), is_bullish: self.is_bullish });
@@ -98,9 +105,12 @@ impl ParabolicSar {
         let mut new_sar = prev_sar + self.af * (prev_ep - prev_sar);
 
         if self.is_bullish {
-            // Clamp SAR below the prior bar's low (Wilder: two prior lows; we use one for
-            // simplicity). Must clamp BEFORE checking reversal so SAR stays valid.
+            // Wilder: SAR must not exceed the lows of the two prior bars.
+            // Clamp BEFORE checking reversal so SAR stays valid.
             new_sar = new_sar.min(prev_low);
+            if let Some(pl2) = self.prev_low2 {
+                new_sar = new_sar.min(pl2);
+            }
             // Reversal: current low breaks below SAR
             if low < new_sar {
                 self.is_bullish = false;
@@ -117,8 +127,11 @@ impl ParabolicSar {
                 }
             }
         } else {
-            // Clamp SAR above the prior bar's high (Wilder: two prior highs; we use one).
+            // Wilder: SAR must not fall below the highs of the two prior bars.
             new_sar = new_sar.max(prev_high);
+            if let Some(ph2) = self.prev_high2 {
+                new_sar = new_sar.max(ph2);
+            }
             // Reversal: current high breaks above SAR
             if high > new_sar {
                 self.is_bullish = true;
@@ -137,6 +150,8 @@ impl ParabolicSar {
         }
 
         self.sar = Some(new_sar);
+        self.prev_high2 = Some(prev_high);
+        self.prev_low2 = Some(prev_low);
         self.prev_high = Some(high);
         self.prev_low = Some(low);
 
@@ -150,6 +165,8 @@ impl ParabolicSar {
         self.is_bullish = true;
         self.prev_high = None;
         self.prev_low = None;
+        self.prev_high2 = None;
+        self.prev_low2 = None;
     }
 }
 

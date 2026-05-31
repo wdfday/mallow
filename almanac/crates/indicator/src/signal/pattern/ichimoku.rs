@@ -10,12 +10,19 @@ pub struct IchimokuValue {
     pub senkou_a: f64,
     /// Senkou Span B: midpoint of `senkou_b` periods — plotted `kijun` periods forward.
     pub senkou_b: f64,
-    /// Chikou Span: current close — plotted `kijun` periods back (returned as-is).
+    /// Chikou Span (raw value): current close. On a chart it is plotted `kijun`
+    /// periods back; the usable signal is exposed as `chikou_above` / `chikou_below`.
     pub chikou: f64,
     /// `true` when price is above the cloud top (both senkou_a and senkou_b, delayed by kijun).
     pub above_cloud: bool,
     /// `true` when price is below the cloud bottom (both senkou_a and senkou_b, delayed by kijun).
     pub below_cloud: bool,
+    /// Chikou confirmation: `true` when the current close is above the close
+    /// `kijun` bars ago (the Chikou span sits above past price → bullish).
+    pub chikou_above: bool,
+    /// Chikou confirmation: `true` when the current close is below the close
+    /// `kijun` bars ago (the Chikou span sits below past price → bearish).
+    pub chikou_below: bool,
 }
 
 /// Ichimoku Kinko Hyo — hệ thống phân tích toàn diện trong một indicator.
@@ -40,7 +47,8 @@ pub struct IchimokuValue {
 ///   → cạnh còn lại của cloud
 ///
 /// Chikou Span: Close hiện tại → plotted kijun bar về phía sau
-///   → so sánh close hôm nay với giá kijun bar trước
+///   → so sánh close hôm nay với close kijun bar trước
+///     (chikou_above = close > close[kijun] → xác nhận bullish)
 /// ```
 ///
 /// **Cloud (Kumo)**: vùng giữa Senkou A và B. Giá trên cloud = bullish;
@@ -71,6 +79,9 @@ pub struct Ichimoku {
     /// Delay buffer: senkou_a/b values are plotted kijun bars ahead in charts,
     /// so above_cloud must compare current close against cloud from kijun bars ago.
     senkou_delay: VecDeque<(f64, f64)>,
+    /// Close history for the Chikou span: the current close is compared against
+    /// the close `kijun` bars ago (Chikou is plotted kijun bars back).
+    close_delay: VecDeque<f64>,
 }
 
 impl Ichimoku {
@@ -82,11 +93,12 @@ impl Ichimoku {
             highs: VecDeque::new(),
             lows: VecDeque::new(),
             senkou_delay: VecDeque::new(),
+            close_delay: VecDeque::new(),
         }
     }
 
     pub fn description() -> &'static str {
-        "Ichimoku Cloud — five lines (Tenkan, Kijun, Senkou A/B, Chikou) forming a complete trend system. Price above the cloud = bullish; inside = neutral; below = bearish."
+        "Ichimoku Cloud — five lines (Tenkan, Kijun, Senkou A/B, Chikou) forming a complete trend system. Price above the cloud = bullish; inside = neutral; below = bearish. Outputs: `.tenkan` (default, conversion line), `.kijun` (base line), `.senkou_a` (leading span A), `.senkou_b` (leading span B), `.chikou` (lagging span raw value = close), `.above_cloud` (price above cloud), `.below_cloud` (price below cloud), `.chikou_above` (close > close kijun bars ago), `.chikou_below` (close < close kijun bars ago)."
     }
 
     pub fn update(&mut self, high: f64, low: f64, close: f64) -> Option<IchimokuValue> {
@@ -97,6 +109,13 @@ impl Ichimoku {
         while self.highs.len() > self.senkou_b_period {
             self.highs.pop_front();
             self.lows.pop_front();
+        }
+
+        // Chikou span: track closes so we can compare the current close against
+        // the close `kijun` bars ago. Keep kijun+1 entries → front = close(t-kijun).
+        self.close_delay.push_back(close);
+        if self.close_delay.len() > self.kijun + 1 {
+            self.close_delay.pop_front();
         }
 
         if self.highs.len() < self.senkou_b_period {
@@ -122,6 +141,14 @@ impl Ichimoku {
             (false, false)
         };
 
+        // Chikou confirmation: current close vs close `kijun` bars ago.
+        let (chikou_above, chikou_below) = if self.close_delay.len() == self.kijun + 1 {
+            let past_close = *self.close_delay.front().unwrap();
+            (close > past_close, close < past_close)
+        } else {
+            (false, false)
+        };
+
         Some(IchimokuValue {
             tenkan,
             kijun,
@@ -130,6 +157,8 @@ impl Ichimoku {
             chikou: close,
             above_cloud,
             below_cloud,
+            chikou_above,
+            chikou_below,
         })
     }
 
@@ -137,6 +166,7 @@ impl Ichimoku {
         self.highs.clear();
         self.lows.clear();
         self.senkou_delay.clear();
+        self.close_delay.clear();
     }
 }
 
@@ -169,6 +199,32 @@ mod tests {
         let v = last.unwrap();
         // After strong uptrend, cloud should be well below current close
         assert!(v.above_cloud, "should be above cloud in strong uptrend");
+    }
+
+    #[test]
+    fn test_ichimoku_chikou_confirmation() {
+        // Strong uptrend: every close exceeds the close `kijun` bars ago →
+        // chikou_above must be true, chikou_below false.
+        let mut ich = Ichimoku::new(3, 5, 8);
+        let mut last = None;
+        for i in 0..20 {
+            let p = 100.0 + i as f64 * 2.0;
+            last = ich.update(p + 1.0, p - 1.0, p);
+        }
+        let v = last.unwrap();
+        assert!(v.chikou_above, "uptrend: close should exceed close kijun bars ago");
+        assert!(!v.chikou_below, "uptrend: chikou_below must be false");
+
+        // Downtrend → mirror image.
+        let mut ich = Ichimoku::new(3, 5, 8);
+        let mut last = None;
+        for i in 0..20 {
+            let p = 200.0 - i as f64 * 2.0;
+            last = ich.update(p + 1.0, p - 1.0, p);
+        }
+        let v = last.unwrap();
+        assert!(v.chikou_below, "downtrend: close should be below close kijun bars ago");
+        assert!(!v.chikou_above, "downtrend: chikou_above must be false");
     }
 
     #[test]

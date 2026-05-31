@@ -4,7 +4,7 @@ use wasm_bindgen::prelude::*;
 use serde::Serialize;
 use serde_json::json;
 
-use alm_core::{Bar, Strategy, signal::Direction};
+use alm_core::{Bar, Strategy};
 use alm_indicator::{HeikenAshi, IndicatorBox};
 use alm_strategy::build_strategy;
 
@@ -158,155 +158,111 @@ pub fn list_indicators() -> JsValue {
 
 // ── Mini backtest engine ──────────────────────────────────────────────────────
 
-#[derive(Serialize)]
-pub(crate) struct TradeOut {
-    entry_ts:    i64,
-    exit_ts:     i64,
-    entry_price: f64,
-    exit_price:  f64,
-    pnl_pct:     f64,
-    side:        &'static str,
-}
-
-#[derive(Serialize)]
-pub(crate) struct EquityPoint { t: i64, equity: f64 }
-
-#[derive(Serialize)]
-pub(crate) struct BacktestOut {
-    total_return_pct:  f64,
-    max_drawdown_pct:  f64,
-    win_rate_pct:      f64,
-    profit_factor:     f64,
-    sharpe_ratio:      f64,
-    total_trades:      usize,
-    equity_curve:      Vec<EquityPoint>,
-    trades:            Vec<TradeOut>,
-    indicator_series:  serde_json::Value,
-}
-
-/// Run a bar-by-bar backtest using a named strategy or script.
+/// Run an in-memory backtest through the real [`alm_engine::Engine`] — the same
+/// engine + [`alm_report::BacktestReport`] the backend uses, so on-chart results
+/// match the server (minus Monte-Carlo / walk-forward, which stay server-side).
 ///
-/// Config (JSON string):
-/// ```json
-/// {
-///   "initial_capital": 10000,
-///   "position_size_pct": 1.0,
-///   "commission_pct": 0.001,
-///   "slippage_pct": 0.0005
-/// }
-/// ```
+/// Config (JSON): `{ "initial_capital", "position_size_pct", "commission_pct", "slippage_pct" }`.
+/// Returns the full report (all metrics, equity curve, trades, regime summary) plus
+/// `indicator_series` for chart overlay.
 pub(crate) fn run_strategy(
-    _symbol: &str,
+    symbol: &str,
     bars: &[Bar],
-    strategy: &mut dyn Strategy,
-    initial_capital: f64,
-    position_size_pct: f64,
-    commission_pct: f64,
-    slippage_pct: f64,
-) -> BacktestOut {
-    let mut equity = initial_capital;
-    let mut position: f64 = 0.0;   // qty held
-    let mut entry_price: f64 = 0.0;
-    let mut entry_ts: i64 = 0;
+    strategy: Box<dyn Strategy>,
+    cfg: &BtConfig,
+) -> serde_json::Value {
+    use alm_engine::Engine;
+    use alm_strategy::risk::{AnySizer, AtrSizing, FixedFractional, FixedQuantity, FixedUsd, RiskFractional};
+    use alm_data::BarVecFeed;
 
-    let mut peak = equity;
-    let mut max_dd: f64 = 0.0;
-    let mut equity_curve: Vec<EquityPoint> = Vec::with_capacity(bars.len());
-    let mut trades: Vec<TradeOut> = Vec::new();
-
-    for bar in bars {
-        let signals = strategy.on_bar(bar);
-
-        for sig in &signals {
-            match sig.direction {
-                Direction::Long if position == 0.0 => {
-                    let fill = bar.close * (1.0 + slippage_pct);
-                    let alloc = equity * position_size_pct;
-                    let cost = alloc * commission_pct;
-                    position = (alloc - cost) / fill;
-                    entry_price = fill;
-                    entry_ts = bar.timestamp;
-                    equity -= cost;
-                }
-                Direction::Exit | Direction::Short if position > 0.0 => {
-                    let fill = bar.close * (1.0 - slippage_pct);
-                    let proceeds = position * fill;
-                    let cost = proceeds * commission_pct;
-                    let pnl_pct = (fill - entry_price) / entry_price * 100.0;
-                    equity = equity - position * entry_price + proceeds - cost;
-                    trades.push(TradeOut {
-                        entry_ts, exit_ts: bar.timestamp,
-                        entry_price, exit_price: fill,
-                        pnl_pct, side: "long",
-                    });
-                    position = 0.0;
-                }
-                _ => {}
+    // Mirror alm-engine `build_sizer`: explicit size_mode (helm SizeMode) first,
+    // else legacy field inference (qty > usd > risk(ATR) > pct).
+    let max_slots = cfg.max_units.max(1);
+    let pct = cfg.size_pct.clamp(0.01, 1.0);
+    let risk = cfg.risk_per_trade.unwrap_or(0.01);
+    let str_ = cfg.strength_sizing;
+    let sizer = match cfg.size_mode.as_deref() {
+        Some("fixed_qty")        => AnySizer::FixedQuantity(FixedQuantity::new(cfg.size_qty.unwrap_or(1.0), max_slots)),
+        Some("quote_qty")        => AnySizer::FixedUsd(FixedUsd::new(cfg.size_usd.unwrap_or(0.0), max_slots)),
+        // Risk-based modes ignore strength (it would break the fixed-risk invariant).
+        Some("volatility")       => AnySizer::Atr(AtrSizing::new(risk, cfg.atr_mult, max_slots).with_strength_sizing(false)),
+        Some("fixed_fractional") => AnySizer::RiskFractional(RiskFractional::new(risk, max_slots).with_strength_sizing(false)),
+        Some("percent_equity")   => AnySizer::FixedFractional(FixedFractional::fractional(pct, max_slots).with_strength_sizing(str_)),
+        _ => {
+            if let Some(qty) = cfg.size_qty {
+                AnySizer::FixedQuantity(FixedQuantity::new(qty, max_slots))
+            } else if let Some(usd) = cfg.size_usd {
+                AnySizer::FixedUsd(FixedUsd::new(usd, max_slots))
+            } else if let Some(r) = cfg.risk_per_trade {
+                AnySizer::Atr(AtrSizing::new(r, cfg.atr_mult, max_slots).with_strength_sizing(false))
+            } else {
+                AnySizer::FixedFractional(FixedFractional::fractional(pct, max_slots).with_strength_sizing(str_))
             }
         }
-
-        // Mark-to-market equity
-        let mark = if position > 0.0 {
-            equity - position * entry_price + position * bar.close
-        } else {
-            equity
-        };
-        peak = peak.max(mark);
-        if peak > 0.0 { max_dd = max_dd.max((peak - mark) / peak * 100.0); }
-        equity_curve.push(EquityPoint { t: bar.timestamp, equity: mark });
-    }
-
-    // Close open position at last bar
-    if position > 0.0 {
-        if let Some(last) = bars.last() {
-            let fill = last.close * (1.0 - slippage_pct);
-            let proceeds = position * fill;
-            let cost = proceeds * commission_pct;
-            let pnl_pct = (fill - entry_price) / entry_price * 100.0;
-            equity = equity - position * entry_price + proceeds - cost;
-            trades.push(TradeOut {
-                entry_ts, exit_ts: last.timestamp,
-                entry_price, exit_price: fill,
-                pnl_pct, side: "long",
-            });
+    };
+    let mut engine = Engine::sync(cfg.capital, strategy, sizer, cfg.commission, cfg.slippage);
+    if cfg.max_units > 1 {
+        engine = engine.with_pyramiding(cfg.max_units, cfg.max_position_pct);
+        if !cfg.pyramid {
+            engine = engine.with_independent_legs();
         }
     }
+    let mut feed = BarVecFeed::new(bars.to_vec(), symbol.to_string());
+    let report = engine.run(&mut feed, 0.0);
 
-    let total_return_pct = (equity / initial_capital - 1.0) * 100.0;
-    let total_trades = trades.len();
-    let wins = trades.iter().filter(|t| t.pnl_pct > 0.0).count();
-    let win_rate_pct = if total_trades > 0 { wins as f64 / total_trades as f64 * 100.0 } else { 0.0 };
-    let gross_profit: f64 = trades.iter().filter(|t| t.pnl_pct > 0.0).map(|t| t.pnl_pct).sum();
-    let gross_loss: f64 = trades.iter().filter(|t| t.pnl_pct <= 0.0).map(|t| t.pnl_pct.abs()).sum();
-    let profit_factor = if gross_loss > 0.0 { gross_profit / gross_loss } else { f64::INFINITY };
+    // Equity curve + trades live on the portfolio (not the report) — the chart
+    // uses them for the equity overlay and entry/exit markers.
+    let equity_curve: Vec<_> = engine.portfolio.equity_curve.iter()
+        .map(|p| json!({ "t": p.timestamp, "equity": p.equity }))
+        .collect();
+    let trades: Vec<_> = engine.portfolio.trades.iter()
+        .map(|t| json!({
+            "entry_ts": t.entry_timestamp, "exit_ts": t.exit_timestamp,
+            "entry_price": t.entry_price,   "exit_price": t.exit_price,
+            "qty": t.qty,
+            "pnl": t.pnl,
+            // FRACTIONS (0.1 = 10%) — matches deep TradeResponse; FE multiplies by 100.
+            "pnl_pct": t.pnl_pct,
+            "commission": t.commission,
+            "mae_pct": t.mae_pct,
+            "mfe_pct": t.mfe_pct,
+            "bars_held": t.bars_held,
+            "exit_reason": t.exit_reason.to_string(),
+            "side": format!("{:?}", t.side).to_lowercase(),
+        }))
+        .collect();
+    // Raw fills (every order execution, in order) — lets the chart mark each
+    // pyramiding *add* that MERGE mode hides inside one averaged trade. `sym`
+    // carries the leg key (`BTCUSDT` or `BTCUSDT#2`); `leg` is its 0-based index.
+    let fills: Vec<_> = engine.portfolio.fills.iter()
+        .map(|f| {
+            let leg = f.symbol.split('#').nth(1).and_then(|s| s.parse::<usize>().ok())
+                .map(|n| n.saturating_sub(1)).unwrap_or(0);
+            json!({
+                "t": f.timestamp, "price": f.price, "qty": f.qty,
+                "side": format!("{:?}", f.side).to_lowercase(),
+                "sym": f.symbol, "leg": leg,
+            })
+        })
+        .collect();
 
-    // Sharpe: annualise bar returns from equity curve
-    let sharpe_ratio = if equity_curve.len() > 2 {
-        let rets: Vec<f64> = equity_curve.windows(2)
-            .map(|w| (w[1].equity - w[0].equity) / w[0].equity)
-            .collect();
-        let mean = rets.iter().sum::<f64>() / rets.len() as f64;
-        let var: f64 = rets.iter().map(|r| (r - mean).powi(2)).sum::<f64>() / rets.len() as f64;
-        let std = var.sqrt();
-        if std > 0.0 { mean / std * (252_f64).sqrt() } else { 0.0 }
-    } else { 0.0 };
-
-    // indicator_series from strategy.take_indicator_series()
-    let ind_series = strategy.take_indicator_series();
+    // Indicator series for chart overlay — read from the strategy after the run
+    // (the engine owns it; `engine.strategy` is public).
     let mut ind_map = serde_json::Map::new();
-    for (name, pts) in ind_series {
+    for (name, pts) in engine.strategy.take_indicator_series() {
         let ts: Vec<i64> = pts.iter().map(|(t, _)| *t).collect();
         let vs: Vec<f64> = pts.iter().map(|(_, v)| *v).collect();
         ind_map.insert(name, json!({ "t": ts, "v": vs }));
     }
 
-    BacktestOut {
-        total_return_pct, max_drawdown_pct: max_dd,
-        win_rate_pct, profit_factor,
-        sharpe_ratio: if sharpe_ratio.is_finite() { sharpe_ratio } else { 0.0 },
-        total_trades, equity_curve, trades,
-        indicator_series: serde_json::Value::Object(ind_map),
+    let mut out = serde_json::to_value(&report).unwrap_or_else(|_| json!({}));
+    if let serde_json::Value::Object(ref mut m) = out {
+        m.insert("equity_curve".into(), json!(equity_curve));
+        m.insert("trades".into(), json!(trades));
+        m.insert("fills".into(), json!(fills));
+        m.insert("indicator_series".into(), serde_json::Value::Object(ind_map));
     }
+    out
 }
 
 /// Run a named strategy backtest client-side.
@@ -326,13 +282,13 @@ pub fn run_backtest(
         Ok(v) => v,
         Err(e) => return js_error(&format!("params: {e}")),
     };
-    let mut strategy = match build_strategy(strategy_name, &params) {
+    let strategy = match build_strategy(strategy_name, &params) {
         Ok(s) => s,
         Err(e) => return js_error(&format!("strategy '{strategy_name}': {e}")),
     };
     let bars = build_bars(symbol, t, o, h, l, c, v);
-    let (cap, size, comm, slip) = parse_config(config_json);
-    let out = run_strategy(symbol, &bars, strategy.as_mut(), cap, size, comm, slip);
+    let cfg = parse_config(config_json);
+    let out = run_strategy(symbol, &bars, strategy, &cfg);
     to_js(&out)
 }
 
@@ -347,25 +303,71 @@ pub fn run_script_backtest(
     t: &[f64], o: &[f64], h: &[f64], l: &[f64], c: &[f64], v: &[f64],
     config_json: &str,
 ) -> JsValue {
-    let mut strategy = match build_strategy("script", &json!({ "script": script })) {
+    // On-chart runs on a single timeframe's bars and cannot load/warm HTF feeds,
+    // so a multi-timeframe (HTF) script is skipped here with a clear message — run
+    // it via Deep backtest instead (which loads + warms each TF from parquet).
+    let htfs = alm_strategy::probe_script_htfs(script);
+    if !htfs.is_empty() {
+        let tfs = htfs.iter().map(|t| format!("{t:?}")).collect::<Vec<_>>().join(", ");
+        return js_error(&format!(
+            "Multi-timeframe script (uses {tfs}) — on-chart is single-timeframe only. Run it with Deep backtest."
+        ));
+    }
+    let strategy = match build_strategy("script", &json!({ "script": script })) {
         Ok(s) => s,
         Err(e) => return js_error(&format!("script strategy: {e}")),
     };
     let bars = build_bars(symbol, t, o, h, l, c, v);
-    let (cap, size, comm, slip) = parse_config(config_json);
-    let out = run_strategy(symbol, &bars, strategy.as_mut(), cap, size, comm, slip);
+    let cfg = parse_config(config_json);
+    let out = run_strategy(symbol, &bars, strategy, &cfg);
     to_js(&out)
 }
 
-pub(crate) fn parse_config(config_json: &str) -> (f64, f64, f64, f64) {
+pub(crate) struct BtConfig {
+    pub capital: f64,
+    pub size_pct: f64,
+    /// Fixed USD notional per trade (quote_qty mode). None = unused.
+    pub size_usd: Option<f64>,
+    /// Fixed absolute quantity per trade (fixed_qty mode). None = unused.
+    pub size_qty: Option<f64>,
+    /// Risk fraction of equity per trade (fixed_fractional / "Risk %" mode). None = unused.
+    pub risk_per_trade: Option<f64>,
+    /// ATR stop-distance multiplier for the Risk % mode (default 2.0).
+    pub atr_mult: f64,
+    /// Whether signal strength scales the size (orthogonal tag).
+    pub strength_sizing: bool,
+    /// Explicit sizing mode synced with helm SizeMode (fixed_fractional/volatility/percent_equity/quote_qty/fixed_qty).
+    pub size_mode: Option<String>,
+    pub commission: f64,
+    pub slippage: f64,
+    /// Pyramiding: max accumulated legs (1 = off). Mirrors helm `MaxUnits`.
+    pub max_units: usize,
+    /// Pyramiding: exposure cap as fraction of equity (0 = none). Mirrors helm `MaxPositionPct`.
+    pub max_position_pct: f64,
+    /// Pyramiding mode: true (default) = MERGE (averaged), false = INDEPENDENT legs. Mirrors helm `Pyramid`.
+    pub pyramid: bool,
+}
+
+pub(crate) fn parse_config(config_json: &str) -> BtConfig {
     let v: serde_json::Value = serde_json::from_str(config_json).unwrap_or(json!({}));
     let get = |key: &str, default: f64| v.get(key).and_then(|v| v.as_f64()).unwrap_or(default);
-    (
-        get("initial_capital",   10_000.0),
-        get("position_size_pct", 1.0),
-        get("commission_pct",    0.001),
-        get("slippage_pct",      0.0005),
-    )
+    let opt = |key: &str| v.get(key).and_then(|x| x.as_f64()).filter(|n| *n > 0.0);
+    BtConfig {
+        capital:    get("initial_capital",   10_000.0),
+        size_pct:   get("position_size_pct", 1.0),
+        size_usd:   opt("position_size_usd"),
+        size_qty:   opt("position_size_quantity"),
+        risk_per_trade: opt("risk_per_trade_pct"),
+        atr_mult:   get("atr_multiplier", 2.0),
+        strength_sizing: v.get("strength_sizing").and_then(|x| x.as_bool()).unwrap_or(true),
+        size_mode: v.get("size_mode").and_then(|x| x.as_str()).map(String::from),
+        commission: get("commission_pct",    0.001),
+        slippage:   get("slippage_pct",      0.0005),
+        max_units:  get("max_units", 1.0).max(1.0) as usize,
+        max_position_pct: get("max_position_pct", 0.0),
+        // Default merge (true). Accept bool or 0/1 numeric.
+        pyramid: v.get("pyramid").map(|x| x.as_bool().unwrap_or_else(|| x.as_f64().unwrap_or(1.0) != 0.0)).unwrap_or(true),
+    }
 }
 
 /// List all named strategy keys usable with `run_backtest`.
@@ -373,6 +375,14 @@ pub(crate) fn parse_config(config_json: &str) -> (f64, f64, f64, f64) {
 pub fn list_strategies() -> JsValue {
     use alm_strategy::catalog::STRATEGY_KEYS;
     to_js(&STRATEGY_KEYS)
+}
+
+/// Full indicator catalog for editor hints: `[{name, label, category, description,
+/// params:[{name,type,default}], outputs:[{name,type}]}, ...]`. Drives autocomplete,
+/// field completion, and hover docs client-side (no server round-trip).
+#[wasm_bindgen]
+pub fn indicator_catalog() -> JsValue {
+    to_js(&alm_strategy::catalog::all())
 }
 
 /// Lint a strategy script client-side (no server round-trip).

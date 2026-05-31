@@ -65,7 +65,7 @@ impl Alma {
     }
 
     pub fn description() -> &'static str {
-        "Arnaud Legoux MA — Gaussian-weighted MA centred near the most recent bar. Combines low lag with minimal ripple; configurable via offset and sigma."
+        "Arnaud Legoux MA — Gaussian-weighted MA centred near the most recent bar. Combines low lag with minimal ripple; configurable via offset and sigma. Outputs a single value (price scale)."
     }
 
     /// ALMA(9) với tham số mặc định được Legoux khuyến nghị.

@@ -70,7 +70,7 @@ impl Tsi {
     }
 
     pub fn description() -> &'static str {
-        "True Strength Index — double-smoothed momentum oscillator normalised to ±100. Zero-line crossovers indicate trend changes."
+        "True Strength Index — double-smoothed momentum oscillator normalised to ±100. Zero-line crossovers indicate trend changes. Outputs a single −100 to +100 value."
     }
 
     /// Default parameters: first=25, second=13
@@ -89,29 +89,32 @@ impl Tsi {
         let pc = close - prev;
         let apc = pc.abs();
 
-        // Chain the two EMAs
-        if let Some(e1) = self.ema1_pc.update(pc) {
-            if let Some(pcds) = self.ema2_pc.update(e1) {
-                // We only need the apcds when pcds is ready; ema1_apc runs in parallel
-                if let Some(e1a) = self.ema1_apc.update(apc) {
-                    if let Some(apcds) = self.ema2_apc.update(e1a) {
-                        self.value = if apcds.abs() < f64::EPSILON {
-                            Some(0.0)
-                        } else {
-                            Some((pcds / apcds) * 100.0)
-                        };
-                        return self.value;
-                    }
-                    // ema2_apc not ready yet
-                    return None;
-                }
-                // ema1_apc not ready — still need to feed apc even though we got pcds
-                return None;
-            }
-        }
-        // ema1_apc may still need feeding even if ema1_pc not ready
-        self.ema1_apc.update(apc);
-        None
+        // Feed BOTH first-pass EMAs in lockstep every bar. They share the same
+        // period (`first`) so they become ready on the same bar — keeping the
+        // numerator (PC) and denominator (|PC|) cascades perfectly in sync.
+        // (Feeding them conditionally would drop |PC| samples and desync the
+        // two double-smoothed series, biasing TSI.)
+        let e1_pc = self.ema1_pc.update(pc);
+        let e1_apc = self.ema1_apc.update(apc);
+
+        let (Some(e1_pc), Some(e1_apc)) = (e1_pc, e1_apc) else {
+            return None;
+        };
+
+        // Same lockstep for the second pass (both period `second`).
+        let pcds = self.ema2_pc.update(e1_pc);
+        let apcds = self.ema2_apc.update(e1_apc);
+
+        let (Some(pcds), Some(apcds)) = (pcds, apcds) else {
+            return None;
+        };
+
+        self.value = if apcds.abs() < f64::EPSILON {
+            Some(0.0)
+        } else {
+            Some((pcds / apcds) * 100.0)
+        };
+        self.value
     }
 
     pub fn value(&self) -> Option<f64> {
@@ -139,7 +142,9 @@ mod tests {
     #[test]
     fn test_tsi_not_ready_during_warmup() {
         let mut tsi = Tsi::new(5, 3);
-        for i in 0..8 {
+        // Warmup: 1 bar (prev_close) + first(5) feeds → ema1 ready at bar 5,
+        // + second(3) feeds → ema2 ready at bar 7. So bars 0..=6 are not ready.
+        for i in 0..7 {
             let v = tsi.update(100.0 + i as f64);
             assert!(v.is_none(), "TSI should not be ready during warmup: bar {i}");
         }

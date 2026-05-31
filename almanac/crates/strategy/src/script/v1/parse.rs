@@ -254,7 +254,7 @@ fn parse_transform_args(args: &str, line_no: usize) -> anyhow::Result<CandleDire
 ///
 /// Indicators not listed here accept no positional secondary params — any
 /// integer after the period is silently ignored (use `buf=N` for buf depth).
-fn positional_param_names(ind_type: &str) -> &'static [&'static str] {
+pub(crate) fn positional_param_names(ind_type: &str) -> &'static [&'static str] {
     match ind_type {
         "macd"            => &["slow", "signal"],
         "bbands"          => &["multiplier"],
@@ -273,6 +273,9 @@ fn positional_param_names(ind_type: &str) -> &'static [&'static str] {
         "alligator"       => &["teeth", "lips"],
         "tsi"             => &["second"],
         "ppo"             => &["slow", "signal"],
+        "pmo"             => &["smooth2", "signal"],
+        "smi"             => &["smooth1", "smooth2", "signal"],
+        "coppock"         => &["long", "wma"],
         "uo"              => &["medium", "slow"],
         "ao"              => &["slow"],
         "connors_rsi"     => &["streak_period", "rank_period"],
@@ -360,17 +363,20 @@ pub(crate) fn try_parse_indicator_line(line: &str) -> Option<IndicatorDecl> {
 
 // ── Type → (canonical_type, IndicatorKind) ───────────────────────────────────
 
-pub(super) fn map_indicator_type(type_str: &str) -> (String, IndicatorKind) {
+pub(crate) fn map_indicator_type(type_str: &str) -> (String, IndicatorKind) {
     use IndicatorKind::{Multi, Single};
     match type_str {
         // ── Single-output: Array<f64> ────────────────────────────────────────
         "ema" | "sma" | "wma" | "hma" | "dema" | "tema" | "smma" | "kama" | "alma" |
-        "mcginley" | "lsma" | "vwma" | "rsi" | "cci" | "roc" | "mfi" | "mom" | "cmo" |
+        "mcginley" | "vwma" | "rsi" | "cci" | "roc" | "mfi" | "mom" | "cmo" |
         "dpo" | "rci" | "chop" | "williams_r" | "cmf" | "obv" | "vwap" | "ao" | "bop" |
         "coppock" | "uo" | "tsi" | "connors_rsi" | "volatility_ratio" =>
             (type_str.to_string(), Single("value".to_string())),
 
-        "atr" => ("atr".to_string(), Single("atr".to_string())),
+        // fields: .atr  .tr  — average true range is the primary; .tr = raw true range
+        "atr" => ("atr".to_string(), Multi("atr".to_string())),
+        // fields: .value  .slope  — least-squares MA value is primary; .slope = regression slope
+        "lsma" => ("lsma".to_string(), Multi("value".to_string())),
 
         // ── Multi-output: Array<MEntry> ──────────────────────────────────────
         // Primary = the one field that makes sense when used as a plain number.
@@ -378,8 +384,8 @@ pub(super) fn map_indicator_type(type_str: &str) -> (String, IndicatorKind) {
         // fields: .macd  .signal  .histogram  — MACD line is the primary output
         "macd" => ("macd".to_string(), Multi("macd".to_string())),
 
-        // scalar: ADX trend-strength value only — use ind.dmi() for +DI/-DI lines
-        "adx"  => ("adx".to_string(),  Single("value".to_string())),
+        // fields: .adx (default, trend strength) .plus_di .minus_di
+        "adx"  => ("adx".to_string(),  Multi("adx".to_string())),
         // fields: .plus_di  .minus_di  .dx     — positive DI is the bullish leg
         "dmi"  => ("dmi".to_string(),  Multi("plus_di".to_string())),
 
@@ -426,12 +432,15 @@ pub(super) fn map_indicator_type(type_str: &str) -> (String, IndicatorKind) {
         // fields: .rwi_high  .rwi_low  — high RWI confirms uptrend
         "rwi" => ("rwi".to_string(), Multi("rwi_high".to_string())),
 
+        // fields: .bull_power (default)  .bear_power  .ema  — Elder Ray
+        "elder_ray" => ("elder_ray".to_string(), Multi("bull_power".to_string())),
+
         // fields: .tenkan  .kijun  .senkou_a  .senkou_b  .chikou  .above_cloud
         "ichimoku" => ("ichimoku".to_string(), Multi("tenkan".to_string())),
         // fields: .jaw  .teeth  .lips  .bullish  — teeth = 8-bar balance line
         "alligator" => ("alligator".to_string(), Multi("teeth".to_string())),
-        // fields: .short_avg  .long_avg  .bullish  — long group defines the trend
-        "gmma" => ("gmma".to_string(), Multi("long_avg".to_string())),
+        // fields: .spread (default, >0 bull/<0 bear)  .bullish  .short_0..short_5  .long_0..long_5
+        "gmma" => ("gmma".to_string(), Multi("spread".to_string())),
         // fields: .value  .velocity  — filtered price + rate-of-change estimate
         "kalman" => ("kalman".to_string(), Multi("value".to_string())),
 
@@ -476,9 +485,13 @@ pub(crate) fn indicator_json_config(
             "period": period,
             "multiplier": p!("multiplier", 2.0),
         }),
+        // smooth_k: 1 = Fast Stochastic (default), >1 = Slow Stochastic.
+        // Named-only param to keep the legacy positional `ind.stochastic(14, 3)`
+        // mapping (positional[0] → d_period) non-breaking.
         "stochastic" => json!({
             "type": "stochastic",
             "k_period": period,
+            "smooth_k": p!("smooth_k", 1.0) as u64,
             "d_period": p!("d_period", 3.0) as u64,
         }),
         "stoch_rsi" => json!({
@@ -612,7 +625,32 @@ pub(crate) fn indicator_json_config(
         "obv"     => json!({"type": "obv"}),
         "vwap"    => json!({"type": "vwap"}),
         "bop"     => json!({"type": "bop"}),
-        "coppock" => json!({"type": "coppock"}),
+        "coppock" => json!({
+            "type":  "coppock",
+            "short": if period == 0 { 11 } else { period },
+            "long":  p!("long", 14.0) as u64,
+            "wma":   p!("wma",  10.0) as u64,
+        }),
+        "pmo" => json!({
+            "type":    "pmo",
+            "smooth1": if period == 0 { 35 } else { period },
+            "smooth2": p!("smooth2", 20.0) as u64,
+            "signal":  p!("signal",  10.0) as u64,
+        }),
+        "smi" => json!({
+            "type":    "smi",
+            "period":  if period == 0 { 13 } else { period },
+            "smooth1": p!("smooth1", 25.0) as u64,
+            "smooth2": p!("smooth2",  2.0) as u64,
+            "signal":  p!("signal",   9.0) as u64,
+        }),
+        // kst: 4-ROC + 4-SMA arrays can't be expressed positionally; the period
+        // arg sets the signal line. Arrays stay at the Pring defaults (override
+        // via the JSON config path if needed).
+        "kst" => json!({
+            "type":   "kst",
+            "signal": if period == 0 { 9 } else { period },
+        }),
         t         => json!({"type": t, "period": period}),
     }
 }
@@ -655,7 +693,8 @@ mod tests {
         let d = try_parse_indicator_line(r#"let atr = ind.atr(14, buf=5);"#).unwrap();
         assert_eq!(d.period, 14);
         assert_eq!(d.buf_depth, 5);
-        assert!(matches!(d.kind, IndicatorKind::Single(_)));
+        // atr is now multi-output (.atr default, .tr raw true range).
+        assert!(matches!(d.kind, IndicatorKind::Multi(_)));
     }
 
     #[test]

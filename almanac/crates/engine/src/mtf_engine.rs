@@ -49,7 +49,7 @@
 //!   ├── broker.process_pending(bar)  → Fill events    (pending from prev bar)
 //!   ├── drain Fill events            → apply_fill
 //!   ├── push to windows[base_tf]
-//!   ├── exit_rules check on base bar OHLC → force_close
+//!   ├── signal-level exit check on base bar OHLC → force_close
 //!   ├── record_equity (AFTER exits)  → EquityEvent
 //!   ├── strategy.on_bar(MtfSnapshot)  → SignalEvent
 //!   └── signal → risk.size → OrderEvent → broker.submit  (fills next bar)
@@ -60,7 +60,7 @@
 //!
 //! # Components reused
 //!
-//! [`Portfolio`], [`SimBroker`], [`PositionTracker`] / [`ExitRules`],
+//! [`Portfolio`], [`SimBroker`], [`PositionTracker`],
 //! [`RiskManager`], [`BacktestReport`].
 
 use std::cmp::Ordering;
@@ -69,7 +69,7 @@ use std::collections::{BinaryHeap, HashMap, VecDeque};
 use alm_core::{
     bus::EventBus,
     event::{EquityEvent, Event, FillEvent},
-    exit::{ExitReason, ExitRules, PositionTracker},
+    exit::{ExitReason, IntraBarMode, PositionTracker},
     order::{OrderRequest, Side},
     portfolio::Portfolio,
     signal::{Direction, Signal},
@@ -147,10 +147,13 @@ pub struct MtfEngine<S: MtfStrategy, R: RiskManager> {
     window_size: usize,
 
     last_price: f64,
-    exit_rules: ExitRules,
+    intra_bar_mode: IntraBarMode,
     position_trackers: HashMap<String, PositionTracker>,
-    pending_signal_levels: HashMap<String, (Option<f64>, Option<f64>)>,
+    pending_signal_levels: HashMap<String, (Option<f64>, Option<f64>, Option<f64>, Option<usize>)>,
     single_entry: bool,
+    /// Warm-up boundary (Unix ms, base-bar open). Base bars before this only warm
+    /// indicators (via `on_bars`); no trading / equity. `None` = trade from the start.
+    warmup_until: Option<i64>,
 }
 
 // ── Constructors / builder ───────────────────────────────────────────────────
@@ -175,11 +178,21 @@ impl<S: MtfStrategy, R: RiskManager> MtfEngine<S, R> {
             windows: HashMap::new(),
             window_size: DEFAULT_WINDOW_SIZE,
             last_price: 0.0,
-            exit_rules: ExitRules::default(),
+            intra_bar_mode: IntraBarMode::default(),
             position_trackers: HashMap::new(),
             pending_signal_levels: HashMap::new(),
             single_entry: false,
+            warmup_until: None,
         }
+    }
+
+    /// Warm indicators on base bars before `until` (Unix ms, bar OPEN) without trading.
+    /// Critical for HTF: an HTF indicator needs many base bars of history to converge,
+    /// so the report would otherwise start with cold HTF state. `on_bars` still runs
+    /// during warm-up (advancing every TF's indicator state); only trading/equity is gated.
+    pub fn with_warmup_until(mut self, until: i64) -> Self {
+        self.warmup_until = if until > 0 { Some(until) } else { None };
+        self
     }
 
     pub fn with_base_tf(mut self, tf: Timeframe) -> Self {
@@ -192,8 +205,8 @@ impl<S: MtfStrategy, R: RiskManager> MtfEngine<S, R> {
         self
     }
 
-    pub fn with_exit_rules(mut self, rules: ExitRules) -> Self {
-        self.exit_rules = rules;
+    pub fn with_intra_bar_mode(mut self, mode: IntraBarMode) -> Self {
+        self.intra_bar_mode = mode;
         self
     }
 
@@ -264,10 +277,20 @@ impl<S: MtfStrategy, R: RiskManager> MtfEngine<S, R> {
             // 4. Nếu base TF có trong batch: dispatch full event chain.
             //    Nếu không (HTF-only tick — hiếm khi feeds aligned, chỉ xảy ra
             //    khi base feed có gap): bỏ qua broker/exit/equity, chỉ gọi strategy.
+            // Warm-up: base bars whose OPEN < warmup_until only advance indicator
+            // state (step 5 `on_bars` below) — no fills/exits/equity, no trading.
+            // Essential for HTF, whose indicators need a long base history to converge.
             let base_bar_idx = batch.iter().position(|e| e.tf == self.base_tf);
-            if let Some(idx) = base_bar_idx {
-                let base_bar = batch[idx].bar.clone();
-                self.run_base_tick(&base_bar);
+            let is_trading = match (self.warmup_until, base_bar_idx) {
+                (Some(until), Some(idx)) => batch[idx].bar.timestamp >= until,
+                (Some(_), None)          => false, // HTF-only tick never trades
+                (None, _)                => true,
+            };
+            if is_trading {
+                if let Some(idx) = base_bar_idx {
+                    let base_bar = batch[idx].bar.clone();
+                    self.run_base_tick(&base_bar);
+                }
             }
 
             // 5. Build snapshot và gọi strategy.on_bars (sau khi state đã cập nhật).
@@ -289,13 +312,15 @@ impl<S: MtfStrategy, R: RiskManager> MtfEngine<S, R> {
                 self.strategy.on_bars(snap)
             };
 
-            // 6. Emit signals → orders → broker. Orders fill on next base bar's open.
-            for sig in signals {
-                self.bus
-                    .send(Event::Signal(alm_core::event::SignalEvent { signal: sig }));
-            }
-            while let Some(ev) = self.bus.try_recv() {
-                self.dispatch(ev);
+            // 6. Emit signals → orders → broker (suppressed during warm-up).
+            if is_trading {
+                for sig in signals {
+                    self.bus
+                        .send(Event::Signal(alm_core::event::SignalEvent { signal: sig }));
+                }
+                while let Some(ev) = self.bus.try_recv() {
+                    self.dispatch(ev);
+                }
             }
         }
 
@@ -325,8 +350,8 @@ impl<S: MtfStrategy, R: RiskManager> MtfEngine<S, R> {
                 self.portfolio.apply_fill(&fill);
                 if let Some(tr) = tracker {
                     if let Some(trade) = self.portfolio.trades.last_mut() {
-                        trade.mae_pct = tr.mae * 100.0;
-                        trade.mfe_pct = tr.mfe * 100.0;
+                        trade.mae_pct = tr.mae;
+                        trade.mfe_pct = tr.mfe;
                         trade.bars_held = tr.bars_held;
                         trade.exit_reason = ExitReason::EndOfData;
                     }
@@ -397,7 +422,7 @@ impl<S: MtfStrategy, R: RiskManager> MtfEngine<S, R> {
             .iter_mut()
             .filter_map(|(sym, tr)| {
                 tr.update_and_check(
-                    bar.open, bar.high, bar.low, bar.close, &self.exit_rules,
+                    bar.open, bar.high, bar.low, bar.close, self.intra_bar_mode,
                 )
                 .map(|(fp, r)| (sym.clone(), fp, r))
             })
@@ -413,8 +438,8 @@ impl<S: MtfStrategy, R: RiskManager> MtfEngine<S, R> {
                 self.last_price = fp;
                 if let Some(tr) = tracker {
                     if let Some(trade) = self.portfolio.trades.last_mut() {
-                        trade.mae_pct = tr.mae * 100.0;
-                        trade.mfe_pct = tr.mfe * 100.0;
+                        trade.mae_pct = tr.mae;
+                        trade.mfe_pct = tr.mfe;
                         trade.bars_held = tr.bars_held;
                         trade.exit_reason = reason;
                     }
@@ -448,7 +473,12 @@ impl<S: MtfStrategy, R: RiskManager> MtfEngine<S, R> {
                 self.broker.submit(order_event.order.clone());
             }
             Event::Fill(ref fill_event) => self.handle_fill(&fill_event.fill),
-            Event::Equity(_) => {}
+            Event::Equity(_) => {
+                // No-op in backtest: the equity curve is built directly by
+                // `portfolio.record_equity()`. The event is emitted as an
+                // extension hook for a live bus whose subscribers (dashboards,
+                // realtime feeds) tap equity snapshots — SyncBus has none.
+            }
         }
     }
 
@@ -485,10 +515,11 @@ impl<S: MtfStrategy, R: RiskManager> MtfEngine<S, R> {
                 if self.risk.validate(signal, &self.portfolio) {
                     let qty = self.risk.size(signal, &self.portfolio, self.last_price);
                     if qty > f64::EPSILON {
-                        if signal.target_price.is_some() || signal.stop_price.is_some() {
+                        if signal.target_price.is_some() || signal.stop_price.is_some()
+                            || signal.trailing_stop_pct.is_some() || signal.max_bars_held.is_some() {
                             self.pending_signal_levels.insert(
                                 signal.symbol.clone(),
-                                (signal.target_price, signal.stop_price),
+                                (signal.target_price, signal.stop_price, signal.trailing_stop_pct, signal.max_bars_held),
                             );
                         }
                         let side = match signal.direction {
@@ -523,15 +554,15 @@ impl<S: MtfStrategy, R: RiskManager> MtfEngine<S, R> {
                         .positions
                         .get(&fill.symbol)
                         .map_or(true, |p| p.qty > 0.0);
-                    let (tp, sl) = sig_levels.unwrap_or((None, None));
-                    PositionTracker::with_levels(fill.price, sl, tp, is_long)
+                    let (tp, sl, trail, max_bars) = sig_levels.unwrap_or((None, None, None, None));
+                    PositionTracker::with_levels(fill.price, sl, tp, trail, max_bars, is_long)
                 });
         } else {
             self.pending_signal_levels.remove(&fill.symbol);
             if let Some(tr) = self.position_trackers.remove(&fill.symbol) {
                 if let Some(trade) = self.portfolio.trades.last_mut() {
-                    trade.mae_pct = tr.mae * 100.0;
-                    trade.mfe_pct = tr.mfe * 100.0;
+                    trade.mae_pct = tr.mae;
+                    trade.mfe_pct = tr.mfe;
                     trade.bars_held = tr.bars_held;
                 }
             }
@@ -652,6 +683,30 @@ mod tests {
         // Strategy emits a Long on the first base bar after the SECOND H1
         // close — uptrend means at least one trade.
         assert!(report.total_trades >= 1, "expected ≥1 trade in uptrend");
+    }
+
+    #[test]
+    fn warmup_suppresses_trading_before_until_mtf() {
+        let m1 = BarVecFeed::new(m1_uptrend(4 * 60), "TEST".into()); // 240 base bars
+        let h1 = BarVecFeed::new(h1_uptrend(4), "TEST".into());
+        let until = 120 * 60_000; // warm the first 120 base bars; trade from there
+        let mut engine = MtfEngine::sync(
+            10_000.0, MtfTrend { symbol: "TEST".into() },
+            FixedFractional::fractional(0.95, 1), 0.0, 0.0,
+        )
+        .with_base_tf(Timeframe::M1)
+        .with_single_entry()
+        .with_warmup_until(until);
+        engine.add_feed(Timeframe::M1, m1);
+        engine.add_feed(Timeframe::H1, h1);
+        engine.run(0.0);
+
+        // No equity / trade before the warm-up boundary, and fewer than the full 240.
+        assert!(engine.portfolio.equity_curve.iter().all(|p| p.timestamp >= until),
+            "equity recorded during warm-up");
+        assert!(engine.portfolio.equity_curve.len() < 240, "warm-up bars still recorded equity");
+        assert!(engine.portfolio.trades.iter().all(|t| t.entry_timestamp >= until),
+            "trade entered during warm-up");
     }
 
     #[test]

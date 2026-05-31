@@ -29,7 +29,7 @@ use crate::{
     // Volume
     Cmf, Obv, Vwap,
     // Pattern
-    Ichimoku, ParabolicSar, Rwi, WilliamsFractal,
+    ElderRay, Ichimoku, ParabolicSar, Rwi, WilliamsFractal,
 };
 use serde_json::Value;
 
@@ -106,6 +106,7 @@ pub enum IndicatorBox {
     ParabolicSar(ParabolicSar),
     Rwi(Rwi),
     WilliamsFractal(WilliamsFractal),
+    ElderRay(ElderRay),
 }
 
 fn get_usize(v: &Value, key: &str, default: usize) -> usize {
@@ -118,6 +119,23 @@ fn get_usize(v: &Value, key: &str, default: usize) -> usize {
 fn get_f64(v: &Value, key: &str, default: f64) -> f64 {
     v.get(key)
         .and_then(Value::as_f64)
+        .unwrap_or(default)
+}
+
+fn get_usize_arr4(v: &Value, key: &str, default: [usize; 4]) -> [usize; 4] {
+    v.get(key)
+        .and_then(Value::as_array)
+        .and_then(|arr| {
+            if arr.len() == 4 {
+                let mut out = [0usize; 4];
+                for (i, el) in arr.iter().enumerate() {
+                    out[i] = el.as_f64()? as usize;
+                }
+                Some(out)
+            } else {
+                None
+            }
+        })
         .unwrap_or(default)
 }
 
@@ -212,8 +230,9 @@ impl IndicatorBox {
             "mfi"         => Self::Mfi(Mfi::new(get_usize(cfg, "period", 14))),
             "bop"         => Self::Bop(Bop::new()),
             "williams_r"  => Self::WilliamsR(WilliamsR::new(get_usize(cfg, "period", 14))),
-            "stochastic"  => Self::Stochastic(Stochastic::new(
+            "stochastic"  => Self::Stochastic(Stochastic::new_full(
                 get_usize(cfg, "k_period", 14),
+                get_usize(cfg, "smooth_k", 1), // 1 = Fast (default); >1 = Slow (e.g. 14/3/3)
                 get_usize(cfg, "d_period", 3),
             )),
             "stoch_rsi"   => Self::StochRsi(StochasticRsi::new(
@@ -227,15 +246,28 @@ impl IndicatorBox {
             "rci"         => Self::Rci(Rci::new(get_usize(cfg, "period", 9))),
             "bull_bear"   => Self::BullBear(BullBearPower::new(get_usize(cfg, "period", 13))),
             "fisher"      => Self::Fisher(Fisher::new(get_usize(cfg, "period", 9))),
-            "kst"         => Self::Kst(Kst::standard()),
-            "pmo"         => Self::Pmo(Pmo::standard()),
+            "kst"         => Self::Kst(Kst::new(
+                get_usize_arr4(cfg, "roc_periods", [10, 13, 14, 15]),
+                get_usize_arr4(cfg, "sma_periods", [10, 13, 14, 15]),
+                get_usize(cfg, "signal", 9),
+            )),
+            "pmo"         => Self::Pmo(Pmo::new(
+                get_usize(cfg, "smooth1", 35),
+                get_usize(cfg, "smooth2", 20),
+                get_usize(cfg, "signal", 10),
+            )),
             "ppo"         => Self::Ppo(Ppo::new(
                 get_usize(cfg, "fast", 12),
                 get_usize(cfg, "slow", 26),
                 get_usize(cfg, "signal", 9),
             )),
             "rvi"         => Self::Rvi(Rvi::new(get_usize(cfg, "period", 10))),
-            "smi"         => Self::Smi(Smi::standard()),
+            "smi"         => Self::Smi(Smi::new(
+                get_usize(cfg, "period", 13),
+                get_usize(cfg, "smooth1", 25),
+                get_usize(cfg, "smooth2", 2),
+                get_usize(cfg, "signal", 9),
+            )),
             "uo"          => Self::Uo(Uo::new(
                 get_usize(cfg, "fast", 7),
                 get_usize(cfg, "medium", 14),
@@ -250,7 +282,11 @@ impl IndicatorBox {
                 get_usize(cfg, "fast", 5),
                 get_usize(cfg, "slow", 34),
             )),
-            "coppock"     => Self::Coppock(Coppock::standard()),
+            "coppock"     => Self::Coppock(Coppock::new(
+                get_usize(cfg, "short", 11),
+                get_usize(cfg, "long", 14),
+                get_usize(cfg, "wma", 10),
+            )),
             // ── Volatility ────────────────────────────────────────────────────
             "atr"               => Self::Atr(Atr::new(get_usize(cfg, "period", 14))),
             "bbands"            => Self::BBands(BBands::new(
@@ -300,6 +336,7 @@ impl IndicatorBox {
             )),
             "rwi"              => Self::Rwi(Rwi::new(get_usize(cfg, "period", 14))),
             "fractal"          => Self::WilliamsFractal(WilliamsFractal::new()),
+            "elder_ray"        => Self::ElderRay(ElderRay::new(get_usize(cfg, "period", 13))),
             other => bail!("unknown indicator type: '{other}'"),
         };
         Ok(ind)
@@ -345,7 +382,11 @@ impl IndicatorBox {
             }
             Self::Adx(i) => {
                 let v = i.update(bar.high, bar.low, bar.close)?;
-                scalar(v.adx)
+                let mut m = HashMap::new();
+                m.insert("adx".into(), v.adx);
+                m.insert("plus_di".into(), v.plus_di);
+                m.insert("minus_di".into(), v.minus_di);
+                Some(m)
             }
             Self::Dmi(i) => {
                 let v = i.update(bar.high, bar.low, bar.close)?;
@@ -381,15 +422,25 @@ impl IndicatorBox {
                 m.insert("teeth".into(), v.teeth);
                 m.insert("lips".into(), v.lips);
                 m.insert("bullish".into(), if v.bullish { 1.0 } else { 0.0 });
+                m.insert("bearish".into(), if v.bearish { 1.0 } else { 0.0 });
                 Some(m)
             }
             Self::Gmma(i) => {
                 let v = i.update(bar.close)?;
-                let short_avg = v.short.iter().sum::<f64>() / 6.0;
-                let long_avg  = v.long.iter().sum::<f64>() / 6.0;
                 let mut m = HashMap::new();
-                m.insert("short_avg".into(), short_avg);
-                m.insert("long_avg".into(), long_avg);
+                // `spread` (primary) = normalized gap between the two groups:
+                //   (mean(short) - mean(long)) / mean(long)
+                // >0 bullish, <0 bearish, crossing 0 = group crossover; magnitude =
+                // ribbon separation/compression (near 0 = trend weakening).
+                let short_avg = v.short.iter().sum::<f64>() / 6.0;
+                let long_avg  = v.long.iter().sum::<f64>()  / 6.0;
+                let spread = if long_avg.abs() > f64::EPSILON {
+                    (short_avg - long_avg) / long_avg
+                } else {
+                    0.0
+                };
+                m.insert("spread".into(), spread);
+                // `bullish` = short group *fully* above long group (strict, GmmaValue.bullish).
                 m.insert("bullish".into(), if v.bullish { 1.0 } else { 0.0 });
                 // Individual EMA lines — position-indexed, period-agnostic
                 m.insert("short_0".into(), v.short[0]);
@@ -508,6 +559,7 @@ impl IndicatorBox {
             Self::Atr(i) => {
                 let v = i.update(bar.high, bar.low, bar.close)?;
                 let mut m = HashMap::new();
+                m.insert("tr".into(), v.tr);
                 m.insert("atr".into(), v.atr);
                 Some(m)
             }
@@ -598,6 +650,8 @@ impl IndicatorBox {
                 m.insert("chikou".into(), v.chikou);
                 m.insert("above_cloud".into(), if v.above_cloud { 1.0 } else { 0.0 });
                 m.insert("below_cloud".into(), if v.below_cloud { 1.0 } else { 0.0 });
+                m.insert("chikou_above".into(), if v.chikou_above { 1.0 } else { 0.0 });
+                m.insert("chikou_below".into(), if v.chikou_below { 1.0 } else { 0.0 });
                 Some(m)
             }
             Self::ParabolicSar(i) => {
@@ -621,6 +675,14 @@ impl IndicatorBox {
                 m.insert("bearish".into(), if v.bearish { 1.0 } else { 0.0 });
                 m.insert("fractal_high".into(), v.high);
                 m.insert("fractal_low".into(), v.low);
+                Some(m)
+            }
+            Self::ElderRay(i) => {
+                let v = i.update(bar.high, bar.low, bar.close)?;
+                let mut m = HashMap::new();
+                m.insert("bull_power".into(), v.bull_power);
+                m.insert("bear_power".into(), v.bear_power);
+                m.insert("ema".into(), v.ema);
                 Some(m)
             }
         }
@@ -694,6 +756,7 @@ impl IndicatorBox {
             Self::ParabolicSar(_)   => "parabolic_sar",
             Self::Rwi(_)            => "rwi",
             Self::WilliamsFractal(_) => "fractal",
+            Self::ElderRay(_) => "elder_ray",
         }
     }
 
@@ -721,13 +784,13 @@ impl IndicatorBox {
             Self::Lsma(_)      => &["value", "slope"],
             Self::Macd(_)      => &["macd", "signal", "histogram"],
             Self::Trix(_)      => &["trix", "signal", "histogram"],
-            Self::Adx(_)       => &["value"],
+            Self::Adx(_)       => &["adx", "plus_di", "minus_di"],
             Self::Dmi(_)       => &["plus_di", "minus_di"],
             Self::Aroon(_)     => &["up", "down"],
             Self::AroonOsc(_)  => &["value"],
             Self::Vortex(_)    => &["plus_vi", "minus_vi"],
-            Self::Alligator(_) => &["jaw", "teeth", "lips", "bullish"],
-            Self::Gmma(_)      => &["short_avg", "long_avg", "bullish", "short_0", "short_1", "short_2", "short_3", "short_4", "short_5", "long_0", "long_1", "long_2", "long_3", "long_4", "long_5"],
+            Self::Alligator(_) => &["jaw", "teeth", "lips", "bullish", "bearish"],
+            Self::Gmma(_)      => &["spread", "bullish", "short_0", "short_1", "short_2", "short_3", "short_4", "short_5", "long_0", "long_1", "long_2", "long_3", "long_4", "long_5"],
             Self::Kdj(_)       => &["k", "d", "j"],
             Self::Kalman(_)    => &["value", "velocity"],
             Self::Stochastic(_) => &["k", "d"],
@@ -739,7 +802,7 @@ impl IndicatorBox {
             Self::Ppo(_)       => &["ppo", "signal", "histogram"],
             Self::Rvi(_)       => &["rvi", "signal"],
             Self::Smi(_)       => &["smi", "signal"],
-            Self::Atr(_)       => &["atr"],
+            Self::Atr(_)       => &["atr", "tr"],
             Self::BBands(_)    => &["upper", "middle", "lower", "bandwidth", "percent_b"],
             Self::Keltner(_)   => &["upper", "middle", "lower"],
             Self::SuperTrend(_) => &["value", "bullish"],
@@ -747,10 +810,11 @@ impl IndicatorBox {
             Self::ChopZone(_)  => &["angle", "zone"],
             Self::ChandelierExit(_) => &["long_stop", "short_stop", "atr"],
             Self::ChandeKroll(_) => &["stop_long", "stop_short"],
-            Self::Ichimoku(_)  => &["tenkan", "kijun", "senkou_a", "senkou_b", "chikou", "above_cloud", "below_cloud"],
+            Self::Ichimoku(_)  => &["tenkan", "kijun", "senkou_a", "senkou_b", "chikou", "above_cloud", "below_cloud", "chikou_above", "chikou_below"],
             Self::ParabolicSar(_) => &["sar", "bullish"],
             Self::Rwi(_)       => &["rwi_high", "rwi_low"],
             Self::WilliamsFractal(_) => &["bullish", "bearish", "fractal_high", "fractal_low"],
+            Self::ElderRay(_) => &["bull_power", "bear_power", "ema"],
         }
     }
 
@@ -822,6 +886,7 @@ impl IndicatorBox {
             Self::ParabolicSar(_)    => ParabolicSar::description(),
             Self::Rwi(_)             => Rwi::description(),
             Self::WilliamsFractal(_) => WilliamsFractal::description(),
+            Self::ElderRay(_) => ElderRay::description(),
         }
     }
 
@@ -833,56 +898,56 @@ impl IndicatorBox {
     pub fn script_usage(&self) -> &'static str {
         match self {
             // ── Trend / MA ────────────────────────────────────────────────────
-            Self::Sma(_)       => "ind.sma(20)[0]  → scalar value",
-            Self::Ema(_)       => "ind.ema(20)[0]  → scalar value",
-            Self::Wma(_)       => "ind.wma(20)[0]  → scalar value",
-            Self::Hma(_)       => "ind.hma(20)[0]  → scalar value",
-            Self::Dema(_)      => "ind.dema(20)[0]  → scalar value",
-            Self::Tema(_)      => "ind.tema(20)[0]  → scalar value",
-            Self::Smma(_)      => "ind.smma(20)[0]  → scalar value",
-            Self::Alma(_)      => "ind.alma(9, 0.85, 6.0)[0]  → scalar value",
-            Self::McGinley(_)  => "ind.mcginley(14)[0]  → scalar value",
-            Self::Lsma(_)      => "ind.lsma(25)[0]  → scalar value",
-            Self::Vwma(_)      => "ind.vwma(20)[0]  → scalar value",
-            Self::Kama(_)      => "ind.kama(10, 2, 30)[0]  → scalar value",
+            Self::Sma(_)       => "ind.sma(20)[0]  → scalar (price level, SMA basis)",
+            Self::Ema(_)       => "ind.ema(20)[0]  → scalar (price level, EMA)",
+            Self::Wma(_)       => "ind.wma(20)[0]  → scalar (price level, weighted MA)",
+            Self::Hma(_)       => "ind.hma(20)[0]  → scalar (price level, low-lag Hull MA)",
+            Self::Dema(_)      => "ind.dema(20)[0]  → scalar (price level, double EMA)",
+            Self::Tema(_)      => "ind.tema(20)[0]  → scalar (price level, triple EMA)",
+            Self::Smma(_)      => "ind.smma(20)[0]  → scalar (price level, Wilder/RMA)",
+            Self::Alma(_)      => "ind.alma(9, 0.85, 6.0)[0]  → scalar (price level)  ·  args: period, offset, sigma",
+            Self::McGinley(_)  => "ind.mcginley(14)[0]  → scalar (price level, self-adjusting MA)",
+            Self::Lsma(_)      => "ind.lsma(25)[0] → .value (default, linear-regression endpoint)  ·  .slope (regression slope, >0 rising)",
+            Self::Vwma(_)      => "ind.vwma(20)[0]  → scalar (price level, volume-weighted)",
+            Self::Kama(_)      => "ind.kama(10, 2, 30)[0]  → scalar (price level, adaptive MA)  ·  args: er_period, fast, slow",
             Self::Macd(_)      => "ind.macd(12, 26, 9)[0] → .macd (default)  ·  .signal  ·  .histogram",
             Self::Trix(_)      => "ind.trix(18, 9)[0] → .trix (default)  ·  .signal  ·  .histogram",
-            Self::Adx(_)       => "ind.adx(14)[0] → scalar ADX strength (0–100)",
+            Self::Adx(_)       => "ind.adx(14)[0] → ADX strength 0–100 (default)  ·  .plus_di  ·  .minus_di",
             Self::Dmi(_)       => "ind.dmi(14)[0] → .plus_di (default)  ·  .minus_di",
-            Self::Aroon(_)     => "ind.aroon(25)[0] → .up  ·  .down  (oscillator: use aroon_osc)",
-            Self::AroonOsc(_)  => "ind.aroon_osc(25)[0] → scalar oscillator value",
+            Self::Aroon(_)     => "ind.aroon(25)[0] → .up (default, 0–100)  ·  .down (0–100)  (for the spread use aroon_osc)",
+            Self::AroonOsc(_)  => "ind.aroon_osc(25)[0] → scalar −100..100  (>0 uptrend, <0 downtrend)",
             Self::Vortex(_)    => "ind.vortex(14)[0] → .plus_vi (default)  ·  .minus_vi",
-            Self::Alligator(_) => "ind.alligator(13, 8, 5)[0] → .teeth (default)  ·  .jaw  ·  .lips  ·  .bullish",
-            Self::Gmma(_)      => "ind.gmma(0)[0] → .long_avg (default)  ·  .short_avg  ·  .bullish  ·  .short_0..short_5  ·  .long_0..long_5\n  custom: ind.gmma(3, 5, 8, 10, 12, 15, 30, 35, 40, 45, 50, 60)",
+            Self::Alligator(_) => "ind.alligator(13, 8, 5)[0] → .teeth (default)  ·  .jaw  ·  .lips  ·  .bullish  ·  .bearish",
+            Self::Gmma(_)      => "ind.gmma(0)[0] → .spread (default, normalised group gap: >0 bull / <0 bear / cross 0 = crossover, |spread| = ribbon separation)  ·  .bullish (strict full separation flag)  ·  .short_0..short_5  ·  .long_0..long_5\n  custom: ind.gmma(3, 5, 8, 10, 12, 15, 30, 35, 40, 45, 50, 60)",
             Self::Kdj(_)       => "ind.kdj(9, 3, 3)[0] → .k (default)  ·  .d  ·  .j",
             Self::Kalman(_)    => "ind.kalman(0, q_pos=0.001, q_vel=0.001, r=1.0)[0] → .value (default)  ·  .velocity",
             // ── Momentum / Oscillator ─────────────────────────────────────────
-            Self::Rsi(_)        => "ind.rsi(14)[0]  → scalar 0–100",
-            Self::Cci(_)        => "ind.cci(20)[0]  → scalar (centered ~0)",
-            Self::Roc(_)        => "ind.roc(10)[0]  → scalar % change",
-            Self::Mom(_)        => "ind.mom(10)[0]  → scalar price difference",
-            Self::Cmo(_)        => "ind.cmo(14)[0]  → scalar -100–100",
-            Self::Dpo(_)        => "ind.dpo(20)[0]  → scalar (detrended)",
-            Self::Mfi(_)        => "ind.mfi(14)[0]  → scalar 0–100",
-            Self::Bop(_)        => "ind.bop()[0]  → scalar -1–1",
-            Self::WilliamsR(_)  => "ind.williams_r(14)[0]  → scalar -100–0",
-            Self::Stochastic(_) => "ind.stochastic(14, 3)[0] → .k (default)  ·  .d",
+            Self::Rsi(_)        => "ind.rsi(14)[0]  → scalar 0–100  (>70 overbought, <30 oversold)",
+            Self::Cci(_)        => "ind.cci(20)[0]  → scalar centered ~0  (>+100 / <−100 = breakout zones)",
+            Self::Roc(_)        => "ind.roc(10)[0]  → scalar % change  (>0 up-momentum, <0 down)",
+            Self::Mom(_)        => "ind.mom(10)[0]  → scalar price difference vs N bars ago  (>0 bullish)",
+            Self::Cmo(_)        => "ind.cmo(14)[0]  → scalar −100..100  (oscillates around 0)",
+            Self::Dpo(_)        => "ind.dpo(20)[0]  → scalar detrended price  (>0 above trend, <0 below)",
+            Self::Mfi(_)        => "ind.mfi(14)[0]  → scalar 0–100  (volume-weighted; >80 / <20 extremes)",
+            Self::Bop(_)        => "ind.bop()[0]  → scalar −1..1  (>0 buying pressure, <0 selling)",
+            Self::WilliamsR(_)  => "ind.williams_r(14)[0]  → scalar −100..0  (>−20 overbought, <−80 oversold)",
+            Self::Stochastic(_) => "ind.stochastic(14, 3)[0] → .k (default)  ·  .d   (Fast; for Slow add smooth_k: ind.stochastic(14, 3, smooth_k=3))",
             Self::StochRsi(_)   => "ind.stoch_rsi(14, 3)[0] → .k (default)  ·  .d",
-            Self::Tsi(_)        => "ind.tsi(25, 13)[0]  → scalar -100–100",
-            Self::Rci(_)        => "ind.rci(9)[0]  → scalar -100–100",
+            Self::Tsi(_)        => "ind.tsi(25, 13)[0]  → scalar −100..100  (zero-cross = trend change)",
+            Self::Rci(_)        => "ind.rci(9)[0]  → scalar −100..100  (+100 perfect uptrend, −100 downtrend)",
             Self::BullBear(_)   => "ind.bull_bear(13)[0] → .bull (default)  ·  .bear  ·  .ema",
             Self::Fisher(_)     => "ind.fisher(9)[0] → .fisher (default)  ·  .signal",
-            Self::Kst(_)        => "ind.kst()[0] → .kst (default)  ·  .signal  ·  .histogram",
-            Self::Pmo(_)        => "ind.pmo()[0] → .pmo (default)  ·  .signal",
+            Self::Kst(_)        => "ind.kst(9)[0] → .kst (default)  ·  .signal  ·  .histogram   (arg = signal period)",
+            Self::Pmo(_)        => "ind.pmo(35, 20, 10)[0] → .pmo (default)  ·  .signal  ·  .histogram",
             Self::Ppo(_)        => "ind.ppo(12, 26, 9)[0] → .ppo (default)  ·  .signal  ·  .histogram",
             Self::Rvi(_)        => "ind.rvi(10)[0] → .rvi (default)  ·  .signal",
-            Self::Smi(_)        => "ind.smi()[0] → .smi (default)  ·  .signal",
-            Self::Uo(_)         => "ind.uo(7, 14, 28)[0]  → scalar 0–100",
-            Self::ConnorsRsi(_) => "ind.connors_rsi(3, 2, 100)[0]  → scalar 0–100",
-            Self::Ao(_)         => "ind.ao(5, 34)[0]  → scalar (oscillator)",
-            Self::Coppock(_)    => "ind.coppock()[0]  → scalar (oscillator)",
+            Self::Smi(_)        => "ind.smi(13, 25, 2, 9)[0] → .smi (default)  ·  .signal",
+            Self::Uo(_)         => "ind.uo(7, 14, 28)[0]  → scalar 0–100  (>70 overbought, <30 oversold)",
+            Self::ConnorsRsi(_) => "ind.connors_rsi(3, 2, 100)[0]  → scalar 0–100  (mean-reversion; >90 / <10 extremes)",
+            Self::Ao(_)         => "ind.ao(5, 34)[0]  → scalar oscillator around 0  (>0 bullish momentum)",
+            Self::Coppock(_)    => "ind.coppock(11, 14, 10)[0]  → scalar oscillator  (upturn from below 0 = long-term buy)",
             // ── Volatility ────────────────────────────────────────────────────
-            Self::Atr(_)             => "ind.atr(14)[0].atr",
+            Self::Atr(_)             => "ind.atr(14)[0] → .atr (default, Wilder-smoothed true range)  ·  .tr (raw true range of the bar)",
             Self::BBands(_)     => "ind.bbands(20, 2.0)[0] → .middle (default)  ·  .upper  ·  .lower  ·  .bandwidth  ·  .percent_b",
             Self::Keltner(_)    => "ind.keltner(20, 10, 2.0)[0] → .middle (default)  ·  .upper  ·  .lower",
             Self::SuperTrend(_) => "ind.supertrend(10, 3.0)[0] → .value (default)  ·  .bullish  (1.0 = bullish, 0.0 = bearish)",
@@ -891,20 +956,22 @@ impl IndicatorBox {
             Self::ChopZone(_)       => "ind.chop_zone(34, 5.0)[0] → .zone (default)  ·  .angle  (1=trending up, 0=choppy, -1=trending down)",
             Self::ChandelierExit(_) => "ind.chandelier_exit(22, 3.0)[0] → .long_stop (default)  ·  .short_stop  ·  .atr",
             Self::ChandeKroll(_)    => "ind.chande_kroll(10, 1.5, 9)[0] → .stop_long (default)  ·  .stop_short",
-            Self::VolatilityRatio(_) => "ind.volatility_ratio(10)[0]  → scalar (>1 = expanding volatility)",
+            Self::VolatilityRatio(_) => "ind.volatility_ratio(10)[0]  → scalar  (near 1 = explosive bar/breakout, near 0 = consolidation)",
             // ── Volume ────────────────────────────────────────────────────────
-            Self::Obv(_)  => "ind.obv()[0]  → scalar cumulative volume",
-            Self::Cmf(_)  => "ind.cmf(20)[0]  → scalar -1–1",
-            Self::Vwap(_) => "ind.vwap()[0]  → scalar price level",
+            Self::Obv(_)  => "ind.obv()[0]  → scalar cumulative volume  (divergence vs price = trend weakness)",
+            Self::Cmf(_)  => "ind.cmf(20)[0]  → scalar −1..1  (>0 buying pressure, <0 selling pressure)",
+            Self::Vwap(_) => "ind.vwap()[0]  → scalar price level  (price above = bullish intraday bias)",
             // ── Pattern ───────────────────────────────────────────────────────
             Self::Ichimoku(_) =>
-                "ind.ichimoku(9, 26, 52)[0] → .tenkan (default)  ·  .kijun  ·  .senkou_a  ·  .senkou_b  ·  .chikou  ·  .above_cloud  ·  .below_cloud",
+                "ind.ichimoku(9, 26, 52)[0] → .tenkan (default)  ·  .kijun  ·  .senkou_a  ·  .senkou_b  ·  .chikou (raw close)  ·  .above_cloud  ·  .below_cloud  ·  .chikou_above (close > close[kijun])  ·  .chikou_below",
             Self::ParabolicSar(_) =>
-                "ind.parabolic_sar(0.02, 0.2)[0] → .sar (default)  ·  .bullish  (1.0 = bullish, 0.0 = bearish)",
+                "ind.parabolic_sar(0, 0.02, 0.2)[0] → .sar (default)  ·  .bullish  (1.0 = bullish, 0.0 = bearish)  ·  args: dummy_period, step, max",
             Self::Rwi(_) =>
                 "ind.rwi(14)[0] → .rwi_high (default)  ·  .rwi_low  (>1 = directional move)",
             Self::WilliamsFractal(_) =>
                 "ind.fractal()[0] → .bullish (default)  ·  .bearish  ·  .fractal_high  ·  .fractal_low",
+            Self::ElderRay(_) =>
+                "ind.elder_ray(13)[0] → .bull_power (default, high−EMA)  ·  .bear_power (low−EMA)  ·  .ema",
         }
     }
 
@@ -974,7 +1041,49 @@ impl IndicatorBox {
             Self::ParabolicSar(i)   => i.reset(),
             Self::Rwi(i)            => i.reset(),
             Self::WilliamsFractal(i) => i.reset(),
+            Self::ElderRay(i) => i.reset(),
         }
+    }
+}
+
+/// Output-field semantic type. Every indicator output is physically an `f64`
+/// (see [`IndicatorBox::update`]), but some fields are *bool-semantic*: they
+/// only ever carry `0.0` or `1.0` and stand for a true/false flag.
+///
+/// Surfaced in the public catalog so the UI/script users know that a field
+/// like `bullish` must be compared (`> 0.5`) rather than negated (`!x`, which
+/// Rhai rejects on an `f64`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FieldKind {
+    /// Continuous numeric value (price level, oscillator reading, …).
+    Scalar,
+    /// Boolean flag encoded as `0.0` / `1.0`.
+    Bool,
+}
+
+impl FieldKind {
+    /// Stable wire token: `"f64"` or `"bool"`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FieldKind::Scalar => "f64",
+            FieldKind::Bool => "bool",
+        }
+    }
+}
+
+/// Bool-semantic output fields: [`IndicatorBox::update`] flattens a `bool` to
+/// `0.0`/`1.0` for these. Single source of truth — mirrored by
+/// `is_boolean_flag_field` in `crates/strategy/src/script/v1/strategy.rs`.
+pub const BOOL_FIELDS: &[&str] =
+    &["bullish", "bearish", "above_cloud", "below_cloud", "chikou_above", "chikou_below"];
+
+/// Classify an indicator output field by name. Names listed in [`BOOL_FIELDS`]
+/// are [`FieldKind::Bool`]; everything else is [`FieldKind::Scalar`].
+pub fn field_kind(name: &str) -> FieldKind {
+    if BOOL_FIELDS.contains(&name) {
+        FieldKind::Bool
+    } else {
+        FieldKind::Scalar
     }
 }
 
@@ -990,10 +1099,6 @@ mod tests {
     use super::*;
     use serde_json::json;
 
-    fn mk_bar(t: i64, c: f64) -> Bar {
-        Bar::new(t, "TEST", c, c, c, c, 1.0)
-    }
-
     const ALL_TYPES: &[&str] = &[
         "sma", "ema", "wma", "hma", "dema", "tema", "smma", "alma",
         "mcginley", "lsma", "vwma", "kama", "macd", "trix", "adx",
@@ -1006,7 +1111,7 @@ mod tests {
         "chop", "chop_zone", "chandelier_exit", "chande_kroll",
         "volatility_ratio",
         "obv", "cmf", "vwap",
-        "ichimoku", "parabolic_sar", "rwi", "fractal",
+        "ichimoku", "parabolic_sar", "rwi", "fractal", "elder_ray",
     ];
 
     #[test]
@@ -1041,7 +1146,7 @@ mod tests {
             "chop", "chop_zone", "chandelier_exit", "chande_kroll",
             "volatility_ratio",
             "obv", "cmf", "vwap",
-            "ichimoku", "parabolic_sar", "rwi", "fractal",
+            "ichimoku", "parabolic_sar", "rwi", "fractal", "elder_ray",
         ] {
             let ind = IndicatorBox::from_config(&json!({ "type": name })).unwrap();
             assert_eq!(ind.type_name(), *name, "type_name mismatch for {name}");
@@ -1051,33 +1156,67 @@ mod tests {
 
     #[test]
     fn field_names_cover_actual_output() {
-        // Sanity: after feeding enough bars, every advertised field must
-        // appear in the output map, and no extra keys must sneak in.
-        let cases: &[(&str, usize)] = &[
-            ("ema",         30),   // scalar
-            ("macd",       120),   // multi-field
-            ("bbands",      60),
-            ("aroon",       60),
-            ("aroon_osc",   60),
-            ("stochastic",  60),
-            ("ichimoku",   200),
-        ];
-        for (name, warmup) in cases {
+        // Full indicator↔value audit: for EVERY known indicator, after enough
+        // warmup the live output map keys must exactly equal field_names() —
+        // no advertised field missing, no undocumented key leaking out. This is
+        // the source-of-truth guarantee the script layer (MULTI_FIELDS, primary
+        // field, lint, autocomplete) builds on.
+        //
+        // Feed non-degenerate OHLC (high≠low, varying close + volume) so
+        // range-based indicators (stochastic, atr, aroon, …) actually produce
+        // meaningful output instead of divide-by-zero edge cases.
+        const WARMUP: usize = 320; // ≥ ichimoku senkou_b(52) and all others
+
+        let mut failures: Vec<String> = Vec::new();
+
+        for name in ALL_TYPES {
             let mut ind = IndicatorBox::from_config(&json!({ "type": name })).unwrap();
-            let fields = ind.field_names();
+            let fields: Vec<&str> = ind.field_names().to_vec();
+
             let mut last = None;
-            for i in 1..=*warmup {
-                last = ind.update(&mk_bar((i as i64) * 60_000, 100.0 + (i as f64).sin()));
+            for i in 1..=WARMUP {
+                let t = (i as i64) * 60_000;
+                // gently trending close with a wiggle, real high/low band, varied volume
+                let c = 100.0 + i as f64 * 0.1 + (i as f64 * 0.7).sin() * 3.0;
+                let bar = Bar::new(t, "TEST", c, c + 1.5, c - 1.5, c, 1000.0 + (i % 17) as f64 * 50.0);
+                last = ind.update(&bar);
             }
-            let out = last.expect(&format!("{name} should be warm after {warmup} bars"));
-            for f in fields {
-                assert!(out.contains_key(*f),
-                    "{name}: advertised field '{f}' missing from output {:?}", out.keys().collect::<Vec<_>>());
+
+            let out = match last {
+                Some(m) => m,
+                None => { failures.push(format!("{name}: no output after {WARMUP} bars")); continue; }
+            };
+
+            for f in &fields {
+                if !out.contains_key(*f) {
+                    failures.push(format!(
+                        "{name}: advertised field '{f}' missing from output {:?}",
+                        out.keys().collect::<Vec<_>>()));
+                }
             }
             for k in out.keys() {
-                assert!(fields.iter().any(|f| f == k),
-                    "{name}: output has undocumented field '{k}' (advertised: {fields:?})");
+                if !fields.iter().any(|f| f == k) {
+                    failures.push(format!(
+                        "{name}: output has undocumented field '{k}' (advertised: {fields:?})"));
+                }
+            }
+
+            // Value format: no NaN/Inf may leak — a NaN silently breaks every
+            // script comparison (NaN > x is always false), invisible because
+            // ScriptStrategy::on_bar swallows nothing here, it just mis-evaluates.
+            for (k, v) in &out {
+                if !v.is_finite() {
+                    failures.push(format!("{name}: field '{k}' produced non-finite value {v}"));
+                }
+                // Bool-semantic fields must flatten to clean 0.0 / 1.0.
+                if BOOL_FIELDS.contains(&k.as_str()) && *v != 0.0 && *v != 1.0 {
+                    failures.push(format!(
+                        "{name}: bool flag '{k}' = {v}, expected exactly 0.0 or 1.0"));
+                }
             }
         }
+
+        assert!(failures.is_empty(),
+            "indicator field_names()↔update() mismatches:\n  {}", failures.join("\n  "));
     }
 }

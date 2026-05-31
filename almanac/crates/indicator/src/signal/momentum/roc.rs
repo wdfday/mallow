@@ -45,7 +45,7 @@ impl Roc {
     }
 
     pub fn description() -> &'static str {
-        "Rate of Change — percentage change in price over N bars. Positive ROC = upward momentum; zero-cross signals momentum reversal."
+        "Rate of Change — percentage change in price over N bars. Positive ROC = upward momentum; zero-cross signals momentum reversal. Outputs a single percentage-change value."
     }
 
     pub fn update(&mut self, close: f64) -> Option<f64> {

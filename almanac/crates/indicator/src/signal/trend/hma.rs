@@ -56,7 +56,7 @@ impl Hma {
     }
 
     pub fn description() -> &'static str {
-        "Hull Moving Average — combines WMAs at different periods to nearly eliminate lag while retaining smoothness. Preferred when response speed is critical."
+        "Hull Moving Average — combines WMAs at different periods to nearly eliminate lag while retaining smoothness. Preferred when response speed is critical. Outputs a single value (price scale)."
     }
 
     pub fn update(&mut self, value: f64) -> Option<f64> {

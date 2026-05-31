@@ -19,7 +19,7 @@ use crate::Rsi;
 ///
 /// Component 3 — Percent Rank của 1-bar ROC%:
 ///   roc = (close − prev_close) / prev_close × 100
-///   pct_rank = count(roc_history < roc_today) / (rank_period − 1) × 100
+///   pct_rank = count(rank_period prior roc < roc_today) / rank_period × 100
 ///
 /// CRSI = (rsi1 + rsi2 + pct_rank) / 3    (range: 0..100)
 /// ```
@@ -39,8 +39,9 @@ use crate::Rsi;
 /// (uptrend dài hạn). Entry khi pullback → CRSI < 10. Exit nhanh (1−3 ngày).
 ///
 /// # Warmup
-/// Cần `max(rsi_period, streak_rsi_period) + rank_period` bar.
-/// Default CRSI(3,2,100): cần ~103 bar.
+/// Cần `max(rsi_period, streak_rsi_period) + rank_period + 1` bar (ROC component
+/// cần bar hiện tại + `rank_period` ROC lịch sử, mỗi ROC cần 1 prev_close).
+/// Default CRSI(3,2,100): cần ~104 bar.
 #[derive(Debug, Clone)]
 pub struct ConnorsRsi {
     rsi_period: usize,
@@ -77,7 +78,7 @@ impl ConnorsRsi {
     }
 
     pub fn description() -> &'static str {
-        "ConnorsRSI — composite of short-term RSI(3), streak RSI, and percentile rank of daily returns. Optimised for short-term mean-reversion entries."
+        "ConnorsRSI — composite of short-term RSI(3), streak RSI, and percentile rank of daily returns. Optimised for short-term mean-reversion entries. Outputs a single 0–100 value."
     }
 
     /// Default parameters: rsi_period=3, streak_rsi_period=2, percent_rank_period=100
@@ -123,18 +124,22 @@ impl ConnorsRsi {
             0.0
         };
         self.roc_window.push_back(roc);
-        if self.roc_window.len() > self.rank_period {
+        // Keep the current bar (at the back) plus `rank_period` historical ROC
+        // values in front of it → window holds `rank_period + 1` elements.
+        if self.roc_window.len() > self.rank_period + 1 {
             self.roc_window.pop_front();
         }
 
-        // Need full rank_period window
-        if self.roc_window.len() < self.rank_period {
+        // Need the current bar + a full `rank_period` of history behind it.
+        if self.roc_window.len() < self.rank_period + 1 {
             return None;
         }
 
-        // Percent rank: count of past roc values strictly below current roc
-        let count_below = self.roc_window.iter().take(self.rank_period - 1).filter(|&&r| r < roc).count();
-        let pct_rank = count_below as f64 / (self.rank_period as f64 - 1.0) * 100.0;
+        // Percent rank (Connors / TradingView `percentrank`): of the
+        // `rank_period` historical ROC values (everything except the current
+        // bar at the back), how many are strictly below today's ROC.
+        let count_below = self.roc_window.iter().take(self.rank_period).filter(|&&r| r < roc).count();
+        let pct_rank = count_below as f64 / self.rank_period as f64 * 100.0;
 
         match (rsi1, rsi2) {
             (Some(r1), Some(r2)) => {

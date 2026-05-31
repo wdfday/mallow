@@ -14,10 +14,10 @@ pub use engine_builder::{asset_lot_size, intra_bar_mode_from_str};
 
 use std::path::Path;
 
-use alm_core::{MtfStrategy, Timeframe};
+use alm_core::{Bar, MtfStrategy, Timeframe};
 use alm_data::{BarFeed, BarVecFeed};
 use alm_strategy::{
-    build_mtf_strategy, probe_script_htfs, AnySizer, FixedFractional, FixedQuantity, FixedUsd,
+    build_mtf_strategy, probe_script_htfs,
     MtfScriptStrategy, ScriptStrategy,
 };
 use anyhow::{bail, Result};
@@ -114,12 +114,20 @@ pub fn run(req: BacktestRequest, data_dir: &Path) -> Result<BacktestResponse> {
     let risk_free = req.risk_free_annual.unwrap_or(DEFAULT_RISK_FREE);
     let params = req.params.clone().unwrap_or(Value::Object(Default::default()));
 
-    let all_bars = loader::load_bars_for_request(&req, data_dir)?;
-    let bar_count = all_bars.len();
+    // Warm indicators on extra history before `from` (≈ 2.5× period for EMA-family,
+    // 1× for SMA/window) so they're converged at the trading start. `trading_from_ms`
+    // is the original `from`; bars before it only warm the engine, don't trade.
+    let warmup_bars = loader::compute_warmup_bars(&req);
+    let (all_bars, trading_from_ms) = loader::load_bars_warmed(&req, data_dir, warmup_bars)?;
 
+    // Report range / benchmark / bar_count cover only the trading window (≥ from).
+    let bar_count = match trading_from_ms {
+        Some(f) => all_bars.iter().filter(|b| b.timestamp >= f).count(),
+        None => all_bars.len(),
+    };
     let curve_max = estimate_curve_target(bar_count);
 
-    if bar_count > MAX_BARS {
+    if all_bars.len() > MAX_BARS {
         let tf = req.timeframe.as_deref().unwrap_or("M1").to_uppercase();
         let suggestion = match tf.as_str() {
             "M1"  => "Use M5 or M15 for ranges > 3 months",
@@ -128,7 +136,7 @@ pub fn run(req: BacktestRequest, data_dir: &Path) -> Result<BacktestResponse> {
             "H1"  => "Use H4 or D1 for ranges > 5 years",
             _     => "Narrow the date range",
         };
-        anyhow::bail!("{} bars exceeds the {} bar limit. {}.", bar_count, MAX_BARS, suggestion);
+        anyhow::bail!("{} bars exceeds the {} bar limit. {}.", all_bars.len(), MAX_BARS, suggestion);
     }
 
     tracing::info!(symbol = %symbol, strategy = %req.strategy, bars = bar_count, "starting backtest");
@@ -147,13 +155,16 @@ pub fn run(req: BacktestRequest, data_dir: &Path) -> Result<BacktestResponse> {
             .ok_or_else(|| anyhow::anyhow!("ScriptStrategy requires a 'script' param"))?;
         use alm_core::strategy::Strategy;
         let strategy: Box<dyn Strategy> = Box::new(
-            ScriptStrategy::build(script_text, true, alm_strategy::candle_type::CandleType::Raw)?
+            ScriptStrategy::build(script_text, true)?
                 .with_error_sink(sink),
         );
         engine_builder::build_with_strategy(&req, strategy)?
     } else {
         engine_builder::build(&req, &params)?
     };
+    if let Some(f) = trading_from_ms {
+        engine = engine.with_warmup_until(f);
+    }
     let mut bar_feed = BarVecFeed::new(all_bars.clone(), symbol.clone());
     let report = engine.run(&mut bar_feed, risk_free);
 
@@ -167,7 +178,12 @@ pub fn run(req: BacktestRequest, data_dir: &Path) -> Result<BacktestResponse> {
         }
     }
 
-    Ok(response::build(engine, report, req, symbol, bar_count, &all_bars, capital, risk_free, curve_max))
+    // Benchmark / curves over the trading window only (drop warm-up bars before `from`).
+    let trading_bars: Vec<Bar> = match trading_from_ms {
+        Some(f) => all_bars.into_iter().filter(|b| b.timestamp >= f).collect(),
+        None => all_bars,
+    };
+    Ok(response::build(engine, report, req, symbol, bar_count, &trading_bars, capital, risk_free, curve_max))
 }
 
 /// Run a multi-timeframe backtest from a [`MtfBacktestRequest`].
@@ -198,29 +214,43 @@ pub fn run_mtf(req: MtfBacktestRequest, data_dir: &Path) -> Result<BacktestRespo
         .as_deref()
         .and_then(|s| parse_date_ms(s).map(|ms| ms + 86_400_000 - 1));
 
+    // Named MTF has no script to scan per-indicator, so warm each feed by a fixed,
+    // generous count in its OWN bars (covers e.g. ema(100)×2.5) — enough for HTF
+    // indicators to converge before `from`. The engine trades from `from`.
+    const MTF_NAMED_WARMUP: i64 = 250;
+    let warm_from = |tf: Timeframe| -> Option<i64> {
+        from_ms.map(|f| f - MTF_NAMED_WARMUP * tf.duration_ms())
+    };
+
     // Load base TF bars (also used for buy-hold benchmark).
     let base_bars = load_bars_for_tf(
         &symbol,
         Some(base_tf_str),
         req.data_source.as_deref(),
-        from_ms,
+        warm_from(base_tf),
         to_ms,
         data_dir,
     )?;
     if base_bars.is_empty() {
         bail!("no bars found for symbol '{}' at base timeframe '{}'", symbol, base_tf_str);
     }
-    let base_bar_count = base_bars.len();
+    let base_bar_count = match from_ms {
+        Some(f) => base_bars.iter().filter(|b| b.timestamp >= f).count(),
+        None => base_bars.len(),
+    };
 
     // Build risk manager.
-    let risk: AnySizer = if let Some(qty) = req.position_size_quantity {
-        AnySizer::FixedQuantity(FixedQuantity::new(qty, max_positions))
-    } else if let Some(usd) = req.position_size_usd {
-        AnySizer::FixedUsd(FixedUsd::new(usd, max_positions).with_lot_size(lot_size))
-    } else {
-        let pct = req.position_size_pct.unwrap_or(DEFAULT_POSITION_PCT).clamp(0.01, 1.0);
-        AnySizer::FixedFractional(FixedFractional::new(pct, max_positions).with_lot_size(lot_size))
-    };
+    let risk = engine_builder::build_sizer(
+        None, // MTF: legacy field inference (no explicit size_mode)
+        req.position_size_quantity,
+        req.position_size_usd,
+        req.risk_per_trade_pct,
+        req.atr_multiplier,
+        req.position_size_pct,
+        req.strength_sizing,
+        max_positions,
+        lot_size,
+    );
 
     let strategy = build_mtf_strategy(&req.strategy, &params)?;
     let strategy_name = strategy.name().to_string();
@@ -238,7 +268,8 @@ pub fn run_mtf(req: MtfBacktestRequest, data_dir: &Path) -> Result<BacktestRespo
 
     let mut engine = MtfEngine::sync(capital, strategy, risk, commission, slippage)
         .with_base_tf(base_tf)
-        .with_single_entry();
+        .with_single_entry()
+        .with_warmup_until(from_ms.unwrap_or(0));
 
     engine.add_feed(base_tf, BarVecFeed::new(base_bars.clone(), symbol.clone()));
 
@@ -248,7 +279,7 @@ pub fn run_mtf(req: MtfBacktestRequest, data_dir: &Path) -> Result<BacktestRespo
             &symbol,
             Some(tf_str.as_str()),
             req.data_source.as_deref(),
-            from_ms,
+            warm_from(htf),
             to_ms,
             data_dir,
         )?;
@@ -265,13 +296,17 @@ pub fn run_mtf(req: MtfBacktestRequest, data_dir: &Path) -> Result<BacktestRespo
     let report = engine.run(risk_free);
 
     let monte_carlo_cfg = req.monte_carlo;
+    let trading_base: Vec<Bar> = match from_ms {
+        Some(f) => base_bars.into_iter().filter(|b| b.timestamp >= f).collect(),
+        None => base_bars,
+    };
     Ok(mtf_response::build(
         engine,
         report,
         strategy_name,
         symbol,
         base_bar_count,
-        &base_bars,
+        &trading_base,
         capital,
         risk_free,
         curve_max,
@@ -286,7 +321,7 @@ pub fn run_mtf(req: MtfBacktestRequest, data_dir: &Path) -> Result<BacktestRespo
 /// Feeds `MtfEngine` with real parquet files for each declared TF — no resampling.
 fn run_mtf_script(
     req: BacktestRequest,
-    mut strategy: MtfScriptStrategy,
+    strategy: MtfScriptStrategy,
     htfs: Vec<Timeframe>,
     data_dir: &Path,
 ) -> Result<BacktestResponse> {
@@ -305,11 +340,21 @@ fn run_mtf_script(
     let to_ms = req.to.as_deref()
         .and_then(|s| parse_date_ms(s).map(|ms| ms + 86_400_000 - 1));
 
+    // Per-TF warm-up. HTF indicators need many base bars of history to converge, so
+    // each feed is loaded with extra bars before `from` (period × factor of THAT TF).
+    // `warm_from(tf)` = the shifted load-start for a feed; engine trades from `from`.
+    let script_txt = req.params.as_ref()
+        .and_then(|p| p.get("script")).and_then(|v| v.as_str()).unwrap_or("");
+    let warm_per_tf = loader::script_warmup_per_tf(script_txt, base_tf);
+    let warm_from = |tf: Timeframe| -> Option<i64> {
+        from_ms.map(|f| f - warm_per_tf.get(&tf).copied().unwrap_or(0) as i64 * tf.duration_ms())
+    };
+
     let base_bars = load_bars_for_tf(
         &symbol,
         Some(base_tf_str),
         req.data_source.as_deref(),
-        from_ms,
+        warm_from(base_tf),
         to_ms,
         data_dir,
     )?;
@@ -319,23 +364,30 @@ fn run_mtf_script(
             symbol, base_tf_str
         );
     }
-    let bar_count = base_bars.len();
+    // Report range / benchmark / bar_count cover only the trading window (≥ from).
+    let bar_count = match from_ms {
+        Some(f) => base_bars.iter().filter(|b| b.timestamp >= f).count(),
+        None => base_bars.len(),
+    };
 
-    if bar_count > MAX_BARS {
+    if base_bars.len() > MAX_BARS {
         anyhow::bail!(
             "{} bars exceeds the {} bar limit. Narrow the date range or use a higher timeframe.",
-            bar_count, MAX_BARS
+            base_bars.len(), MAX_BARS
         );
     }
 
-    let risk: AnySizer = if let Some(qty) = req.position_size_quantity {
-        AnySizer::FixedQuantity(FixedQuantity::new(qty, max_positions))
-    } else if let Some(usd) = req.position_size_usd {
-        AnySizer::FixedUsd(FixedUsd::new(usd, max_positions).with_lot_size(lot_size))
-    } else {
-        let pct = req.position_size_pct.unwrap_or(DEFAULT_POSITION_PCT).clamp(0.01, 1.0);
-        AnySizer::FixedFractional(FixedFractional::new(pct, max_positions).with_lot_size(lot_size))
-    };
+    let risk = engine_builder::build_sizer(
+        None, // MTF: legacy field inference (no explicit size_mode)
+        req.position_size_quantity,
+        req.position_size_usd,
+        req.risk_per_trade_pct,
+        req.atr_multiplier,
+        req.position_size_pct,
+        req.strength_sizing,
+        max_positions,
+        lot_size,
+    );
 
     let curve_max = estimate_curve_target(bar_count);
     let strategy_name = strategy.name().to_string();
@@ -351,7 +403,8 @@ fn run_mtf_script(
 
     let mut engine = MtfEngine::sync(capital, strategy, risk, commission, slippage)
         .with_base_tf(base_tf)
-        .with_single_entry();
+        .with_single_entry()
+        .with_warmup_until(from_ms.unwrap_or(0));
 
     engine.add_feed(base_tf, BarVecFeed::new(base_bars.clone(), symbol.clone()));
 
@@ -361,7 +414,7 @@ fn run_mtf_script(
             &symbol,
             Some(tf_str.as_str()),
             req.data_source.as_deref(),
-            from_ms,
+            warm_from(*htf),
             to_ms,
             data_dir,
         )?;
@@ -383,13 +436,18 @@ fn run_mtf_script(
         .map(|(k, pts)| (k, pts.into_iter().map(|(t, v)| CurvePoint { t, v }).collect()))
         .collect();
 
+    // Benchmark over the trading window only (drop warm-up bars before `from`).
+    let trading_base: Vec<Bar> = match from_ms {
+        Some(f) => base_bars.into_iter().filter(|b| b.timestamp >= f).collect(),
+        None => base_bars,
+    };
     Ok(mtf_response::build(
         engine,
         report,
         strategy_name,
         symbol,
         bar_count,
-        &base_bars,
+        &trading_base,
         capital,
         risk_free,
         curve_max,

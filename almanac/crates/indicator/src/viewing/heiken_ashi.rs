@@ -78,7 +78,7 @@ impl HeikenAshi {
     }
 
     pub fn description() -> &'static str {
-        "Heikin-Ashi — modified candlestick using averaged OHLC values to smooth price action. Consecutive same-colour bars confirm a trend; doji-like bars signal potential reversal."
+        "Heikin-Ashi — modified candlestick using averaged OHLC values to smooth price action. Consecutive same-colour bars confirm a trend; doji-like bars signal potential reversal. Outputs smoothed OHLC values."
     }
 
     pub fn update(&mut self, open: f64, high: f64, low: f64, close: f64) -> Option<HaBar> {

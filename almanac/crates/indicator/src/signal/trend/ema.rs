@@ -51,7 +51,7 @@ impl Ema {
     }
 
     pub fn description() -> &'static str {
-        "Exponential Moving Average — applies exponentially decreasing weights to older prices. Reacts faster than SMA; widely used in crossover strategies and as a trend filter."
+        "Exponential Moving Average — applies exponentially decreasing weights to older prices. Reacts faster than SMA; widely used in crossover strategies and as a trend filter. Outputs a single value (price scale)."
     }
 
     /// Feed một giá mới. Trả về `Some(ema)` sau khi đủ `period` bar để seed.

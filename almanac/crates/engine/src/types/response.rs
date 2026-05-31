@@ -43,6 +43,21 @@ pub struct TradeResponse {
     pub exit_reason: String,
 }
 
+/// One order execution. Surfaced so clients can mark pyramiding *adds* (same-direction
+/// fills into an open position) that the merged `trades` view collapses into one row.
+#[derive(Debug, Serialize, ToSchema)]
+pub struct FillResponse {
+    pub t: i64,
+    pub price: f64,
+    pub qty: f64,
+    /// `"buy"` or `"sell"`.
+    pub side: String,
+    /// Position key — base symbol, or `SYM#n` for an independent leg.
+    pub sym: String,
+    /// 0-based leg index (0 = base / first leg).
+    pub leg: usize,
+}
+
 // ── Optional sections ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -56,7 +71,7 @@ pub struct RegimeTradeStatsResponse {
 
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RegimeSummaryResponse {
-    /// On-change transitions: (timestamp_ms, "trend/vol/liq" label).
+    /// On-change transitions: (timestamp_ms, "trend/vol" label).
     pub changes: Vec<(i64, String)>,
     /// Trade performance broken down by regime label.
     pub trade_breakdown: Vec<RegimeTradeStatsResponse>,
@@ -279,6 +294,11 @@ pub struct BacktestResponse {
     pub calendar: CalendarStats,
 
     pub trades: Vec<TradeResponse>,
+
+    /// Raw fills — only populated when pyramiding is active (`max_units > 1`), so
+    /// normal single-entry backtests stay lean. Lets the chart mark each add.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub fills: Vec<FillResponse>,
 
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub indicator_series: HashMap<String, Vec<CurvePoint>>,

@@ -338,7 +338,7 @@ impl Handler {
                 Some(tf) => tf,
                 None => {
                     let err = format!(
-                        "invalid timeframe `{s}` (supported: M1, M3, M5, M10, M15, M30, H1, H2, H4, H6, H12, D1, W1)"
+                        "invalid timeframe `{s}` (supported: M1, M3, M5, M15, M30, H1, H2, H4, H6, H12, D1, W1, MN)"
                     );
                     warn!(hand_id = %req.hand_id, "register rejected: {err}");
                     if let Some(reply) = msg.reply {
@@ -548,15 +548,22 @@ async fn signal_publisher(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn parse_timeframe_str(s: &str) -> Option<Timeframe> {
+    // Must stay in sync with feed::SUBSCRIBE_TFS — the timeframes herald actually
+    // ingests. A hand can only register on a TF the ledger has bars for.
     match s.to_ascii_uppercase().as_str() {
         "M1"  => Some(Timeframe::M1),
+        "M3"  => Some(Timeframe::M3),
         "M5"  => Some(Timeframe::M5),
         "M15" => Some(Timeframe::M15),
         "M30" => Some(Timeframe::M30),
         "H1"  => Some(Timeframe::H1),
+        "H2"  => Some(Timeframe::H2),
         "H4"  => Some(Timeframe::H4),
+        "H6"  => Some(Timeframe::H6),
+        "H12" => Some(Timeframe::H12),
         "D1"  => Some(Timeframe::D1),
         "W1"  => Some(Timeframe::W1),
+        "MN"  => Some(Timeframe::MN),
         _ => None,
     }
 }

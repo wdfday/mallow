@@ -25,8 +25,8 @@ pub struct Trade {
     pub bars_held: usize,
     /// Why this trade was closed.
     pub exit_reason: ExitReason,
-    /// Full three-dimensional regime snapshot at the moment this trade was opened
-    /// — `trend` / `volatility` / `liquidity`, each with both a status label and a
+    /// Two-dimensional regime snapshot at the moment this trade was opened
+    /// — `trend` / `volatility`, each with both a status label and a
     /// raw value. `None` when the strategy does not produce a regime state.
     /// Populated by the engine when the strategy exposes `current_regime()`.
     #[serde(default)]

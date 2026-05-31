@@ -20,10 +20,12 @@ pub use stream::{ScriptStreamEval, StreamDecl, IndicatorSnapshot, PlotResult};
 
 // ── Shared internals — accessible to v2 and script::lint ─────────────────────
 pub(crate) use binding::MEntry;
+pub(crate) use strategy::scalar_out;
 pub(crate) use engine::{
     build_engine, extract_max_lookback, BAR_FIELDS, DEFAULT_BUF_DEPTH,
 };
 pub(crate) use parse::{
     extract_candle_directives, extract_regime_block, CandleDirective,
     try_parse_indicator_line, IndicatorKind,
+    map_indicator_type, positional_param_names, indicator_json_config,
 };

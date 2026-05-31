@@ -65,12 +65,22 @@ pub struct SymbolInfo {
     pub timeframes: Vec<TfInfo>,
 }
 
+/// One indicator output field with its semantic type (`f64` scalar vs `bool`
+/// 0/1 flag). Mirrors `alm_strategy::catalog::OutputField`.
+#[derive(Debug, Serialize)]
+pub struct FieldInfo {
+    pub name: String,
+    /// `"f64"` (scalar) | `"bool"` (0/1 flag).
+    #[serde(rename = "type")]
+    pub type_: &'static str,
+}
+
 #[derive(Debug, Serialize)]
 pub struct LiveIndicator {
     pub canonical_key: String,
     #[serde(rename = "type")]
     pub type_name: String,
-    pub fields: Vec<String>,
+    pub fields: Vec<FieldInfo>,
     pub config: Value,
     pub refcount: usize,
     pub pinned: bool,
@@ -109,7 +119,10 @@ pub async fn list_symbols(
                         .map(|(spec, cell)| LiveIndicator {
                             canonical_key: spec.canonical_key(),
                             type_name: spec.name.clone(),
-                            fields: cell.field_names().iter().map(|f| f.to_string()).collect(),
+                            fields: cell.field_names().iter().map(|f| FieldInfo {
+                                name: f.to_string(),
+                                type_: alm_indicator::field_kind(f).as_str(),
+                            }).collect(),
                             config: spec.config.clone(),
                             refcount: cell.refcount,
                             pinned: cell.pinned,

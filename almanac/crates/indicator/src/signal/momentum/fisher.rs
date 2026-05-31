@@ -8,18 +8,21 @@ use std::collections::VecDeque;
 /// Fisher Transform "bình thường hoá" dữ liệu về Gaussian → các giá trị cực trị
 /// (thường ±1.5 đến ±2.5) đáng tin cậy hơn làm tín hiệu đảo chiều.
 ///
-/// # Công thức
+/// # Công thức (Ehlers gốc — có 2 lớp smoothing EMA)
 /// ```text
 /// HL_half = (high + low) / 2
 /// HH(n)   = highest(HL_half, n)
 /// LL(n)   = lowest(HL_half, n)
 ///
-/// value = 2 × (HL_half − LL) / (HH − LL) − 1    → chuẩn hoá về [-1, 1]
-/// value = clamp(value, -0.999, 0.999)              → tránh log(0) hoặc log(∞)
+/// raw   = 2 × (HL_half − LL) / (HH − LL) − 1            → chuẩn hoá thô về [-1, 1]
+/// value = 0.33 × raw + 0.67 × value_prev                → smooth lớp 1
+/// value = clamp(value, -0.999, 0.999)                   → tránh log(0)/log(∞)
 ///
-/// Fisher  = 0.5 × ln((1 + value) / (1 − value))   → Fisher Transform
-/// Signal  = Fisher giá trị trước (1-bar lag)
+/// Fisher = 0.5 × ln((1 + value) / (1 − value)) + 0.5 × Fisher_prev   → smooth lớp 2
+/// Signal = Fisher giá trị trước (1-bar lag)
 /// ```
+/// Hai lớp smoothing (0.33/0.67 cho value, 0.5/0.5 cho Fisher) là phần cốt lõi của
+/// Ehlers: thiếu chúng, Fisher trở nên rất choppy và ngưỡng ±1.5 mất ý nghĩa.
 ///
 /// # Cách đọc
 /// - Fisher vượt +1.5 → overbought, xem xét sell
@@ -36,7 +39,9 @@ pub struct Fisher {
     period: usize,
     /// Rolling buffer cho HL midpoints
     buf: VecDeque<f64>,
-    /// Giá trị Fisher trước để làm signal line
+    /// Giá trị normalized đã smooth ở bar trước (lớp 1)
+    prev_value: f64,
+    /// Giá trị Fisher trước — vừa để smooth lớp 2 vừa làm signal line
     prev_fisher: f64,
 }
 
@@ -55,12 +60,13 @@ impl Fisher {
         Self {
             period,
             buf: VecDeque::with_capacity(period),
+            prev_value: 0.0,
             prev_fisher: 0.0,
         }
     }
 
     pub fn description() -> &'static str {
-        "Fisher Transform — normalises price into a Gaussian distribution to produce sharper turning points. Signal line crossovers mark reversals."
+        "Fisher Transform — normalises price into a Gaussian distribution to produce sharper turning points. Signal line crossovers mark reversals. Outputs: `.fisher` (default, transformed value), `.signal` (signal line)."
     }
 
     /// Fisher(9) — period phổ biến nhất.
@@ -84,17 +90,20 @@ impl Fisher {
         let ll = self.buf.iter().cloned().fold(f64::INFINITY, f64::min);
 
         let range = hh - ll;
-        let value = if range < f64::EPSILON {
+        let raw = if range < f64::EPSILON {
             // Không có biên độ — tránh division by zero
             0.0
         } else {
-            // Chuẩn hoá HL midpoint về [-1, 1], clamp để tránh ln(0)
-            let raw = 2.0 * (midpoint - ll) / range - 1.0;
-            raw.clamp(-0.999, 0.999)
+            // Chuẩn hoá HL midpoint về [-1, 1]
+            2.0 * (midpoint - ll) / range - 1.0
         };
 
-        // Fisher Transform = arctanh(value) = 0.5 * ln((1+v)/(1-v))
-        let fisher = 0.5 * ((1.0 + value) / (1.0 - value)).ln();
+        // Lớp 1: smooth normalized value (Ehlers 0.33/0.67), clamp để tránh ln(0)/ln(∞)
+        let value = (0.33 * raw + 0.67 * self.prev_value).clamp(-0.999, 0.999);
+        self.prev_value = value;
+
+        // Fisher Transform = arctanh(value), rồi smooth lớp 2 (0.5/0.5)
+        let fisher = 0.5 * ((1.0 + value) / (1.0 - value)).ln() + 0.5 * self.prev_fisher;
 
         let result = FisherValue {
             fisher,
@@ -111,6 +120,7 @@ impl Fisher {
 
     pub fn reset(&mut self) {
         self.buf.clear();
+        self.prev_value = 0.0;
         self.prev_fisher = 0.0;
     }
 }

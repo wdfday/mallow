@@ -62,7 +62,7 @@ impl Lsma {
     }
 
     pub fn description() -> &'static str {
-        "Least Squares MA (Linear Regression MA) — fits a linear regression line to the last N closes and returns the endpoint. Also exposes slope for trend-strength measurement."
+        "Least Squares MA (Linear Regression MA) — fits a linear regression line to the last N closes and returns the endpoint. Outputs: `.value` (default, regression endpoint on price scale), `.slope` (regression slope, price/bar)."
     }
 
     /// Feed một bar mới. Trả về `(lsma, slope)` sau khi đủ `period` bar.

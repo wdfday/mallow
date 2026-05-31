@@ -44,7 +44,7 @@ impl Smma {
     }
 
     pub fn description() -> &'static str {
-        "Smoothed MA (RMA/Wilder MA) — uses a longer effective period than EMA for the same N, reducing noise. Wilder used it internally for RSI and ATR."
+        "Smoothed MA (RMA/Wilder MA) — uses a longer effective period than EMA for the same N, reducing noise. Wilder used it internally for RSI and ATR. Outputs a single value (price scale)."
     }
 
     /// Feed một bar mới. Trả về `Some(smma)` sau khi đủ `period` bar.

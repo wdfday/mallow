@@ -14,6 +14,7 @@ alm-indicator = { path = "../indicator" }
 alm-strategy  = { path = "../strategy" }
 alm-report    = { path = "../report" }
 alm-data      = { path = "../data" }
+alm-engine    = { path = "../engine" }   # in-memory Engine (wasm subset) → full BacktestReport
 
 wasm-bindgen       = "0.2"
 serde-wasm-bindgen = "0.6"

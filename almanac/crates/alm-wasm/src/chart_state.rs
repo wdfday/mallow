@@ -21,8 +21,9 @@
 //! ## Script indicators (`set_script`)
 //! Pass a Rhai script — indicator series are auto-extracted from `ind.TYPE(period)`
 //! declarations exactly as the herald `/api/v1/data` endpoint does. `candle.transform`
-//! directives inside the script are honoured. Signals (`long`/`short`/`exit`) are
-//! evaluated but the results are discarded — this mode is indicator-only.
+//! directives inside the script are honoured. Signals (`long`/`short`/`exit`,
+//! with resolved TP/SL levels) are collected live into the snapshot's `signals`
+//! array as bars stream in — for entry/exit markers + TP/SL overlays.
 //!
 //! ## Snapshot output
 //! ```json
@@ -51,7 +52,7 @@ use serde::Serialize;
 use serde_json::Value;
 use wasm_bindgen::prelude::*;
 
-use alm_core::{Bar, Strategy};
+use alm_core::{Bar, Direction, Signal, Strategy};
 use alm_indicator::{HeikenAshi, IndicatorBox};
 use alm_strategy::ScriptStrategy;
 
@@ -64,6 +65,70 @@ use crate::{build_bars, js_error, parse_config, run_strategy};
 struct ChartSnapshot<'a> {
     bars:       BarsOut<'a>,
     indicators: HashMap<String, HashMap<String, Vec<Value>>>,
+    /// Live signals emitted by the script slot as bars stream in (entry/exit +
+    /// resolved TP/SL levels). Empty when no script is set.
+    signals:    &'a [SignalOut],
+}
+
+/// One live signal emitted by the script, shaped for chart overlay: entry/exit
+/// markers + TP/SL boxes. `tp`/`sl` are resolved to **absolute price levels**
+/// (offset signals are converted using `price`) so the FE can draw directly.
+#[derive(Serialize, Clone)]
+struct SignalOut {
+    /// Bar timestamp (ms).
+    t:        f64,
+    /// `"long"` | `"short"` | `"exit"`.
+    dir:      &'static str,
+    /// Signal price (bar close at emission).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    price:    Option<f64>,
+    /// Take-profit, absolute price level.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tp:       Option<f64>,
+    /// Stop-loss, absolute price level.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sl:       Option<f64>,
+    /// Time-based exit hint: hold at most this many bars. Metadata only — the
+    /// live eval does not act on it; the FE may draw it as a time-stop / box cap.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_bars: Option<usize>,
+    strength: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason:   Option<String>,
+}
+
+impl SignalOut {
+    fn from_signal(s: &Signal) -> Self {
+        let dir = match s.direction {
+            Direction::Long  => "long",
+            Direction::Short => "short",
+            Direction::Exit  => "exit",
+        };
+        // Resolve offset TP/SL to absolute levels so the FE draws price lines/boxes directly.
+        // Offsets are magnitudes; the DIRECTION decides which side they land on:
+        //   long  → TP above (price + d), SL below (price − d)
+        //   short → TP below (price − d), SL above (price + d)
+        let (tp, sl) = if s.is_offset {
+            let long = matches!(s.direction, Direction::Long);
+            let tp = s.price.zip(s.target_price)
+                .map(|(p, d)| if long { p + d.abs() } else { p - d.abs() });
+            let sl = s.price.zip(s.stop_price)
+                .map(|(p, d)| if long { p - d.abs() } else { p + d.abs() });
+            (tp, sl)
+        } else {
+            (s.target_price, s.stop_price)
+        };
+        SignalOut {
+            t: s.timestamp as f64,
+            dir,
+            price: s.price,
+            tp,
+            sl,
+            max_bars: s.max_bars_held,
+            strength: s.strength,
+            reason: s.reason.clone(),
+        }
+    }
 }
 
 
@@ -185,33 +250,38 @@ fn f64_to_json(v: f64) -> Value {
 
 /// Wraps a `ScriptStrategy` in collection mode and replays raw bars through it.
 ///
-/// Only indicator series are extracted from the result; signals (`long`/`short`/
-/// `exit`) are evaluated internally but the output is discarded. This mirrors the
-/// herald `/api/v1/data` endpoint's script-indicator mode.
+/// Indicator series are extracted for plotting; signals (`long`/`short`/`exit`,
+/// with resolved TP/SL) are collected live into `signals` for chart overlays.
 ///
 /// Script-level `candle.transform` directives are honoured by `ScriptStrategy`
 /// internally, independent of `ChartState`'s chart-level candle transform.
 struct ScriptSlot {
     strategy: ScriptStrategy,
+    /// Live signals emitted so far, in bar order. Drives chart overlays
+    /// (entry/exit markers + TP/SL boxes). Grows on `feed`, cleared on `rebuild`.
+    signals:  Vec<SignalOut>,
 }
 
 impl ScriptSlot {
     fn new(script: &str) -> Result<Self, String> {
         let strategy = ScriptStrategy::from_script(script)
             .map_err(|e| e.to_string())?;
-        Ok(Self { strategy })
+        Ok(Self { strategy, signals: Vec::new() })
     }
 
-    /// Feed one raw bar through the strategy (signals ignored).
+    /// Feed one raw bar through the strategy and collect any emitted signal.
     fn feed(&mut self, bar: &Bar) {
-        self.strategy.on_bar(bar);
+        for sig in self.strategy.on_bar(bar) {
+            self.signals.push(SignalOut::from_signal(&sig));
+        }
     }
 
-    /// Reset and replay all raw bars from scratch.
+    /// Reset and replay all raw bars from scratch (signals re-collected).
     fn rebuild(&mut self, bars: &[Bar]) {
         self.strategy.reset();
+        self.signals.clear();
         for bar in bars {
-            self.strategy.on_bar(bar);
+            self.feed(bar);
         }
     }
 
@@ -305,7 +375,8 @@ impl ChartState {
     ///
     /// Indicator series are auto-extracted from `ind.TYPE(period)` declarations
     /// exactly as the herald `/api/v1/data` endpoint does. Signal outputs
-    /// (`long`/`short`/`exit`) are evaluated internally but discarded.
+    /// (`long`/`short`/`exit` + TP/SL) are collected into the snapshot's
+    /// `signals` array as bars stream in.
     ///
     /// The script's own `candle.transform` directive is honoured independently
     /// of the chart-level candle transform — script always operates on raw bars.
@@ -576,12 +647,20 @@ impl ChartState {
         if self.bars.is_empty() {
             return js_error("no bars loaded");
         }
-        let mut strategy = match ScriptStrategy::from_script(script) {
+        // On-chart is single-timeframe — HTF scripts can't load/warm extra feeds here.
+        let htfs = alm_strategy::probe_script_htfs(script);
+        if !htfs.is_empty() {
+            let tfs = htfs.iter().map(|t| format!("{t:?}")).collect::<Vec<_>>().join(", ");
+            return js_error(&format!(
+                "Multi-timeframe script (uses {tfs}) — on-chart is single-timeframe only. Run it with Deep backtest."
+            ));
+        }
+        let strategy = match ScriptStrategy::from_script(script) {
             Ok(s) => s,
             Err(e) => return js_error(&format!("script: {e}")),
         };
-        let (cap, size, comm, slip) = parse_config(config_json);
-        let out = run_strategy(&self.symbol, &self.bars, &mut strategy, cap, size, comm, slip);
+        let cfg = parse_config(config_json);
+        let out = run_strategy(&self.symbol, &self.bars, Box::new(strategy), &cfg);
         crate::to_js(&out)
     }
 
@@ -599,12 +678,12 @@ impl ChartState {
             Ok(v) => v,
             Err(e) => return js_error(&format!("params: {e}")),
         };
-        let mut strategy = match alm_strategy::build_strategy(strategy_name, &params) {
+        let strategy = match alm_strategy::build_strategy(strategy_name, &params) {
             Ok(s) => s,
             Err(e) => return js_error(&format!("strategy '{strategy_name}': {e}")),
         };
-        let (cap, size, comm, slip) = parse_config(config_json);
-        let out = run_strategy(&self.symbol, &self.bars, strategy.as_mut(), cap, size, comm, slip);
+        let cfg = parse_config(config_json);
+        let out = run_strategy(&self.symbol, &self.bars, strategy, &cfg);
         crate::to_js(&out)
     }
 }
@@ -711,6 +790,10 @@ impl ChartState {
             }
         }
 
-        ChartSnapshot { bars: bars_out, indicators }
+        let signals = self.script_slot.as_ref()
+            .map(|ss| ss.signals.as_slice())
+            .unwrap_or(&[]);
+
+        ChartSnapshot { bars: bars_out, indicators, signals }
     }
 }

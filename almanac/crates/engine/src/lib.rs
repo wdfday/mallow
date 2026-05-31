@@ -63,8 +63,7 @@
 //!
 //! ```rust,ignore
 //! Engine::sync(capital, strategy, risk, commission, slippage)
-//!     .with_exit_rules(ExitRules { stop_loss_pct: Some(0.05), .. })
-//!     .with_candle_transform(CandleTransform::new(CandleType::HeikenAshi, 0))
+//!     .with_intra_bar_mode(IntraBarMode::Pessimistic)  // how SL/TP fill within a bar
 //!     .with_next_bar(true)      // buffer signals, fill at next bar.open explicitly
 //!     .with_single_entry()      // block re-entry while position is open
 //!     .with_window(300)         // on_window() sliding window size
@@ -152,20 +151,22 @@
 
 pub mod broker;
 pub mod bus_sync;
-pub mod clock;
 pub mod engine;
 pub mod mtf_engine;
 pub mod multi_engine;
+// Native-only: rayon threads / async. Excluded on wasm32 (in-browser backtest
+// uses the in-memory Engine directly — see alm-wasm).
+#[cfg(not(target_arch = "wasm32"))]
 pub mod runner;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod walk_forward;
 
-// Historical bar loading + canonical backtest runner.
-// Moved from the former `logbook` crate when the HTTP surface collapsed
-// into `herald`: keeping the library-side here puts engine run helpers
-// next to the `Engine` itself, so any consumer (CLI, HTTP, NATS) gets
-// the same dispatcher without a detour.
+// Historical bar loading + canonical backtest runner — filesystem/Parquet,
+// native-only. wasm feeds bars straight into `Engine` + `BarVecFeed`.
+#[cfg(not(target_arch = "wasm32"))]
 pub mod backtest;
 pub mod curve_compress;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod data;
 pub mod types;
 
@@ -173,5 +174,7 @@ pub use bus_sync::SyncBus;
 pub use engine::Engine;
 pub use mtf_engine::{MtfEngine, MtfSnapshot, MtfStrategy, TfBarEvent, TfView};
 pub use multi_engine::{MultiEngine, MultiStrategy};
+#[cfg(not(target_arch = "wasm32"))]
 pub use runner::{run_batch, run_portfolio, PortfolioReport, SymbolBars};
+#[cfg(not(target_arch = "wasm32"))]
 pub use walk_forward::{walk_forward, walk_forward_sync, WalkForwardConfig, WalkForwardMode, WalkForwardResult, WalkForwardWindow};

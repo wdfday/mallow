@@ -47,7 +47,7 @@ impl Dpo {
     }
 
     pub fn description() -> &'static str {
-        "Detrended Price Oscillator — removes the longer-term trend to expose shorter cycles in price. Useful for identifying cycle lengths."
+        "Detrended Price Oscillator — removes the longer-term trend to expose shorter cycles in price. Useful for identifying cycle lengths. Outputs a single detrended-price value oscillating around 0."
     }
 
     /// Feed một giá mới. Trả về `Some(dpo)` sau khi đủ `period + displacement` bar.

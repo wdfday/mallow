@@ -27,7 +27,7 @@ use alm_core::{
     Bar,
     bus::EventBus,
     event::{EquityEvent, Event, FillEvent, MarketEvent},
-    exit::{ExitRules, PositionTracker},
+    exit::{IntraBarMode, PositionTracker},
     order::{OrderRequest, Side},
     portfolio::Portfolio,
     signal::{Direction, Signal},
@@ -35,7 +35,6 @@ use alm_core::{
 };
 use alm_data::BarFeed;
 use alm_report::BacktestReport;
-use alm_strategy::candle_type::CandleTransform;
 
 use alm_core::portfolio::PortfolioSnapshot;
 use crate::{broker::SimBroker, bus_sync::SyncBus};
@@ -114,17 +113,12 @@ pub struct MultiEngine<S: MultiStrategy, R: RiskManager> {
     bar_windows: HashMap<String, std::collections::VecDeque<Bar>>,
     window_size: usize,
 
-    exit_rules: ExitRules,
+    intra_bar_mode: IntraBarMode,
     position_trackers: HashMap<String, PositionTracker>,
     /// Pending TP/SL absolute price levels from entry Signal — consumed at Fill time.
-    pending_signal_levels: HashMap<String, (Option<f64>, Option<f64>)>,
+    pending_signal_levels: HashMap<String, (Option<f64>, Option<f64>, Option<f64>, Option<usize>)>,
     /// Block re-entry in the same direction while a position is open.
     single_entry: bool,
-    /// Optional candle transform applied before strategy sees each bar.
-    /// Broker fills and exit-rule checks always use the raw bar.
-    candle_transform: Option<CandleTransform>,
-    /// Per-symbol sliding window of transformed bars for on_window().
-    strategy_bar_windows: HashMap<String, std::collections::VecDeque<Bar>>,
 }
 
 impl<S: MultiStrategy, R: RiskManager> MultiEngine<S, R> {
@@ -146,17 +140,15 @@ impl<S: MultiStrategy, R: RiskManager> MultiEngine<S, R> {
             last_prices: HashMap::new(),
             bar_windows: HashMap::new(),
             window_size: DEFAULT_WINDOW_SIZE,
-            exit_rules: ExitRules::default(),
+            intra_bar_mode: IntraBarMode::default(),
             position_trackers: HashMap::new(),
             pending_signal_levels: HashMap::new(),
             single_entry: false,
-            candle_transform: None,
-            strategy_bar_windows: HashMap::new(),
         }
     }
 
-    pub fn with_exit_rules(mut self, rules: ExitRules) -> Self {
-        self.exit_rules = rules;
+    pub fn with_intra_bar_mode(mut self, mode: IntraBarMode) -> Self {
+        self.intra_bar_mode = mode;
         self
     }
 
@@ -167,11 +159,6 @@ impl<S: MultiStrategy, R: RiskManager> MultiEngine<S, R> {
 
     pub fn with_single_entry(mut self) -> Self {
         self.single_entry = true;
-        self
-    }
-
-    pub fn with_candle_transform(mut self, transform: CandleTransform) -> Self {
-        self.candle_transform = Some(transform);
         self
     }
 
@@ -229,8 +216,8 @@ impl<S: MultiStrategy, R: RiskManager> MultiEngine<S, R> {
             self.portfolio.apply_fill(&fill);
             if let Some(tr) = tracker {
                 if let Some(trade) = self.portfolio.trades.last_mut() {
-                    trade.mae_pct     = tr.mae * 100.0;
-                    trade.mfe_pct     = tr.mfe * 100.0;
+                    trade.mae_pct     = tr.mae;
+                    trade.mfe_pct     = tr.mfe;
                     trade.bars_held   = tr.bars_held;
                     trade.exit_reason = alm_core::ExitReason::EndOfData;
                 }
@@ -251,10 +238,6 @@ impl<S: MultiStrategy, R: RiskManager> MultiEngine<S, R> {
             Event::Market(ref market) => {
                 let bar = &market.bar;
                 self.last_prices.insert(bar.symbol.clone(), bar.close);
-
-                // Apply candle transform for strategy. Broker/exit rules use raw bar.
-                let transformed = self.candle_transform.as_mut().and_then(|t| t.apply(bar));
-                let strategy_bar: &Bar = transformed.as_ref().unwrap_or(bar);
 
                 // Fill pending orders at this bar's open.
                 let fills = self.broker.process_pending(bar);
@@ -287,7 +270,7 @@ impl<S: MultiStrategy, R: RiskManager> MultiEngine<S, R> {
                         .iter_mut()
                         .filter_map(|(sym, tracker)| {
                             tracker
-                                .update_and_check(bar.open, bar.high, bar.low, bar.close, &self.exit_rules)
+                                .update_and_check(bar.open, bar.high, bar.low, bar.close, self.intra_bar_mode)
                                 .map(|(fp, reason)| (sym.clone(), fp, reason))
                         })
                         .collect();
@@ -305,8 +288,8 @@ impl<S: MultiStrategy, R: RiskManager> MultiEngine<S, R> {
                             self.portfolio.apply_fill(&fill);
                             if let Some(tr) = tracker {
                                 if let Some(trade) = self.portfolio.trades.last_mut() {
-                                    trade.mae_pct     = tr.mae * 100.0;
-                                    trade.mfe_pct     = tr.mfe * 100.0;
+                                    trade.mae_pct     = tr.mae;
+                                    trade.mfe_pct     = tr.mfe;
                                     trade.bars_held   = tr.bars_held;
                                     trade.exit_reason = reason;
                                 }
@@ -328,22 +311,15 @@ impl<S: MultiStrategy, R: RiskManager> MultiEngine<S, R> {
                 let snapshot = self.portfolio.snapshot(&self.last_prices);
                 self.strategy.set_portfolio_snapshot(&snapshot);
 
-                // Update raw sliding window (for bar_windows).
+                // Update sliding window.
                 let window = self.bar_windows.entry(bar.symbol.clone()).or_default();
                 if window.len() >= self.window_size { window.pop_front(); }
                 window.push_back(bar.clone());
+                let window_slice: Vec<Bar> = window.iter().cloned().collect();
 
-                // Update transformed sliding window (for on_window strategy calls).
-                let strat_window = self.strategy_bar_windows.entry(bar.symbol.clone()).or_default();
-                if strat_window.len() >= self.window_size { strat_window.pop_front(); }
-                strat_window.push_back(strategy_bar.clone());
+                let mut signals = self.strategy.on_bar(bar, &self.last_prices);
 
-                // Strategy: on_bar (transformed).
-                let strat_window_slice: Vec<Bar> = strat_window.iter().cloned().collect();
-                let mut signals = self.strategy.on_bar(strategy_bar, &self.last_prices);
-
-                // Strategy: on_window (transformed).
-                let window_signals = self.strategy.on_window(strategy_bar, &strat_window_slice, &self.last_prices);
+                let window_signals = self.strategy.on_window(bar, &window_slice, &self.last_prices);
                 signals.extend(window_signals);
 
                 for signal in signals {
@@ -381,11 +357,12 @@ impl<S: MultiStrategy, R: RiskManager> MultiEngine<S, R> {
                                 self.last_prices.get(&signal.symbol).copied().unwrap_or(0.0);
                             let qty = self.risk.size(signal, &self.portfolio, price);
                             if qty > f64::EPSILON {
-                                // Store signal-level TP/SL for PositionTracker creation at fill.
-                                if signal.target_price.is_some() || signal.stop_price.is_some() {
+                                // Store signal-level exit levels for PositionTracker creation at fill.
+                                if signal.target_price.is_some() || signal.stop_price.is_some()
+                                    || signal.trailing_stop_pct.is_some() || signal.max_bars_held.is_some() {
                                     self.pending_signal_levels.insert(
                                         signal.symbol.clone(),
-                                        (signal.target_price, signal.stop_price),
+                                        (signal.target_price, signal.stop_price, signal.trailing_stop_pct, signal.max_bars_held),
                                     );
                                 }
                                 let side = match signal.direction {
@@ -422,22 +399,27 @@ impl<S: MultiStrategy, R: RiskManager> MultiEngine<S, R> {
                     self.position_trackers.entry(fill.symbol.clone()).or_insert_with(|| {
                         let is_long = self.portfolio.positions.get(&fill.symbol)
                             .map_or(true, |p| p.qty > 0.0);
-                        let (sig_tp, sig_sl) = sig_levels.unwrap_or((None, None));
-                        PositionTracker::with_levels(fill.price, sig_sl, sig_tp, is_long)
+                        let (sig_tp, sig_sl, sig_trail, sig_max_bars) = sig_levels.unwrap_or((None, None, None, None));
+                        PositionTracker::with_levels(fill.price, sig_sl, sig_tp, sig_trail, sig_max_bars, is_long)
                     });
                 } else {
                     self.pending_signal_levels.remove(&fill.symbol);
                     if let Some(tr) = self.position_trackers.remove(&fill.symbol) {
                         if let Some(trade) = self.portfolio.trades.last_mut() {
-                            trade.mae_pct   = tr.mae * 100.0;
-                            trade.mfe_pct   = tr.mfe * 100.0;
+                            trade.mae_pct   = tr.mae;
+                            trade.mfe_pct   = tr.mfe;
                             trade.bars_held = tr.bars_held;
                         }
                     }
                 }
             }
 
-            Event::Equity(_) => {}
+            Event::Equity(_) => {
+                // No-op in backtest: the equity curve is built directly by
+                // `portfolio.record_equity()`. The event is emitted as an
+                // extension hook for a live bus whose subscribers (dashboards,
+                // realtime feeds) tap equity snapshots — SyncBus has none.
+            }
         }
     }
 }

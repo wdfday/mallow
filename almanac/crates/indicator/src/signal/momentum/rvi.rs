@@ -68,7 +68,7 @@ impl Rvi {
     }
 
     pub fn description() -> &'static str {
-        "Relative Vigor Index — correlates close-to-open range with high-low range, smoothed. Positive = bullish vigor; signal line crossovers trigger entries."
+        "Relative Vigor Index — correlates close-to-open range with high-low range, smoothed. Positive = bullish vigor; signal line crossovers trigger entries. Outputs: `.rvi` (default, RVI line), `.signal` (signal line)."
     }
 
     /// RVI(10) — period chuẩn.

@@ -74,7 +74,7 @@ impl Vortex {
     }
 
     pub fn description() -> &'static str {
-        "Vortex Indicator — two oscillators (VI+ and VI-) based on the idea of vortex motion in price. Crossovers signal trend changes."
+        "Vortex Indicator — two oscillators (VI+ and VI-) based on the idea of vortex motion in price. Crossovers signal trend changes. Outputs: `.plus_vi` (default, positive vortex), `.minus_vi` (negative vortex)."
     }
 
     /// Vortex(14) — period chuẩn được tác giả khuyến nghị.

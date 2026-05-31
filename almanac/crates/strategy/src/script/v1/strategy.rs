@@ -43,7 +43,6 @@
 //!
 //! - `trend`, `trend_value` — trend dimension status (string) + raw value
 //! - `vol`, `vol_value`     — volatility dimension
-//! - `liq`, `liq_value`     — liquidity dimension
 //!
 //! Indicators declared in either block share a single namespace — names must be
 //! unique. The strategy exposes the latest state via `Strategy::current_regime()`,
@@ -101,8 +100,6 @@ pub struct ScriptStrategy {
     candle_transform: CandleTransform,
     /// Latest regime state computed by the regime sub-script.
     current_regime:   Option<RegimeState>,
-    /// Candle directive parsed from the script header (e.g. `candle.transform("heiken_ashi")`).
-    script_candle:    Option<(String, Option<usize>)>,
     /// Shared error sink — caller creates it, strategy writes first runtime error here.
     /// `None` in live/registry mode (errors are logged but not captured).
     pub error_sink:   Option<std::sync::Arc<std::sync::Mutex<Option<String>>>>,
@@ -126,15 +123,15 @@ fn validate_candle_kind(kind: &str) -> Result<()> {
 impl ScriptStrategy {
     /// Backtest / stream mode: indicator series auto-collected into `take_indicator_series()`.
     pub fn from_script(script: &str) -> Result<Self> {
-        Self::build(script, true, CandleType::Raw)
+        Self::build(script, true)
     }
 
     /// Live (herald registry) mode: series collection disabled to avoid unbounded accumulation.
     pub fn from_script_live(script: &str) -> Result<Self> {
-        Self::build(script, false, CandleType::Raw)
+        Self::build(script, false)
     }
 
-    pub fn build(script: &str, collect_series: bool, candle_type: CandleType) -> Result<Self> {
+    pub fn build(script: &str, collect_series: bool) -> Result<Self> {
         // Step 0: extract top-of-file `candle.*` directives BEFORE everything
         // else. Strict enforcement: any non-directive line closes the header,
         // so a later `candle.transform()` is a parse error.
@@ -255,22 +252,17 @@ impl ScriptStrategy {
             bar_buf: VecDeque::with_capacity(max_buf),
             bar_buf_depth: max_buf,
             series: if collect_series { Some(HashMap::new()) } else { None },
-            // Script-declared candle directive overrides the caller-supplied
-            // `candle_type` (which itself comes from `from_params`'s
-            // `candle_type` JSON field or from `from_script*` defaulting to
-            // Raw). This means a script with `candle.transform("heiken_ashi")`
-            // applies HA whether called from backtest engine OR live registry
-            // — ScriptStrategy owns the transform internally.
+            // Candle type is driven solely by the in-script `candle.transform(...)`
+            // directive — ScriptStrategy owns the transform internally so the same
+            // candle type applies in both backtest engine and live registry.
             candle_transform: {
                 let effective = match &script_candle {
-                    Some((kind, smooth)) =>
-                        CandleType::from_str(kind, smooth.unwrap_or(3)),
-                    None => candle_type,
+                    Some((kind, smooth)) => CandleType::from_str(kind, smooth.unwrap_or(3)),
+                    None => CandleType::Raw,
                 };
                 CandleTransform::new(effective)
             },
             current_regime: None,
-            script_candle,
             error_sink: None,
             persistent_state: rhai::Map::new(),
         })
@@ -284,12 +276,7 @@ impl ScriptStrategy {
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("ScriptStrategy requires a 'script' param"))?;
         let live = p.get("_live").and_then(|v| v.as_bool()).unwrap_or(false);
-        let candle_type = {
-            let ct = p.get("candle_type").and_then(|v| v.as_str()).unwrap_or("raw");
-            let sp = p.get("smooth_period").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
-            CandleType::from_str(ct, sp)
-        };
-        if live { Self::build(script, false, candle_type) } else { Self::build(script, true, candle_type) }
+        Self::build(script, !live)
     }
 
     /// Attach a shared error sink — backtest runner sets this to capture the
@@ -311,8 +298,24 @@ impl ScriptStrategy {
 /// (stored as 0.0/1.0). These must not be plotted on the main price chart
 /// because their 0–1 range collapses the y-axis when the price is e.g. 60 000.
 #[inline]
+/// Fields whose indicator value is a `bool` flattened to `0.0`/`1.0` in
+/// `IndicatorBox::update`. Plotting them as a continuous series is meaningless,
+/// so they are excluded from the plot-series collection. Delegates to the
+/// single source of truth in `alm_indicator` so the list cannot drift.
 fn is_boolean_flag_field(field: &str) -> bool {
-    matches!(field, "bullish" | "bearish" | "above_cloud" | "below_cloud")
+    alm_indicator::field_kind(field) == alm_indicator::FieldKind::Bool
+}
+
+/// Read a numeric output var as `f64`, tolerating an `i64` value.
+///
+/// Rhai distinguishes integer and float literals strictly: `tp = 100` stores an
+/// `i64`, and a plain `get_value::<f64>` would return `None` — silently dropping
+/// the value. Scalar output vars (`tp`, `sl`, `strength`, `trail`, `atr`) accept
+/// either, so an integer literal works as a user naturally expects.
+pub(crate) fn scalar_out(scope: &Scope, name: &str) -> Option<f64> {
+    scope
+        .get_value::<f64>(name)
+        .or_else(|| scope.get_value::<i64>(name).map(|v| v as f64))
 }
 
 // ── Strategy impl ─────────────────────────────────────────────────────────────
@@ -377,8 +380,6 @@ impl Strategy for ScriptStrategy {
         scope.push("trend_value",  0.0_f64);
         scope.push("vol",          String::new());
         scope.push("vol_value",    0.0_f64);
-        scope.push("liq",          String::new());
-        scope.push("liq_value",    0.0_f64);
 
         scope.push("entry",       false);
         scope.push("exit",        false);
@@ -386,6 +387,8 @@ impl Strategy for ScriptStrategy {
         scope.push("short",       false);
         scope.push("tp",        0.0_f64);
         scope.push("sl",        0.0_f64);
+        scope.push("trail",     0.0_f64);
+        scope.push("max_bars",  0_i64);
         scope.push("strength",  1.0_f64);
         scope.push("is_offset", false);
         scope.push("reason",    String::new());
@@ -417,7 +420,7 @@ impl Strategy for ScriptStrategy {
         }
 
         // Run the regime sub-script first so the main block sees the latest
-        // `trend` / `vol` / `liq` (and value) variables. A runtime error in the
+        // `trend` / `vol` (and value) variables. A runtime error in the
         // regime block silently leaves defaults in place — the main block still
         // runs with the previous regime cleared.
         if let Some(regime_ast) = &self.regime_ast {
@@ -426,12 +429,9 @@ impl Strategy for ScriptStrategy {
                 let trend_value  = scope.get_value::<f64>("trend_value").unwrap_or(0.0);
                 let vol_status   = scope.get_value::<String>("vol").unwrap_or_default();
                 let vol_value    = scope.get_value::<f64>("vol_value").unwrap_or(0.0);
-                let liq_status   = scope.get_value::<String>("liq").unwrap_or_default();
-                let liq_value    = scope.get_value::<f64>("liq_value").unwrap_or(0.0);
                 self.current_regime = Some(RegimeState::new(
                     RegimeDimension::new(trend_value, trend_status),
                     RegimeDimension::new(vol_value,   vol_status),
-                    RegimeDimension::new(liq_value,   liq_status),
                 ));
             }
         }
@@ -453,12 +453,14 @@ impl Strategy for ScriptStrategy {
             self.persistent_state = new_state;
         }
 
-        let strength  = scope.get_value::<f64>("strength").unwrap_or(1.0).clamp(0.0, 1.0);
-        let target    = scope.get_value::<f64>("tp").filter(|&v| v != 0.0);
-        let stop      = scope.get_value::<f64>("sl").filter(|&v| v != 0.0);
+        let strength  = scalar_out(&scope, "strength").unwrap_or(1.0).clamp(0.0, 1.0);
+        let target    = scalar_out(&scope, "tp").filter(|&v| v != 0.0);
+        let stop      = scalar_out(&scope, "sl").filter(|&v| v != 0.0);
+        let trail     = scalar_out(&scope, "trail").filter(|&v| v > 0.0);
+        let max_bars  = scope.get_value::<i64>("max_bars").filter(|&v| v > 0).map(|v| v as usize);
         let is_offset = scope.get_value::<bool>("is_offset").unwrap_or(false);
         let reason    = scope.get_value::<String>("reason").filter(|s| !s.is_empty());
-        let atr       = scope.get_value::<f64>("atr").filter(|&v| v > 0.0);
+        let atr       = scalar_out(&scope, "atr").filter(|&v| v > 0.0);
 
         let go_long  = scope.get_value::<bool>("long").unwrap_or(false)
                     || scope.get_value::<bool>("entry").unwrap_or(false);
@@ -467,22 +469,26 @@ impl Strategy for ScriptStrategy {
 
         if go_long {
             let mut sig = Signal::long(bar.timestamp, &bar.symbol, strength);
-            sig.price        = Some(bar.close);
-            sig.target_price = target;
-            sig.stop_price   = stop;
-            sig.is_offset    = is_offset;
-            sig.reason       = reason;
-            sig.atr          = atr;
+            sig.price             = Some(bar.close);
+            sig.target_price      = target;
+            sig.stop_price        = stop;
+            sig.trailing_stop_pct = trail;
+            sig.max_bars_held     = max_bars;
+            sig.is_offset         = is_offset;
+            sig.reason            = reason;
+            sig.atr               = atr;
             return vec![sig];
         }
         if go_short {
             let mut sig = Signal::short(bar.timestamp, &bar.symbol, strength);
-            sig.price        = Some(bar.close);
-            sig.target_price = target;
-            sig.stop_price   = stop;
-            sig.is_offset    = is_offset;
-            sig.reason       = reason;
-            sig.atr          = atr;
+            sig.price             = Some(bar.close);
+            sig.target_price      = target;
+            sig.stop_price        = stop;
+            sig.trailing_stop_pct = trail;
+            sig.max_bars_held     = max_bars;
+            sig.is_offset         = is_offset;
+            sig.reason            = reason;
+            sig.atr               = atr;
             return vec![sig];
         }
         if go_exit {
@@ -502,12 +508,6 @@ impl Strategy for ScriptStrategy {
     fn current_regime(&self) -> Option<&alm_core::regime::RegimeState> {
         self.current_regime.as_ref()
     }
-
-    fn script_candle_spec(&self) -> Option<(String, Option<usize>)> {
-        self.script_candle.clone()
-    }
-
-    fn handles_candle_internally(&self) -> bool { true }
 
     fn name(&self) -> &str { "script" }
 
@@ -613,6 +613,78 @@ if falling(h1_ema20) || m1_rsi5[0] > 65.0 { exit = true; }
     fn runs_200_bars_no_panic() {
         let mut s = ScriptStrategy::from_script(EMA_CROSS_SCRIPT).unwrap();
         for i in 0..200 { let _ = s.on_bar(&make_bar(i)); }
+    }
+
+    /// Multi-field exposure for atr (`.tr`) + lsma (`.slope`), plus MEntry⊕MEntry
+    /// arithmetic/comparison (`atr[0].tr - atr[1].tr`, `lsma[0] > lsma[1]`),
+    /// and MEntry-aware aggregation (`highest(atr, 3)`). All must compile and
+    /// run without panicking.
+    const MULTI_FIELD_SCRIPT: &str = r#"
+let atr14 = ind.atr(14, buf=3);
+let lsma25 = ind.lsma(25);
+
+let tr_now = atr14[0].tr;
+let slope  = lsma25[0].slope;
+
+if atr14[0] > atr14[1] && lsma25[0] > lsma25[1] && tr_now > 0.0 && slope > 0.0 {
+    entry = true;
+    tp = close[0] + (atr14[0] - atr14[1]) + highest(atr14, 3);
+}
+if atr14[0] < atr14[1] { exit = true; }
+"#;
+
+    #[test]
+    fn compile_and_run_multi_field_atr_lsma() {
+        // NOTE: on_bar swallows runtime errors (returns []), so a bare "no panic"
+        // run would pass even if `.tr` / `.slope` getters were unregistered. We
+        // attach an error_sink and assert it stays empty — proving the field
+        // access actually evaluates, not silently errors every bar.
+        let sink = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+        let mut s = ScriptStrategy::from_script(MULTI_FIELD_SCRIPT)
+            .expect("multi-field atr/lsma script should compile")
+            .with_error_sink(std::sync::Arc::clone(&sink));
+        for i in 0..120 { let _ = s.on_bar(&make_bar(i)); }
+        assert!(sink.lock().unwrap().is_none(), "runtime error: {:?}", sink.lock().unwrap());
+    }
+
+    /// Rhai stores `tp = 100` as an i64, not f64. `scalar_out` must still pick it
+    /// up so an integer literal target is applied instead of silently dropped.
+    #[test]
+    fn integer_literal_scalar_outputs_apply() {
+        let script = r#"
+entry    = true;
+tp       = 250;
+sl       = 90;
+strength = 1;
+"#;
+        let sink = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+        let mut s = ScriptStrategy::from_script(script)
+            .expect("should compile")
+            .with_error_sink(std::sync::Arc::clone(&sink));
+        let mut sigs = vec![];
+        for i in 0..5 { sigs = s.on_bar(&make_bar(i)); if !sigs.is_empty() { break; } }
+        assert!(sink.lock().unwrap().is_none(), "runtime error: {:?}", sink.lock().unwrap());
+        let long = sigs.iter().find(|s| matches!(s.direction, alm_core::signal::Direction::Long))
+            .expect("entry should emit a long signal");
+        assert_eq!(long.target_price, Some(250.0), "integer tp must be applied as f64");
+        assert_eq!(long.stop_price,   Some(90.0),  "integer sl must be applied as f64");
+        assert!((long.strength - 1.0).abs() < 1e-9, "integer strength must apply");
+    }
+
+    /// Stochastic Slow via the non-breaking `smooth_k` named param compiles + runs.
+    #[test]
+    fn compile_stochastic_slow_smooth_k() {
+        let script = r#"
+let st = ind.stochastic(14, 3, smooth_k=3);
+if st[0].k > st[0].d { entry = true; }
+if st[0].k < st[0].d { exit = true; }
+"#;
+        let sink = std::sync::Arc::new(std::sync::Mutex::new(None::<String>));
+        let mut s = ScriptStrategy::from_script(script)
+            .expect("stochastic slow with smooth_k should compile")
+            .with_error_sink(std::sync::Arc::clone(&sink));
+        for i in 0..80 { let _ = s.on_bar(&make_bar(i)); }
+        assert!(sink.lock().unwrap().is_none(), "runtime error: {:?}", sink.lock().unwrap());
     }
 
     #[test]
@@ -941,38 +1013,6 @@ if cross_above(ema9, ema21) && adx14[0] > 20.0 && trend == "trending" {
     // ── Candle directive tests ────────────────────────────────────────────────
 
     #[test]
-    fn script_candle_directive_exposed_via_trait() {
-        use alm_core::strategy::Strategy;
-        let s = r#"candle.transform("heiken_ashi");
-
-let ema9 = ind.ema(9);
-if cross_above(ema9, ema9) { entry = true; }
-"#;
-        let strat = ScriptStrategy::from_script(s).unwrap();
-        let spec = Strategy::script_candle_spec(&strat);
-        assert_eq!(spec, Some(("heiken_ashi".to_string(), None)));
-    }
-
-    #[test]
-    fn script_candle_directive_with_smooth_exposed() {
-        use alm_core::strategy::Strategy;
-        let s = r#"candle.transform("smooth_ha", 3);
-let ema9 = ind.ema(9);"#;
-        let strat = ScriptStrategy::from_script(s).unwrap();
-        assert_eq!(
-            Strategy::script_candle_spec(&strat),
-            Some(("smooth_ha".to_string(), Some(3))),
-        );
-    }
-
-    #[test]
-    fn script_no_candle_directive_returns_none() {
-        use alm_core::strategy::Strategy;
-        let strat = ScriptStrategy::from_script(EMA_CROSS_SCRIPT).unwrap();
-        assert!(Strategy::script_candle_spec(&strat).is_none());
-    }
-
-    #[test]
     fn script_candle_invalid_kind_rejected_at_compile() {
         let s = r#"candle.transform("renko_5");
 let ema9 = ind.ema(9);"#;
@@ -1033,14 +1073,6 @@ if cross_below(ema9, ema21) { exit  = true; }
         // mean the directive was silently ignored.
         assert_ne!(raw_sigs, ha_sigs,
             "HA directive must change signal stream when run on same raw bars");
-    }
-
-    #[test]
-    fn script_handles_candle_internally_flag() {
-        use alm_core::strategy::Strategy;
-        let strat = ScriptStrategy::from_script("let x = ind.ema(9);").unwrap();
-        // Script strategy always handles internally (so engine can skip its transform).
-        assert!(Strategy::handles_candle_internally(&strat));
     }
 
     #[test]

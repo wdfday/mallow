@@ -51,7 +51,7 @@ impl Chop {
     }
 
     pub fn description() -> &'static str {
-        "Choppiness Index — measures whether the market is trending (low value) or chopping sideways (high value, near 100). Values below 61.8 suggest a trending environment."
+        "Choppiness Index — measures whether the market is trending (low value) or chopping sideways (high value, near 100). Values below 61.8 suggest a trending environment. Outputs a single 0–100 value (>61.8 choppy, <38.2 trending)."
     }
 
     /// Default parameters: period=14

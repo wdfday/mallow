@@ -55,7 +55,7 @@ impl Kama {
     }
 
     pub fn description() -> &'static str {
-        "Kaufman Adaptive MA — adjusts its smoothing constant based on the Efficiency Ratio (trending vs choppy). Stays flat in noise and tracks closely in trends."
+        "Kaufman Adaptive MA — adjusts its smoothing constant based on the Efficiency Ratio (trending vs choppy). Stays flat in noise and tracks closely in trends. Outputs a single value (price scale)."
     }
 
     /// Default parameters: er_period=10, fast=2, slow=30
@@ -96,7 +96,12 @@ impl Kama {
 
         let sc = (er * (self.fast_sc - self.slow_sc) + self.slow_sc).powi(2);
 
-        let prev_kama = self.kama.unwrap_or(close);
+        // Canonical Kaufman seed: the first KAMA value is the SMA of the
+        // closes in the ER window (not the current close). Seeding with the
+        // current close would make the first output meaningless (KAMA == price).
+        let prev_kama = self.kama.unwrap_or_else(|| {
+            self.closes.iter().sum::<f64>() / self.closes.len() as f64
+        });
         let new_kama = prev_kama + sc * (close - prev_kama);
         self.kama = Some(new_kama);
         self.kama

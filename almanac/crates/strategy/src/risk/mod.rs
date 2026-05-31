@@ -64,6 +64,74 @@ impl RiskManager for FixedFractional {
     }
 }
 
+// ── Fixed-fractional (Ralph Vince, risk-based) ─────────────────────────────────
+
+/// **Fixed-fractional** in the classic Ralph Vince sense: risk a fixed fraction of
+/// equity per trade, sized by the distance to the **signal's own stop** (`sl`):
+///
+/// ```text
+/// qty = equity × risk_per_trade / |entry − sl|
+/// ```
+///
+/// Decoupled from how the stop is defined (ATR, swing low, fixed %, absolute) — it
+/// just reads `signal.stop_price` (resolved from offset if `is_offset`). The ATR-stop
+/// variant is [`AtrSizing`] (`volatility` mode); this one honours whatever stop the
+/// strategy set. Returns `0.0` (skip) when no stop is present — you cannot risk-size
+/// without one.
+pub struct RiskFractional {
+    /// Fraction of equity to risk per trade (e.g. 0.01 = 1%).
+    pub risk_per_trade: f64,
+    pub max_positions: usize,
+    pub lot_size: f64,
+    pub strength_sizing: bool,
+}
+
+impl RiskFractional {
+    pub fn new(risk_per_trade: f64, max_positions: usize) -> Self {
+        Self { risk_per_trade, max_positions, lot_size: 0.0, strength_sizing: true }
+    }
+    pub fn with_lot_size(mut self, lot_size: f64) -> Self { self.lot_size = lot_size; self }
+    pub fn with_strength_sizing(mut self, enabled: bool) -> Self { self.strength_sizing = enabled; self }
+
+    fn current_equity(portfolio: &Portfolio) -> f64 {
+        portfolio.equity_curve.last().map(|p| p.equity).unwrap_or(portfolio.initial_capital)
+    }
+}
+
+impl RiskManager for RiskFractional {
+    fn validate(&self, signal: &Signal, portfolio: &Portfolio) -> bool {
+        if signal.direction == Direction::Exit { return true; }
+        if let Some(pos) = portfolio.positions.get(&signal.symbol) {
+            let same_dir = matches!(
+                (signal.direction, pos.is_long()),
+                (Direction::Long, true) | (Direction::Short, false)
+            ) && pos.qty.abs() > f64::EPSILON;
+            if same_dir { return false; }
+        }
+        portfolio.positions.len() < self.max_positions
+    }
+
+    fn size(&self, signal: &Signal, portfolio: &Portfolio, price: f64) -> f64 {
+        if price <= f64::EPSILON { return 0.0; }
+        // Stop distance = the strategy's own stop. Offset stops carry the distance
+        // directly (magnitude); absolute stops give |entry − sl|.
+        let stop_distance = match signal.stop_price {
+            Some(sl) if signal.is_offset => sl.abs(),
+            Some(sl) => (price - sl).abs(),
+            None => return 0.0, // no stop → cannot risk-size
+        };
+        if stop_distance <= f64::EPSILON { return 0.0; }
+        let equity = Self::current_equity(portfolio);
+        let strength = if self.strength_sizing { signal.strength } else { 1.0 };
+        let raw = equity * self.risk_per_trade * strength / stop_distance;
+        if self.lot_size > f64::EPSILON {
+            (raw / self.lot_size).floor() * self.lot_size
+        } else {
+            raw
+        }
+    }
+}
+
 // ── ATR-based position sizing ─────────────────────────────────────────────────
 
 /// ATR-based position sizing: size = (equity × risk_per_trade) / (atr_multiplier × ATR).
@@ -77,6 +145,9 @@ pub struct AtrSizing {
     pub atr_multiplier: f64,
     /// Maximum simultaneous open positions.
     pub max_positions: usize,
+    /// When `true` (default), position size is scaled by `signal.strength`.
+    /// Set to `false` to treat every signal as strength = 1.0 (full allocation).
+    pub strength_sizing: bool,
     /// Internal ATR indicator (period 14 by default).
     atr: Atr,
 }
@@ -87,12 +158,18 @@ impl AtrSizing {
             risk_per_trade,
             atr_multiplier,
             max_positions,
+            strength_sizing: true,
             atr: Atr::standard(), // period 14
         }
     }
 
     pub fn with_atr_period(mut self, period: usize) -> Self {
         self.atr = Atr::new(period);
+        self
+    }
+
+    pub fn with_strength_sizing(mut self, enabled: bool) -> Self {
+        self.strength_sizing = enabled;
         self
     }
 
@@ -121,17 +198,22 @@ impl RiskManager for AtrSizing {
 
     fn size(&self, signal: &Signal, portfolio: &Portfolio, price: f64) -> f64 {
         if price <= f64::EPSILON { return 0.0; }
-        let current_atr = match self.atr.value() {
-            Some(v) if v > f64::EPSILON => v,
-            _ => return 0.0,
-        };
+        // Volatility sizing risks `risk_per_trade` of equity per `atr` of volatility,
+        // using the ATR the SIGNAL carries (the strategy's own `atr` output) — matching
+        // helm, which sizes off `signal.atr`. Falls back to the internal ATR only when
+        // the signal omits one (e.g. a script that didn't set `atr = ...`). It does NOT
+        // read or touch `signal.stop_price`: the user's stop is theirs to place.
+        let atr = signal.atr
+            .filter(|a| *a > f64::EPSILON)
+            .or_else(|| self.atr.value().filter(|a| *a > f64::EPSILON));
+        let Some(atr) = atr else { return 0.0 };
         let equity = Self::current_equity(portfolio);
-        let stop_distance = self.atr_multiplier * current_atr;
-        let raw = (equity * self.risk_per_trade * signal.strength) / stop_distance;
-        raw.max(0.0)
+        let strength = if self.strength_sizing { signal.strength } else { 1.0 };
+        ((equity * self.risk_per_trade * strength) / atr).max(0.0)
     }
 
     fn on_bar(&mut self, bar: &Bar) {
+        // Maintain a fallback ATR for signals that don't carry their own.
         self.atr.update(bar.high, bar.low, bar.close);
     }
 }
@@ -155,16 +237,24 @@ pub struct EqualWeight {
     pub max_positions: usize,
     /// Minimum tradeable lot.  `0.0` → fractional.  `1.0` → whole shares.
     pub lot_size: f64,
+    /// When `true` (default), position size is scaled by `signal.strength`.
+    /// Set to `false` to treat every signal as strength = 1.0 (full allocation).
+    pub strength_sizing: bool,
 }
 
 impl EqualWeight {
     pub fn new(max_positions: usize) -> Self {
-        Self { max_positions, lot_size: 0.0 }
+        Self { max_positions, lot_size: 0.0, strength_sizing: true }
     }
 
     /// Set the minimum lot size (e.g. `1.0` for whole shares, `100.0` for HOSE).
     pub fn with_lot_size(mut self, lot_size: f64) -> Self {
         self.lot_size = lot_size;
+        self
+    }
+
+    pub fn with_strength_sizing(mut self, enabled: bool) -> Self {
+        self.strength_sizing = enabled;
         self
     }
 
@@ -189,7 +279,8 @@ impl RiskManager for EqualWeight {
     fn size(&self, signal: &Signal, portfolio: &Portfolio, price: f64) -> f64 {
         if price <= f64::EPSILON || self.max_positions == 0 { return 0.0; }
         let slot_value = Self::equity(portfolio) / self.max_positions as f64;
-        let raw = slot_value * signal.strength / price;
+        let strength = if self.strength_sizing { signal.strength } else { 1.0 };
+        let raw = slot_value * strength / price;
         if self.lot_size > f64::EPSILON {
             (raw / self.lot_size).floor() * self.lot_size
         } else {
@@ -290,39 +381,77 @@ impl RiskManager for FixedQuantity {
 /// Allows `backtest::run()` to choose the sizer at runtime based on request fields
 /// without boxing or trait objects.
 pub enum AnySizer {
+    /// `percent_equity` mode — % of equity allocation (× strength tag).
     FixedFractional(FixedFractional),
+    /// `fixed_fractional` mode (Ralph Vince) — risk f% of equity to the signal's own stop.
+    RiskFractional(RiskFractional),
     FixedUsd(FixedUsd),
     FixedQuantity(FixedQuantity),
     EqualWeight(EqualWeight),
+    /// ATR-based risk-parity sizing — the backtest counterpart of helm's
+    /// `volatility` SizeMode. Needs `on_bar` to feed its internal ATR.
+    Atr(AtrSizing),
 }
 
 impl RiskManager for AnySizer {
     fn validate(&self, signal: &Signal, portfolio: &Portfolio) -> bool {
         match self {
             Self::FixedFractional(s) => s.validate(signal, portfolio),
+            Self::RiskFractional(s)  => s.validate(signal, portfolio),
             Self::FixedUsd(s)        => s.validate(signal, portfolio),
             Self::FixedQuantity(s)   => s.validate(signal, portfolio),
             Self::EqualWeight(s)     => s.validate(signal, portfolio),
+            Self::Atr(s)             => s.validate(signal, portfolio),
         }
     }
 
     fn size(&self, signal: &Signal, portfolio: &Portfolio, price: f64) -> f64 {
         match self {
             Self::FixedFractional(s) => s.size(signal, portfolio, price),
+            Self::RiskFractional(s)  => s.size(signal, portfolio, price),
             Self::FixedUsd(s)        => s.size(signal, portfolio, price),
             Self::FixedQuantity(s)   => s.size(signal, portfolio, price),
             Self::EqualWeight(s)     => s.size(signal, portfolio, price),
+            Self::Atr(s)             => s.size(signal, portfolio, price),
         }
     }
 
     fn on_bar(&mut self, bar: &Bar) {
         match self {
             Self::FixedFractional(_) => {},
+            Self::RiskFractional(_)  => {},
             Self::FixedUsd(_)        => {},
             Self::FixedQuantity(_)   => {},
             Self::EqualWeight(_)     => {},
+            Self::Atr(s)             => s.on_bar(bar),
         }
-        let _ = bar;
+    }
+}
+
+#[cfg(test)]
+mod risk_fractional_tests {
+    use super::*;
+    use alm_core::portfolio::Portfolio;
+    use alm_core::signal::Signal;
+
+    #[test]
+    fn risks_fixed_fraction_to_the_signal_stop() {
+        let pf = Portfolio::new(10_000.0);            // equity = 10k
+        let sizer = RiskFractional::new(0.01, 1);     // risk 1% = $100
+        // Absolute stop $98 below entry $100 → distance 2 → qty = 100/2 = 50.
+        let mut s = Signal::long(0, "X", 1.0);
+        s.stop_price = Some(98.0);
+        assert!((sizer.size(&s, &pf, 100.0) - 50.0).abs() < 1e-9);
+
+        // Offset stop (distance 5) → qty = 100/5 = 20.
+        let mut so = Signal::long(0, "X", 1.0);
+        so.stop_price = Some(5.0);
+        so.is_offset = true;
+        assert!((sizer.size(&so, &pf, 100.0) - 20.0).abs() < 1e-9);
+
+        // No stop → cannot risk-size → 0 (skip).
+        let bare = Signal::long(0, "X", 1.0);
+        assert_eq!(sizer.size(&bare, &pf, 100.0), 0.0);
     }
 }
 
@@ -350,6 +479,33 @@ mod kelly_tests {
         assert_eq!(KellySizing::compute_kelly_f(0.5, 0.0, 0.05), 0.0);
         assert_eq!(KellySizing::compute_kelly_f(0.5, 0.05, 0.0), 0.0);
     }
+
+    /// `strength_sizing = false` must size every entry at
+    /// full allocation regardless of the signal's computed strength, while the
+    /// default (on) scales by strength. Covers the strength-aware sizers reachable
+    /// from the backtest request path.
+    #[test]
+    fn strength_sizing_toggle_changes_allocation() {
+        let p = Portfolio::new(10_000.0);
+        let weak = Signal::long(0, "BTCUSDT", 0.25);
+        let full = Signal::long(0, "BTCUSDT", 1.0);
+        let price = 100.0;
+
+        // FixedFractional.
+        let on  = FixedFractional::fractional(1.0, 1);
+        let off = FixedFractional::fractional(1.0, 1).with_strength_sizing(false);
+        // On a full-strength signal both behave identically.
+        assert!((on.size(&full, &p, price) - off.size(&full, &p, price)).abs() < 1e-9);
+        // On a weak signal: on scales down, off stays at full allocation.
+        assert!(on.size(&weak, &p, price) < on.size(&full, &p, price),
+            "strength sizing on must scale a weak signal down");
+        assert!((off.size(&weak, &p, price) - off.size(&full, &p, price)).abs() < 1e-9,
+            "strength sizing off must size weak and full signals identically");
+
+        // EqualWeight: same invariant.
+        let ew_off = EqualWeight::new(1).with_strength_sizing(false);
+        assert!((ew_off.size(&weak, &p, price) - ew_off.size(&full, &p, price)).abs() < 1e-9);
+    }
 }
 
 /// Kelly criterion position sizing.
@@ -372,6 +528,9 @@ pub struct KellySizing {
     pub fraction: f64,
     /// Maximum simultaneous open positions.
     pub max_positions: usize,
+    /// When `true` (default), position size is scaled by `signal.strength`.
+    /// Set to `false` to treat every signal as strength = 1.0 (full allocation).
+    pub strength_sizing: bool,
 }
 
 impl KellySizing {
@@ -382,7 +541,12 @@ impl KellySizing {
         fraction: f64,
         max_positions: usize,
     ) -> Self {
-        Self { win_rate, avg_win, avg_loss, fraction, max_positions }
+        Self { win_rate, avg_win, avg_loss, fraction, max_positions, strength_sizing: true }
+    }
+
+    pub fn with_strength_sizing(mut self, enabled: bool) -> Self {
+        self.strength_sizing = enabled;
+        self
     }
 
     /// Compute Kelly fraction `f* = W − (1−W)/R` where `R = avg_win/avg_loss`.
@@ -432,7 +596,8 @@ impl RiskManager for KellySizing {
         let effective_f = (self.fraction * kelly_f).min(1.0);
         let equity = portfolio.equity_curve.last()
             .map(|p| p.equity).unwrap_or(portfolio.initial_capital);
-        let raw = equity * effective_f * signal.strength / price;
+        let strength = if self.strength_sizing { signal.strength } else { 1.0 };
+        let raw = equity * effective_f * strength / price;
         raw.max(0.0)
     }
 }

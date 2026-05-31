@@ -55,7 +55,7 @@ impl Gmma {
     }
 
     pub fn description() -> &'static str {
-        "Guppy Multiple MA — two groups of EMAs (short-term 3-15 and long-term 30-60). Spread between groups signals trend strength; compression signals potential reversal."
+        "Guppy Multiple MA — twelve EMAs split into a short-term trader group (3-15) and a long-term investor group (30-60). The default output `.spread` is the normalised gap between the two group means: positive = bullish, negative = bearish, a zero-cross marks a group crossover, and the magnitude measures ribbon separation (wide = strong trend, near-zero = compression / possible reversal)."
     }
 
     /// Custom periods. `short` and `long` must each have exactly 6 elements.

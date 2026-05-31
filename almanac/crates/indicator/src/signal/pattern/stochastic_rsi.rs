@@ -84,7 +84,7 @@ impl StochasticRsi {
     }
 
     pub fn description() -> &'static str {
-        "Stochastic RSI — applies Stochastic to RSI values instead of price. More sensitive than RSI alone; K/D crossovers in extreme zones signal short-term reversals."
+        "Stochastic RSI — applies Stochastic to RSI values instead of price. More sensitive than RSI alone; K/D crossovers in extreme zones signal short-term reversals. Outputs: `.k` (default, %K line), `.d` (%D signal line)."
     }
 
     /// Default parameters: rsi_period=14, smooth_d=3

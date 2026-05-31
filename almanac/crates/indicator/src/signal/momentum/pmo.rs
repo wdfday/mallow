@@ -57,7 +57,7 @@ impl Pmo {
     }
 
     pub fn description() -> &'static str {
-        "Price Momentum Oscillator — double-smoothed ROC normalised to a bounded range. Signal line crossovers signal momentum shifts."
+        "Price Momentum Oscillator — double-smoothed ROC normalised to a bounded range. Signal line crossovers signal momentum shifts. Outputs: `.pmo` (default, PMO line), `.signal` (signal line), `.histogram` (PMO minus signal)."
     }
 
     /// PMO(35, 20, 10) — cấu hình Swenlin gốc.

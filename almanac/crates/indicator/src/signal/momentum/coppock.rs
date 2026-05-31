@@ -53,7 +53,7 @@ impl Coppock {
     }
 
     pub fn description() -> &'static str {
-        "Coppock Curve — long-term momentum indicator; sum of two weighted ROCs. Originally designed to identify buying opportunities after major market lows."
+        "Coppock Curve — long-term momentum indicator; sum of two weighted ROCs. Originally designed to identify buying opportunities after major market lows. Outputs a single oscillator value."
     }
 
     /// Coppock Curve với tham số gốc (11, 14, 10).

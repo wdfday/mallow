@@ -43,7 +43,9 @@ impl SimBroker {
         let mut fills = Vec::new();
 
         self.pending.retain(|order| {
-            if order.symbol != bar.symbol {
+            // Independent pyramiding legs are keyed `SYM#n`; match on the base
+            // symbol so they fill against the underlying symbol's bar.
+            if crate::engine::base_symbol(&order.symbol) != bar.symbol {
                 return true; // keep — different symbol, process later
             }
 

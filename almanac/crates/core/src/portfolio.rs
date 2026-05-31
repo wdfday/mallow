@@ -93,6 +93,12 @@ pub struct Portfolio {
     pub positions: HashMap<String, Position>,
     pub equity_curve: Vec<EquityPoint>,
     pub trades: Vec<Trade>,
+    /// Every fill applied, in order. Lets consumers reconstruct sub-trade events
+    /// the merged `trades` view hides — e.g. each pyramiding *add* (a Buy fill into
+    /// an already-open long) so the chart can mark where legs were stacked even
+    /// though MERGE mode collapses them into a single averaged trade.
+    #[serde(default)]
+    pub fills: Vec<Fill>,
 }
 
 impl Portfolio {
@@ -103,6 +109,7 @@ impl Portfolio {
             positions: HashMap::new(),
             equity_curve: Vec::new(),
             trades: Vec::new(),
+            fills: Vec::new(),
         }
     }
 
@@ -134,6 +141,7 @@ impl Portfolio {
     /// - `Side::Sell` on flat/short → opens or adds to short
     /// - `Side::Sell` on long      → closes long, records long Trade
     pub fn apply_fill(&mut self, fill: &Fill) {
+        self.fills.push(fill.clone());
         self.cash += fill.cash_impact();
 
         self.positions.entry(fill.symbol.clone()).or_insert(Position {
@@ -183,8 +191,11 @@ impl Portfolio {
                             entry_timestamp: pos.entry_timestamp,
                             exit_timestamp: fill.timestamp,
                             pnl,
+                            // Canonical unit: FRACTION (0.1 = 10%). Display layers
+                            // (response DTO → FE) multiply by 100; the report's
+                            // aggregate `*_pct` fields also scale fraction → percent.
                             pnl_pct: if pos.avg_price.abs() > f64::EPSILON {
-                                pnl / (pos.avg_price * covered_qty) * 100.0
+                                pnl / (pos.avg_price * covered_qty)
                             } else {
                                 0.0
                             },
@@ -259,8 +270,9 @@ impl Portfolio {
                             entry_timestamp: pos.entry_timestamp,
                             exit_timestamp: fill.timestamp,
                             pnl,
+                            // Canonical unit: FRACTION (0.1 = 10%) — see the buy/cover branch.
                             pnl_pct: if pos.avg_price.abs() > f64::EPSILON {
-                                pnl / (pos.avg_price * closed_qty) * 100.0
+                                pnl / (pos.avg_price * closed_qty)
                             } else {
                                 0.0
                             },

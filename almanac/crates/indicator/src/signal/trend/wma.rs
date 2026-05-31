@@ -49,7 +49,7 @@ impl Wma {
     }
 
     pub fn description() -> &'static str {
-        "Weighted Moving Average — linearly increasing weights so the most recent bar has the highest weight. Smoother reaction than EMA with less lag than SMA."
+        "Weighted Moving Average — linearly increasing weights so the most recent bar has the highest weight. Smoother reaction than EMA with less lag than SMA. Outputs a single value (price scale)."
     }
 
     pub fn update(&mut self, value: f64) -> Option<f64> {

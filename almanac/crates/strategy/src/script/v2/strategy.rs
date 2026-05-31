@@ -36,7 +36,7 @@ use super::parse::{
     try_parse_indicator_line, CandleDirective, DEFAULT_BUF_DEPTH,
 };
 use super::engine::{build_engine, BAR_FIELDS};
-use crate::script::v1::MEntry;
+use crate::script::v1::{MEntry, scalar_out};
 
 // ── MtfScriptStrategy ─────────────────────────────────────────────────────────
 
@@ -51,7 +51,6 @@ pub struct MtfScriptStrategy {
     series:           Option<HashMap<String, Vec<(i64, f64)>>>,
     candle_transform: CandleTransform,
     current_regime:   Option<RegimeState>,
-    script_candle:    Option<(String, Option<usize>)>,
 }
 
 fn validate_candle_kind(kind: &str) -> Result<()> {
@@ -67,12 +66,12 @@ fn validate_candle_kind(kind: &str) -> Result<()> {
 impl MtfScriptStrategy {
     /// Backtest mode — collects plot series.
     pub fn from_script(script: &str, base_tf: Timeframe) -> Result<Self> {
-        Self::build(script, true, CandleType::Raw, base_tf)
+        Self::build(script, true, base_tf)
     }
 
     /// Live (herald registry) mode — series collection disabled.
     pub fn from_script_live(script: &str, base_tf: Timeframe) -> Result<Self> {
-        Self::build(script, false, CandleType::Raw, base_tf)
+        Self::build(script, false, base_tf)
     }
 
     /// Build from JSON params (`"script"`, `"base_tf"`, `"_live"`, etc.).
@@ -80,26 +79,16 @@ impl MtfScriptStrategy {
         let script = p.get("script").and_then(|v| v.as_str())
             .ok_or_else(|| anyhow::anyhow!("MtfScriptStrategy requires a 'script' param"))?;
         let live = p.get("_live").and_then(|v| v.as_bool()).unwrap_or(false);
-        let candle_type = {
-            let ct = p.get("candle_type").and_then(|v| v.as_str()).unwrap_or("raw");
-            let sp = p.get("smooth_period").and_then(|v| v.as_u64()).unwrap_or(3) as usize;
-            CandleType::from_str(ct, sp)
-        };
         let base_tf = p.get("base_tf")
             .and_then(|v| v.as_str())
             .and_then(parse_timeframe_str)
             .unwrap_or(Timeframe::M1);
-        if live {
-            Self::build(script, false, candle_type, base_tf)
-        } else {
-            Self::build(script, true, candle_type, base_tf)
-        }
+        Self::build(script, !live, base_tf)
     }
 
     fn build(
         script: &str,
         collect_series: bool,
-        candle_type: CandleType,
         base_tf: Timeframe,
     ) -> Result<Self> {
         let base_tf_ms = base_tf.duration_ms();
@@ -218,12 +207,11 @@ impl MtfScriptStrategy {
             candle_transform: {
                 let effective = match &script_candle {
                     Some((kind, smooth)) => CandleType::from_str(kind, smooth.unwrap_or(3)),
-                    None => candle_type,
+                    None => CandleType::Raw,
                 };
                 CandleTransform::new(effective)
             },
             current_regime: None,
-            script_candle,
         })
     }
 
@@ -243,9 +231,6 @@ impl MtfScriptStrategy {
             .collect()
     }
 
-    pub fn script_candle_spec(&self) -> Option<(String, Option<usize>)> {
-        self.script_candle.clone()
-    }
 }
 
 // ── MtfStrategy impl ──────────────────────────────────────────────────────────
@@ -364,8 +349,6 @@ impl MtfStrategy for MtfScriptStrategy {
         scope.push("trend_value", 0.0_f64);
         scope.push("vol",         String::new());
         scope.push("vol_value",   0.0_f64);
-        scope.push("liq",         String::new());
-        scope.push("liq_value",   0.0_f64);
 
         // Signal output slots.
         scope.push("entry",     false);
@@ -374,6 +357,8 @@ impl MtfStrategy for MtfScriptStrategy {
         scope.push("short",     false);
         scope.push("tp",        0.0_f64);
         scope.push("sl",        0.0_f64);
+        scope.push("trail",     0.0_f64);
+        scope.push("max_bars",  0_i64);
         scope.push("strength",  1.0_f64);
         scope.push("is_offset", false);
         scope.push("reason",    String::new());
@@ -386,12 +371,9 @@ impl MtfStrategy for MtfScriptStrategy {
                 let trend_value  = scope.get_value::<f64>("trend_value").unwrap_or(0.0);
                 let vol_status   = scope.get_value::<String>("vol").unwrap_or_default();
                 let vol_value    = scope.get_value::<f64>("vol_value").unwrap_or(0.0);
-                let liq_status   = scope.get_value::<String>("liq").unwrap_or_default();
-                let liq_value    = scope.get_value::<f64>("liq_value").unwrap_or(0.0);
                 self.current_regime = Some(RegimeState::new(
                     RegimeDimension::new(trend_value, trend_status),
                     RegimeDimension::new(vol_value,   vol_status),
-                    RegimeDimension::new(liq_value,   liq_status),
                 ));
             }
         }
@@ -424,12 +406,14 @@ impl MtfStrategy for MtfScriptStrategy {
 
         // ── 11. Extract signals ────────────────────────────────────────────────
         let symbol    = base_bar.symbol.as_str();
-        let strength  = scope.get_value::<f64>("strength").unwrap_or(1.0).clamp(0.0, 1.0);
-        let target    = scope.get_value::<f64>("tp").filter(|&v| v != 0.0);
-        let stop      = scope.get_value::<f64>("sl").filter(|&v| v != 0.0);
+        let strength  = scalar_out(&scope, "strength").unwrap_or(1.0).clamp(0.0, 1.0);
+        let target    = scalar_out(&scope, "tp").filter(|&v| v != 0.0);
+        let stop      = scalar_out(&scope, "sl").filter(|&v| v != 0.0);
+        let trail     = scalar_out(&scope, "trail").filter(|&v| v > 0.0);
+        let max_bars  = scope.get_value::<i64>("max_bars").filter(|&v| v > 0).map(|v| v as usize);
         let is_offset = scope.get_value::<bool>("is_offset").unwrap_or(false);
         let reason    = scope.get_value::<String>("reason").filter(|s| !s.is_empty());
-        let atr       = scope.get_value::<f64>("atr").filter(|&v| v > 0.0);
+        let atr       = scalar_out(&scope, "atr").filter(|&v| v > 0.0);
 
         let go_long  = scope.get_value::<bool>("long").unwrap_or(false)
                     || scope.get_value::<bool>("entry").unwrap_or(false);
@@ -438,22 +422,26 @@ impl MtfStrategy for MtfScriptStrategy {
 
         if go_long {
             let mut sig = Signal::long(base_bar.timestamp, symbol, strength);
-            sig.price        = Some(base_bar.close);
-            sig.target_price = target;
-            sig.stop_price   = stop;
-            sig.is_offset    = is_offset;
-            sig.reason       = reason;
-            sig.atr          = atr;
+            sig.price             = Some(base_bar.close);
+            sig.target_price      = target;
+            sig.stop_price        = stop;
+            sig.trailing_stop_pct = trail;
+            sig.max_bars_held     = max_bars;
+            sig.is_offset         = is_offset;
+            sig.reason            = reason;
+            sig.atr               = atr;
             return vec![sig];
         }
         if go_short {
             let mut sig = Signal::short(base_bar.timestamp, symbol, strength);
-            sig.price        = Some(base_bar.close);
-            sig.target_price = target;
-            sig.stop_price   = stop;
-            sig.is_offset    = is_offset;
-            sig.reason       = reason;
-            sig.atr          = atr;
+            sig.price             = Some(base_bar.close);
+            sig.target_price      = target;
+            sig.stop_price        = stop;
+            sig.trailing_stop_pct = trail;
+            sig.max_bars_held     = max_bars;
+            sig.is_offset         = is_offset;
+            sig.reason            = reason;
+            sig.atr               = atr;
             return vec![sig];
         }
         if go_exit {

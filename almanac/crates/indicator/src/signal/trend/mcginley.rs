@@ -49,7 +49,7 @@ impl McGinleyDynamic {
     }
 
     pub fn description() -> &'static str {
-        "McGinley Dynamic — self-adjusting MA that automatically varies its speed to track price regardless of market conditions. Reduces whipsaws in choppy environments."
+        "McGinley Dynamic — self-adjusting MA that automatically varies its speed to track price regardless of market conditions. Reduces whipsaws in choppy environments. Outputs a single value (price scale)."
     }
 
     /// McGinley Dynamic(14) — period được McGinley khuyến nghị cho daily.

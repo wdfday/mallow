@@ -8,15 +8,6 @@ pub enum Direction {
     Exit,
 }
 
-/// Optional pattern metadata attached to a signal.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PatternMeta {
-    pub pattern_kind: String,      // e.g. "bull_flag", "ascending_triangle"
-    pub confidence: f64,           // [0.0, 1.0]
-    pub target_price: Option<f64>, // projected price target
-    pub stop_price: Option<f64>,   // invalidation stop level
-}
-
 /// Trading signal emitted by a strategy.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Signal {
@@ -25,8 +16,6 @@ pub struct Signal {
     pub direction: Direction,
     /// Conviction strength [0.0, 1.0] — used by RiskManager for position sizing
     pub strength: f64,
-    /// Optional pattern metadata — populated by pattern_breakout strategy
-    pub pattern: Option<PatternMeta>,
     /// bar.close at the time this signal fired — entry reference price for the receiver.
     pub price: Option<f64>,
     /// Take-profit level. Absolute price if is_offset=false, delta from price if is_offset=true.
@@ -42,28 +31,28 @@ pub struct Signal {
     /// ATR (Average True Range) at bar close — forwarded to helm for stop/TP sizing.
     /// Set by the strategy or computed from the ledger ATR(14) at signal time.
     pub atr: Option<f64>,
+    /// Trailing-stop fraction from the running peak (long) / trough (short).
+    /// E.g. `0.05` = exit when price retraces 5% from the best price seen.
+    pub trailing_stop_pct: Option<f64>,
+    /// Time-based exit: force-close after this many bars in position.
+    pub max_bars_held: Option<usize>,
 }
 
 impl Signal {
     pub fn long(timestamp: i64, symbol: impl Into<String>, strength: f64) -> Self {
-        Self { timestamp, symbol: symbol.into(), direction: Direction::Long, strength, pattern: None, price: None, target_price: None, stop_price: None, is_offset: false, reason: None, atr: None }
+        Self { timestamp, symbol: symbol.into(), direction: Direction::Long, strength, price: None, target_price: None, stop_price: None, is_offset: false, reason: None, atr: None, trailing_stop_pct: None, max_bars_held: None }
     }
 
     pub fn short(timestamp: i64, symbol: impl Into<String>, strength: f64) -> Self {
-        Self { timestamp, symbol: symbol.into(), direction: Direction::Short, strength, pattern: None, price: None, target_price: None, stop_price: None, is_offset: false, reason: None, atr: None }
+        Self { timestamp, symbol: symbol.into(), direction: Direction::Short, strength, price: None, target_price: None, stop_price: None, is_offset: false, reason: None, atr: None, trailing_stop_pct: None, max_bars_held: None }
     }
 
     pub fn exit(timestamp: i64, symbol: impl Into<String>) -> Self {
-        Self { timestamp, symbol: symbol.into(), direction: Direction::Exit, strength: 1.0, pattern: None, price: None, target_price: None, stop_price: None, is_offset: false, reason: None, atr: None }
+        Self { timestamp, symbol: symbol.into(), direction: Direction::Exit, strength: 1.0, price: None, target_price: None, stop_price: None, is_offset: false, reason: None, atr: None, trailing_stop_pct: None, max_bars_held: None }
     }
 
     pub fn with_atr(mut self, atr: f64) -> Self {
         self.atr = Some(atr);
-        self
-    }
-
-    pub fn with_pattern(mut self, meta: PatternMeta) -> Self {
-        self.pattern = Some(meta);
         self
     }
 }

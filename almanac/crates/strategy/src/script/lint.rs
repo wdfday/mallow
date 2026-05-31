@@ -23,14 +23,15 @@ use crate::script::v1::{
 pub const KNOWN_INDICATOR_TYPES: &[&str] = &[
     // ── Single-output: Array<f64> ────────────────────────────────────────────
     "ema", "sma", "wma", "hma", "dema", "tema", "smma", "kama", "alma",
-    "mcginley", "lsma", "vwma", "rsi", "cci", "roc", "mfi", "mom", "cmo",
+    "mcginley", "vwma", "rsi", "cci", "roc", "mfi", "mom", "cmo",
     "dpo", "rci", "chop", "williams_r", "cmf", "obv", "vwap", "ao", "bop",
     "coppock", "uo", "tsi", "connors_rsi", "volatility_ratio",
-    "atr",
     "aroon_osc",   // scalar aroon oscillator (−100…+100)
-    "adx",         // scalar ADX strength (0–100) — use dmi for +DI/-DI lines
     // ── Multi-output: Array<Map> ─────────────────────────────────────────────
+    "atr",         // .atr (default)  .tr
+    "lsma",        // .value (default)  .slope
     "macd",        // .macd  .signal  .histogram
+    "adx",         // .adx (default, strength 0–100)  .plus_di  .minus_di
     "dmi",         // .plus_di  .minus_di
     "bbands",      // .upper  .middle  .lower  .bandwidth  .percent_b
     "keltner",     // .upper  .middle  .lower
@@ -50,9 +51,10 @@ pub const KNOWN_INDICATOR_TYPES: &[&str] = &[
     "smi",         // .smi  .signal
     "fisher",      // .fisher  .signal
     "rwi",         // .rwi_high  .rwi_low
-    "ichimoku",    // .tenkan  .kijun  .senkou_a  .senkou_b  .chikou  .above_cloud  .below_cloud
-    "alligator",   // .jaw  .teeth  .lips  .bullish
-    "gmma",        // .short_avg  .long_avg  .bullish
+    "elder_ray",   // .bull_power  .bear_power  .ema
+    "ichimoku",    // .tenkan  .kijun  .senkou_a  .senkou_b  .chikou  .above_cloud  .below_cloud  .chikou_above  .chikou_below
+    "alligator",   // .jaw  .teeth  .lips  .bullish  .bearish
+    "gmma",        // .spread (default)  .bullish  .short_0..short_5  .long_0..long_5
     "kalman",      // .value  .velocity
     "bull_bear",         // .bull  .bear  .ema
     "chandelier_exit",   // .long_stop  .short_stop  .atr
@@ -282,23 +284,24 @@ pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnos
             // regime outputs (writable in regime block, readable everywhere)
             "trend", "trend_value",
             "vol",   "vol_value",
-            "liq",   "liq_value",
         ],
         functions:   vec![
             // crossover
             "cross_above", "crossover",
-            "cross_below", "crossunder",
+            "cross_below", "crossunder", "crossed",
             // direction
             "rising", "falling", "rising_n", "falling_n",
-            "above", "below", "in_range",
+            "above", "below", "in_range", "within",
+            // bool-flag coercion (f64 0/1 → bool)
+            "flag",
             // movement
             "slope", "momentum",
             // lookback
             "highest", "lowest",
-            // aggregation
-            "avg", "sum",
+            // aggregation / statistics
+            "avg", "sum", "stdev", "pct_change", "zscore",
             // scalar math
-            "abs", "sqrt", "pow",
+            "abs", "sqrt", "pow", "sign",
             "round", "floor", "ceil",
             "min", "max", "clamp",
             // debug
@@ -400,6 +403,12 @@ fn extract_raw_indicator_type(trimmed: &str) -> Option<(String, String)> {
     let type_str  = after_dot[..paren_pos].trim().to_string();
 
     if prefix.is_empty() || type_str.is_empty() { return None; }
+    // Only an indicator declaration if both sides are bare identifiers, e.g.
+    // `let x = ind.ema(9)`. Reject expressions like `let f = !flag(st[1].bullish)`
+    // or `let v = ema9[0].value` whose `prefix`/`type` carry `!`, `(`, `[`, etc.
+    let is_ident = |s: &str| !s.is_empty()
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    if !is_ident(&prefix) || !is_ident(&type_str) { return None; }
     Some((prefix, type_str))
 }
 
@@ -436,6 +445,20 @@ fn edit_distance(a: &str, b: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `let x = !flag(st[1].bullish) && flag(st[0].bullish)` is a valid expression,
+    /// NOT an indicator declaration — must not be flagged as "wrong indicator prefix".
+    #[test]
+    fn lint_flag_expr_not_indicator_decl() {
+        let script = r#"
+let st = ind.supertrend(10, multiplier=3.0, buf=3);
+let flip_up   = !flag(st[1].bullish) && flag(st[0].bullish);
+let flip_down =  flag(st[1].bullish) && !flag(st[0].bullish);
+if flip_up { entry = true; }
+"#;
+        let (errors, _scope) = script_lint(script, None);
+        assert!(errors.is_empty(), "flag() expr falsely flagged: {errors:?}");
+    }
 
     #[test]
     fn lint_single_output_clean() {
@@ -495,7 +518,7 @@ if macd[0].histogram > 0.0 && bb[0].upper > 0.0 { entry = true; }
 
     #[test]
     fn lint_regime_block_does_not_trip_parser() {
-        // adx is scalar in the shared linter — use adx14[0] directly (no field access).
+        // adx[0] (bare) uses the primary field (ADX strength) — no field access needed.
         let script = r#"
 regime {
     let adx14 = ind.adx(14);
@@ -536,15 +559,15 @@ candle.transform("heiken_ashi");
     #[test]
     fn lint_scalar_field_access_is_error() {
         let script = r#"
-let adx14 = ind.adx(14);
+let cci20 = ind.cci(20);
 let rsi14 = ind.rsi(14);
-if adx14[0].adx > 25.0 { entry = true; }
-if rsi14[0] > 60.0     { exit  = true; }
+if cci20[0].value > 25.0 { entry = true; }
+if rsi14[0] > 60.0       { exit  = true; }
 "#;
         let (errors, _) = script_lint(script, None);
         assert!(
-            errors.iter().any(|e| e.severity == "error" && e.message.contains("adx14")),
-            "expected error for adx14[0].adx on scalar indicator, got: {errors:?}"
+            errors.iter().any(|e| e.severity == "error" && e.message.contains("cci20")),
+            "expected error for cci20[0].value on scalar indicator, got: {errors:?}"
         );
         assert!(
             !errors.iter().any(|e| e.message.contains("rsi14")),
@@ -556,16 +579,16 @@ if rsi14[0] > 60.0     { exit  = true; }
     fn lint_scalar_field_access_in_regime_block_is_error() {
         let script = r#"
 regime {
-    let adx14 = ind.adx(14);
-    if adx14[0].adx > 25.0 { trend = "trending"; }
+    let cci20 = ind.cci(20);
+    if cci20[0].value > 25.0 { trend = "trending"; }
 }
 let ema9 = ind.ema(9);
 if ema9[0] > 0.0 { entry = true; }
 "#;
         let (errors, _) = script_lint(script, None);
         assert!(
-            errors.iter().any(|e| e.severity == "error" && e.message.contains("adx14")),
-            "expected error for adx14[0].adx in regime block, got: {errors:?}"
+            errors.iter().any(|e| e.severity == "error" && e.message.contains("cci20")),
+            "expected error for cci20[0].value in regime block, got: {errors:?}"
         );
     }
 

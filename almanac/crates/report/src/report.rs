@@ -334,7 +334,9 @@ impl BacktestReport {
             total_trades,
             win_rate_pct: win_rate * 100.0,
             profit_factor: pf,
-            expectancy,
+            // pnl_pct is now a fraction → scale to percentage points like the
+            // sibling aggregate fields (avg_win_pct, etc.).
+            expectancy: expectancy * 100.0,
             avg_win_pct: avg_win * 100.0,
             avg_loss_pct: avg_loss * 100.0,
             avg_trade_duration_hours: avg_duration,
@@ -551,8 +553,8 @@ impl BacktestReport {
             MetricMeta {
                 field: "expectancy",
                 label: "Expectancy",
-                unit: "fraction",
-                description: "The average expected return per trade as a fraction of the position size. Positive expectancy is the minimum requirement for a viable strategy.",
+                unit: "%",
+                description: "The average expected return per trade as a percentage of the position size. Positive expectancy is the minimum requirement for a viable strategy.",
                 thresholds: ">0 required",
                 description_vi: "Lợi nhuận kỳ vọng trung bình trên mỗi lệnh, tính theo tỷ lệ phần trăm kích thước vị thế. Expectancy dương là điều kiện tối thiểu để một chiến lược có giá trị.",
                 thresholds_vi: ">0 bắt buộc",

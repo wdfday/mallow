@@ -80,8 +80,16 @@ impl WatchEvaluator {
 
 impl LedgerObserver for WatchEvaluator {
     fn on_advance(&self, symbol: &str, tf: Timeframe, outcome: &AdvanceOutcome) {
-        let now_ms   = chrono::Utc::now().timestamp_millis();
-        let is_stale = (now_ms - outcome.ts) > FRESHNESS_GATE_MS;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        // Freshness measured from bar CLOSE, not open. `outcome.ts` is the bar's
+        // OPEN — for an HTF bar that just closed it is up to one TF-duration old, so
+        // gating on open would suppress every legitimate HTF watch signal. Also drop
+        // bars whose OPEN is in the future (clock skew / replay). Mirrors
+        // Registry::evaluate_and_publish.
+        const FUTURE_OPEN_TOLERANCE_MS: i64 = 5_000;
+        let close_ts    = outcome.ts + tf.duration_ms();
+        let from_future = outcome.ts > now_ms + FUTURE_OPEN_TOLERANCE_MS;
+        let is_stale    = (now_ms - close_ts) > FRESHNESS_GATE_MS || from_future;
 
         // Step 1 — snapshot matching watch entries under a brief read lock.
         // `try_read` avoids blocking if an HTTP handler holds the write lock.

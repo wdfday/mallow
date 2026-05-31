@@ -72,7 +72,7 @@ impl SuperTrend {
     }
 
     pub fn description() -> &'static str {
-        "SuperTrend — ATR-based trailing stop that flips between bullish and bearish states. When price crosses above the band = bullish signal; below = bearish."
+        "SuperTrend — ATR-based trailing stop that flips between bullish and bearish states. When price crosses above the band = bullish signal; below = bearish. Outputs: `.value` (default, trend line), `.bullish` (1.0 = bullish, 0.0 = bearish)."
     }
 
     pub fn update(&mut self, high: f64, low: f64, close: f64) -> Option<SuperTrendValue> {

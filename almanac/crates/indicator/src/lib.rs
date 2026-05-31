@@ -5,7 +5,7 @@ pub mod viewing;
 pub mod util;
 
 mod box_;
-pub use box_::IndicatorBox;
+pub use box_::{field_kind, FieldKind, IndicatorBox, BOOL_FIELDS};
 
 pub use regime::RegimeDetector;
 pub use util::{RollingMax, RollingMin};

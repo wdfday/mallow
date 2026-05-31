@@ -56,7 +56,7 @@ impl Ppo {
     }
 
     pub fn description() -> &'static str {
-        "Percentage Price Oscillator — MACD expressed as a percentage of the slow EMA. Makes histogram values comparable across different price scales."
+        "Percentage Price Oscillator — MACD expressed as a percentage of the slow EMA. Makes histogram values comparable across different price scales. Outputs: `.ppo` (default, PPO line), `.signal` (signal line), `.histogram` (PPO minus signal)."
     }
 
     /// PPO(12, 26, 9) — cấu hình chuẩn, tương đương MACD mặc định.

@@ -23,38 +23,39 @@ impl RegimeDimension {
     pub fn is_known(&self) -> bool { !self.status.is_empty() }
 }
 
-/// Three-dimensional market regime state.
+/// Two-dimensional market regime state.
 ///
 /// Each dimension carries both the raw indicator value and a user-defined status label,
 /// allowing scripts to classify markets however they choose without being locked into
 /// hardcoded thresholds.
 ///
+/// Liquidity was dropped as a regime dimension: it belongs to market microstructure
+/// (spread, order-book depth) which OHLCV bars cannot measure — see
+/// `docs/strategy-regime-agentic-design.md`.
+///
 /// Produced by the regime script (if configured) and pushed into the main strategy
-/// script scope as flattened variables: `trend`, `trend_value`, `vol`, `vol_value`,
-/// `liq`, `liq_value`.
+/// script scope as flattened variables: `trend`, `trend_value`, `vol`, `vol_value`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RegimeState {
     pub trend:      RegimeDimension,
     pub volatility: RegimeDimension,
-    pub liquidity:  RegimeDimension,
 }
 
 impl RegimeState {
-    pub fn new(trend: RegimeDimension, volatility: RegimeDimension, liquidity: RegimeDimension) -> Self {
-        Self { trend, volatility, liquidity }
+    pub fn new(trend: RegimeDimension, volatility: RegimeDimension) -> Self {
+        Self { trend, volatility }
     }
 
     pub fn unknown() -> Self {
         Self {
             trend:      RegimeDimension::unknown(),
             volatility: RegimeDimension::unknown(),
-            liquidity:  RegimeDimension::unknown(),
         }
     }
 
-    /// Human-readable label, e.g. `"trending/high/normal"`.
+    /// Human-readable label, e.g. `"trending/high"`.
     pub fn label(&self) -> String {
-        format!("{}/{}/{}", self.trend.status, self.volatility.status, self.liquidity.status)
+        format!("{}/{}", self.trend.status, self.volatility.status)
     }
 }
 
@@ -85,9 +86,8 @@ mod tests {
         let r = RegimeState::new(
             RegimeDimension::new(28.0, "trending"),
             RegimeDimension::new(1.3, "high"),
-            RegimeDimension::new(0.8, "normal"),
         );
-        assert_eq!(r.label(), "trending/high/normal");
+        assert_eq!(r.label(), "trending/high");
     }
 
     #[test]
@@ -101,6 +101,6 @@ mod tests {
     fn unknown() {
         let r = RegimeState::unknown();
         assert!(!r.trend.is_known());
-        assert_eq!(r.label(), "//");
+        assert_eq!(r.label(), "/");
     }
 }

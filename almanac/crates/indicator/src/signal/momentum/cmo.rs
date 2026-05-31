@@ -49,7 +49,7 @@ impl Cmo {
     }
 
     pub fn description() -> &'static str {
-        "Chande Momentum Oscillator — variation of RSI using sum-of-gains minus sum-of-losses, scaled to ±100. Oscillates around zero instead of 0–100."
+        "Chande Momentum Oscillator — variation of RSI using sum-of-gains minus sum-of-losses, scaled to ±100. Oscillates around zero instead of 0–100. Outputs a single −100 to +100 value."
     }
 
     pub fn update(&mut self, close: f64) -> Option<f64> {

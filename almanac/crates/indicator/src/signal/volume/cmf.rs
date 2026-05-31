@@ -57,7 +57,7 @@ impl Cmf {
     }
 
     pub fn description() -> &'static str {
-        "Chaikin Money Flow — sum of money flow volume over N bars divided by total volume. Positive = buying pressure; negative = selling pressure."
+        "Chaikin Money Flow — sum of money flow volume over N bars divided by total volume. Positive = buying pressure; negative = selling pressure. Outputs a single value (−1 to +1)."
     }
 
     pub fn update(&mut self, high: f64, low: f64, close: f64, volume: f64) -> Option<f64> {

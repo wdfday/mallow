@@ -33,7 +33,7 @@ impl Bop {
     }
 
     pub fn description() -> &'static str {
-        "Balance of Power — measures the strength of buyers vs sellers as (close - open) / (high - low). Positive = buying pressure; negative = selling pressure."
+        "Balance of Power — measures the strength of buyers vs sellers as (close - open) / (high - low). Positive = buying pressure; negative = selling pressure. Outputs a single −1 to +1 value."
     }
 
     /// Tính BOP cho một bar. Không cần warmup — kết quả ngay lập tức.

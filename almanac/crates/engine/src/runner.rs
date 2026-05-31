@@ -1,5 +1,5 @@
 use crate::engine::Engine;
-use alm_core::exit::ExitRules;
+use alm_core::exit::IntraBarMode;
 use alm_core::strategy::{RiskManager, Strategy};
 use alm_data::BarVecFeed;
 use alm_report::BacktestReport;
@@ -67,7 +67,7 @@ pub fn run_portfolio<S, R, FS, FR>(
     initial_capital: f64,
     commission_pct: f64,
     slippage_pct: f64,
-    exit_rules: ExitRules,
+    intra_bar_mode: IntraBarMode,
     risk_free_annual: f64,
 ) -> PortfolioReport
 where
@@ -89,7 +89,7 @@ where
                 commission_pct,
                 slippage_pct,
             )
-            .with_exit_rules(exit_rules.clone());
+            .with_intra_bar_mode(intra_bar_mode);
             let report = engine.run(&mut feed, risk_free_annual);
             (sb.symbol, report)
         })

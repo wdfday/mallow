@@ -97,7 +97,8 @@ export class ChartState {
      *
      * Indicator series are auto-extracted from `ind.TYPE(period)` declarations
      * exactly as the herald `/api/v1/data` endpoint does. Signal outputs
-     * (`long`/`short`/`exit`) are evaluated internally but discarded.
+     * (`long`/`short`/`exit` + TP/SL) are collected into the snapshot's
+     * `signals` array as bars stream in.
      *
      * The script's own `candle.transform` directive is honoured independently
      * of the chart-level candle transform — script always operates on raw bars.
@@ -126,6 +127,13 @@ export class ChartState {
  * Standard Heikin-Ashi. Returns `{t,o,h,l,c,v}` same length as input.
  */
 export function heikin_ashi(t: Float64Array, o: Float64Array, h: Float64Array, l: Float64Array, c: Float64Array, v: Float64Array): any;
+
+/**
+ * Full indicator catalog for editor hints: `[{name, label, category, description,
+ * params:[{name,type,default}], outputs:[{name,type}]}, ...]`. Drives autocomplete,
+ * field completion, and hover docs client-side (no server round-trip).
+ */
+export function indicator_catalog(): any;
 
 export function init(): void;
 
@@ -168,3 +176,11 @@ export function run_script_backtest(symbol: string, script: string, t: Float64Ar
  * EMA-smoothed Heikin-Ashi. Warmup bars trimmed from output.
  */
 export function smooth_ha(t: Float64Array, o: Float64Array, h: Float64Array, l: Float64Array, c: Float64Array, v: Float64Array, period: number): any;
+
+/**
+ * Lint a strategy script client-side (no server round-trip).
+ *
+ * Returns `{ errors: [{line, col, message, severity}], scope: {...} }`.
+ * Pass `base_tf` as e.g. `"H1"` or `null` / empty string to skip TF checks.
+ */
+export function validate_script(script: string, base_tf: string): any;

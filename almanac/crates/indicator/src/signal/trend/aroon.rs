@@ -57,7 +57,7 @@ impl Aroon {
     }
 
     pub fn description() -> &'static str {
-        "Aroon — measures how recently the highest high and lowest low occurred within the period. High Aroon Up + low Aroon Down = strong uptrend."
+        "Aroon — measures how recently the highest high and lowest low occurred within the period. High Aroon Up + low Aroon Down = strong uptrend. Outputs: `.up` (default, Aroon Up 0–100), `.down` (Aroon Down 0–100)."
     }
 
     pub fn update(&mut self, high: f64, low: f64) -> Option<AroonValue> {
@@ -117,7 +117,7 @@ impl AroonOscillator {
     }
 
     pub fn description() -> &'static str {
-        "Aroon Oscillator — Aroon Up minus Aroon Down. Positive = uptrend, negative = downtrend. Range: −100 to +100."
+        "Aroon Oscillator — Aroon Up minus Aroon Down. Positive = uptrend, negative = downtrend. Outputs a single value (−100 to +100)."
     }
 
     pub fn update(&mut self, high: f64, low: f64) -> Option<f64> {

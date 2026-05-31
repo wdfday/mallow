@@ -31,7 +31,15 @@ fn main() -> Result<()> {
 
     let proto_file = proto_dir.join("market.proto");
 
-    println!("cargo:rerun-if-changed={}", proto_file.display());
+    // market.proto imports the others, so prost compiles them all — watch every
+    // proto file, not just the entry point, or edits to signal.proto etc. won't
+    // trigger a rebuild and the generated code goes stale.
+    for entry in std::fs::read_dir(&proto_dir)?.flatten() {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "proto") {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
 
     prost_build::compile_protos(
         &[proto_file.to_str().unwrap()],

@@ -240,7 +240,8 @@ export class ChartState {
      *
      * Indicator series are auto-extracted from `ind.TYPE(period)` declarations
      * exactly as the herald `/api/v1/data` endpoint does. Signal outputs
-     * (`long`/`short`/`exit`) are evaluated internally but discarded.
+     * (`long`/`short`/`exit` + TP/SL) are collected into the snapshot's
+     * `signals` array as bars stream in.
      *
      * The script's own `candle.transform` directive is honoured independently
      * of the chart-level candle transform — script always operates on raw bars.
@@ -325,6 +326,17 @@ export function heikin_ashi(t, o, h, l, c, v) {
     const ptr5 = passArrayF64ToWasm0(v, wasm.__wbindgen_malloc);
     const len5 = WASM_VECTOR_LEN;
     const ret = wasm.heikin_ashi(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5);
+    return ret;
+}
+
+/**
+ * Full indicator catalog for editor hints: `[{name, label, category, description,
+ * params:[{name,type,default}], outputs:[{name,type}]}, ...]`. Drives autocomplete,
+ * field completion, and hover docs client-side (no server round-trip).
+ * @returns {any}
+ */
+export function indicator_catalog() {
+    const ret = wasm.indicator_catalog();
     return ret;
 }
 
@@ -493,6 +505,24 @@ export function smooth_ha(t, o, h, l, c, v, period) {
     const ptr5 = passArrayF64ToWasm0(v, wasm.__wbindgen_malloc);
     const len5 = WASM_VECTOR_LEN;
     const ret = wasm.smooth_ha(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5, period);
+    return ret;
+}
+
+/**
+ * Lint a strategy script client-side (no server round-trip).
+ *
+ * Returns `{ errors: [{line, col, message, severity}], scope: {...} }`.
+ * Pass `base_tf` as e.g. `"H1"` or `null` / empty string to skip TF checks.
+ * @param {string} script
+ * @param {string} base_tf
+ * @returns {any}
+ */
+export function validate_script(script, base_tf) {
+    const ptr0 = passStringToWasm0(script, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(base_tf, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.validate_script(ptr0, len0, ptr1, len1);
     return ret;
 }
 export function __wbg_Error_2e59b1b37a9a34c3(arg0, arg1) {

@@ -50,7 +50,7 @@ impl Vwap {
     }
 
     pub fn description() -> &'static str {
-        "Volume-Weighted Average Price — cumulative (price × volume) / cumulative volume, resetting each session. Institutional benchmark; price above VWAP = bullish intraday bias."
+        "Volume-Weighted Average Price — cumulative (price × volume) / cumulative volume, resetting each session. Institutional benchmark; price above VWAP = bullish intraday bias. Outputs a single value (price level)."
     }
 
     pub fn update(&mut self, ts_ms: i64, high: f64, low: f64, close: f64, volume: f64) -> f64 {

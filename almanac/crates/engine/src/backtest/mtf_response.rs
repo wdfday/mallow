@@ -71,10 +71,11 @@ pub fn build<S: MtfStrategy>(
             entry_time: ms_to_iso(t.entry_timestamp),
             exit_time: ms_to_iso(t.exit_timestamp),
             pnl: t.pnl,
+            // FRACTIONS (0.1 = 10%) — FE multiplies by 100 for display.
             pnl_pct: t.pnl_pct,
             commission: t.commission,
-            mae_pct: t.mae_pct * 100.0,
-            mfe_pct: t.mfe_pct * 100.0,
+            mae_pct: t.mae_pct,
+            mfe_pct: t.mfe_pct,
             bars_held: t.bars_held,
             exit_reason: t.exit_reason.to_string(),
         })
@@ -160,6 +161,7 @@ pub fn build<S: MtfStrategy>(
         strategy: strategy_name,
         symbol,
         params: serde_json::Value::Object(Default::default()),
+        fills: Vec::new(), // MTF engine does not pyramid
         timeframe: report.timeframe.to_string(),
         bar_count,
         capital: CapitalStats {

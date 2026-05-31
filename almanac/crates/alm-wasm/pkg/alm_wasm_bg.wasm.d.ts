@@ -23,6 +23,7 @@ export const chartstate_snapshot: (a: number) => any;
 export const chartstate_symbol: (a: number) => [number, number];
 export const chartstate_update_indicator: (a: number, b: number, c: number, d: number, e: number) => any;
 export const heikin_ashi: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => any;
+export const indicator_catalog: () => any;
 export const init: () => void;
 export const list_indicators: () => any;
 export const list_strategies: () => any;
@@ -30,6 +31,7 @@ export const run_backtest: (a: number, b: number, c: number, d: number, e: numbe
 export const run_indicators: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => any;
 export const run_script_backtest: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number) => any;
 export const smooth_ha: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number) => any;
+export const validate_script: (a: number, b: number, c: number, d: number) => any;
 export const __wbindgen_exn_store: (a: number) => void;
 export const __externref_table_alloc: () => number;
 export const __wbindgen_externrefs: WebAssembly.Table;

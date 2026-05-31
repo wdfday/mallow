@@ -80,7 +80,7 @@ type handModel struct {
 	Symbols          domain.StringSlice      `gorm:"column:symbols;type:jsonb;not null;default:'[]'"`
 	Strategy         domain.StrategySpec     `gorm:"column:strategy;type:jsonb;not null;default:'{}'"`
 	Position         domain.PositionConfig   `gorm:"column:position;type:jsonb;not null;default:'{}'"`
-	Risk             domain.HandRiskConfig   `gorm:"column:risk;type:jsonb;not null;default:'{}'"`
+	Guard            domain.HandGuardConfig  `gorm:"column:risk;type:jsonb;not null;default:'{}'"`
 	Futures          *domain.FuturesConfig   `gorm:"column:futures;type:jsonb"`
 	AllocatedCapital decimal.Decimal         `gorm:"column:allocated_capital;type:numeric(20,8);not null;default:0"`
 	SignalTTLSec     int                     `gorm:"column:signal_ttl_sec;not null;default:0"`
@@ -107,7 +107,7 @@ func toModel(h *domain.Hand) *handModel {
 		Symbols:          h.Symbols,
 		Strategy:         h.Strategy,
 		Position:         h.Position,
-		Risk:             h.Risk,
+		Guard:            h.Guard,
 		Futures:          h.Futures,
 		AllocatedCapital: h.AllocatedCapital,
 		SignalTTLSec:     h.SignalTTLSec,
@@ -139,7 +139,7 @@ func toDomain(m *handModel) (*domain.Hand, error) {
 		Symbols:          m.Symbols,
 		Strategy:         m.Strategy,
 		Position:         m.Position,
-		Risk:             m.Risk,
+		Guard:            m.Guard,
 		Futures:          m.Futures,
 		AllocatedCapital: m.AllocatedCapital,
 		SignalTTLSec:     m.SignalTTLSec,

@@ -98,7 +98,7 @@ func newOKXHand(env *okxTestEnv) *runtime.Hand {
 		Mode:     tactics.SizingFixedQty,
 		FixedQty: decimal.NewFromFloat(0.001),
 	})
-	hand := runtime.NewHand(uuid.New(), env.rt.HelmID, env.rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandRiskConfig{}, decimal.Zero)
+	hand := runtime.NewHand(uuid.New(), env.rt.HelmID, env.rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
 	hand.Symbol = "BTC-USDT"
 	hand.StrategyName = "signal_follower"
 	hand.EnableEventSink()

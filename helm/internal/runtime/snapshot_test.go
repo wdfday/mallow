@@ -50,7 +50,7 @@ func addAllocatedHand(rt *runtime.HelmRuntime, symbol string, qty, allocatedCap 
 		strat, tact,
 		false, 5, 0,
 		nil, domain.OrderTypeMarket, 0, domain.LimitFallbackCancel,
-		domain.HandRiskConfig{}, decimal.NewFromFloat(allocatedCap),
+		domain.HandGuardConfig{}, decimal.NewFromFloat(allocatedCap),
 	)
 	h.Symbol = symbol
 	h.StrategyName = "signal_follower"

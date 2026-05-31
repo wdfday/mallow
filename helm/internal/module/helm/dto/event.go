@@ -15,13 +15,11 @@ type CreateForAccountReq struct {
 	Name      string
 	Exchange  domain.ExchangeConfig
 	Creds     natsapi.CredentialsFetchResp
-	Portfolio domain.PortfolioConfig
 	Risk      domain.RiskConfig
 }
 
 // UpdateReq is the patch payload for updating a Helm config.
 type UpdateReq struct {
-	Name      string
-	Portfolio *domain.PortfolioConfig
-	Risk      *domain.RiskConfig
+	Name string
+	Risk *domain.RiskConfig
 }

@@ -51,6 +51,58 @@ func applyLoss(p *portfolio.Portfolio, sym string, qty int64, entryPrice, exitPr
 	})
 }
 
+// buyFill opens/extends a long position (notional = qty×price) without closing it.
+func buyFill(p *portfolio.Portfolio, sym string, qty int64, price float64) {
+	now := time.Now()
+	p.ApplyFill(portfolio.Fill{
+		Timestamp: now,
+		Symbol:    sym,
+		Side:      portfolio.SideBuy,
+		Qty:       decimal.NewFromInt(qty),
+		Price:     decimal.NewFromFloat(price),
+	})
+	p.RecordEquity(now)
+}
+
+// ── Gross exposure ceiling ──────────────────────────────────────────────────────
+
+func TestValidate_GrossExposureCeiling(t *testing.T) {
+	pf := newPort(10_000)
+	m := risk.New(risk.Config{MaxPositions: 10, MaxGrossExposurePct: 1.0, MaxDrawdownPct: 1.0, DailyLossLimitPct: 1.0}, pf) // gross ≤ equity
+
+	// Flat: gross 0 < cap → entry approved.
+	if ok, reason := m.Validate(entryIntent("BTCUSDT", 1.0), "h1"); !ok {
+		t.Fatalf("flat account should approve entry, got blocked: %s", reason)
+	}
+
+	// Deploy full equity: 100 @ 100 = 10_000 notional == equity → at the ceiling.
+	buyFill(pf, "BTCUSDT", 100, 100)
+
+	// Pyramid add to the same symbol is now blocked by the gross ceiling (binds adds).
+	if ok, reason := m.Validate(entryIntent("BTCUSDT", 1.0), "h1"); ok {
+		t.Fatalf("add at gross ceiling should be blocked, got approved (reason=%q)", reason)
+	}
+	// A new symbol is likewise blocked.
+	if ok, _ := m.Validate(entryIntent("ETHUSDT", 1.0), "h1"); ok {
+		t.Fatal("new entry at gross ceiling should be blocked")
+	}
+
+	// Exit always passes regardless of exposure.
+	if ok, reason := m.Validate(closeIntent("BTCUSDT"), "h1"); !ok {
+		t.Fatalf("exit must always pass, got blocked: %s", reason)
+	}
+}
+
+func TestValidate_GrossExposureLeverageAllowsStacking(t *testing.T) {
+	pf := newPort(10_000)
+	m := risk.New(risk.Config{MaxPositions: 10, MaxGrossExposurePct: 2.0, MaxDrawdownPct: 1.0, DailyLossLimitPct: 1.0}, pf) // up to 2× equity
+
+	buyFill(pf, "BTCUSDT", 100, 100) // gross 10_000, cap 20_000 → still room
+	if ok, reason := m.Validate(entryIntent("BTCUSDT", 1.0), "h1"); !ok {
+		t.Fatalf("under 2× ceiling should allow pyramid add, got blocked: %s", reason)
+	}
+}
+
 // ── IsHalted ──────────────────────────────────────────────────────────────────
 
 func TestIsHalted_StartsUnhalted(t *testing.T) {
@@ -107,6 +159,30 @@ func TestResetHalt_AlsoClearsDailyHalt(t *testing.T) {
 	}
 }
 
+// TestResetHalt_RebasesPeak_NoImmediateRehalt locks the fix for the dead
+// ResetPeakToCurrentEquity wiring: after a max-drawdown halt, ResetHalt must rebase the
+// peak so the next entry is approved instead of re-halting from the stale high-water mark.
+func TestResetHalt_RebasesPeak_NoImmediateRehalt(t *testing.T) {
+	p := newPort(10_000)
+	// Daily-loss disabled (1.0) so only the drawdown gate is in play.
+	cfg := risk.Config{MaxPositions: 10, DailyLossLimitPct: 1.0, MaxDrawdownPct: 0.05}
+	m := risk.New(cfg, p)
+	applyLoss(p, "AAPL", 100, 100, 94) // 6% drawdown > 5% → halt
+
+	if ok, _ := m.Validate(entryIntent("AAPL", 0.5), "h1"); ok {
+		t.Fatal("expected halt after drawdown breach")
+	}
+	m.ResetHalt()
+
+	// Peak rebased to current equity → drawdown 0 → entry approved, not re-halted.
+	if ok, reason := m.Validate(entryIntent("MSFT", 0.5), "h1"); !ok {
+		t.Fatalf("entry should be approved after reset (peak rebased), got blocked: %s", reason)
+	}
+	if m.IsHalted() {
+		t.Fatal("manager should not re-halt after reset when drawdown is rebased to 0")
+	}
+}
+
 // ── Validate — exit intents ───────────────────────────────────────────────────
 
 func TestValidate_CloseIntent_AlwaysApproved(t *testing.T) {
@@ -138,16 +214,14 @@ func TestValidate_CloseIntent_ApprovedWhenHalted(t *testing.T) {
 
 // ── Validate — MaxPositions ───────────────────────────────────────────────────
 
-func TestValidate_MaxPositions_Zero_BlocksEntry(t *testing.T) {
+func TestValidate_MaxPositions_Zero_IsUnlimited(t *testing.T) {
 	p := newPort(10_000)
-	m := risk.New(risk.Config{MaxPositions: 0, DailyLossLimitPct: 1.0, MaxDrawdownPct: 1.0}, p)
+	// All guards disabled (0) — fully permissive. MaxPositions=0 means no breadth cap.
+	m := risk.New(risk.Config{}, p)
 
 	ok, reason := m.Validate(entryIntent("AAPL", 0.5), "test-hand")
-	if ok {
-		t.Fatal("expected entry blocked when MaxPositions=0")
-	}
-	if reason != "max positions reached" {
-		t.Fatalf("expected 'max positions reached', got %q", reason)
+	if !ok {
+		t.Fatalf("MaxPositions=0 must be unlimited (entry approved), got blocked: %s", reason)
 	}
 }
 
@@ -248,17 +322,17 @@ func TestValidate_MaxOrderRateLimit_HaltsWhenExceeded(t *testing.T) {
 
 func TestUpdateConfig_ChangesMaxPositionsImmediately(t *testing.T) {
 	p := newPort(10_000)
-	m := risk.New(risk.Config{MaxPositions: 0, DailyLossLimitPct: 1.0, MaxDrawdownPct: 1.0}, p)
+	m := risk.New(risk.Config{MaxPositions: 1}, p)
+	buyFill(p, "AAPL", 1, 100) // 1 open unit → at the MaxPositions=1 limit
 
-	ok, _ := m.Validate(entryIntent("AAPL", 0.5), "test-hand")
-	if ok {
-		t.Fatal("expected blocked with MaxPositions=0")
+	if ok, _ := m.Validate(entryIntent("MSFT", 0.5), "test-hand"); ok {
+		t.Fatal("expected new symbol blocked at MaxPositions=1")
 	}
 
-	m.UpdateConfig(risk.Config{MaxPositions: 5, DailyLossLimitPct: 0.02, MaxDrawdownPct: 0.10})
-	ok, _ = m.Validate(entryIntent("AAPL", 0.5), "test-hand")
+	m.UpdateConfig(risk.Config{MaxPositions: 5})
+	ok, reason := m.Validate(entryIntent("MSFT", 0.5), "test-hand")
 	if !ok {
-		t.Fatal("expected allowed after MaxPositions raised to 5")
+		t.Fatalf("expected allowed after MaxPositions raised to 5: %s", reason)
 	}
 }
 

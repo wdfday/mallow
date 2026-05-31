@@ -21,7 +21,7 @@ type RuntimeSpawner interface {
 	// ResetHalt clears the risk-manager halt flag on the named runtime.
 	ResetHalt(id uuid.UUID) error
 	// UpdateRiskConfig refreshes the live risk parameters for the named runtime.
-	UpdateRiskConfig(id uuid.UUID, portfolio domain.PortfolioConfig, risk domain.RiskConfig) error
+	UpdateRiskConfig(id uuid.UUID, risk domain.RiskConfig) error
 	// SyncOne triggers an async portfolio sync for the given orchestrator (fire-and-forget).
 	SyncOne(id uuid.UUID)
 	// RotateCreds updates credentials in-place and reconnects the WS stream.

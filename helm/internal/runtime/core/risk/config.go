@@ -15,6 +15,13 @@ type Config struct {
 	// when portfolio drawdown from peak exceeds this fraction (e.g. 0.10 = 10%).
 	MaxDrawdownPct float64 `json:"max_drawdown_pct"`
 
+	// MaxGrossExposurePct caps total open notional (Σ|qty|×price) as a fraction of equity.
+	// Unlike MaxPositions this DOES bind pyramid adds — it is the account-blowup ceiling that
+	// lets a hand stack aggressively up to a known limit. Entries (incl. adds) are rejected
+	// once current gross exposure ≥ this × equity. 0 disables the gate.
+	// >1 permits leverage (futures); e.g. 3.0 = up to 3× equity gross.
+	MaxGrossExposurePct float64 `json:"max_gross_exposure_pct"`
+
 	// MaxOrderRateLimit is the maximum number of approved entry/adjustments allowed per hand
 	// within OrderRateWindowSec. If exceeded, trading is halted. 0 disables this gate.
 	MaxOrderRateLimit int `json:"max_order_rate_limit"`
@@ -23,13 +30,16 @@ type Config struct {
 	OrderRateWindowSec int `json:"order_rate_window_sec"`
 }
 
-// DefaultConfig returns conservative defaults suitable for paper trading.
+// DefaultConfig returns fully permissive defaults: every guard disabled (0).
+// Guards are opt-in — the user enables a limit deliberately. Shipping a tight default
+// (e.g. 2%/day) only fires during normal testing and annoys users into editing it.
 func DefaultConfig() Config {
 	return Config{
-		MaxPositions:       5,
-		DailyLossLimitPct:  0.02,
-		MaxDrawdownPct:     0.10,
-		MaxOrderRateLimit:  15,
-		OrderRateWindowSec: 60,
+		MaxPositions:        0, // unlimited
+		DailyLossLimitPct:   0, // disabled
+		MaxDrawdownPct:      0, // disabled
+		MaxGrossExposurePct: 0, // disabled (no exposure ceiling)
+		MaxOrderRateLimit:   0, // disabled
+		OrderRateWindowSec:  0,
 	}
 }

@@ -87,11 +87,11 @@ func (s *StrategySpec) Scan(src any) error          { return jsonScan(src, s) }
 type SizeMode string
 
 const (
-	SizeModeFixedFractional SizeMode = "fixed_fractional" // scale unit by signal confidence
-	SizeModeFixedQty        SizeMode = "fixed_qty"        // fixed base quantity
-	SizeModeQuoteQty        SizeMode = "quote_qty"        // fixed quote spend per trade
-	SizeModePercentEquity   SizeMode = "percent_equity"   // fixed % of equity
-	SizeModeVolatility      SizeMode = "volatility"       // ATR-based risk parity
+	SizeModeFixedFractional SizeMode = "fixed_fractional" // Ralph Vince: risk f×equity / stop (SL → ATR fallback)
+	SizeModeFixedQty        SizeMode = "fixed_qty"        // fixed base quantity (× signal strength)
+	SizeModeQuoteQty        SizeMode = "quote_qty"        // fixed quote spend per trade (× signal strength)
+	SizeModePercentEquity   SizeMode = "percent_equity"   // notional: UnitPct × equity (× strength)
+	SizeModeVolatility      SizeMode = "volatility"       // fixed_fractional with the stop forced to ATR
 )
 
 // OrderType is the default entry order type for a hand.
@@ -128,9 +128,9 @@ const (
 //
 //	fixed_fractional → RiskPerTradePct  (Ralph Vince: f×equity / stop; SL → ATR fallback)
 //	volatility       → RiskPerTradePct  (same, stop forced to ATR)
-//	percent_equity   → UnitCapital  (if set, USDT)  or  UnitPct  (fraction of allocated)
+//	percent_equity   → UnitPct         (fraction of allocated equity per unit)
 //	fixed_qty        → FixedQty
-//	quote_qty        → FixedQuoteQty
+//	quote_qty        → FixedQuoteQty   (fixed USDT notional; use this for absolute sizing)
 type PositionConfig struct {
 	// SizeMode selects the sizing algorithm. Defaults to fixed_fractional.
 	SizeMode SizeMode `json:"size_mode,omitempty"`
@@ -141,12 +141,8 @@ type PositionConfig struct {
 	// Used by: fixed_fractional, volatility.  e.g. 0.01 = risk 1% of equity per trade.
 	RiskPerTradePct float64 `json:"risk_per_trade_pct,omitempty"`
 
-	// UnitCapital: fixed USDT amount per entry unit.
-	// Used by: percent_equity (takes priority over UnitPct when non-zero).
-	UnitCapital decimal.Decimal `json:"unit_capital,omitempty"`
-
-	// UnitPct: fraction of allocated capital per entry unit.
-	// Used by: percent_equity (fallback when UnitCapital is zero).  e.g. 0.10 = 10%.
+	// UnitPct: fraction of allocated equity deployed per entry unit.
+	// Used by: percent_equity.  e.g. 0.10 = 10% of allocated equity per unit.
 	UnitPct float64 `json:"unit_pct,omitempty"`
 
 	// FixedQty: fixed base-asset quantity per trade.
@@ -179,15 +175,15 @@ type PositionConfig struct {
 func (p PositionConfig) Value() (driver.Value, error) { return jsonValue(p) }
 func (p *PositionConfig) Scan(src any) error          { return jsonScan(src, p) }
 
-// ── HandRiskConfig ─────────────────────────────────────────────────────────────
+// ── HandGuardConfig ─────────────────────────────────────────────────────────────
 
-// HandRiskConfig holds per-hand risk settings.
-// Sizing lives in PositionConfig; portfolio-level risk lives in HelmConfig.
-//
-// Edge-degradation guard: tracks a sliding window of the last WindowTrades closed
-// trades and auto-pauses the hand when any enabled threshold is breached.
-// All threshold fields are optional — zero means disabled.
-type HandRiskConfig struct {
+// HandGuardConfig is the per-hand circuit breaker (edge-degradation guard), NOT
+// per-trade risk — sizing/stop risk lives in PositionConfig, portfolio-level risk in
+// HelmConfig. It tracks a sliding window of the last WindowTrades closed trades and
+// auto-pauses the hand when any enabled threshold is breached.
+// All threshold fields are optional — zero means disabled. Percentages are taken against
+// the hand's AllocatedCapital (required: alloc=0 hands cannot arm these guards).
+type HandGuardConfig struct {
 	// WindowTrades is the number of most-recent closed trades to evaluate.
 	// 0 disables all edge-degradation checks below.
 	WindowTrades int `json:"window_trades,omitempty"`
@@ -209,8 +205,8 @@ type HandRiskConfig struct {
 	MaxConsecLoss int `json:"max_consec_loss,omitempty"`
 }
 
-func (r HandRiskConfig) Value() (driver.Value, error) { return jsonValue(r) }
-func (r *HandRiskConfig) Scan(src any) error          { return jsonScan(src, r) }
+func (r HandGuardConfig) Value() (driver.Value, error) { return jsonValue(r) }
+func (r *HandGuardConfig) Scan(src any) error          { return jsonScan(src, r) }
 
 // ── FuturesConfig ─────────────────────────────────────────────────────────────
 
@@ -244,7 +240,7 @@ type HandConfig struct {
 	Symbols  []string
 	Strategy StrategySpec
 	Position PositionConfig
-	Risk     HandRiskConfig
+	Guard    HandGuardConfig
 	Futures  *FuturesConfig
 
 	// Top-level fields — mirror the dedicated columns on Hand.
@@ -275,7 +271,7 @@ func (c *HandConfig) Defaults() {
 	if c.Position.MaxPositionPct == 0 {
 		c.Position.MaxPositionPct = 0.20
 	}
-	if c.Position.UnitCapital.IsZero() && c.Position.UnitPct == 0 {
+	if c.Position.UnitPct == 0 {
 		c.Position.UnitPct = 0.10
 	}
 	if c.Position.MaxUnits == 0 {

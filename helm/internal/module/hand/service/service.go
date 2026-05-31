@@ -85,7 +85,7 @@ func (s *Service) hydrate(data *domain.Hand) (*runtime.HandRef, error) {
 		return nil, fmt.Errorf("no runtime for helm %q: %w", data.HelmID, err)
 	}
 	strat, tact := runtime.BuildHandComponents(data)
-	hand := runtime.NewHand(data.ID, data.HelmID, rt, strat, tact, data.Position.Pyramid, data.Position.MaxUnits, runtime.SignalTTLFor(data), data.Futures, data.OrderType, data.LimitTimeoutSec, data.LimitFallback, data.Risk, data.AllocatedCapital)
+	hand := runtime.NewHand(data.ID, data.HelmID, rt, strat, tact, data.Position.Pyramid, data.Position.MaxUnits, runtime.SignalTTLFor(data), data.Futures, data.OrderType, data.LimitTimeoutSec, data.LimitFallback, data.Guard, data.AllocatedCapital)
 	setMeta(hand, data)
 	rt.AddHand(hand)
 	if data.Status == domain.HandStatusRunning {

@@ -32,9 +32,10 @@ func (r *Registry) Spawn(cfg *helmdomain.Helm, exchCfg helmdomain.ExchangeConfig
 
 	pf := portfolio.New(decimal.Zero)
 	riskCfg := risk.Config{
-		MaxPositions:      cfg.Portfolio.MaxPositions,
-		DailyLossLimitPct: cfg.Risk.DailyLossLimitPct,
-		MaxDrawdownPct:    cfg.Risk.MaxDrawdownPct,
+		MaxPositions:        cfg.Risk.MaxPositions,
+		DailyLossLimitPct:   cfg.Risk.DailyLossLimitPct,
+		MaxDrawdownPct:      cfg.Risk.MaxDrawdownPct,
+		MaxGrossExposurePct: cfg.Risk.MaxGrossExposurePct,
 	}
 	riskMgr := risk.New(riskCfg, pf)
 

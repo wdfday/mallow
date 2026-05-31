@@ -5,6 +5,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"mallow/helm/internal/runtime/core/portfolio"
 	"mallow/helm/internal/runtime/core/strategy"
 )
@@ -105,8 +107,9 @@ func (m *Manager) Validate(intent strategy.Intent, handID string) (bool, string)
 
 	equity := m.portfolio.Equity()
 	if equity.IsPositive() {
+		// All percentage gates are opt-in: 0 = disabled (not "halt on any loss").
 		dailyPnL := m.portfolio.DailyPnL()
-		if dailyPnL.IsNegative() {
+		if m.cfg.DailyLossLimitPct > 0 && dailyPnL.IsNegative() {
 			lossRatio, _ := dailyPnL.Neg().Div(equity).Float64()
 			if lossRatio >= m.cfg.DailyLossLimitPct {
 				m.haltedDay = today
@@ -118,21 +121,23 @@ func (m *Manager) Validate(intent strategy.Intent, handID string) (bool, string)
 			}
 		}
 
-		// Gate 1b: max drawdown — halts permanently until ResetHalt.
-		if dd := m.portfolio.CurrentDrawdown(); dd >= m.cfg.MaxDrawdownPct {
-			m.halted = true
-			slog.Warn("risk: max drawdown breached — halting all trading",
-				"drawdown_pct", dd*100,
-				"limit_pct", m.cfg.MaxDrawdownPct*100,
-			)
-			return false, "max drawdown breached"
+		// Gate 1b: max drawdown — halts permanently until ResetHalt. 0 = disabled.
+		if m.cfg.MaxDrawdownPct > 0 {
+			if dd := m.portfolio.CurrentDrawdown(); dd >= m.cfg.MaxDrawdownPct {
+				m.halted = true
+				slog.Warn("risk: max drawdown breached — halting all trading",
+					"drawdown_pct", dd*100,
+					"limit_pct", m.cfg.MaxDrawdownPct*100,
+				)
+				return false, "max drawdown breached"
+			}
 		}
 	}
 
-	// Gate 3: max concurrent open units (entries only).
+	// Gate 3: max concurrent open units (entries only). 0 = unlimited.
 	// Counts all active legs across hands plus any manual portfolio positions not
 	// owned by a hand. This correctly reflects pre-existing account exposure.
-	if intent.Action.IsEntry() && m.cfg.MaxPositions >= 0 {
+	if intent.Action.IsEntry() && m.cfg.MaxPositions > 0 {
 		// Adding to an existing position is always allowed under MaxPositions.
 		if m.portfolio.GetPosition(intent.Signal.Symbol) == nil {
 			var units int
@@ -144,6 +149,17 @@ func (m *Manager) Validate(intent strategy.Intent, handID string) (bool, string)
 			if units >= m.cfg.MaxPositions {
 				return false, "max positions reached"
 			}
+		}
+	}
+
+	// Gate 4: account gross-exposure ceiling (entries AND pyramid adds).
+	// Unlike Gate 3 this binds adds — it is the account-blowup backstop that lets hands
+	// pyramid aggressively up to a known notional limit. Coarse: blocks once already at the
+	// ceiling (the incoming order may push slightly past, same as MaxPositions).
+	if intent.Action.IsEntry() && m.cfg.MaxGrossExposurePct > 0 && equity.IsPositive() {
+		ceiling := equity.Mul(decimal.NewFromFloat(m.cfg.MaxGrossExposurePct))
+		if m.portfolio.GrossExposure().GreaterThanOrEqual(ceiling) {
+			return false, "max gross exposure reached"
 		}
 	}
 
@@ -170,6 +186,10 @@ func (m *Manager) ResetHalt() {
 	m.halted = false
 	m.haltedDay = time.Time{}
 	m.handOrderTimes = make(map[string][]time.Time)
+	// Rebase the drawdown high-water mark to current equity so the max-drawdown gate
+	// measures loss from the post-reset level. Without this the next Validate recomputes
+	// the same drawdown from the stale peak and immediately re-halts.
+	m.portfolio.ResetPeakToCurrentEquity()
 	slog.Info("risk: halt reset")
 }
 
@@ -182,5 +202,6 @@ func (m *Manager) UpdateConfig(cfg Config) {
 		"max_positions", cfg.MaxPositions,
 		"daily_loss_limit_pct", cfg.DailyLossLimitPct,
 		"max_drawdown_pct", cfg.MaxDrawdownPct,
+		"max_gross_exposure_pct", cfg.MaxGrossExposurePct,
 	)
 }

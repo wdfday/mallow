@@ -120,7 +120,7 @@ func newAlpacaHand(env *alpacaTestEnv) *runtime.Hand {
 		Mode:     tactics.SizingFixedQty,
 		FixedQty: decimal.NewFromFloat(1), // 1 share minimum for Alpaca
 	})
-	hand := runtime.NewHand(uuid.New(), env.rt.HelmID, env.rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandRiskConfig{}, decimal.Zero)
+	hand := runtime.NewHand(uuid.New(), env.rt.HelmID, env.rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
 	hand.Symbol = "AAPL"
 	hand.StrategyName = "signal_follower"
 	hand.EnableEventSink()

@@ -135,7 +135,7 @@ func addHand(rt *runtime.HelmRuntime, pyramid bool, maxUnits int) *runtime.Hand 
 	handID := uuid.New()
 	strat := strategy.NewSignalFollower(0.3)
 	tact := tactics.New(tactics.DefaultSizingConfig())
-	h := runtime.NewHand(handID, rt.HelmID, rt, strat, tact, pyramid, maxUnits, 10*time.Second, nil, domain.OrderTypeMarket, 0, "", domain.HandRiskConfig{}, decimal.Zero)
+	h := runtime.NewHand(handID, rt.HelmID, rt, strat, tact, pyramid, maxUnits, 10*time.Second, nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
 	rt.AddHand(h)
 	return h
 }

@@ -42,7 +42,7 @@ func (r *Registry) Resume(id uuid.UUID) ([]string, error) {
 
 // UpdateRiskConfig updates the live risk parameters for the given helm.
 // No-op if the runtime is not active (e.g. halted/disabled).
-func (r *Registry) UpdateRiskConfig(id uuid.UUID, portfolio helmdomain.PortfolioConfig, riskCfg helmdomain.RiskConfig) error {
+func (r *Registry) UpdateRiskConfig(id uuid.UUID, riskCfg helmdomain.RiskConfig) error {
 	r.mu.RLock()
 	rt, ok := r.helmRuntimes[id]
 	r.mu.RUnlock()
@@ -50,9 +50,10 @@ func (r *Registry) UpdateRiskConfig(id uuid.UUID, portfolio helmdomain.Portfolio
 		return nil // not running; new config will be used on next Spawn
 	}
 	rt.UpdateRiskConfig(risk.Config{
-		MaxPositions:      portfolio.MaxPositions,
-		DailyLossLimitPct: riskCfg.DailyLossLimitPct,
-		MaxDrawdownPct:    riskCfg.MaxDrawdownPct,
+		MaxPositions:        riskCfg.MaxPositions,
+		DailyLossLimitPct:   riskCfg.DailyLossLimitPct,
+		MaxDrawdownPct:      riskCfg.MaxDrawdownPct,
+		MaxGrossExposurePct: riskCfg.MaxGrossExposurePct,
 	})
 	return nil
 }

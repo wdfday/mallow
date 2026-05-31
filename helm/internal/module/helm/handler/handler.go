@@ -310,10 +310,6 @@ func (h *Handler) update(c *gin.Context) {
 	updateReq := dto.UpdateReq{
 		Name: req.Name,
 	}
-	if req.Portfolio != nil {
-		p := req.Portfolio.ToDomain()
-		updateReq.Portfolio = &p
-	}
 	if req.Risk != nil {
 		r := req.Risk.ToDomain()
 		updateReq.Risk = &r

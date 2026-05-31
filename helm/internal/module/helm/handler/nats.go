@@ -179,10 +179,9 @@ func (h *NATSHandler) update(msg *nats.Msg) {
 		return
 	}
 	var raw struct {
-		ID        string                      `json:"id"`
-		Name      string                      `json:"name"`
-		Portfolio *helmDto.PortfolioConfigDTO `json:"portfolio"`
-		Risk      *helmDto.RiskConfigDTO      `json:"risk"`
+		ID   string                 `json:"id"`
+		Name string                 `json:"name"`
+		Risk *helmDto.RiskConfigDTO `json:"risk"`
 	}
 	if err := json.Unmarshal(msg.Data, &raw); err != nil {
 		_ = msg.Respond(natsapi.ReplyErr("invalid json: " + err.Error()))
@@ -199,10 +198,6 @@ func (h *NATSHandler) update(msg *nats.Msg) {
 	}
 
 	updateReq := helmDto.UpdateReq{Name: raw.Name}
-	if raw.Portfolio != nil {
-		p := raw.Portfolio.ToDomain()
-		updateReq.Portfolio = &p
-	}
 	if raw.Risk != nil {
 		r := raw.Risk.ToDomain()
 		updateReq.Risk = &r

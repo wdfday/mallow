@@ -46,17 +46,15 @@ func (s *Service) CreateForAccount(req helmDto.CreateForAccountReq) (*domain.Hel
 	if req.Name == "" {
 		req.Name = "My Helm"
 	}
-	req.Portfolio.Defaults()
 	req.Risk.Defaults()
 
 	cfg := &domain.Helm{
-		ID:          uuid.New(),
+		ID:          uuid.Must(uuid.NewV7()),
 		UserID:      req.UserID,
 		AccountID:   req.AccountID,
 		Name:        req.Name,
 		BrokerType:  req.Exchange.BrokerType,
 		AccountType: string(exchCfg.AccountType),
-		Portfolio:   req.Portfolio,
 		Risk:        req.Risk,
 		Status:      domain.HelmStatusActive,
 		CreatedAt:   time.Now().UTC(),
@@ -110,9 +108,6 @@ func (s *Service) Update(id uuid.UUID, req helmDto.UpdateReq) (*domain.Helm, err
 		if req.Name != "" {
 			o.Name = req.Name
 		}
-		if req.Portfolio != nil {
-			o.Portfolio = *req.Portfolio
-		}
 		if req.Risk != nil {
 			o.Risk = *req.Risk
 		}
@@ -122,8 +117,8 @@ func (s *Service) Update(id uuid.UUID, req helmDto.UpdateReq) (*domain.Helm, err
 		return nil, err
 	}
 	// Refresh live risk manager so new limits take effect immediately.
-	if req.Portfolio != nil || req.Risk != nil {
-		_ = s.spawner.UpdateRiskConfig(id, updated.Portfolio, updated.Risk)
+	if req.Risk != nil {
+		_ = s.spawner.UpdateRiskConfig(id, updated.Risk)
 	}
 	return updated, nil
 }

@@ -149,7 +149,7 @@ func addSimHand(rt *runtime.HelmRuntime, symbol string, qty float64, signalTTL t
 		strat, tact,
 		false, maxUnits, signalTTL,
 		nil, domain.OrderTypeMarket, 0, domain.LimitFallbackCancel,
-		domain.HandRiskConfig{}, decimal.Zero,
+		domain.HandGuardConfig{}, decimal.Zero,
 	)
 	h.Symbol = symbol
 	h.StrategyName = "signal_follower"
@@ -567,7 +567,7 @@ func TestSignal_InsufficientCapital_AutoStop(t *testing.T) {
 		strat, tact,
 		false, 1, 0,
 		nil, domain.OrderTypeMarket, 0, domain.LimitFallbackCancel,
-		domain.HandRiskConfig{}, decimal.Zero,
+		domain.HandGuardConfig{}, decimal.Zero,
 	)
 	h.Symbol = symbol
 	h.StrategyName = "signal_follower"

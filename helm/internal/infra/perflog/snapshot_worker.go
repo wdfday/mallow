@@ -35,6 +35,9 @@ type SnapshotSource interface {
 type SnapshotEmitter interface {
 	HelmStringID() string
 	BuildSnapshot(ts time.Time) *perf.Snapshot
+	// RecordEquity samples equity into the drawdown curve/peak on the worker's cadence,
+	// keeping the drawdown projection decoupled from the fill path.
+	RecordEquity(ts time.Time)
 }
 
 // SnapshotWorker is the single background goroutine that writes helm equity
@@ -88,7 +91,10 @@ func (w *SnapshotWorker) Run(ctx context.Context) {
 }
 
 func (w *SnapshotWorker) publish(ctx context.Context, rt SnapshotEmitter) {
-	snap := rt.BuildSnapshot(time.Now().UTC())
+	ts := time.Now().UTC()
+	// Sample equity → drawdown curve/peak on this cadence (post-fill debounce + heartbeat).
+	rt.RecordEquity(ts)
+	snap := rt.BuildSnapshot(ts)
 	if snap == nil {
 		return
 	}

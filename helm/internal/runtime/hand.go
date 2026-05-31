@@ -66,10 +66,10 @@ type Hand struct {
 	leverageApplied   map[string]bool // symbols where SetLeverage has been called
 
 	// ── Inbound channels ─────────────────────────────────────────────────────
-	Signals       chan Signal              // buf=1, drain-replace; always latest non-urgent signal
-	UrgentSignals chan Signal              // buf=4; exit signals, never silently dropped
+	Signals       chan Signal               // buf=1, drain-replace; always latest non-urgent signal
+	UrgentSignals chan Signal               // buf=4; exit signals, never silently dropped
 	fillCh        chan exchange.WsFillEvent // buf=8; WS full fills routed from runFillProcessor
-	eventBus      *handEventBus            // nil in production; non-nil only when EnableEventSink() is called (tests)
+	eventBus      *handEventBus             // nil in production; non-nil only when EnableEventSink() is called (tests)
 
 	// seenFills marks orders whose fill has been fully applied to the portfolio
 	// (via WS full-fill, REST-immediate, or poll fallback). Checked by handleWsFill
@@ -86,7 +86,7 @@ type Hand struct {
 
 	// ── Edge-risk guard ───────────────────────────────────────────────────────
 	// All fields written exclusively from the run-loop goroutine — no extra lock.
-	edgeRisk     domain.HandRiskConfig
+	edgeRisk     domain.HandGuardConfig
 	allocatedCap decimal.Decimal   // initial budget; zero = fall back to full portfolio equity
 	tradeRing    []decimal.Decimal // circular PnL buffer, len = edgeRisk.WindowTrades
 	ringHead     int               // next write slot in tradeRing
@@ -111,7 +111,7 @@ type Hand struct {
 	pendingExits    map[string]exitPending  // orderID → raw SL/TP from signal; resolved on entry fill
 	exitLevels      map[string]exitLevel    // symbol → active local SL/TP safety net
 	pos             *position.HandPositions // in-memory mirror of poslog
-	pendingOrderPos    map[string]string       // orderID → positionID for fill/cancel attribution
+	pendingOrderPos map[string]string       // orderID → positionID for fill/cancel attribution
 	// pendingCancels tracks bracket/OCO order IDs that helm itself initiated a cancel for.
 	// When OrderEventCanceled arrives, IDs in this set are normal cleanup (OCO sibling closed);
 	// IDs NOT in this set are external cancels (user closed position manually at exchange).

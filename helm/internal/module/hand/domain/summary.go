@@ -17,7 +17,7 @@ type HandSummary struct {
 	HelmID           uuid.UUID       `json:"helm_id"`
 	Strategy         StrategySpec    `json:"strategy"`
 	Position         PositionConfig  `json:"position"`
-	Risk             HandRiskConfig  `json:"risk"`
+	Guard            HandGuardConfig `json:"risk"`
 	Symbols          []string        `json:"symbols"`
 	Status           HandStatus      `json:"status"`
 	Running          bool            `json:"running"`

@@ -16,20 +16,21 @@ type StrategyDTO = domain.StrategySpec
 // AllocatedCapital and SignalTTLSec live on the parent request (CreateHandReq / UpdateHandReq),
 // not here — they are first-class columns, not part of the position JSONB.
 type PositionDTO struct {
-	SizeMode        domain.SizeMode `json:"size_mode,omitempty" binding:"omitempty,oneof=fixed_fractional fixed_qty quote_qty percent_equity volatility"`
-	UnitCapital     float64         `json:"unit_capital,omitempty" binding:"omitempty,gte=0"`
-	UnitPct         float64         `json:"unit_pct,omitempty" binding:"omitempty,gt=0,lte=1"`
-	FixedQty        float64         `json:"fixed_qty,omitempty" binding:"omitempty,gt=0"`
-	FixedQuoteQty   float64         `json:"fixed_quote_qty,omitempty" binding:"omitempty,gt=0"`
-	MaxUnits        int             `json:"max_units,omitempty" binding:"omitempty,min=1"`
-	Pyramid         bool            `json:"pyramid,omitempty"`
-	RiskPerTradePct float64         `json:"risk_per_trade_pct,omitempty" binding:"omitempty,gt=0,lte=1"`
-	MaxPositionPct  float64         `json:"max_position_pct,omitempty" binding:"omitempty,gt=0,lte=1"`
+	SizeMode      domain.SizeMode `json:"size_mode,omitempty" binding:"omitempty,oneof=fixed_fractional fixed_qty quote_qty percent_equity volatility"`
+	UnitPct       float64         `json:"unit_pct,omitempty" binding:"omitempty,gt=0,lte=1"`
+	FixedQty      float64         `json:"fixed_qty,omitempty" binding:"omitempty,gt=0"`
+	FixedQuoteQty float64         `json:"fixed_quote_qty,omitempty" binding:"omitempty,gt=0"`
+	MaxUnits      int             `json:"max_units,omitempty" binding:"omitempty,min=1"`
+	Pyramid       bool            `json:"pyramid,omitempty"`
+	// RiskPerTradePct: fraction of equity risked per trade (Ralph Vince). Capped at 0.1
+	// (10%) — risking more than that per trade is reckless, one stop-out near-wipes the book.
+	RiskPerTradePct float64 `json:"risk_per_trade_pct,omitempty" binding:"omitempty,gt=0,lte=0.1"`
+	MaxPositionPct  float64 `json:"max_position_pct,omitempty" binding:"omitempty,gt=0,lte=1"`
 }
 
-// HandRiskConfigDTO is the API representation of per-hand edge-degradation settings.
+// HandGuardConfigDTO is the API representation of per-hand edge-degradation settings.
 // All fields are optional; zero means disabled.
-type HandRiskConfigDTO struct {
+type HandGuardConfigDTO struct {
 	WindowTrades     int     `json:"window_trades,omitempty"      binding:"omitempty,min=1,max=1000"`
 	MaxTotalLossPct  float64 `json:"max_total_loss_pct,omitempty"  binding:"omitempty,gt=0,lte=1"`
 	MaxAvgLossPct    float64 `json:"max_avg_loss_pct,omitempty"    binding:"omitempty,gt=0,lte=1"`
@@ -50,7 +51,6 @@ func strategyToDomain(d StrategyDTO) domain.StrategySpec { return d }
 func positionToDomain(d PositionDTO) domain.PositionConfig {
 	return domain.PositionConfig{
 		SizeMode:        d.SizeMode,
-		UnitCapital:     decimal.NewFromFloat(d.UnitCapital),
 		UnitPct:         d.UnitPct,
 		FixedQty:        decimal.NewFromFloat(d.FixedQty),
 		FixedQuoteQty:   decimal.NewFromFloat(d.FixedQuoteQty),
@@ -61,8 +61,8 @@ func positionToDomain(d PositionDTO) domain.PositionConfig {
 	}
 }
 
-func riskToDomain(d HandRiskConfigDTO) domain.HandRiskConfig {
-	return domain.HandRiskConfig{
+func guardToDomain(d HandGuardConfigDTO) domain.HandGuardConfig {
+	return domain.HandGuardConfig{
 		WindowTrades:     d.WindowTrades,
 		MaxTotalLossPct:  d.MaxTotalLossPct,
 		MaxAvgLossPct:    d.MaxAvgLossPct,

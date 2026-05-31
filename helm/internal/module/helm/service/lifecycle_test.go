@@ -142,7 +142,7 @@ func (m *mockSpawner) ResetHalt(id uuid.UUID) error {
 	return m.resetHaltErr
 }
 
-func (m *mockSpawner) UpdateRiskConfig(id uuid.UUID, _ domain.PortfolioConfig, _ domain.RiskConfig) error {
+func (m *mockSpawner) UpdateRiskConfig(id uuid.UUID, _ domain.RiskConfig) error {
 	m.updateRiskCalled = append(m.updateRiskCalled, id)
 	return nil
 }

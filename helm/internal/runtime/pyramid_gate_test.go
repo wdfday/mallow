@@ -31,7 +31,7 @@ func addPyramidHand(rt *runtime.HelmRuntime, symbol string, qty float64, maxUnit
 		strat, tact,
 		true, maxUnits, 0, // pyramid=true
 		nil, domain.OrderTypeMarket, 0, domain.LimitFallbackCancel,
-		domain.HandRiskConfig{}, decimal.Zero,
+		domain.HandGuardConfig{}, decimal.Zero,
 	)
 	h.Symbol = symbol
 	h.StrategyName = "signal_follower"

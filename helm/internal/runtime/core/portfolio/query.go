@@ -39,6 +39,21 @@ func (p *Portfolio) Equity() decimal.Decimal {
 	return p.equityLocked()
 }
 
+// GrossExposure returns the total open notional across all positions, |Qty| × CurrentPrice
+// (longs and shorts both add to exposure). Used by the risk manager's account-level
+// exposure ceiling. Phantom shorts (transient negative-Qty bookkeeping) are excluded.
+func (p *Portfolio) GrossExposure() decimal.Decimal {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	gross := decimal.Zero
+	for _, pos := range p.positions {
+		if pos.Qty.IsPositive() {
+			gross = gross.Add(pos.Qty.Mul(pos.CurrentPrice))
+		}
+	}
+	return gross
+}
+
 // Positions returns a snapshot of all open long positions.
 // Negative-Qty entries (transient phantom shorts absorbing out-of-order fills)
 // are excluded — they are bookkeeping state, not real open exposure.

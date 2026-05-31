@@ -66,7 +66,7 @@ func addIntegrationHandEx(rt *runtime.HelmRuntime, symbol string, qty decimal.De
 		strat, tact,
 		pyramid, maxUnits, 0,
 		nil, domain.OrderTypeMarket, 0, domain.LimitFallbackCancel,
-		domain.HandRiskConfig{}, allocCap,
+		domain.HandGuardConfig{}, allocCap,
 	)
 	h.Symbol = symbol
 	h.StrategyName = "signal_follower"
@@ -563,6 +563,12 @@ func TestSnapshotIntegration_Binance_Pyramid(t *testing.T) {
 		level := i + 1
 		t.Logf("── pyramid level %d ──────────────────", level)
 
+		// Avg-anchor gate adds only to a winning leg (price beyond the blended avg).
+		// Live ticks barely move within the test window, so step the known price up
+		// each level to keep the leg "winning"; level 1 (flat leg) is never gated.
+		price = price.Mul(decimal.NewFromFloat(1.001))
+		rt.UpdatePrice(symbol, price)
+
 		placed := orderNotifyNew(hand, lastFillOrderID, 20*time.Second)
 		hand.DeliverSignal(longSignalFor(symbol))
 
@@ -775,7 +781,11 @@ func TestSnapshotIntegration_Binance_PyramidRoundTrip(t *testing.T) {
 	}
 
 	// ── Stage 2: pyramid entry ─────────────────────────────────────────────────
+	// Avg-anchor gate adds only to a winning leg (price beyond the blended avg). Nudge
+	// the known price above the entry avg so the add isn't blocked — a live tick rarely
+	// moves on its own within the test window.
 	t.Log("═══ Stage 2: pyramid entry ═══")
+	rt.UpdatePrice(symbol, price.Mul(decimal.NewFromFloat(1.001)))
 	id2 := placeAndWait(longSignalFor(symbol), id1, "pyramid")
 	logStageSnaps("pyramid entry")
 

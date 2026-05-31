@@ -73,9 +73,10 @@ CREATE TABLE IF NOT EXISTS helms (
     name             TEXT            NOT NULL,
     broker_type      TEXT            NOT NULL DEFAULT '',     -- alpaca | binance | okx | bybit
     account_type     TEXT            NOT NULL DEFAULT '',     -- spot | futures_usdm | futures_coinm | unified
-    portfolio_config JSONB           NOT NULL DEFAULT '{}',   -- PortfolioConfig: allocation rules
-    risk_config      JSONB           NOT NULL DEFAULT '{}',   -- RiskConfig: circuit-breakers
-    enabled          BOOLEAN         NOT NULL DEFAULT FALSE,  -- user toggle; gates hand CRUD
+    -- RiskConfig: account-level guards (all opt-in, 0 = disabled): max_positions,
+    -- daily_loss_limit_pct, max_drawdown_pct, max_gross_exposure_pct. PortfolioConfig was
+    -- folded in here — there is no separate portfolio_config column.
+    risk_config      JSONB           NOT NULL DEFAULT '{}',
     status           TEXT            NOT NULL DEFAULT 'active'
                      CHECK (status IN ('active', 'paused', 'halted', 'disabled')),
     last_synced_at   TIMESTAMPTZ,                             -- last successful REST sync
@@ -89,7 +90,7 @@ CREATE INDEX IF NOT EXISTS idx_helms_account_id ON helms(account_id);
 -- ── hands ─────────────────────────────────────────────────────────────────────
 
 CREATE TABLE IF NOT EXISTS hands (
-    id       TEXT    PRIMARY KEY,
+    id       UUID    PRIMARY KEY,   -- app-generated UUIDv7 (hand repo GenerateID)
     helm_id  UUID    NOT NULL REFERENCES helms(id) ON DELETE CASCADE,
     name     TEXT    NOT NULL,
     type     TEXT    NOT NULL DEFAULT 'signal_follower'
@@ -99,7 +100,7 @@ CREATE TABLE IF NOT EXISTS hands (
     symbols  JSONB   NOT NULL DEFAULT '[]',  -- []string
     strategy JSONB   NOT NULL DEFAULT '{}',  -- StrategySpec
     position JSONB   NOT NULL DEFAULT '{}',  -- PositionConfig: per-trade sizing only
-    risk     JSONB   NOT NULL DEFAULT '{}',  -- HandRiskConfig: edge-degradation guard
+    risk     JSONB   NOT NULL DEFAULT '{}',  -- HandGuardConfig: per-hand edge-degradation circuit breaker (json key kept as "risk")
     futures  JSONB,                          -- FuturesConfig; NULL when market = 'spot'
     -- Capital budget: first-class column so it is queryable and aggregatable.
     -- Zero = hand draws from full helm equity without isolation.

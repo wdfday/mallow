@@ -149,7 +149,7 @@ func newBinanceHand(env *binanceTestEnv) *runtime.Hand {
 		Mode:     tactics.SizingFixedQty,
 		FixedQty: decimal.NewFromFloat(0.001),
 	})
-	hand := runtime.NewHand(uuid.New(), env.rt.HelmID, env.rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandRiskConfig{}, decimal.Zero)
+	hand := runtime.NewHand(uuid.New(), env.rt.HelmID, env.rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
 	hand.Symbol = "BTCUSDT"
 	hand.StrategyName = "signal_follower"
 	hand.EnableEventSink()
@@ -373,7 +373,7 @@ func TestBinance_PyramidAndKill(t *testing.T) {
 		domain.OrderTypeMarket,
 		0,  // limitTimeoutSec = 0
 		"", // limitFallback = ""
-		domain.HandRiskConfig{},
+		domain.HandGuardConfig{},
 		decimal.Zero,
 	)
 	hand.Symbol = symbol
@@ -421,7 +421,10 @@ func TestBinance_PyramidAndKill(t *testing.T) {
 	}
 	t.Logf("position after 1st fill: qty=%s avg_px=%s", pos.Qty, pos.AvgPrice)
 
-	// Deliver 2nd signal (Pyramid Add).
+	// Deliver 2nd signal (Pyramid Add). The avg-anchor gate only adds to a winning leg
+	// (price beyond the blended avg), so nudge the known price above the entry avg first —
+	// a live tick rarely moves on its own within the test window.
+	env.rt.UpdatePrice(symbol, pos.AvgPrice.Mul(decimal.NewFromFloat(1.001)))
 	placed2 := orderNotifyNew(hand, fill1OrderID, 20*time.Second)
 	filled2 := fillNotify(hand, 30*time.Second)
 	hand.DeliverSignal(longSigWithSLTP(symbol, decimal.Zero, decimal.Zero, false))

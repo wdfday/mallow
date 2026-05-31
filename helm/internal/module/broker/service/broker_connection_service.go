@@ -96,7 +96,7 @@ func (s *brokerConnectionService) Create(ctx context.Context, req *dto.CreateBro
 	}
 
 	conn := &domain.BrokerConnection{
-		ID:         uuid.New(),
+		ID:         uuid.Must(uuid.NewV7()),
 		UserID:     req.UserID,
 		BrokerType: req.BrokerType,
 		BrokerName: req.BrokerName,
@@ -197,7 +197,7 @@ func (s *brokerConnectionService) ensureLinkedAccount(ctx context.Context, conn 
 	}
 
 	account := &accountDomain.Account{
-		ID:                 uuid.New(),
+		ID:                 uuid.Must(uuid.NewV7()),
 		UserID:             conn.UserID,
 		AccountName:        accountName,
 		AccountType:        accountType,
@@ -382,10 +382,10 @@ func (s *brokerConnectionService) RotateKey(ctx context.Context, id, userID uuid
 	}
 
 	newCreds := client.Credentials{
-		APIKey:      req.APIKey,
-		APISecret:   req.APISecret,
-		Passphrase:  req.Passphrase,
-		IsPaper:     conn.IsPaper,
+		APIKey:     req.APIKey,
+		APISecret:  req.APISecret,
+		Passphrase: req.Passphrase,
+		IsPaper:    conn.IsPaper,
 	}
 
 	// Validate before touching the DB — fail fast if the new key is bad.

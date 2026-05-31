@@ -34,7 +34,7 @@ func NewHand(
 	orderType domain.OrderType,
 	limitTimeoutSec int,
 	limitFallback domain.LimitFallback,
-	edgeRisk domain.HandRiskConfig,
+	edgeRisk domain.HandGuardConfig,
 	allocatedCap decimal.Decimal,
 ) *Hand {
 	if maxUnits <= 0 {
@@ -113,7 +113,6 @@ func BuildHandComponents(b *domain.Hand) (strategy.Strategy, *tactics.Tactician)
 
 	sc := tactics.SizingConfig{
 		Mode:            sizingMode,
-		UnitCapital:     b.Position.UnitCapital,
 		UnitPct:         b.Position.UnitPct,
 		RiskPerTradePct: b.Position.RiskPerTradePct,
 		MaxPositionPct:  b.Position.MaxPositionPct,

@@ -103,6 +103,10 @@ type HelmRuntime struct {
 	// The snapshot goroutine owns correctness; fills only provide a timing hint.
 	snapshotDirty atomic.Int32
 
+	// syncScheduled is 1 while a debounced post-order REST sync is pending.
+	// Set by MarkSyncDirty (after fills); coalesces a fill burst into a single sync.
+	syncScheduled atomic.Int32
+
 	// ── Durability ───────────────────────────────────────────────────────────
 	// nil fields degrade gracefully: poslog events are lost, events go to slog only.
 	PosLog    poslog.Log            // JetStream WAL for position events

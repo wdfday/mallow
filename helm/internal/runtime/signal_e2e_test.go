@@ -112,7 +112,7 @@ func newFixedQtyHand(rt *runtime.HelmRuntime, qty decimal.Decimal) *runtime.Hand
 		Mode:     tactics.SizingFixedQty,
 		FixedQty: qty,
 	})
-	h := runtime.NewHand(uuid.New(), rt.HelmID, rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandRiskConfig{}, decimal.Zero)
+	h := runtime.NewHand(uuid.New(), rt.HelmID, rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
 	h.EnableEventSink()
 	return h
 }

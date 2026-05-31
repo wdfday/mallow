@@ -19,17 +19,12 @@ import (
 
 // ── Config DTOs ────────────────────────────────────────────────────────────
 
-// PortfolioConfigDTO is the API shape for account-level capital allocation settings.
-type PortfolioConfigDTO struct {
-	MaxPositions   int     `json:"max_positions,omitempty" binding:"omitempty,min=1"`
-	MaxPositionPct float64 `json:"max_position_pct,omitempty" binding:"omitempty,gt=0,lte=1"`
-	ReserveRatio   float64 `json:"reserve_ratio,omitempty" binding:"omitempty,gte=0,lt=1"`
-}
-
-// RiskConfigDTO is the API shape for account-level risk circuit-breakers.
+// RiskConfigDTO is the API shape for account-level risk circuit-breakers / guards.
 type RiskConfigDTO struct {
-	DailyLossLimitPct float64 `json:"daily_loss_limit_pct,omitempty" binding:"omitempty,gt=0,lte=1"`
-	MaxDrawdownPct    float64 `json:"max_drawdown_pct,omitempty" binding:"omitempty,gt=0,lte=1"`
+	MaxPositions        int     `json:"max_positions,omitempty" binding:"omitempty,min=1"`
+	DailyLossLimitPct   float64 `json:"daily_loss_limit_pct,omitempty" binding:"omitempty,gt=0,lte=1"`
+	MaxDrawdownPct      float64 `json:"max_drawdown_pct,omitempty" binding:"omitempty,gt=0,lte=1"`
+	MaxGrossExposurePct float64 `json:"max_gross_exposure_pct,omitempty" binding:"omitempty,gt=0,lte=20"`
 }
 
 // ── Response DTOs ──────────────────────────────────────────────────────────
@@ -432,33 +427,21 @@ type EquityPageResp struct {
 
 // ── Conversions ────────────────────────────────────────────────────────────
 
-func (d PortfolioConfigDTO) ToDomain() domain.PortfolioConfig {
-	return domain.PortfolioConfig{
-		MaxPositions:   d.MaxPositions,
-		MaxPositionPct: d.MaxPositionPct,
-		ReserveRatio:   d.ReserveRatio,
-	}
-}
-
-func portfolioToDTO(p domain.PortfolioConfig) PortfolioConfigDTO {
-	return PortfolioConfigDTO{
-		MaxPositions:   p.MaxPositions,
-		MaxPositionPct: p.MaxPositionPct,
-		ReserveRatio:   p.ReserveRatio,
-	}
-}
-
 func (d RiskConfigDTO) ToDomain() domain.RiskConfig {
 	return domain.RiskConfig{
-		DailyLossLimitPct: d.DailyLossLimitPct,
-		MaxDrawdownPct:    d.MaxDrawdownPct,
+		MaxPositions:        d.MaxPositions,
+		DailyLossLimitPct:   d.DailyLossLimitPct,
+		MaxDrawdownPct:      d.MaxDrawdownPct,
+		MaxGrossExposurePct: d.MaxGrossExposurePct,
 	}
 }
 
 func riskToDTO(r domain.RiskConfig) RiskConfigDTO {
 	return RiskConfigDTO{
-		DailyLossLimitPct: r.DailyLossLimitPct,
-		MaxDrawdownPct:    r.MaxDrawdownPct,
+		MaxPositions:        r.MaxPositions,
+		DailyLossLimitPct:   r.DailyLossLimitPct,
+		MaxDrawdownPct:      r.MaxDrawdownPct,
+		MaxGrossExposurePct: r.MaxGrossExposurePct,
 	}
 }
 

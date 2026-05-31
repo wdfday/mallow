@@ -173,7 +173,6 @@ func (r *HelmRuntime) ReportFill(fill helmdomain.FillReport) {
 		pfSide = portfolio.SideSell
 	}
 
-	now := time.Now().UTC()
 	// Apply to portfolio: adjusts cash and positions. This is what makes
 	// subsequent ProcessTrade calls see the correct open exposure.
 	r.Portfolio.ApplyFill(portfolio.Fill{
@@ -197,14 +196,16 @@ func (r *HelmRuntime) ReportFill(fill helmdomain.FillReport) {
 		}
 	}
 
-	// Record an equity data point so RiskMgr can evaluate maxDrawdown on the next trade.
-	r.Portfolio.RecordEquity(now)
-
 	r.tradeMu.Unlock()
 
-	// Hint to the snapshot loop: a fill just landed, flush within snapshotDebounce.
-	// This is a timing hint only — snapshot correctness does not depend on it.
+	// Fills do NOT touch the equity curve / drawdown peak — those are a sampled
+	// projection owned by the SnapshotWorker (after-order debounce + 60s heartbeat),
+	// not an event-sourced aggregate. Fills only emit timing hints:
+	//   MarkSnapshotDirty → worker samples equity (RecordEquity) + emits within 500ms.
+	//   MarkSyncDirty     → debounced REST sync (~3s) reconciles cash/positions to the
+	//                       exchange truth (settlement-safe; optimistic state covers the gap).
 	r.MarkSnapshotDirty()
+	r.MarkSyncDirty()
 }
 
 // helmSnapshot builds a helm-level Snapshot from current portfolio state.
@@ -240,6 +241,43 @@ func (r *HelmRuntime) helmSnapshot(ts time.Time) *perf.Snapshot {
 // This is a timing hint only — snapshot correctness does not depend on it.
 func (r *HelmRuntime) MarkSnapshotDirty() {
 	r.snapshotDirty.Store(1)
+}
+
+// RecordEquity samples the current equity into the equity curve and advances the
+// drawdown high-water mark. Called by the SnapshotWorker on its cadence (post-fill
+// debounce + 60s heartbeat) — NOT from the fill path — so the drawdown peak is a
+// time-sampled projection, not driven by any single fill's instantaneous mark-to-market.
+func (r *HelmRuntime) RecordEquity(ts time.Time) {
+	r.Portfolio.RecordEquity(ts)
+}
+
+// syncDebounce coalesces a burst of fills (e.g. pyramid stacking) into a single
+// post-order REST sync, and delays it enough for exchange settlement so ApplySync
+// reconciles fees/rounding instead of clobbering a not-yet-acknowledged fill.
+const syncDebounce = 3 * time.Second
+
+// MarkSyncDirty schedules a single debounced REST sync after an order. Coalesced:
+// concurrent fills within the debounce window collapse into one sync. The optimistic
+// portfolio state (ApplyFill) covers reads until the sync lands.
+func (r *HelmRuntime) MarkSyncDirty() {
+	if !r.syncScheduled.CompareAndSwap(0, 1) {
+		return // a sync is already scheduled for this window
+	}
+	time.AfterFunc(syncDebounce, func() {
+		r.syncScheduled.Store(0)
+		select {
+		case <-r.stopCh:
+			return // runtime stopped
+		default:
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := r.Sync(ctx); err != nil {
+			slog.Warn("helm: post-order sync failed", "helm_id", r.HelmID, "err", err)
+			return
+		}
+		r.persistSyncTime()
+	})
 }
 
 // BuildSnapshot returns the current helm-level portfolio snapshot.

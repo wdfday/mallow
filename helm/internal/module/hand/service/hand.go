@@ -154,7 +154,7 @@ func (s *Service) Create(cfg domain.HandConfig) (*runtime.HandRef, error) {
 	}
 
 	strat, tact := runtime.BuildHandComponents(data)
-	hand := runtime.NewHand(id, cfg.HelmID, rt, strat, tact, data.Position.Pyramid, data.Position.MaxUnits, runtime.SignalTTLFor(data), data.Futures, data.OrderType, data.LimitTimeoutSec, data.LimitFallback, data.Risk, data.AllocatedCapital)
+	hand := runtime.NewHand(id, cfg.HelmID, rt, strat, tact, data.Position.Pyramid, data.Position.MaxUnits, runtime.SignalTTLFor(data), data.Futures, data.OrderType, data.LimitTimeoutSec, data.LimitFallback, data.Guard, data.AllocatedCapital)
 	setMeta(hand, data)
 	rt.AddHand(hand)
 	bi := &runtime.HandRef{Data: data, Runner: hand, Exchange: rt.Exchange}
@@ -166,7 +166,7 @@ func (s *Service) Create(cfg domain.HandConfig) (*runtime.HandRef, error) {
 	return bi, nil
 }
 
-// Update patches mutable fields: Name, Position sizing, and Risk exit rules.
+// Update patches mutable fields: Name, Position sizing, and Guard exit rules.
 // Symbols, Strategy, Type, and Market are immutable after creation.
 // The hand must be stopped before updating.
 func (s *Service) Update(id uuid.UUID, patch domain.HandConfig) error {
@@ -188,8 +188,8 @@ func (s *Service) Update(id uuid.UUID, patch domain.HandConfig) error {
 		if patch.Position.SizeMode != "" {
 			d.Position = patch.Position
 		}
-		if patch.Risk != (domain.HandRiskConfig{}) {
-			d.Risk = patch.Risk
+		if patch.Guard != (domain.HandGuardConfig{}) {
+			d.Guard = patch.Guard
 		}
 		return nil
 	}); err != nil {
@@ -207,7 +207,7 @@ func (s *Service) Update(id uuid.UUID, patch domain.HandConfig) error {
 	if rt, _ := s.registry.Get(orchID); rt != nil {
 		rt.RemoveHand(id.String())
 		strat, tact := runtime.BuildHandComponents(updated)
-		bi.Runner = runtime.NewHand(updated.ID, orchID, rt, strat, tact, updated.Position.Pyramid, updated.Position.MaxUnits, runtime.SignalTTLFor(updated), updated.Futures, updated.OrderType, updated.LimitTimeoutSec, updated.LimitFallback, updated.Risk, updated.AllocatedCapital)
+		bi.Runner = runtime.NewHand(updated.ID, orchID, rt, strat, tact, updated.Position.Pyramid, updated.Position.MaxUnits, runtime.SignalTTLFor(updated), updated.Futures, updated.OrderType, updated.LimitTimeoutSec, updated.LimitFallback, updated.Guard, updated.AllocatedCapital)
 		setMeta(bi.Runner, updated)
 		rt.AddHand(bi.Runner)
 	}

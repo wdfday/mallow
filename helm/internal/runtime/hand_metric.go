@@ -105,7 +105,7 @@ func (b *HandRef) Summary() handdomain.HandSummary {
 		HelmID:           b.Data.HelmID,
 		Strategy:         b.Data.Strategy,
 		Position:         b.Data.Position,
-		Risk:             b.Data.Risk,
+		Guard:            b.Data.Guard,
 		Symbols:          []string(b.Data.Symbols),
 		Status:           b.Data.Status,
 		Running:          b.Runner.IsRunning(),

@@ -104,8 +104,8 @@ const (
 	// Sets ExecutionPlan.QuoteQty; the exchange determines base qty at fill time.
 	SizingQuoteQty SizingMode = "quote_qty"
 
-	// SizingPercentEquity is plain notional sizing: deploy one unit of capital.
-	// qty = unit / price   (unit = UnitCapital, or UnitPct/MaxPositionPct × equity)
+	// SizingPercentEquity is plain notional sizing: deploy a fraction of equity per unit.
+	// qty = (UnitPct × equity × strength) / price. For absolute USDT notional, use quote_qty.
 	SizingPercentEquity SizingMode = "percent_equity"
 
 	// SizingVolatility is fixed fractional with the stop forced to ATR (volatility parity):
@@ -121,16 +121,15 @@ const (
 type SizingConfig struct {
 	Mode SizingMode `json:"mode"`
 
-	// Per-trade unit: how much capital to deploy in a single entry.
-	// UnitCapital (fixed) takes priority over UnitPct.
-	// Both zero → fall back to MaxPositionPct × allocatedEquity.
-	UnitCapital decimal.Decimal `json:"unit_capital,omitempty"`
-	UnitPct     float64         `json:"unit_pct,omitempty"`
+	// UnitPct is the fraction of allocated equity deployed per entry unit.
+	// Used only by SizingPercentEquity (e.g. 0.10 = 10% of equity per unit).
+	UnitPct float64 `json:"unit_pct,omitempty"`
 
-	// RiskPerTradePct is used only by SizingVolatility (e.g. 0.01 = 1%).
+	// RiskPerTradePct is used by SizingFixedFractional and SizingVolatility (e.g. 0.01 = 1%).
 	RiskPerTradePct float64 `json:"risk_per_trade_pct"`
 
-	// MaxPositionPct is the legacy fallback when UnitCapital and UnitPct are both zero.
+	// MaxPositionPct is the notional exposure ceiling as a fraction of equity (cap only —
+	// it never sources position size). Zero → default 100% of equity.
 	MaxPositionPct float64 `json:"max_position_pct"`
 
 	// FixedQty is used only by SizingFixedQty.

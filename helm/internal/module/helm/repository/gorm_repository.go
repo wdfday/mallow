@@ -19,27 +19,22 @@ type GORMHelmRepo struct{ db *gorm.DB }
 func New(db *gorm.DB) *GORMHelmRepo { return &GORMHelmRepo{db: db} }
 
 func (r *GORMHelmRepo) Save(o *domain.Helm) error {
-	pfJSON, err := jsonMarshal(o.Portfolio)
-	if err != nil {
-		return fmt.Errorf("marshal portfolio: %w", err)
-	}
 	riskJSON, err := jsonMarshal(o.Risk)
 	if err != nil {
 		return fmt.Errorf("marshal risk: %w", err)
 	}
 	m := helmModel{
-		ID:              o.ID.String(),
-		UserID:          o.UserID.String(),
-		AccountID:       o.AccountID.String(),
-		Name:            o.Name,
-		BrokerType:      o.BrokerType,
-		AccountType:     o.AccountType,
-		PortfolioConfig: pfJSON,
-		RiskConfig:      riskJSON,
-		Status:          string(o.Status),
-		LastSyncedAt:    o.LastSyncedAt,
-		CreatedAt:       o.CreatedAt,
-		UpdatedAt:       o.UpdatedAt,
+		ID:           o.ID.String(),
+		UserID:       o.UserID.String(),
+		AccountID:    o.AccountID.String(),
+		Name:         o.Name,
+		BrokerType:   o.BrokerType,
+		AccountType:  o.AccountType,
+		RiskConfig:   riskJSON,
+		Status:       string(o.Status),
+		LastSyncedAt: o.LastSyncedAt,
+		CreatedAt:    o.CreatedAt,
+		UpdatedAt:    o.UpdatedAt,
 	}
 	return r.db.Save(&m).Error
 }
@@ -97,7 +92,6 @@ func (r *GORMHelmRepo) UpdateLastSyncedAt(id uuid.UUID, t time.Time) error {
 	})
 }
 
-
 func (r *GORMHelmRepo) Delete(id uuid.UUID) error {
 	res := r.db.Delete(&helmModel{}, "id = ?", id.String())
 	if res.Error != nil {
@@ -118,18 +112,17 @@ func (r *GORMHelmRepo) Delete(id uuid.UUID) error {
 //	ALTER TABLE helms DROP COLUMN IF EXISTS capital;
 //	ALTER TABLE helms DROP COLUMN IF EXISTS exchange_config;
 type helmModel struct {
-	ID              string     `gorm:"column:id;type:uuid;primaryKey"`
-	UserID          string     `gorm:"column:user_id;type:uuid;not null;index:idx_helms_user_id"`
-	AccountID       string     `gorm:"column:account_id;type:uuid;not null;uniqueIndex"`
-	Name            string     `gorm:"column:name;not null"`
-	BrokerType      string     `gorm:"column:broker_type;not null;default:''"`
-	AccountType     string     `gorm:"column:account_type;not null;default:''"`
-	PortfolioConfig []byte     `gorm:"column:portfolio_config;type:jsonb;not null;default:'{}'"`
-	RiskConfig      []byte     `gorm:"column:risk_config;type:jsonb;not null;default:'{}'"`
-	Status          string     `gorm:"column:status;not null;default:disabled"`
-	LastSyncedAt    *time.Time `gorm:"column:last_synced_at"`
-	CreatedAt       time.Time  `gorm:"column:created_at;not null;autoCreateTime"`
-	UpdatedAt       time.Time  `gorm:"column:updated_at;not null;autoUpdateTime"`
+	ID           string     `gorm:"column:id;type:uuid;primaryKey"`
+	UserID       string     `gorm:"column:user_id;type:uuid;not null;index:idx_helms_user_id"`
+	AccountID    string     `gorm:"column:account_id;type:uuid;not null;uniqueIndex"`
+	Name         string     `gorm:"column:name;not null"`
+	BrokerType   string     `gorm:"column:broker_type;not null;default:''"`
+	AccountType  string     `gorm:"column:account_type;not null;default:''"`
+	RiskConfig   []byte     `gorm:"column:risk_config;type:jsonb;not null;default:'{}'"`
+	Status       string     `gorm:"column:status;not null;default:disabled"`
+	LastSyncedAt *time.Time `gorm:"column:last_synced_at"`
+	CreatedAt    time.Time  `gorm:"column:created_at;not null;autoCreateTime"`
+	UpdatedAt    time.Time  `gorm:"column:updated_at;not null;autoUpdateTime"`
 }
 
 func (helmModel) TableName() string { return "helms" }
@@ -161,7 +154,6 @@ func modelToDomain(m *helmModel) (*domain.Helm, error) {
 		CreatedAt:    m.CreatedAt,
 		UpdatedAt:    m.UpdatedAt,
 	}
-	_ = jsonUnmarshal(m.PortfolioConfig, &o.Portfolio)
 	_ = jsonUnmarshal(m.RiskConfig, &o.Risk)
 	return o, nil
 }

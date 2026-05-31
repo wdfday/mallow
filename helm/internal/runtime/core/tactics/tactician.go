@@ -113,9 +113,15 @@ func (t *Tactician) size(intent strategy.Intent, ctx MarketContext) decimal.Deci
 		return t.sizing.FixedQty.Mul(strengthFactor(intent.Signal))
 
 	case SizingPercentEquity:
-		// Notional sizing: deploy one unit of capital, scaled by signal strength.
+		// Notional sizing: deploy UnitPct × equity, scaled by signal strength.
 		// qty = unit * strength / price.
-		qty = t.unitCapital().Mul(strengthFactor(intent.Signal)).Div(ctx.Price)
+		unit := t.unitCapital()
+		if !unit.IsPositive() {
+			slog.Warn("tactics: percent_equity sizing skipped — unit_pct not set",
+				"symbol", intent.Signal.Symbol)
+			return decimal.Zero
+		}
+		qty = unit.Mul(strengthFactor(intent.Signal)).Div(ctx.Price)
 
 	default: // fixed_fractional (Ralph Vince) and volatility
 		// NOTE: the risk-based modes deliberately do NOT scale by strength — their size
@@ -211,17 +217,14 @@ func (t *Tactician) stopDistance(sig strategy.Signal, ctx MarketContext) decimal
 	return ctx.ATR // fallback for fixed_fractional; the forced stop for volatility
 }
 
-// unitCapital returns the capital deployed per single entry order.
-// Priority: UnitCapital (fixed) → UnitPct × allocated → MaxPositionPct × allocated (legacy).
+// unitCapital returns the equity deployed per single entry order for percent_equity:
+// UnitPct × allocated equity. Returns zero when UnitPct is unset (caller then skips the
+// trade) — MaxPositionPct is a cap, never a size source, so it does not back-fill here.
 func (t *Tactician) unitCapital() decimal.Decimal {
-	alloc := t.allocatedEquity()
-	if t.sizing.UnitCapital.IsPositive() {
-		return t.sizing.UnitCapital
+	if t.sizing.UnitPct <= 0 {
+		return decimal.Zero
 	}
-	if t.sizing.UnitPct > 0 {
-		return alloc.Mul(decimal.NewFromFloat(t.sizing.UnitPct))
-	}
-	return alloc.Mul(decimal.NewFromFloat(t.sizing.MaxPositionPct))
+	return t.allocatedEquity().Mul(decimal.NewFromFloat(t.sizing.UnitPct))
 }
 
 // limitPrice calculates a limit price slightly inside the current market price.

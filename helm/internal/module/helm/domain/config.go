@@ -26,52 +26,33 @@ type ExchangeConfig struct {
 	Paper       bool        `json:"paper,omitempty"`      // true = paper/demo trading (no real money)
 }
 
-// PortfolioConfig manages how the orchestrator allocates capital across bots.
-// Think of it as the "sizing" layer at account level — analogous to bot.PositionConfig.
-type PortfolioConfig struct {
-	// MaxPositions is the account-wide cap on simultaneous open positions across all bots.
-	// Zero = no limit enforced here (trust each bot's own PositionConfig.MaxPositions).
+// RiskConfig holds account-level circuit-breakers / guards — no sizing. Hands own their
+// own capital (AllocatedCapital) and size within it; per-hand edge-degradation guards live
+// in hand.HandGuardConfig. There is no account-level %-per-position cap or cash reserve:
+// reserve is implicit (TotalEquity − Σ AllocatedCapital), per-position size is the hand's.
+type RiskConfig struct {
+	// MaxPositions caps the number of concurrent open position units across all hands
+	// (account-wide breadth). Enforced only when entering a NEW symbol — pyramiding into an
+	// existing position is exempt; per-hand pyramid depth is capped by PositionConfig.MaxUnits.
+	// Zero = no breadth cap.
 	MaxPositions int `json:"max_positions,omitempty"`
 
-	// MaxPositionPct is the maximum fraction of total equity any single open position may occupy.
-	// Applied by the risk manager before each order (e.g. 0.10 = 10%).
-	MaxPositionPct float64 `json:"max_position_pct,omitempty"`
-
-	// ReserveRatio is the fraction of total capital kept as uninvested cash reserve.
-	// Hands cannot deploy capital beyond (1 - ReserveRatio) × TotalCapital.
-	// E.g. 0.10 = always keep 10% in cash.
-	ReserveRatio float64 `json:"reserve_ratio,omitempty"`
-}
-
-// Defaults fills zero-value PortfolioConfig fields with sensible values.
-func (p *PortfolioConfig) Defaults() {
-	if p.MaxPositions == 0 {
-		p.MaxPositions = 5
-	}
-	if p.MaxPositionPct == 0 {
-		p.MaxPositionPct = 0.10
-	}
-	// ReserveRatio defaults to 0 (no forced cash reserve).
-}
-
-// RiskConfig holds account-level circuit-breakers — pure risk guards, no sizing.
-// Sizing lives in PortfolioConfig; per-bot exit rules live in bot.BotRiskConfig.
-type RiskConfig struct {
 	// DailyLossLimitPct halts trading for the rest of the day when daily PnL loss
-	// exceeds this fraction of equity (e.g. 0.02 = 2%).
+	// exceeds this fraction of equity (e.g. 0.02 = 2%). 0 = disabled.
 	DailyLossLimitPct float64 `json:"daily_loss_limit_pct,omitempty"`
 
 	// MaxDrawdownPct permanently halts all trading when the portfolio drawdown from
-	// peak equity exceeds this fraction (e.g. 0.10 = 10%).
+	// peak equity exceeds this fraction (e.g. 0.10 = 10%). 0 = disabled.
 	MaxDrawdownPct float64 `json:"max_drawdown_pct,omitempty"`
+
+	// MaxGrossExposurePct caps total open notional (Σ|qty|×price) as a fraction of equity.
+	// Binds pyramid adds (unlike MaxPositions) — the account-blowup ceiling under aggressive
+	// stacking. 1.0 = no leverage (gross ≤ equity); >1 permits leverage; 0 = disabled.
+	MaxGrossExposurePct float64 `json:"max_gross_exposure_pct,omitempty"`
 }
 
-// Defaults fills zero-value RiskConfig fields with sensible values.
-func (r *RiskConfig) Defaults() {
-	if r.DailyLossLimitPct == 0 {
-		r.DailyLossLimitPct = 0.02
-	}
-	if r.MaxDrawdownPct == 0 {
-		r.MaxDrawdownPct = 0.10
-	}
-}
+// Defaults is intentionally permissive: every guard is OPT-IN, where 0 = disabled
+// (enforced by risk.Manager's gates). We ship NO tight default — a default like 2%/day
+// or 10% drawdown only fires during normal testing and forces users to go edit it, which
+// is worse UX than leaving the account unguarded until the user deliberately sets a limit.
+func (r *RiskConfig) Defaults() {}

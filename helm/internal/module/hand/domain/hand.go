@@ -19,7 +19,7 @@ type Hand struct {
 	Symbols  StringSlice
 	Strategy StrategySpec
 	Position PositionConfig
-	Risk     HandRiskConfig
+	Guard    HandGuardConfig
 	Futures  *FuturesConfig
 
 	// AllocatedCapital is the hand's fixed capital budget (quote currency, e.g. USDT).
@@ -64,7 +64,7 @@ func (h *Hand) SummaryFromDB() HandSummary {
 		HelmID:           h.HelmID,
 		Strategy:         h.Strategy,
 		Position:         h.Position,
-		Risk:             h.Risk,
+		Guard:            h.Guard,
 		Symbols:          []string(h.Symbols),
 		Status:           h.Status,
 		Running:          false,
@@ -83,7 +83,7 @@ func (b *Hand) ApplyConfig(cfg HandConfig) {
 	b.Symbols = StringSlice(cfg.Symbols)
 	b.Strategy = cfg.Strategy
 	b.Position = cfg.Position
-	b.Risk = cfg.Risk
+	b.Guard = cfg.Guard
 	b.Futures = cfg.Futures
 	b.AllocatedCapital = cfg.AllocatedCapital
 	b.SignalTTLSec = cfg.SignalTTLSec

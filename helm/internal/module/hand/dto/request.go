@@ -26,7 +26,7 @@ type CreateHandReq struct {
 	LimitTimeoutSec int                  `json:"limit_timeout_sec,omitempty" binding:"omitempty,min=5,max=3600"`
 	LimitFallback   domain.LimitFallback `json:"limit_fallback,omitempty" binding:"omitempty,oneof=cancel market"`
 	Position        PositionDTO          `json:"position"`
-	Risk            HandRiskConfigDTO    `json:"risk"`
+	Guard           HandGuardConfigDTO   `json:"risk"`
 	Futures         *FuturesDTO          `json:"futures"`
 }
 
@@ -39,7 +39,7 @@ func (r CreateHandReq) ToDomain() domain.HandConfig {
 		Symbols:          r.Symbols,
 		Strategy:         strategyToDomain(r.Strategy),
 		Position:         positionToDomain(r.Position),
-		Risk:             riskToDomain(r.Risk),
+		Guard:            guardToDomain(r.Guard),
 		AllocatedCapital: decimal.NewFromFloat(r.AllocatedCapital),
 		SignalTTLSec:     r.SignalTTLSec,
 		OrderType:        r.OrderType,
@@ -55,14 +55,14 @@ func (r CreateHandReq) ToDomain() domain.HandConfig {
 	return cfg
 }
 
-// UpdateHandReq allows patching Name, AllocatedCapital, SignalTTLSec, Position sizing, and Risk.
+// UpdateHandReq allows patching Name, AllocatedCapital, SignalTTLSec, Position sizing, and Guard.
 // Symbols, Strategy, Type, and Market are immutable after creation.
 type UpdateHandReq struct {
-	Name             string             `json:"name" binding:"omitempty,min=1,max=128"`
-	AllocatedCapital float64            `json:"allocated_capital,omitempty" binding:"omitempty,gt=0"`
-	SignalTTLSec     int                `json:"signal_ttl_sec,omitempty" binding:"omitempty,min=-1,max=3600"`
-	Position         *PositionDTO       `json:"position"`
-	Risk             *HandRiskConfigDTO `json:"risk"`
+	Name             string              `json:"name" binding:"omitempty,min=1,max=128"`
+	AllocatedCapital float64             `json:"allocated_capital,omitempty" binding:"omitempty,gt=0"`
+	SignalTTLSec     int                 `json:"signal_ttl_sec,omitempty" binding:"omitempty,min=-1,max=3600"`
+	Position         *PositionDTO        `json:"position"`
+	Guard            *HandGuardConfigDTO `json:"risk"`
 }
 
 func (r UpdateHandReq) ToDomain() domain.HandConfig {
@@ -74,8 +74,8 @@ func (r UpdateHandReq) ToDomain() domain.HandConfig {
 	if r.Position != nil {
 		cfg.Position = positionToDomain(*r.Position)
 	}
-	if r.Risk != nil {
-		cfg.Risk = riskToDomain(*r.Risk)
+	if r.Guard != nil {
+		cfg.Guard = guardToDomain(*r.Guard)
 	}
 	return cfg
 }

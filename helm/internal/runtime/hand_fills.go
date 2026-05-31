@@ -83,24 +83,35 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 	// deletes it from pendingOrderPos) and forwarded to the bracket goroutine so it
 	// can write the KindBracketPlaced poslog event with the correct subject/positionID.
 	var posIDForBracket string
+	// bracketQty is the qty the exchange bracket must cover: the leg's MERGED total after
+	// this add (pre-add leg qty + this fill), not just this add's qty — otherwise a pyramid
+	// add would leave a bracket covering only the latest leg.
+	bracketQty := qty
 	h.mu.Lock()
 	posIDForBracket = h.pendingOrderPos[orderID]
 	if pending, ok := h.pendingExits[orderID]; ok {
 		delete(h.pendingExits, orderID)
+
+		// Pre-add leg state (LegSnapshot is pre-fill — this fill is applied later via
+		// publishOrderFilled). Drives both the blended-avg anchor and the merged bracket qty.
+		var preQty, preAvg decimal.Decimal
+		if snap, ok := h.pos.LegSnapshot(posIDForBracket); ok && snap.Qty.IsPositive() {
+			preQty, preAvg = snap.Qty, snap.EntryPrice
+			bracketQty = preQty.Add(qty) // merged total
+		}
+
 		resolved := exitLevel{Side: pending.Side}
 		if pending.IsOffset {
 			// ── avg-anchor (pyramiding-design.md) ──
 			// Anchor offsets to the leg's blended avg entry AFTER this add, NOT this fill's
-			// price, so the SL/TP rebase tracks the merged cost (consistent with the avg-anchored
-			// add gate in hand_runner.go). The leg state here is pre-fill, so compute the post-add
-			// blended avg inline using the same qty/price publishOrderFilled feeds the leg → it
-			// matches the leg's EntryPrice exactly. First entry: leg qty 0 → anchor == fill price.
+			// price, so the SL/TP track the merged cost (consistent with the avg-anchored add
+			// gate in hand_runner.go). First entry: preQty 0 → anchor == fill price.
 			//   add 1 @ 100 (avg 100), offset -5 → SL = 95
 			//   add 2 @ 110 (avg 105), offset -5 → SL = 100   ← anchored to blended avg, not last fill
 			anchor := price
-			if snap, ok := h.pos.LegSnapshot(posIDForBracket); ok && snap.Qty.IsPositive() {
-				if newQty := snap.Qty.Add(qty); newQty.IsPositive() {
-					anchor = snap.Qty.Mul(snap.EntryPrice).Add(qty.Mul(price)).Div(newQty)
+			if preQty.IsPositive() {
+				if newQty := preQty.Add(qty); newQty.IsPositive() {
+					anchor = preQty.Mul(preAvg).Add(qty.Mul(price)).Div(newQty)
 				}
 			}
 			if anchor.IsPositive() {
@@ -116,6 +127,17 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 			resolved.StopLoss = pending.StopLoss
 			resolved.TakeProfit = pending.TakeProfit
 		}
+
+		// Pyramid add: cancel the prior consolidated bracket BEFORE overwriting exitLevels.
+		// Otherwise the old exchange order is orphaned (its IDs are about to be lost) and the
+		// position ends up with split partial brackets at stale levels. The new bracket below
+		// is placed for the full merged qty at the rebased level — one bracket per position.
+		// (Marks pendingCancels so HandleExitOrderCanceled treats this as helm cleanup, not a
+		// disown.) Caller holds h.mu, as cancelExitOrders requires.
+		if old, ok := h.exitLevels[symbol]; ok && len(old.ExchangeOrderIDs) > 0 {
+			h.cancelExitOrders(ctx, symbol, "")
+		}
+
 		h.exitLevels[symbol] = resolved
 		if resolved.StopLoss.IsPositive() || resolved.TakeProfit.IsPositive() {
 			resolvedEl = resolved
@@ -154,7 +176,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 					Symbol:     symbol,
 					Market:     market,
 					Side:       exitSide,
-					Qty:        qty,
+					Qty:        bracketQty, // full merged leg qty, not just this add
 					StopLoss:   el.StopLoss,
 					TakeProfit: el.TakeProfit,
 				}

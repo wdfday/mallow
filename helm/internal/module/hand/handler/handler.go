@@ -180,6 +180,30 @@ func checkCapitalAllocation(
 	), nil
 }
 
+// checkSymbolConflict blocks a hand from claiming a symbol already traded by another
+// non-terminal hand on the same helm. The exchange holds ONE net position per symbol per
+// account, so two hands on the same symbol cannot keep independent positions — an
+// urgent-close / kill / auto-pause acts on the net portfolio qty and would corrupt the
+// other hand's position. Enforced at create/update so that ambiguous state is unreachable.
+func checkSymbolConflict(existing []handdomain.HandSummary, symbols []string, excludeHandID string) error {
+	claimed := make(map[string]string, len(existing)) // symbol → owning hand name
+	for i := range existing {
+		b := existing[i]
+		if b.ID.String() == excludeHandID || b.Status.IsTerminal() {
+			continue
+		}
+		for _, s := range b.Symbols {
+			claimed[s] = b.Name
+		}
+	}
+	for _, s := range symbols {
+		if owner, ok := claimed[s]; ok {
+			return fmt.Errorf("symbol %s is already traded by hand %q on this helm — one symbol can have at most one hand per helm", s, owner)
+		}
+	}
+	return nil
+}
+
 // buildOverflow assembles a CapitalOverflow with sorted suggestions.
 // Hands with the most reducible free capital are listed first.
 func buildOverflow(
@@ -282,6 +306,10 @@ func (h *Handler) create(c *gin.Context) {
 	}
 	if overflow, _ := checkCapitalAllocation(rt.Portfolio.Summary().Cash.InexactFloat64(), h.handMgr.ListByHelm(helmID), cfg.AllocatedCapital, ""); overflow != nil {
 		c.JSON(http.StatusUnprocessableEntity, overflow)
+		return
+	}
+	if err := checkSymbolConflict(h.handMgr.ListByHelm(helmID), cfg.Symbols, ""); err != nil {
+		shared.RespondWithError(c, http.StatusConflict, err.Error())
 		return
 	}
 	instance, err := h.handMgr.Create(cfg)

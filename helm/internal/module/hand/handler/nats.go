@@ -26,14 +26,14 @@ func NewNATSHandler(handMgr HandService, helmSvc HelmService, reg RuntimeRegistr
 
 func (h *NATSHandler) Subscribe(nc *nats.Conn) error {
 	routes := map[string]nats.MsgHandler{
-		natsapi.SubjHandList:    h.list,
-		natsapi.SubjHandGet:     h.get,
-		natsapi.SubjHandCreate:  h.create,
-		natsapi.SubjHandUpdate:  h.update,
-		natsapi.SubjHandDelete:  h.delete,
-		natsapi.SubjHandStart: h.start,
-		natsapi.SubjHandStop:  h.stop,
-		natsapi.SubjHandKill:  h.kill,
+		natsapi.SubjHandList:   h.list,
+		natsapi.SubjHandGet:    h.get,
+		natsapi.SubjHandCreate: h.create,
+		natsapi.SubjHandUpdate: h.update,
+		natsapi.SubjHandDelete: h.delete,
+		natsapi.SubjHandStart:  h.start,
+		natsapi.SubjHandStop:   h.stop,
+		natsapi.SubjHandKill:   h.kill,
 	}
 	for subj, fn := range routes {
 		sub, err := nc.Subscribe(subj, fn)
@@ -128,6 +128,10 @@ func (h *NATSHandler) create(msg *nats.Msg) {
 	}
 	if overflow, _ := checkCapitalAllocation(rt.Portfolio.Summary().Equity.InexactFloat64(), h.handMgr.ListByHelm(cfg.HelmID), cfg.AllocatedCapital, ""); overflow != nil {
 		_ = msg.Respond(natsapi.ReplyErr(overflow.Error))
+		return
+	}
+	if err := checkSymbolConflict(h.handMgr.ListByHelm(cfg.HelmID), cfg.Symbols, ""); err != nil {
+		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
 		return
 	}
 	instance, err := h.handMgr.Create(cfg)

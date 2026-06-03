@@ -363,6 +363,51 @@ func (m *MeteredExchange) SetLeverage(ctx context.Context, creds Credentials, sy
 	return fmt.Errorf("exchange %q does not implement LeverageSetter", m.Name())
 }
 
+// GetSymbolFilters implements SymbolInfoProvider — public endpoint, no credentials.
+// Delegates to inner if it implements SymbolInfoProvider.
+func (m *MeteredExchange) GetSymbolFilters(ctx context.Context, symbol string) (SymbolFilters, error) {
+	if s, ok := m.inner.(SymbolInfoProvider); ok {
+		return s.GetSymbolFilters(ctx, symbol)
+	}
+	return SymbolFilters{}, fmt.Errorf("exchange %q does not implement SymbolInfoProvider", m.Name())
+}
+
+// GetFreeBalance implements SpotBalanceFetcher — delegates to inner.
+// Used as a fallback when a SELL exit fails with insufficient balance.
+func (m *MeteredExchange) GetFreeBalance(ctx context.Context, creds Credentials, asset string) (decimal.Decimal, error) {
+	if s, ok := m.inner.(SpotBalanceFetcher); ok {
+		return s.GetFreeBalance(ctx, creds, asset)
+	}
+	return decimal.Zero, fmt.Errorf("exchange %q does not implement SpotBalanceFetcher", m.Name())
+}
+
+// ClidSurfaces implements ClidCapable — delegates to inner.
+// Callable on any receiver; falls back to zero ClidSurfaces when inner doesn't implement it.
+func (m *MeteredExchange) ClidSurfaces() ClidSurfaces {
+	if c, ok := m.inner.(ClidCapable); ok {
+		return c.ClidSurfaces()
+	}
+	return ClidSurfaces{}
+}
+
+// GetOrderByClientOrderID implements ClientOrderQuerier — delegates to inner.
+// Used by recoverAmbiguousPlace to confirm whether a timed-out order landed.
+func (m *MeteredExchange) GetOrderByClientOrderID(ctx context.Context, creds Credentials, symbol string, market MarketKind, clientOrderID string) (*OrderResult, error) {
+	if s, ok := m.inner.(ClientOrderQuerier); ok {
+		return s.GetOrderByClientOrderID(ctx, creds, symbol, market, clientOrderID)
+	}
+	return nil, fmt.Errorf("exchange %q does not implement ClientOrderQuerier", m.Name())
+}
+
+// SyncTime implements TimeSyncer — delegates to inner.
+// Syncs local clock against exchange server time to prevent -1021 errors.
+func (m *MeteredExchange) SyncTime(ctx context.Context) error {
+	if ts, ok := m.inner.(TimeSyncer); ok {
+		return ts.SyncTime(ctx)
+	}
+	return nil // not an error; exchange simply doesn't support time sync
+}
+
 // ensure MeteredExchange satisfies Exchange and all optional interfaces at compile time.
 var _ Exchange = (*MeteredExchange)(nil)
 var _ AccountSyncer = (*MeteredExchange)(nil)
@@ -373,6 +418,11 @@ var _ OrderReconciler = (*MeteredExchange)(nil)
 var _ HistoryFetcher = (*MeteredExchange)(nil)
 var _ ExitOrderPlacer = (*MeteredExchange)(nil)
 var _ LeverageSetter = (*MeteredExchange)(nil)
+var _ SymbolInfoProvider = (*MeteredExchange)(nil)
+var _ SpotBalanceFetcher = (*MeteredExchange)(nil)
+var _ ClidCapable = (*MeteredExchange)(nil)
+var _ ClientOrderQuerier = (*MeteredExchange)(nil)
+var _ TimeSyncer = (*MeteredExchange)(nil)
 
 // AtomicMinStore atomically stores v only if v < current (or current == 0).
 // Exported for testing.

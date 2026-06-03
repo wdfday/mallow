@@ -81,7 +81,7 @@ func (r *Registry) ResetHalt(id uuid.UUID) error {
 func (r *Registry) RouteSignal(helmID, handID string, sig Signal) {
 	id, err := uuid.Parse(helmID)
 	if err != nil {
-		r.routeNoHelm.Add(1)
+		r.metrics.incNoHelm()
 		slog.Warn("signal route: invalid helm_id", "helm_id", helmID, "hand_id", handID)
 		return
 	}
@@ -89,12 +89,12 @@ func (r *Registry) RouteSignal(helmID, handID string, sig Signal) {
 	helmRuntime := r.helmRuntimes[id]
 	r.mu.RUnlock()
 	if helmRuntime == nil {
-		r.routeNoHelm.Add(1)
+		r.metrics.incNoHelm()
 		slog.Warn("signal route: no helm found", "helm_id", helmID, "hand_id", handID)
 		return
 	}
 	if !helmRuntime.DispatchHandSignal(handID, sig) {
-		r.routeNoHand.Add(1)
+		r.metrics.incNoHand()
 		slog.Warn("signal route: hand not found in helm", "helm_id", helmID, "hand_id", handID)
 	}
 }
@@ -108,8 +108,8 @@ type DispatchStats struct {
 // DispatchStats returns a snapshot of routing error counters.
 func (r *Registry) DispatchStats() DispatchStats {
 	return DispatchStats{
-		RouteNoHelm: r.routeNoHelm.Load(),
-		RouteNoHand: r.routeNoHand.Load(),
+		RouteNoHelm: r.metrics.loadNoHelm(),
+		RouteNoHand: r.metrics.loadNoHand(),
 	}
 }
 

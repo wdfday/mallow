@@ -9,6 +9,36 @@ import (
 	"mallow/helm/internal/infra/exchange"
 )
 
+// GetSymbolFilters returns all static per-symbol rules (precision, minimums, asset identity)
+// from the Binance public ExchangeInfo endpoint in a single call.
+func (c *Client) GetSymbolFilters(ctx context.Context, symbol string) (exchange.SymbolFilters, error) {
+	info, err := c.newSpot(exchange.Credentials{}).NewExchangeInfoService().Symbol(symbol).Do(ctx)
+	if err != nil {
+		return exchange.SymbolFilters{}, fmt.Errorf("binance exchange info (%s): %w", symbol, err)
+	}
+	for _, s := range info.Symbols {
+		if s.Symbol != symbol {
+			continue
+		}
+		f := exchange.SymbolFilters{
+			BaseAsset:  s.BaseAsset,
+			QuoteAsset: s.QuoteAsset,
+		}
+		if lot := s.LotSizeFilter(); lot != nil {
+			f.QtyStep, _ = decimal.NewFromString(lot.StepSize)
+			f.MinQty, _ = decimal.NewFromString(lot.MinQuantity)
+		}
+		if pf := s.PriceFilter(); pf != nil {
+			f.PriceTick, _ = decimal.NewFromString(pf.TickSize)
+		}
+		if nf := s.NotionalFilter(); nf != nil {
+			f.MinNotional, _ = decimal.NewFromString(nf.MinNotional)
+		}
+		return f, nil
+	}
+	return exchange.SymbolFilters{}, fmt.Errorf("binance: symbol %s not found", symbol)
+}
+
 // BalanceInfo represents a single asset balance.
 type BalanceInfo struct {
 	Asset  string

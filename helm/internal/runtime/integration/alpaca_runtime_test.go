@@ -14,7 +14,7 @@
 //	ALPACA_API_KEY / ALPACA_API_SECRET
 //
 // go test -v -run TestAlpaca_ ./internal/runtime/ -timeout 90s
-package runtime_test
+package integration_test
 
 import (
 	"context"

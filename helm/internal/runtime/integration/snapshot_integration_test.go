@@ -1,4 +1,4 @@
-package runtime_test
+package integration_test
 
 // snapshot_integration_test.go — end-to-end snapshot verification against real exchanges.
 //
@@ -1015,4 +1015,8 @@ func TestSnapshotIntegration_Binance_KillPauseRelease(t *testing.T) {
 	snapKill := currentSnapshot(rt)
 	t.Logf("helm snapshot after kill: positions=%d cash=%s equity=%s",
 		len(snapKill.Positions), snapKill.Cash, snapKill.Equity)
+}
+
+func longSignalFor(symbol string) runtime.Signal {
+	return longSig(symbol)
 }

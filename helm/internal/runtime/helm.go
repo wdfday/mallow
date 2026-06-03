@@ -52,10 +52,11 @@ type HelmRuntime struct {
 	CreatedAt time.Time
 
 	// ── Core resources (account-level, shared across all hands) ──────────────
-	Portfolio *portfolio.Portfolio
-	RiskMgr   RiskManager
-	Exchange  exchange.Exchange
-	Creds     exchange.Credentials
+	Portfolio   *portfolio.Portfolio
+	RiskMgr     RiskManager
+	Exchange    exchange.Exchange
+	Creds       exchange.Credentials
+	FilterStore SymbolFilterStore // registry-owned symbol precision cache; nil = no prewarm
 
 	// ── Hands ────────────────────────────────────────────────────────────────
 	mu          sync.RWMutex
@@ -84,9 +85,8 @@ type HelmRuntime struct {
 
 	// ── Market data cache ────────────────────────────────────────────────────
 	lastSyncAtNano atomic.Int64 // UnixNano of last successful REST sync; 0 = never
-	// prices owns the last-trade cache + the registry-shared L2 lookup (see priceCache).
-	// Its getL2 is injected at Spawn(); nil = no L2 streamer connected.
-	prices *priceCache
+	// prices is the registry-owned per-exchange price map wired at Spawn().
+	marketData *exchangePublicData
 
 	// ── Trade gate (per-minute circuit breaker) ───────────────────────────────
 	tradeMu      sync.Mutex   // serialises ProcessTrade + ReportFill across all hands
@@ -155,7 +155,7 @@ func NewHelmRuntime(
 		wsFillCh:    make(chan exchange.WsFillEvent, 256),
 		hands:       make(map[string]*Hand),
 		router:      newOrderRouter(),
-		prices:      newPriceCache(),
+		marketData:  newExchangePublicData(), // default; overwritten by Registry.Spawn with shared bucket
 		dedup:       newFillDedup(),
 		dust:        newDustLedger(),
 		resetTicker: time.NewTicker(1 * time.Minute),

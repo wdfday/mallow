@@ -39,6 +39,66 @@ type exitLevel struct {
 	ExchangeOrderIDs []string        // exchange-side SL/TP order IDs; canceled when position closes
 }
 
+// ── handConfig ────────────────────────────────────────────────────────────────
+
+// handConfig holds all per-hand execution settings that are immutable after Start.
+// Set once by NewHand; every field is read-only for the lifetime of the run loop.
+type handConfig struct {
+	pyramid         bool                  // true = merge additional entries into existing leg
+	maxUnits        int                   // max concurrent legs; used by reconciler on replay
+	signalTTL       time.Duration         // 0 = TTL check disabled
+	orderType       domain.OrderType      //
+	limitTimeoutSec int                   // 0 = no timeout
+	limitFallback   domain.LimitFallback  //
+	futuresConfig   *domain.FuturesConfig // nil for spot
+}
+
+// ── handEdgeGuard ─────────────────────────────────────────────────────────────
+
+// handEdgeGuard is the sliding-window edge-risk circular buffer.
+// All fields are written exclusively from the run-loop goroutine — no lock needed.
+type handEdgeGuard struct {
+	cfg        domain.HandGuardConfig
+	ring       []decimal.Decimal // circular PnL buffer; len = cfg.WindowTrades
+	head       int               // next write slot (wraps modulo cfg.WindowTrades)
+	full       bool              // true once ring has wrapped at least once
+	consecLoss int               // current consecutive-loss streak
+}
+
+// push appends pnl into the ring, advances head, and marks full on first wrap.
+// Caller must ensure cfg.WindowTrades > 0 before calling (checkEdgeRisk guards this).
+func (g *handEdgeGuard) push(pnl decimal.Decimal) {
+	g.ring[g.head] = pnl
+	g.head = (g.head + 1) % g.cfg.WindowTrades
+	if g.head == 0 {
+		g.full = true
+	}
+}
+
+// ── handMetrics ───────────────────────────────────────────────────────────────
+
+// handMetrics is the live atomic counter state embedded in Hand.
+// Snapshot it via Hand.Metrics() which converts to the JSON-safe HandMetrics DTO.
+type handMetrics struct {
+	signalsReceived   atomic.Int64
+	signalsFiltered   atomic.Int64
+	signalsDropped    atomic.Int64 // non-urgent channel-full drops
+	tradesApproved    atomic.Int64
+	ordersPlaced      atomic.Int64
+	ordersFilled      atomic.Int64
+	ordersFailed      atomic.Int64
+	latestSignalLagMs atomic.Int64 // lag from signal GeneratedAt → hand receives; ms
+
+	// PnL fields use a separate mutex because decimal.Decimal is not atomic.
+	mu              sync.Mutex
+	totalPnL        decimal.Decimal
+	totalCommission decimal.Decimal
+	winCount        int64
+	lossCount       int64
+}
+
+// ── Hand ──────────────────────────────────────────────────────────────────────
+
 // Hand is an autonomous trading agent.
 // Each Hand owns its own strategy, tactician, signal channel, and run-loop goroutine.
 // Account-level resources (Exchange, Portfolio, RiskManager) are shared via HelmRuntime.
@@ -48,20 +108,21 @@ type Hand struct {
 	helmID      uuid.UUID
 	helmRuntime *HelmRuntime
 
-	// ── Strategy & tactics ───────────────────────────────────────────────────
+	// ── Display metadata (set by service layer, read-only after Start) ────────
+	Symbol       string
+	StrategyName string
+	Timeframe    string // bar timeframe the strategy runs on (M1/M5/H1/...); used for trade attribution
+	CapitalPct   float64
+
+	// ── Execution config (immutable after Start) ──────────────────────────────
+	cfg handConfig
+
+	// ── Strategy & tactics ────────────────────────────────────────────────────
 	strategy  strategy.Strategy
 	tactician tactics.Planner
 	limiter   *rate.Limiter
 
-	// ── Execution config (immutable after Start) ──────────────────────────────
-	pyramid         bool          // true = merge additional entries into existing leg
-	maxUnits        int           // max concurrent legs; used by reconciler on replay
-	signalTTL       time.Duration // 0 = TTL check disabled
-	orderType       domain.OrderType
-	limitTimeoutSec int // 0 = no timeout
-	limitFallback   domain.LimitFallback
-	futuresConfig   *domain.FuturesConfig // nil for spot
-
+	// ── Leverage state (futures only; nil-safe for spot) ─────────────────────
 	leverageAppliedMu sync.Mutex
 	leverageApplied   map[string]bool // symbols where SetLeverage has been called
 
@@ -94,6 +155,7 @@ type Hand struct {
 	// (track order, poslog, or failure cleanup) on-loop, preserving the single-owner invariant.
 	placeResultCh chan *pendingPlace
 
+	// ── Fill dedup ───────────────────────────────────────────────────────────
 	// seenFills marks orders whose fill has been fully applied to the portfolio
 	// (via WS full-fill, REST-immediate, or poll fallback). Checked by handleWsFill
 	// and pollOrders to prevent double-apply of the same order's total qty.
@@ -108,20 +170,10 @@ type Hand struct {
 	partialApplied map[string]decimal.Decimal
 
 	// ── Edge-risk guard ───────────────────────────────────────────────────────
-	// All fields written exclusively from the run-loop goroutine — no extra lock.
-	edgeRisk     domain.HandGuardConfig
-	allocatedCap decimal.Decimal   // initial budget; zero = fall back to full portfolio equity
-	tradeRing    []decimal.Decimal // circular PnL buffer, len = edgeRisk.WindowTrades
-	ringHead     int               // next write slot in tradeRing
-	ringFull     bool              // true after tradeRing has wrapped at least once
-	consecLoss   int               // current consecutive-loss streak
-
-	// ── Display metadata (set by service layer, read-only after Start) ────────
-	Symbol       string
-	StrategyName string
-	Timeframe    string // bar timeframe the strategy runs on (M1/M5/H1/...); used for trade attribution
-	CapitalPct   float64
-
+	// guard and allocatedCap are written exclusively from the run-loop goroutine —
+	// no extra lock needed beyond the run-loop single-owner invariant.
+	guard        handEdgeGuard
+	allocatedCap decimal.Decimal // initial budget;
 	// ── Goroutine lifecycle ───────────────────────────────────────────────────
 	mu      sync.RWMutex
 	running bool
@@ -142,21 +194,7 @@ type Hand struct {
 
 	// ── Observability ────────────────────────────────────────────────────────
 	health  HandHealth
-	metrics struct {
-		signalsReceived   atomic.Int64
-		signalsFiltered   atomic.Int64
-		signalsDropped    atomic.Int64 // non-urgent channel-full drops
-		tradesApproved    atomic.Int64
-		ordersPlaced      atomic.Int64
-		ordersFilled      atomic.Int64
-		ordersFailed      atomic.Int64
-		latestSignalLagMs atomic.Int64 // lag from signal GeneratedAt → hand receives; ms
-		mu                sync.Mutex
-		totalPnL          decimal.Decimal
-		totalCommission   decimal.Decimal
-		winCount          int64
-		lossCount         int64
-	}
+	metrics handMetrics
 }
 
 // ID returns the bot's unique identifier.

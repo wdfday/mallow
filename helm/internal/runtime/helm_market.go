@@ -2,37 +2,26 @@ package runtime
 
 import (
 	"log/slog"
-	"strings"
 
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
 )
 
-// stripExchangePrefix removes the "exchange:" prefix that herald attaches to
-// symbol names (e.g. "binance:ETHUSDT" → "ETHUSDT", "okx:BTC-USDT" → "BTC-USDT").
-// Symbols without a prefix are returned unchanged.
-func stripExchangePrefix(symbol string) string {
-	if _, after, found := strings.Cut(symbol, ":"); found {
-		return after
-	}
-	return symbol
-}
-
 // UpdatePrice stores the latest market price for a symbol and forwards it to the portfolio.
-// Stores under both the raw key and the prefix-stripped key so that lookups
-// using either form ("ETHUSDT" or "binance:ETHUSDT") succeed.
+// symbol is already a bare ticker (the herald "exchange:" prefix is stripped by
+// Registry.UpdatePrice before the value reaches the shared exchangePriceMap).
 func (r *HelmRuntime) UpdatePrice(symbol string, price decimal.Decimal) {
 	if !price.IsPositive() {
 		return
 	}
-	r.prices.set(symbol, price)
+	r.marketData.setPrice(symbol, price)
 	r.Portfolio.UpdatePrice(symbol, price)
 }
 
 func (r *HelmRuntime) lastKnownPrice(symbol string) decimal.Decimal {
-	// priceCache covers the trade cache + L2 mid-price; the Portfolio is the final fallback.
-	if p := r.prices.get(symbol); p.IsPositive() {
+	// exchangePriceMap covers the trade cache + L2 mid-price; the Portfolio is the final fallback.
+	if p := r.marketData.getPrice(symbol); p.IsPositive() {
 		return p
 	}
 	if pos := r.Portfolio.GetPosition(symbol); pos != nil {
@@ -45,7 +34,7 @@ func (r *HelmRuntime) lastKnownPrice(symbol string) decimal.Decimal {
 // Delegates to the registry-level broker cache injected at Spawn().
 // ok=false when no L2 streamer is connected or no snapshot has been received yet.
 func (r *HelmRuntime) LatestL2(symbol string) (exchange.L2Snapshot, bool) {
-	return r.prices.latestL2(symbol)
+	return r.marketData.latestL2(symbol)
 }
 
 // EnqueueLifecycleEvent drops a broker order lifecycle event (ack/cancel) into

@@ -78,7 +78,7 @@ type TimeInForce string
 const (
 	TIFDefault TimeInForce = ""    // use exchange default
 	TIFDay     TimeInForce = "day" // cancel at end of trading session
-	TIFGTC     TimeInForce = "gtc" // good till cancelled
+	TIFGTC     TimeInForce = "gtc" // good till canceled
 	TIFIOC     TimeInForce = "ioc" // immediate-or-cancel
 	TIFFOK     TimeInForce = "fok" // fill-or-kill
 )

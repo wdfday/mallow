@@ -1,7 +1,9 @@
 package runtime
 
 import (
+	"encoding/json"
 	"sync"
+	"time"
 
 	"github.com/shopspring/decimal"
 
@@ -15,48 +17,40 @@ import (
 // granularity as before, but the state is encapsulated and unit-testable in isolation.
 // See ACTOR_MODEL.md (SRP cleanup of the flat runtime).
 
-// ── priceCache ──────────────────────────────────────────────────────────────────
+// ── exchangePriceMap ─────────────────────────────────────────────────────────────
 
-// priceCache is the per-helm last-trade price cache plus the registry-shared L2 lookup.
-// It does NOT know about the Portfolio — the Portfolio fallback stays in HelmRuntime.
-type priceCache struct {
+// exchangePriceMap is the registry-owned, per-exchange last-trade price cache.
+// Each HelmRuntime gets a pointer to its exchange's map at Spawn time, so all helms
+// on the same exchange share one price feed — no per-helm copy needed.
+// getL2 delegates to the registry's shared broker-level L2 cache; nil = no streamer.
+type exchangePriceMap struct {
 	mu     sync.RWMutex
 	prices map[string]decimal.Decimal
 	// getL2 delegates to the registry's shared broker-level cache; nil = no L2 streamer.
 	getL2 func(symbol string) (exchange.L2Snapshot, bool)
 }
 
-func newPriceCache() *priceCache {
-	return &priceCache{prices: make(map[string]decimal.Decimal)}
+func newExchangePriceMap() *exchangePriceMap {
+	return &exchangePriceMap{prices: make(map[string]decimal.Decimal)}
 }
 
-// set stores price under both the raw and prefix-stripped key so lookups using either
-// form ("ETHUSDT" or "binance:ETHUSDT") succeed.
-func (c *priceCache) set(symbol string, price decimal.Decimal) {
-	stripped := stripExchangePrefix(symbol)
-	c.mu.Lock()
-	c.prices[symbol] = price
-	if stripped != symbol {
-		c.prices[stripped] = price
-	}
-	c.mu.Unlock()
+func (m *exchangePriceMap) set(symbol string, price decimal.Decimal) {
+	m.mu.Lock()
+	m.prices[symbol] = price
+	m.mu.Unlock()
 }
 
 // get returns the cached price, falling back to the L2 mid-price. Returns zero when
 // neither is available (the Portfolio fallback is the caller's responsibility).
-func (c *priceCache) get(symbol string) decimal.Decimal {
-	stripped := stripExchangePrefix(symbol)
-	c.mu.RLock()
-	p := c.prices[symbol]
-	if !p.IsPositive() && stripped != symbol {
-		p = c.prices[stripped]
-	}
-	c.mu.RUnlock()
+func (m *exchangePriceMap) get(symbol string) decimal.Decimal {
+	m.mu.RLock()
+	p := m.prices[symbol]
+	m.mu.RUnlock()
 	if p.IsPositive() {
 		return p
 	}
-	if c.getL2 != nil {
-		if snap, ok := c.getL2(symbol); ok {
+	if m.getL2 != nil {
+		if snap, ok := m.getL2(symbol); ok {
 			bid := snap.Bids[0].Price
 			ask := snap.Asks[0].Price
 			if bid.IsPositive() && ask.IsPositive() {
@@ -67,11 +61,11 @@ func (c *priceCache) get(symbol string) decimal.Decimal {
 	return decimal.Zero
 }
 
-func (c *priceCache) latestL2(symbol string) (exchange.L2Snapshot, bool) {
-	if c.getL2 == nil {
+func (m *exchangePriceMap) latestL2(symbol string) (exchange.L2Snapshot, bool) {
+	if m.getL2 == nil {
 		return exchange.L2Snapshot{}, false
 	}
-	return c.getL2(symbol)
+	return m.getL2(symbol)
 }
 
 // ── orderRouter ─────────────────────────────────────────────────────────────────
@@ -207,4 +201,10 @@ func (f *fillDedup) markFillPublished(orderID string) {
 	}
 	f.fills[orderID] = struct{}{}
 	f.fillsMu.Unlock()
+}
+
+func timePtr(t time.Time) *time.Time { return &t }
+
+func unmarshalJSON(b []byte, v any) error {
+	return json.Unmarshal(b, v)
 }

@@ -70,7 +70,7 @@ func (h *Hand) publishOrderPlaced(
 	h.mu.RUnlock()
 
 	isClose := isExitIntent
-	isPyramidAdd := !isClose && h.pyramid && !isFlat
+	isPyramidAdd := !isClose && h.cfg.pyramid && !isFlat
 
 	var positionID string
 	switch {
@@ -119,8 +119,9 @@ func (h *Hand) publishOrderPlaced(
 // publishOrderFilled emits KindOrderFilled to the durable poslog.
 // pnl is the realized PnL for closing fills (zero for entry fills).
 // commission is the fee paid for this fill (may be zero when exchange doesn't report it).
-// closeSource identifies what triggered the close (e.g. "signal", "sl", "tp", "kill").
-func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, price, pnl, commission decimal.Decimal, source, closeSource string) {
+// deployedCapital is the quote cost of this specific fill (net_qty×price + entry_fee_quote);
+// zero for exit fills (not a capital deployment). closeSource identifies what triggered the close.
+func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, legQty, price, pnl, commission, deployedCapital decimal.Decimal, source, closeSource string) {
 	h.mu.RLock()
 	positionID := h.pendingOrderPos[orderID]
 	var isBracketExit bool
@@ -176,6 +177,7 @@ func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, pric
 				cp.TakeProfitPrice = snap.TakeProfit.String()
 			}
 			cp.NEntries = snap.NEntries
+			cp.DeployedCapital = decimalToString(snap.DeployedCapital)
 		}
 		closedPayload, _ := json.Marshal(cp)
 		h.publishAndApply(ctx, poslog.Event{
@@ -192,10 +194,11 @@ func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, pric
 	}
 
 	payload, _ := json.Marshal(poslog.OrderFilledPayload{
-		OrderID:   orderID,
-		FillPrice: price.String(),
-		FillQty:   qty.String(),
-		Source:    source,
+		OrderID:         orderID,
+		FillPrice:       price.String(),
+		FillQty:         qty.String(),
+		Source:          source,
+		DeployedCapital: decimalToString(deployedCapital),
 	})
 	h.publishAndApply(ctx, poslog.Event{
 		ID:         orderID + "_filled",
@@ -221,7 +224,14 @@ func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, pric
 		if hasSnap {
 			cp.Symbol = snap.Symbol
 			cp.Side = snap.Side
-			cp.Qty = qty.String() // fill qty, not leg's accumulated qty
+			// Use the full position qty (legQty) so the trade record reflects the
+			// complete position size. The dust portion's PnL is already included
+			// in grossPnL via appendTradeRecord (legQty × exitPrice − legQty × entryPrice).
+			effQty := legQty
+			if effQty.IsZero() {
+				effQty = qty // fallback to fill qty when legQty not available
+			}
+			cp.Qty = effQty.String()
 			cp.EntryPrice = snap.EntryPrice.String()
 			cp.EntryAt = snap.OpenedAt
 			if snap.StopLoss.IsPositive() {
@@ -231,6 +241,7 @@ func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, pric
 				cp.TakeProfitPrice = snap.TakeProfit.String()
 			}
 			cp.NEntries = snap.NEntries
+			cp.DeployedCapital = decimalToString(snap.DeployedCapital)
 		}
 		closedPayload, _ := json.Marshal(cp)
 		h.publishAndApply(ctx, poslog.Event{
@@ -254,11 +265,45 @@ func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, pric
 // goroutine path could not guarantee).
 //
 // No-ops when TradeLog is not configured.
-func (h *Hand) appendTradeRecord(ctx context.Context, cp poslog.PositionClosedPayload, commission decimal.Decimal, exitAt time.Time) {
+func (h *Hand) appendTradeRecord(ctx context.Context, cp poslog.PositionClosedPayload, exitCommission decimal.Decimal, exitAt time.Time) {
 	tl := h.helmRuntime.TradeLog
 	if tl == nil {
 		return
 	}
+	// Compute PnL with a clean two-layer model:
+	//
+	//   gross_pnl  = (exit_qty × exit_price) − (net_qty × entry_price)
+	//                Pure price movement; no fees on either side.
+	//
+	//   commission = entry_commission + exit_commission
+	//                entry_commission is derived from deployed_capital:
+	//                  deployed_capital = net_qty × entry_price + entry_commission
+	//                  → entry_commission = deployed_capital − net_qty × entry_price
+	//
+	//   net_pnl    = gross_pnl − commission          ← computed by PG GENERATED column
+	//
+	// deployed_capital accumulates all entry fills (incl. pyramid adds) with their fees,
+	// so this derivation is exact for any number of entry fills.
+	// Falls back to the legacy (exit−entry)×qty formula when deployed_capital is missing.
+	grossPnL := cp.RealizedPnL // legacy fallback
+	totalCommission := exitCommission
+	exitQty, _ := decimal.NewFromString(cp.Qty)
+	exitPrice, _ := decimal.NewFromString(cp.ClosePrice)
+	entryPrice, _ := decimal.NewFromString(cp.EntryPrice)
+	netQty, _ := decimal.NewFromString(cp.Qty) // cp.Qty is set to snap.Qty (full leg qty)
+	deployed, _ := decimal.NewFromString(cp.DeployedCapital)
+	if deployed.IsPositive() && exitQty.IsPositive() && exitPrice.IsPositive() {
+		// gross_pnl = pure price movement, no fees.
+		grossPnL = exitQty.Mul(exitPrice).Sub(netQty.Mul(entryPrice)).String()
+		// entry_commission = deployed_capital − net_qty × entry_price.
+		if entryPrice.IsPositive() {
+			entryCommission := deployed.Sub(netQty.Mul(entryPrice))
+			if entryCommission.IsPositive() {
+				totalCommission = totalCommission.Add(entryCommission)
+			}
+		}
+	}
+
 	rec := perf.TradeRecord{
 		HelmID:          h.helmID.String(),
 		HandID:          h.id.String(),
@@ -271,8 +316,8 @@ func (h *Hand) appendTradeRecord(ctx context.Context, cp poslog.PositionClosedPa
 		ExitPrice:       cp.ClosePrice,
 		EntryAt:         cp.EntryAt,
 		ExitAt:          exitAt,
-		GrossPnL:        cp.RealizedPnL,
-		Commission:      decimalToString(commission),
+		GrossPnL:        grossPnL,
+		Commission:      decimalToString(totalCommission),
 		StopLossPrice:   cp.StopLossPrice,
 		TakeProfitPrice: cp.TakeProfitPrice,
 		PlannedRisk:     plannedRisk(cp.Qty, cp.EntryPrice, cp.StopLossPrice),

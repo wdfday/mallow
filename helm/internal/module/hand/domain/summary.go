@@ -30,6 +30,21 @@ type HandSummary struct {
 	DeployedCapital  decimal.Decimal `json:"deployed_capital"`
 	AvailableCash    decimal.Decimal `json:"available_cash"` // allocated + realized_pnl - deployed
 	SignalTTLSec     int             `json:"signal_ttl_sec,omitempty"`
+	Legs             []LegView       `json:"legs,omitempty"` // active position legs currently held
+}
+
+// LegView is the JSON-safe snapshot of a single active position leg.
+type LegView struct {
+	PositionID      string          `json:"position_id"`
+	Symbol          string          `json:"symbol"`
+	Side            string          `json:"side"`
+	Phase           string          `json:"phase"` // entering | adding | open | exiting
+	Qty             decimal.Decimal `json:"qty"`
+	EntryPrice      decimal.Decimal `json:"entry_price"`
+	DeployedCapital decimal.Decimal `json:"deployed_capital"`
+	StopLoss        decimal.Decimal `json:"stop_loss,omitempty"`
+	TakeProfit      decimal.Decimal `json:"take_profit,omitempty"`
+	OpenedAt        time.Time       `json:"opened_at"`
 }
 
 // HandHealthView is the JSON-safe health snapshot.

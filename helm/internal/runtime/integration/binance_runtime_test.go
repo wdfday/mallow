@@ -8,7 +8,7 @@
 //	BINANCE_API_KEY / BINANCE_API_SECRET
 //
 // go test -v -run TestBinance_ ./internal/runtime/ -timeout 90s
-package runtime_test
+package integration_test
 
 import (
 	"context"

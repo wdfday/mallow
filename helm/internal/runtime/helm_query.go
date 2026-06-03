@@ -89,8 +89,7 @@ func (r *HelmRuntime) Price(symbol string) decimal.Decimal {
 // Returns nil if the underlying exchange adapter is not instrumented with MeteredExchange.
 func (r *HelmRuntime) ExchangeSnapshot() *exchange.MetricsSnapshot {
 	if m, ok := r.Exchange.(*exchange.MeteredExchange); ok {
-		s := m.Snapshot()
-		return &s
+		return new(m.Snapshot())
 	}
 	return nil
 }

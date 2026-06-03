@@ -4,6 +4,9 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
+
+	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
 )
@@ -32,6 +35,7 @@ type InstrumentInfo struct {
 	State    string
 	TickSz   string
 	LotSz    string
+	MinSz    string
 }
 
 // PositionInfo represents an open position on OKX.
@@ -144,6 +148,7 @@ func (c *Client) GetInstrument(ctx context.Context, instType, instID string) (*I
 			State    string `json:"state"`
 			TickSz   string `json:"tickSz"`
 			LotSz    string `json:"lotSz"`
+			MinSz    string `json:"minSz"`
 		} `json:"data"`
 	}
 
@@ -163,5 +168,26 @@ func (c *Client) GetInstrument(ctx context.Context, instType, instID string) (*I
 		State:    d.State,
 		TickSz:   d.TickSz,
 		LotSz:    d.LotSz,
+		MinSz:    d.MinSz,
 	}, nil
+}
+
+// GetSymbolFilters implements exchange.SymbolInfoProvider.
+func (c *Client) GetSymbolFilters(ctx context.Context, symbol string) (exchange.SymbolFilters, error) {
+	instType := "SPOT"
+	if strings.HasSuffix(symbol, "-SWAP") {
+		instType = "SWAP"
+	}
+	info, err := c.GetInstrument(ctx, instType, symbol)
+	if err != nil {
+		return exchange.SymbolFilters{}, err
+	}
+	f := exchange.SymbolFilters{
+		BaseAsset:  info.BaseCcy,
+		QuoteAsset: info.QuoteCcy,
+	}
+	f.QtyStep, _ = decimal.NewFromString(info.LotSz)
+	f.MinQty, _ = decimal.NewFromString(info.MinSz)
+	f.PriceTick, _ = decimal.NewFromString(info.TickSz)
+	return f, nil
 }

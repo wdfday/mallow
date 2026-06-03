@@ -94,6 +94,26 @@ func (s *Service) hydrate(data *domain.Hand) (*runtime.HandRef, error) {
 	return &runtime.HandRef{Data: data, Runner: hand, Exchange: rt.Exchange}, nil
 }
 
+// AllSymbols returns the deduplicated set of symbols across all live hands.
+// Used to prewarm the exchange symbol-filter cache at startup.
+func (s *Service) AllSymbols() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	seen := make(map[string]struct{}, len(s.hands))
+	for _, bi := range s.hands {
+		for _, sym := range bi.Data.Symbols {
+			if sym != "" {
+				seen[sym] = struct{}{}
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for sym := range seen {
+		out = append(out, sym)
+	}
+	return out
+}
+
 // StartAllHydrated starts the runners of all hydrated hands that have status HandStatusRunning.
 // This is called at startup after the orchestrator has reconciled position state.
 func (s *Service) StartAllHydrated() {

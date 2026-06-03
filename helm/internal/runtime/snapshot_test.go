@@ -162,7 +162,7 @@ func TestSnapshot_RoundTrip_EntryThenExit(t *testing.T) {
 	}
 
 	// Exit.
-	hand.DeliverSignal(exitSig(symbol))
+	hand.DeliverSignal(exitSignalFor(symbol))
 	waitCode(hand, runtime.CodeOrderFilled, 3*time.Second)
 
 	snap := rt.BuildSnapshot(time.Now())

@@ -43,14 +43,15 @@ func New(cfg Config) *Client {
 }
 
 var (
-	_ exchange.Exchange        = (*Client)(nil)
-	_ exchange.ExitOrderPlacer = (*Client)(nil)
-	_ exchange.LeverageSetter  = (*Client)(nil)
-	_ exchange.AccountSyncer   = (*Client)(nil)
-	_ exchange.AccountStreamer = (*Client)(nil)
-	_ exchange.HistoryFetcher  = (*Client)(nil)
-	_ exchange.PriceFetcher    = (*Client)(nil)
-	_ exchange.OrderReconciler = (*Client)(nil)
+	_ exchange.Exchange           = (*Client)(nil)
+	_ exchange.ExitOrderPlacer    = (*Client)(nil)
+	_ exchange.LeverageSetter     = (*Client)(nil)
+	_ exchange.AccountSyncer      = (*Client)(nil)
+	_ exchange.AccountStreamer    = (*Client)(nil)
+	_ exchange.HistoryFetcher     = (*Client)(nil)
+	_ exchange.PriceFetcher       = (*Client)(nil)
+	_ exchange.OrderReconciler    = (*Client)(nil)
+	_ exchange.SymbolInfoProvider = (*Client)(nil)
 )
 
 func (c *Client) Name() string { return "okx" }

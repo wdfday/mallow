@@ -42,9 +42,6 @@ func (h *Hand) handleWsFill(ctx context.Context, ev exchange.WsFillEvent) {
 	if side == "buy" && ev.Commission.IsPositive() && ev.CommissionAsset != "" &&
 		strings.HasPrefix(ev.Symbol, ev.CommissionAsset) {
 		qty = qty.Sub(ev.Commission)
-		// Truncate to 4 decimal places so the qty fits exchange lot size step (0.0001).
-		// Rounding down avoids insufficient-balance on exit; the dust is negligible.
-		qty = qty.Truncate(4)
 		// Convert base-asset fee → quote equivalent for consistent two-trip accounting.
 		if ev.FilledAvg.IsPositive() {
 			commission = ev.Commission.Mul(ev.FilledAvg)
@@ -64,7 +61,9 @@ func (h *Hand) handleWsFill(ctx context.Context, ev exchange.WsFillEvent) {
 //   - WS (handleWsFill): fast-path, fill arrives via broker WebSocket
 //   - REST poll (pollOrders): 5s fallback when WS event was missed
 //   - REST-immediate (handleSignal): broker confirmed fill in the PlaceOrder response
-func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty, price, commission decimal.Decimal, source string) {
+func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
+	qty, price, commission decimal.Decimal, source string) {
+
 	h.metrics.ordersFilled.Add(1)
 
 	// ── 1. Resolve pending exit level (entry fill only) ───────────────────────
@@ -115,17 +114,28 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 				}
 			}
 			if anchor.IsPositive() {
+				// Round to the exchange tick size (authoritative) so SL/TP satisfy
+				// PRICE_FILTER. StopOffset/TakeProfitOffset come from Rust float
+				// arithmetic and carry many decimal places; fill price representation
+				// is also unreliable (Binance may return "2014.1200000" → Exponent=-7).
+				prec := priceTick(h.helmRuntime.filtersFor(ctx, symbol).PriceTick)
 				if !pending.StopOffset.IsZero() {
-					resolved.StopLoss = anchor.Add(pending.StopOffset)
+					resolved.StopLoss = anchor.Add(pending.StopOffset).Round(prec)
 				}
 				if !pending.TakeProfitOffset.IsZero() {
-					resolved.TakeProfit = anchor.Add(pending.TakeProfitOffset)
+					resolved.TakeProfit = anchor.Add(pending.TakeProfitOffset).Round(prec)
 				}
 			}
 			offsetResolved = true
 		} else {
-			resolved.StopLoss = pending.StopLoss
-			resolved.TakeProfit = pending.TakeProfit
+			// Absolute SL/TP from signal — Rust float, round to exchange tick.
+			prec := priceTick(h.helmRuntime.filtersFor(ctx, symbol).PriceTick)
+			if pending.StopLoss.IsPositive() {
+				resolved.StopLoss = pending.StopLoss.Round(prec)
+			}
+			if pending.TakeProfit.IsPositive() {
+				resolved.TakeProfit = pending.TakeProfit.Round(prec)
+			}
 		}
 
 		// Pyramid add: cancel the prior consolidated bracket BEFORE overwriting exitLevels.
@@ -140,8 +150,26 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 
 		h.exitLevels[symbol] = resolved
 		if resolved.StopLoss.IsPositive() || resolved.TakeProfit.IsPositive() {
-			resolvedEl = resolved
-			hasExitBracket = true
+			// Sanity check: for a long exit (sell), SL must be below TP; for short (buy), above.
+			// Rounding can collapse SL and TP to the same value — sending that to the exchange
+			// causes a hard error ("relationship of prices not correct"). Skip OCO in that case.
+			slTpOK := true
+			if resolved.StopLoss.IsPositive() && resolved.TakeProfit.IsPositive() {
+				if resolved.Side == "buy" { // short → TP < SL
+					slTpOK = resolved.TakeProfit.LessThan(resolved.StopLoss)
+				} else { // long → SL < TP
+					slTpOK = resolved.StopLoss.LessThan(resolved.TakeProfit)
+				}
+				if !slTpOK {
+					slog.Warn("fill: SL/TP collapsed to same value after rounding — skipping OCO bracket",
+						"hand_id", h.id, "symbol", symbol,
+						"stop_loss", resolved.StopLoss, "take_profit", resolved.TakeProfit)
+				}
+			}
+			if slTpOK {
+				resolvedEl = resolved
+				hasExitBracket = true
+			}
 		}
 	}
 	h.mu.Unlock()
@@ -149,7 +177,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 	// ── 2. Place exchange-side bracket orders (entry fill only) ──────────────
 	// Runs in a goroutine so it doesn't block the fill handling path.
 	// On success, stores the resulting order IDs back into exitLevels so they
-	// can be cancelled if the position closes via the other exit leg.
+	// can be canceled if the position closes via the other exit leg.
 	if hasExitBracket {
 		if placer, ok := h.helmRuntime.Exchange.(exchange.ExitOrderPlacer); ok {
 			exitSide := exchange.Sell
@@ -172,11 +200,12 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 				// Retry loop: spot exchanges may return "insufficient balance" briefly after
 				// a fill if the asset has not yet settled into the available balance.
 				// Retries up to 5× with linear backoff (1s, 2s … 5s = 15s total).
+				bktCtx := handCtx
 				exitReq := exchange.ExitOrderRequest{
 					Symbol:     symbol,
 					Market:     market,
 					Side:       exitSide,
-					Qty:        bracketQty, // full merged leg qty, not just this add
+					Qty:        truncateQty(h.helmRuntime.filtersFor(bktCtx, symbol), bracketQty),
 					StopLoss:   el.StopLoss,
 					TakeProfit: el.TakeProfit,
 				}
@@ -211,7 +240,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 						HandID: h.id.String(),
 						Code:   CodeOrderExitFailed,
 						Symbol: symbol,
-						Reason: fmt.Sprintf("stop_loss=%s take_profit=%s err=%s", el.StopLoss, el.TakeProfit, err),
+						Reason: fmt.Sprintf("qty=%s stop_loss=%s take_profit=%s err=%s", exitReq.Qty, el.StopLoss, el.TakeProfit, err),
 						Msg:    "order: exchange SL/TP bracket FAILED — local monitor is the only net",
 					})
 					return
@@ -251,6 +280,14 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 	posID := h.pendingOrderPos[orderID]
 	isClosingFill := posID != "" && h.pos.LegPhase(posID) == position.PhaseExiting
 	entryPrice := h.pos.LegEntryPrice(posID)
+	// legQty is the full position size before this fill is applied.
+	// Used for dust detection (step 4.5) and the trade record (publishOrderFilled).
+	var legQty decimal.Decimal
+	if isClosingFill {
+		if snap, ok := h.pos.LegSnapshot(posID); ok {
+			legQty = snap.Qty.Abs()
+		}
+	}
 
 	var isBracketExit bool
 	if !isClosingFill {
@@ -262,6 +299,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 					if primaryLeg := h.pos.PrimaryLeg(); primaryLeg != nil {
 						posID = primaryLeg.PositionID
 						entryPrice = primaryLeg.EntryPrice
+						legQty = primaryLeg.Qty.Abs()
 					}
 					break
 				}
@@ -291,19 +329,24 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 			h.metrics.mu.Lock()
 			h.metrics.totalPnL = h.metrics.totalPnL.Add(closePnL)
 			h.metrics.totalCommission = h.metrics.totalCommission.Add(commission)
-			if closePnL.IsPositive() {
-				h.metrics.winCount++
-			} else {
-				h.metrics.lossCount++
+			// dust_exit is a synthetic rounding fill — same trade, not a new trade event.
+			// Accumulate PnL for accurate totals, but skip win/loss count and edge risk:
+			// the "trade outcome" was already decided and recorded by the main closing fill.
+			if source != "dust_exit" {
+				if closePnL.IsPositive() {
+					h.metrics.winCount++
+				} else {
+					h.metrics.lossCount++
+				}
 			}
 			h.metrics.mu.Unlock()
-			h.checkEdgeRisk(closePnL)
+			if source != "dust_exit" {
+				h.checkEdgeRisk(closePnL)
+			}
 		}
 	}
 
-	// ── 4. Portfolio update ───────────────────────────────────────────────────
-	// Single update point for all fill paths (WS, poll, REST-immediate).
-	// Registry no longer calls ReportFill before routing to hand.
+	// ── 4. Portfolio update (main exchange fill) ─────────────────────────────
 	h.helmRuntime.ReportFill(helmdomain.FillReport{
 		HandID:     h.id.String(),
 		HelmID:     h.helmID.String(),
@@ -316,10 +359,73 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 		Timestamp:  time.Now().UTC(),
 	})
 
-	// ── 5. Poslog ─────────────────────────────────────────────────────────────
+	// ── 4.5. Dust reconciliation (spot closing fills only) ────────────────────
+	// When a spot exit is truncated to the exchange's LOT_SIZE step, the remaining
+	// sub-step qty (dust) cannot be sold at the exchange. The hand "sells" the
+	// dust internally to helm at the current market price so that:
+	//   1. Helm's portfolio is credited with the USDT value of the dust.
+	//   2. The dust PnL is included in the trade's gross PnL (via legQty in
+	//      publishOrderFilled → appendTradeRecord).
+	//   3. dustLedger suppresses a false checkPositionDesync alarm for the
+	//      tiny physical BTC residual that remains at the exchange.
+	//
+	// MUST run BEFORE publishOrderFilled: the leg still exists in h.pos here.
+	// After publishOrderFilled emits KindPositionClosed, the leg is gone.
+	isFutures := h.helmRuntime.Creds.AccountType == exchange.AccountFuturesUSDM ||
+		h.helmRuntime.Creds.AccountType == exchange.AccountFuturesCOINM
+	if isClosingFill && !isFutures && legQty.IsPositive() {
+		dust := legQty.Sub(qty)
+		filters := h.helmRuntime.filtersFor(ctx, symbol)
+		if filters.QtyStep.IsPositive() && dust.IsPositive() && dust.LessThan(filters.QtyStep) {
+			dustPrice := price
+			if mp := h.helmRuntime.lastKnownPrice(symbol); mp.IsPositive() {
+				dustPrice = mp
+			}
+			slog.Info("hand: dust reconciliation — sub-step residual returned to helm at market price",
+				"hand_id", h.id, "symbol", symbol,
+				"dust", dust, "price", dustPrice, "step", filters.QtyStep,
+			)
+			// Credit portfolio with the USDT value of the dust.
+			h.helmRuntime.ReportFill(helmdomain.FillReport{
+				HandID:    h.id.String(),
+				HelmID:    h.helmID.String(),
+				OrderID:   orderID + "_dust",
+				Symbol:    symbol,
+				Side:      side,
+				Qty:       dust,
+				Price:     dustPrice,
+				Timestamp: time.Now().UTC(),
+			})
+			// Accumulate dust PnL into hand metrics (no win/loss count — same trade).
+			if entryPrice.IsPositive() {
+				var dustPnL decimal.Decimal
+				if side == "sell" {
+					dustPnL = dustPrice.Sub(entryPrice).Mul(dust)
+				} else {
+					dustPnL = entryPrice.Sub(dustPrice).Mul(dust)
+				}
+				h.metrics.mu.Lock()
+				h.metrics.totalPnL = h.metrics.totalPnL.Add(dustPnL)
+				h.metrics.mu.Unlock()
+			}
+			// Suppress checkPositionDesync for the physical BTC residual at exchange.
+			h.helmRuntime.RecordDust(symbol, dust)
+		}
+	}
+
+	// ── 5. poslog ─────────────────────────────────────────────────────────────
 	// publishOrderFilled updates h.pos (ActiveLegs) — must run BEFORE emitEvent
 	// so that observers (tests, SSE clients) see a consistent DeployedCapital.
-	h.publishOrderFilled(ctx, orderID, qty, price, closePnL, commission, source, closeSource)
+	// deployedCapital = quote cost of THIS fill = qty×price + entry_fee_quote.
+	// Zero for exit fills (no new capital is deployed on close).
+	var deployedCapital decimal.Decimal
+	if !isClosingFill {
+		deployedCapital = qty.Mul(price).Add(commission)
+	}
+	// Pass legQty so publishOrderFilled uses the full position size in the trade
+	// record (gross_pnl = legQty×exitPrice − legQty×entryPrice, which includes
+	// the dust portion at approximately the same price).
+	h.publishOrderFilled(ctx, orderID, qty, legQty, price, closePnL, commission, deployedCapital, source, closeSource)
 
 	// ── 5.5. Persist resolved IsOffset SL/TP into the leg ───────────────────
 	// For offset entries the OrderPlaced poslog carried zero SL/TP (fill price
@@ -440,29 +546,25 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string, qty,
 // for the ring buffer fields — they are exclusively written here).
 // Auto-pauses the hand when any enabled threshold is breached.
 func (h *Hand) checkEdgeRisk(pnl decimal.Decimal) {
-	cfg := h.edgeRisk
+	cfg := h.guard.cfg
 	if cfg.WindowTrades == 0 {
 		return
 	}
 
 	// ── 1. Push PnL into ring ─────────────────────────────────────────────────
-	h.tradeRing[h.ringHead] = pnl
-	h.ringHead = (h.ringHead + 1) % cfg.WindowTrades
-	if h.ringHead == 0 {
-		h.ringFull = true
-	}
+	h.guard.push(pnl)
 
 	// ── 2. Update consecutive-loss streak ────────────────────────────────────
 	if pnl.IsNegative() {
-		h.consecLoss++
+		h.guard.consecLoss++
 	} else {
-		h.consecLoss = 0
+		h.guard.consecLoss = 0
 	}
 
 	// ── 3. Determine active window size ──────────────────────────────────────
 	count := cfg.WindowTrades
-	if !h.ringFull {
-		count = h.ringHead // number of pushes so far; ringHead hasn't wrapped yet
+	if !h.guard.full {
+		count = h.guard.head // number of pushes so far; head hasn't wrapped yet
 		if count == 0 {
 			return
 		}
@@ -470,11 +572,11 @@ func (h *Hand) checkEdgeRisk(pnl decimal.Decimal) {
 
 	// ── 4. Compute window stats ───────────────────────────────────────────────
 	sum := decimal.Zero
-	minPnL := h.tradeRing[0]
+	minPnL := h.guard.ring[0]
 	for i := 0; i < count; i++ {
-		sum = sum.Add(h.tradeRing[i])
-		if h.tradeRing[i].LessThan(minPnL) {
-			minPnL = h.tradeRing[i]
+		sum = sum.Add(h.guard.ring[i])
+		if h.guard.ring[i].LessThan(minPnL) {
+			minPnL = h.guard.ring[i]
 		}
 	}
 	avg := sum.Div(decimal.NewFromInt(int64(count)))
@@ -509,8 +611,8 @@ func (h *Hand) checkEdgeRisk(pnl decimal.Decimal) {
 		breachReason = fmt.Sprintf("single trade loss %.2f%% > max %.2f%%",
 			-pct(minPnL), cfg.MaxSingleLossPct*100)
 
-	case cfg.MaxConsecLoss > 0 && h.consecLoss >= cfg.MaxConsecLoss:
-		breachReason = fmt.Sprintf("consecutive losses %d reached max %d", h.consecLoss, cfg.MaxConsecLoss)
+	case cfg.MaxConsecLoss > 0 && h.guard.consecLoss >= cfg.MaxConsecLoss:
+		breachReason = fmt.Sprintf("consecutive losses %d reached max %d", h.guard.consecLoss, cfg.MaxConsecLoss)
 	}
 
 	if breachReason == "" {

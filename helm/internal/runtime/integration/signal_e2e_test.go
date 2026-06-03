@@ -13,7 +13,7 @@
 //	ALPACA_API_KEY / ALPACA_API_SECRET       (paper-api.alpaca.markets)
 //
 // go test -v -run TestSignalToOrder ./internal/runtime/ -timeout 60s
-package runtime_test
+package integration_test
 
 import (
 	"context"

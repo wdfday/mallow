@@ -8,6 +8,7 @@ import (
 
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/natsapi"
+	"mallow/helm/internal/runtime/clid"
 	"mallow/helm/internal/runtime/core/portfolio"
 )
 
@@ -98,7 +99,7 @@ func (r *HelmRuntime) Sync(ctx context.Context) error {
 
 	for _, p := range snap.Positions {
 		if p.CurPrice.IsPositive() {
-			r.prices.set(p.Symbol, p.CurPrice)
+			r.marketData.setPrice(p.Symbol, p.CurPrice)
 		}
 	}
 
@@ -114,7 +115,7 @@ func (r *HelmRuntime) Sync(ctx context.Context) error {
 		// exchange id when the venue's trade record omits the clOrdId, e.g. Binance).
 		// Works only while the order is still tracked in orderHandMap (slow/gap fills);
 		// returns "" for orders already cleared — omitempty hides it from JSON.
-		handID := r.PendingOrderHandID(canonOrderKey(t.ClientOrderID, t.OrderID))
+		handID := r.PendingOrderHandID(clid.CanonKey(t.ClientOrderID, t.OrderID))
 		msg := natsapi.TransactionMsg{
 			HelmID:    helmID,
 			AccountID: accountID,
@@ -179,7 +180,7 @@ func (r *HelmRuntime) ReconcileOrders(ctx context.Context) {
 	for _, o := range orders {
 		// Track by clid when the exchange echoes ours (race-free key shared with WS fills),
 		// else by exchange id. handID unknown after crash — fill routing falls back to REST poll.
-		key := canonOrderKey(o.ClientOrderID, o.ID)
+		key := clid.CanonKey(o.ClientOrderID, o.ID)
 		if r.HasOrderTracking(key) {
 			continue
 		}

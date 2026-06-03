@@ -116,8 +116,8 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 		case "new", "accepted", "submitted", "pending_new":
 			// Limit order timeout: cancel (and optionally re-place) if it hasn't filled
 			// within LimitTimeoutSec seconds.
-			if o.Type == "limit" && h.limitTimeoutSec > 0 {
-				timeout := time.Duration(h.limitTimeoutSec) * time.Second
+			if o.Type == "limit" && h.cfg.limitTimeoutSec > 0 {
+				timeout := time.Duration(h.cfg.limitTimeoutSec) * time.Second
 				if time.Since(o.SubmitTime) > timeout {
 					h.handleLimitTimeout(ctx, o, result)
 				}
@@ -125,8 +125,8 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 
 		case "partially_filled":
 			// Limit timeout for partially-filled orders (same policy).
-			if o.Type == "limit" && h.limitTimeoutSec > 0 {
-				timeout := time.Duration(h.limitTimeoutSec) * time.Second
+			if o.Type == "limit" && h.cfg.limitTimeoutSec > 0 {
+				timeout := time.Duration(h.cfg.limitTimeoutSec) * time.Second
 				if time.Since(o.SubmitTime) > timeout && result.FilledQty.IsPositive() {
 					h.handleLimitTimeout(ctx, o, result)
 					break
@@ -304,7 +304,7 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 
 	remainingQty := o.Qty.Sub(alreadyFilledQty)
 	slog.Info("hand: limit order timed out", "order_id", o.ID, "age", age,
-		"filled", alreadyFilledQty, "remaining", remainingQty, "fallback", h.limitFallback)
+		"filled", alreadyFilledQty, "remaining", remainingQty, "fallback", h.cfg.limitFallback)
 
 	h.helmRuntime.EmitEvent(natsapi.HelmEvent{
 		HandID:  h.id.String(),
@@ -316,7 +316,7 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 		Msg:     "order: limit timeout",
 	})
 
-	if h.limitFallback == handdomain.LimitFallbackMarket && remainingQty.IsPositive() {
+	if h.cfg.limitFallback == handdomain.LimitFallbackMarket && remainingQty.IsPositive() {
 		result, err := h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, exchange.OrderRequest{
 			Symbol: o.Symbol,
 			Side:   exchange.OrderSide(o.Side),

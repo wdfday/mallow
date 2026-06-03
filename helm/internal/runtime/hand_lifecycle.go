@@ -40,27 +40,31 @@ func NewHand(
 	if maxUnits <= 0 {
 		maxUnits = 1
 	}
-	var tradeRing []decimal.Decimal
+	var ring []decimal.Decimal
 	if edgeRisk.WindowTrades > 0 {
-		tradeRing = make([]decimal.Decimal, edgeRisk.WindowTrades)
+		ring = make([]decimal.Decimal, edgeRisk.WindowTrades)
 	}
 	return &Hand{
-		id:              id,
-		helmID:          helmID,
-		helmRuntime:     rt,
-		strategy:        strat,
-		tactician:       tact,
-		limiter:         rate.NewLimiter(rate.Every(1*time.Second), 5),
-		pyramid:         pyramid,
-		maxUnits:        maxUnits,
-		futuresConfig:   futuresConfig,
-		signalTTL:       signalTTL,
-		orderType:       orderType,
-		limitTimeoutSec: limitTimeoutSec,
-		limitFallback:   limitFallback,
-		edgeRisk:        edgeRisk,
+		id:          id,
+		helmID:      helmID,
+		helmRuntime: rt,
+		strategy:    strat,
+		tactician:   tact,
+		limiter:     rate.NewLimiter(rate.Every(1*time.Second), 5),
+		cfg: handConfig{
+			pyramid:         pyramid,
+			maxUnits:        maxUnits,
+			signalTTL:       signalTTL,
+			orderType:       orderType,
+			limitTimeoutSec: limitTimeoutSec,
+			limitFallback:   limitFallback,
+			futuresConfig:   futuresConfig,
+		},
+		guard: handEdgeGuard{
+			cfg:  edgeRisk,
+			ring: ring,
+		},
 		allocatedCap:    allocatedCap,
-		tradeRing:       tradeRing,
 		leverageApplied: make(map[string]bool),
 		Signals:         make(chan Signal, 1),
 		UrgentSignals:   make(chan Signal, 4),
@@ -156,7 +160,7 @@ func (h *Hand) restorePosition(hp *position.HandPositions, currentPrice decimal.
 
 	// Rebuild local exit-level guards.
 	// Pyramid: SL/TP from pos (latest signal levels); non-pyramid: per-leg.
-	if h.pyramid {
+	if h.cfg.pyramid {
 		if pos.StopLoss.IsPositive() || pos.TakeProfit.IsPositive() {
 			var bracketIDs []string
 			if pl := hp.PrimaryLeg(); pl != nil {

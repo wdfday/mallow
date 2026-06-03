@@ -13,6 +13,7 @@ import (
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/natsapi"
 	helmdomain "mallow/helm/internal/module/helm/domain"
+	"mallow/helm/internal/runtime/clid"
 )
 
 // StartFillStreaming opens the WS order stream and starts the fill and lifecycle
@@ -125,7 +126,7 @@ func (r *HelmRuntime) runLifecycleProcessor(ctx context.Context) {
 				)
 			case exchange.OrderLifecycleEventCanceled:
 				// Lookup hand BEFORE removing tracking — needed for external-close detection.
-				key := canonOrderKey(ev.ClientOrderID, ev.OrderID)
+				key := clid.CanonKey(ev.ClientOrderID, ev.OrderID)
 				handID := r.PendingOrderHandID(key)
 				r.RemoveOrderTracking(key)
 				if key != ev.OrderID {
@@ -172,7 +173,7 @@ func (r *HelmRuntime) applyWsFill(ev exchange.WsFillEvent) {
 	// clid for our orders (tracked before placement → no WS-before-REST race) and the
 	// exchange id for everything else. An untracked order (placed manually outside the
 	// bot) resolves to "" → the orphan path.
-	routeKey := canonOrderKey(ev.ClientOrderID, ev.OrderID)
+	routeKey := clid.CanonKey(ev.ClientOrderID, ev.OrderID)
 	botID := r.PendingOrderHandID(routeKey)
 
 	// Rollout observability: record how this fill resolved to a hand.
@@ -181,7 +182,7 @@ func (r *HelmRuntime) applyWsFill(ev exchange.WsFillEvent) {
 	switch {
 	case botID == "":
 		r.fillRouteOrphan.Add(1)
-	case routeKey == ev.ClientOrderID && isOurClid(ev.ClientOrderID):
+	case routeKey == ev.ClientOrderID && clid.IsOurClid(ev.ClientOrderID):
 		r.fillRouteClid.Add(1)
 		fillRoute = "clid"
 	default:

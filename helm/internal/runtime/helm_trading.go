@@ -66,13 +66,11 @@ func (r *HelmRuntime) ProcessTrade(
 	if price.IsZero() {
 		if pf, ok := r.Exchange.(exchange.PriceFetcher); ok {
 			// Fallback to REST only when WebSocket price cache is cold.
+			// proposal.Symbol is already a bare ticker (dispatcher strips the herald prefix).
 			// This call may take 100ms–2s but runs outside tradeMu.
-			// Strip exchange prefix ("binance:ETHUSDT" → "ETHUSDT") before
-			// calling the REST ticker — exchange APIs never use the prefix.
-			restSymbol := stripExchangePrefix(proposal.Symbol)
-			if p, err := pf.GetCurrentPrice(ctx, r.Creds, restSymbol); err == nil && p.IsPositive() {
+			if p, err := pf.GetCurrentPrice(ctx, r.Creds, proposal.Symbol); err == nil && p.IsPositive() {
 				price = p
-				r.prices.set(proposal.Symbol, p) // stores raw + prefix-stripped key
+				r.marketData.setPrice(proposal.Symbol, p)
 			}
 		}
 	}
@@ -160,7 +158,7 @@ func (r *HelmRuntime) ReportFill(fill helmdomain.FillReport) {
 	// Fill price is the freshest known price; update cache so the next
 	// ProcessTrade sizing call doesn't fall back to a stale tick.
 	if fill.Price.IsPositive() {
-		r.prices.set(fill.Symbol, fill.Price)
+		r.marketData.setPrice(fill.Symbol, fill.Price)
 	}
 
 	pfSide := portfolio.SideBuy

@@ -84,6 +84,10 @@ type OrderFilledPayload struct {
 	// Source identifies how the fill was detected.
 	// "ws" = WebSocket push, "poll" = periodic poll, "reconcile" = startup reconcile.
 	Source string `json:"source"`
+	// DeployedCapital is the quote cost of this fill: net_qty×price + entry_fee_quote.
+	// Accumulated into LegState so net PnL can be computed as received − deployed.
+	// Zero on old events (backward-compat: those trades will have imprecise net PnL).
+	DeployedCapital string `json:"deployed_capital,omitempty"`
 }
 
 // OrderCancelledPayload describes why an order did not result in a fill.
@@ -141,6 +145,9 @@ type PositionClosedPayload struct {
 	NEntries int `json:"n_entries,omitempty"`
 	// Commission paid on the closing fill (may be zero when exchange doesn't report it).
 	Commission string `json:"commission,omitempty"`
+	// DeployedCapital is the total quote spent across all entry fills for this leg.
+	// Populated from LegState at close time. Used for net_pnl = received - deployed.
+	DeployedCapital string `json:"deployed_capital,omitempty"`
 }
 
 // Event is one entry in the position log.

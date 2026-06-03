@@ -153,7 +153,7 @@ func (r *PostgresStatsRunner) runGrouped(ctx context.Context, col, where string,
 	return out, rows.Err()
 }
 
-// buildStatsWhere assembles the parameterised WHERE clause shared by the main
+// buildStatsWhere assembles the parameterized WHERE clause shared by the main
 // query and the grouped queries. Order: user_id, [helm_id], [hand_id], [after], [before].
 func buildStatsWhere(scope domain.Scope, p domain.Period) (string, []any) {
 	parts := []string{"user_id = $1"}

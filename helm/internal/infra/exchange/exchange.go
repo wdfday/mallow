@@ -161,6 +161,38 @@ type LeverageSetter interface {
 	SetLeverage(ctx context.Context, creds Credentials, symbol string, leverage int, marginType string) error
 }
 
+// SymbolFilters holds all static, public per-symbol rules fetched once at startup.
+// Covers order precision, minimum sizes, and asset identity — everything the runtime
+// needs from ExchangeInfo / InstrumentInfo without per-call lookups.
+type SymbolFilters struct {
+	// Precision
+	QtyStep   decimal.Decimal // LOT_SIZE stepSize — qty must be a multiple of this
+	PriceTick decimal.Decimal // PRICE_FILTER tickSize — price must be a multiple of this
+
+	// Minimums
+	MinQty      decimal.Decimal // LOT_SIZE minQty — smallest allowed order qty
+	MinNotional decimal.Decimal // NOTIONAL/MIN_NOTIONAL minNotional — smallest order value in quote
+
+	// Asset identity
+	BaseAsset  string // e.g. "ETH" for ETHUSDT
+	QuoteAsset string // e.g. "USDT" for ETHUSDT
+}
+
+// SymbolInfoProvider is an optional interface for exchanges that can return
+// static symbol rules (LOT_SIZE, PRICE_FILTER, MIN_NOTIONAL).
+type SymbolInfoProvider interface {
+	GetSymbolFilters(ctx context.Context, symbol string) (SymbolFilters, error)
+}
+
+// TimeSyncer is an optional interface for exchanges that can synchronize the
+// local clock against the exchange server time. Implementing it prevents -1021
+// (Timestamp outside recvWindow) errors caused by server clock drift.
+type TimeSyncer interface {
+	// SyncTime fetches the exchange server time (public endpoint, no credentials)
+	// and stores an offset that corrects all subsequent signed request timestamps.
+	SyncTime(ctx context.Context) error
+}
+
 // Exchange is the core interface every broker adapter must implement.
 // Implementations are stateless — credentials are passed per call so one instance
 // can serve multiple accounts without re-instantiation.
@@ -179,7 +211,7 @@ type Exchange interface {
 
 	// ── Reconciliation ────────────────────────────────────────────────────────
 
-	// ListOpenOrders returns all orders that are not yet filled or cancelled.
+	// ListOpenOrders returns all orders that are not yet filled or canceled.
 	// Pass symbol="" to list across all symbols (exchange-dependent behavior).
 	// Used by the reconciler on startup to cross-reference the poslog.
 	ListOpenOrders(ctx context.Context, creds Credentials, symbol string) ([]OrderResult, error)

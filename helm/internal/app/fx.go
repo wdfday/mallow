@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/nats-io/nats.go"
@@ -438,8 +439,18 @@ func hydrateRuntimes(repo orchdomain.HelmRepo, reg *runtime.Registry, brokerSvc 
 
 // hydrateHands loads all persisted hands from DB and wires them into the hand service.
 // Must run AFTER hydrateRuntimes so that helm runtimes exist in the registry.
-func hydrateHands(svc *service.Service) {
+// After hydration, prewarns the exchange symbol-filter cache for all active symbols
+// so the hot order-placement path never hits a cold fetch on first signal.
+func hydrateHands(svc *service.Service, reg *runtime.Registry) {
 	svc.HydrateAll()
+	symbols := svc.AllSymbols()
+	slog.Info("hands hydrated, prewarming symbol filters", "symbols", symbols)
+	if len(symbols) > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		reg.PrewarmFilters(ctx, symbols)
+		slog.Info("symbol filters prewarm complete", "count", len(symbols))
+	}
 }
 
 func newFillPersister(js nats.JetStreamContext, db *sql.DB) *perflog.FillPersister {

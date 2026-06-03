@@ -14,6 +14,7 @@ import (
 	"mallow/helm/internal/infra/natsapi"
 	handdomain "mallow/helm/internal/module/hand/domain"
 	helmdomain "mallow/helm/internal/module/helm/domain"
+	"mallow/helm/internal/runtime/clid"
 	"mallow/helm/internal/runtime/core/strategy"
 	"mallow/helm/internal/runtime/position"
 )
@@ -182,9 +183,9 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		})
 	}
 
-	if !sig.IsUrgent() && h.signalTTL > 0 && !sig.ReceivedAt.IsZero() && time.Since(sig.ReceivedAt) > h.signalTTL {
+	if !sig.IsUrgent() && h.cfg.signalTTL > 0 && !sig.ReceivedAt.IsZero() && time.Since(sig.ReceivedAt) > h.cfg.signalTTL {
 		age := time.Since(sig.ReceivedAt).Truncate(time.Millisecond)
-		reason := fmt.Sprintf("expired: age %s > ttl %s", age, h.signalTTL)
+		reason := fmt.Sprintf("expired: age %s > ttl %s", age, h.cfg.signalTTL)
 		filtered(CodeSignalStale, reason)
 		return
 	}
@@ -266,8 +267,8 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		h.mu.RLock()
 		count := h.pos.EntryCount()
 		h.mu.RUnlock()
-		if count >= h.maxUnits {
-			filtered(CodeSignalMaxUnits, fmt.Sprintf("max units reached (%d/%d)", count, h.maxUnits))
+		if count >= h.cfg.maxUnits {
+			filtered(CodeSignalMaxUnits, fmt.Sprintf("max units reached (%d/%d)", count, h.cfg.maxUnits))
 			return
 		}
 	}
@@ -280,7 +281,7 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 	// Scope: pyramid (merge) mode; independent-leg (OFF) gating is out of scope for now.
 	// See docs/pyramiding-design.md (avg-anchor decision). PARITY TODO: engine still gates on
 	// last_unit_price — migrate engine to avg to keep backtest ↔ live identical.
-	if isEntry && h.pyramid {
+	if isEntry && h.cfg.pyramid {
 		h.mu.RLock()
 		var legSide string
 		var legAvg, legQty decimal.Decimal
@@ -413,15 +414,22 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		pending.TakeProfit = reply.TakeProfit
 	}
 
-	// Hand-level OrderType is the default; signal's EntryType can override to limit.
-	orderType := exchange.Market
-	if h.orderType == handdomain.OrderTypeLimit {
-		orderType = exchange.Limit
-	}
+	// Hand config is authoritative for market vs limit.
+	// A market hand always executes at market; a limit hand uses the tactician's price.
+	// The signal's entry_type is a hint for limit hands only — it never overrides a
+	// market hand config (signal strength → UrgencyNormal would otherwise silently
+	// convert every 0.5–0.8 strength signal to a limit order on a market hand).
 	var limitPrice decimal.Decimal
-	if reply.EntryType == "limit" && reply.LimitPrice.IsPositive() {
+	orderType := exchange.Market
+	if h.cfg.orderType == handdomain.OrderTypeLimit {
 		orderType = exchange.Limit
-		limitPrice = reply.LimitPrice
+		if reply.EntryType == "limit" && reply.LimitPrice.IsPositive() {
+			limitPrice = reply.LimitPrice
+		}
+		// If no limit price resolved, fall back to market to avoid Price("0") → PRICE_FILTER.
+		if limitPrice.IsZero() {
+			orderType = exchange.Market
+		}
 	}
 
 	isFutures := h.helmRuntime.Creds.AccountType == exchange.AccountFuturesUSDM ||
@@ -434,18 +442,17 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		if !h.leverageApplied[sig.Symbol] {
 			h.leverageApplied[sig.Symbol] = true
 			h.leverageAppliedMu.Unlock()
-			h.applyFuturesLeverage(ctx, sig.Symbol, h.futuresConfig)
+			h.applyFuturesLeverage(ctx, sig.Symbol, h.cfg.futuresConfig)
 		} else {
 			h.leverageAppliedMu.Unlock()
 		}
 	}
 
 	orderQty := reply.Qty
-	// Spot exchanges enforce LOT_SIZE step = 0.0001 for most pairs (e.g. ETHUSDT).
-	// Truncate to 4 decimal places so qty is always a valid multiple of the step.
-	// Futures use ReduceOnly and have their own precision — skip truncation there.
+	// Truncate qty to the exchange's LOT_SIZE stepSize so the order is a valid
+	// multiple of the step. Futures use ReduceOnly and have their own precision.
 	if !isFutures {
-		orderQty = orderQty.Truncate(4)
+		orderQty = truncateQty(h.helmRuntime.filtersFor(ctx, sig.Symbol), orderQty)
 		// Record sub-step dust so checkPositionDesync doesn't mistake the residual
 		// (qty - orderQty) for an external close. Cleared when a new position opens.
 		if dust := reply.Qty.Sub(orderQty); dust.IsPositive() {
@@ -473,7 +480,7 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 	// Generate the client order id and track it BEFORE placing the order, so a WS
 	// fill that races ahead of the REST response still routes to this hand via the
 	// clid (the exchange does not know it yet, but we already do). See CLIENT_ORDER_ID.md.
-	clid := newClientOrderID()
+	clid := clid.New()
 	orderReq := exchange.OrderRequest{
 		Symbol:        sig.Symbol,
 		Side:          exchange.OrderSide(reply.Side),
@@ -543,7 +550,7 @@ func (h *Hand) runPlaceREST(ctx context.Context, pp *pendingPlace) {
 					"hand_id", h.id, "symbol", pp.sig.Symbol,
 					"attempted_qty", pp.reply.Qty, "free_qty", freeQty,
 				)
-				pp.orderReq.Qty = freeQty.Truncate(4)
+				pp.orderReq.Qty = truncateQty(h.helmRuntime.filtersFor(ctx, pp.sig.Symbol), freeQty)
 				result, err = h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, pp.orderReq)
 			}
 		}
@@ -591,7 +598,7 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 			"hand_id", h.id,
 			"symbol", sig.Symbol,
 			"side", reply.Side,
-			"qty", reply.Qty,
+			"qty", orderQty,
 			"order_type", orderType,
 			"err", err,
 		)
@@ -600,7 +607,7 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 			Symbol:    sig.Symbol,
 			Direction: string(sig.Direction),
 			Side:      reply.Side,
-			Qty:       reply.Qty,
+			Qty:       orderQty,
 			Reason:    err.Error(),
 			Msg:       "order: placement failed",
 		})

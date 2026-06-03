@@ -8,7 +8,7 @@
 //   - Binance demo credentials in creds_test.go
 //
 // go test -v -run TestPoslog_E2E ./internal/runtime/ -timeout 90s
-package runtime_test
+package integration_test
 
 import (
 	"context"

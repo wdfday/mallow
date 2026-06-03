@@ -1,10 +1,12 @@
 package runtime
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
@@ -65,16 +67,15 @@ func (r *Registry) Spawn(cfg *helmdomain.Helm, exchCfg helmdomain.ExchangeConfig
 		AccountID:  exchCfg.AccountID,
 	}
 	rt := NewHelmRuntime(cfg.ID, cfg.AccountID, cfg.UserID, brokerType, pf, riskMgr, ex, creds, cfg.LastSyncedAt, cfg.CreatedAt)
+	rt.FilterStore = r.market.filterViewFor(ex.Name())
 	// Restore pause state so signal gating survives a restart.
 	if cfg.Status == helmdomain.HelmStatusPaused || cfg.Status == helmdomain.HelmStatusHalted {
 		rt.paused = true
 	}
 
-	// Delegate L2 lookups to the registry's shared broker-level cache.
-	// Captured by value so the closure stays valid after Spawn returns.
-	rt.prices.getL2 = func(symbol string) (exchange.L2Snapshot, bool) {
-		return r.LatestL2(brokerType, symbol)
-	}
+	// Wire the registry-owned per-exchange public data; all helms on the same
+	// exchange share one bucket and see price + L2 updates immediately.
+	rt.marketData = r.market.priceDataFor(ex.Name())
 
 	// Wire the unit counter so MaxPositions counts actual open legs + manual positions,
 	// not just distinct portfolio symbols.
@@ -93,9 +94,11 @@ func (r *Registry) Spawn(cfg *helmdomain.Helm, exchCfg helmdomain.ExchangeConfig
 	ms := r.marketStreamers[brokerType]
 	r.mu.RUnlock()
 	if ms != nil {
-		// Price is still per-helm: each account has its own portfolio that tracks
-		// unrealized P&L from price ticks.
-		ms.AddPriceHandler(rt.UpdatePrice)
+		// Registry-level UpdatePrice splits the herald "exchange:SYMBOL" prefix
+		// and writes into the shared per-exchange price map. All helms on the same
+		// exchange share that map, so only one handler registration per streamer is
+		// needed — but AddPriceHandler is idempotent / deduplicated by the streamer.
+		ms.AddPriceHandler(r.UpdatePrice)
 	}
 
 	r.mu.Lock()
@@ -146,4 +149,20 @@ func (r *Registry) Teardown(id uuid.UUID) []string {
 		slog.Info("runtime: torn down", "helm_id", id, "hands_orphaned", len(handIDs))
 	}
 	return handIDs
+}
+
+// StartFillStreaming starts account fill listeners for all runtimes whose exchange
+// implements AccountStreamer. Called once from the app lifecycle after SetRuntime.
+// Each HelmRuntime owns its own fill streaming goroutines — see helm_fills.go.
+func (r *Registry) StartFillStreaming(ctx context.Context, _ *nats.Conn) {
+	r.mu.RLock()
+	rts := make([]*HelmRuntime, 0, len(r.helmRuntimes))
+	for _, rt := range r.helmRuntimes {
+		rts = append(rts, rt)
+	}
+	r.mu.RUnlock()
+
+	for _, rt := range rts {
+		rt.StartFillStreaming(ctx)
+	}
 }

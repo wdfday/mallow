@@ -12,7 +12,7 @@
 //	NATS_URL=nats://localhost:4222
 //	BINANCE_API_KEY=xxx BINANCE_API_SECRET=yyy
 //	go test -v -run TestSync_E2E ./internal/runtime/ -timeout 30s
-package runtime_test
+package integration_test
 
 import (
 	"context"

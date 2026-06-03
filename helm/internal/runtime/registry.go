@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
+	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/perflog"
@@ -35,7 +37,6 @@ type SyncStore interface {
 	UpdateLastSyncedAt(id uuid.UUID, t time.Time) error
 }
 
-
 // SignalSink is the narrow interface consumed by SignalDispatcher.
 // Registry implements it; callers only see this interface.
 type SignalSink interface {
@@ -46,20 +47,22 @@ type SignalSink interface {
 // One Helm per active helm config.
 // MarketStreamers are shared per broker type.
 type Registry struct {
+	// ── Live runtimes ─────────────────────────────────────────────────────
 	mu              sync.RWMutex
 	helmRuntimes    map[uuid.UUID]*HelmRuntime
-	marketStreamers map[string]exchange.MarketStreamer // broker_type → shared streamer
+	marketStreamers map[string]exchange.MarketStreamer // brokerType → shared streamer
 
-	// l2Books holds the latest L2 (order book) snapshot per broker type and symbol.
-	// Keyed as l2Books[brokerType][symbol]. Shared across all helms of the same broker.
-	// A single handler per streamer feeds this cache and fans-out to all watching hands.
-	l2Books map[string]map[string]exchange.L2Snapshot
-	l2Mu    sync.RWMutex
+	// ── Per-exchange market data caches ───────────────────────────────────
+	// market groups symbolFilters, prices, and l2Books under one struct.
+	// All three use exchange name as outer key; each HelmRuntime gets a
+	// scoped view wired at Spawn time (see filterViewFor / priceViewFor).
+	market exchangeMarketCache
 
+	// ── Factories (injected at construction) ──────────────────────────────
 	exchFactory     ExchangeFactory
 	streamerFactory MarketStreamerFactory
 
-	// nc, js, and runCtx are set once via SetRuntime after startup.
+	// ── Runtime wiring (set via SetRuntime / Set* after startup) ──────────
 	nc        *nats.Conn
 	js        nats.JetStreamContext
 	runCtx    context.Context
@@ -68,12 +71,9 @@ type Registry struct {
 	tradeLog  perf.TradeLog // JetStream HELM_TRADES — drained into PG by TradePersister
 	pnlSummer HandPnLSummer // postgres aggregate querier for RestorePnL
 
-	// Routing error counters — incremented in RouteSignal, exported via DispatchStats.
-	routeNoHelm atomic.Int64 // helm_id not found in registry
-	routeNoHand atomic.Int64 // hand_id not found in the resolved HelmRuntime
-
-	// dispatcher is wired via SetDispatcher after startup; nil before wiring.
-	dispatcher *SignalDispatcher
+	// ── Signal routing ────────────────────────────────────────────────────
+	dispatcher *SignalDispatcher // wired via SetDispatcher after startup; nil before
+	metrics    registryMetrics   // routing miss counters, exported via DispatchStats
 }
 
 // NewRegistry creates an empty Registry.
@@ -81,7 +81,7 @@ func NewRegistry(factory ExchangeFactory, streamerFactory MarketStreamerFactory)
 	return &Registry{
 		helmRuntimes:    make(map[uuid.UUID]*HelmRuntime),
 		marketStreamers: make(map[string]exchange.MarketStreamer),
-		l2Books:         make(map[string]map[string]exchange.L2Snapshot),
+		market:          newExchangeMarketCache(),
 		exchFactory:     factory,
 		streamerFactory: streamerFactory,
 	}
@@ -97,7 +97,6 @@ func (r *Registry) SetSyncStore(store SyncStore) {
 	}
 	r.mu.Unlock()
 }
-
 
 // SetPosLog injects the position event log (breaks init cycle — called after NATS connects).
 func (r *Registry) SetPosLog(log poslog.Log) {
@@ -199,3 +198,91 @@ func (r *Registry) All() []*HelmRuntime {
 	}
 	return out
 }
+
+// UpdatePrice is the registry-level price handler registered with each market streamer.
+// herald attaches an "exchange:" prefix to symbol names (e.g. "binance:ETHUSDT").
+// UpdatePrice splits on ":" to obtain the exchange name and bare symbol, then writes
+// into the correct per-exchange price map. All HelmRuntimes wired to that exchange
+// share the same map and therefore see the update immediately.
+func (r *Registry) UpdatePrice(heraldSym string, price decimal.Decimal) {
+	if !price.IsPositive() {
+		return
+	}
+	exchangeName, bareSym, ok := strings.Cut(heraldSym, ":")
+	if !ok {
+		// No prefix — treat the whole string as a bare symbol on an unnamed exchange.
+		bareSym = heraldSym
+		exchangeName = ""
+	}
+	r.market.updatePrice(exchangeName, bareSym, price)
+}
+
+// PrewarmFilters fetches symbol filters for every symbol concurrently using one
+// exchange client per unique broker type, then stores results in the registry's
+// symbolFilters cache. Call this at startup after hands are hydrated.
+//
+// As a side-effect it also syncs each exchange's server time (for exchanges that
+// implement TimeSyncer) so subsequent signed REST requests carry the correct
+// timestamp and avoid -1021 recvWindow errors from server clock drift.
+func (r *Registry) PrewarmFilters(ctx context.Context, symbols []string) {
+	seen := make(map[exchange.Exchange]struct{})
+	r.mu.RLock()
+	for _, rt := range r.helmRuntimes {
+		seen[rt.Exchange] = struct{}{}
+	}
+	r.mu.RUnlock()
+
+	// ── 1. Sync server time (sequential — one call per exchange) ──────────────
+	// Must complete before filter fetches so any signed requests in GetSymbolFilters
+	// already carry the corrected timestamp.
+	for ex := range seen {
+		if ts, ok := ex.(exchange.TimeSyncer); ok {
+			if err := ts.SyncTime(ctx); err != nil {
+				slog.Warn("prewarm: server time sync failed", "exchange", ex.Name(), "err", err)
+			}
+		}
+	}
+
+	// ── 2. Fetch symbol filters concurrently ──────────────────────────────────
+	var wg sync.WaitGroup
+	for ex := range seen {
+		sip, ok := ex.(exchange.SymbolInfoProvider)
+		if !ok {
+			continue
+		}
+		// Ensure the per-exchange inner map exists before goroutines write into it.
+		r.market.filterViewFor(ex.Name())
+		for _, sym := range symbols {
+			wg.Add(1)
+			go func(p exchange.SymbolInfoProvider, exName, s string) {
+				defer wg.Done()
+				f, err := p.GetSymbolFilters(ctx, s)
+				if err != nil {
+					slog.Warn("prewarm: symbol filters fetch failed",
+						"exchange", exName, "symbol", s, "err", err)
+					return
+				}
+				r.market.setFilter(exName, s, f)
+				slog.Info("prewarm: symbol filters ready",
+					"exchange", exName, "symbol", s,
+					"qty_step", f.QtyStep, "price_tick", f.PriceTick,
+					"min_qty", f.MinQty, "min_notional", f.MinNotional)
+			}(sip, ex.Name(), sym)
+		}
+	}
+	wg.Wait()
+}
+
+// ── registryMetrics ───────────────────────────────────────────────────────────
+
+// registryMetrics holds all runtime counters for the Registry.
+type registryMetrics struct {
+	routeNoHelm int64 // helm_id not found in registry    (atomic)
+	routeNoHand int64 // hand_id not found in HelmRuntime (atomic)
+}
+
+func (m *registryMetrics) incNoHelm() { atomic.AddInt64(&m.routeNoHelm, 1) }
+func (m *registryMetrics) incNoHand() { atomic.AddInt64(&m.routeNoHand, 1) }
+
+func (m *registryMetrics) loadNoHelm() int64 { return atomic.LoadInt64(&m.routeNoHelm) }
+func (m *registryMetrics) loadNoHand() int64 { return atomic.LoadInt64(&m.routeNoHand) }

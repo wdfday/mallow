@@ -56,10 +56,11 @@ type LegState struct {
 
 	PendingOrderID string
 
-	EntryPrice decimal.Decimal // avg_entry (pyramid: recomputed on each add fill)
-	Qty        decimal.Decimal // total qty  (pyramid: accumulated)
-	StopLoss   decimal.Decimal // zero = not set
-	TakeProfit decimal.Decimal // zero = not set
+	EntryPrice      decimal.Decimal // avg_entry (pyramid: recomputed on each add fill)
+	Qty             decimal.Decimal // total qty  (pyramid: accumulated)
+	DeployedCapital decimal.Decimal // total quote cost across all entry fills: sum(net_qty×price + entry_fee_quote)
+	StopLoss        decimal.Decimal // zero = not set
+	TakeProfit      decimal.Decimal // zero = not set
 
 	OpenedAt time.Time
 
@@ -165,6 +166,7 @@ func (l *LegState) applyOrderFilled(e poslog.Event) error {
 		l.Qty = qty
 		l.OpenedAt = e.At
 		l.entryCount++
+		l.DeployedCapital, _ = decimal.NewFromString(p.DeployedCapital)
 		l.Phase = PhaseOpen
 
 	case PhaseAdding:
@@ -178,6 +180,9 @@ func (l *LegState) applyOrderFilled(e poslog.Event) error {
 		l.pendingAddSL = decimal.Zero
 		l.pendingAddTP = decimal.Zero
 		l.entryCount++
+		if add, _ := decimal.NewFromString(p.DeployedCapital); add.IsPositive() {
+			l.DeployedCapital = l.DeployedCapital.Add(add)
+		}
 		l.Phase = PhaseOpen
 
 	case PhaseExiting:
@@ -238,6 +243,7 @@ func (l *LegState) reset() {
 	l.PendingOrderID = ""
 	l.EntryPrice = decimal.Zero
 	l.Qty = decimal.Zero
+	l.DeployedCapital = decimal.Zero
 	l.StopLoss = decimal.Zero
 	l.TakeProfit = decimal.Zero
 	l.OpenedAt = time.Time{}
@@ -360,14 +366,15 @@ func (h *HandPositions) LegSnapshot(positionID string) (LegSnapshot, bool) {
 		return LegSnapshot{}, false
 	}
 	return LegSnapshot{
-		Symbol:     leg.Symbol,
-		Side:       leg.Side,
-		Qty:        leg.Qty,
-		EntryPrice: leg.EntryPrice,
-		StopLoss:   leg.StopLoss,
-		TakeProfit: leg.TakeProfit,
-		OpenedAt:   leg.OpenedAt,
-		NEntries:   leg.entryCount,
+		Symbol:          leg.Symbol,
+		Side:            leg.Side,
+		Qty:             leg.Qty,
+		EntryPrice:      leg.EntryPrice,
+		DeployedCapital: leg.DeployedCapital,
+		StopLoss:        leg.StopLoss,
+		TakeProfit:      leg.TakeProfit,
+		OpenedAt:        leg.OpenedAt,
+		NEntries:        leg.entryCount,
 	}, true
 }
 
@@ -375,14 +382,15 @@ func (h *HandPositions) LegSnapshot(positionID string) (LegSnapshot, bool) {
 // Captured at the moment a closing event is recorded so the resulting trade
 // record can stand alone (no need to replay entry events).
 type LegSnapshot struct {
-	Symbol     string
-	Side       string
-	Qty        decimal.Decimal
-	EntryPrice decimal.Decimal
-	StopLoss   decimal.Decimal // SL price active at time of close (zero = none)
-	TakeProfit decimal.Decimal // TP price active at time of close (zero = none)
-	OpenedAt   time.Time
-	NEntries   int // number of entry fills (1 for non-pyramid; 1 + adds for pyramid)
+	Symbol          string
+	Side            string
+	Qty             decimal.Decimal
+	EntryPrice      decimal.Decimal
+	DeployedCapital decimal.Decimal // total quote cost across all entry fills
+	StopLoss        decimal.Decimal // SL price active at time of close (zero = none)
+	TakeProfit      decimal.Decimal // TP price active at time of close (zero = none)
+	OpenedAt        time.Time
+	NEntries        int // number of entry fills (1 for non-pyramid; 1 + adds for pyramid)
 }
 
 // Apply dispatches a poslog event to the appropriate leg, creating it if needed.

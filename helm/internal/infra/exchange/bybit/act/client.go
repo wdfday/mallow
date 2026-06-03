@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"mallow/helm/internal/infra/exchange"
 )
 
@@ -48,11 +50,12 @@ func New(cfg Config) *Client {
 }
 
 var (
-	_ exchange.Exchange        = (*Client)(nil)
-	_ exchange.ExitOrderPlacer = (*Client)(nil)
-	_ exchange.LeverageSetter  = (*Client)(nil)
-	_ exchange.AccountStreamer = (*Client)(nil)
-	_ exchange.HistoryFetcher  = (*Client)(nil)
+	_ exchange.Exchange           = (*Client)(nil)
+	_ exchange.ExitOrderPlacer    = (*Client)(nil)
+	_ exchange.LeverageSetter     = (*Client)(nil)
+	_ exchange.AccountStreamer    = (*Client)(nil)
+	_ exchange.HistoryFetcher     = (*Client)(nil)
+	_ exchange.SymbolInfoProvider = (*Client)(nil)
 )
 
 func (c *Client) Name() string { return "bybit" }
@@ -118,4 +121,85 @@ func sign(payload, secret string) string {
 	mac := hmac.New(sha256.New, []byte(secret))
 	mac.Write([]byte(payload))
 	return hex.EncodeToString(mac.Sum(nil))
+}
+
+// doPublic performs an unsigned GET to a Bybit public endpoint (no credentials required).
+func (c *Client) doPublic(ctx context.Context, path string, params map[string]string, out any) error {
+	qs := ""
+	if len(params) > 0 {
+		parts := make([]string, 0, len(params))
+		for k, v := range params {
+			parts = append(parts, k+"="+v)
+		}
+		qs = "?" + strings.Join(parts, "&")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path+qs, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("status=%d body=%s", resp.StatusCode, string(body))
+	}
+	return json.Unmarshal(body, out)
+}
+
+// GetSymbolFilters implements exchange.SymbolInfoProvider.
+// Calls /v5/market/instruments-info (public) to fetch lotSizeFilter.basePrecision
+// (QtyStep) and priceFilter.tickSize (PriceTick) for the given spot symbol.
+func (c *Client) GetSymbolFilters(ctx context.Context, symbol string) (exchange.SymbolFilters, error) {
+	// Try "spot" first; fall back to "linear" for perpetual contracts.
+	for _, cat := range []string{"spot", "linear"} {
+		var resp struct {
+			RetCode int    `json:"retCode"`
+			RetMsg  string `json:"retMsg"`
+			Result  struct {
+				List []struct {
+					Symbol        string `json:"symbol"`
+					BaseCoin      string `json:"baseCoin"`
+					QuoteCoin     string `json:"quoteCoin"`
+					LotSizeFilter struct {
+						BasePrecision string `json:"basePrecision"`
+						MinOrderQty   string `json:"minOrderQty"`
+					} `json:"lotSizeFilter"`
+					PriceFilter struct {
+						TickSize string `json:"tickSize"`
+					} `json:"priceFilter"`
+				} `json:"list"`
+			} `json:"result"`
+		}
+		if err := c.doPublic(ctx, "/v5/market/instruments-info", map[string]string{
+			"category": cat,
+			"symbol":   symbol,
+		}, &resp); err != nil {
+			continue
+		}
+		if resp.RetCode != 0 || len(resp.Result.List) == 0 {
+			continue
+		}
+		item := resp.Result.List[0]
+		f := exchange.SymbolFilters{
+			BaseAsset:  item.BaseCoin,
+			QuoteAsset: item.QuoteCoin,
+		}
+		if s := item.LotSizeFilter.BasePrecision; s != "" {
+			f.QtyStep, _ = decimal.NewFromString(s)
+		}
+		if s := item.LotSizeFilter.MinOrderQty; s != "" {
+			f.MinQty, _ = decimal.NewFromString(s)
+		}
+		if s := item.PriceFilter.TickSize; s != "" {
+			f.PriceTick, _ = decimal.NewFromString(s)
+		}
+		return f, nil
+	}
+	return exchange.SymbolFilters{}, fmt.Errorf("bybit: instrument %s not found", symbol)
 }

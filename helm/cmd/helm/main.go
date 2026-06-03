@@ -50,7 +50,13 @@ func main() {
 		if err != nil {
 			log.Fatalf("pyroscope start failed: %v", err)
 		}
-		defer profiler.Stop()
+		defer func(profiler *pyroscope.Profiler) {
+			err := profiler.Stop()
+			if err != nil {
+				log.Printf("pyroscope stop failed: %v", err)
+
+			}
+		}(profiler)
 		log.Printf("pyroscope profiling active: %s", cfg.Server.PyroscopeURL)
 	}
 

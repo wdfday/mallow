@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"log/slog"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -64,11 +65,14 @@ func (d *SignalDispatcher) Dispatch(resp *engine.SignalResponse, receivedAt time
 		slog.Warn("signal dispatcher: nil signal payload", "helm_id", helmID, "hand_id", handID)
 		return
 	}
+	// Strip the herald "exchange:" prefix (e.g. "binance:ETHUSDT" → "ETHUSDT")
+	// so the symbol matches the hand's configured bare ticker.
+	_, sym, ok := strings.Cut(sig.S, ":")
+	if !ok {
+		sym = sig.S
+	}
 	s := Signal{
-		// Strip exchange prefix ("binance:ETHUSDT" → "ETHUSDT") at the boundary
-		// where herald signals enter the helm domain. h.Symbol (from DB) is always
-		// the raw ticker, so this makes sig.Symbol match h.Symbol throughout.
-		Symbol:      stripExchangePrefix(sig.S),
+		Symbol:      sym,
 		Direction:   strategy.Direction(sig.Dir),
 		Strength:    sig.Strength,
 		ReceivedAt:  receivedAt,

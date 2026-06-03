@@ -27,6 +27,31 @@ type HandMetrics struct {
 	SignalQueueDepth  int             `json:"signal_queue_depth"`   // pending signals in the hand channel
 }
 
+// Metrics returns a snapshot of the hand's trading counters and P&L.
+func (h *Hand) Metrics() HandMetrics {
+	h.metrics.mu.Lock()
+	pnl := h.metrics.totalPnL
+	commission := h.metrics.totalCommission
+	wins := h.metrics.winCount
+	losses := h.metrics.lossCount
+	h.metrics.mu.Unlock()
+	return HandMetrics{
+		SignalsReceived:   h.metrics.signalsReceived.Load(),
+		SignalsFiltered:   h.metrics.signalsFiltered.Load(),
+		SignalsDropped:    h.metrics.signalsDropped.Load(),
+		TradesApproved:    h.metrics.tradesApproved.Load(),
+		OrdersPlaced:      h.metrics.ordersPlaced.Load(),
+		OrdersFilled:      h.metrics.ordersFilled.Load(),
+		OrdersFailed:      h.metrics.ordersFailed.Load(),
+		TotalPnL:          pnl,
+		TotalCommission:   commission,
+		WinCount:          wins,
+		LossCount:         losses,
+		LatestSignalLagMs: h.metrics.latestSignalLagMs.Load(),
+		SignalQueueDepth:  len(h.Signals),
+	}
+}
+
 // MetricsView converts live HandMetrics into the domain DTO.
 // Call this before removing the hand from memory to snapshot its final state.
 func (h *Hand) MetricsView() handdomain.HandMetricsView {
@@ -118,5 +143,6 @@ func (b *HandRef) Summary() handdomain.HandSummary {
 		DeployedCapital:  b.Runner.DeployedCapital(),
 		AvailableCash:    b.Runner.AvailableCash(),
 		SignalTTLSec:     b.Data.SignalTTLSec,
+		Legs:             b.Runner.ActiveLegs(),
 	}
 }

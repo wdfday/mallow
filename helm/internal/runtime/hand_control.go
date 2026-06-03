@@ -150,31 +150,6 @@ func (h *Hand) Health() HandHealth {
 	return health
 }
 
-// Metrics returns a snapshot of the hand's trading counters and P&L.
-func (h *Hand) Metrics() HandMetrics {
-	h.metrics.mu.Lock()
-	pnl := h.metrics.totalPnL
-	commission := h.metrics.totalCommission
-	wins := h.metrics.winCount
-	losses := h.metrics.lossCount
-	h.metrics.mu.Unlock()
-	return HandMetrics{
-		SignalsReceived:   h.metrics.signalsReceived.Load(),
-		SignalsFiltered:   h.metrics.signalsFiltered.Load(),
-		SignalsDropped:    h.metrics.signalsDropped.Load(),
-		TradesApproved:    h.metrics.tradesApproved.Load(),
-		OrdersPlaced:      h.metrics.ordersPlaced.Load(),
-		OrdersFilled:      h.metrics.ordersFilled.Load(),
-		OrdersFailed:      h.metrics.ordersFailed.Load(),
-		TotalPnL:          pnl,
-		TotalCommission:   commission,
-		WinCount:          wins,
-		LossCount:         losses,
-		LatestSignalLagMs: h.metrics.latestSignalLagMs.Load(),
-		SignalQueueDepth:  len(h.Signals),
-	}
-}
-
 // Position returns the current open position for this hand's symbol, or nil if flat.
 func (h *Hand) Position() *portfolio.Position {
 	return h.helmRuntime.Portfolio.GetPosition(h.Symbol)
@@ -300,6 +275,33 @@ func (h *Hand) AllocatedCapital() decimal.Decimal {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.allocatedCap
+}
+
+// ActiveLegs returns a snapshot of all currently active position legs.
+// Safe to call from any goroutine.
+func (h *Hand) ActiveLegs() []domain.LegView {
+	h.mu.RLock()
+	legs := h.pos.ActiveLegs()
+	h.mu.RUnlock()
+	if len(legs) == 0 {
+		return nil
+	}
+	out := make([]domain.LegView, 0, len(legs))
+	for _, l := range legs {
+		out = append(out, domain.LegView{
+			PositionID:      l.PositionID,
+			Symbol:          l.Symbol,
+			Side:            l.Side,
+			Phase:           string(l.Phase),
+			Qty:             l.Qty,
+			EntryPrice:      l.EntryPrice,
+			DeployedCapital: l.DeployedCapital,
+			StopLoss:        l.StopLoss,
+			TakeProfit:      l.TakeProfit,
+			OpenedAt:        l.OpenedAt,
+		})
+	}
+	return out
 }
 
 // AvailableCash returns USDT liquid for this hand — not locked in open positions.

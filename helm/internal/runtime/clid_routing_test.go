@@ -16,7 +16,6 @@ package runtime_test
 
 import (
 	"context"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -25,6 +24,7 @@ import (
 
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/runtime"
+	"mallow/helm/internal/runtime/clid"
 )
 
 // raceExchange implements exchange.Exchange + exchange.AccountStreamer. On PlaceOrder
@@ -141,9 +141,9 @@ func TestClidRouting_WsFillBeforeRestResponse(t *testing.T) {
 
 	// clid sent to the exchange must be a mallow-generated id.
 	select {
-	case clid := <-ex.lastClid:
-		if !strings.HasPrefix(clid, "mlw") {
-			t.Fatalf("expected mallow clid prefix on PlaceOrder, got %q", clid)
+	case clidVal := <-ex.lastClid:
+		if !clid.IsOurClid(clidVal) {
+			t.Fatalf("expected mallow clid prefix on PlaceOrder, got %q", clidVal)
 		}
 	case <-time.After(simWait):
 		t.Fatal("PlaceOrder was never called")

@@ -18,7 +18,6 @@ type Signal = strategy.Signal
 const (
 	HealthRunning  = "running"
 	HealthStopped  = "stopped"
-	HealthStale    = "stale"    // no signal received for >5 min; run-loop still active
 	HealthError    = "error"    // last order failed; clears on next successful order
 	HealthKilled   = "killed"   // Kill() called; positions flattened
 	HealthReleased = "released" // Release() called; positions orphaned
@@ -78,7 +77,6 @@ const (
 	CodeHandStopped       = 10202 // hand run-loop stopped (clean shutdown)
 	CodeHandKilled        = 10205 // hand killed — all positions flattened at market
 	CodeHandReleased      = 10206 // hand released — open positions orphaned (left live at exchange)
-	CodeHandStale         = 10207 // signal feed silent > stale threshold
 	CodeHandLeverageSet   = 10208 // futures leverage and margin type configured at exchange
 	CodePositionExtClosed = 10209 // position externally closed (user manual exit at exchange detected via bracket order cancel)
 

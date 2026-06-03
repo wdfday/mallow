@@ -12,6 +12,7 @@ import (
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/poslog"
 	handdomain "mallow/helm/internal/module/hand/domain"
+	"mallow/helm/internal/runtime/clid"
 	"mallow/helm/internal/runtime/position"
 )
 
@@ -113,7 +114,7 @@ func (r *DefaultReconciler) reconcileHand(
 		result.Err = fmt.Errorf("poslog replay: %w", err)
 		return result
 	}
-	hp := position.ReplayHand(events, hand.pyramid, hand.maxUnits)
+	hp := position.ReplayHand(events, hand.cfg.pyramid, hand.cfg.maxUnits)
 
 	if hp.IsFlat() {
 		// No open position, but still restore historical PnL so realizedEquity() is correct.
@@ -137,7 +138,7 @@ func (r *DefaultReconciler) reconcileHand(
 
 	// Re-replay to get the updated phase after any emitted events.
 	events2, _ := r.log.ReplayHand(ctx, hand.helmID.String(), hand.id.String())
-	hp2 := position.ReplayHand(events2, hand.pyramid, hand.maxUnits)
+	hp2 := position.ReplayHand(events2, hand.cfg.pyramid, hand.cfg.maxUnits)
 
 	primary := hp2.PrimaryLeg()
 	if primary != nil {
@@ -208,7 +209,7 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 		orch.TrackOrder(orderID, hand.id.String())
 		// If the exchange echoes our clid, restore clid routing too — WS fills carry the
 		// clid and would otherwise route as orphan after a restart. See CLIENT_ORDER_ID.md.
-		if isOurClid(exOrder.ClientOrderID) {
+		if clid.IsOurClid(exOrder.ClientOrderID) {
 			orch.TrackOrder(exOrder.ClientOrderID, hand.id.String())
 		}
 
@@ -265,7 +266,7 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 		// Order still open (possibly missed by the open-orders batch fetch due to a
 		// brief exchange inconsistency). Restore tracking so pollOrders keeps watching it.
 		orch.TrackOrder(orderID, hand.id.String())
-		if isOurClid(exOrder.ClientOrderID) {
+		if clid.IsOurClid(exOrder.ClientOrderID) {
 			orch.TrackOrder(exOrder.ClientOrderID, hand.id.String())
 		}
 		hand.mu.Lock()

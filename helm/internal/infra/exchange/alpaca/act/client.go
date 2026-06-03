@@ -1,10 +1,12 @@
 package act
 
 import (
+	"context"
 	"strings"
 
 	alpacasdk "github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata"
+	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
 )
@@ -30,12 +32,23 @@ func New(cfg Config) *Client {
 }
 
 var (
-	_ exchange.Exchange        = (*Client)(nil)
-	_ exchange.ExitOrderPlacer = (*Client)(nil)
-	_ exchange.AccountSyncer   = (*Client)(nil)
-	_ exchange.AccountStreamer = (*Client)(nil)
-	_ exchange.HistoryFetcher  = (*Client)(nil)
+	_ exchange.Exchange           = (*Client)(nil)
+	_ exchange.ExitOrderPlacer    = (*Client)(nil)
+	_ exchange.AccountSyncer      = (*Client)(nil)
+	_ exchange.AccountStreamer    = (*Client)(nil)
+	_ exchange.HistoryFetcher     = (*Client)(nil)
+	_ exchange.SymbolInfoProvider = (*Client)(nil)
 )
+
+// GetSymbolFilters implements exchange.SymbolInfoProvider.
+// Alpaca stocks trade in whole shares — QtyStep=1. QuoteAsset is always "USD".
+func (c *Client) GetSymbolFilters(_ context.Context, symbol string) (exchange.SymbolFilters, error) {
+	return exchange.SymbolFilters{
+		QtyStep:    decimal.NewFromInt(1),
+		BaseAsset:  symbol,
+		QuoteAsset: "USD",
+	}, nil
+}
 
 func (c *Client) Name() string { return "alpaca" }
 

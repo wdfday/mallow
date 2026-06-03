@@ -118,7 +118,7 @@ func (h *Hand) flattenPositions(ctx context.Context) {
 		isFutures := h.helmRuntime.Creds.AccountType == exchange.AccountFuturesUSDM ||
 			h.helmRuntime.Creds.AccountType == exchange.AccountFuturesCOINM
 		if !isFutures {
-			qty = qty.Truncate(4)
+			qty = truncateQty(h.helmRuntime.filtersFor(ctx, leg.Symbol), qty)
 			// Record sub-step residual so ReportFill's dust-cleanup can remove the
 			// position after the fill without leaving an untradeable sliver.
 			if dust := leg.Qty.Abs().Sub(qty); dust.IsPositive() {

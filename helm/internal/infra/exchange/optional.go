@@ -81,6 +81,40 @@ type BalanceEvent struct {
 	At    time.Time
 }
 
+// ── Position event streaming ──────────────────────────────────────────────────
+
+// PositionSide indicates the direction of a futures position.
+type PositionSide string
+
+const (
+	PositionLong  PositionSide = "long"
+	PositionShort PositionSide = "short"
+	PositionNet   PositionSide = "net" // one-way / both mode (Binance BOTH, OKX net)
+)
+
+// PositionEvent is pushed by the exchange private WS whenever a futures position changes.
+// Emitted on order fill that opens/closes/changes a position, and on account sync events.
+// For spot-only accounts this event is never emitted — positions are implicit from holdings.
+type PositionEvent struct {
+	Symbol string
+	Side   PositionSide
+	// Size is signed: positive = long, negative = short, zero = position closed/flat.
+	Size          decimal.Decimal
+	EntryPrice    decimal.Decimal
+	UnrealizedPnL decimal.Decimal
+	At            time.Time
+}
+
+// RiskEvent is pushed by the exchange when account margin risk changes —
+// typically a margin-call warning or when margin ratio crosses a threshold.
+// Symbol is empty for account-level risk events; non-empty for per-position risk.
+type RiskEvent struct {
+	Symbol           string
+	MarginRatio      decimal.Decimal // maintenance margin ratio; approaches 1.0 near liquidation
+	LiquidationPrice decimal.Decimal // estimated liq price; zero if not provided
+	At               time.Time
+}
+
 // ── Order lifecycle event streaming ──────────────────────────────────────────
 
 // OrderLifecycleEventType classifies a private WS order lifecycle event (not a fill).
@@ -181,6 +215,10 @@ type ClientOrderQuerier interface {
 //     May be nil if the caller only cares about lifecycle events.
 //   - onBalance is called on balance-change events (deposits, withdrawals, fee deductions).
 //     May be nil; exchanges that do not push balance events on this connection ignore it.
+//   - onPosition is called on futures position updates (size, entry price, unrealized PnL).
+//     May be nil; spot-only exchanges never call it.
+//   - onRisk is called on margin-call or liquidation-warning events.
+//     May be nil; spot-only exchanges never call it.
 type AccountStreamer interface {
 	StreamOrders(
 		ctx context.Context,
@@ -188,6 +226,8 @@ type AccountStreamer interface {
 		onLifecycle func(OrderLifecycleEvent),
 		onFill func(WsFillEvent),
 		onBalance func(BalanceEvent),
+		onPosition func(PositionEvent), // futures position update; nil = ignore
+		onRisk func(RiskEvent), // margin-call / liquidation warning; nil = ignore
 	) error
 }
 

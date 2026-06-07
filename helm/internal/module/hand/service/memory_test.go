@@ -121,7 +121,7 @@ func validConfig(helmID uuid.UUID) domain.HandConfig {
 func TestKillAndRelease_FreesMemory(t *testing.T) {
 	mockEx := &stubExchange{}
 	factory := &stubExchFactory{ex: mockEx}
-	reg := runtime.NewRegistry(factory, nil)
+	reg := runtime.NewRegistry(factory)
 	svc := NewService(newStubRepo(), reg, nil)
 
 	helmID := uuid.New()
@@ -238,7 +238,7 @@ func TestKillAndRelease_FreesMemory(t *testing.T) {
 func TestAllocateCapital_DynamicScale(t *testing.T) {
 	mockEx := &stubExchange{}
 	factory := &stubExchFactory{ex: mockEx}
-	reg := runtime.NewRegistry(factory, nil)
+	reg := runtime.NewRegistry(factory)
 	repo := newStubRepo()
 	svc := NewService(repo, reg, nil)
 
@@ -327,4 +327,3 @@ func TestAllocateCapital_DynamicScale(t *testing.T) {
 		t.Fatalf("expected runner capital 800 after failed reduction, got %v", runnerCap)
 	}
 }
-

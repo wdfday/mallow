@@ -84,7 +84,7 @@ func (r *stubHandRepo) Delete(id uuid.UUID) error {
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func newSvc() *service.Service {
-	reg := runtime.NewRegistry(nil, nil)
+	reg := runtime.NewRegistry(nil)
 	return service.NewService(newStubRepo(), reg, nil)
 }
 

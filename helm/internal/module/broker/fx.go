@@ -9,12 +9,12 @@ import (
 	"gorm.io/gorm"
 
 	"mallow/helm/internal/infra/exchange"
+	"mallow/helm/internal/infra/exchange/client/alpaca"
+	"mallow/helm/internal/infra/exchange/client/binance"
+	"mallow/helm/internal/infra/exchange/client/bybit"
+	"mallow/helm/internal/infra/exchange/client/okx"
 	"mallow/helm/internal/infra/natsapi"
 	accountRepo "mallow/helm/internal/module/account/repository"
-	"mallow/helm/internal/module/broker/client/alpaca"
-	"mallow/helm/internal/module/broker/client/binance"
-	"mallow/helm/internal/module/broker/client/bybit"
-	"mallow/helm/internal/module/broker/client/okx"
 	"mallow/helm/internal/module/broker/domain"
 	"mallow/helm/internal/module/broker/handler"
 	repository2 "mallow/helm/internal/module/broker/repository"
@@ -110,9 +110,9 @@ func (a *helmCreatorAdapter) AutoDeleteForAccount(_ context.Context, accountID u
 
 func (a *helmCreatorAdapter) RotateCredsForAccount(_ context.Context, accountID uuid.UUID, req service2.HelmAutoCreateReq) error {
 	creds := exchange.Credentials{
-		APIKey:     req.APIKey,
-		APISecret:  req.APISecret,
-		Passphrase: req.Passphrase,
+		APIKey:      req.APIKey,
+		APISecret:   req.APISecret,
+		Passphrase:  req.Passphrase,
 		AccountType: exchange.AccountType(req.AccountType),
 	}
 	return a.svc.RotateCredsForAccount(accountID, creds)

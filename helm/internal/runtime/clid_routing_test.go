@@ -90,6 +90,8 @@ func (s *raceExchange) StreamOrders(
 	_ func(exchange.OrderLifecycleEvent),
 	onFill func(exchange.WsFillEvent),
 	_ func(exchange.BalanceEvent),
+	_ func(exchange.PositionEvent),
+	_ func(exchange.RiskEvent),
 ) error {
 	s.mu.Lock()
 	s.onFill = onFill

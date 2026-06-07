@@ -25,7 +25,7 @@ const (
 
 // StreamOrders implements exchange.AccountStreamer.
 // Connects to Bybit private WebSocket, authenticates, subscribes to the "order"
-// topic, and calls handlers on each event. Reconnects automatically.
+// and "position" topics, and calls handlers on each event. Reconnects automatically.
 // onBalance is ignored — Bybit wallet updates arrive on a separate topic not yet subscribed.
 func (c *Client) StreamOrders(
 	ctx context.Context,
@@ -33,6 +33,8 @@ func (c *Client) StreamOrders(
 	onLifecycle func(exchange.OrderLifecycleEvent),
 	onFill func(exchange.WsFillEvent),
 	_ func(exchange.BalanceEvent),
+	onPosition func(exchange.PositionEvent),
+	onRisk func(exchange.RiskEvent),
 ) error {
 	go func() {
 		defer func() {
@@ -47,7 +49,7 @@ func (c *Client) StreamOrders(
 				return
 			}
 			start := time.Now()
-			err := c.streamOrdersOnce(ctx, creds, onLifecycle, onFill)
+			err := c.streamOrdersOnce(ctx, creds, onLifecycle, onFill, onPosition, onRisk)
 			if ctx.Err() != nil {
 				return
 			}
@@ -73,6 +75,8 @@ func (c *Client) streamOrdersOnce(
 	creds exchange.Credentials,
 	onLifecycle func(exchange.OrderLifecycleEvent),
 	onFill func(exchange.WsFillEvent),
+	onPosition func(exchange.PositionEvent),
+	onRisk func(exchange.RiskEvent),
 ) error {
 	wsURL := bybitPrivateWSURL
 	if c.paper {
@@ -91,7 +95,7 @@ func (c *Client) streamOrdersOnce(
 
 	sub := map[string]any{
 		"op":   "subscribe",
-		"args": []string{"order"},
+		"args": []string{"order", "position"},
 	}
 	if err := conn.WriteJSON(sub); err != nil {
 		return fmt.Errorf("subscribe: %w", err)
@@ -130,7 +134,7 @@ func (c *Client) streamOrdersOnce(
 			}
 		case msg := <-msgs:
 			slog.Info("bybit: raw ws message", "raw", string(msg))
-			c.handleBybitMessage(msg, onLifecycle, onFill)
+			c.handleBybitMessage(msg, onLifecycle, onFill, onPosition, onRisk)
 		}
 	}
 }
@@ -174,13 +178,78 @@ func wsAuth(conn *websocket.Conn, creds exchange.Credentials) error {
 	return nil
 }
 
+// bybitPositionEvent is the private WebSocket "position" topic message.
+type bybitPositionEvent struct {
+	Topic string `json:"topic"`
+	Data  []struct {
+		Symbol        string `json:"symbol"`
+		Side          string `json:"side"` // Buy/Sell/None
+		Size          string `json:"size"`
+		AvgPrice      string `json:"avgPrice"`
+		UnrealisedPnl string `json:"unrealisedPnl"`
+		LiqPrice      string `json:"liqPrice"`
+		PositionMM    string `json:"positionMM"` // maintenance margin
+		UpdatedTime   string `json:"updatedTime"`
+	} `json:"data"`
+}
+
+// handleBybitPositionMessage processes "position" topic WS events.
+// Emits PositionEvent for each position update, and RiskEvent when a liquidation price
+// is available (indicating the position has margin risk data).
+func handleBybitPositionMessage(msg []byte, onPosition func(exchange.PositionEvent), onRisk func(exchange.RiskEvent)) {
+	var ev bybitPositionEvent
+	if err := json.Unmarshal(msg, &ev); err != nil {
+		return
+	}
+	for _, d := range ev.Data {
+		ts := time.Now().UTC()
+		if ms, err := strconv.ParseInt(d.UpdatedTime, 10, 64); err == nil && ms > 0 {
+			ts = time.UnixMilli(ms).UTC()
+		}
+		size := parseDecimal(d.Size)
+		side := exchange.PositionNet
+		if strings.ToLower(d.Side) == "sell" {
+			side = exchange.PositionShort
+			size = size.Neg()
+		} else if strings.ToLower(d.Side) == "buy" {
+			side = exchange.PositionLong
+		}
+		if onPosition != nil {
+			onPosition(exchange.PositionEvent{
+				Symbol:        d.Symbol,
+				Side:          side,
+				Size:          size,
+				EntryPrice:    parseDecimal(d.AvgPrice),
+				UnrealizedPnL: parseDecimal(d.UnrealisedPnl),
+				At:            ts,
+			})
+		}
+		if onRisk != nil {
+			liqPx := parseDecimal(d.LiqPrice)
+			if liqPx.IsPositive() {
+				onRisk(exchange.RiskEvent{
+					Symbol:           d.Symbol,
+					LiquidationPrice: liqPx,
+					At:               ts,
+				})
+			}
+		}
+	}
+}
+
 func (c *Client) handleBybitMessage(
 	msg []byte,
 	onLifecycle func(exchange.OrderLifecycleEvent),
 	onFill func(exchange.WsFillEvent),
+	onPosition func(exchange.PositionEvent),
+	onRisk func(exchange.RiskEvent),
 ) {
 	var ev bybitOrderEvent
 	if err := json.Unmarshal(msg, &ev); err != nil {
+		return
+	}
+	if ev.Topic == "position" {
+		handleBybitPositionMessage(msg, onPosition, onRisk)
 		return
 	}
 	if ev.Topic != "order" {

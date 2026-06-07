@@ -30,6 +30,8 @@ func (c *Client) StreamOrders(
 	onLifecycle func(exchange.OrderLifecycleEvent),
 	onFill func(exchange.WsFillEvent),
 	_ func(exchange.BalanceEvent),
+	onPosition func(exchange.PositionEvent),
+	onRisk func(exchange.RiskEvent),
 ) error {
 	go func() {
 		defer func() {
@@ -44,7 +46,7 @@ func (c *Client) StreamOrders(
 				return
 			}
 			start := time.Now()
-			err := c.streamOrdersOnce(ctx, creds, onLifecycle, onFill)
+			err := c.streamOrdersOnce(ctx, creds, onLifecycle, onFill, onPosition, onRisk)
 			if ctx.Err() != nil {
 				return
 			}
@@ -70,6 +72,8 @@ func (c *Client) streamOrdersOnce(
 	creds exchange.Credentials,
 	onLifecycle func(exchange.OrderLifecycleEvent),
 	onFill func(exchange.WsFillEvent),
+	onPosition func(exchange.PositionEvent),
+	onRisk func(exchange.RiskEvent),
 ) error {
 	wsURL := okxPrivateWSURL
 	if c.paper {
@@ -90,9 +94,11 @@ func (c *Client) streamOrdersOnce(
 	// "orders" supports instType:ANY; "orders-algo" rejects ANY (error 60018)
 	// and requires an explicit instType. Subscribe to both SPOT and SWAP so
 	// the same connection covers spot OCO brackets and futures algo orders.
+	// "positions" with instType:ANY receives futures position update pushes.
 	algoInstTypes := []string{"SPOT", "SWAP"}
 	args := []map[string]string{
 		{"channel": "orders", "instType": "ANY"},
+		{"channel": "positions", "instType": "ANY"}, // futures position updates
 	}
 	for _, t := range algoInstTypes {
 		args = append(args, map[string]string{"channel": "orders-algo", "instType": t})
@@ -138,7 +144,7 @@ func (c *Client) streamOrdersOnce(
 				continue
 			}
 			slog.Info("okx: raw ws message", "raw", string(msg))
-			handleOKXMessage(msg, onLifecycle, onFill)
+			handleOKXMessage(msg, onLifecycle, onFill, onPosition, onRisk)
 		}
 	}
 }
@@ -189,6 +195,22 @@ func okxWsSign(timestamp, secret string) string {
 	return base64.StdEncoding.EncodeToString(mac.Sum(nil))
 }
 
+type okxPositionEvent struct {
+	Arg struct {
+		Channel string `json:"channel"`
+	} `json:"arg"`
+	Data []struct {
+		InstId   string `json:"instId"`
+		PosSide  string `json:"posSide"`  // net/long/short
+		Pos      string `json:"pos"`      // position size (signed)
+		AvgPx    string `json:"avgPx"`    // average entry price
+		Upl      string `json:"upl"`      // unrealized P&L
+		MgnRatio string `json:"mgnRatio"` // margin ratio; empty for cross/no-margin
+		LiqPx    string `json:"liqPx"`    // estimated liquidation price; "0" if not applicable
+		UTime    string `json:"uTime"`
+	} `json:"data"`
+}
+
 type okxOrderEvent struct {
 	Arg struct {
 		Channel string `json:"channel"`
@@ -234,6 +256,8 @@ func handleOKXMessage(
 	msg []byte,
 	onLifecycle func(exchange.OrderLifecycleEvent),
 	onFill func(exchange.WsFillEvent),
+	onPosition func(exchange.PositionEvent),
+	onRisk func(exchange.RiskEvent),
 ) {
 	var ev okxOrderEvent
 	if err := json.Unmarshal(msg, &ev); err != nil {
@@ -242,6 +266,9 @@ func handleOKXMessage(
 	switch ev.Arg.Channel {
 	case "orders-algo":
 		handleOKXAlgoMessage(msg, onLifecycle, onFill)
+		return
+	case "positions":
+		handleOKXPositionMessage(msg, onPosition, onRisk)
 		return
 	case "orders":
 		// handled below
@@ -321,6 +348,51 @@ func handleOKXMessage(
 					Side:          side,
 					Qty:           parseDecimal(d.Sz),
 					Timestamp:     ts,
+				})
+			}
+		}
+	}
+}
+
+// handleOKXPositionMessage processes "positions" WS channel events.
+// Emits PositionEvent for each position update, and RiskEvent when margin ratio or
+// liquidation price is non-zero (indicating the position has margin risk data).
+func handleOKXPositionMessage(msg []byte, onPosition func(exchange.PositionEvent), onRisk func(exchange.RiskEvent)) {
+	var ev okxPositionEvent
+	if err := json.Unmarshal(msg, &ev); err != nil {
+		return
+	}
+	for _, d := range ev.Data {
+		ts := time.Now().UTC()
+		if ms, err := strconv.ParseInt(d.UTime, 10, 64); err == nil && ms > 0 {
+			ts = time.UnixMilli(ms).UTC()
+		}
+		if onPosition != nil {
+			side := exchange.PositionNet
+			switch d.PosSide {
+			case "long":
+				side = exchange.PositionLong
+			case "short":
+				side = exchange.PositionShort
+			}
+			onPosition(exchange.PositionEvent{
+				Symbol:        d.InstId,
+				Side:          side,
+				Size:          parseDecimal(d.Pos),
+				EntryPrice:    parseDecimal(d.AvgPx),
+				UnrealizedPnL: parseDecimal(d.Upl),
+				At:            ts,
+			})
+		}
+		if onRisk != nil {
+			mgnRatio := parseDecimal(d.MgnRatio)
+			liqPx := parseDecimal(d.LiqPx)
+			if mgnRatio.IsPositive() || liqPx.IsPositive() {
+				onRisk(exchange.RiskEvent{
+					Symbol:           d.InstId,
+					MarginRatio:      mgnRatio,
+					LiquidationPrice: liqPx,
+					At:               ts,
 				})
 			}
 		}

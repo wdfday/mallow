@@ -388,7 +388,7 @@ func TestPaper_StreamOrders(t *testing.T) {
 	if err := c.StreamOrders(cx, creds,
 		func(e exchange.OrderLifecycleEvent) { lifecycle <- e },
 		func(e exchange.WsFillEvent) { fills <- e },
-		nil,
+		nil, nil, nil,
 	); err != nil {
 		t.Fatalf("StreamOrders: %v", err)
 	}
@@ -495,7 +495,7 @@ func TestPaper_SubscribeFills(t *testing.T) {
 			case fills <- ev:
 			case <-cx.Done():
 			}
-		}, nil)
+		}, nil, nil, nil)
 	}()
 	t.Log("fill stream open — placing market order...")
 
@@ -787,7 +787,7 @@ func TestPaper_FillStreamIntegrity(t *testing.T) {
 			case fills <- ev:
 			case <-cx.Done():
 			}
-		}, nil)
+		}, nil, nil, nil)
 	}()
 	t.Log("fill stream open — settling 500ms before orders...")
 	time.Sleep(500 * time.Millisecond)
@@ -1099,7 +1099,7 @@ func TestPaper_FillLatencyDist(t *testing.T) {
 			case fills <- ev:
 			case <-cx.Done():
 			}
-		}, nil)
+		}, nil, nil, nil)
 	}()
 	t.Log("fill stream open — settling 500ms...")
 	time.Sleep(500 * time.Millisecond)

@@ -11,10 +11,10 @@ import (
 	"github.com/shopspring/decimal"
 	"gorm.io/gorm"
 
+	"mallow/helm/internal/infra/exchange/client"
 	"mallow/helm/internal/infra/natsapi"
 	accountDomain "mallow/helm/internal/module/account/domain"
 	accountRepo "mallow/helm/internal/module/account/repository"
-	"mallow/helm/internal/module/broker/client"
 	"mallow/helm/internal/module/broker/domain"
 	"mallow/helm/internal/module/broker/dto"
 	"mallow/helm/internal/module/broker/repository"
@@ -153,11 +153,17 @@ func (s *brokerConnectionService) Create(ctx context.Context, req *dto.CreateBro
 		if creds.Passphrase != nil {
 			pp = *creds.Passphrase
 		}
+		// Binance USDM futures sub-accounts are served by the fbinance exchange adapter
+		// (separate FAPI client). Remap the broker type so the Helm routes correctly.
+		helmBrokerType := string(conn.BrokerType)
+		if conn.BrokerType == domain.BrokerTypeBinance && sub.accountType == "futures_usdm" {
+			helmBrokerType = string(domain.BrokerTypeFBinance)
+		}
 		if err := s.helmCreator.AutoCreateForAccount(context.Background(), HelmAutoCreateReq{
 			UserID:      conn.UserID,
 			AccountID:   account.ID,
 			AccountName: account.AccountName,
-			BrokerType:  string(conn.BrokerType),
+			BrokerType:  helmBrokerType,
 			AccountType: string(account.AccountType),
 			APIKey:      req.APIKey,
 			APISecret:   req.APISecret,

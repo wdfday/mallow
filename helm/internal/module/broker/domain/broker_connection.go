@@ -11,10 +11,11 @@ import (
 type BrokerType string
 
 const (
-	BrokerTypeOKX     BrokerType = "okx"     // OKX Exchange (Crypto)
-	BrokerTypeBinance BrokerType = "binance" // Binance (Crypto)
-	BrokerTypeAlpaca  BrokerType = "alpaca"  // Alpaca (US equities/crypto)
-	BrokerTypeBybit   BrokerType = "bybit"   // Bybit (Crypto derivatives)
+	BrokerTypeOKX      BrokerType = "okx"      // OKX Exchange (Crypto)
+	BrokerTypeBinance  BrokerType = "binance"  // Binance Spot (Crypto)
+	BrokerTypeFBinance BrokerType = "fbinance" // Binance USDM Futures (FAPI)
+	BrokerTypeAlpaca   BrokerType = "alpaca"   // Alpaca (US equities/crypto)
+	BrokerTypeBybit    BrokerType = "bybit"    // Bybit (Crypto derivatives)
 )
 
 // BrokerConnectionStatus represents the connection status

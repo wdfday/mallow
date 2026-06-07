@@ -18,7 +18,7 @@ import (
 //
 // All fields are keyed by bare symbol (e.g. "ETHUSDT"), no exchange prefix.
 // One instance per exchange name (e.g. "binance", "okx") in exchangeMarketCache.
-// A single RWMutex guards all three maps — contention is negligible since writes
+// A single RWMutex guards all fields — contention is negligible since writes
 // (ticks, L2 events) are serialized per-symbol and reads are fast map lookups.
 type exchangePublicData struct {
 	mu sync.RWMutex
@@ -204,13 +204,4 @@ func (c *exchangeMarketCache) setL2(exchangeName, symbol string, snap exchange.L
 // ok=false if no snapshot has been received yet.
 func (r *Registry) LatestL2(brokerType, symbol string) (exchange.L2Snapshot, bool) {
 	return r.market.latestL2(brokerType, symbol)
-}
-
-// handleL2 returns the L2 book handler for a given broker type.
-// Registered once per market streamer; all helms of the same broker share this cache
-// via the getL2 closure injected at Spawn() — no per-helm copy or fan-out needed.
-func (r *Registry) handleL2(brokerType string) func(exchange.L2Snapshot) {
-	return func(snap exchange.L2Snapshot) {
-		r.market.setL2(brokerType, snap.Symbol, snap)
-	}
 }

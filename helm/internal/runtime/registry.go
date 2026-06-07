@@ -22,14 +22,10 @@ import (
 )
 
 // ExchangeFactory creates per-account exchange adapters from an ExchangeConfig.
+// Public market data streaming (prices, L2) is handled separately in lifecycle.go
+// via buildMarketDataListener — it is not the factory's responsibility.
 type ExchangeFactory interface {
 	New(cfg helmdomain.ExchangeConfig) (exchange.Exchange, error)
-}
-
-// MarketStreamerFactory creates shared market data streaming clients per broker type.
-// Returns nil if the broker does not support market streaming.
-type MarketStreamerFactory interface {
-	New(cfg helmdomain.ExchangeConfig) exchange.MarketStreamer
 }
 
 // SyncStore persists the last successful sync timestamp for crash recovery.
@@ -46,22 +42,22 @@ type SignalSink interface {
 
 // Registry manages all live Helm instances.
 // One Helm per active helm config.
-// MarketStreamers are shared per broker type.
+// MarketStreamers are stored inside exchangePublicData alongside the price/filter/l2
+// caches they feed — both are keyed by exchange name (= broker type), so there is
+// no need for a separate marketStreamers map.
 type Registry struct {
 	// ── Live runtimes ─────────────────────────────────────────────────────
-	mu              sync.RWMutex
-	helmRuntimes    map[uuid.UUID]*HelmRuntime
-	marketStreamers map[string]exchange.MarketStreamer // brokerType → shared streamer
+	mu           sync.RWMutex
+	helmRuntimes map[uuid.UUID]*HelmRuntime
 
 	// ── Per-exchange market data caches ───────────────────────────────────
-	// market groups symbolFilters, prices, and l2Books under one struct.
-	// All three use exchange name as outer key; each HelmRuntime gets a
-	// scoped view wired at Spawn time (see filterViewFor / priceViewFor).
+	// market groups symbolFilters, prices, l2Books, and the market streamer
+	// under one struct per exchange name.  Each HelmRuntime gets a scoped
+	// view wired at Spawn time (see filterViewFor / priceViewFor).
 	market exchangeMarketCache
 
-	// ── Factories (injected at construction) ──────────────────────────────
-	exchFactory     ExchangeFactory
-	streamerFactory MarketStreamerFactory
+	// ── Factory (injected at construction) ────────────────────────────────
+	exchFactory ExchangeFactory
 
 	// ── Runtime wiring (set via SetRuntime / Set* after startup) ──────────
 	nc        *nats.Conn
@@ -78,13 +74,11 @@ type Registry struct {
 }
 
 // NewRegistry creates an empty Registry.
-func NewRegistry(factory ExchangeFactory, streamerFactory MarketStreamerFactory) *Registry {
+func NewRegistry(factory ExchangeFactory) *Registry {
 	return &Registry{
-		helmRuntimes:    make(map[uuid.UUID]*HelmRuntime),
-		marketStreamers: make(map[string]exchange.MarketStreamer),
-		market:          newExchangeMarketCache(),
-		exchFactory:     factory,
-		streamerFactory: streamerFactory,
+		helmRuntimes: make(map[uuid.UUID]*HelmRuntime),
+		market:       newExchangeMarketCache(),
+		exchFactory:  factory,
 	}
 }
 

@@ -289,6 +289,8 @@ func (m *MeteredExchange) StreamOrders(
 	onLifecycle func(OrderLifecycleEvent),
 	onFill func(WsFillEvent),
 	onBalance func(BalanceEvent),
+	onPosition func(PositionEvent),
+	onRisk func(RiskEvent),
 ) error {
 	s, ok := m.inner.(AccountStreamer)
 	if !ok {
@@ -321,7 +323,7 @@ func (m *MeteredExchange) StreamOrders(
 		}
 	}
 
-	err := s.StreamOrders(ctx, creds, wrappedLifecycle, wrappedFill, wrappedBalance)
+	err := s.StreamOrders(ctx, creds, wrappedLifecycle, wrappedFill, wrappedBalance, onPosition, onRisk)
 	if err != nil {
 		m.Metrics.WS.StreamErrors.Add(1)
 	}

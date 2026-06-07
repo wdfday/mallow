@@ -462,7 +462,7 @@ func TestOKX_StreamOrders(t *testing.T) {
 	if err := c.StreamOrders(cx, creds,
 		func(e exchange.OrderLifecycleEvent) { lifecycle <- e },
 		func(e exchange.WsFillEvent) { fills <- e },
-		nil,
+		nil, nil, nil,
 	); err != nil {
 		t.Fatalf("StreamOrders: %v", err)
 	}
@@ -573,7 +573,7 @@ func TestOKX_SubscribeFills(t *testing.T) {
 			case fills <- ev:
 			case <-cx.Done():
 			}
-		}, nil)
+		}, nil, nil, nil)
 	}()
 	t.Log("fill stream open — placing market order...")
 
@@ -1224,7 +1224,7 @@ func TestOKX_FillStreamIntegrity(t *testing.T) {
 			case fills <- ev:
 			case <-cx.Done():
 			}
-		}, nil)
+		}, nil, nil, nil)
 	}()
 	t.Log("fill stream open — settling 1s before orders...")
 	time.Sleep(1 * time.Second)

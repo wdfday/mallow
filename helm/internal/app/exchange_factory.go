@@ -4,21 +4,20 @@ import (
 	"fmt"
 	"sync"
 
-	"mallow/helm/internal/config"
 	"mallow/helm/internal/infra/exchange"
 	alpacaact "mallow/helm/internal/infra/exchange/alpaca/act"
-	alpacaex "mallow/helm/internal/infra/exchange/alpaca/ex"
 	binanceact "mallow/helm/internal/infra/exchange/binance/act"
-	binanceex "mallow/helm/internal/infra/exchange/binance/ex"
 	bybitact "mallow/helm/internal/infra/exchange/bybit/act"
-	bybitex "mallow/helm/internal/infra/exchange/bybit/ex"
+	fbinanceact "mallow/helm/internal/infra/exchange/fbinance/act"
 	okxact "mallow/helm/internal/infra/exchange/okx/act"
-	okxex "mallow/helm/internal/infra/exchange/okx/ex"
 	orchdomain "mallow/helm/internal/module/helm/domain"
 )
 
 // exchangeFactory implements runtime.ExchangeFactory.
-// Returns a stateless shared client per (broker, env) — no credentials stored.
+// Returns a stateless shared REST client per (broker, env) — credentials are
+// injected at request time via HelmRuntime.Creds, not stored in the client.
+// Public market data streaming is handled separately by buildMarketDataListener
+// in lifecycle.go (hardcoded per MARKET_DATA_SOURCE env).
 type exchangeFactory struct {
 	mu      sync.Mutex
 	clients map[string]exchange.Exchange // cache key: "brokerType|baseURL|paper"
@@ -55,6 +54,8 @@ func (f *exchangeFactory) create(cfg orchdomain.ExchangeConfig) (exchange.Exchan
 		}), nil
 	case "binance":
 		return binanceact.New(cfg.Paper), nil
+	case "fbinance":
+		return fbinanceact.New(cfg.Paper), nil
 	case "bybit":
 		return bybitact.New(bybitact.Config{
 			BaseURL: cfg.BaseURL,
@@ -69,32 +70,6 @@ func (f *exchangeFactory) create(cfg orchdomain.ExchangeConfig) (exchange.Exchan
 			BaseURL: baseURL,
 		}), nil
 	default:
-		return nil, fmt.Errorf("unknown exchange: %q (supported: alpaca, binance, okx, bybit)", cfg.BrokerType)
-	}
-}
-
-// marketStreamerFactory implements runtime.MarketStreamerFactory.
-// Returns a shared market data streaming client per broker type.
-type marketStreamerFactory struct {
-	cfg config.MarketDataConfig
-}
-
-func newMarketStreamerFactory(cfg *config.Config) *marketStreamerFactory {
-	return &marketStreamerFactory{cfg: cfg.MarketData}
-}
-
-func (f *marketStreamerFactory) New(cfg orchdomain.ExchangeConfig) exchange.MarketStreamer {
-	switch cfg.BrokerType {
-	case "binance":
-		return binanceex.New(cfg.Paper)
-	case "bybit":
-		return bybitex.New(cfg.Paper)
-	case "okx":
-		return okxex.New(cfg.Paper)
-	case "alpaca", "":
-		// Use shared admin-level key from service config (not per-account).
-		return alpacaex.New(f.cfg.AlpacaAPIKey, f.cfg.AlpacaAPISecret)
-	default:
-		return nil
+		return nil, fmt.Errorf("unknown exchange: %q (supported: alpaca, binance, fbinance, okx, bybit)", cfg.BrokerType)
 	}
 }

@@ -249,7 +249,7 @@ func TestBybit_StreamOrders(t *testing.T) {
 	if err := c.StreamOrders(cx, creds,
 		func(e exchange.OrderLifecycleEvent) { lifecycle <- e },
 		func(e exchange.WsFillEvent) { fills <- e },
-		nil,
+		nil, nil, nil,
 	); err != nil {
 		t.Fatalf("StreamOrders: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestBybit_SubscribeFills(t *testing.T) {
 			case fills <- ev:
 			case <-cx.Done():
 			}
-		}, nil)
+		}, nil, nil, nil)
 	}()
 	t.Log("fill stream open — placing order to trigger fill event...")
 	time.Sleep(1 * time.Second)
@@ -894,7 +894,7 @@ func TestBybit_FillStreamIntegrity(t *testing.T) {
 			case fills <- ev:
 			case <-cx.Done():
 			}
-		}, nil)
+		}, nil, nil, nil)
 	}()
 	t.Log("fill stream open — settling 1s before orders...")
 	time.Sleep(1 * time.Second)
@@ -1009,7 +1009,7 @@ func TestBybit_FillLatencyDist(t *testing.T) {
 			case fills <- ev:
 			case <-cx.Done():
 			}
-		}, nil)
+		}, nil, nil, nil)
 	}()
 	t.Log("fill stream open — settling 1s...")
 	time.Sleep(1 * time.Second)

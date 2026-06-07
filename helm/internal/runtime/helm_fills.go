@@ -85,6 +85,8 @@ func (r *HelmRuntime) connectStream(streamCtx context.Context) bool {
 		r.EnqueueLifecycleEvent,
 		r.EnqueueWsFill,
 		r.handleBalanceEvent,
+		r.handlePositionEvent,
+		r.handleRiskEvent,
 	); err != nil {
 		slog.Error("order stream start failed", "helm_id", r.HelmID, "err", err)
 		return false
@@ -104,6 +106,30 @@ func (r *HelmRuntime) handleBalanceEvent(ev exchange.BalanceEvent) {
 		"helm_id", r.HelmID,
 		"asset", ev.Asset,
 		"free", ev.Free,
+	)
+}
+
+// handlePositionEvent updates the helm's knowledge of its current futures position.
+// Currently logs the event; future: update a per-symbol position cache for risk checks.
+func (r *HelmRuntime) handlePositionEvent(ev exchange.PositionEvent) {
+	slog.Info("position update",
+		"helm_id", r.HelmID,
+		"symbol", ev.Symbol,
+		"side", ev.Side,
+		"size", ev.Size,
+		"entry_px", ev.EntryPrice,
+		"upnl", ev.UnrealizedPnL,
+	)
+}
+
+// handleRiskEvent handles margin call / liquidation warnings.
+// Currently logs; future: trigger helm pause or notify via NATS helm.events.*.
+func (r *HelmRuntime) handleRiskEvent(ev exchange.RiskEvent) {
+	slog.Warn("risk event",
+		"helm_id", r.HelmID,
+		"symbol", ev.Symbol,
+		"margin_ratio", ev.MarginRatio,
+		"liq_price", ev.LiquidationPrice,
 	)
 }
 

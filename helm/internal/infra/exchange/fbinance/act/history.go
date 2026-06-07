@@ -2,16 +2,18 @@ package act
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strconv"
 	"time"
+
+	"github.com/adshao/go-binance/v2/futures"
 
 	"mallow/helm/internal/infra/exchange"
 )
 
 // FilledOrders implements exchange.HistoryFetcher.
-// Queries spot myTrades for each provided symbol.
-// symbols must be non-empty — Binance requires a per-symbol query.
+// Queries USDM futures userTrades for each provided symbol.
 func (c *Client) FilledOrders(ctx context.Context, creds exchange.Credentials, symbols []string, from, to time.Time) ([]exchange.AccountTransaction, error) {
 	if len(symbols) == 0 {
 		return nil, nil
@@ -19,27 +21,27 @@ func (c *Client) FilledOrders(ctx context.Context, creds exchange.Credentials, s
 
 	fromMs := from.UnixMilli()
 	toMs := to.UnixMilli()
-	spot := c.newSpot(creds)
+	fut := c.newFut(creds)
 	var all []exchange.AccountTransaction
 
 	for _, sym := range symbols {
-		trades, err := spot.NewListTradesService().
+		trades, err := fut.NewListAccountTradeService().
 			Symbol(sym).
 			StartTime(fromMs).
 			EndTime(toMs).
 			Limit(1000).
 			Do(ctx)
 		if err != nil {
-			slog.Warn("binance history: spot trades failed", "symbol", sym, "err", err)
+			slog.Warn("fbinance history: futures trades failed", "symbol", sym, "err", err)
 			continue
 		}
 		for _, t := range trades {
 			side := exchange.Buy
-			if !t.IsBuyer {
+			if t.Side == futures.SideTypeSell {
 				side = exchange.Sell
 			}
 			all = append(all, exchange.AccountTransaction{
-				TradeID:  strconv.FormatInt(t.ID, 10),
+				TradeID:  fmt.Sprintf("fut-%d", t.ID),
 				OrderID:  strconv.FormatInt(t.OrderID, 10),
 				Symbol:   t.Symbol,
 				Side:     string(side),

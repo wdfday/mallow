@@ -111,9 +111,18 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 			if netCommission.IsNegative() {
 				netCommission = decimal.Zero
 			}
-			pendingExit, hasPendingExit := h.pendingExits[result.ID]
-			if hasPendingExit {
-				delete(h.pendingExits, result.ID)
+			// Only consume pendingExits here for the netQty==0 path.
+			// When netQty > 0, applyFill reads and deletes pendingExits itself
+			// inside its own lock section — that is where scheduleBracketPlacement
+			// is triggered. Deleting here first would leave applyFill with an empty
+			// pendingExits lookup → hasExitBracket=false → no OCO bracket placed.
+			var pendingExit exitPending
+			var hasPendingExit bool
+			if !netQty.IsPositive() {
+				pendingExit, hasPendingExit = h.pendingExits[result.ID]
+				if hasPendingExit {
+					delete(h.pendingExits, result.ID)
+				}
 			}
 			h.seenFills[result.ID] = time.Now()
 			h.mu.Unlock()

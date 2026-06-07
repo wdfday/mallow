@@ -41,24 +41,6 @@ func (r *Registry) Spawn(cfg *helmdomain.Helm, exchCfg helmdomain.ExchangeConfig
 	riskMgr := risk.New(riskCfg, pf)
 
 	brokerType := exchCfg.BrokerType
-	r.mu.Lock()
-	if _, ok := r.marketStreamers[brokerType]; !ok {
-		if r.streamerFactory != nil {
-			if ms := r.streamerFactory.New(exchCfg); ms != nil {
-				r.marketStreamers[brokerType] = ms
-				slog.Info("runtime: market streamer created", "broker", brokerType)
-				// Register the L2 book handler once per streamer.
-				// A single handler fans-out to all helms of this broker type —
-				// subsequent helms do not need their own registration.
-				if bs, ok := ms.(exchange.BookStreamer); ok {
-					bs.AddBookHandler(r.handleL2(brokerType))
-					slog.Info("runtime: L2 book handler registered", "broker", brokerType)
-				}
-			}
-		}
-	}
-	r.mu.Unlock()
-
 	creds := exchange.Credentials{
 		APIKey:     exchCfg.APIKey,
 		APISecret:  exchCfg.APISecret,
@@ -90,18 +72,6 @@ func (r *Registry) Spawn(cfg *helmdomain.Helm, exchCfg helmdomain.ExchangeConfig
 	rt.syncStore = r.syncStore
 	rt.SetEventConn(r.nc, r.js)
 	r.mu.RUnlock()
-
-	// Register this runtime's price updater with the shared market streamer.
-	r.mu.RLock()
-	ms := r.marketStreamers[brokerType]
-	r.mu.RUnlock()
-	if ms != nil {
-		// Registry-level UpdatePrice splits the herald "exchange:SYMBOL" prefix
-		// and writes into the shared per-exchange price map. All helms on the same
-		// exchange share that map, so only one handler registration per streamer is
-		// needed — but AddPriceHandler is idempotent / deduplicated by the streamer.
-		ms.AddPriceHandler(r.UpdatePrice)
-	}
 
 	r.mu.Lock()
 	r.helmRuntimes[cfg.ID] = rt

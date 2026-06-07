@@ -1,11 +1,11 @@
 package act
 
-// types.go — Binance native types and converters to internal exchange types.
+// types.go — Binance spot native types and converters to internal exchange types.
 //
 // Layout:
 //   Parse helpers     — string → decimal / float64
 //   Side mapping      — gobinance.SideType ↔ exchange.OrderSide
-//   Order converters  — gobinance / futures SDK types → exchange.OrderResult
+//   Order converters  — gobinance SDK types → exchange.OrderResult
 //   Exit helpers      — slippage math for stop-limit exit orders
 
 import (
@@ -15,7 +15,6 @@ import (
 
 	gobinance "github.com/adshao/go-binance/v2"
 	"github.com/adshao/go-binance/v2/common"
-	"github.com/adshao/go-binance/v2/futures"
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
@@ -105,21 +104,6 @@ func spotGetToResult(orderID string, r *gobinance.Order) *exchange.OrderResult {
 		Qty:           parseDecimal(r.OrigQuantity),
 		FilledQty:     filledQty,
 		FilledAvg:     filledAvg,
-	}
-}
-
-// futuresCreateToResult maps a futures CreateOrderResponse to OrderResult.
-// Futures order IDs are plain numeric strings (no symbol prefix needed —
-// futures GetOrder accepts symbol + orderID separately).
-func futuresCreateToResult(side exchange.OrderSide, r *futures.CreateOrderResponse) *exchange.OrderResult {
-	return &exchange.OrderResult{
-		ID:            strconv.FormatInt(r.OrderID, 10),
-		ClientOrderID: r.ClientOrderID,
-		Symbol:        r.Symbol,
-		Side:          side,
-		Status:        strings.ToLower(string(r.Status)),
-		Qty:           parseDecimal(r.OrigQuantity),
-		FilledQty:     parseDecimal(r.ExecutedQuantity),
 	}
 }
 

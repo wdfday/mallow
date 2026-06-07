@@ -47,11 +47,9 @@ var Module = fx.Options(
 	accountmodule.Module,
 	brokermodule.Module,
 
-	// Exchange factories
+	// Exchange factory — covers both execution adapters (New) and market data streaming (NewStreamer).
 	fx.Provide(newExchangeFactory),
 	fx.Provide(asRuntimeFactory),
-	fx.Provide(newMarketStreamerFactory),
-	fx.Provide(asStreamerFactory),
 
 	// Signal engine client
 	fx.Provide(engine.NewSignalClient),
@@ -134,9 +132,6 @@ var Module = fx.Options(
 
 // asRuntimeFactory adapts *exchangeFactory to the runtime.ExchangeFactory interface.
 func asRuntimeFactory(f *exchangeFactory) runtime.ExchangeFactory { return f }
-
-// asStreamerFactory adapts *marketStreamerFactory to the runtime.MarketStreamerFactory interface.
-func asStreamerFactory(f *marketStreamerFactory) runtime.MarketStreamerFactory { return f }
 
 func runMigrations(db *gorm.DB) error {
 	if err := accountrepo.Migrate(db); err != nil {

@@ -13,12 +13,15 @@ import (
 
 // StreamOrders implements exchange.AccountStreamer.
 // onBalance is ignored — Alpaca does not push balance updates on the trade-updates stream.
+// onPosition and onRisk are ignored — Alpaca is spot-only; no futures positions or margin calls.
 func (c *Client) StreamOrders(
 	ctx context.Context,
 	creds exchange.Credentials,
 	onLifecycle func(exchange.OrderLifecycleEvent),
 	onFill func(exchange.WsFillEvent),
 	_ func(exchange.BalanceEvent),
+	_ func(exchange.PositionEvent), // spot-only: no futures positions
+	_ func(exchange.RiskEvent), // spot-only: no margin/liquidation
 ) error {
 	slog.Info("alpaca: starting order stream")
 	go c.streamOrdersLoop(ctx, creds, onLifecycle, onFill)

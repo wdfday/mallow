@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"github.com/shopspring/decimal"
-	"mallow/helm/internal/module/broker/client"
+	"mallow/helm/internal/infra/exchange/client"
 
 	binancesdk "github.com/adshao/go-binance/v2"
 )
@@ -297,8 +297,7 @@ func (c *Client) DetectAccounts(ctx context.Context, creds client.Credentials) (
 		if r.err != nil {
 			return nil, r.err
 		}
-		// Temporarily restrict to spot only — futures accounts not yet supported for users.
-		if r.acct.AccountType == "spot" {
+		if r.acct.AccountType != "" {
 			accounts = append(accounts, r.acct)
 		}
 	}

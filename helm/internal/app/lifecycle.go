@@ -21,12 +21,33 @@ import (
 	mdbybit "mallow/helm/internal/infra/marketdata/bybit"
 	mdokx "mallow/helm/internal/infra/marketdata/okx"
 	"mallow/helm/internal/infra/poslog"
+	brokerservice "mallow/helm/internal/module/broker/service"
 	handhandler "mallow/helm/internal/module/hand/handler"
 	handservice "mallow/helm/internal/module/hand/service"
 	orchhandler "mallow/helm/internal/module/helm/handler"
 	"mallow/helm/internal/runtime"
 	"mallow/helm/internal/safe"
 )
+
+// syncBrokerAccounts runs a one-shot account-discovery pass on startup.
+// For every active broker connection that supports MultiAccountDetector (e.g. Binance),
+// it calls DetectAccounts and ensures each sub-account has a matching Account + Helm row.
+// Runs in a goroutine — startup is not blocked. Comment out after running once.
+func syncBrokerAccounts(lc fx.Lifecycle, brokerSvc brokerservice.BrokerConnectionService) {
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			go func() {
+				defer safe.Recover()
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				defer cancel()
+				if err := brokerSvc.SyncAllAccounts(ctx); err != nil {
+					slog.Warn("startup broker account sync failed", "err", err)
+				}
+			}()
+			return nil
+		},
+	})
+}
 
 // startNATSAPI subscribes per-module NATS request/reply handlers on start, drains on stop.
 func startNATSAPI(

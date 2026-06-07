@@ -237,6 +237,30 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 	}
 	h.mu.Unlock()
 
+	// Case 3: external cancel while leg is already exiting (PhaseExiting).
+	// This is the expected OCO counterpart auto-cancel: Binance (and some others)
+	// automatically cancel the SL leg when TP fills, and vice versa. The fills for
+	// the triggered leg are still in-flight — do NOT orphan. Instead, drop the
+	// cancelled order ID from exitLevels and let the fills close the leg normally.
+	// If no fills arrive, the next portfolio sync will catch the desync.
+	if affectedLeg != nil && affectedLeg.Phase == position.PhaseExiting {
+		slog.Info("hand: bracket cancel while exiting — OCO counterpart auto-cancel, ignoring",
+			"hand_id", h.id, "symbol", affectedSymbol, "order_id", orderID)
+		h.mu.Lock()
+		if lv, ok := h.exitLevels[affectedSymbol]; ok {
+			filtered := lv.ExchangeOrderIDs[:0]
+			for _, id := range lv.ExchangeOrderIDs {
+				if id != orderID {
+					filtered = append(filtered, id)
+				}
+			}
+			lv.ExchangeOrderIDs = filtered
+			h.exitLevels[affectedSymbol] = lv
+		}
+		h.mu.Unlock()
+		return
+	}
+
 	if affectedLeg == nil {
 		// Not a bracket order — check if it is a pending entry or pyramid add order
 		// that was cancelled externally (e.g. user cancels from exchange UI, GTX/IOC

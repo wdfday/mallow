@@ -60,6 +60,18 @@ func (r *gormBrokerConnectionRepository) GetActiveByUserID(ctx context.Context, 
 	return connections, nil
 }
 
+func (r *gormBrokerConnectionRepository) GetAllActive(ctx context.Context) ([]*domain.BrokerConnection, error) {
+	var connections []*domain.BrokerConnection
+	err := r.db.WithContext(ctx).
+		Where("status = ?", domain.BrokerConnectionStatusActive).
+		Order("created_at ASC").
+		Find(&connections).Error
+	if err != nil {
+		return nil, err
+	}
+	return connections, nil
+}
+
 func (r *gormBrokerConnectionRepository) GetByUserIDAndType(ctx context.Context, userID uuid.UUID, brokerType domain.BrokerType) ([]*domain.BrokerConnection, error) {
 	var connections []*domain.BrokerConnection
 	err := r.db.WithContext(ctx).

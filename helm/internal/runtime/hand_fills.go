@@ -729,6 +729,7 @@ func (h *Hand) scheduleBracketPlacement(lv exitLevel, symbol string, bracketQty 
 		h.mu.Lock()
 		if cur, ok := h.exitLevels[symbol]; ok {
 			cur.ExchangeOrderIDs = result.OrderIDs
+			cur.PlacedAt = time.Now()
 			h.exitLevels[symbol] = cur
 		}
 		h.mu.Unlock()

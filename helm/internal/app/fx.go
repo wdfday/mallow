@@ -123,6 +123,7 @@ var Module = fx.Options(
 	fx.Invoke(wirePnLSummer),
 	fx.Invoke(hydrateRuntimes), // helm runtimes must be ready before hands are hydrated
 	fx.Invoke(hydrateHands),    // depends on hydrateRuntimes having run first
+	// fx.Invoke(syncBrokerAccounts), // one-shot migration: uncomment → restart → comment back
 	fx.Invoke(subscribeHeraldReady),
 	fx.Invoke(startHeartbeatLoop),
 	fx.Invoke(startNATSAPI),

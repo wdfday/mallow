@@ -14,7 +14,8 @@ import (
 
 const demoBinanceURL = "https://demo-api.binance.com"
 const demoFuturesURL = "https://demo-fapi.binance.com"
-const demoCoinMURL = "https://demo-dapi.binance.com"
+
+// const demoCoinMURL = "https://demo-dapi.binance.com" // coin-m not supported
 
 // Client implements broker.BrokerClient for Binance.
 type Client struct{}
@@ -62,8 +63,7 @@ func (c *Client) GetPositions(ctx context.Context, creds client.Credentials) ([]
 	switch creds.AccountType {
 	case "futures_usdm":
 		return c.getFuturesPositions(ctx, creds)
-	case "futures_coinm":
-		return c.getCoinMPositions(ctx, creds)
+		// case "futures_coinm": return c.getCoinMPositions(ctx, creds) // not supported
 	}
 	return c.getSpotPositions(ctx, creds)
 }
@@ -159,41 +159,8 @@ func (c *Client) getFuturesPositions(ctx context.Context, creds client.Credentia
 	return positions, nil
 }
 
-func (c *Client) getCoinMPositions(ctx context.Context, creds client.Credentials) ([]client.Position, error) {
-	sdk := binancesdk.NewDeliveryClient(creds.APIKey, creds.APISecret)
-	if creds.IsPaper {
-		sdk.BaseURL = demoCoinMURL
-	}
-	risk, err := sdk.NewGetPositionRiskService().Do(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("binance coin-m positions failed: %w", err)
-	}
-	var positions []client.Position
-	for _, p := range risk {
-		qty, _ := decimal.NewFromString(p.PositionAmt)
-		if qty.IsZero() {
-			continue
-		}
-		avgPx, _ := decimal.NewFromString(p.EntryPrice)
-		markPx, _ := decimal.NewFromString(p.MarkPrice)
-		upl, _ := decimal.NewFromString(p.UnRealizedProfit)
-		positions = append(positions, client.Position{
-			Symbol:             p.Symbol,
-			Name:               p.Symbol,
-			AssetType:          "crypto",
-			Quantity:           qty.Abs(),
-			AverageCostPerUnit: avgPx,
-			CurrentPrice:       markPx,
-			CurrentValue:       qty.Abs().Mul(markPx),
-			UnrealizedGain:     upl,
-			Currency:           "USD",
-			Exchange:           "BINANCE",
-			ExternalID:         p.Symbol,
-			LastUpdated:        time.Now(),
-		})
-	}
-	return positions, nil
-}
+// getCoinMPositions — coin-margined futures not supported; kept for future reference.
+// func (c *Client) getCoinMPositions(...) { ... }
 
 // DetectAccounts implements client.MultiAccountDetector.
 // Probes spot, USDT-margined futures, and coin-margined futures in parallel.
@@ -262,37 +229,11 @@ func (c *Client) DetectAccounts(ctx context.Context, creds client.Credentials) (
 		}
 	}()
 
-	// Futures CoinM
-	go func() {
-		defer func() {
-			if r := recover(); r != nil {
-				slog.Error("goroutine panic recovered", "recover", r)
-				ch <- result{err: fmt.Errorf("panic: %v", r)}
-			}
-		}()
-		sdk := binancesdk.NewDeliveryClient(creds.APIKey, creds.APISecret)
-		if creds.IsPaper {
-			sdk.BaseURL = demoCoinMURL
-		}
-		balances, err := sdk.NewGetBalanceService().Do(ctx)
-		if err != nil {
-			ch <- result{}
-			return
-		}
-		var cash decimal.Decimal
-		for _, b := range balances {
-			v, _ := decimal.NewFromString(b.Balance)
-			cash = cash.Add(v)
-		}
-		if cash.IsPositive() {
-			ch <- result{acct: client.DetectedAccount{AccountType: "futures_coinm", CashBalance: cash}}
-		} else {
-			ch <- result{}
-		}
-	}()
+	// Futures CoinM — disabled (not supported)
+	// go func() { ... ch <- result{acct: DetectedAccount{AccountType: "futures_coinm"}} }()
 
 	var accounts []client.DetectedAccount
-	for range 3 {
+	for range 2 {
 		r := <-ch
 		if r.err != nil {
 			return nil, r.err

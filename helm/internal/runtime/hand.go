@@ -187,6 +187,7 @@ type exitLevel struct {
 	StopLoss         decimal.Decimal // absolute stop price; zero = not set
 	TakeProfit       decimal.Decimal // absolute take-profit price; zero = not set
 	ExchangeOrderIDs []string        // exchange-side SL/TP order IDs; canceled when position closes
+	PlacedAt         time.Time       // when the bracket order was placed; used for not_found grace period
 }
 
 // ── handConfig ────────────────────────────────────────────────────────────────

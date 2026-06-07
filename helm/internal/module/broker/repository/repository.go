@@ -36,6 +36,10 @@ type BrokerConnectionRepository interface {
 	// UpdateStatus updates the connection status
 	UpdateStatus(ctx context.Context, id uuid.UUID, status domain.BrokerConnectionStatus) error
 
+	// GetAllActive returns every active (non-deleted) broker connection across all users.
+	// Used at startup to sync sub-accounts that may have been added since last link.
+	GetAllActive(ctx context.Context) ([]*domain.BrokerConnection, error)
+
 	// Count returns the total number of broker connections for a user
 	Count(ctx context.Context, userID uuid.UUID) (int64, error)
 

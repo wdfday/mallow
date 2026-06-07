@@ -672,10 +672,34 @@ func (h *Hand) runPlaceREST(ctx context.Context, pp *pendingPlace) {
 			if freeQty.IsZero() {
 				// Base asset is completely gone — position closed externally
 				// (OCO triggered, manual sell, etc.). Skip PlaceOrder entirely and
-				// let applyPlaceResult dust-close the poslog leg.
+				// let applyPlaceResult close the poslog leg.
 				slog.Warn("hand: pre-exit balance check — base asset gone, skipping PlaceOrder",
 					"hand_id", h.id, "symbol", pp.sig.Symbol, "poslog_qty", pp.orderQty)
 				pp.positionGoneAtExchange = true
+				pp.cancelledBracketIDs = bracketIDs
+
+				// Try to recover the actual OCO fill price so applyPlaceResult
+				// can record the real exit price instead of falling back to
+				// lastKnownPrice (dust exit). With the corrected getAlgoOrder
+				// query (ordType required) this should now find the filled leg.
+				for _, id := range bracketIDs {
+					r, qErr := h.helmRuntime.Exchange.GetOrder(ctx, h.helmRuntime.Creds, id)
+					if qErr != nil || r == nil {
+						continue
+					}
+					if r.Status == "filled" && r.FilledQty.IsPositive() && r.FilledAvg.IsPositive() {
+						pp.ocoFillPrice = r.FilledAvg
+						pp.ocoFillQty = r.FilledQty
+						pp.ocoFillSide = string(r.Side)
+						if pp.ocoFillSide == "" {
+							pp.ocoFillSide = "sell"
+						}
+						slog.Info("hand: OCO fill recovered from exchange",
+							"hand_id", h.id, "symbol", pp.sig.Symbol,
+							"order_id", id, "price", r.FilledAvg, "qty", r.FilledQty)
+						break
+					}
+				}
 				return
 			}
 			useQty := freeQty
@@ -728,17 +752,46 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 	if pp.positionGoneAtExchange {
 		h.helmRuntime.RemoveOrderTracking(clid)
 		if isExitOrder && !isFutures {
-			slog.Warn("order: exit failed — base asset gone (OCO likely triggered) — dust exit",
-				"hand_id", h.id, "symbol", sig.Symbol, "qty", orderQty)
-			h.emitEvent(natsapi.HelmEvent{
-				Code:   CodeOrderDustExit,
-				Symbol: sig.Symbol,
-				Qty:    orderQty,
-				Reason: "position gone at exchange — OCO likely triggered concurrently",
-				Msg:    "order: dust exit — base asset unavailable",
-			})
-			lastPrice := h.helmRuntime.lastKnownPrice(sig.Symbol)
-			h.closeLegAsDust(ctx, sig.Symbol, reply.Side, orderQty, lastPrice)
+			if pp.ocoFillPrice.IsPositive() && pp.ocoFillQty.IsPositive() {
+				// Real OCO fill price recovered — apply as a proper fill so the
+				// trade record has the correct exit price and PnL.
+				closeSide := pp.ocoFillSide
+				if closeSide == "" {
+					closeSide = reply.Side
+				}
+				bracketID := ""
+				if len(pp.cancelledBracketIDs) > 0 {
+					bracketID = pp.cancelledBracketIDs[0]
+				}
+				slog.Info("order: OCO fill recovered — applying real fill",
+					"hand_id", h.id, "symbol", sig.Symbol,
+					"order_id", bracketID, "price", pp.ocoFillPrice, "qty", pp.ocoFillQty)
+				// Guard seenFills so a late WS delivery of the same order ID doesn't double-apply.
+				if bracketID != "" {
+					h.mu.Lock()
+					if _, already := h.seenFills[bracketID]; already {
+						h.mu.Unlock()
+						return
+					}
+					h.seenFills[bracketID] = time.Now()
+					h.mu.Unlock()
+				}
+				h.applyFill(ctx, bracketID, sig.Symbol, closeSide,
+					pp.ocoFillQty, pp.ocoFillPrice, decimal.Zero, "bracket_recovered")
+			} else {
+				// Fill price not recoverable — fall back to dust exit at last known price.
+				slog.Warn("order: exit failed — base asset gone (OCO likely triggered) — dust exit",
+					"hand_id", h.id, "symbol", sig.Symbol, "qty", orderQty)
+				h.emitEvent(natsapi.HelmEvent{
+					Code:   CodeOrderDustExit,
+					Symbol: sig.Symbol,
+					Qty:    orderQty,
+					Reason: "position gone at exchange — OCO likely triggered concurrently",
+					Msg:    "order: dust exit — base asset unavailable",
+				})
+				lastPrice := h.helmRuntime.lastKnownPrice(sig.Symbol)
+				h.closeLegAsDust(ctx, sig.Symbol, reply.Side, orderQty, lastPrice)
+			}
 		}
 		return
 	}

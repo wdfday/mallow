@@ -49,6 +49,11 @@ type BrokerConnectionService interface {
 	// decrypts the credentials, and returns a CredentialsFetchResp ready for
 	// spawning a helm runtime. Replaces the old NATS investment.accounts.credentials round-trip.
 	GetCredentialsByAccountID(ctx context.Context, accountID string) (natsapi.CredentialsFetchResp, error)
+
+	// SyncAllAccounts iterates every active broker connection and ensures all
+	// detected sub-accounts (e.g. Binance spot + futures_usdm) have a matching
+	// Account + Helm row. Safe to call on startup — ensureLinkedAccount is idempotent.
+	SyncAllAccounts(ctx context.Context) error
 }
 
 // RotateKeyRequest carries the new plaintext credentials for a key rotation.

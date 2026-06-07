@@ -117,22 +117,17 @@ type algoOrderData struct {
 }
 
 // getAlgoOrder fetches an algo (OCO/conditional) order.
-// Checks active orders first (/api/v5/trade/orders-algo). If not found (order already
-// triggered/expired), falls back to history (/api/v5/trade/orders-algo-history) so the
-// poller can detect fills that WS delivery missed during a disconnect.
+// Checks active orders first (/api/v5/trade/orders-algo) with ordType.
+// If not found (order already triggered/expired), falls back to history
+// (/api/v5/trade/orders-algo-history) so the poller can detect fills that
+// WS delivery missed during a disconnect.
 func (c *Client) getAlgoOrder(ctx context.Context, creds exchange.Credentials, orderID, instID, algoID string) (*exchange.OrderResult, error) {
 	type algoResp struct {
 		okxEnvelope
 		Data []algoOrderData `json:"data"`
 	}
 
-	// ── 1. Active orders ──────────────────────────────────────────────────────
-	// Query by algoId only — adding ordType causes 404 even for valid orders.
-	activePath := fmt.Sprintf("/api/v5/trade/orders-algo?algoId=%s&instId=%s", algoID, instID)
-	var activeResp algoResp
-	if err := c.doRequest(ctx, creds, http.MethodGet, activePath, nil, &activeResp); err == nil &&
-		activeResp.Code == "0" && len(activeResp.Data) > 0 {
-		d := activeResp.Data[0]
+	toResult := func(d algoOrderData) *exchange.OrderResult {
 		return &exchange.OrderResult{
 			ID:        orderID,
 			Symbol:    d.InstId,
@@ -141,14 +136,26 @@ func (c *Client) getAlgoOrder(ctx context.Context, creds exchange.Credentials, o
 			Qty:       parseDecimal(d.Sz),
 			FilledQty: parseDecimal(d.ActualSz),
 			FilledAvg: parseDecimal(d.ActualPx),
-		}, nil
+		}
+	}
+
+	// ── 1. Active orders ──────────────────────────────────────────────────────
+	// OKX requires ordType for /api/v5/trade/orders-algo. Try both oco and
+	// conditional so we handle whichever type this bracket was placed as.
+	for _, ordType := range []string{"oco", "conditional"} {
+		activePath := fmt.Sprintf("/api/v5/trade/orders-algo?ordType=%s&algoId=%s&instId=%s", ordType, algoID, instID)
+		var activeResp algoResp
+		if err := c.doRequest(ctx, creds, http.MethodGet, activePath, nil, &activeResp); err == nil &&
+			activeResp.Code == "0" && len(activeResp.Data) > 0 {
+			return toResult(activeResp.Data[0]), nil
+		}
 	}
 
 	// ── 2. History fallback ───────────────────────────────────────────────────
 	// Once an OCO/conditional is triggered or expired it leaves the active list.
 	// The history endpoint returns it with state=effective/canceled.
-	// Note: ordType must be a single value — comma-separated is not supported by OKX.
-	// We query oco first (most common for brackets), then conditional as fallback.
+	// 51603 "Order does not exist" from history means this ordType has no record
+	// for this algoId — try the next type before giving up.
 	for _, ordType := range []string{"oco", "conditional"} {
 		histPath := fmt.Sprintf("/api/v5/trade/orders-algo-history?algoId=%s&instId=%s&ordType=%s", algoID, instID, ordType)
 		var histResp algoResp
@@ -156,19 +163,13 @@ func (c *Client) getAlgoOrder(ctx context.Context, creds exchange.Credentials, o
 			return nil, fmt.Errorf("get algo order history (%s): %w", ordType, err)
 		}
 		if histResp.Code != "0" {
+			if histResp.Code == "51603" {
+				continue // not in this ordType's history — try next
+			}
 			return nil, fmt.Errorf("okx get algo order history: code=%s msg=%s", histResp.Code, histResp.Msg)
 		}
 		if len(histResp.Data) > 0 {
-			d := histResp.Data[0]
-			return &exchange.OrderResult{
-				ID:        orderID,
-				Symbol:    d.InstId,
-				Side:      exchange.OrderSide(d.Side),
-				Status:    mapAlgoOrderStatus(d.State),
-				Qty:       parseDecimal(d.Sz),
-				FilledQty: parseDecimal(d.ActualSz),
-				FilledAvg: parseDecimal(d.ActualPx),
-			}, nil
+			return toResult(histResp.Data[0]), nil
 		}
 	}
 	// Not found in active or either history type — the algo order has definitively

@@ -142,39 +142,90 @@ func (s *brokerConnectionService) Create(ctx context.Context, req *dto.CreateBro
 		subAccounts = []subAccount{{accountType: req.AccountType, cash: portfolio.CashBalance}}
 	}
 
+	pp := ""
+	if creds.Passphrase != nil {
+		pp = *creds.Passphrase
+	}
 	for _, sub := range subAccounts {
-		account, err := s.ensureLinkedAccount(ctx, conn, sub.accountType)
+		s.ensureSubAccount(ctx, conn, sub.accountType, creds.APIKey, creds.APISecret, pp)
+	}
+
+	return conn, nil
+}
+
+// ensureSubAccount creates the Account + Helm for one sub-account type if they
+// don't already exist. Called both from Create and SyncAllAccounts.
+// All errors are logged and treated as non-fatal.
+func (s *brokerConnectionService) ensureSubAccount(ctx context.Context, conn *domain.BrokerConnection, accountType, apiKey, apiSecret, passphrase string) {
+	account, err := s.ensureLinkedAccount(ctx, conn, accountType)
+	if err != nil {
+		slog.Warn("broker: failed to create linked account (non-fatal)",
+			"broker_connection_id", conn.ID, "account_type", accountType, "err", err)
+		return
+	}
+
+	// Binance USDM futures sub-accounts are served by the fbinance exchange adapter
+	// (separate FAPI client). Remap the broker type so the Helm routes correctly.
+	helmBrokerType := string(conn.BrokerType)
+	if conn.BrokerType == domain.BrokerTypeBinance && accountType == "futures_usdm" {
+		helmBrokerType = string(domain.BrokerTypeFBinance)
+	}
+	if err := s.helmCreator.AutoCreateForAccount(context.Background(), HelmAutoCreateReq{
+		UserID:      conn.UserID,
+		AccountID:   account.ID,
+		AccountName: account.AccountName,
+		BrokerType:  helmBrokerType,
+		AccountType: string(account.AccountType),
+		APIKey:      apiKey,
+		APISecret:   apiSecret,
+		Passphrase:  passphrase,
+		Paper:       conn.IsPaper,
+	}); err != nil {
+		slog.Warn("broker: auto helm create failed (non-fatal)", "account_id", account.ID, "err", err)
+	}
+}
+
+// SyncAllAccounts iterates every active broker connection and ensures all
+// detected sub-accounts have a matching Account + Helm row. Idempotent — safe
+// to call on every startup.
+func (s *brokerConnectionService) SyncAllAccounts(ctx context.Context) error {
+	conns, err := s.repo.GetAllActive(ctx)
+	if err != nil {
+		return fmt.Errorf("broker sync: list active connections: %w", err)
+	}
+	synced := 0
+	for _, conn := range conns {
+		bc, err := s.getBrokerClient(conn.BrokerType)
 		if err != nil {
-			slog.Warn("broker: failed to create linked account (non-fatal)", "broker_connection_id", conn.ID, "account_type", sub.accountType, "err", err)
+			slog.Debug("broker sync: skipping unsupported type", "broker_type", conn.BrokerType)
 			continue
 		}
-
+		detector, ok := bc.(client.MultiAccountDetector)
+		if !ok {
+			continue // single-account exchange, nothing to discover
+		}
+		creds, err := s.buildCreds(conn)
+		if err != nil {
+			slog.Warn("broker sync: decrypt creds failed", "id", conn.ID, "err", err)
+			continue
+		}
+		detected, err := detector.DetectAccounts(ctx, creds)
+		if err != nil {
+			slog.Warn("broker sync: DetectAccounts failed", "id", conn.ID, "err", err)
+			continue
+		}
 		pp := ""
 		if creds.Passphrase != nil {
 			pp = *creds.Passphrase
 		}
-		// Binance USDM futures sub-accounts are served by the fbinance exchange adapter
-		// (separate FAPI client). Remap the broker type so the Helm routes correctly.
-		helmBrokerType := string(conn.BrokerType)
-		if conn.BrokerType == domain.BrokerTypeBinance && sub.accountType == "futures_usdm" {
-			helmBrokerType = string(domain.BrokerTypeFBinance)
+		for _, d := range detected {
+			s.ensureSubAccount(ctx, conn, d.AccountType, creds.APIKey, creds.APISecret, pp)
 		}
-		if err := s.helmCreator.AutoCreateForAccount(context.Background(), HelmAutoCreateReq{
-			UserID:      conn.UserID,
-			AccountID:   account.ID,
-			AccountName: account.AccountName,
-			BrokerType:  helmBrokerType,
-			AccountType: string(account.AccountType),
-			APIKey:      req.APIKey,
-			APISecret:   req.APISecret,
-			Passphrase:  pp,
-			Paper:       conn.IsPaper,
-		}); err != nil {
-			slog.Warn("broker: auto helm create failed (non-fatal)", "account_id", account.ID, "err", err)
-		}
+		synced++
 	}
-
-	return conn, nil
+	slog.Info("broker sync: startup account sync complete",
+		"total_connections", len(conns), "multi_account_synced", synced)
+	return nil
 }
 
 // ensureLinkedAccount creates an Account row linked to this broker connection

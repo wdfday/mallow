@@ -17,13 +17,14 @@ const (
 // Position represents an open position for one symbol.
 // Qty is positive for a long position, negative for a short position.
 type Position struct {
-	Symbol         string          `json:"symbol"`
-	Qty            decimal.Decimal `json:"qty"`
-	AvgPrice       decimal.Decimal `json:"avg_price"`
-	CurrentPrice   decimal.Decimal `json:"current_price"`
-	UnrealizedPnL  decimal.Decimal `json:"unrealized_pnl"`
-	MarketValue    decimal.Decimal `json:"market_value"`
-	EntryTimestamp time.Time       `json:"entry_timestamp"`
+	Symbol          string          `json:"symbol"`
+	Qty             decimal.Decimal `json:"qty"`
+	AvgPrice        decimal.Decimal `json:"avg_price"`
+	CurrentPrice    decimal.Decimal `json:"current_price"`
+	UnrealizedPnL   decimal.Decimal `json:"unrealized_pnl"`
+	MarketValue     decimal.Decimal `json:"market_value"`
+	EntryTimestamp  time.Time       `json:"entry_timestamp"`
+	EntryCommission decimal.Decimal `json:"entry_commission"`
 }
 
 // Fill represents a confirmed order execution.

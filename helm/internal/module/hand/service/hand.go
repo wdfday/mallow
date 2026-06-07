@@ -7,6 +7,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"mallow/helm/internal/infra/exchange"
+
 	"mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/runtime"
 )
@@ -104,6 +106,9 @@ func (s *Service) ListByHelmLive(orchID uuid.UUID) []domain.HandSummary {
 }
 
 func (s *Service) Create(cfg domain.HandConfig) (*runtime.HandRef, error) {
+	if cfg.Market == domain.MarketTypeFutures {
+		return nil, fmt.Errorf("futures trading is not yet supported")
+	}
 	if cfg.Name == "" {
 		return nil, fmt.Errorf("hand name is required")
 	}
@@ -134,9 +139,13 @@ func (s *Service) Create(cfg domain.HandConfig) (*runtime.HandRef, error) {
 		return nil, fmt.Errorf("helm runtime not found: %w", err)
 	}
 	if cfg.Market == domain.MarketTypeFutures {
-		ft, ok := rt.Exchange.(interface{ SupportsFutures() bool })
-		if !ok || !ft.SupportsFutures() {
+		if ft, ok := rt.Exchange.(interface{ SupportsFutures() bool }); !ok || !ft.SupportsFutures() {
 			return nil, fmt.Errorf("exchange %q does not support futures trading", rt.Exchange.Name())
+		}
+		if cfg.Futures != nil && cfg.Futures.MarginType == domain.MarginTypeIsolated {
+			if iso, ok := rt.Exchange.(exchange.IsolatedMarginTrader); !ok || !iso.SupportsIsolatedMargin() {
+				return nil, fmt.Errorf("exchange %q does not support isolated margin — use cross margin", rt.Exchange.Name())
+			}
 		}
 	}
 

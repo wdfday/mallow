@@ -103,6 +103,11 @@ func handleMessage(msg []byte, onTick func(string, decimal.Decimal)) {
 }
 
 func pinger(ctx context.Context, conn *websocket.Conn) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("goroutine panic recovered", "recover", r)
+		}
+	}()
 	ticker := time.NewTicker(pingInterval)
 	defer ticker.Stop()
 	for {

@@ -31,6 +31,11 @@ func (c *Client) streamOrdersLoop(
 	onLifecycle func(exchange.OrderLifecycleEvent),
 	onFill func(exchange.WsFillEvent),
 ) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("goroutine panic recovered", "recover", r)
+		}
+	}()
 	bo := exchange.Backoff{Min: 2 * time.Second, Max: 60 * time.Second, Factor: 2.0, Jitter: true}
 	attempt := 0
 	for {

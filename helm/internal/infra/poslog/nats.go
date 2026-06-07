@@ -191,3 +191,14 @@ func (l *NatsLog) drain(ctx context.Context, filterSubject string) ([]Event, err
 	}
 	return events, nil
 }
+
+// PurgeHand deletes all poslog messages for a hand from the HELM_POSITIONS stream.
+// Uses a subject-scoped purge so only messages for this hand are removed — messages
+// belonging to other hands on the same helm are unaffected.
+func (l *NatsLog) PurgeHand(_ context.Context, helmID, handID string) error {
+	subject := fmt.Sprintf("%s.%s.%s.>", subjectBase, helmID, handID)
+	// Legacy JetStream API: *StreamPurgeRequest implements PurgeOpt via
+	// configureJSContext — pass directly instead of nats.WithPurgeSubject
+	// (which only exists in the newer jetstream package).
+	return l.js.PurgeStream(streamName, &nats.StreamPurgeRequest{Subject: subject})
+}

@@ -51,6 +51,7 @@ func (p *Portfolio) ApplyFill(fill Fill) {
 		pos.EntryTimestamp = fill.Timestamp
 		if fill.Side == SideBuy {
 			pos.Qty = fill.Qty
+			pos.EntryCommission = fill.Commission
 		} else {
 			// Phantom sell: exchange fill arrived while portfolio is flat (Sync
 			// cleared the position, or out-of-order WS delivery). Cash was already
@@ -58,6 +59,7 @@ func (p *Portfolio) ApplyFill(fill Fill) {
 			// fill can cancel it cleanly; helmSnapshot / equityLocked skip negative
 			// positions so it does not inflate equity or appear in the UI.
 			pos.Qty = fill.Qty.Neg()
+			pos.EntryCommission = fill.Commission
 		}
 		pos.AvgPrice = fill.Price
 	} else if pos.Qty.IsPositive() {
@@ -67,11 +69,16 @@ func (p *Portfolio) ApplyFill(fill Fill) {
 			newQty := pos.Qty.Add(fill.Qty)
 			pos.AvgPrice = pos.AvgPrice.Mul(pos.Qty).Add(fill.Price.Mul(fill.Qty)).Div(newQty)
 			pos.Qty = newQty
+			pos.EntryCommission = pos.EntryCommission.Add(fill.Commission)
 		} else {
 			// Reducing or fully closing long.
 			// Use clamped qty for PnL so we never record profit on qty we didn't hold.
 			closedQty := minDecimal(fill.Qty, pos.Qty)
-			pnl := fill.Price.Sub(pos.AvgPrice).Mul(closedQty).Sub(fill.Commission)
+			var entryComm decimal.Decimal
+			if pos.Qty.IsPositive() {
+				entryComm = pos.EntryCommission.Mul(closedQty).Div(pos.Qty)
+			}
+			pnl := fill.Price.Sub(pos.AvgPrice).Mul(closedQty).Sub(entryComm).Sub(fill.Commission)
 			costBasis := pos.AvgPrice.Mul(closedQty)
 			var pnlPct decimal.Decimal
 			if costBasis.IsPositive() {
@@ -90,6 +97,7 @@ func (p *Portfolio) ApplyFill(fill Fill) {
 				PnLPct:         pnlPct,
 			})
 
+			pos.EntryCommission = pos.EntryCommission.Sub(entryComm)
 			// Subtract full fill.Qty so slight oversell goes negative rather than
 			// leaving a dust long. helmSnapshot ignores negative Qty positions.
 			pos.Qty = pos.Qty.Sub(fill.Qty)
@@ -174,8 +182,10 @@ func (p *Portfolio) ApplySync(cash decimal.Decimal, positions []SyncedPosition) 
 		// the actual PnL from entry. Keep the in-memory value if we have one.
 		avgPrice := sp.AvgPrice
 		entryTS := time.Time{}
+		var entryComm decimal.Decimal
 		if old, ok := oldPositions[sp.Symbol]; ok {
 			entryTS = old.EntryTimestamp
+			entryComm = old.EntryCommission
 			if avgPrice.IsZero() && old.AvgPrice.IsPositive() {
 				avgPrice = old.AvgPrice
 			}
@@ -188,13 +198,14 @@ func (p *Portfolio) ApplySync(cash decimal.Decimal, positions []SyncedPosition) 
 		}
 
 		p.positions[sp.Symbol] = &Position{
-			Symbol:         sp.Symbol,
-			Qty:            sp.Qty,
-			AvgPrice:       avgPrice,
-			CurrentPrice:   sp.CurPrice,
-			UnrealizedPnL:  unrealized,
-			MarketValue:    sp.Qty.Mul(sp.CurPrice),
-			EntryTimestamp: entryTS,
+			Symbol:          sp.Symbol,
+			Qty:             sp.Qty,
+			AvgPrice:        avgPrice,
+			CurrentPrice:    sp.CurPrice,
+			UnrealizedPnL:   unrealized,
+			MarketValue:     sp.Qty.Mul(sp.CurPrice),
+			EntryTimestamp:  entryTS,
+			EntryCommission: entryComm,
 		}
 	}
 	// NOTE: peakEquity is intentionally NOT updated here. Broker syncs can happen
@@ -213,7 +224,7 @@ func (p *Portfolio) ApplySync(cash decimal.Decimal, positions []SyncedPosition) 
 // cash. Called by the poslog reconciler on startup to replay positions that were
 // open when the process last stopped. avgPrice is the original entry price;
 // currentPrice is the latest known market price.
-func (p *Portfolio) RestorePosition(symbol, side string, qty, avgPrice, currentPrice decimal.Decimal, entryTimestamp time.Time) {
+func (p *Portfolio) RestorePosition(symbol, side string, qty, avgPrice, currentPrice, deployedCapital decimal.Decimal, entryTimestamp time.Time) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -221,14 +232,25 @@ func (p *Portfolio) RestorePosition(symbol, side string, qty, avgPrice, currentP
 		qty = qty.Neg() // short position has negative Qty
 	}
 	mv := qty.Mul(currentPrice)
+
+	// Derive entry commission from deployed capital.
+	entryComm := decimal.Zero
+	if side == "buy" && deployedCapital.IsPositive() {
+		entryComm = deployedCapital.Sub(qty.Mul(avgPrice))
+		if entryComm.IsNegative() {
+			entryComm = decimal.Zero
+		}
+	}
+
 	p.positions[symbol] = &Position{
-		Symbol:         symbol,
-		Qty:            qty,
-		AvgPrice:       avgPrice,
-		CurrentPrice:   currentPrice,
-		UnrealizedPnL:  currentPrice.Sub(avgPrice).Mul(qty),
-		MarketValue:    mv,
-		EntryTimestamp: entryTimestamp,
+		Symbol:          symbol,
+		Qty:             qty,
+		AvgPrice:        avgPrice,
+		CurrentPrice:    currentPrice,
+		UnrealizedPnL:   currentPrice.Sub(avgPrice).Mul(qty),
+		MarketValue:     mv,
+		EntryTimestamp:  entryTimestamp,
+		EntryCommission: entryComm,
 	}
 }
 

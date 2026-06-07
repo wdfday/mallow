@@ -18,6 +18,7 @@ import (
 	"mallow/helm/internal/infra/poslog"
 	helmdomain "mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/runtime/perf"
+	"mallow/helm/internal/safe"
 )
 
 // ExchangeFactory creates per-account exchange adapters from an ExchangeConfig.
@@ -217,25 +218,17 @@ func (r *Registry) UpdatePrice(heraldSym string, price decimal.Decimal) {
 	r.market.updatePrice(exchangeName, bareSym, price)
 }
 
-// PrewarmFilters fetches symbol filters for every symbol concurrently using one
-// exchange client per unique broker type, then stores results in the registry's
-// symbolFilters cache. Call this at startup after hands are hydrated.
+// PrewarmFilters fetches symbol filters for (exchange, symbol) pairs owned by
+// active hands. symbolsByExchange must be obtained from the hand service so that
+// only pairs that actually belong to each exchange are fetched — OKX symbols
+// (SOL-USDT) are never sent to Binance and vice-versa.
 //
 // As a side-effect it also syncs each exchange's server time (for exchanges that
 // implement TimeSyncer) so subsequent signed REST requests carry the correct
 // timestamp and avoid -1021 recvWindow errors from server clock drift.
-func (r *Registry) PrewarmFilters(ctx context.Context, symbols []string) {
-	seen := make(map[exchange.Exchange]struct{})
-	r.mu.RLock()
-	for _, rt := range r.helmRuntimes {
-		seen[rt.Exchange] = struct{}{}
-	}
-	r.mu.RUnlock()
-
+func (r *Registry) PrewarmFilters(ctx context.Context, symbolsByExchange map[exchange.Exchange][]string) {
 	// ── 1. Sync server time (sequential — one call per exchange) ──────────────
-	// Must complete before filter fetches so any signed requests in GetSymbolFilters
-	// already carry the corrected timestamp.
-	for ex := range seen {
+	for ex := range symbolsByExchange {
 		if ts, ok := ex.(exchange.TimeSyncer); ok {
 			if err := ts.SyncTime(ctx); err != nil {
 				slog.Warn("prewarm: server time sync failed", "exchange", ex.Name(), "err", err)
@@ -245,16 +238,16 @@ func (r *Registry) PrewarmFilters(ctx context.Context, symbols []string) {
 
 	// ── 2. Fetch symbol filters concurrently ──────────────────────────────────
 	var wg sync.WaitGroup
-	for ex := range seen {
+	for ex, symbols := range symbolsByExchange {
 		sip, ok := ex.(exchange.SymbolInfoProvider)
 		if !ok {
 			continue
 		}
-		// Ensure the per-exchange inner map exists before goroutines write into it.
 		r.market.filterViewFor(ex.Name())
 		for _, sym := range symbols {
 			wg.Add(1)
 			go func(p exchange.SymbolInfoProvider, exName, s string) {
+				defer safe.Recover()
 				defer wg.Done()
 				f, err := p.GetSymbolFilters(ctx, s)
 				if err != nil {

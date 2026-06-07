@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -885,7 +886,8 @@ func (h *Handler) ordersHistory(c *gin.Context) {
 
 	records, err := h.orderLog.Query(c.Request.Context(), f)
 	if err != nil {
-		shared.RespondWithError(c, http.StatusInternalServerError, "Failed to query order history: "+err.Error())
+		slog.Error("order history query failed", "helm_id", rt.HelmID, "err", err)
+		shared.RespondWithError(c, http.StatusInternalServerError, "failed to query order history")
 		return
 	}
 

@@ -16,6 +16,11 @@ import (
 // Returns immediately; the goroutine runs until ctx is cancelled.
 func (c *Client) SubscribeDepth(ctx context.Context, symbol string, ring *exchange.DepthRing) {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("goroutine panic recovered", "recover", r)
+			}
+		}()
 		for {
 			if ctx.Err() != nil {
 				return

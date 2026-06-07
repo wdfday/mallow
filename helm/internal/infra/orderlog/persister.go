@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"mallow/helm/internal/infra/poslog"
+	"mallow/helm/internal/safe"
 )
 
 const (
@@ -33,6 +34,7 @@ func NewPersister(js nats.JetStreamContext, db *sql.DB) *Persister {
 
 // Run consumes helm.pos.> until ctx is cancelled.
 func (p *Persister) Run(ctx context.Context) {
+	defer safe.Recover()
 	msgCh := make(chan *nats.Msg, 256)
 	sub, err := p.js.ChanSubscribe(
 		subjectFilter,

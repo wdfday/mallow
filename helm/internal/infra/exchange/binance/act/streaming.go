@@ -92,6 +92,11 @@ func (c *Client) streamSpotOrders(
 	onFill func(exchange.WsFillEvent),
 	onBalance func(exchange.BalanceEvent),
 ) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("goroutine panic recovered", "recover", r)
+		}
+	}()
 	bo := exchange.Backoff{Min: 5 * time.Second, Max: 5 * time.Minute, Factor: 2.0, Jitter: true}
 	attempt := 0
 	for {
@@ -264,6 +269,11 @@ func (c *Client) streamFuturesOrders(
 	onLifecycle func(exchange.OrderLifecycleEvent),
 	onFill func(exchange.WsFillEvent),
 ) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("goroutine panic recovered", "recover", r)
+		}
+	}()
 	bo := exchange.Backoff{Min: 5 * time.Second, Max: 5 * time.Minute, Factor: 2.0, Jitter: true}
 	attempt := 0
 	for {
@@ -410,6 +420,11 @@ func (c *Client) streamDeliveryOrders(
 	onLifecycle func(exchange.OrderLifecycleEvent),
 	onFill func(exchange.WsFillEvent),
 ) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("goroutine panic recovered", "recover", r)
+		}
+	}()
 	bo := exchange.Backoff{Min: 5 * time.Second, Max: 5 * time.Minute, Factor: 2.0, Jitter: true}
 	attempt := 0
 	for {

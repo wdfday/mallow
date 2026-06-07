@@ -92,9 +92,13 @@ const (
 	ActionEnterShort Action = "enter_short"
 	ActionExitLong   Action = "exit_long"
 	ActionExitShort  Action = "exit_short"
-	ActionScaleIn    Action = "scale_in"
-	ActionScaleOut   Action = "scale_out"
-	ActionDoNothing  Action = "do_nothing"
+	// ActionScaleIn / ActionScaleOut are design stubs for partial entry and exit.
+	// - ScaleIn: add to an existing position (pyramid add). See design-scale-out.md.
+	// - ScaleOut: partially close a position. See design-scale-out.md.
+	// Tactician routes them to buy/sell sides; hand_runner does not yet act on them.
+	ActionScaleIn   Action = "scale_in"
+	ActionScaleOut  Action = "scale_out"
+	ActionDoNothing Action = "do_nothing"
 )
 
 // IsEntry reports whether this action opens or adds to a position.
@@ -115,7 +119,7 @@ type Urgency string
 const (
 	UrgencyImmediate Urgency = "immediate" // market order, execute now
 	UrgencyNormal    Urgency = "normal"    // limit order, reasonable timeframe
-	UrgencyPatient   Urgency = "patient"   // TWAP / VWAP, spread over time (declared; not yet implemented)
+	UrgencyPatient   Urgency = "patient"   // TWAP slices; declared in Tactician.Plan but TwapExecutor not yet implemented — see design-twap.md
 )
 
 // ── Strategy interface ────────────────────────────────────────────────────────

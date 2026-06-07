@@ -100,6 +100,7 @@ func (t *Tactician) size(intent strategy.Intent, ctx MarketContext) decimal.Deci
 	}
 
 	// Scale-out closes half the current position.
+	// NOTE: This is a sizing-only placeholder; the execution engine (hand_runner) does not support partial exits yet.
 	if intent.Action == strategy.ActionScaleOut {
 		return ctx.PositionQty.Abs().Div(decimal.NewFromInt(2))
 	}

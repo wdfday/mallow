@@ -92,9 +92,6 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 				break
 			}
 			h.mu.Unlock()
-			// Guard against WS-orphan race: WS may have processed this fill before
-			// PlaceOrder returned (labeling the order "manual"), updating the portfolio
-			// already. Skip to prevent a double-apply and duplicate JetStream publish.
 			if h.helmRuntime.hasOrderFillPublished(result.ID) {
 				h.mu.Lock()
 				delete(h.partialApplied, result.ID)
@@ -105,12 +102,37 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 			// by the WS partial-fill path (registry → rt.ReportFill + MarkPartialApplied)
 			// so we only apply the remaining delta — no double-count.
 			h.mu.Lock()
-			netQty := result.FilledQty.Sub(h.partialApplied[result.ID])
-			delete(h.partialApplied, result.ID)
-			h.seenFills[result.ID] = struct{}{}
+			state := h.partialApplied[result.ID]
+
+			cumQty, cumCommission := h.helmRuntime.normalizeCommission(result.Symbol, result.Side, result.FilledQty, result.FilledAvg, result.Commission, result.CommissionAsset)
+
+			netQty := cumQty.Sub(state.Qty)
+			netCommission := cumCommission.Sub(state.Commission)
+			if netCommission.IsNegative() {
+				netCommission = decimal.Zero
+			}
+			pendingExit, hasPendingExit := h.pendingExits[result.ID]
+			if hasPendingExit {
+				delete(h.pendingExits, result.ID)
+			}
+			h.seenFills[result.ID] = time.Now()
 			h.mu.Unlock()
 			if netQty.IsPositive() {
-				h.applyFill(ctx, result.ID, result.Symbol, side, netQty, result.FilledAvg, decimal.Zero, "poll")
+				h.applyFill(ctx, result.ID, result.Symbol, side, netQty, result.FilledAvg, netCommission, "poll")
+			} else {
+				// netQty == 0: all partial fills were already applied by the WS path
+				// (MarkPartialApplied). Fee fix (OKX base-asset fee deduction) causes
+				// netQty to be exactly zero — previously it was fee_amount > 0 which
+				// went through applyFill. We must still complete the poslog fill so the
+				// leg transitions PhaseEntering → PhaseOpen, otherwise EXIT signals
+				// see no PhaseOpen leg and return NO_POS.
+				//
+				// Pass cumQty (net, fee-deducted) so leg.Qty reflects actual held qty.
+				h.mu.Lock()
+				delete(h.partialApplied, result.ID)
+				h.mu.Unlock()
+				h.completeWsFillFromREST(ctx, result.ID, result.Symbol, side,
+					cumQty, result.FilledAvg, cumCommission, pendingExit, false)
 			}
 
 		case "new", "accepted", "submitted", "pending_new":
@@ -160,12 +182,45 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 					if _, seen := h.seenFills[result.ID]; !seen {
 						// Same cumulative-deduct as the "filled" case: GetOrder returns
 						// total filled qty; subtract what the WS partial path already applied.
-						netQty := result.FilledQty.Sub(h.partialApplied[result.ID])
-						delete(h.partialApplied, result.ID)
-						h.seenFills[result.ID] = struct{}{}
+						state := h.partialApplied[result.ID]
+
+						cumQty := result.FilledQty
+						cumCommission := result.Commission
+						if result.Side == exchange.Buy && result.Commission.IsPositive() && result.CommissionAsset != "" &&
+							strings.HasPrefix(result.Symbol, result.CommissionAsset) {
+							cumQty = cumQty.Sub(result.Commission)
+							if result.FilledAvg.IsPositive() {
+								cumCommission = result.Commission.Mul(result.FilledAvg)
+							}
+						}
+
+						netQty := cumQty.Sub(state.Qty)
+						netCommission := cumCommission.Sub(state.Commission)
+						if netCommission.IsNegative() {
+							netCommission = decimal.Zero
+						}
+						h.seenFills[result.ID] = time.Now()
+						// Consume pendingExits even when netQty==0: the WS partial path
+						// already applied all qty but never had pendingExits populated
+						// (set after PlaceOrder returned). Without this, no bracket is placed.
+						pendingExit, hasPendingExit := h.pendingExits[result.ID]
+						if hasPendingExit {
+							delete(h.pendingExits, result.ID)
+						}
+						posIDForBracket := h.pendingOrderPos[result.ID]
 						h.mu.Unlock()
 						if netQty.IsPositive() {
-							h.applyFill(ctx, result.ID, result.Symbol, side, netQty, result.FilledAvg, decimal.Zero, "partial_cancel")
+							h.applyFill(ctx, result.ID, result.Symbol, side, netQty, result.FilledAvg, netCommission, "partial_cancel")
+						} else {
+							h.mu.Lock()
+							delete(h.partialApplied, result.ID)
+							h.mu.Unlock()
+							if hasPendingExit {
+								// WS already applied all qty; schedule the missing bracket now.
+								h.completeWsFillFromREST(ctx, result.ID, result.Symbol, side,
+									result.FilledQty, result.FilledAvg, decimal.Zero, pendingExit, false)
+								_ = posIDForBracket // captured above, used by completeWsFillFromREST internally
+							}
 						}
 					} else {
 						h.mu.Unlock()
@@ -174,9 +229,11 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 			}
 
 		case "cancelled", "rejected", "expired":
-			// publishAndApply first so h.pos is consistent when observers see the event.
+			// Capture pre-cancel phase BEFORE publishAndApply changes leg state.
+			// Used to emit the correct position-level cancel event below.
 			h.mu.RLock()
 			posID := h.pendingOrderPos[o.ID]
+			preCancelPhase := h.pos.LegPhase(posID)
 			h.mu.RUnlock()
 			if posID != "" {
 				payload, _ := json.Marshal(poslog.OrderCancelledPayload{
@@ -210,6 +267,27 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 				Reason:  result.Status,
 				Msg:     "order: " + result.Status,
 			})
+			// Position-level cancel events: tell users the trade intent was cancelled.
+			switch preCancelPhase {
+			case position.PhaseEntering:
+				h.emitEvent(natsapi.HelmEvent{
+					Code:    CodePositionEnterCancelled,
+					Symbol:  result.Symbol,
+					OrderID: o.ID,
+					Side:    string(result.Side),
+					Reason:  result.Status,
+					Msg:     "position: entry cancelled — no position opened",
+				})
+			case position.PhaseAdding:
+				h.emitEvent(natsapi.HelmEvent{
+					Code:    CodePositionAddCancelled,
+					Symbol:  result.Symbol,
+					OrderID: o.ID,
+					Side:    string(result.Side),
+					Reason:  result.Status,
+					Msg:     "position: pyramid add cancelled — position reverts to prior state",
+				})
+			}
 		}
 	}
 
@@ -247,9 +325,11 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 	age := time.Since(o.SubmitTime).Truncate(time.Second)
 
 	// Snapshot poslog context before cancelling so we can propagate it to the fallback.
+	// Snapshot origPosID before cancelling. origPhase will be re-read AFTER any
+	// partial applyFill so it reflects the post-fill leg state — avoids targeting
+	// a dead (PhaseIdle) position with KindOrderCancelled and the fallback order.
 	h.mu.RLock()
 	origPosID := h.pendingOrderPos[o.ID]
-	origPhase := h.pos.LegPhase(origPosID)
 	h.mu.RUnlock()
 
 	if cancelErr := h.helmRuntime.Exchange.CancelOrder(ctx, h.helmRuntime.Creds, o.ID); cancelErr != nil {
@@ -258,6 +338,14 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 	}
 
 	cumFilledQty := polled.FilledQty
+	cumCommission := polled.Commission
+	if polled.Side == exchange.Buy && polled.Commission.IsPositive() && polled.CommissionAsset != "" &&
+		strings.HasPrefix(polled.Symbol, polled.CommissionAsset) {
+		cumFilledQty = cumFilledQty.Sub(polled.Commission)
+		if polled.FilledAvg.IsPositive() {
+			cumCommission = polled.Commission.Mul(polled.FilledAvg)
+		}
+	}
 	if cumFilledQty.IsPositive() {
 		// Apply the delta that hasn't been applied yet. polled.FilledQty is cumulative
 		// (from GetOrder REST); WS partials may have already applied some of it via
@@ -268,12 +356,20 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 		}
 		h.mu.Lock()
 		if _, seen := h.seenFills[o.ID]; !seen {
-			netQty := cumFilledQty.Sub(h.partialApplied[o.ID])
-			delete(h.partialApplied, o.ID)
-			h.seenFills[o.ID] = struct{}{}
+			state := h.partialApplied[o.ID]
+			netQty := cumFilledQty.Sub(state.Qty)
+			netCommission := cumCommission.Sub(state.Commission)
+			if netCommission.IsNegative() {
+				netCommission = decimal.Zero
+			}
+			h.seenFills[o.ID] = time.Now()
 			h.mu.Unlock()
 			if netQty.IsPositive() {
-				h.applyFill(ctx, o.ID, polled.Symbol, side, netQty, polled.FilledAvg, decimal.Zero, "limit_timeout_partial")
+				h.applyFill(ctx, o.ID, polled.Symbol, side, netQty, polled.FilledAvg, netCommission, "limit_timeout_partial")
+			} else {
+				h.mu.Lock()
+				delete(h.partialApplied, o.ID)
+				h.mu.Unlock()
 			}
 		} else {
 			h.mu.Unlock()
@@ -281,6 +377,18 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 	}
 	// alreadyFilledQty is used below to compute the remaining qty for the fallback order.
 	alreadyFilledQty := cumFilledQty
+
+	// Re-snapshot origPhase AFTER partial applyFill: if the partial fully closed the
+	// position (e.g. fill qty == leg qty), the leg is now PhaseIdle. Publishing
+	// KindOrderCancelled or placing a fallback market order on a dead position would error.
+	h.mu.RLock()
+	origPhase := h.pos.LegPhase(origPosID)
+	h.mu.RUnlock()
+	if origPhase == position.PhaseIdle {
+		slog.Info("hand: limit timeout partial fill fully closed position — skipping cancel event and fallback",
+			"order_id", o.ID, "filled", alreadyFilledQty)
+		return
+	}
 
 	// Publish KindOrderCancelled for the original limit so:
 	// 1. pendingOrderPos[o.ID] is cleared (pollOrders won't re-publish on next cycle)
@@ -386,7 +494,7 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 
 		if result.Status == "filled" {
 			h.mu.Lock()
-			h.seenFills[result.ID] = struct{}{}
+			h.seenFills[result.ID] = time.Now()
 			h.mu.Unlock()
 			h.applyFill(ctx, result.ID, o.Symbol, string(o.Side), result.FilledQty, result.FilledAvg, decimal.Zero, "limit_fallback")
 		}
@@ -452,26 +560,6 @@ func isLotSizeError(err error) bool {
 		"lot size", "min notional", "minimum quantity", "minimum amount",
 		"filter failure", "below minimum", "invalid quantity",
 		"order size", "qty too small", "quantity too small",
-	} {
-		if strings.Contains(msg, kw) {
-			return true
-		}
-	}
-	return false
-}
-
-// isInsufficientBalanceError returns true for exchange errors indicating the
-// account does not have enough of the base asset to fill a SELL order.
-// Binance: code=-2010. OKX: "insufficient balance". Generic fallback.
-func isInsufficientBalanceError(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	for _, kw := range []string{
-		"insufficient balance", "insufficient funds",
-		"code=-2010", // Binance spot
-		"51008",      // OKX insufficient balance
 	} {
 		if strings.Contains(msg, kw) {
 			return true

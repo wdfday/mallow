@@ -35,21 +35,25 @@ func (c *Client) syncSpot(ctx context.Context, creds exchange.Credentials) (*exc
 	cash := decimal.Zero
 	type assetBalance struct {
 		asset string
-		free  decimal.Decimal
+		total decimal.Decimal
 	}
 	var nonCash []assetBalance
 	var balances []exchange.AssetBalance
 
 	for _, b := range acct.Balances {
 		free := parseDecimal(b.Free)
-		if !free.IsPositive() {
+		locked := parseDecimal(b.Locked)
+		total := free.Add(locked)
+		if !total.IsPositive() {
 			continue
 		}
-		balances = append(balances, exchange.AssetBalance{Asset: b.Asset, Free: free})
+		if free.IsPositive() {
+			balances = append(balances, exchange.AssetBalance{Asset: b.Asset, Free: free})
+		}
 		if b.Asset == "USDT" {
 			cash = cash.Add(free)
 		} else if b.Asset != "BUSD" && b.Asset != "USDC" {
-			nonCash = append(nonCash, assetBalance{asset: b.Asset, free: free})
+			nonCash = append(nonCash, assetBalance{asset: b.Asset, total: total})
 		}
 	}
 
@@ -62,7 +66,7 @@ func (c *Client) syncSpot(ctx context.Context, creds exchange.Credentials) (*exc
 		}
 		positions = append(positions, exchange.ExchangePosition{
 			Symbol:   symbol,
-			Qty:      ab.free,
+			Qty:      ab.total,
 			AvgPrice: decimal.Zero,
 			CurPrice: price,
 		})

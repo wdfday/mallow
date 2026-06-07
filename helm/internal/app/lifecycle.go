@@ -25,6 +25,7 @@ import (
 	handservice "mallow/helm/internal/module/hand/service"
 	orchhandler "mallow/helm/internal/module/helm/handler"
 	"mallow/helm/internal/runtime"
+	"mallow/helm/internal/safe"
 )
 
 // startNATSAPI subscribes per-module NATS request/reply handlers on start, drains on stop.
@@ -118,6 +119,7 @@ func startHeartbeatLoop(lc fx.Lifecycle, sc *engine.SignalClient, reg *runtime.R
 		OnStart: func(ctx context.Context) error {
 			runCtx, cancel := context.WithCancel(context.Background())
 			go func() {
+				defer safe.Recover()
 				defer cancel()
 				runHeraldHeartbeat(runCtx, sc, reg, handMgr, 30*time.Second)
 			}()
@@ -255,9 +257,10 @@ func runOrchestrator(
 
 			// Steps 3–6.
 			reg.ReconcileAllOrders(ctx)
-			reg.RecoverGapFills(ctx, nc)
-			reg.StartFillStreaming(runCtx, nc)
-			reg.StartPollingSync(runCtx, nc, cfg.Runtime.SyncInterval)
+			reg.RecoverGapFills(ctx)
+			reg.RecoverAllBrackets(ctx) // re-place brackets lost in crash window between KindSLUpdated and KindBracketPlaced
+			reg.StartFillStreaming(runCtx)
+			reg.StartPollingSync(runCtx, cfg.Runtime.SyncInterval)
 
 			// Subscribe to herald bar closes (bars.* NATS subject) to keep
 			// the per-helm price cache warm. This is the primary price source
@@ -289,6 +292,7 @@ func runOrchestrator(
 					slog.Error("market data listener init failed", "err", err)
 				} else {
 					go func() {
+						defer safe.Recover()
 						slog.Info("market data listener starting", "source", listener.Name(), "symbols", cfg.MarketData.Symbols)
 						if err := listener.Subscribe(runCtx, cfg.MarketData.Symbols, func(symbol string, price decimal.Decimal) {
 							for _, rt := range reg.All() {
@@ -304,6 +308,7 @@ func runOrchestrator(
 			go heartbeat(runCtx, reg, 30*time.Second)
 
 			go func() {
+				defer safe.Recover()
 				slog.Info("API server starting", "addr", cfg.Server.APIAddr)
 				if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 					slog.Error("API server error", "err", err)
@@ -322,6 +327,7 @@ func runOrchestrator(
 }
 
 func heartbeat(ctx context.Context, reg *runtime.Registry, interval time.Duration) {
+	defer safe.Recover()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {

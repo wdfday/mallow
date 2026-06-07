@@ -11,6 +11,7 @@ package act
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/shopspring/decimal"
 
@@ -119,10 +120,17 @@ type orderData struct {
 	InstID    string `json:"instId"`
 	Side      string `json:"side"`      // "buy" | "sell"
 	State     string `json:"state"`     // "live" | "partially_filled" | "filled" | "canceled"
-	AccFillSz string `json:"accFillSz"` // cumulative filled size
+	AccFillSz string `json:"accFillSz"` // cumulative filled size (gross, before fee)
 	AvgPx     string `json:"avgPx"`     // average fill price
 	Sz        string `json:"sz"`        // original order size
 	Px        string `json:"px"`        // limit price (empty for market orders)
+	// Fee fields — required for normalizeCommission in the REST poll path.
+	// When feeCcy == base asset (e.g. "SOL" for SOL-USDT), the fee is deducted
+	// from accFillSz to get the net quantity actually held. Without this,
+	// the OCO bracket is sized for gross qty > net qty held → OKX rejects with
+	// "insufficient balance / margin too low for borrowing".
+	Fee    string `json:"fee"`    // cumulative fee (negative = cost, e.g. "-0.003282966")
+	FeeCcy string `json:"feeCcy"` // fee currency (e.g. "SOL", "USDT")
 }
 
 // ── Fill history types ────────────────────────────────────────────────────────
@@ -139,6 +147,7 @@ type okxFill struct {
 	TradeID string `json:"tradeId"`
 	OrdID   string `json:"ordId"`
 	ClOrdID string `json:"clOrdId"` // caller client order id, echoed by fills-history
+	BillID  string `json:"billId"`  // cursor for pagination (after= parameter)
 	Side    string `json:"side"`    // "buy" | "sell"
 	FillSz  string `json:"fillSz"`
 	FillPx  string `json:"fillPx"`
@@ -150,16 +159,24 @@ type okxFill struct {
 // ── Converters: OKX native → internal ────────────────────────────────────────
 
 // orderDataToResult converts an OKX orderData record to exchange.OrderResult.
+// Commission is set from the cumulative fee field so that normalizeCommission
+// in the REST poll path can correctly deduct base-asset fees from accFillSz.
 func orderDataToResult(d *orderData) *exchange.OrderResult {
+	fee := parseDecimal(d.Fee)
+	if fee.IsNegative() {
+		fee = fee.Neg() // normalise to positive (OKX sends as negative cost)
+	}
 	return &exchange.OrderResult{
-		ID:            d.InstID + ":" + d.OrdID,
-		ClientOrderID: d.ClOrdID,
-		Symbol:        d.InstID,
-		Side:          exchange.OrderSide(d.Side),
-		Status:        mapOrderStatus(d.State),
-		Qty:           parseDecimal(d.Sz),
-		FilledQty:     parseDecimal(d.AccFillSz),
-		FilledAvg:     parseDecimal(d.AvgPx),
+		ID:              d.InstID + ":" + d.OrdID,
+		ClientOrderID:   d.ClOrdID,
+		Symbol:          d.InstID,
+		Side:            exchange.OrderSide(d.Side),
+		Status:          mapOrderStatus(d.State),
+		Qty:             parseDecimal(d.Sz),
+		FilledQty:       parseDecimal(d.AccFillSz),
+		FilledAvg:       parseDecimal(d.AvgPx),
+		Commission:      fee,
+		CommissionAsset: d.FeeCcy,
 	}
 }
 
@@ -179,13 +196,21 @@ func mapOrderStatus(state string) string {
 	}
 }
 
-// parseOKXOrderID splits the "INSTID:ordId" composite key used by PlaceOrder.
-// Returns ("_", orderID) when the separator is absent to allow graceful fallback.
-func parseOKXOrderID(orderID string) (instID, ordID string) {
+// parseOKXOrderID splits the composite order key used by PlaceOrder and PlaceExitOrders.
+//
+//	Regular order:  "BTC-USDT:12345"      → instID="BTC-USDT" ordID="12345"  isAlgo=false
+//	Algo order:     "BTC-USDT:A:12345"    → instID="BTC-USDT" ordID="12345"  isAlgo=true
+//
+// The ":A:" infix marks algo orders (OCO/conditional placed via /api/v5/trade/order-algo).
+// Returns ("_", orderID, false) when the separator is absent to allow graceful fallback.
+func parseOKXOrderID(orderID string) (instID, ordID string, isAlgo bool) {
+	if i := strings.Index(orderID, ":A:"); i >= 0 {
+		return orderID[:i], orderID[i+3:], true
+	}
 	for i := len(orderID) - 1; i >= 0; i-- {
 		if orderID[i] == ':' {
-			return orderID[:i], orderID[i+1:]
+			return orderID[:i], orderID[i+1:], false
 		}
 	}
-	return "_", orderID
+	return "_", orderID, false
 }

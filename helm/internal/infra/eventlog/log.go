@@ -10,6 +10,7 @@ import (
 
 	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/readmodel"
+	"mallow/helm/internal/safe"
 )
 
 // Log is the interface for persisting and querying helm/hand events.
@@ -34,6 +35,7 @@ func New(db *sql.DB) Log {
 // Append inserts a single event row. Runs in a goroutine; errors are swallowed.
 func (l *postgresLog) Append(ctx context.Context, helmID uuid.UUID, userID uuid.UUID, ev natsapi.HelmEvent) {
 	go func() {
+		defer safe.Recover()
 		var handID *uuid.UUID
 		if ev.HandID != "" {
 			if parsed, err := uuid.Parse(ev.HandID); err == nil {

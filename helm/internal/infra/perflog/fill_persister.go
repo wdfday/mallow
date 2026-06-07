@@ -12,6 +12,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"mallow/helm/internal/infra/natsapi"
+	"mallow/helm/internal/safe"
 )
 
 const (
@@ -32,6 +33,7 @@ func NewFillPersister(js nats.JetStreamContext, db *sql.DB) *FillPersister {
 }
 
 func (p *FillPersister) Run(ctx context.Context) {
+	defer safe.Recover()
 	msgCh := make(chan *nats.Msg, fillBatchSize*2)
 
 	sub, err := p.js.ChanSubscribe(

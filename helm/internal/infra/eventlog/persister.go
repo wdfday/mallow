@@ -11,6 +11,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"mallow/helm/internal/infra/natsapi"
+	"mallow/helm/internal/safe"
 )
 
 // Persister subscribes to the HELM_EVENTS JetStream stream with a durable
@@ -39,6 +40,7 @@ func NewPersister(js nats.JetStreamContext, db *sql.DB) *Persister {
 // persister will re-consume from the last ack'd sequence. Use a durable name
 // so missed events during downtime are replayed from JetStream retention (7d).
 func (p *Persister) Run(ctx context.Context) {
+	defer safe.Recover()
 	sub, err := p.js.Subscribe(
 		"helm.events.>",
 		p.handleMsg,

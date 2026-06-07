@@ -131,6 +131,12 @@ func (c *Client) GetOrder(ctx context.Context, creds exchange.Credentials, order
 	}
 	resp, err := c.newSpot(creds).NewGetOrderService().Symbol(symbol).OrderID(oid).Do(ctx)
 	if err != nil {
+		// -2013: order does not exist — definitively gone from the exchange.
+		// Return not_found so the poller can treat the associated leg as externally closed
+		// rather than retrying indefinitely on a transient error.
+		if isBinanceCode(err, -2013) {
+			return &exchange.OrderResult{ID: orderID, Status: "not_found"}, nil
+		}
 		return nil, fmt.Errorf("binance get order: %w", err)
 	}
 	return spotGetToResult(orderID, resp), nil

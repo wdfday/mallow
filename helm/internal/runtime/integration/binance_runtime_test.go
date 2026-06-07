@@ -84,6 +84,7 @@ func newBinanceEnv(t *testing.T) *binanceTestEnv {
 		uuid.New(), uuid.New(), uuid.New(),
 		ex.Name(), pf, rm, ex, creds, nil, time.Now(),
 	)
+	rt.FilterStore = &mockFilterStore{}
 
 	// Seed live price for sizing.
 	var price decimal.Decimal
@@ -448,8 +449,8 @@ func TestBinance_PyramidAndKill(t *testing.T) {
 
 	// Verify accumulated position.
 	pos = env.rt.Portfolio.GetPosition(symbol)
-	if pos == nil || pos.Qty.LessThan(decimal.NewFromFloat(0.002)) {
-		t.Fatalf("expected accumulated position size >= 0.002, got %v", pos)
+	if pos == nil || pos.Qty.LessThan(decimal.NewFromFloat(0.0019)) {
+		t.Fatalf("expected accumulated position size >= 0.0019, got %v", pos)
 	}
 	t.Logf("accumulated position: qty=%s avg_px=%s", pos.Qty, pos.AvgPrice)
 

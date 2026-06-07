@@ -132,6 +132,9 @@ func Migrate(db *gorm.DB) error {
 			SET position = position - 'order_type' - 'limit_timeout_sec' - 'limit_fallback'
 			WHERE position ? 'order_type' OR position ? 'limit_timeout_sec' OR position ? 'limit_fallback'`,
 		`ALTER TABLE hands ADD COLUMN IF NOT EXISTS final_metrics JSONB`,
+		// Update check constraint on hands status to allow "killed" and "released"
+		`ALTER TABLE hands DROP CONSTRAINT IF EXISTS hands_status_check`,
+		`ALTER TABLE hands ADD CONSTRAINT hands_status_check CHECK (status IN ('running', 'stopped', 'paused', 'killed', 'released'))`,
 	}
 	for _, s := range stmts {
 		if err := db.Exec(s).Error; err != nil {

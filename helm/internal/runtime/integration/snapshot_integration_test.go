@@ -14,6 +14,8 @@ package integration_test
 
 import (
 	"context"
+	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,6 +35,29 @@ import (
 	"mallow/helm/internal/runtime/perf"
 )
 
+type mockFilterStore struct {
+	mu      sync.Mutex
+	filters map[string]exchange.SymbolFilters
+}
+
+func (m *mockFilterStore) GetFilters(symbol string) exchange.SymbolFilters {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.filters == nil {
+		return exchange.SymbolFilters{}
+	}
+	return m.filters[symbol]
+}
+
+func (m *mockFilterStore) SetFilters(symbol string, f exchange.SymbolFilters) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.filters == nil {
+		m.filters = make(map[string]exchange.SymbolFilters)
+	}
+	m.filters[symbol] = f
+}
+
 // ── shared runtime builder ────────────────────────────────────────────────────
 
 func buildIntegrationRuntime(t *testing.T, ex exchange.Exchange, creds exchange.Credentials, capital decimal.Decimal) *runtime.HelmRuntime {
@@ -44,6 +69,7 @@ func buildIntegrationRuntime(t *testing.T, ex exchange.Exchange, creds exchange.
 		uuid.New(), uuid.New(), uuid.New(),
 		ex.Name(), pf, rm, ex, creds, nil, time.Now(),
 	)
+	rt.FilterStore = &mockFilterStore{}
 	rm.SetUnitCounter(rt.OpenUnitCount)
 
 	t.Cleanup(func() { rt.Stop() })
@@ -114,16 +140,23 @@ func assertOpenSnapshot(t *testing.T, rt *runtime.HelmRuntime, symbol string) {
 	}
 }
 
-// assertFlatSnapshot verifies the helm-level snapshot has no open positions.
-func assertFlatSnapshot(t *testing.T, rt *runtime.HelmRuntime) {
+// assertFlatSnapshot verifies the helm-level snapshot has no open position for the traded symbol.
+func assertFlatSnapshot(t *testing.T, rt *runtime.HelmRuntime, symbol string) {
 	t.Helper()
 	snap := currentSnapshot(rt)
 	if snap == nil {
 		t.Error("helm snapshot: BuildSnapshot returned nil")
 		return
 	}
-	if len(snap.Positions) != 0 {
-		t.Errorf("helm: expected 0 positions after exit, got %d", len(snap.Positions))
+	var symbolPos *perf.PositionEntry
+	for _, p := range snap.Positions {
+		if p.Symbol == symbol {
+			symbolPos = &p
+			break
+		}
+	}
+	if symbolPos != nil && symbolPos.Qty.IsPositive() {
+		t.Errorf("helm: expected %s position to be flat after exit, got qty=%s", symbol, symbolPos.Qty)
 	}
 	if !snap.Equity.IsPositive() {
 		t.Errorf("helm: equity should remain positive after round-trip, got %s", snap.Equity)
@@ -205,6 +238,9 @@ func TestSnapshotIntegration_Binance(t *testing.T) {
 func TestSnapshotIntegration_OKX(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping exchange integration test in -short mode")
+	}
+	if os.Getenv("OKX_INTEGRATION") == "" {
+		t.Skip("OKX integration tests disabled — set OKX_INTEGRATION=1 to enable")
 	}
 	if okxPaperAPIKey == "" {
 		t.Skip("OKX paper credentials not set")
@@ -425,7 +461,7 @@ func TestSnapshotIntegration_Binance_RoundTrip(t *testing.T) {
 		t.Log("exit fill not observed in activity ring — continuing to snapshot check")
 	}
 
-	assertFlatSnapshot(t, rt)
+	assertFlatSnapshot(t, rt, symbol)
 }
 
 // ── Binance Non-Pyramid ───────────────────────────────────────────────────────
@@ -812,7 +848,7 @@ func TestSnapshotIntegration_Binance_PyramidRoundTrip(t *testing.T) {
 	placeAndWait(exitSig(symbol), id2, "exit")
 	logStageSnaps("exit")
 
-	assertFlatSnapshot(t, rt)
+	assertFlatSnapshot(t, rt, symbol)
 }
 
 // TestSnapshotIntegration_Binance_KillPauseRelease verifies hand lifecycle

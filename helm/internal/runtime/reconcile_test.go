@@ -68,6 +68,10 @@ func (f *fakePosLog) TradesPaged(_ context.Context, _, _ string, _ uint64, _ int
 	return poslog.TradesPage{}, nil
 }
 
+func (f *fakePosLog) PurgeHand(_ context.Context, _, _ string) error {
+	return nil
+}
+
 func (f *fakePosLog) publishedIDs() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()

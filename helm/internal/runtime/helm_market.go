@@ -1,7 +1,7 @@
 package runtime
 
 import (
-	"log/slog"
+	"strings"
 
 	"github.com/shopspring/decimal"
 
@@ -37,32 +37,61 @@ func (r *HelmRuntime) LatestL2(symbol string) (exchange.L2Snapshot, bool) {
 	return r.marketData.latestL2(symbol)
 }
 
-// EnqueueLifecycleEvent drops a broker order lifecycle event (ack/cancel) into
-// the runtime's lifecycle channel, non-blocking (drops on full with an error log).
+// EnqueueLifecycleEvent appends a broker order lifecycle event to the unbounded
+// lifecycle queue and signals the drain goroutine. Never blocks the WS goroutine.
 func (r *HelmRuntime) EnqueueLifecycleEvent(ev exchange.OrderLifecycleEvent) {
+	r.lifecycleMu.Lock()
+	r.lifecycleQueue = append(r.lifecycleQueue, ev)
+	r.lifecycleMu.Unlock()
 	select {
-	case r.lifecycleCh <- ev:
-	default:
-		slog.Error("lifecycle channel full, dropping event",
-			"helm_id", r.HelmID,
-			"type", ev.Type,
-			"order_id", ev.OrderID,
-			"symbol", ev.Symbol,
-		)
+	case r.lifecycleSignal <- struct{}{}:
+	default: // drain already scheduled
 	}
 }
 
-// EnqueueWsFill drops a WS fill event into the runtime's fill channel, non-blocking.
-// Drops on full — the REST poll fallback will catch the fill within 5s.
+// EnqueueWsFill appends a WS fill event to the unbounded fill queue and signals
+// the drain goroutine. Never blocks the WS goroutine — eliminates backpressure
+// that could stall the WS receive loop and delay lifecycle events on the same
+// connection when runFillProcessor is slow (e.g. tradeMu contention).
 func (r *HelmRuntime) EnqueueWsFill(ev exchange.WsFillEvent) {
+	r.wsFillMu.Lock()
+	r.wsFillQueue = append(r.wsFillQueue, ev)
+	r.wsFillMu.Unlock()
 	select {
-	case r.wsFillCh <- ev:
-	default:
-		slog.Error("ws fill channel full, dropping fill — REST poll will recover",
-			"helm_id", r.HelmID,
-			"order_id", ev.OrderID,
-			"symbol", ev.Symbol,
-			"qty", ev.FilledQty,
-		)
+	case r.wsFillSignal <- struct{}{}:
+	default: // drain already scheduled
 	}
+}
+
+// normalizeCommission returns the commission converted to the quote currency (e.g. USDT)
+// and updates the fill quantity (by deducting commission) if the fee is paid in the base asset.
+// It uses lastKnownPrice to fetch exchange rates for non-standard assets like BNB.
+func (r *HelmRuntime) normalizeCommission(symbol string, side exchange.OrderSide, qty, price, commission decimal.Decimal, asset string) (decimal.Decimal, decimal.Decimal) {
+	if !commission.IsPositive() || asset == "" {
+		return qty, commission
+	}
+
+	assetUpper := strings.ToUpper(asset)
+	if assetUpper == "USDT" || assetUpper == "BUSD" || assetUpper == "USDC" {
+		return qty, commission
+	}
+
+	if side == exchange.Buy && strings.HasPrefix(strings.ToUpper(symbol), assetUpper) {
+		qty = qty.Sub(commission)
+		if price.IsPositive() {
+			commission = commission.Mul(price)
+		}
+		return qty, commission
+	}
+
+	feeSymbol := assetUpper + "USDT"
+	feePrice := r.lastKnownPrice(feeSymbol)
+	if feePrice.IsZero() && assetUpper == "BNB" {
+		feePrice = decimal.NewFromFloat(600.0)
+	}
+	if feePrice.IsPositive() {
+		commission = commission.Mul(feePrice)
+	}
+
+	return qty, commission
 }

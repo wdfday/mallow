@@ -178,17 +178,6 @@ func (r *HelmRuntime) ReportFill(fill helmdomain.FillReport) {
 		Commission: fill.Commission,
 	})
 
-	// After a SELL fill, if the remaining position qty is ≤ the recorded dust
-	// (sub-lot residual from lot-size truncation before placing the exit order),
-	// the remaining position is untradeable. Remove it so the portfolio stays flat.
-	if fill.Side == "sell" {
-		if dust := r.GetDust(fill.Symbol); dust.IsPositive() {
-			if pos := r.Portfolio.GetPosition(fill.Symbol); pos != nil && !pos.Qty.GreaterThan(dust) {
-				r.Portfolio.RemovePosition(fill.Symbol)
-			}
-		}
-	}
-
 	r.tradeMu.Unlock()
 
 	// Fills do NOT touch the equity curve / drawdown peak — those are a sampled
@@ -289,17 +278,13 @@ func (r *HelmRuntime) HelmStringID() string {
 	return r.HelmID.String()
 }
 
-// ── Dust management ───────────────────────────────────────────────────────────
-
-// RecordDust adds qty to the known dust residual for symbol.
-// Called after a spot exit order is placed with truncated qty so the sub-step
-// remainder is not mistaken for an external close by checkPositionDesync.
-func (r *HelmRuntime) RecordDust(symbol string, qty decimal.Decimal) { r.dust.record(symbol, qty) }
-
-// ClearDust removes all recorded dust for symbol.
-// Called when a new position opens for the symbol (dust from the previous trade
-// is no longer relevant and should not suppress future desync detection).
-func (r *HelmRuntime) ClearDust(symbol string) { r.dust.clear(symbol) }
-
-// GetDust returns the accumulated dust qty for symbol (zero if none recorded).
-func (r *HelmRuntime) GetDust(symbol string) decimal.Decimal { return r.dust.get(symbol) }
+// RemovePosition removes an open position from the portfolio under tradeMu.
+// Callers (e.g. Hand.HandleExitOrderCanceled) must use this method rather than
+// accessing tradeMu directly, so the mutex ordering stays:
+//
+//	tradeMu always acquired by HelmRuntime, never by a Hand goroutine.
+func (r *HelmRuntime) RemovePosition(symbol string) {
+	r.tradeMu.Lock()
+	r.Portfolio.RemovePosition(symbol)
+	r.tradeMu.Unlock()
+}

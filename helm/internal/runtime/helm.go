@@ -18,6 +18,7 @@ import (
 	"mallow/helm/internal/runtime/core/risk"
 	"mallow/helm/internal/runtime/core/strategy"
 	"mallow/helm/internal/runtime/perf"
+	"mallow/helm/internal/safe"
 )
 
 // HandPnLSummer queries aggregate PnL metrics for a hand from PostgreSQL in one query.
@@ -34,6 +35,7 @@ type RiskManager interface {
 	ResetHalt()
 	UpdateConfig(cfg risk.Config)
 	SetUnitCounter(fn func() int)
+	SetAvailableCashFn(fn func() decimal.Decimal)
 }
 
 // HelmRuntime is the live in-memory state for one helm instance.
@@ -65,11 +67,20 @@ type HelmRuntime struct {
 	pausedHands []string // hand IDs that were running when helm was paused; restored on Resume
 
 	// ── Fill routing ─────────────────────────────────────────────────────────
-	// lifecycleCh and wsFillCh decouple WS callbacks from NATS publishing.
-	// runOrderProcessor drains lifecycleCh; runFillProcessor drains wsFillCh.
-	// Both enqueue methods are non-blocking (drop on full with an error log).
-	lifecycleCh chan exchange.OrderLifecycleEvent
-	wsFillCh    chan exchange.WsFillEvent
+	// Unbounded mailboxes + coalescing signals — mirrors hand.fillQueue pattern.
+	// The WS goroutine NEVER blocks: EnqueueWsFill / EnqueueLifecycleEvent
+	// append under a short mutex and signal a buf=1 channel. runFillProcessor
+	// and runLifecycleProcessor drain the full batch on each wake-up.
+	// This prevents the WS receive loop from stalling when runFillProcessor is
+	// slow (e.g. tradeMu contention), which would otherwise back-pressure through
+	// the msgs channel into TCP, delaying lifecycle events on the same connection.
+	lifecycleMu     sync.Mutex
+	lifecycleQueue  []exchange.OrderLifecycleEvent
+	lifecycleSignal chan struct{} // buf=1 coalescing wakeup
+
+	wsFillMu     sync.Mutex
+	wsFillQueue  []exchange.WsFillEvent
+	wsFillSignal chan struct{} // buf=1 coalescing wakeup
 	// router owns the orderID→handID routing map (see helpers.go / orderRouter).
 	router *orderRouter
 
@@ -123,11 +134,6 @@ type HelmRuntime struct {
 	// dedup owns the gap-recovery trade-id set and the REST-fill-published order-id set,
 	// preventing double-apply / double-publish of the same fill (see fillDedup).
 	dedup *fillDedup
-
-	// ── Dust tracking ────────────────────────────────────────────────────────
-	// dust owns the per-symbol sub-step residual left after a truncated spot exit order,
-	// so checkPositionDesync doesn't mistake it for an external close (see dustLedger).
-	dust *dustLedger
 }
 
 // NewHelmRuntime creates a HelmRuntime and starts its circuit-breaker reset ticker.
@@ -142,30 +148,30 @@ func NewHelmRuntime(
 	createdAt time.Time,
 ) *HelmRuntime {
 	rt := &HelmRuntime{
-		HelmID:      orchID,
-		AccountID:   accountID,
-		UserID:      userID,
-		BrokerType:  brokerType,
-		CreatedAt:   createdAt,
-		Portfolio:   pf,
-		RiskMgr:     riskMgr,
-		Exchange:    ex,
-		Creds:       creds,
-		lifecycleCh: make(chan exchange.OrderLifecycleEvent, 128),
-		wsFillCh:    make(chan exchange.WsFillEvent, 256),
-		hands:       make(map[string]*Hand),
-		router:      newOrderRouter(),
-		marketData:  newExchangePublicData(), // default; overwritten by Registry.Spawn with shared bucket
-		dedup:       newFillDedup(),
-		dust:        newDustLedger(),
-		resetTicker: time.NewTicker(1 * time.Minute),
-		stopCh:      make(chan struct{}),
+		HelmID:          orchID,
+		AccountID:       accountID,
+		UserID:          userID,
+		BrokerType:      brokerType,
+		CreatedAt:       createdAt,
+		Portfolio:       pf,
+		RiskMgr:         riskMgr,
+		Exchange:        ex,
+		Creds:           creds,
+		lifecycleSignal: make(chan struct{}, 1),
+		wsFillSignal:    make(chan struct{}, 1),
+		hands:           make(map[string]*Hand),
+		router:          newOrderRouter(),
+		marketData:      newExchangePublicData(), // default; overwritten by Registry.Spawn with shared bucket
+		dedup:           newFillDedup(),
+		resetTicker:     time.NewTicker(1 * time.Minute),
+		stopCh:          make(chan struct{}),
 	}
 	if lastSyncedAt != nil {
 		rt.lastSyncAtNano.Store(lastSyncedAt.UnixNano())
 	}
 	// Reset the per-minute request counter; goroutine exits when stopCh closes.
 	go func() {
+		defer safe.Recover()
 		for {
 			select {
 			case <-rt.resetTicker.C:
@@ -219,4 +225,16 @@ func (r *HelmRuntime) EmitEvent(ev natsapi.HelmEvent) {
 	if r.js != nil {
 		natsapi.PublishHelmEvent(r.js, r.HelmID.String(), ev)
 	}
+}
+
+// ReconcileHand runs on-demand reconciliation for a single hand.
+// Called by Hand.Start() when the hand is restarted after an extended downtime gap
+// (> onDemandReconcileGap) so fills and position changes during downtime are applied
+// before the first signal arrives. No-op when PosLog is nil (dev / no-persistence mode).
+func (r *HelmRuntime) ReconcileHand(ctx context.Context, hand *Hand) {
+	if r.PosLog == nil {
+		return
+	}
+	rec := NewReconciler(r.PosLog)
+	rec.ReconcileSingle(ctx, r, hand)
 }

@@ -11,6 +11,7 @@ import (
 	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/runtime/core/portfolio"
+	"mallow/helm/internal/safe"
 )
 
 // ---------------------------------------------------------------------------
@@ -27,11 +28,20 @@ func (h *Hand) emitEvent(ev natsapi.HelmEvent) {
 	}
 }
 
+// onDemandReconcileGap is the minimum time a hand must have been stopped before
+// Start() triggers an on-demand reconcile. Covers fills and position changes that
+// occurred while the hand was stopped.
+// Short stop-restart cycles (test, cascade-pause/resume) are excluded.
+const onDemandReconcileGap = 30 * time.Second
+
 // Start spawns the bot's run-loop goroutine.
+// If the hand was previously stopped for longer than onDemandReconcileGap, it also
+// spawns a background reconcile goroutine so any fills missed during the downtime
+// are applied before the first signal arrives.
 func (h *Hand) Start() {
 	h.mu.Lock()
-	defer h.mu.Unlock()
 	if h.running {
+		h.mu.Unlock()
 		return
 	}
 	h.running = true
@@ -40,8 +50,26 @@ func (h *Hand) Start() {
 	h.ctx = ctx
 	h.cancel = cancel
 	h.health.Status = HealthRunning
-	h.health.StartedAt = new(time.Now().UTC())
+	now := time.Now().UTC()
+	h.health.StartedAt = &now
+	// Capture the gap while the lock is held, then release before spawning goroutines.
+	needsReconcile := !h.stoppedAt.IsZero() && now.Sub(h.stoppedAt) > onDemandReconcileGap
+	h.mu.Unlock()
+
 	go h.run(ctx)
+
+	// On-demand reconcile: catch fills and external closes that occurred while the
+	// hand was stopped. Runs concurrently with the run-loop (which waits for the
+	// first signal) — safe because the run-loop holds no orders at this point.
+	if needsReconcile {
+		go func() {
+			defer safe.Recover()
+			slog.Info("hand: on-demand reconcile — restarted after gap",
+				"hand_id", h.id, "gap", now.Sub(h.stoppedAt).Truncate(time.Second))
+			h.helmRuntime.ReconcileHand(context.Background(), h)
+		}()
+	}
+
 	slog.Info("hand started", "hand_id", h.id, "exchange", h.helmRuntime.Exchange.Name())
 	h.emitEvent(natsapi.HelmEvent{
 		Code:   CodeHandStarted,
@@ -52,12 +80,14 @@ func (h *Hand) Start() {
 
 // Stop cancels the run-loop and waits for it to exit.
 func (h *Hand) Stop() {
+	defer safe.Recover()
 	h.mu.Lock()
 	if !h.running {
 		h.mu.Unlock()
 		return
 	}
 	h.running = false
+	h.stoppedAt = time.Now().UTC()
 	if h.health.Status != HealthKilled && h.health.Status != HealthReleased {
 		h.health.Status = HealthStopped
 	}
@@ -90,13 +120,14 @@ func (h *Hand) Kill(ctx context.Context) {
 	h.helmRuntime.RemoveHand(h.id.String())
 }
 
-// Release stops the hand without closing open positions.
-// Each open leg is emitted as KindPositionOrphaned so the reconciler never
-// reclaims it on restart. The position stays live at the exchange with any
-// exchange-side SL/TP already placed.
+// Release stops the hand without closing exchange-side positions.
+// The hand performs a synthetic close (buyback) at market price so a trade record
+// is logged, but no exchange order is placed. The physical position remains open
+// on the exchange for the user to manage. Exchange-side SL/TP brackets are cancelled
+// as safety cleanup.
 func (h *Hand) Release(ctx context.Context) {
-	slog.Info("hand: release — orphaning open positions", "hand_id", h.id)
-	h.emitEvent(natsapi.HelmEvent{Code: CodeHandReleased, Reason: "positions orphaned at exchange", Msg: "hand: released"})
+	slog.Info("hand: release — performing synthetic close (buyback)", "hand_id", h.id)
+	h.emitEvent(natsapi.HelmEvent{Code: CodeHandReleased, Reason: "positions released (synthetic close)", Msg: "hand: released"})
 	h.mu.Lock()
 	h.health.Status = HealthReleased
 	h.mu.Unlock()
@@ -200,16 +231,20 @@ func (h *Hand) activeUnitCount() int {
 	return h.pos.ActiveCount()
 }
 
-// MarkPartialApplied records the incremental qty that the registry applied to the
+// MarkPartialApplied records the incremental qty, average price, and commission that the registry applied to the
 // portfolio for a WS OrderEventPartialFill. This does NOT set seenFills — it
 // intentionally allows the subsequent WS OrderEventFilled event to proceed through
 // handleWsFill so that the final fill increment is applied and poslog is updated.
 //
 // The REST poll path (pollOrders "filled") deducts partialApplied from the cumulative
 // FilledQty returned by GetOrder to avoid double-counting.
-func (h *Hand) MarkPartialApplied(orderID string, qty decimal.Decimal) {
+func (h *Hand) MarkPartialApplied(orderID string, qty, price, commission decimal.Decimal) {
 	h.mu.Lock()
-	h.partialApplied[orderID] = h.partialApplied[orderID].Add(qty)
+	state := h.partialApplied[orderID]
+	state.Qty = state.Qty.Add(qty)
+	state.Cost = state.Cost.Add(qty.Mul(price))
+	state.Commission = state.Commission.Add(commission)
+	h.partialApplied[orderID] = state
 	h.mu.Unlock()
 }
 
@@ -238,6 +273,39 @@ func (h *Hand) drainFills(ctx context.Context) {
 	h.fillMu.Unlock()
 	for _, ev := range batch {
 		h.handleWsFill(ctx, ev)
+	}
+}
+
+// NotifyBracketPartialFill marks the SIBLING bracket order IDs as pending-cancel so
+// HandleExitOrderCanceled treats the eventual sibling cancel as helm-initiated, not
+// an external close.
+//
+// Problem this solves (Binance OCO / multi-leg TP fills):
+//
+//	When the TP leg of an OCO fills in multiple Binance executions, applyWsFill routes
+//	each partial fill via MarkPartialApplied (no EnqueueFill → no cancelExitOrders).
+//	Binance simultaneously auto-cancels the SL leg. If that cancel event arrives before
+//	the FINAL TP fill is processed by applyFill (which is when cancelExitOrders runs),
+//	HandleExitOrderCanceled finds the SL id NOT in pendingCancels → misidentified as
+//	external close → EXT_CLOSE.
+//
+//	Calling this on the first partial fill pre-populates pendingCancels[sibling_id]
+//	so the cancel event is always recognised as helm-initiated.
+func (h *Hand) NotifyBracketPartialFill(orderID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, lv := range h.exitLevels {
+		for _, id := range lv.ExchangeOrderIDs {
+			if id == orderID {
+				// Mark all OTHER bracket order IDs as pending helm-cancel.
+				for _, sibID := range lv.ExchangeOrderIDs {
+					if sibID != orderID {
+						h.pendingCancels[sibID] = struct{}{}
+					}
+				}
+				return
+			}
+		}
 	}
 }
 

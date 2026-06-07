@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -15,6 +14,7 @@ import (
 	"mallow/helm/internal/infra/poslog"
 	helmdomain "mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/runtime/position"
+	"mallow/helm/internal/safe"
 )
 
 // handleWsFill processes a fully-filled WsFillEvent received via the WS path.
@@ -25,34 +25,14 @@ func (h *Hand) handleWsFill(ctx context.Context, ev exchange.WsFillEvent) {
 		h.mu.Unlock()
 		return
 	}
-	h.seenFills[ev.OrderID] = struct{}{}
+	h.seenFills[ev.OrderID] = time.Now()
 	h.mu.Unlock()
 
 	side := "buy"
 	if ev.Side == exchange.Sell {
 		side = "sell"
 	}
-	qty := ev.FilledQty
-	commission := ev.Commission
-	// On Binance spot BUY, when the fee is paid in the base asset (e.g. "ETH" for ETHUSDT),
-	// Binance deducts it from the received base qty. The wallet holds FilledQty - Commission,
-	// not FilledQty. Record the net qty so exit orders don't exceed the actual balance.
-	// Also normalize the commission to quote currency (commission × fill_price) so that
-	// entry + exit fees can be summed consistently for the trade record.
-	if side == "buy" && ev.Commission.IsPositive() && ev.CommissionAsset != "" &&
-		strings.HasPrefix(ev.Symbol, ev.CommissionAsset) {
-		qty = qty.Sub(ev.Commission)
-		// Convert base-asset fee → quote equivalent for consistent two-trip accounting.
-		if ev.FilledAvg.IsPositive() {
-			commission = ev.Commission.Mul(ev.FilledAvg)
-		}
-		slog.Debug("fill: base-asset fee deducted from qty",
-			"hand_id", h.id, "symbol", ev.Symbol,
-			"commission_asset", ev.CommissionAsset, "commission_base", ev.Commission,
-			"commission_quote", commission, "gross_qty", ev.FilledQty, "net_qty", qty,
-		)
-	}
-	h.applyFill(ctx, ev.OrderID, ev.Symbol, side, qty, ev.FilledAvg, commission, "ws")
+	h.applyFill(ctx, ev.OrderID, ev.Symbol, side, ev.FilledQty, ev.FilledAvg, ev.Commission, "ws")
 }
 
 // applyFill is the single authority for all fill side-effects:
@@ -66,12 +46,29 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 
 	h.metrics.ordersFilled.Add(1)
 
+	h.mu.Lock()
+	state := h.partialApplied[orderID]
+	delete(h.partialApplied, orderID)
+	h.mu.Unlock()
+
+	cumulativeQty := qty.Add(state.Qty)
+	cumulativeCommission := commission.Add(state.Commission)
+	cumulativeAvgPrice := price
+	if cumulativeQty.IsPositive() {
+		cumulativeCost := qty.Mul(price).Add(state.Cost)
+		cumulativeAvgPrice = cumulativeCost.Div(cumulativeQty)
+	}
+
 	// ── 1. Resolve pending exit level (entry fill only) ───────────────────────
 	// pendingExits holds the SL/TP for an entry order before the fill price is known.
 	// On entry fill: promote to exitLevels (resolved to absolute price if IsOffset).
 	// On close fill: pendingExits[orderID] will not exist — this block is a no-op.
 	var resolvedEl exitLevel
 	var hasExitBracket bool
+	// oldBracketIDs holds the exchange OCO order IDs that existed before a pyramid add fill.
+	// Populated inside the pendingExits block below; used after the lock to emit a
+	// bracket-replaced event explaining why the old OCO was cancelled.
+	var oldBracketIDs []string
 	// offsetResolved flags an IsOffset entry whose absolute SL/TP we just computed.
 	// We need to persist these back into LegState (via KindSLUpdated) after the leg
 	// has transitioned to PhaseOpen, otherwise the leg's StopLoss/TakeProfit stay
@@ -85,7 +82,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 	// bracketQty is the qty the exchange bracket must cover: the leg's MERGED total after
 	// this add (pre-add leg qty + this fill), not just this add's qty — otherwise a pyramid
 	// add would leave a bracket covering only the latest leg.
-	bracketQty := qty
+	bracketQty := cumulativeQty
 	h.mu.Lock()
 	posIDForBracket = h.pendingOrderPos[orderID]
 	if pending, ok := h.pendingExits[orderID]; ok {
@@ -96,179 +93,41 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 		var preQty, preAvg decimal.Decimal
 		if snap, ok := h.pos.LegSnapshot(posIDForBracket); ok && snap.Qty.IsPositive() {
 			preQty, preAvg = snap.Qty, snap.EntryPrice
-			bracketQty = preQty.Add(qty) // merged total
+			bracketQty = preQty.Add(cumulativeQty) // merged total
 		}
 
-		resolved := exitLevel{Side: pending.Side}
-		if pending.IsOffset {
-			// ── avg-anchor (pyramiding-design.md) ──
-			// Anchor offsets to the leg's blended avg entry AFTER this add, NOT this fill's
-			// price, so the SL/TP track the merged cost (consistent with the avg-anchored add
-			// gate in hand_runner.go). First entry: preQty 0 → anchor == fill price.
-			//   add 1 @ 100 (avg 100), offset -5 → SL = 95
-			//   add 2 @ 110 (avg 105), offset -5 → SL = 100   ← anchored to blended avg, not last fill
-			anchor := price
-			if preQty.IsPositive() {
-				if newQty := preQty.Add(qty); newQty.IsPositive() {
-					anchor = preQty.Mul(preAvg).Add(qty.Mul(price)).Div(newQty)
-				}
-			}
-			if anchor.IsPositive() {
-				// Round to the exchange tick size (authoritative) so SL/TP satisfy
-				// PRICE_FILTER. StopOffset/TakeProfitOffset come from Rust float
-				// arithmetic and carry many decimal places; fill price representation
-				// is also unreliable (Binance may return "2014.1200000" → Exponent=-7).
-				prec := priceTick(h.helmRuntime.filtersFor(ctx, symbol).PriceTick)
-				if !pending.StopOffset.IsZero() {
-					resolved.StopLoss = anchor.Add(pending.StopOffset).Round(prec)
-				}
-				if !pending.TakeProfitOffset.IsZero() {
-					resolved.TakeProfit = anchor.Add(pending.TakeProfitOffset).Round(prec)
-				}
-			}
-			offsetResolved = true
-		} else {
-			// Absolute SL/TP from signal — Rust float, round to exchange tick.
-			prec := priceTick(h.helmRuntime.filtersFor(ctx, symbol).PriceTick)
-			if pending.StopLoss.IsPositive() {
-				resolved.StopLoss = pending.StopLoss.Round(prec)
-			}
-			if pending.TakeProfit.IsPositive() {
-				resolved.TakeProfit = pending.TakeProfit.Round(prec)
+		// Capture existing bracket IDs BEFORE resolvePendingExit cancels them.
+		// Used after the lock is released to emit a bracket-replaced event.
+		if preQty.IsPositive() {
+			if old, ok := h.exitLevels[symbol]; ok {
+				oldBracketIDs = append([]string(nil), old.ExchangeOrderIDs...)
 			}
 		}
 
-		// Pyramid add: cancel the prior consolidated bracket BEFORE overwriting exitLevels.
-		// Otherwise the old exchange order is orphaned (its IDs are about to be lost) and the
-		// position ends up with split partial brackets at stale levels. The new bracket below
-		// is placed for the full merged qty at the rebased level — one bracket per position.
-		// (Marks pendingCancels so HandleExitOrderCanceled treats this as helm cleanup, not a
-		// disown.) Caller holds h.mu, as cancelExitOrders requires.
-		if old, ok := h.exitLevels[symbol]; ok && len(old.ExchangeOrderIDs) > 0 {
-			h.cancelExitOrders(ctx, symbol, "")
-		}
-
-		h.exitLevels[symbol] = resolved
-		if resolved.StopLoss.IsPositive() || resolved.TakeProfit.IsPositive() {
-			// Sanity check: for a long exit (sell), SL must be below TP; for short (buy), above.
-			// Rounding can collapse SL and TP to the same value — sending that to the exchange
-			// causes a hard error ("relationship of prices not correct"). Skip OCO in that case.
-			slTpOK := true
-			if resolved.StopLoss.IsPositive() && resolved.TakeProfit.IsPositive() {
-				if resolved.Side == "buy" { // short → TP < SL
-					slTpOK = resolved.TakeProfit.LessThan(resolved.StopLoss)
-				} else { // long → SL < TP
-					slTpOK = resolved.StopLoss.LessThan(resolved.TakeProfit)
-				}
-				if !slTpOK {
-					slog.Warn("fill: SL/TP collapsed to same value after rounding — skipping OCO bracket",
-						"hand_id", h.id, "symbol", symbol,
-						"stop_loss", resolved.StopLoss, "take_profit", resolved.TakeProfit)
-				}
-			}
-			if slTpOK {
-				resolvedEl = resolved
-				hasExitBracket = true
-			}
-		}
+		resolvedEl, hasExitBracket, offsetResolved = h.resolvePendingExit(ctx, symbol, pending, cumulativeAvgPrice, cumulativeQty, preQty, preAvg)
 	}
 	h.mu.Unlock()
+
+	// ── 1.5. Bracket replacement event (pyramid add only) ────────────────────
+	// When a pyramid add fills, resolvePendingExit cancels the old OCO bracket and
+	// schedules a new one covering the merged position. Emit an explicit event so
+	// users understand why an OCO bracket was cancelled — it is not an external close.
+	if len(oldBracketIDs) > 0 && hasExitBracket {
+		h.emitEvent(natsapi.HelmEvent{
+			Code:    CodeOrderCancelled,
+			Symbol:  symbol,
+			OrderID: fmt.Sprintf("%v", oldBracketIDs),
+			Reason:  "pyramid_add_bracket_replace",
+			Msg:     "order: OCO bracket cancelled — pyramid add will place new merged bracket",
+		})
+	}
 
 	// ── 2. Place exchange-side bracket orders (entry fill only) ──────────────
 	// Runs in a goroutine so it doesn't block the fill handling path.
 	// On success, stores the resulting order IDs back into exitLevels so they
 	// can be canceled if the position closes via the other exit leg.
 	if hasExitBracket {
-		if placer, ok := h.helmRuntime.Exchange.(exchange.ExitOrderPlacer); ok {
-			exitSide := exchange.Sell
-			if resolvedEl.Side == "sell" { // short → buy to close
-				exitSide = exchange.Buy
-			}
-			market := exchange.MarketSpot
-			if h.helmRuntime.Creds.AccountType == exchange.AccountFuturesUSDM ||
-				h.helmRuntime.Creds.AccountType == exchange.AccountFuturesCOINM {
-				market = exchange.MarketFutures
-			}
-			// Capture the hand's lifecycle context so the goroutine exits
-			// immediately when Hand.Stop() is called — prevents goroutine leaks
-			// when tests or operators shut down a hand during the retry window.
-			h.mu.RLock()
-			handCtx := h.ctx
-			h.mu.RUnlock()
-
-			go func(el exitLevel, posID string) {
-				// Retry loop: spot exchanges may return "insufficient balance" briefly after
-				// a fill if the asset has not yet settled into the available balance.
-				// Retries up to 5× with linear backoff (1s, 2s … 5s = 15s total).
-				bktCtx := handCtx
-				exitReq := exchange.ExitOrderRequest{
-					Symbol:     symbol,
-					Market:     market,
-					Side:       exitSide,
-					Qty:        truncateQty(h.helmRuntime.filtersFor(bktCtx, symbol), bracketQty),
-					StopLoss:   el.StopLoss,
-					TakeProfit: el.TakeProfit,
-				}
-				var result *exchange.ExitOrderResult
-				var err error
-				for attempt := 1; attempt <= 5; attempt++ {
-					select {
-					case <-handCtx.Done():
-						slog.Info("hand: exit order goroutine cancelled (hand stopped)", "hand_id", h.id, "symbol", symbol)
-						return
-					case <-time.After(time.Duration(attempt) * time.Second):
-					}
-					exitCtx, cancel := context.WithTimeout(handCtx, 10*time.Second)
-					result, err = placer.PlaceExitOrders(exitCtx, h.helmRuntime.Creds, exitReq)
-					cancel()
-					if err == nil {
-						break
-					}
-					slog.Warn("hand: place exit orders retry", "hand_id", h.id, "symbol", symbol,
-						"attempt", attempt, "err", err)
-				}
-				if err != nil {
-					// Exchange-side bracket failed after all retries. The position is NOT
-					// unprotected: exitLevels[symbol] still holds the SL/TP with an EMPTY
-					// ExchangeOrderIDs, so the in-process checkExits monitor is automatically
-					// the active net (it fires a market close when price crosses, polled ≤5s).
-					// But the exchange-side guarantee is gone — escalate loudly so a human
-					// knows this position relies on the helm process staying up.
-					slog.Error("hand: place exit orders failed — position now relies on the local monitor only",
-						"hand_id", h.id, "symbol", symbol, "err", err)
-					h.helmRuntime.EmitEvent(natsapi.HelmEvent{
-						HandID: h.id.String(),
-						Code:   CodeOrderExitFailed,
-						Symbol: symbol,
-						Reason: fmt.Sprintf("qty=%s stop_loss=%s take_profit=%s err=%s", exitReq.Qty, el.StopLoss, el.TakeProfit, err),
-						Msg:    "order: exchange SL/TP bracket FAILED — local monitor is the only net",
-					})
-					return
-				}
-				slog.Info("hand: exit orders placed", "hand_id", h.id, "symbol", symbol, "order_ids", result.OrderIDs)
-				h.helmRuntime.EmitEvent(natsapi.HelmEvent{
-					HandID:  h.id.String(),
-					Code:    CodeOrderExitPlaced,
-					Symbol:  symbol,
-					OrderID: fmt.Sprintf("%v", result.OrderIDs),
-					Reason:  fmt.Sprintf("stop_loss=%s take_profit=%s", el.StopLoss, el.TakeProfit),
-					Msg:     "order: bracket exit placed (safety net)",
-				})
-				for _, id := range result.OrderIDs {
-					h.trackOrder(id)
-				}
-				h.mu.Lock()
-				if lv, ok := h.exitLevels[symbol]; ok {
-					lv.ExchangeOrderIDs = result.OrderIDs
-					h.exitLevels[symbol] = lv
-				}
-				h.mu.Unlock()
-				// Persist bracket order IDs to poslog so they survive a restart.
-				if posID != "" {
-					h.publishBracketPlaced(handCtx, posID, symbol, result.OrderIDs)
-				}
-			}(resolvedEl, posIDForBracket)
-		}
+		h.scheduleBracketPlacement(resolvedEl, symbol, bracketQty, posIDForBracket)
 	}
 
 	// ── 3. Close detection via poslog phase ──────────────────────────────────
@@ -279,6 +138,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 	h.mu.RLock()
 	posID := h.pendingOrderPos[orderID]
 	isClosingFill := posID != "" && h.pos.LegPhase(posID) == position.PhaseExiting
+	preFillPhase := h.pos.LegPhase(posID) // captured before publishOrderFilled mutates leg state
 	entryPrice := h.pos.LegEntryPrice(posID)
 	// legQty is the full position size before this fill is applied.
 	// Used for dust detection (step 4.5) and the trade record (publishOrderFilled).
@@ -312,23 +172,55 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 	var closeSource string
 	if isClosingFill {
 		h.mu.Lock()
+		// Read exitLevels BEFORE cancelling — needed to classify bracket exit as sl/tp.
+		// NOTE: do NOT delete exitLevels[symbol] here. publishOrderFilled (called at
+		// step 5 below) needs exitLevels[symbol] intact to detect isBracketExit and
+		// find the positionID for the position-closed event + trade record.
+		// The delete is deferred to after publishOrderFilled.
+		el := h.exitLevels[symbol]
 		h.cancelExitOrders(ctx, symbol, orderID)
-		delete(h.exitLevels, symbol)
 		h.mu.Unlock()
-		if isBracketExit {
-			closeSource = "bracket_exit"
-		} else {
-			closeSource = source
+		switch {
+		case isBracketExit:
+			// Determine whether the SL or TP leg of the OCO filled by comparing
+			// the fill price to the saved levels. Side == "buy" means entry was
+			// a long (exit sell): SL is below entry, TP is above entry.
+			closeSource = "bracket_exit" // fallback if levels unavailable
+			if el.StopLoss.IsPositive() && el.TakeProfit.IsPositive() {
+				if el.Side == "buy" { // long: SL ≤ fill ≤ TP
+					if cumulativeAvgPrice.LessThanOrEqual(el.StopLoss) {
+						closeSource = "sl"
+					} else if cumulativeAvgPrice.GreaterThanOrEqual(el.TakeProfit) {
+						closeSource = "tp"
+					}
+				} else { // short: TP ≤ fill ≤ SL
+					if cumulativeAvgPrice.GreaterThanOrEqual(el.StopLoss) {
+						closeSource = "sl"
+					} else if cumulativeAvgPrice.LessThanOrEqual(el.TakeProfit) {
+						closeSource = "tp"
+					}
+				}
+			}
+		case source == "kill":
+			closeSource = "kill"
+		case source == "release":
+			closeSource = "release"
+		case source == "dust_exit":
+			closeSource = "dust"
+		default:
+			// rest / ws / poll / partial_cancel — all mean a strategy DirExit
+			// signal or local exit monitor triggered the closing order.
+			closeSource = "signal"
 		}
-		if price.IsPositive() && entryPrice.IsPositive() {
+		if cumulativeAvgPrice.IsPositive() && entryPrice.IsPositive() {
 			if side == "sell" { // closing a long position
-				closePnL = price.Sub(entryPrice).Mul(qty)
+				closePnL = cumulativeAvgPrice.Sub(entryPrice).Mul(cumulativeQty)
 			} else { // closing a short position (buy to cover)
-				closePnL = entryPrice.Sub(price).Mul(qty)
+				closePnL = entryPrice.Sub(cumulativeAvgPrice).Mul(cumulativeQty)
 			}
 			h.metrics.mu.Lock()
 			h.metrics.totalPnL = h.metrics.totalPnL.Add(closePnL)
-			h.metrics.totalCommission = h.metrics.totalCommission.Add(commission)
+			h.metrics.totalCommission = h.metrics.totalCommission.Add(cumulativeCommission)
 			// dust_exit is a synthetic rounding fill — same trade, not a new trade event.
 			// Accumulate PnL for accurate totals, but skip win/loss count and edge risk:
 			// the "trade outcome" was already decided and recorded by the main closing fill.
@@ -374,7 +266,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 	isFutures := h.helmRuntime.Creds.AccountType == exchange.AccountFuturesUSDM ||
 		h.helmRuntime.Creds.AccountType == exchange.AccountFuturesCOINM
 	if isClosingFill && !isFutures && legQty.IsPositive() {
-		dust := legQty.Sub(qty)
+		dust := legQty.Sub(cumulativeQty)
 		filters := h.helmRuntime.filtersFor(ctx, symbol)
 		if filters.QtyStep.IsPositive() && dust.IsPositive() && dust.LessThan(filters.QtyStep) {
 			dustPrice := price
@@ -408,8 +300,6 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 				h.metrics.totalPnL = h.metrics.totalPnL.Add(dustPnL)
 				h.metrics.mu.Unlock()
 			}
-			// Suppress checkPositionDesync for the physical BTC residual at exchange.
-			h.helmRuntime.RecordDust(symbol, dust)
 		}
 	}
 
@@ -420,12 +310,26 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 	// Zero for exit fills (no new capital is deployed on close).
 	var deployedCapital decimal.Decimal
 	if !isClosingFill {
-		deployedCapital = qty.Mul(price).Add(commission)
+		deployedCapital = cumulativeQty.Mul(cumulativeAvgPrice).Add(cumulativeCommission)
+		h.metrics.mu.Lock()
+		h.metrics.totalCommission = h.metrics.totalCommission.Add(cumulativeCommission)
+		h.metrics.mu.Unlock()
 	}
 	// Pass legQty so publishOrderFilled uses the full position size in the trade
 	// record (gross_pnl = legQty×exitPrice − legQty×entryPrice, which includes
 	// the dust portion at approximately the same price).
-	h.publishOrderFilled(ctx, orderID, qty, legQty, price, closePnL, commission, deployedCapital, source, closeSource)
+	h.publishOrderFilled(ctx, orderID, cumulativeQty, legQty, cumulativeAvgPrice, closePnL, cumulativeCommission, deployedCapital, source, closeSource)
+
+	// Delete exitLevels[symbol] AFTER publishOrderFilled so that publishOrderFilled
+	// can detect isBracketExit by finding the bracket order ID in exitLevels.
+	// cancelExitOrders already ran above (marks sibling in pendingCancels and
+	// launches a REST cancel goroutine) — it only needs exitLevels to exist during
+	// its own execution, not during publishOrderFilled.
+	if isClosingFill {
+		h.mu.Lock()
+		delete(h.exitLevels, symbol)
+		h.mu.Unlock()
+	}
 
 	// ── 5.5. Persist resolved IsOffset SL/TP into the leg ───────────────────
 	// For offset entries the OrderPlaced poslog carried zero SL/TP (fill price
@@ -539,6 +443,105 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 		Equity:          equity,
 	})
 
+	// ── 6.5. Position lifecycle events ───────────────────────────────────────
+	// Emitted after CodeOrderFilled so the order event (low-level fact) always
+	// precedes the position event (higher-level view) in the activity feed.
+	// preFillPhase was captured before publishOrderFilled mutated leg state —
+	// it reflects the leg's intent (entering vs adding vs exiting) at fill time.
+	switch {
+	case isClosingFill:
+		// Position closed: carry realized PnL + pct so the UI can display the trade outcome.
+		// pnl_pct is a fraction (FE ×100 to show %). entryPrice×legQty = notional deployed.
+		var pnlPct decimal.Decimal
+		if entryPrice.IsPositive() && legQty.IsPositive() {
+			pnlPct = closePnL.Div(entryPrice.Mul(legQty))
+		}
+		h.emitEvent(natsapi.HelmEvent{
+			Code:            CodePositionClosed,
+			Symbol:          symbol,
+			Side:            side,
+			Qty:             cumulativeQty,
+			Price:           cumulativeAvgPrice,
+			PositionID:      posID,
+			EntryPrice:      entryPrice,
+			PnL:             closePnL,
+			PnLPct:          pnlPct,
+			Reason:          closeSource,
+			Msg:             "position: closed",
+			AvailableCash:   availCash,
+			DeployedCapital: deployed,
+			Equity:          equity,
+		})
+	case preFillPhase == position.PhaseAdding:
+		// Pyramid add confirmed — show total position qty and new blended avg entry.
+		var newAvgEntry, totalQty decimal.Decimal
+		h.mu.RLock()
+		if snap, ok := h.pos.LegSnapshot(posID); ok {
+			newAvgEntry = snap.EntryPrice
+			totalQty = snap.Qty.Abs()
+		}
+		h.mu.RUnlock()
+		h.emitEvent(natsapi.HelmEvent{
+			Code:            CodePositionAdded,
+			Symbol:          symbol,
+			Side:            side,
+			Qty:             totalQty,           // total position qty after add
+			Price:           cumulativeAvgPrice, // this add's fill price
+			PositionID:      posID,
+			EntryPrice:      newAvgEntry, // new blended avg across all legs
+			Reason:          source,
+			Msg:             "position: pyramid add",
+			AvailableCash:   availCash,
+			DeployedCapital: deployed,
+			Equity:          equity,
+		})
+	case preFillPhase == position.PhaseEntering:
+		// New position confirmed open.
+		h.emitEvent(natsapi.HelmEvent{
+			Code:            CodePositionOpened,
+			Symbol:          symbol,
+			Side:            side,
+			Qty:             cumulativeQty,
+			Price:           cumulativeAvgPrice,
+			PositionID:      posID,
+			EntryPrice:      cumulativeAvgPrice,
+			Reason:          source,
+			Msg:             "position: opened",
+			AvailableCash:   availCash,
+			DeployedCapital: deployed,
+			Equity:          equity,
+		})
+	}
+
+	// ── 7. Poslog GC — purge when flat ────────────────────────────────────────
+	// Once all legs are closed/orphaned, the poslog for this hand carries only
+	// stale terminal events that serve no purpose on restart (ReplayHand would
+	// return them but the state machine would immediately mark the hand as flat
+	// anyway). Purging now keeps the HELM_POSITIONS stream lean and makes the
+	// next ReplayHand instant (empty slice → reconciler skips restorePosition).
+	//
+	// Run in a goroutine: PurgeStream is a single NATS API call (~1ms) but we
+	// don't want to block the fill hot path on any transient latency.
+	// Non-fatal on error: the stream will be purged on the next close-to-flat.
+	if isClosingFill {
+		h.mu.RLock()
+		flat := h.pos.IsFlat()
+		h.mu.RUnlock()
+		if flat && h.helmRuntime.PosLog != nil {
+			helmID := h.helmID.String()
+			handID := h.id.String()
+			go func() {
+				defer safe.Recover()
+				if err := h.helmRuntime.PosLog.PurgeHand(context.Background(), helmID, handID); err != nil {
+					slog.Warn("poslog: purge after flat failed (non-fatal)",
+						"hand_id", handID, "helm_id", helmID, "err", err)
+				} else {
+					slog.Info("poslog: purged after hand reached flat", "hand_id", handID)
+				}
+			}()
+		}
+	}
+
 }
 
 // checkEdgeRisk evaluates the per-hand sliding-window edge-degradation guard.
@@ -581,10 +584,11 @@ func (h *Hand) checkEdgeRisk(pnl decimal.Decimal) {
 	}
 	avg := sum.Div(decimal.NewFromInt(int64(count)))
 
-	// Reference capital for pct thresholds.
-	h.mu.RLock()
-	ref := h.allocatedCap
-	h.mu.RUnlock()
+	// Reference capital for pct thresholds: realized equity (allocatedCap + closedPnL −
+	// commission) so the guard tightens naturally as the hand loses money, rather than
+	// referencing a fixed allocation that becomes stale after repeated losses.
+	// Falls back to total portfolio equity when realizedEquity is zero (no allocation set).
+	ref := h.realizedEquity()
 	if !ref.IsPositive() {
 		ref = h.helmRuntime.Portfolio.Equity()
 	}
@@ -628,4 +632,510 @@ func (h *Hand) checkEdgeRisk(pnl decimal.Decimal) {
 		Msg:    "hand: auto-stopped — edge degradation",
 	})
 	go h.Stop()
+}
+
+// scheduleBracketPlacement launches the exchange OCO bracket placement goroutine.
+// Shared between the entry-fill path and the post-restart recovery path.
+// bracketQty is the full position size to protect. posID is the poslog position ID
+// (used to write KindBracketPlaced on success; empty string skips poslog write).
+func (h *Hand) scheduleBracketPlacement(lv exitLevel, symbol string, bracketQty decimal.Decimal, posID string) {
+	placer, ok := h.helmRuntime.Exchange.(exchange.ExitOrderPlacer)
+	if !ok {
+		return
+	}
+	exitSide := exchange.Sell
+	if lv.Side == "sell" { // short → buy to close
+		exitSide = exchange.Buy
+	}
+	market := exchange.MarketSpot
+	if h.helmRuntime.Creds.AccountType == exchange.AccountFuturesUSDM ||
+		h.helmRuntime.Creds.AccountType == exchange.AccountFuturesCOINM {
+		market = exchange.MarketFutures
+	}
+	h.mu.RLock()
+	handCtx := h.ctx
+	h.mu.RUnlock()
+
+	go func(el exitLevel) {
+		defer safe.Recover()
+		bktCtx := handCtx
+		var marginMode string
+		if h.cfg.futuresConfig != nil {
+			marginMode = string(h.cfg.futuresConfig.MarginType)
+		}
+		// Use actual leg qty at execution time (after publishOrderFilled has set it),
+		// not the scheduled bracketQty which may be the ordered qty when partial fills
+		// resulted in a smaller actual position (e.g. OKX Unified Account buy capped
+		// by available margin, or quote_qty order filled below expected base qty).
+		// Fall back to bracketQty if the leg is already gone (position closed by a
+		// concurrent exit before the bracket goroutine ran).
+		actualBracketQty := bracketQty
+		h.mu.RLock()
+		if pl := h.pos.PrimaryLeg(); pl != nil && pl.Symbol == symbol && pl.Qty.IsPositive() {
+			actualBracketQty = pl.Qty
+		}
+		h.mu.RUnlock()
+		exitReq := exchange.ExitOrderRequest{
+			Symbol:     symbol,
+			Market:     market,
+			Side:       exitSide,
+			Qty:        truncateQty(h.helmRuntime.filtersFor(bktCtx, symbol), actualBracketQty),
+			StopLoss:   el.StopLoss,
+			TakeProfit: el.TakeProfit,
+			MarginMode: marginMode,
+		}
+		var result *exchange.ExitOrderResult
+		var err error
+		for attempt := 1; attempt <= 5; attempt++ {
+			select {
+			case <-handCtx.Done():
+				slog.Info("hand: exit order goroutine cancelled (hand stopped)", "hand_id", h.id, "symbol", symbol)
+				return
+			case <-time.After(time.Duration(attempt) * time.Second):
+			}
+			exitCtx, cancel := context.WithTimeout(handCtx, 10*time.Second)
+			result, err = placer.PlaceExitOrders(exitCtx, h.helmRuntime.Creds, exitReq)
+			cancel()
+			if err == nil {
+				break
+			}
+			slog.Warn("hand: place exit orders retry", "hand_id", h.id, "symbol", symbol,
+				"attempt", attempt, "err", err)
+		}
+		if err != nil {
+			slog.Error("hand: place exit orders failed — position now relies on the local monitor only",
+				"hand_id", h.id, "symbol", symbol, "err", err)
+			h.helmRuntime.EmitEvent(natsapi.HelmEvent{
+				HandID: h.id.String(),
+				Code:   CodeOrderExitFailed,
+				Symbol: symbol,
+				Reason: fmt.Sprintf("qty=%s stop_loss=%s take_profit=%s err=%s", exitReq.Qty, el.StopLoss, el.TakeProfit, err),
+				Msg:    "order: exchange SL/TP bracket FAILED — local monitor is the only net",
+			})
+			return
+		}
+		slog.Info("hand: exit orders placed", "hand_id", h.id, "symbol", symbol, "order_ids", result.OrderIDs)
+		h.helmRuntime.EmitEvent(natsapi.HelmEvent{
+			HandID:  h.id.String(),
+			Code:    CodeOrderExitPlaced,
+			Symbol:  symbol,
+			OrderID: fmt.Sprintf("%v", result.OrderIDs),
+			Reason:  fmt.Sprintf("stop_loss=%s take_profit=%s", el.StopLoss, el.TakeProfit),
+			Msg:     "order: bracket exit placed (safety net)",
+		})
+		for _, id := range result.OrderIDs {
+			h.trackOrder(id)
+		}
+		h.mu.Lock()
+		if cur, ok := h.exitLevels[symbol]; ok {
+			cur.ExchangeOrderIDs = result.OrderIDs
+			h.exitLevels[symbol] = cur
+		}
+		h.mu.Unlock()
+		if posID != "" {
+			h.publishBracketPlaced(handCtx, posID, symbol, result.OrderIDs)
+		}
+	}(lv)
+}
+
+// restoreExitLevelsFromPoslog rebuilds exitLevels from the durable poslog-backed
+// position state (h.pos) after a restart.
+//
+// exitLevels is an ephemeral in-memory map — it is populated at runtime by
+// resolvePendingExit / scheduleBracketPlacement and is NOT persisted. After a
+// restart it starts empty even though the poslog has all the information:
+//
+//	KindSLUpdated     → leg.StopLoss / TakeProfit
+//	KindBracketPlaced → leg.ExchangeOrderIDs
+//
+// Without this reconstruction:
+//   - RecoverBrackets iterates exitLevels and finds nothing → bracket recovery skipped
+//   - checkPositionDesync sees hasExit=false → leg treated as UNPROTECTED → EXT_CLOSE
+func (h *Hand) restoreExitLevelsFromPoslog() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, leg := range h.pos.ActiveLegs() {
+		if leg.Phase != position.PhaseOpen {
+			slog.Debug("startup: restoreExitLevels — leg not PhaseOpen, skip",
+				"hand_id", h.id, "symbol", leg.Symbol, "phase", leg.Phase)
+			continue
+		}
+		if !leg.StopLoss.IsPositive() && !leg.TakeProfit.IsPositive() && len(leg.ExchangeOrderIDs) == 0 {
+			slog.Info("startup: restoreExitLevels — leg has no exit management (no SL/TP, no OCO ids)",
+				"hand_id", h.id, "symbol", leg.Symbol,
+				"qty", leg.Qty, "entry_price", leg.EntryPrice)
+			continue
+		}
+		lv := exitLevel{
+			Side:             leg.Side,
+			StopLoss:         leg.StopLoss,
+			TakeProfit:       leg.TakeProfit,
+			ExchangeOrderIDs: append([]string(nil), leg.ExchangeOrderIDs...),
+		}
+		h.exitLevels[leg.Symbol] = lv
+		slog.Info("startup: restoreExitLevels — exit level restored from poslog",
+			"hand_id", h.id,
+			"symbol", leg.Symbol,
+			"qty", leg.Qty,
+			"sl", lv.StopLoss,
+			"tp", lv.TakeProfit,
+			"exchange_order_ids", lv.ExchangeOrderIDs,
+			"has_oco", len(lv.ExchangeOrderIDs) > 0,
+		)
+	}
+}
+
+// RecoverBrackets reconciles exchange-side OCO bracket orders after a restart.
+//
+// Three scenarios handled:
+//  1. ExchangeOrderIDs empty (crash before KindBracketPlaced) → re-place bracket.
+//  2. ExchangeOrderIDs present, bracket already triggered during downtime ("filled") →
+//     synthesize a bracket fill now so the position closes cleanly before Sync() runs.
+//     Without this, Sync() detects a portfolio desync and emits EXT_CLOSE with an
+//     approximate price instead of recording the real OCO execution price.
+//  3. ExchangeOrderIDs present, bracket cancelled externally during downtime →
+//     route to HandleExitOrderCanceled (disown + orphan detection).
+//
+// Safe to call on a running hand — uses the actor's mutex and launches goroutines.
+// Must be called after RecoverGapFills so fills from downtime are already applied
+// (prevents re-placing a bracket for a position that is now flat).
+func (h *Hand) RecoverBrackets(ctx context.Context) {
+	h.mu.RLock()
+	type toPlaceEntry struct {
+		symbol string
+		lv     exitLevel
+		posID  string
+		qty    decimal.Decimal
+	}
+	type toCheckEntry struct {
+		symbol string
+		id     string
+	}
+	var toPlace []toPlaceEntry
+	var toCheck []toCheckEntry
+
+	slog.Info("startup: RecoverBrackets — scanning exitLevels",
+		"hand_id", h.id, "exit_levels_count", len(h.exitLevels))
+
+	for symbol, lv := range h.exitLevels {
+		if len(lv.ExchangeOrderIDs) > 0 {
+			slog.Info("startup: RecoverBrackets — checking known bracket IDs",
+				"hand_id", h.id, "symbol", symbol,
+				"sl", lv.StopLoss, "tp", lv.TakeProfit,
+				"order_ids", lv.ExchangeOrderIDs)
+			for _, id := range lv.ExchangeOrderIDs {
+				toCheck = append(toCheck, toCheckEntry{symbol: symbol, id: id})
+			}
+			continue
+		}
+		if !lv.StopLoss.IsPositive() && !lv.TakeProfit.IsPositive() {
+			continue
+		}
+		slog.Info("startup: RecoverBrackets — no OCO ids, will re-place bracket",
+			"hand_id", h.id, "symbol", symbol,
+			"sl", lv.StopLoss, "tp", lv.TakeProfit)
+		if pl := h.pos.PrimaryLeg(); pl != nil && pl.Symbol == symbol {
+			toPlace = append(toPlace, toPlaceEntry{
+				symbol: symbol, lv: lv,
+				posID: pl.PositionID, qty: pl.Qty.Abs(),
+			})
+		}
+	}
+	h.mu.RUnlock()
+
+	// ── Scenario 2 & 3: check brackets with known IDs ────────────────────────
+	for _, c := range toCheck {
+		result, err := h.helmRuntime.Exchange.GetOrder(ctx, h.helmRuntime.Creds, c.id)
+		if err != nil {
+			slog.Warn("startup: RecoverBrackets — GetOrder failed",
+				"hand_id", h.id, "symbol", c.symbol, "order_id", c.id, "err", err)
+			continue
+		}
+		slog.Info("startup: RecoverBrackets — bracket status from exchange",
+			"hand_id", h.id, "symbol", c.symbol, "order_id", c.id,
+			"status", result.Status,
+			"filled_qty", result.FilledQty,
+			"filled_avg", result.FilledAvg,
+		)
+		switch result.Status {
+		case "filled":
+			// Bracket was triggered and filled during downtime.
+			// Route through EnqueueFill (actor loop) rather than calling applyFill
+			// directly — RecoverBrackets runs while the hand's actor loop is already
+			// active (called after StartAllHydrated), so direct applyFill is a race.
+			h.mu.Lock()
+			if _, alreadySeen := h.seenFills[c.id]; alreadySeen {
+				h.mu.Unlock()
+				continue
+			}
+			h.seenFills[c.id] = time.Now()
+			h.mu.Unlock()
+
+			closeSide := string(result.Side)
+			if closeSide == "" {
+				closeSide = "sell"
+			}
+			slog.Info("hand: bracket filled during downtime — enqueuing recovery fill",
+				"hand_id", h.id, "symbol", c.symbol, "order_id", c.id,
+				"filled_qty", result.FilledQty, "filled_avg", result.FilledAvg)
+			if result.FilledQty.IsPositive() && result.FilledAvg.IsPositive() {
+				h.EnqueueFill(exchange.WsFillEvent{
+					OrderID:   c.id,
+					TradeID:   c.id + "_recovery",
+					Symbol:    c.symbol,
+					Side:      exchange.OrderSide(closeSide),
+					FilledQty: result.FilledQty,
+					FilledAvg: result.FilledAvg,
+				})
+			}
+
+		case "canceled", "cancelled", "expired", "rejected":
+			// Bracket was externally cancelled during downtime.
+			slog.Info("hand: bracket cancelled during downtime — handling external close",
+				"hand_id", h.id, "symbol", c.symbol, "order_id", c.id, "status", result.Status)
+			h.HandleExitOrderCanceled(ctx, c.id)
+
+		default:
+			// "new" / "submitted" — bracket still live; no action needed.
+			slog.Debug("hand: bracket still live after restart",
+				"hand_id", h.id, "symbol", c.symbol, "order_id", c.id, "status", result.Status)
+		}
+	}
+
+	// ── Scenario 1: re-place brackets where IDs were never recorded ──────────
+	// Before placing a new bracket, query the exchange for existing live algo orders
+	// for each symbol. If a matching OCO already exists (placed before the crash but
+	// before KindBracketPlaced was written), adopt its IDs instead of creating a
+	// duplicate — two concurrent OCOs for the same position would cause "insufficient
+	// balance" errors when the second tries to sell a position already closed by the first.
+	algoLister, hasAlgoLister := h.helmRuntime.Exchange.(exchange.AlgoOrderLister)
+
+	for _, p := range toPlace {
+		if p.qty.IsZero() {
+			continue
+		}
+
+		// Check for existing live algo orders matching this symbol/SL/TP.
+		if hasAlgoLister {
+			existing, err := algoLister.ListLiveAlgoOrders(ctx, h.helmRuntime.Creds, p.symbol)
+			if err != nil {
+				slog.Warn("hand: RecoverBrackets — ListLiveAlgoOrders failed (will re-place)",
+					"hand_id", h.id, "symbol", p.symbol, "err", err)
+			} else {
+				var adopted string
+				for _, ao := range existing {
+					// Match by SL/TP proximity (within 1 tick) — exact match unreliable
+					// due to rounding in the original PlaceExitOrders call.
+					slMatch := p.lv.StopLoss.IsZero() || p.lv.StopLoss.Sub(ao.StopLoss).Abs().LessThanOrEqual(decimal.NewFromFloat(0.01))
+					tpMatch := p.lv.TakeProfit.IsZero() || p.lv.TakeProfit.Sub(ao.TakeProfit).Abs().LessThanOrEqual(decimal.NewFromFloat(0.01))
+					if slMatch && tpMatch {
+						adopted = ao.AlgoID
+						break
+					}
+				}
+				if adopted != "" {
+					slog.Info("hand: found existing live algo — adopting IDs instead of re-placing",
+						"hand_id", h.id, "symbol", p.symbol, "algo_id", adopted)
+					h.trackOrder(adopted)
+					h.mu.Lock()
+					if lv, ok := h.exitLevels[p.symbol]; ok {
+						lv.ExchangeOrderIDs = []string{adopted}
+						h.exitLevels[p.symbol] = lv
+					}
+					h.mu.Unlock()
+					h.publishBracketPlaced(ctx, p.posID, p.symbol, []string{adopted})
+					continue
+				}
+			}
+		}
+
+		slog.Info("hand: re-placing bracket after restart — KindBracketPlaced was not confirmed",
+			"hand_id", h.id, "symbol", p.symbol,
+			"stop_loss", p.lv.StopLoss, "take_profit", p.lv.TakeProfit, "qty", p.qty)
+		h.scheduleBracketPlacement(p.lv, p.symbol, p.qty, p.posID)
+	}
+}
+
+// resolvePendingExit resolves raw SL/TP from a just-filled entry order into an absolute
+// exitLevel, updates h.exitLevels[symbol], and returns whether a bracket should be placed.
+//
+// MUST be called with h.mu held (for exitLevels read/write and cancelExitOrders).
+//
+// price/qty are the fill price and fill qty.
+// preQty/preAvg are the leg's qty/avg BEFORE this fill (zero for first entry).
+//
+// Returns (resolved exitLevel, hasExitBracket, offsetResolved).
+func (h *Hand) resolvePendingExit(
+	ctx context.Context,
+	symbol string, pending exitPending,
+	price, qty, preQty, preAvg decimal.Decimal,
+) (resolvedEl exitLevel, hasExitBracket bool, offsetResolved bool) {
+	resolved := exitLevel{Side: pending.Side}
+	if pending.IsOffset {
+		// ── avg-anchor (pyramiding-design.md) ──
+		// Anchor offsets to the blended avg entry AFTER this add so the SL/TP tracks
+		// the merged cost. First entry: preQty=0 → anchor == fill price.
+		anchor := price
+		if preQty.IsPositive() {
+			if newQty := preQty.Add(qty); newQty.IsPositive() {
+				anchor = preQty.Mul(preAvg).Add(qty.Mul(price)).Div(newQty)
+			}
+		}
+		if anchor.IsPositive() {
+			prec := priceTick(h.helmRuntime.filtersFor(ctx, symbol).PriceTick)
+			if !pending.StopOffset.IsZero() {
+				resolved.StopLoss = anchor.Add(pending.StopOffset).Round(prec)
+			}
+			if !pending.TakeProfitOffset.IsZero() {
+				resolved.TakeProfit = anchor.Add(pending.TakeProfitOffset).Round(prec)
+			}
+		}
+		offsetResolved = true
+	} else {
+		prec := priceTick(h.helmRuntime.filtersFor(ctx, symbol).PriceTick)
+		if pending.StopLoss.IsPositive() {
+			resolved.StopLoss = pending.StopLoss.Round(prec)
+		}
+		if pending.TakeProfit.IsPositive() {
+			resolved.TakeProfit = pending.TakeProfit.Round(prec)
+		}
+		// Persist absolute SL/TP to poslog so they survive restart.
+		// offsetResolved is true only for offset mode — for absolute levels we
+		// must emit KindSLUpdated here so restoreExitLevelsFromPoslog can rebuild
+		// exitLevels with correct levels on restart (needed for bracket re-placement
+		// in the crash-window scenario where KindBracketPlaced was not written).
+		if resolved.StopLoss.IsPositive() || resolved.TakeProfit.IsPositive() {
+			offsetResolved = true // reuse the flag to trigger KindSLUpdated in applyFill
+		}
+	}
+
+	// Pyramid add: cancel prior consolidated bracket before overwriting exitLevels.
+	if old, ok := h.exitLevels[symbol]; ok && len(old.ExchangeOrderIDs) > 0 {
+		h.cancelExitOrders(ctx, symbol, "")
+	}
+	h.exitLevels[symbol] = resolved
+
+	if resolved.StopLoss.IsPositive() || resolved.TakeProfit.IsPositive() {
+		slTpOK := true
+		if resolved.StopLoss.IsPositive() && resolved.TakeProfit.IsPositive() {
+			if resolved.Side == "buy" { // long → SL < TP
+				slTpOK = resolved.StopLoss.LessThan(resolved.TakeProfit)
+			} else { // short → TP < SL
+				slTpOK = resolved.TakeProfit.LessThan(resolved.StopLoss)
+			}
+			if !slTpOK {
+				slog.Warn("fill: SL/TP relationship invalid after rounding — skipping OCO bracket",
+					"hand_id", h.id, "symbol", symbol, "side", resolved.Side,
+					"stop_loss", resolved.StopLoss, "take_profit", resolved.TakeProfit)
+			}
+		}
+		if slTpOK {
+			resolvedEl = resolved
+			hasExitBracket = true
+		}
+	}
+	return
+}
+
+// completeWsFillFromREST is called in the REST-immediate path when the WS fill event
+// arrived before PlaceOrder returned (WS beats REST race).
+//
+// The WS path ran applyFill which:
+//
+//	✅ Called ReportFill (portfolio correctly updated)
+//	❌ publishOrderFilled returned early — pendingOrderPos[orderID] was "" at WS time
+//	   → leg stuck in PhaseEntering, never transitions to PhaseOpen
+//	   → h.pos.ActiveCount()>0 blocks new entries (MAXUNITS)
+//	   → EXIT signal sees no PhaseOpen leg → "NO_POS"
+//	❌ pendingExits not consumed (not set at WS time) → no bracket
+//
+// Now that PlaceOrder has returned, pendingOrderPos and pendingExits are both populated.
+// This method completes the fill processing without re-running ReportFill:
+//  1. publishOrderFilled → leg PhaseEntering → PhaseOpen (poslog + h.pos)
+//  2. Resolve pendingExits → schedule bracket
+//  3. Emit KindSLUpdated if offset levels were resolved (needed for poslog replay)
+//
+// pending is the exitPending captured from line 678 of applyPlaceResult (already in scope).
+// restQty is the net fill qty after base-asset commission adjustment.
+func (h *Hand) completeWsFillFromREST(
+	ctx context.Context,
+	orderID, symbol, side string,
+	restQty, fillAvg, commission decimal.Decimal,
+	pending exitPending,
+	isExitOrder bool,
+) {
+	slog.Info("hand: WS beat REST — completing poslog fill and bracket placement",
+		"hand_id", h.id, "order_id", orderID, "symbol", symbol,
+		"qty", restQty, "price", fillAvg)
+
+	// Capture posID BEFORE publishOrderFilled deletes it from pendingOrderPos.
+	h.mu.RLock()
+	posIDForBracket := h.pendingOrderPos[orderID]
+	h.mu.RUnlock()
+
+	// 1. publishOrderFilled: transitions leg from PhaseEntering → PhaseOpen
+	//    (entry) or PhaseExiting → PhaseIdle (exit).
+	//    Does NOT call ReportFill (portfolio already updated by WS applyFill).
+	deployedCapital := restQty.Mul(fillAvg).Add(commission)
+	if isExitOrder {
+		deployedCapital = decimal.Zero // no new capital deployed on close
+	}
+	h.publishOrderFilled(ctx, orderID, restQty, restQty, fillAvg,
+		decimal.Zero, commission, deployedCapital, "rest", "")
+
+	// 1b. For exit orders: cancel the OCO bracket and clear exitLevels.
+	// The WS applyFill path could not detect isClosingFill (pendingOrderPos was
+	// empty at WS arrival time), so cancelExitOrders was never called. Without
+	// this, bracket orders remain live at the exchange after the position closes,
+	// and checkExits auto-stops the hand on the next tick.
+	if isExitOrder {
+		h.mu.Lock()
+		h.cancelExitOrders(ctx, symbol, orderID)
+		delete(h.exitLevels, symbol)
+		h.mu.Unlock()
+		return
+	}
+
+	// 2. Resolve pendingExits and schedule OCO bracket (entry fills only).
+	if !pending.StopLoss.IsPositive() && !pending.TakeProfit.IsPositive() && !pending.IsOffset {
+		return
+	}
+	h.mu.Lock()
+	delete(h.pendingExits, orderID) // consume (was set at line ~680 of applyPlaceResult)
+	resolvedEl, hasExitBracket, offsetResolved := h.resolvePendingExit(
+		ctx, symbol, pending, fillAvg, restQty, decimal.Zero, decimal.Zero,
+	)
+	h.mu.Unlock()
+
+	if hasExitBracket {
+		h.scheduleBracketPlacement(resolvedEl, symbol, restQty, posIDForBracket)
+	}
+
+	// 3. Persist resolved offset SL/TP to poslog so restart replay sees the absolute levels
+	//    (same KindSLUpdated emitted by the normal applyFill path at step 4).
+	if offsetResolved && posIDForBracket != "" &&
+		(resolvedEl.StopLoss.IsPositive() || resolvedEl.TakeProfit.IsPositive()) {
+		var newSL, newTP string
+		if resolvedEl.StopLoss.IsPositive() {
+			newSL = resolvedEl.StopLoss.String()
+		}
+		if resolvedEl.TakeProfit.IsPositive() {
+			newTP = resolvedEl.TakeProfit.String()
+		}
+		payload, _ := json.Marshal(poslog.SLUpdatedPayload{
+			OrderID: posIDForBracket,
+			NewSL:   newSL,
+			NewTP:   newTP,
+			Reason:  "offset_resolved",
+		})
+		h.publishAndApply(ctx, poslog.Event{
+			ID:         posIDForBracket + "_sl_resolved_" + orderID,
+			HandID:     h.id.String(),
+			HelmID:     h.helmID.String(),
+			PositionID: posIDForBracket,
+			Kind:       poslog.KindSLUpdated,
+			Payload:    payload,
+			At:         time.Now().UTC(),
+		})
+	}
 }

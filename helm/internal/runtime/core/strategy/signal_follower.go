@@ -7,10 +7,11 @@ import "fmt"
 // a minimum-strength filter on entries. All execution hints (StopPrice,
 // TargetPrice, ATR, IsOffset) pass through unchanged in intent.Signal.
 //
-// Urgency is derived from signal strength:
-//   - strength ≥ 0.8 → Immediate (market order)
-//   - strength ≥ 0.5 → Normal    (limit order)
-//   - strength  < 0.5 → Patient   (TWAP — declared, not yet implemented)
+// Urgency is always Immediate for passing signals — execution type (market vs
+// limit) is determined by hand config (OrderTypeMarket / OrderTypeLimit), not
+// by strength tiers. Tiered urgency based on magic strength thresholds (0.8/0.5)
+// had no effect on market hands (99% of use cases) and mapped signals below 0.5
+// to UrgencyPatient (TWAP), which is not implemented.
 type SignalFollower struct {
 	minStrength float64
 }
@@ -28,6 +29,8 @@ func (s *SignalFollower) Name() string { return "signal_follower" }
 
 // Evaluate translates a raw Signal into a structured Intent.
 // Exit signals are always passed through with Immediate urgency — they are never dropped.
+// Entry signals that pass minStrength are also Immediate — execution type is a hand-level
+// config (market vs limit), not a per-signal strength decision.
 func (s *SignalFollower) Evaluate(sig Signal) Intent {
 	intent := Intent{Signal: sig}
 
@@ -55,15 +58,9 @@ func (s *SignalFollower) Evaluate(sig Signal) Intent {
 		intent.Reason = fmt.Sprintf("unrecognised direction %q", sig.Direction)
 	}
 
-	switch {
-	case sig.Strength >= 0.8:
-		intent.Urgency = UrgencyImmediate
-	case sig.Strength >= 0.5:
-		intent.Urgency = UrgencyNormal
-	default:
-		intent.Urgency = UrgencyPatient
-	}
-
+	// All passing entry signals are Immediate. The hand's OrderType config
+	// (market/limit) determines execution — not strength tiers.
+	intent.Urgency = UrgencyImmediate
 	return intent
 }
 

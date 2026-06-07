@@ -14,6 +14,11 @@ import (
 // SupportsFutures implements exchange.FuturesTrader — Binance supports futures.
 func (c *Client) SupportsFutures() bool { return true }
 
+// SupportsIsolatedMargin implements exchange.IsolatedMarginTrader.
+// Binance futures supports isolated margin — margin mode is set per-symbol via SetLeverage
+// and does not need to be specified per-order (Binance uses account-level margin mode).
+func (c *Client) SupportsIsolatedMargin() bool { return true }
+
 // SetLeverage sets the leverage for a futures symbol.
 // marginType: "ISOLATED" | "CROSSED"
 func (c *Client) SetLeverage(ctx context.Context, creds exchange.Credentials, symbol string, leverage int, marginType string) error {

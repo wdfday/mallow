@@ -71,14 +71,16 @@ func NewHand(
 		fillSignal:      make(chan struct{}, 1),
 		pollCh:          make(chan pollBatch, 1),
 		placeResultCh:   make(chan *pendingPlace, 16),
-		seenFills:       make(map[string]struct{}),
-		partialApplied:  make(map[string]decimal.Decimal),
+		seenFills:       make(map[string]time.Time),
+
+		partialApplied:  make(map[string]partialAppliedState),
 		orders:          make([]domain.Order, 0, 256),
 		pendingExits:    make(map[string]exitPending),
 		exitLevels:      make(map[string]exitLevel),
 		pos:             position.NewHandPositions(pyramid, maxUnits),
 		pendingOrderPos: make(map[string]string),
 		pendingCancels:  make(map[string]struct{}),
+		exitCancelCh:    make(chan string, 8),
 		health:          HandHealth{Status: "stopped"},
 	}
 }
@@ -139,7 +141,7 @@ func (h *Hand) restorePosition(hp *position.HandPositions, currentPrice decimal.
 
 	// Restore each active leg into the portfolio without generating new orders.
 	for _, leg := range hp.ActiveLegs() {
-		h.helmRuntime.Portfolio.RestorePosition(leg.Symbol, leg.Side, leg.Qty, leg.EntryPrice, currentPrice, leg.OpenedAt)
+		h.helmRuntime.Portfolio.RestorePosition(leg.Symbol, leg.Side, leg.Qty, leg.EntryPrice, currentPrice, leg.DeployedCapital, leg.OpenedAt)
 	}
 
 	h.mu.Lock()

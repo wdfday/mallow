@@ -17,6 +17,7 @@ package integration_test
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -284,6 +285,9 @@ func TestSignalToOrder_Binance(t *testing.T) {
 func TestSignalToOrder_OKX(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping exchange integration test in -short mode")
+	}
+	if os.Getenv("OKX_INTEGRATION") == "" {
+		t.Skip("OKX integration tests disabled — set OKX_INTEGRATION=1 to enable")
 	}
 	if okxPaperAPIKey == "" {
 		t.Skip("OKX paper credentials not set in creds_test.go")
@@ -607,6 +611,9 @@ func TestSignalRoundTrip_Binance(t *testing.T) {
 func TestSignalRoundTrip_OKX(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping exchange integration test in -short mode")
+	}
+	if os.Getenv("OKX_INTEGRATION") == "" {
+		t.Skip("OKX integration tests disabled — set OKX_INTEGRATION=1 to enable")
 	}
 	if okxPaperAPIKey == "" {
 		t.Skip("OKX paper credentials not set in creds_test.go")

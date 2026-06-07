@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime/pprof"
-	"strings"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -17,9 +16,11 @@ import (
 	"mallow/helm/internal/runtime/clid"
 	"mallow/helm/internal/runtime/core/strategy"
 	"mallow/helm/internal/runtime/position"
+	"mallow/helm/internal/safe"
 )
 
 func (h *Hand) run(ctx context.Context) {
+	defer safe.Recover()
 	defer close(h.done)
 
 	// Tag this goroutine for Pyroscope continuous profiling.
@@ -58,6 +59,15 @@ func (h *Hand) runLoop(ctx context.Context) {
 			continue
 		default:
 		}
+		// Second-priority drain: bracket cancels (after fills).
+		// Fills must always be processed first so that cancelExitOrders populates
+		// pendingCancels before HandleExitOrderCanceled checks it.
+		select {
+		case orderID := <-h.exitCancelCh:
+			h.HandleExitOrderCanceled(ctx, orderID)
+			continue
+		default:
+		}
 
 		select {
 		case sig := <-h.UrgentSignals:
@@ -66,6 +76,8 @@ func (h *Hand) runLoop(ctx context.Context) {
 			h.handleSignal(ctx, sig)
 		case <-h.fillSignal:
 			h.drainFills(ctx)
+		case orderID := <-h.exitCancelCh:
+			h.HandleExitOrderCanceled(ctx, orderID)
 		case pp := <-h.placeResultCh:
 			// Off-loop order placement came back — record/poslog on success, clean up on
 			// failure, all on the loop (single-owner).
@@ -81,6 +93,7 @@ func (h *Hand) runLoop(ctx context.Context) {
 			if !h.pollInFlight {
 				h.pollInFlight = true
 				go func() {
+					defer safe.Recover()
 					batch := pollBatch{
 						orders:   h.fetchPendingOrders(ctx),
 						brackets: h.fetchBracketStates(ctx),
@@ -91,8 +104,7 @@ func (h *Hand) runLoop(ctx context.Context) {
 					}
 				}()
 			}
-			h.checkExits()             // mostly in-memory; conditional REST already off-loaded
-			h.checkPositionDesync(ctx) // in-memory portfolio compare, no REST
+			h.checkExits() // mostly in-memory; conditional REST already off-loaded
 		case <-staleTicker.C:
 			h.checkStale()
 		case <-ctx.Done():
@@ -101,14 +113,45 @@ func (h *Hand) runLoop(ctx context.Context) {
 	}
 }
 
+const seenFillsTTL = 2 * time.Minute
+
 func (h *Hand) checkStale() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	// Trim seenFills and partialApplied: remove entries for orders that have reached
-	// a terminal state (filled/canceled/rejected/expired). Terminal orders are never
-	// re-polled, so these entries serve no purpose and would grow unboundedly.
-	if len(h.seenFills) > 100 || len(h.partialApplied) > 50 {
+	// Prune seenFills by TTL. Entries older than 2 minutes are safe to drop:
+	// Binance WS delivers fill events within ~100ms of the fill — no late event
+	// will arrive after 2 minutes. Pruning by TTL (rather than by order status)
+	// avoids the race where an order is marked terminal before its WS fill arrives.
+	now := time.Now()
+	for id, t := range h.seenFills {
+		if now.Sub(t) > seenFillsTTL {
+			delete(h.seenFills, id)
+		}
+	}
+
+	// Prune pendingCancels whose orderID no longer appears in any exitLevels entry.
+	// These are stale: the WS cancel event was missed (restart, brief disconnect)
+	// and the bracket is already gone at the exchange. Keeping them would permanently
+	// suppress external-close detection for those IDs.
+	if len(h.pendingCancels) > 0 {
+		activeIDs := make(map[string]struct{})
+		for _, lv := range h.exitLevels {
+			for _, id := range lv.ExchangeOrderIDs {
+				activeIDs[id] = struct{}{}
+			}
+		}
+		for id := range h.pendingCancels {
+			if _, stillActive := activeIDs[id]; !stillActive {
+				delete(h.pendingCancels, id)
+			}
+		}
+	}
+
+	// partialApplied is a safety-net prune: entries are normally deleted when the
+	// order reaches a terminal state in pollOrders. This handles edge cases where
+	// the order was removed without going through the normal terminal path.
+	if len(h.partialApplied) > 50 {
 		live := make(map[string]struct{}, len(h.orders))
 		for _, o := range h.orders {
 			switch o.Status {
@@ -116,14 +159,6 @@ func (h *Hand) checkStale() {
 				live[o.ID] = struct{}{}
 			}
 		}
-		for id := range h.seenFills {
-			if _, stillLive := live[id]; !stillLive {
-				delete(h.seenFills, id)
-			}
-		}
-		// partialApplied entries should be consumed (deleted) when the order reaches a
-		// terminal state in pollOrders. This is a safety net for edge cases where the
-		// order was removed from h.orders without going through the normal terminal path.
 		for id := range h.partialApplied {
 			if _, stillLive := live[id]; !stillLive {
 				delete(h.partialApplied, id)
@@ -204,6 +239,11 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 	}
 
 	intent := h.strategy.Evaluate(sig)
+
+	if intent.Action == strategy.ActionEnterShort {
+		filtered(CodeSignalRejected, "not support short selling yet")
+		return
+	}
 
 	slog.Debug("signal: strategy evaluated",
 		"hand_id", h.id,
@@ -320,8 +360,6 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 	//     realized equity so sizing tracks the hand's PnL, not the shared pool.
 	//     Also pass AvailableBudget so the tactician can hard-clamp qty to the
 	//     remaining budget (allocated + cumPnL − deployedCapital).
-	//   - Shared-pool hand (allocatedCap = 0): leave both zero so the tactician
-	//     falls back to portfolio equity and is bounded only by helm-level risk.
 	var equityOverride, availableBudget decimal.Decimal
 	if h.AllocatedCapital().IsPositive() {
 		equityOverride = h.realizedEquity()
@@ -453,11 +491,6 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 	// multiple of the step. Futures use ReduceOnly and have their own precision.
 	if !isFutures {
 		orderQty = truncateQty(h.helmRuntime.filtersFor(ctx, sig.Symbol), orderQty)
-		// Record sub-step dust so checkPositionDesync doesn't mistake the residual
-		// (qty - orderQty) for an external close. Cleared when a new position opens.
-		if dust := reply.Qty.Sub(orderQty); dust.IsPositive() {
-			h.helmRuntime.RecordDust(sig.Symbol, dust)
-		}
 	}
 	// If truncation rounded the qty to zero, the entire position is sub-step dust.
 	// Close the poslog leg without placing an exchange order — the tiny remainder
@@ -472,7 +505,6 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 			Reason: fmt.Sprintf("exit qty %s rounds to zero after truncation — dust_exit", reply.Qty),
 			Msg:    "order: sub-step dust exit — poslog closed without exchange sell",
 		})
-		h.helmRuntime.RecordDust(sig.Symbol, reply.Qty)
 		lastPrice := h.helmRuntime.lastKnownPrice(sig.Symbol)
 		h.closeLegAsDust(ctx, sig.Symbol, reply.Side, reply.Qty, lastPrice)
 		return
@@ -481,6 +513,10 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 	// fill that races ahead of the REST response still routes to this hand via the
 	// clid (the exchange does not know it yet, but we already do). See CLIENT_ORDER_ID.md.
 	clid := clid.New()
+	var marginMode string
+	if isFutures && h.cfg.futuresConfig != nil {
+		marginMode = string(h.cfg.futuresConfig.MarginType)
+	}
 	orderReq := exchange.OrderRequest{
 		Symbol:        sig.Symbol,
 		Side:          exchange.OrderSide(reply.Side),
@@ -490,6 +526,7 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		QuoteQty:      reply.QuoteQty,
 		Price:         limitPrice,
 		ReduceOnly:    isFutures && isExitOrder,
+		MarginMode:    marginMode,
 		ClientOrderID: clid,
 	}
 	h.trackOrder(clid)
@@ -504,6 +541,7 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		isFutures: isFutures, isExitOrder: isExitOrder, signalAt: signalAt,
 	}
 	go func() {
+		defer safe.Recover()
 		h.runPlaceREST(ctx, pp)
 		select {
 		case h.placeResultCh <- pp:
@@ -531,30 +569,130 @@ type pendingPlace struct {
 
 	result *exchange.OrderResult // set by runPlaceREST
 	err    error
+	// positionGoneAtExchange is set by runPlaceREST when a sell exit fails with
+	// insufficient balance AND GetFreeBalance returns zero. This means the base
+	// asset has been fully sold externally (e.g. OCO triggered concurrently).
+	// applyPlaceResult closes the poslog leg via dust_exit as a safety net,
+	// in case the orders-algo WS fill event was slow or missed.
+	positionGoneAtExchange bool
+	// ocoFillPrice / ocoFillQty / ocoFillSide carry the actual OCO execution
+	// details fetched from the exchange when positionGoneAtExchange=true.
+	// Used instead of lastKnownPrice so the trade record reflects the real
+	// OCO execution price (not an approximation from the bar-close cache).
+	cancelledBracketIDs []string
+	ocoFillPrice        decimal.Decimal
+	ocoFillQty          decimal.Decimal
+	ocoFillSide         string
 }
 
 // runPlaceREST is the I/O phase of an entry/exit: PlaceOrder plus the insufficient-balance
 // retry and the ambiguous-failure (clid) recovery. Pure REST — it mutates no hand state
 // (the clid was tracked on-loop before this runs) — so it executes OFF the actor loop.
 func (h *Hand) runPlaceREST(ctx context.Context, pp *pendingPlace) {
-	result, err := h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, pp.orderReq)
-	// ── Insufficient-balance retry (spot SELL exit only) ──────────────────────
-	// When fee was paid in base asset, poslog may hold gross qty while the wallet
-	// holds net (gross - fee). Query actual free balance and retry once.
-	if err != nil && pp.isExitOrder && pp.reply.Side == "sell" && !pp.isFutures &&
-		isInsufficientBalanceError(err) {
-		if bf, ok := h.helmRuntime.Exchange.(exchange.SpotBalanceFetcher); ok {
-			baseAsset := spotBaseAsset(pp.sig.Symbol)
-			if freeQty, balErr := bf.GetFreeBalance(ctx, h.helmRuntime.Creds, baseAsset); balErr == nil && freeQty.IsPositive() {
-				slog.Warn("order: insufficient balance on exit — retrying with actual free balance",
-					"hand_id", h.id, "symbol", pp.sig.Symbol,
-					"attempted_qty", pp.reply.Qty, "free_qty", freeQty,
-				)
-				pp.orderReq.Qty = truncateQty(h.helmRuntime.filtersFor(ctx, pp.sig.Symbol), freeQty)
-				result, err = h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, pp.orderReq)
+	// ── Pre-flight: cancel bracket orders before a signal exit ───────────────
+	// Spot OCO bracket orders lock the entire base asset in resting sell orders.
+	// If a signal exit arrives while brackets are active, a direct market sell
+	// fails because freeBalance(base) == 0 — all qty is locked in the OCO.
+	// Fix: cancel the brackets synchronously (in this goroutine, off-loop) so
+	// the asset is freed before PlaceOrder, then refresh qty from actual balance.
+	//
+	// Scope: spot sell exits only. Futures ReduceOnly orders don't lock margin.
+	//
+	// Race: if the OCO triggers between our cancel and PlaceOrder, cancel returns
+	// "order not found" (idempotent error), and the subsequent PlaceOrder fails
+	// with insufficient balance — caught by the existing retry below.
+	if pp.isExitOrder && !pp.isFutures && pp.reply.Side == "sell" {
+		h.mu.Lock()
+		lv, hasBracket := h.exitLevels[pp.sig.Symbol]
+		var bracketIDs []string
+		if hasBracket && len(lv.ExchangeOrderIDs) > 0 {
+			bracketIDs = append(bracketIDs, lv.ExchangeOrderIDs...)
+			// Mark as helm-initiated so HandleExitOrderCanceled ignores the WS
+			// "canceled" events that arrive after we cancel.
+			// NOTE: ExchangeOrderIDs is intentionally NOT cleared here. Keeping the
+			// IDs allows isBracketExit detection in applyFill to work correctly when
+			// the OCO fires concurrently with the signal exit (race window between the
+			// cancel call and PlaceOrder). Without the IDs, orders-algo fills arrive
+			// as orphan fills → poslog not closed → EXT_CLOSE.
+			// pendingCancels is sufficient to suppress WS cancel events being
+			// misread as external closes — no need to clear IDs.
+			for _, id := range bracketIDs {
+				h.pendingCancels[id] = struct{}{}
 			}
 		}
+		h.mu.Unlock()
+
+		if len(bracketIDs) > 0 {
+			cancelCtx, cancelFn := context.WithTimeout(ctx, 5*time.Second)
+			for _, id := range bracketIDs {
+				if err := h.helmRuntime.Exchange.CancelOrder(cancelCtx, h.helmRuntime.Creds, id); err != nil {
+					slog.Warn("hand: pre-exit bracket cancel",
+						"hand_id", h.id, "symbol", pp.sig.Symbol, "order_id", id, "err", err)
+				}
+			}
+			cancelFn()
+			slog.Info("hand: pre-exit bracket cancelled",
+				"hand_id", h.id, "symbol", pp.sig.Symbol, "cancelled", bracketIDs)
+		}
+
+		// Always check free balance before placing a spot sell exit, regardless of
+		// whether brackets were active. Two invariants:
+		//   (a) Don't sell more than freeBalance — poslog qty may be gross while the
+		//       wallet holds net (fee deducted in base asset), or the position may have
+		//       been fully closed externally (OCO triggered while helm was down).
+		//   (b) Don't sell more than pp.orderQty — that's this hand's share.
+		//       freeBalance includes other hands' capital on the same symbol.
+		//
+		// When brackets were cancelled: OKX cancel-algos is eventually consistent —
+		// retry up to 3×300ms to let the unfreeze propagate.
+		// When no brackets: one shot is sufficient (nothing to wait for).
+		if bf, ok := h.helmRuntime.Exchange.(exchange.SpotBalanceFetcher); ok {
+			baseAsset := spotBaseAsset(pp.sig.Symbol)
+			maxAttempts := 1
+			if len(bracketIDs) > 0 {
+				maxAttempts = 3
+			}
+			var freeQty decimal.Decimal
+			for attempt := 0; attempt < maxAttempts; attempt++ {
+				if attempt > 0 {
+					select {
+					case <-ctx.Done():
+						goto balanceDone
+					case <-time.After(300 * time.Millisecond):
+					}
+				}
+				balCtx, balFn := context.WithTimeout(ctx, 3*time.Second)
+				freeQty, _ = bf.GetFreeBalance(balCtx, h.helmRuntime.Creds, baseAsset)
+				balFn()
+				if freeQty.IsPositive() {
+					break
+				}
+			}
+		balanceDone:
+			if freeQty.IsZero() {
+				// Base asset is completely gone — position closed externally
+				// (OCO triggered, manual sell, etc.). Skip PlaceOrder entirely and
+				// let applyPlaceResult dust-close the poslog leg.
+				slog.Warn("hand: pre-exit balance check — base asset gone, skipping PlaceOrder",
+					"hand_id", h.id, "symbol", pp.sig.Symbol, "poslog_qty", pp.orderQty)
+				pp.positionGoneAtExchange = true
+				return
+			}
+			useQty := freeQty
+			if pp.orderQty.IsPositive() && pp.orderQty.LessThan(freeQty) {
+				useQty = pp.orderQty // cap at this hand's share
+			}
+			useQty = truncateQty(h.helmRuntime.filtersFor(ctx, pp.sig.Symbol), useQty)
+			if useQty.IsPositive() {
+				pp.orderReq.Qty = useQty
+				pp.orderQty = useQty
+			}
+			slog.Info("hand: pre-exit balance confirmed",
+				"hand_id", h.id, "symbol", pp.sig.Symbol, "exit_qty", pp.orderQty, "free_balance", freeQty)
+		}
 	}
+
+	result, err := h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, pp.orderReq)
 	// Ambiguous failure (timeout / network): the order may have landed. Ask the exchange
 	// by clid before giving up — if it exists, treat the placement as successful.
 	if err != nil {
@@ -583,6 +721,27 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 	signalAt := pp.signalAt
 	result := pp.result
 	err := pp.err
+
+	// positionGoneAtExchange: balance check confirmed the base asset is fully gone
+	// (OCO triggered externally, manual sell, etc.). REST was skipped so result==nil
+	// and err==nil — must be handled before any result dereference.
+	if pp.positionGoneAtExchange {
+		h.helmRuntime.RemoveOrderTracking(clid)
+		if isExitOrder && !isFutures {
+			slog.Warn("order: exit failed — base asset gone (OCO likely triggered) — dust exit",
+				"hand_id", h.id, "symbol", sig.Symbol, "qty", orderQty)
+			h.emitEvent(natsapi.HelmEvent{
+				Code:   CodeOrderDustExit,
+				Symbol: sig.Symbol,
+				Qty:    orderQty,
+				Reason: "position gone at exchange — OCO likely triggered concurrently",
+				Msg:    "order: dust exit — base asset unavailable",
+			})
+			lastPrice := h.helmRuntime.lastKnownPrice(sig.Symbol)
+			h.closeLegAsDust(ctx, sig.Symbol, reply.Side, orderQty, lastPrice)
+		}
+		return
+	}
 
 	if err != nil {
 		// Order never reached the exchange — drop the pre-placement clid tracking so it
@@ -645,7 +804,6 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 				Reason: fmt.Sprintf("exit qty %s below exchange minimum (%s) — dust_exit", orderQty, err.Error()),
 				Msg:    "order: dust exit — position too small for exchange sell",
 			})
-			h.helmRuntime.RecordDust(sig.Symbol, orderQty)
 			lastPrice := h.helmRuntime.lastKnownPrice(sig.Symbol)
 			h.closeLegAsDust(ctx, sig.Symbol, reply.Side, orderQty, lastPrice)
 		}
@@ -670,11 +828,6 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 
 	// Publish order_placed to the durable position event log.
 	isExitIntent := intent.Action == strategy.ActionExitLong || intent.Action == strategy.ActionExitShort
-	// On entry: clear dust residual from the previous trade for this symbol.
-	// The old dust no longer matters once a new position is opened.
-	if !isExitIntent {
-		h.helmRuntime.ClearDust(sig.Symbol)
-	}
 	h.publishOrderPlaced(ctx, result.ID, clid, sig.Symbol, reply, limitPrice, orderType, isExitIntent)
 
 	now := time.Now().UTC()
@@ -722,24 +875,84 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 		Reason:  placedReason,
 		Msg:     "order: placed",
 	})
-	if result.Status == "filled" {
-		// Synchronous fill from REST response. Mark as seen so the WS event
-		// that will arrive shortly does not double-apply.
-		h.mu.Lock()
-		h.seenFills[result.ID] = struct{}{}
-		h.mu.Unlock()
-		// Adjust for base-asset commission: same logic as handleWsFill.
-		restQty := result.FilledQty
-		if reply.Side == "buy" && result.Commission.IsPositive() && result.CommissionAsset != "" &&
-			strings.HasPrefix(result.Symbol, result.CommissionAsset) {
-			restQty = restQty.Sub(result.Commission)
+
+	// ── Position pre-fill lifecycle events ───────────────────────────────────
+	// Emitted after CodeOrderPlaced so the order event (low-level placement fact)
+	// precedes the position event (higher-level intent) in the activity feed.
+	// Skipped for exit orders — those have their own post-fill lifecycle.
+	if !isExitOrder {
+		h.mu.RLock()
+		posID := h.pendingOrderPos[result.ID]
+		phase := h.pos.LegPhase(posID)
+		var preQty, preAvg decimal.Decimal
+		if phase == position.PhaseAdding {
+			if snap, ok := h.pos.LegSnapshot(posID); ok {
+				preQty = snap.Qty.Abs()
+				preAvg = snap.EntryPrice
+			}
 		}
-		h.applyFill(ctx, result.ID, sig.Symbol, reply.Side, restQty, result.FilledAvg, result.Commission, "rest")
+		h.mu.RUnlock()
+
+		switch phase {
+		case position.PhaseEntering:
+			h.emitEvent(natsapi.HelmEvent{
+				Code:       CodePositionEntering,
+				Symbol:     sig.Symbol,
+				Side:       reply.Side,
+				Qty:        orderedQty,
+				Price:      limitPrice,
+				PositionID: posID,
+				OrderID:    order.ID,
+				Msg:        "position: entering",
+			})
+		case position.PhaseAdding:
+			// Show current position state (before this add) so users can see
+			// what they have now vs what the add is targeting.
+			h.emitEvent(natsapi.HelmEvent{
+				Code:       CodePositionAdding,
+				Symbol:     sig.Symbol,
+				Side:       reply.Side,
+				Qty:        orderedQty, // this add's order qty
+				Price:      limitPrice,
+				PositionID: posID,
+				OrderID:    order.ID,
+				EntryPrice: preAvg, // current avg BEFORE this add
+				Reason:     fmt.Sprintf("current_qty=%s current_avg=%s", preQty, preAvg),
+				Msg:        "position: adding (pyramid)",
+			})
+		}
 	}
+
+	if result.Status == "filled" {
+		// Mark as seen AND check if WS already processed this fill.
+		// When WS beats REST (fill event arrives before PlaceOrder returns),
+		// seenFills already has the ID. We must NOT call applyFill again (double
+		// ReportFill = double portfolio debit). However, the WS path ran applyFill
+		// before pendingOrderPos/pendingExits were populated, so it could NOT:
+		//   - transition the leg PhaseEntering → PhaseOpen (publishOrderFilled returned early)
+		//   - place an OCO bracket (pendingExits was empty at WS time)
+		// completeWsFillFromREST performs those two steps without touching the portfolio.
+		h.mu.Lock()
+		_, wsAlreadyApplied := h.seenFills[result.ID]
+		h.seenFills[result.ID] = time.Now()
+		h.mu.Unlock()
+
+		// Compute restQty and restCommission here (needed by both branches).
+		restQty, restCommission := h.helmRuntime.normalizeCommission(result.Symbol, result.Side, result.FilledQty, result.FilledAvg, result.Commission, result.CommissionAsset)
+
+		if wsAlreadyApplied {
+			h.completeWsFillFromREST(ctx, result.ID, sig.Symbol, reply.Side,
+				restQty, result.FilledAvg, restCommission, pending, isExitOrder)
+		} else {
+			h.applyFill(ctx, result.ID, sig.Symbol, reply.Side, restQty, result.FilledAvg, restCommission, "rest")
+		}
+	}
+
 }
 
 // computeDefaultSL returns a stop-loss price to use when the signal provides none.
 // ATR×5 offset is preferred; falls back to 8% fixed when ATR is zero.
+
 func computeDefaultSL(side string, entryPrice, atr decimal.Decimal) decimal.Decimal {
 	if atr.IsPositive() {
 		offset := atr.Mul(decimal.NewFromInt(5))

@@ -17,6 +17,7 @@ package integration_test
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
@@ -47,6 +48,9 @@ func newOKXEnv(t *testing.T) *okxTestEnv {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("skipping exchange integration test in -short mode")
+	}
+	if os.Getenv("OKX_INTEGRATION") == "" {
+		t.Skip("OKX integration tests disabled — set OKX_INTEGRATION=1 to enable")
 	}
 	if okxPaperAPIKey == "" {
 		t.Skip("OKX paper credentials not set in creds_test.go")

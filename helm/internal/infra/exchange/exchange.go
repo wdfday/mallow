@@ -77,6 +77,9 @@ type OrderRequest struct {
 	QuoteQty   decimal.Decimal // quote asset quantity (e.g. 1000 USDT); spot market buy only; mutually exclusive with Qty
 	Price      decimal.Decimal // only for limit orders
 	ReduceOnly bool            // futures only: close-only, never opens a position
+	// MarginMode selects futures margin mode: "isolated" | "cross" | "" (exchange default).
+	// Spot orders ignore this field. OKX maps it to tdMode; Binance sets it via SetLeverage.
+	MarginMode string
 	// ClientOrderID is a caller-generated id (clOrdId) sent to the exchange. When set,
 	// it is the canonical correlation key for WS fill routing — known before the order
 	// reaches the exchange, so the WS-fill-before-REST-response race cannot occur.
@@ -94,6 +97,8 @@ type ExitOrderRequest struct {
 	Qty        decimal.Decimal
 	StopLoss   decimal.Decimal // absolute trigger price; zero = not set
 	TakeProfit decimal.Decimal // absolute trigger price; zero = not set
+	// MarginMode selects futures margin mode: "isolated" | "cross" | "" (exchange default).
+	MarginMode string
 }
 
 // ExitOrderResult holds the exchange-assigned order IDs for placed exit orders.

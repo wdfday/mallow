@@ -6,13 +6,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/nats-io/nats.go"
+
+	"mallow/helm/internal/safe"
 )
 
 // StartPollingSync starts a background goroutine that periodically syncs all runtimes
 // whose exchange implements AccountSyncer. An immediate catch-up pass fires first
 // (covers the gap since last_synced_at on respawn), then a ticker takes over.
-func (r *Registry) StartPollingSync(ctx context.Context, _ *nats.Conn, interval time.Duration) {
+func (r *Registry) StartPollingSync(ctx context.Context, interval time.Duration) {
 	syncAll := func() {
 		r.mu.RLock()
 		rts := make([]*HelmRuntime, 0, len(r.helmRuntimes))
@@ -30,6 +31,7 @@ func (r *Registry) StartPollingSync(ctx context.Context, _ *nats.Conn, interval 
 	}
 
 	go func() {
+		defer safe.Recover()
 		slog.Info("registry: startup sync pass running")
 		syncAll()
 		slog.Info("registry: startup sync pass done")
@@ -65,7 +67,7 @@ func (r *Registry) ReconcileAllOrders(ctx context.Context) {
 
 // RecoverGapFills applies fills missed during downtime for all runtimes.
 // Call after ReconcileAllOrders but before StartFillStreaming.
-func (r *Registry) RecoverGapFills(ctx context.Context, _ *nats.Conn) {
+func (r *Registry) RecoverGapFills(ctx context.Context) {
 	r.mu.RLock()
 	rts := make([]*HelmRuntime, 0, len(r.helmRuntimes))
 	for _, rt := range r.helmRuntimes {
@@ -75,6 +77,22 @@ func (r *Registry) RecoverGapFills(ctx context.Context, _ *nats.Conn) {
 
 	for _, rt := range rts {
 		rt.RecoverGapFills(ctx)
+	}
+}
+
+// RecoverAllBrackets re-places missing exchange OCO bracket orders for every hand
+// across all runtimes. Call AFTER RecoverGapFills so gap fills are applied first
+// (prevents re-placing a bracket for a position that filled during downtime).
+func (r *Registry) RecoverAllBrackets(ctx context.Context) {
+	r.mu.RLock()
+	rts := make([]*HelmRuntime, 0, len(r.helmRuntimes))
+	for _, rt := range r.helmRuntimes {
+		rts = append(rts, rt)
+	}
+	r.mu.RUnlock()
+
+	for _, rt := range rts {
+		rt.RecoverHandBrackets(ctx)
 	}
 }
 
@@ -91,6 +109,7 @@ func (r *Registry) SyncOne(id uuid.UUID) {
 		return
 	}
 	go func() {
+		defer safe.Recover()
 		if err := rt.Sync(ctx); err != nil {
 			slog.Warn("registry: sync failed", "helm_id", id, "err", err)
 			return

@@ -31,6 +31,11 @@ type Manager struct {
 	// unitCounter counts total open position units (hand legs + manual portfolio positions).
 	// When nil, falls back to len(portfolio.Positions()) as a best-effort estimate.
 	unitCounter func() int
+
+	// availableCashFn returns the helm's available cash: totalCash − Σ(hand cash budgets).
+	// When non-nil, Gate 0.5 blocks new entries whenever the value is ≤ 0 — meaning the
+	// account's real cash has dropped below what the hands collectively expect to have.
+	availableCashFn func() decimal.Decimal
 }
 
 // SetUnitCounter injects a function that returns the total number of currently open
@@ -39,6 +44,20 @@ type Manager struct {
 func (m *Manager) SetUnitCounter(fn func() int) {
 	m.mu.Lock()
 	m.unitCounter = fn
+	m.mu.Unlock()
+}
+
+// SetAvailableCashFn injects a function that returns the helm's available cash:
+//
+//	totalCash − Σ(allocatedCap + closedPnL − deployed)  for each hand
+//
+// Gate 0.5 blocks new entries when the returned value is ≤ 0, meaning the account's
+// real cash balance has dropped below what the hands collectively expect to hold —
+// a capital-adequacy circuit-breaker. When nil (default), the gate is disabled.
+// Must be called before trading starts; safe to call concurrently.
+func (m *Manager) SetAvailableCashFn(fn func() decimal.Decimal) {
+	m.mu.Lock()
+	m.availableCashFn = fn
 	m.mu.Unlock()
 }
 
@@ -62,6 +81,16 @@ func (m *Manager) Validate(intent strategy.Intent, handID string) (bool, string)
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// Gate 0.5: capital adequacy — available cash must cover hand budgets.
+	// Fires when totalCash < Σ(hand cash budgets), i.e. real account cash can no longer
+	// back the capital the hands expect to operate with.
+	if m.availableCashFn != nil {
+		if !m.availableCashFn().IsPositive() {
+			slog.Warn("risk: available cash depleted — blocking new entries")
+			return false, "insufficient available cash"
+		}
+	}
 
 	// Gate 1: global halt.
 	if m.halted {

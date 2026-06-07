@@ -6,10 +6,13 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/shopspring/decimal"
+
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/runtime/clid"
 	"mallow/helm/internal/runtime/core/portfolio"
+	"mallow/helm/internal/runtime/position"
 )
 
 // Fill idempotency delegates to fillDedup (see helpers.go).
@@ -156,6 +159,10 @@ func (r *HelmRuntime) Sync(ctx context.Context) error {
 			natsapi.PublishTradeFill(r.js, t)
 		}
 	}
+
+	// Trigger the desync check at Helm level
+	r.checkPositionDesync(ctx)
+
 	return nil
 }
 
@@ -256,4 +263,112 @@ func (r *HelmRuntime) RecoverGapFills(ctx context.Context) {
 	}
 	slog.Info("gap recovery: fills applied",
 		"helm_id", r.HelmID, "total", len(fills), "applied", applied, "skipped", len(fills)-applied)
+}
+
+// RecoverHandBrackets re-places missing OCO bracket orders for all restored hands.
+// Must be called AFTER RecoverGapFills so that bracket fills that occurred during
+// downtime are already applied — otherwise we would re-place a bracket for a position
+// that is already closed.
+//
+// A bracket is considered missing when exitLevels[symbol].ExchangeOrderIDs is empty
+// but SL/TP levels are known from poslog (KindSLUpdated was persisted but
+// KindBracketPlaced was not — crash window between the two events).
+func (r *HelmRuntime) RecoverHandBrackets(ctx context.Context) {
+	r.mu.RLock()
+	hands := make([]*Hand, 0, len(r.hands))
+	for _, h := range r.hands {
+		hands = append(hands, h)
+	}
+	r.mu.RUnlock()
+	for _, h := range hands {
+		// Restore exitLevels from poslog-backed position state BEFORE running
+		// RecoverBrackets. exitLevels is ephemeral (not persisted) — on restart it
+		// starts empty, causing RecoverBrackets to find nothing and checkPositionDesync
+		// to mark the position as unprotected → spurious EXT_CLOSE.
+		h.restoreExitLevelsFromPoslog()
+		h.RecoverBrackets(ctx)
+	}
+}
+
+// checkPositionDesync scans all hands for active legs and compares them against
+// the authoritative exchange portfolio to detect external close events.
+// It is called after a successful REST Sync.
+func (r *HelmRuntime) checkPositionDesync(ctx context.Context) {
+	r.mu.RLock()
+	hands := make([]*Hand, 0, len(r.hands))
+	for _, h := range r.hands {
+		hands = append(hands, h)
+	}
+	r.mu.RUnlock()
+
+	// 1. Group active open legs by symbol.
+	type handLeg struct {
+		hand *Hand
+		leg  *position.LegState
+	}
+	symbolLegs := make(map[string][]handLeg)
+	for _, hand := range hands {
+		hand.mu.RLock()
+		legs := hand.pos.ActiveLegs()
+		hand.mu.RUnlock()
+
+		for _, leg := range legs {
+			if leg.Phase == position.PhaseOpen {
+				symbolLegs[leg.Symbol] = append(symbolLegs[leg.Symbol], handLeg{hand: hand, leg: leg})
+			}
+		}
+	}
+
+	// 2. Perform desync check for each symbol.
+	for symbol, hlList := range symbolLegs {
+		// Get authoritative position from portfolio.
+		pos := r.Portfolio.GetPosition(symbol)
+		exchangeQty := decimal.Zero
+		if pos != nil {
+			exchangeQty = pos.Qty.Abs()
+		}
+
+		// Separate into protected and unprotected groups.
+		//
+		// Protected: any leg that has SL/TP levels configured — regardless of whether
+		// ExchangeOrderIDs are known. If levels are set but IDs are empty (e.g. helm
+		// crashed between PlaceExitOrders and KindBracketPlaced), RecoverBrackets or
+		// applyBracketStates will re-establish the bracket. The hand manages the close
+		// via OCO tracking; desync detection must not fire EXT_CLOSE for these legs.
+		//
+		// Unprotected: legs with NO exit levels at all (no SL/TP, no bracket). Only
+		// these are eligible for EXT_CLOSE via portfolio desync.
+		var protected []handLeg
+		var unprotected []handLeg
+		for _, hl := range hlList {
+			hl.hand.mu.RLock()
+			el, hasExit := hl.hand.exitLevels[symbol]
+			hl.hand.mu.RUnlock()
+
+			if hasExit && (len(el.ExchangeOrderIDs) > 0 || el.StopLoss.IsPositive() || el.TakeProfit.IsPositive()) {
+				protected = append(protected, hl)
+			} else {
+				unprotected = append(unprotected, hl)
+			}
+		}
+
+		// Subtract protected leg quantities from exchangeQty.
+		for _, hl := range protected {
+			exchangeQty = exchangeQty.Sub(hl.leg.Qty.Abs())
+		}
+		if exchangeQty.IsNegative() {
+			exchangeQty = decimal.Zero
+		}
+
+		// Check unprotected legs against remaining exchange quantity.
+		for _, hl := range unprotected {
+			legQty := hl.leg.Qty.Abs()
+			if exchangeQty.GreaterThanOrEqual(legQty) {
+				exchangeQty = exchangeQty.Sub(legQty)
+			} else {
+				// Deficit detected -> external close suspected for this hand's leg.
+				hl.hand.handlePositionDesync(ctx, hl.leg)
+			}
+		}
+	}
 }

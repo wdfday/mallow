@@ -225,8 +225,10 @@ func (l *LegState) applySLUpdated(e poslog.Event) error {
 	if err := json.Unmarshal(e.Payload, &p); err != nil {
 		return err
 	}
-	if sl, err := decimal.NewFromString(p.NewSL); err == nil {
-		l.StopLoss = sl
+	if p.NewSL != "" {
+		if sl, err := decimal.NewFromString(p.NewSL); err == nil {
+			l.StopLoss = sl
+		}
 	}
 	if p.NewTP != "" {
 		if tp, err := decimal.NewFromString(p.NewTP); err == nil {
@@ -234,6 +236,7 @@ func (l *LegState) applySLUpdated(e poslog.Event) error {
 		}
 	}
 	return nil
+
 }
 
 func (l *LegState) reset() {

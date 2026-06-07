@@ -116,7 +116,7 @@ Helm ↔ herald communication (bars + signals + register / deregister) stays the
 | **helm** | `helm/` | `mallow/helm` | Hub **or** tenant | Trade execution + account ownership. Owns broker connections, accounts, helms (account container), hands (signal-following bots), portfolio + position log, exchange adapters. Replaced the old `investment/` service — broker creds, accounts, transactions, watchlists are now all here. |
 | **hist-data** | `hist-data/` | `hist-data` | Hub | Historical data crawler (US stocks + crypto) → Parquet files; Wire DI. |
 | **strategist** | `thstrategist/` | `strategist` | Hub | Google ADK multi-agent AI; chat / WebSocket / Telegram; realtime canvas; Gemini/Claude/OpenAI providers. |
-| **herald** | `almanac/crates/herald/` | (Rust binary `alm-herald`) | Hub **and** tenant | WebSocket ingestion (Binance, OKX) → Ledger + Registry → NATS; HTTP API (`/api/v1/...`) for live data, backtests, strategies, watch, SSE streams. |
+| **herald** | `almanac/crates/herald/` | (Rust binary `alm-herald`) | Hub **and** tenant | WebSocket ingestion (Binance, OKX) → Ledger + Registry → NATS; HTTP API (`/api/v1/...`) for live data, backtests, strategies. (No SSE/streaming or watch — live streaming moved to gateway/NATS, indicators to WASM.) |
 | **pkg** | `pkg/` | `mallow/pkg` | (lib) | Shared Go utilities (errors, response helpers, telemetry, validation). |
 | **mallow-client** | `mallow-client/` | (Next.js + Tailwind + Copilotkit) | Hub | Web UI. Authenticates against the hosted gateway; serves auth/, dashboard/. |
 
@@ -263,29 +263,33 @@ feed::binance  ─┐
 feed::okx      ─┤  mpsc → Handler::run
                 ▼
          Ledger::advance ──→ NATS publish bars.{symbol}
-                │                   │
-          LedgerObserver(s)    bar_bcast (broadcast) ──→ SSE POST /api/v1/stream/:symbol
+                │
+          LedgerObserver(s)
                 │
           Registry (evaluate bots)
                 │
          signal_publisher ──→ NATS "signals"
-                │
-           sig_bcast (broadcast) ──→ SSE GET /api/v1/stream/signals
 ```
+
+> Live streaming to browsers (bars/signals) is **not** served by herald — it moves to
+> the gateway, fed from NATS. Indicators are computed client-side (WASM), so herald
+> emits only raw bars + signals, never indicator values.
 
 **Herald HTTP API** — all under `/api/v1/`:
 
 | Group | Routes |
 |-------|--------|
 | **Health / docs** | `GET /health` · OpenAPI at `/api-doc/openapi.json` (utoipa) |
-| **Live** | `GET /api/v1/symbols` · `GET /api/v1/indicators` · `POST /api/v1/data/:source/:symbol` (OHLCV + indicator snapshot; transparent DuckDB Parquet fallback for historical pages) · `POST /api/v1/data/duckdb` |
+| **Live** | `GET /api/v1/symbols` (symbol list) · `GET /api/v1/indicators` (indicator-type catalog, static) · `POST /api/v1/data/:source/:symbol` (OHLCV; transparent DuckDB Parquet fallback for historical pages) · `POST /api/v1/data/duckdb` |
 | **Backtest** | `GET /api/v1/strategies` · `POST /api/v1/backtest` · `POST /api/v1/backtest/estimate` · `POST /api/v1/backtest/script` · `POST /api/v1/backtest/mtf` (MTF named strategies via `MtfEngine`) |
 | **Script** | `POST /api/v1/script/validate` (Monaco-style lint with diagnostics + autocomplete scope) |
 | **Strategy store** | `GET\|POST /api/v1/strategy/strategies` · `GET\|PUT\|DELETE /api/v1/strategy/strategies/:id` · `GET /api/v1/strategy/strategies/:id/chain` (version chain) · `GET /api/v1/strategy/my` (user's strategies) |
-| **Watch** | `GET\|POST /api/v1/watch` · `GET\|PUT\|DELETE /api/v1/watch/:id` (admin warm-set management) |
-| **Stream (SSE)** | `GET /api/v1/stream/:symbol` (event-source compatible, raw OHLCV) · `POST /api/v1/stream/:symbol` (indicators or script via `StreamRequest`) · `GET /api/v1/stream/signals` (signal batches) |
 
-> **SSE modes:** `GET /stream/:symbol` is native-`EventSource`-compatible — raw bars, no indicator config. `POST /stream/:symbol` carries a `StreamRequest` body (indicator configs OR a Rhai `script`) and requires `fetch()` + `ReadableStream`. Both modes emit a `status` event first, then `bar` events per incoming candle.
+> **No SSE / no live streaming in herald** (removed 2026-05-31). The `/api/v1/stream/*`
+> endpoints, the `/api/v1/watch` admin warm-set, and the `?indicators=true` query on
+> `/symbols` were dropped: live bar/signal streaming will be served by the gateway from
+> NATS, and indicators are computed client-side in WASM. Herald only publishes raw bars +
+> signals to NATS now.
 
 **Strategy versioning (store):** Each strategy version is immutable. `previous_id` parent-pointer links versions like a git commit chain. `POST /backtest/script` always creates a new version via `upsert_strategy`: if `strategy_id` is provided it compares scripts (same → reuse, different → new version with `previous_id = strategy_id`); otherwise deduplicates by `spec_hash` globally.
 
@@ -331,10 +335,7 @@ internal/
 | `GET /api/v1/strategies`              | herald     | JWT required |
 | `POST /api/v1/backtest` / `/backtest/estimate` / `/backtest/script` | herald | JWT required |
 | `POST /api/v1/script/validate`        | herald     | JWT required |
-| `GET\|POST /api/v1/stream/:symbol`    | herald     | JWT required; SSE streamed via reverse proxy |
-| `GET /api/v1/stream/signals`          | herald     | JWT required; SSE |
 | `Any /api/v1/strategy/*path`          | herald     | JWT required (strategy store) |
-| `Any /api/v1/watch[/:id]`             | herald     | JWT required |
 | (any other `/api/v1/*`)               | identity (NoRoute) | JWT required — catch-all dispatches to identity for endpoints not explicitly mapped |
 
 ### helm

@@ -12,6 +12,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"mallow/helm/internal/runtime/perf"
+	"mallow/helm/internal/safe"
 )
 
 const (
@@ -38,6 +39,7 @@ func NewTradePersister(js nats.JetStreamContext, db *sql.DB) *TradePersister {
 
 // Run consumes helm.trades.> and batches INSERTs until ctx is cancelled.
 func (p *TradePersister) Run(ctx context.Context) {
+	defer safe.Recover()
 	msgCh := make(chan *nats.Msg, tradeBatchSize*2)
 
 	sub, err := p.js.ChanSubscribe(

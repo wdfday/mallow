@@ -113,6 +113,12 @@ func (r *PostgresStatsRunner) RunStats(ctx context.Context, scope domain.Scope, 
 // runGrouped runs a single per-column GROUP BY for attribution slices.
 // Filters out NULL groups (we don't surface "unattributed" rows in stats today).
 func (r *PostgresStatsRunner) runGrouped(ctx context.Context, col, where string, args []any) ([]domain.GroupedKPI, error) {
+	// col must be a known trades column — guard against future callers passing user input.
+	switch col {
+	case "symbol", "source":
+	default:
+		return nil, fmt.Errorf("runGrouped: unknown column %q", col)
+	}
 	q := fmt.Sprintf(`
 		SELECT %s,
 		       COUNT(*),

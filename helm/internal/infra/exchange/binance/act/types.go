@@ -9,15 +9,26 @@ package act
 //   Exit helpers      — slippage math for stop-limit exit orders
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 
 	gobinance "github.com/adshao/go-binance/v2"
+	"github.com/adshao/go-binance/v2/common"
 	"github.com/adshao/go-binance/v2/futures"
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
 )
+
+// isBinanceCode returns true when err is a Binance API error with the given code.
+func isBinanceCode(err error, code int64) bool {
+	var apiErr *common.APIError
+	if errors.As(err, &apiErr) {
+		return apiErr.Code == code
+	}
+	return false
+}
 
 // ── Parse helpers ─────────────────────────────────────────────────────────────
 

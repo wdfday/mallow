@@ -10,6 +10,7 @@ import (
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
+	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/infra/poslog"
 	handdomain "mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/runtime/clid"
@@ -48,7 +49,21 @@ type Reconciler interface {
 	// Reconcile runs startup reconciliation for all running/paused hands under orch.
 	// It blocks until every hand has been checked.
 	Reconcile(ctx context.Context, orch *HelmRuntime) []HandReconcileResult
+
+	// ReconcileSingle reconciles one hand on-demand by fetching fresh exchange state.
+	// Used when a hand is restarted after an extended downtime gap so fills and
+	// external closes that occurred while the hand was stopped are applied before
+	// the first signal is processed.
+	ReconcileSingle(ctx context.Context, orch *HelmRuntime, hand *Hand) HandReconcileResult
 }
+
+// reconcileHandTimeout caps exchange API time per hand during reconcile.
+// One slow exchange must not block all remaining hands.
+const reconcileHandTimeout = 30 * time.Second
+
+// equityDriftThreshold is the fractional tolerance for post-reconcile equity check.
+// A drift above 1% of exchange equity triggers CodeReconcileEquityDrift.
+const equityDriftThreshold = 0.01
 
 // ── Default implementation ────────────────────────────────────────────────────
 
@@ -84,17 +99,133 @@ func (r *DefaultReconciler) Reconcile(ctx context.Context, orch *HelmRuntime) []
 			"helm_id", orch.HelmID, "err", errPositions)
 	}
 
+	// Per-action counters for the summary event.
+	counts := make(map[ReconcileAction]int, 6)
+
 	results := make([]HandReconcileResult, 0, len(hands))
 	for _, hand := range hands {
-		res := r.reconcileHand(ctx, orch, hand, exchangeOrders, exchangePositions, errOrders, errPositions)
+		// Each hand gets an independent timeout so one slow exchange API call
+		// cannot block every remaining hand from being reconciled.
+		handCtx, handCancel := context.WithTimeout(ctx, reconcileHandTimeout)
+		res := r.reconcileHand(handCtx, orch, hand, exchangeOrders, exchangePositions, errOrders, errPositions)
+		handCancel()
+
 		results = append(results, res)
+		counts[res.Action]++
 		if res.Err != nil {
 			slog.Error("reconcile failed", "hand_id", hand.id, "err", res.Err)
+			hand.emitEvent(natsapi.HelmEvent{
+				Code:   CodeReconcileFailed,
+				Reason: res.Err.Error(),
+				Msg:    "reconcile: failed — hand left stopped for manual review",
+			})
 		} else {
 			slog.Info("reconcile", "hand_id", hand.id, "action", res.Action, "phase", res.Phase)
 		}
 	}
+
+	// ── Summary event ────────────────────────────────────────────────────────
+	// Helm-level (no HandID) so operators see one event for the whole reconcile
+	// instead of N per-hand events only.
+	orch.EmitEvent(natsapi.HelmEvent{
+		Code: CodeReconcileComplete,
+		Msg:  "reconcile: done",
+		Reason: fmt.Sprintf(
+			"hands=%d restored=%d fills=%d ext_close=%d cancelled=%d skipped=%d failed=%d",
+			len(hands),
+			counts[ReconcileRestored],
+			counts[ReconcileFillApplied],
+			counts[ReconcileExternalClose],
+			counts[ReconcileCancelled],
+			counts[ReconcileSkipped],
+			counts[ReconcileFailed],
+		),
+	})
+
+	// ── Post-reconcile equity drift check ────────────────────────────────────
+	// Compare helm's calculated portfolio equity with the exchange's actual
+	// balance. A drift > 1% means state was not fully recovered — alert the user.
+	// Runs in a goroutine so it doesn't delay handSvc.StartAllHydrated().
+	go func() {
+		r.checkEquityDrift(ctx, orch)
+	}()
+
 	return results
+}
+
+// checkEquityDrift fetches the exchange account snapshot (if supported) and
+// compares it with the helm portfolio equity. Emits CodeReconcileEquityDrift
+// when the absolute difference exceeds equityDriftThreshold of exchange equity.
+// Read-only — does NOT apply the snapshot to the portfolio.
+func (r *DefaultReconciler) checkEquityDrift(ctx context.Context, orch *HelmRuntime) {
+	syncer, ok := orch.Exchange.(exchange.AccountSyncer)
+	if !ok {
+		return
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	snap, err := syncer.SyncAccount(checkCtx, orch.Creds, nil)
+	if err != nil {
+		slog.Warn("reconcile: equity drift check — SyncAccount failed (non-fatal)",
+			"helm_id", orch.HelmID, "err", err)
+		return
+	}
+	if !snap.Equity.IsPositive() || !orch.Portfolio.Equity().IsPositive() {
+		return
+	}
+	helmEquity := orch.Portfolio.Equity()
+	drift := snap.Equity.Sub(helmEquity).Abs()
+	threshold := snap.Equity.Mul(decimal.NewFromFloat(equityDriftThreshold))
+	if drift.LessThan(threshold) {
+		return
+	}
+	driftPct := drift.Div(snap.Equity).Mul(decimal.NewFromInt(100))
+	slog.Warn("reconcile: equity drift detected",
+		"helm_id", orch.HelmID,
+		"exchange_equity", snap.Equity,
+		"helm_equity", helmEquity,
+		"drift_pct", driftPct,
+	)
+	orch.EmitEvent(natsapi.HelmEvent{
+		Code: CodeReconcileEquityDrift,
+		Reason: fmt.Sprintf("exchange=%.4f helm=%.4f drift=%.2f%%",
+			snap.Equity.InexactFloat64(),
+			helmEquity.InexactFloat64(),
+			driftPct.InexactFloat64(),
+		),
+		Msg: "reconcile: equity drift detected — portfolio state may be out of sync",
+	})
+}
+
+// ReconcileSingle reconciles one hand by fetching fresh exchange state on-demand.
+// Used when a hand is restarted after an extended downtime gap. Applies any fills
+// or external closes that occurred while the hand was stopped, using the same
+// poslog+exchange logic as the startup reconciler.
+func (r *DefaultReconciler) ReconcileSingle(ctx context.Context, orch *HelmRuntime, hand *Hand) HandReconcileResult {
+	handCtx, cancel := context.WithTimeout(ctx, reconcileHandTimeout)
+	defer cancel()
+
+	openOrders, errOrders := r.fetchOpenOrders(handCtx, orch)
+	if errOrders != nil {
+		slog.Error("on-demand reconcile: ListOpenOrders failed", "hand_id", hand.id, "err", errOrders)
+	}
+	positions, errPositions := r.fetchPositions(handCtx, orch)
+	if errPositions != nil {
+		slog.Error("on-demand reconcile: ListPositions failed", "hand_id", hand.id, "err", errPositions)
+	}
+
+	res := r.reconcileHand(handCtx, orch, hand, openOrders, positions, errOrders, errPositions)
+	if res.Err != nil {
+		hand.emitEvent(natsapi.HelmEvent{
+			Code:   CodeReconcileFailed,
+			Reason: res.Err.Error(),
+			Msg:    "reconcile: on-demand failed — hand state may be inconsistent",
+		})
+	} else {
+		slog.Info("reconcile: on-demand done",
+			"hand_id", hand.id, "action", res.Action, "phase", res.Phase)
+	}
+	return res
 }
 
 func (r *DefaultReconciler) reconcileHand(
@@ -240,6 +371,13 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 		}
 		hand.mu.Unlock()
 
+		hand.emitEvent(natsapi.HelmEvent{
+			Code:    CodeReconcileRestored,
+			Symbol:  leg.Symbol,
+			OrderID: orderID,
+			Reason:  "pending order still open at exchange after restart",
+			Msg:     "reconcile: order restored",
+		})
 		return ReconcileRestored, nil
 	}
 
@@ -254,12 +392,28 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 		if err := r.emitOrderFilled(ctx, hand, leg.PositionID, exOrder, "reconcile"); err != nil {
 			return ReconcileFailed, err
 		}
+		hand.emitEvent(natsapi.HelmEvent{
+			Code:    CodeReconcileFillApplied,
+			Symbol:  leg.Symbol,
+			OrderID: orderID,
+			Qty:     exOrder.FilledQty,
+			Price:   exOrder.FilledAvg,
+			Reason:  "fill missed during downtime — applied retroactively",
+			Msg:     "reconcile: fill applied",
+		})
 		return ReconcileFillApplied, nil
 
 	case "cancelled", "rejected", "expired":
 		if err := r.emitOrderCancelled(ctx, hand, leg.PositionID, orderID, exOrder.Status); err != nil {
 			return ReconcileFailed, err
 		}
+		hand.emitEvent(natsapi.HelmEvent{
+			Code:    CodeReconcileCancelled,
+			Symbol:  leg.Symbol,
+			OrderID: orderID,
+			Reason:  exOrder.Status + " during downtime",
+			Msg:     "reconcile: order cancelled",
+		})
 		return ReconcileCancelled, nil
 
 	case "partially_filled", "new", "accepted", "pending_new", "submitted":
@@ -297,6 +451,13 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 		slog.Info("reconcile: restored partially-open order for polling",
 			"hand_id", hand.id, "order_id", orderID, "status", exOrder.Status,
 			"filled_qty", exOrder.FilledQty, "original_qty", leg.Qty)
+		hand.emitEvent(natsapi.HelmEvent{
+			Code:    CodeReconcileRestored,
+			Symbol:  leg.Symbol,
+			OrderID: orderID,
+			Reason:  exOrder.Status + " — restored for polling",
+			Msg:     "reconcile: order restored",
+		})
 		return ReconcileRestored, nil
 
 	default:
@@ -315,11 +476,31 @@ func (r *DefaultReconciler) reconcileOpenLeg(
 	pos, exists := positions[leg.Symbol]
 	if !exists || pos.Qty.IsZero() {
 		// Position was closed externally while app was down.
+		// Cancel any dangling OCO bracket orders so the exchange doesn't hold
+		// orphaned bracket orders that could trigger on unrelated future positions.
+		hand.mu.Lock()
+		hand.cancelExitOrders(ctx, leg.Symbol, "")
+		hand.mu.Unlock()
+
 		if err := r.emitExternalClose(ctx, hand, leg); err != nil {
 			return ReconcileFailed, err
 		}
+		hand.emitEvent(natsapi.HelmEvent{
+			Code:   CodeReconcileExternalClose,
+			Symbol: leg.Symbol,
+			Reason: "position not found at exchange after restart — closed externally during downtime",
+			Msg:    "reconcile: position externally closed",
+		})
 		return ReconcileExternalClose, nil
 	}
+	hand.emitEvent(natsapi.HelmEvent{
+		Code:   CodeReconcileRestored,
+		Symbol: leg.Symbol,
+		Qty:    pos.Qty,
+		Price:  pos.AvgPrice,
+		Reason: "open position confirmed at exchange after restart",
+		Msg:    "reconcile: position restored",
+	})
 	return ReconcileRestored, nil
 }
 

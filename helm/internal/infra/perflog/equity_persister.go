@@ -12,6 +12,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"mallow/helm/internal/runtime/perf"
+	"mallow/helm/internal/safe"
 )
 
 const (
@@ -35,6 +36,7 @@ func NewEquityPersister(js nats.JetStreamContext, db *sql.DB) *EquityPersister {
 
 // Run subscribes to helm.equity.> and flushes batches to PG until ctx is cancelled.
 func (p *EquityPersister) Run(ctx context.Context) {
+	defer safe.Recover()
 	sub, err := p.js.PullSubscribe("helm.equity.>", equityConsumer,
 		nats.BindStream("HELM_EQUITY"),
 		nats.AckExplicit(),

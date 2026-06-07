@@ -278,3 +278,27 @@ type OrderReconciler interface {
 type HistoryFetcher interface {
 	FilledOrders(ctx context.Context, creds Credentials, symbols []string, from, to time.Time) ([]AccountTransaction, error)
 }
+
+// IsolatedMarginTrader is implemented by futures exchanges that support per-symbol
+// isolated margin. Exchanges that do NOT implement this interface are assumed to
+// support cross margin only — hand creation with MarginType="isolated" is blocked.
+type IsolatedMarginTrader interface {
+	SupportsIsolatedMargin() bool
+}
+
+// LiveAlgoOrder is a summary of an active exchange-side algo (OCO/conditional) order.
+type LiveAlgoOrder struct {
+	AlgoID     string
+	InstID     string
+	OrdType    string // "oco" | "conditional"
+	StopLoss   decimal.Decimal
+	TakeProfit decimal.Decimal
+}
+
+// AlgoOrderLister is optionally implemented by exchanges that support algo/bracket
+// orders (OKX OCO/conditional). Used during startup recovery to find existing live
+// algo orders for a symbol — prevents duplicate OCO placement when KindBracketPlaced
+// was not persisted before a crash.
+type AlgoOrderLister interface {
+	ListLiveAlgoOrders(ctx context.Context, creds Credentials, instID string) ([]LiveAlgoOrder, error)
+}

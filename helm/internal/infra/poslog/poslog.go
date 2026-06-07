@@ -205,4 +205,11 @@ type Log interface {
 	// cursor=0 starts from the beginning of the stream; pass TradeRecord.Cursor+1 for the
 	// next page. Only position_closed events are returned — other event kinds are skipped.
 	TradesPaged(ctx context.Context, helmID, handID string, cursor uint64, limit int) (TradesPage, error)
+
+	// PurgeHand deletes all poslog messages for a hand from the JetStream stream.
+	// Called after a hand reaches flat (all legs closed/orphaned) so the stream stays
+	// lean and ReplayHand on the next restart returns an empty slice — the hand
+	// restarts clean without re-processing stale closed-position events.
+	// Safe to call even if already empty (NATS treats it as a no-op).
+	PurgeHand(ctx context.Context, helmID, handID string) error
 }

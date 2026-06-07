@@ -14,6 +14,7 @@ import (
 	"mallow/helm/internal/infra/natsapi"
 	helmdomain "mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/runtime/clid"
+	"mallow/helm/internal/safe"
 )
 
 // StartFillStreaming opens the WS order stream and starts the fill and lifecycle
@@ -106,44 +107,20 @@ func (r *HelmRuntime) handleBalanceEvent(ev exchange.BalanceEvent) {
 	)
 }
 
-// runLifecycleProcessor drains lifecycleCh and dispatches order lifecycle events:
+// runLifecycleProcessor drains lifecycleQueue in batch on each lifecycleSignal wakeup.
 //   - Live:     informational — our orders are already tracked by clid before placement
 //   - Canceled: remove from orderbook and notify the owning hand
 func (r *HelmRuntime) runLifecycleProcessor(ctx context.Context) {
+	defer safe.Recover()
 	for {
 		select {
-		case ev := <-r.lifecycleCh:
-			switch ev.Type {
-			case exchange.OrderLifecycleEventLive:
-				// Our orders are tracked by clid before PlaceOrder, so no tracking is needed
-				// here. Untracked orders (placed manually outside the bot) intentionally stay
-				// untracked and resolve to the orphan path when they fill.
-				slog.Debug("order: live ack",
-					"helm_id", r.HelmID,
-					"order_id", ev.OrderID,
-					"client_order_id", ev.ClientOrderID,
-					"symbol", ev.Symbol,
-				)
-			case exchange.OrderLifecycleEventCanceled:
-				// Lookup hand BEFORE removing tracking — needed for external-close detection.
-				key := clid.CanonKey(ev.ClientOrderID, ev.OrderID)
-				handID := r.PendingOrderHandID(key)
-				r.RemoveOrderTracking(key)
-				if key != ev.OrderID {
-					r.RemoveOrderTracking(ev.OrderID) // drop the exchange-id alias too
-				}
-				slog.Info("order tracking: canceled order removed",
-					"helm_id", r.HelmID,
-					"order_id", ev.OrderID,
-				)
-				if handID != "" {
-					r.mu.RLock()
-					hand, ok := r.hands[handID]
-					r.mu.RUnlock()
-					if ok {
-						go hand.HandleExitOrderCanceled(ctx, ev.OrderID)
-					}
-				}
+		case <-r.lifecycleSignal:
+			r.lifecycleMu.Lock()
+			batch := r.lifecycleQueue
+			r.lifecycleQueue = nil
+			r.lifecycleMu.Unlock()
+			for _, ev := range batch {
+				r.applyLifecycleEvent(ctx, ev)
 			}
 		case <-ctx.Done():
 			return
@@ -151,12 +128,82 @@ func (r *HelmRuntime) runLifecycleProcessor(ctx context.Context) {
 	}
 }
 
-// runFillProcessor drains wsFillCh and applies each WS fill event.
+func (r *HelmRuntime) applyLifecycleEvent(ctx context.Context, ev exchange.OrderLifecycleEvent) {
+	switch ev.Type {
+	case exchange.OrderLifecycleEventLive:
+		slog.Debug("order: live ack",
+			"helm_id", r.HelmID,
+			"order_id", ev.OrderID,
+			"client_order_id", ev.ClientOrderID,
+			"symbol", ev.Symbol,
+		)
+	case exchange.OrderLifecycleEventCanceled:
+		key := clid.CanonKey(ev.ClientOrderID, ev.OrderID)
+		handID := r.PendingOrderHandID(key)
+		r.RemoveOrderTracking(key)
+		if key != ev.OrderID {
+			r.RemoveOrderTracking(ev.OrderID)
+		}
+		slog.Info("order tracking: canceled order removed",
+			"helm_id", r.HelmID,
+			"order_id", ev.OrderID,
+		)
+		if handID != "" {
+			r.mu.RLock()
+			hand, ok := r.hands[handID]
+			r.mu.RUnlock()
+			if ok {
+				// Route through the hand's actor loop with a 1s head-start
+				// for the paired OCO fill to arrive first.
+				//
+				// Binance OCO behaviour: when the SL leg fills, the exchange
+				// auto-cancels the TP leg and sends both events on the same WS
+				// connection. In practice the cancel arrives ~2ms before the
+				// fill. Without the delay, HandleExitOrderCanceled would see the
+				// TP cancel, find no entry in pendingCancels, and incorrectly
+				// disown the position before the SL fill is even processed.
+				//
+				// 1s gives the fill event more than enough time to travel
+				// through helm_fills → EnqueueFill → drainFills → applyFill →
+				// cancelExitOrders, which populates pendingCancels with the TP
+				// order ID. When the delayed cancel finally arrives via
+				// exitCancelCh, HandleExitOrderCanceled finds it in pendingCancels
+				// and returns early — no false orphan.
+				handCtx := ctx
+				go func(orderID string) {
+					defer safe.Recover()
+					t := time.NewTimer(1 * time.Second)
+					defer t.Stop()
+					select {
+					case <-t.C:
+					case <-handCtx.Done():
+						return
+					}
+					select {
+					case hand.exitCancelCh <- orderID:
+					case <-handCtx.Done():
+					}
+				}(ev.OrderID)
+			}
+		}
+	}
+}
+
+// runFillProcessor drains wsFillQueue in batch on each wsFillSignal wakeup.
+// Batching amortises the per-event overhead when fill bursts arrive (e.g.
+// multiple partial fills from OKX OCO execution).
 func (r *HelmRuntime) runFillProcessor(ctx context.Context) {
+	defer safe.Recover()
 	for {
 		select {
-		case ev := <-r.wsFillCh:
-			r.applyWsFill(ev)
+		case <-r.wsFillSignal:
+			r.wsFillMu.Lock()
+			batch := r.wsFillQueue
+			r.wsFillQueue = nil
+			r.wsFillMu.Unlock()
+			for _, ev := range batch {
+				r.applyWsFill(ev)
+			}
 		case <-ctx.Done():
 			return
 		}
@@ -167,6 +214,9 @@ func (r *HelmRuntime) runFillProcessor(ctx context.Context) {
 // Full fills are routed to the owning hand (poslog + metrics + exit logic).
 // Partial fills are applied incrementally to the portfolio and tracked for REST dedup.
 func (r *HelmRuntime) applyWsFill(ev exchange.WsFillEvent) {
+	// Normalise commission to quote currency and adjust qty for buys where fee is paid in the base asset or standard non-quote assets like BNB.
+	ev.FilledQty, ev.Commission = r.normalizeCommission(ev.Symbol, ev.Side, ev.FilledQty, ev.FilledAvg, ev.Commission, ev.CommissionAsset)
+
 	helmID := r.HelmID.String()
 
 	// Resolve owning hand before removing the tracking entry. canonOrderKey picks the
@@ -255,7 +305,14 @@ func (r *HelmRuntime) applyWsFill(ev exchange.WsFillEvent) {
 			hand, ok := r.hands[botID]
 			r.mu.RUnlock()
 			if ok {
-				hand.MarkPartialApplied(ev.OrderID, ev.FilledQty)
+				hand.MarkPartialApplied(ev.OrderID, ev.FilledQty, ev.FilledAvg, ev.Commission)
+				// Pre-mark the sibling bracket order as a pending-cancel so
+				// HandleExitOrderCanceled treats the OCO auto-cancel as helm-initiated
+				// even if it arrives before the final partial fill is fully applied.
+				// Fixes the race: Binance fires SL-cancel ~1ms after TP partial fill;
+				// with only MarkPartialApplied run (no cancelExitOrders), pendingCancels
+				// is empty → cancel misidentified as external close → spurious EXT_CLOSE.
+				hand.NotifyBracketPartialFill(ev.OrderID)
 			}
 		}
 		r.ReportFill(fillReport)
@@ -274,11 +331,12 @@ func (r *HelmRuntime) applyWsFill(ev exchange.WsFillEvent) {
 		Msg:     "runtime: fill applied to portfolio",
 	})
 
-	if r.js != nil {
+	// Only publish trade.filled for the final fill, not for each partial.
+	// Each partial already records incremental qty via MarkPartialApplied;
+	// downstream consumers (PnL reporting, trade log) expect one event per order.
+	if r.js != nil && !ev.Partial {
 		natsapi.PublishTradeFill(r.js, r.tradeFillMsg(botID, ev))
-		if !ev.Partial {
-			r.MarkOrderFillPublished(ev.OrderID)
-		}
+		r.MarkOrderFillPublished(ev.OrderID)
 	}
 }
 

@@ -15,6 +15,7 @@ import (
 	analyticsservice "mallow/helm/internal/module/analytics/service"
 	handdomain "mallow/helm/internal/module/hand/domain"
 	dto "mallow/helm/internal/module/hand/dto"
+	handservice "mallow/helm/internal/module/hand/service"
 	helmDto "mallow/helm/internal/module/helm/dto"
 	"mallow/helm/internal/readmodel"
 	"mallow/helm/internal/shared"
@@ -99,163 +100,6 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 
 }
 
-// CapitalSuggestion is one hand that can free up capital for a new hand.
-type CapitalSuggestion struct {
-	HandID          string          `json:"hand_id"`
-	Name            string          `json:"name"`
-	Allocated       decimal.Decimal `json:"allocated"`
-	Deployed        decimal.Decimal `json:"deployed"`
-	ReducibleBy     decimal.Decimal `json:"reducible_by"`     // max freeable = allocated - deployed
-	SuggestedTarget decimal.Decimal `json:"suggested_target"` // allocated - min(reducibleBy, shortage)
-}
-
-// CapitalOverflow is returned (as the 422 JSON body) when a new or updated hand
-// would exceed the helm's unallocated capital. It carries actionable suggestions
-// so the caller knows exactly which hands can be reduced and by how much.
-//
-// Field meanings (all in the helm's quote currency, see docs/metrics-and-reports.md):
-//
-//	helm_equity      = Portfolio.Equity()                                         — broker truth
-//	total_allocated  = Σ existing_hand.AllocatedCapital (excluding the hand being updated)
-//	requested        = the AllocatedCapital being created / updated to
-//	available        = helm_cash − total_allocated                                — i.e. UnallocatedCapital
-type CapitalOverflow struct {
-	Error       string              `json:"error"`
-	HelmEquity  float64             `json:"helm_equity"`
-	TotalAlloc  float64             `json:"total_allocated"`
-	Requested   float64             `json:"requested"`
-	Available   float64             `json:"available"`
-	Suggestions []CapitalSuggestion `json:"suggestions"`
-}
-
-// checkCapitalAllocation validates that the requested allocation fits inside
-// the helm's unallocated capital budget.
-//
-// Inputs:
-//
-//	helmEquity        — `rt.Portfolio.Summary().Cash` (liquid broker cash)
-//	existing          — current allocations across all hands on the helm
-//	allocatedCapital  — the AllocatedCapital being requested (create or update target)
-//	excludeHandID     — pass the current hand's ID when updating so we don't
-//	                    double-count its existing allocation; pass "" when creating
-//
-// Skipped when `allocatedCapital` is zero (shared-pool hand — no per-hand budget).
-//
-// Returns (*CapitalOverflow, nil) on insufficient budget; (nil, nil) when valid.
-func checkCapitalAllocation(
-	helmEquity float64,
-	existing []handdomain.HandSummary,
-	allocatedCapital decimal.Decimal,
-	excludeHandID string,
-) (*CapitalOverflow, error) {
-	if !allocatedCapital.IsPositive() {
-		// Shared-pool hand or zero alloc — nothing to validate.
-		return nil, nil
-	}
-	var used float64
-	for _, b := range existing {
-		if b.ID.String() == excludeHandID {
-			continue
-		}
-		alloc := b.AllocatedCapital.InexactFloat64()
-		if alloc > 0 {
-			used += alloc
-		}
-	}
-	available := helmEquity - used
-	if available < 0 {
-		// Pre-existing skew: total alloc already exceeds equity. Clamp the
-		// reported "available" to 0 so the error message is intelligible.
-		available = 0
-	}
-	requesting := allocatedCapital.InexactFloat64()
-	if requesting <= available {
-		return nil, nil
-	}
-	shortage := requesting - available
-	return buildOverflow(
-		fmt.Sprintf("insufficient unallocated capital: requesting %.2f but only %.2f available "+
-			"(helm equity %.2f, already allocated %.2f)", requesting, available, helmEquity, used),
-		helmEquity, used, requesting, available, shortage, existing, excludeHandID,
-	), nil
-}
-
-// checkSymbolConflict blocks a hand from claiming a symbol already traded by another
-// non-terminal hand on the same helm. The exchange holds ONE net position per symbol per
-// account, so two hands on the same symbol cannot keep independent positions — an
-// urgent-close / kill / auto-pause acts on the net portfolio qty and would corrupt the
-// other hand's position. Enforced at create/update so that ambiguous state is unreachable.
-func checkSymbolConflict(existing []handdomain.HandSummary, symbols []string, excludeHandID string) error {
-	claimed := make(map[string]string, len(existing)) // symbol → owning hand name
-	for i := range existing {
-		b := existing[i]
-		if b.ID.String() == excludeHandID || b.Status.IsTerminal() {
-			continue
-		}
-		for _, s := range b.Symbols {
-			claimed[s] = b.Name
-		}
-	}
-	for _, s := range symbols {
-		if owner, ok := claimed[s]; ok {
-			return fmt.Errorf("symbol %s is already traded by hand %q on this helm — one symbol can have at most one hand per helm", s, owner)
-		}
-	}
-	return nil
-}
-
-// buildOverflow assembles a CapitalOverflow with sorted suggestions.
-// Hands with the most reducible free capital are listed first.
-func buildOverflow(
-	msg string,
-	helmEquity, usedAbs, requesting, available, shortage float64,
-	existing []handdomain.HandSummary,
-	excludeHandID string,
-) *CapitalOverflow {
-	var suggestions []CapitalSuggestion
-	remaining := shortage
-	for _, b := range existing {
-		if b.ID.String() == excludeHandID {
-			continue
-		}
-		alloc := b.AllocatedCapital
-		if !alloc.IsPositive() {
-			continue
-		}
-		deployed := b.DeployedCapital
-		reducible := alloc.Sub(deployed)
-		if !reducible.IsPositive() {
-			continue
-		}
-		reduceBy := reducible
-		if remaining > 0 {
-			cap := decimal.NewFromFloat(remaining)
-			if reducible.LessThan(cap) {
-				reduceBy = reducible
-			} else {
-				reduceBy = cap
-			}
-			remaining -= reduceBy.InexactFloat64()
-		}
-		suggestions = append(suggestions, CapitalSuggestion{
-			HandID:          b.ID.String(),
-			Name:            b.Name,
-			Allocated:       alloc,
-			Deployed:        deployed,
-			ReducibleBy:     reducible,
-			SuggestedTarget: alloc.Sub(reduceBy),
-		})
-	}
-	return &CapitalOverflow{
-		Error:       msg,
-		HelmEquity:  helmEquity,
-		TotalAlloc:  usedAbs,
-		Requested:   requesting,
-		Available:   available,
-		Suggestions: suggestions,
-	}
-}
-
 // create godoc
 // @Summary Create hand
 // @Tags hands
@@ -304,11 +148,11 @@ func (h *Handler) create(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusBadRequest, "helm runtime not available")
 		return
 	}
-	if overflow, _ := checkCapitalAllocation(rt.Portfolio.Summary().Cash.InexactFloat64(), h.handMgr.ListByHelm(helmID), cfg.AllocatedCapital, ""); overflow != nil {
+	if overflow, _ := handservice.CheckCapitalAllocation(rt.Portfolio.Summary().Cash.InexactFloat64(), h.handMgr.ListByHelm(helmID), cfg.AllocatedCapital, ""); overflow != nil {
 		c.JSON(http.StatusUnprocessableEntity, overflow)
 		return
 	}
-	if err := checkSymbolConflict(h.handMgr.ListByHelm(helmID), cfg.Symbols, ""); err != nil {
+	if err := handservice.CheckSymbolConflict(h.handMgr.ListByHelm(helmID), cfg.Symbols, ""); err != nil {
 		shared.RespondWithError(c, http.StatusConflict, err.Error())
 		return
 	}
@@ -472,7 +316,7 @@ func (h *Handler) update(c *gin.Context) {
 			shared.RespondWithError(c, http.StatusBadRequest, "helm runtime not available")
 			return
 		}
-		if overflow, _ := checkCapitalAllocation(rt.Portfolio.Summary().Cash.InexactFloat64(), h.handMgr.ListByHelm(helmID), patch.AllocatedCapital, id.String()); overflow != nil {
+		if overflow, _ := handservice.CheckCapitalAllocation(rt.Portfolio.Summary().Cash.InexactFloat64(), h.handMgr.ListByHelm(helmID), patch.AllocatedCapital, id.String()); overflow != nil {
 			c.JSON(http.StatusUnprocessableEntity, overflow)
 			return
 		}
@@ -568,7 +412,7 @@ func (h *Handler) kill(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Hand killed successfully", dto.HandActionResp{Status: "stopped", ID: id.String()})
+	shared.RespondWithSuccess(c, http.StatusOK, "Hand killed successfully", dto.HandActionResp{Status: "killed", ID: id.String()})
 }
 
 // release godoc
@@ -595,7 +439,7 @@ func (h *Handler) release(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Hand released successfully", dto.HandActionResp{Status: "stopped", ID: id.String()})
+	shared.RespondWithSuccess(c, http.StatusOK, "Hand released successfully", dto.HandActionResp{Status: "released", ID: id.String()})
 }
 
 // Metrics writes Prometheus-style text metrics for all runtimes.
@@ -634,7 +478,7 @@ func (h *Handler) activity(c *gin.Context) {
 		return
 	}
 
-	limit, _ := strconv.Atoi(c.Query("limit"))
+	limit := parseLimitQuery(c, 100, 500)
 	f := readmodel.EventFilter{
 		HelmID: helmID,
 		HandID: &handID,
@@ -749,6 +593,19 @@ func (h *Handler) equity(c *gin.Context) {
 	shared.RespondWithSuccess(c, http.StatusOK, "Equity retrieved", resp)
 }
 
+// parseLimitQuery parses ?limit= with a default and a hard maximum.
+// Returns defaultVal on parse error or out-of-range input.
+func parseLimitQuery(c *gin.Context, defaultVal, maxVal int) int {
+	n, err := strconv.Atoi(c.DefaultQuery("limit", strconv.Itoa(defaultVal)))
+	if err != nil || n <= 0 {
+		return defaultVal
+	}
+	if n > maxVal {
+		return maxVal
+	}
+	return n
+}
+
 // parseHandPeriod mirrors the helm-side parsePeriod but lives in the hand
 // package so handlers stay decoupled from each other.
 func parseHandPeriod(c *gin.Context) domain.Period {
@@ -778,7 +635,7 @@ func (h *Handler) trades(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusNotFound, "not found")
 		return
 	}
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "100"))
+	limit := parseLimitQuery(c, 100, 500)
 	period := domain.Period{Preset: domain.PeriodPreset(c.Query("period"))}
 	if afterStr := c.Query("after"); afterStr != "" {
 		if t, perr := time.Parse(time.RFC3339, afterStr); perr == nil {
@@ -870,7 +727,7 @@ func (h *Handler) allocateCapital(c *gin.Context) {
 		return
 	}
 
-	if overflow, _ := checkCapitalAllocation(rt.Portfolio.Summary().Cash.InexactFloat64(), h.handMgr.ListByHelm(helmID), newCapital, id.String()); overflow != nil {
+	if overflow, _ := handservice.CheckCapitalAllocation(rt.Portfolio.Summary().Cash.InexactFloat64(), h.handMgr.ListByHelm(helmID), newCapital, id.String()); overflow != nil {
 		c.JSON(http.StatusUnprocessableEntity, overflow)
 		return
 	}

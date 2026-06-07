@@ -443,13 +443,17 @@ func hydrateRuntimes(repo orchdomain.HelmRepo, reg *runtime.Registry, brokerSvc 
 // so the hot order-placement path never hits a cold fetch on first signal.
 func hydrateHands(svc *service.Service, reg *runtime.Registry) {
 	svc.HydrateAll()
-	symbols := svc.AllSymbols()
-	slog.Info("hands hydrated, prewarming symbol filters", "symbols", symbols)
-	if len(symbols) > 0 {
+	symsByEx := svc.SymbolsByExchange()
+	total := 0
+	for _, ss := range symsByEx {
+		total += len(ss)
+	}
+	slog.Info("hands hydrated, prewarming symbol filters", "pairs", total)
+	if total > 0 {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		reg.PrewarmFilters(ctx, symbols)
-		slog.Info("symbol filters prewarm complete", "count", len(symbols))
+		reg.PrewarmFilters(ctx, symsByEx)
+		slog.Info("symbol filters prewarm complete", "pairs", total)
 	}
 }
 

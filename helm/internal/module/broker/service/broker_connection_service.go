@@ -272,7 +272,7 @@ func (s *brokerConnectionService) GetByID(ctx context.Context, id, userID uuid.U
 		return nil, err
 	}
 	if conn.UserID != userID {
-		return nil, fmt.Errorf("unauthorized access to broker connection")
+		return nil, fmt.Errorf("broker connection not found")
 	}
 	return conn, nil
 }

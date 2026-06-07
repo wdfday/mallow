@@ -3,6 +3,7 @@ package binance
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -206,6 +207,12 @@ func (c *Client) DetectAccounts(ctx context.Context, creds client.Credentials) (
 
 	// Spot
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("goroutine panic recovered", "recover", r)
+				ch <- result{err: fmt.Errorf("panic: %v", r)}
+			}
+		}()
 		sdk := newSDK(creds)
 		acct, err := sdk.NewGetAccountService().Do(ctx)
 		if err != nil {
@@ -225,6 +232,12 @@ func (c *Client) DetectAccounts(ctx context.Context, creds client.Credentials) (
 
 	// Futures USDM
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("goroutine panic recovered", "recover", r)
+				ch <- result{err: fmt.Errorf("panic: %v", r)}
+			}
+		}()
 		sdk := binancesdk.NewFuturesClient(creds.APIKey, creds.APISecret)
 		if creds.IsPaper {
 			sdk.BaseURL = demoFuturesURL
@@ -251,6 +264,12 @@ func (c *Client) DetectAccounts(ctx context.Context, creds client.Credentials) (
 
 	// Futures CoinM
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("goroutine panic recovered", "recover", r)
+				ch <- result{err: fmt.Errorf("panic: %v", r)}
+			}
+		}()
 		sdk := binancesdk.NewDeliveryClient(creds.APIKey, creds.APISecret)
 		if creds.IsPaper {
 			sdk.BaseURL = demoCoinMURL

@@ -28,6 +28,11 @@ func (c *Client) Subscribe(ctx context.Context, symbols []string) error {
 }
 
 func (c *Client) streamSymbol(ctx context.Context, symbol string) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("goroutine panic recovered", "recover", r)
+		}
+	}()
 	for {
 		if ctx.Err() != nil {
 			return

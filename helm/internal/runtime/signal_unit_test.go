@@ -363,10 +363,15 @@ func TestSignal_ShortEntry(t *testing.T) {
 
 	shortCh := h.Subscribe(64)
 	h.DeliverSignal(shortSignalFor(symbol))
-	mustWaitCodeCh(t, shortCh, runtime.CodeOrderFilled, simWait)
 
-	if sim.placed0().Side != exchange.Sell {
-		t.Errorf("expected sell side for short entry, got %s", sim.placed0().Side)
+	// Since short selling is not supported yet, the signal should be rejected.
+	ev := mustWaitCodeCh(t, shortCh, runtime.CodeSignalRejected, simWait)
+	if ev.Reason != "not support short selling yet" {
+		t.Errorf("expected rejection reason 'not support short selling yet', got '%s'", ev.Reason)
+	}
+
+	if sim.placedCount() != 0 {
+		t.Errorf("expected no orders placed for short entry, got %d", sim.placedCount())
 	}
 }
 

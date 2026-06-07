@@ -105,11 +105,10 @@ func TestApplyFill_Long(t *testing.T) {
 	if !trade.Qty.Equal(d("2")) {
 		t.Errorf("expected trade qty 2, got %s", trade.Qty)
 	}
-	// pnl = (120 - 103.3333333333) * 2 - 0.4 = 33.333333333 * 2 - 0.4 = 66.666666667 - 0.4 = 66.266666667
-	expectedPnL := d("32.9333333333333334") // wait, let's calculate: (120 - 103.3333333333333333) * 2 - 0.4
-	// Actually: (120 - 310/3)*2 - 0.4 = (360/3 - 310/3)*2 - 0.4 = (50/3)*2 - 0.4 = 100/3 - 0.4 = 33.33333333 - 0.4 = 32.93333333
+	// pnl = (120 - 103.3333333333) * 2 - 0.4666666667 (proportional entry) - 0.4 (exit) = 32.4666666667
+	expectedPnL := d("32.4666666666666667")
 	if trade.PnL.Sub(expectedPnL).Abs().GreaterThan(d("1e-9")) {
-		t.Errorf("expected trade PnL around 32.9333, got %s", trade.PnL)
+		t.Errorf("expected trade PnL around 32.4666, got %s", trade.PnL)
 	}
 
 	// 4. Sell to close remaining 1 unit at $130

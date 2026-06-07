@@ -73,6 +73,11 @@ func (c *Client) runOnce(ctx context.Context, symbols []string) error {
 	msgs := make(chan []byte, 128)
 	readErr := make(chan error, 1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("goroutine panic recovered", "recover", r)
+			}
+		}()
 		for {
 			_, msg, err := conn.ReadMessage()
 			if err != nil {

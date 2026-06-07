@@ -123,6 +123,11 @@ func (s *Service) Disable(id uuid.UUID) error {
 
 	// Step 4: remove runtime after grace period.
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("goroutine panic recovered", "recover", r)
+			}
+		}()
 		time.Sleep(5 * time.Second)
 		handIDs := s.spawner.Teardown(id)
 		if s.hands != nil && len(handIDs) > 0 {

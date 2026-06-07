@@ -14,6 +14,10 @@ import (
 // SupportsFutures implements exchange.FuturesTrader — OKX supports SWAP perpetuals.
 func (c *Client) SupportsFutures() bool { return true }
 
+// SupportsIsolatedMargin implements exchange.IsolatedMarginTrader.
+// OKX supports isolated margin via tdMode in the order body.
+func (c *Client) SupportsIsolatedMargin() bool { return true }
+
 // SetLeverage sets leverage and margin mode for a SWAP instrument.
 // marginType: "cross" | "isolated"
 func (c *Client) SetLeverage(ctx context.Context, creds exchange.Credentials, symbol string, leverage int, marginType string) error {

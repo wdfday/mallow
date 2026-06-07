@@ -9,6 +9,7 @@ import (
 	"github.com/google/uuid"
 
 	"mallow/helm/internal/infra/engine"
+	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/runtime"
 )
@@ -94,22 +95,32 @@ func (s *Service) hydrate(data *domain.Hand) (*runtime.HandRef, error) {
 	return &runtime.HandRef{Data: data, Runner: hand, Exchange: rt.Exchange}, nil
 }
 
-// AllSymbols returns the deduplicated set of symbols across all live hands.
-// Used to prewarm the exchange symbol-filter cache at startup.
-func (s *Service) AllSymbols() []string {
+// SymbolsByExchange returns the deduplicated symbols for each exchange, keyed by
+// the exchange instance. Only (exchange, symbol) pairs that actually belong to a
+// hand on that exchange are returned — so OKX symbols (SOL-USDT) are never sent
+// to Binance and vice-versa.
+func (s *Service) SymbolsByExchange() map[exchange.Exchange][]string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	seen := make(map[string]struct{}, len(s.hands))
+	seen := make(map[exchange.Exchange]map[string]struct{})
 	for _, bi := range s.hands {
+		ex := bi.Exchange
+		if seen[ex] == nil {
+			seen[ex] = make(map[string]struct{})
+		}
 		for _, sym := range bi.Data.Symbols {
 			if sym != "" {
-				seen[sym] = struct{}{}
+				seen[ex][sym] = struct{}{}
 			}
 		}
 	}
-	out := make([]string, 0, len(seen))
-	for sym := range seen {
-		out = append(out, sym)
+	out := make(map[exchange.Exchange][]string, len(seen))
+	for ex, syms := range seen {
+		list := make([]string, 0, len(syms))
+		for sym := range syms {
+			list = append(list, sym)
+		}
+		out[ex] = list
 	}
 	return out
 }

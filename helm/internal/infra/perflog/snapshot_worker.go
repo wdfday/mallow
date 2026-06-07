@@ -9,6 +9,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"mallow/helm/internal/runtime/perf"
+	"mallow/helm/internal/safe"
 )
 
 const (
@@ -61,6 +62,7 @@ func NewSnapshotWorker(src SnapshotSource, js nats.JetStreamContext) *SnapshotWo
 // Run starts the debounce and heartbeat loops. Blocks until ctx is cancelled.
 // Intended to run in a dedicated goroutine via the app lifecycle.
 func (w *SnapshotWorker) Run(ctx context.Context) {
+	defer safe.Recover()
 	debounce := time.NewTicker(snapshotDebounce)
 	heartbeat := time.NewTicker(snapshotHeartbeat)
 	defer debounce.Stop()

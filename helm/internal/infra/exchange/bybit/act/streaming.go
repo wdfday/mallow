@@ -35,6 +35,11 @@ func (c *Client) StreamOrders(
 	_ func(exchange.BalanceEvent),
 ) error {
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("goroutine panic recovered", "recover", r)
+			}
+		}()
 		bo := exchange.Backoff{Min: 2 * time.Second, Max: 60 * time.Second, Factor: 2.0, Jitter: true}
 		attempt := 0
 		for {
@@ -95,6 +100,11 @@ func (c *Client) streamOrdersOnce(
 	msgs := make(chan []byte, 64)
 	readErr := make(chan error, 1)
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("goroutine panic recovered", "recover", r)
+			}
+		}()
 		for {
 			_, msg, err := conn.ReadMessage()
 			if err != nil {

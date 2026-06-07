@@ -381,6 +381,24 @@ func (m *MeteredExchange) GetFreeBalance(ctx context.Context, creds Credentials,
 	return decimal.Zero, fmt.Errorf("exchange %q does not implement SpotBalanceFetcher", m.Name())
 }
 
+// SupportsFutures delegates to inner if inner implements the method.
+// Returns false for spot-only exchanges (safe default).
+func (m *MeteredExchange) SupportsFutures() bool {
+	if ft, ok := m.inner.(interface{ SupportsFutures() bool }); ok {
+		return ft.SupportsFutures()
+	}
+	return false
+}
+
+// SupportsIsolatedMargin implements IsolatedMarginTrader — delegates to inner.
+// Returns false when inner does not implement IsolatedMarginTrader (cross margin only).
+func (m *MeteredExchange) SupportsIsolatedMargin() bool {
+	if ft, ok := m.inner.(IsolatedMarginTrader); ok {
+		return ft.SupportsIsolatedMargin()
+	}
+	return false
+}
+
 // ClidSurfaces implements ClidCapable — delegates to inner.
 // Callable on any receiver; falls back to zero ClidSurfaces when inner doesn't implement it.
 func (m *MeteredExchange) ClidSurfaces() ClidSurfaces {
@@ -423,6 +441,7 @@ var _ SpotBalanceFetcher = (*MeteredExchange)(nil)
 var _ ClidCapable = (*MeteredExchange)(nil)
 var _ ClientOrderQuerier = (*MeteredExchange)(nil)
 var _ TimeSyncer = (*MeteredExchange)(nil)
+var _ IsolatedMarginTrader = (*MeteredExchange)(nil)
 
 // AtomicMinStore atomically stores v only if v < current (or current == 0).
 // Exported for testing.

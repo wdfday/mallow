@@ -294,7 +294,21 @@ func (h *Hand) appendTradeRecord(ctx context.Context, cp poslog.PositionClosedPa
 	deployed, _ := decimal.NewFromString(cp.DeployedCapital)
 	if deployed.IsPositive() && exitQty.IsPositive() && exitPrice.IsPositive() {
 		// gross_pnl = pure price movement, no fees.
-		grossPnL = exitQty.Mul(exitPrice).Sub(netQty.Mul(entryPrice)).String()
+		//
+		// Long  (cp.Side=="buy"):  bought at entryPrice, sold at exitPrice
+		//   → PnL = exitQty×exitPrice − netQty×entryPrice
+		//
+		// Short (cp.Side=="sell"): sold at entryPrice, bought back at exitPrice
+		//   → PnL = netQty×entryPrice − exitQty×exitPrice
+		//
+		// The legacy fallback (cp.RealizedPnL) is computed correctly in applyFill
+		// using the closing fill's side, but the deployed-capital formula above used
+		// the long formula unconditionally — inverting the sign for short trades.
+		if cp.Side == "sell" { // short position: entry=sell, cover=buy
+			grossPnL = netQty.Mul(entryPrice).Sub(exitQty.Mul(exitPrice)).String()
+		} else { // long position: entry=buy, exit=sell
+			grossPnL = exitQty.Mul(exitPrice).Sub(netQty.Mul(entryPrice)).String()
+		}
 		// entry_commission = deployed_capital − net_qty × entry_price.
 		if entryPrice.IsPositive() {
 			entryCommission := deployed.Sub(netQty.Mul(entryPrice))

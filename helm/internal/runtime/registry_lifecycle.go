@@ -6,7 +6,6 @@ import (
 	"log/slog"
 
 	"github.com/google/uuid"
-	"github.com/nats-io/nats.go"
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
@@ -80,6 +79,9 @@ func (r *Registry) Spawn(cfg *helmdomain.Helm, exchCfg helmdomain.ExchangeConfig
 	// Wire the unit counter so MaxPositions counts actual open legs + manual positions,
 	// not just distinct portfolio symbols.
 	rt.RiskMgr.SetUnitCounter(rt.OpenUnitCount)
+	// Wire the available-cash provider so the capital-adequacy gate (Gate 0.5) can
+	// block new entries when totalCash drops below the sum of hand cash budgets.
+	rt.RiskMgr.SetAvailableCashFn(rt.AvailableCash)
 
 	r.mu.RLock()
 	rt.PosLog = r.posLog
@@ -116,8 +118,6 @@ func (r *Registry) Spawn(cfg *helmdomain.Helm, exchCfg helmdomain.ExchangeConfig
 	return nil
 }
 
-// Teardown stops and removes the HelmRuntime for the given helm.
-// Returns hand IDs that were registered so the caller can stop them.
 // RotateCreds updates the credentials of a running HelmRuntime in-place and
 // reconnects the WS order stream. Running hands are not interrupted — REST calls
 // (PlaceOrder, GetOrder) pick up new credentials immediately; the WS stream
@@ -134,6 +134,8 @@ func (r *Registry) RotateCreds(id uuid.UUID, newCreds exchange.Credentials) {
 	rt.RotateFillStream(appCtx, newCreds)
 }
 
+// Teardown stops and removes the HelmRuntime for the given helm.
+// Returns hand IDs that were registered so the caller can stop them.
 func (r *Registry) Teardown(id uuid.UUID) []string {
 	r.mu.Lock()
 	rt, ok := r.helmRuntimes[id]
@@ -154,7 +156,7 @@ func (r *Registry) Teardown(id uuid.UUID) []string {
 // StartFillStreaming starts account fill listeners for all runtimes whose exchange
 // implements AccountStreamer. Called once from the app lifecycle after SetRuntime.
 // Each HelmRuntime owns its own fill streaming goroutines — see helm_fills.go.
-func (r *Registry) StartFillStreaming(ctx context.Context, _ *nats.Conn) {
+func (r *Registry) StartFillStreaming(ctx context.Context) {
 	r.mu.RLock()
 	rts := make([]*HelmRuntime, 0, len(r.helmRuntimes))
 	for _, rt := range r.helmRuntimes {

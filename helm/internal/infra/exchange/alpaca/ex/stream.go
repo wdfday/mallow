@@ -26,10 +26,24 @@ func (c *Client) Subscribe(ctx context.Context, symbols []string) error {
 	errCh := make(chan error, 2)
 
 	if len(stocks) > 0 {
-		go func() { errCh <- c.runStocks(ctx, stocks) }()
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("goroutine panic recovered", "recover", r)
+				}
+			}()
+			errCh <- c.runStocks(ctx, stocks)
+		}()
 	}
 	if len(cryptos) > 0 {
-		go func() { errCh <- c.runCrypto(ctx, cryptos) }()
+		go func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("goroutine panic recovered", "recover", r)
+				}
+			}()
+			errCh <- c.runCrypto(ctx, cryptos)
+		}()
 	}
 
 	// Wait for ctx or first fatal error.

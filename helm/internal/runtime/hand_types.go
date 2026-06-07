@@ -86,6 +86,29 @@ const (
 	CodeHelmSynced   = 10302 // portfolio synced from exchange
 	CodeHelmHalted   = 10303 // helm halted by risk manager
 	CodeHelmUnhalted = 10304 // helm halt reset (manual)
+
+	// Reconciler codes — startup gap recovery.
+	CodeReconcileRestored      = 10400 // order / position confirmed still live at exchange after restart
+	CodeReconcileFillApplied   = 10401 // fill missed during downtime — applied retroactively
+	CodeReconcileCancelled     = 10402 // order was cancelled / rejected at exchange during downtime
+	CodeReconcileExternalClose = 10403 // position was closed externally during downtime
+	CodeReconcileFailed        = 10404 // reconciler could not determine state — hand left stopped
+
+	// Position lifecycle codes — position-level view on top of order-level fills.
+	// Pre-fill events (Entering/Adding) fire when the order is placed.
+	// Post-fill events (Opened/Added/Closed) fire when the exchange confirms the fill.
+	// Cancel events fire when a pending entry or add order is cancelled before it fills.
+	CodePositionEntering       = 10503 // entry order placed, position in PhaseEntering — waiting for exchange fill
+	CodePositionAdding         = 10504 // pyramid add order placed, position in PhaseAdding — current qty/avg unchanged until fill
+	CodePositionOpened         = 10500 // entry fill confirmed — position now PhaseOpen; carries avg_entry, qty
+	CodePositionAdded          = 10501 // pyramid add fill confirmed — position grown; carries new total qty, new blended avg_entry
+	CodePositionClosed         = 10502 // exit fill confirmed — position closed; carries pnl, pnl_pct, entry_price, exit_price
+	CodePositionEnterCancelled = 10505 // entry order cancelled before fill — position never opened
+	CodePositionAddCancelled   = 10506 // pyramid add order cancelled before fill — position reverts to prior PhaseOpen state
+
+	// Extended reconciler codes.
+	CodeReconcileComplete    = 10405 // reconcile finished — summary of all outcomes (hands checked, fills applied, …)
+	CodeReconcileEquityDrift = 10406 // post-reconcile equity cross-check: helm portfolio diverges from exchange balance by > 1%
 )
 
 // ── handEventBus — test-only broadcast ───────────────────────────────────────

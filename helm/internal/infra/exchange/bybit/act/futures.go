@@ -13,6 +13,10 @@ import (
 // SupportsFutures implements exchange.FuturesTrader — Bybit supports linear perpetuals.
 func (c *Client) SupportsFutures() bool { return true }
 
+// SupportsIsolatedMargin implements exchange.IsolatedMarginTrader.
+// Bybit supports isolated margin via SetLeverage — position mode is set per-symbol.
+func (c *Client) SupportsIsolatedMargin() bool { return true }
+
 // SetLeverage sets buy/sell leverage for a linear perpetual symbol.
 // marginType: "cross" | "isolated"
 func (c *Client) SetLeverage(ctx context.Context, creds exchange.Credentials, symbol string, leverage int, marginType string) error {

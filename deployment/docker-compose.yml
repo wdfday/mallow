@@ -350,7 +350,7 @@ services:
       GF_AUTH_ANONYMOUS_ENABLED: "true"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
       GF_FEATURE_TOGGLES_ENABLE: traceqlEditor traceToMetrics
-      GF_INSTALL_PLUGINS: grafana-pyroscope-datasource
+      # grafana-pyroscope-datasource is a core plugin in Grafana 10+ — no install needed
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana-data:/var/lib/grafana

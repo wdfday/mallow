@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS hands (
     limit_fallback     TEXT          NOT NULL DEFAULT 'cancel'
                        CHECK (limit_fallback IN ('cancel', 'market')),
     status   TEXT    NOT NULL DEFAULT 'stopped'
-             CHECK (status IN ('running', 'stopped', 'paused')),
+             CHECK (status IN ('running', 'stopped', 'paused', 'killed', 'released')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

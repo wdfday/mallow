@@ -114,6 +114,8 @@ pub struct ScriptLintScope {
 /// 3. Script syntax errors in the logic section (indicator decls stripped first).
 /// 4. HTF declared smaller than `base_tf` — error (e.g. `ind.ema(9, "M1")` in an H1 strategy).
 /// 5. HTF equal to `base_tf` — warning (no benefit, same as base-TF indicator).
+/// 6. period = 0 — error (panics during indicator construction).
+/// 7. Cross-parameter constraint violations — error (e.g. macd fast ≥ slow).
 ///
 /// Pass `base_tf = None` to skip checks 4–5 (e.g. when base TF is unknown at lint time).
 pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnostic>, ScriptLintScope) {
@@ -151,6 +153,9 @@ pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnos
                 if let Some(d) = check_htf_vs_base(&decl.var_name, decl.timeframe, base_tf, lineno) {
                     diags.push(d);
                 }
+                diags.extend(check_indicator_params(
+                    &decl.var_name, &decl.ind_type, decl.period, &decl.extra_params, lineno,
+                ));
                 let multi = matches!(decl.kind, IndicatorKind::Multi(_));
                 scope_inds.push(DeclaredIndicator {
                     name:      decl.var_name,
@@ -196,6 +201,9 @@ pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnos
                     if let Some(d) = check_htf_vs_base(&decl.var_name, decl.timeframe, base_tf, lineno) {
                         diags.push(d);
                     }
+                    diags.extend(check_indicator_params(
+                        &decl.var_name, &decl.ind_type, decl.period, &decl.extra_params, lineno,
+                    ));
                     let multi = matches!(decl.kind, IndicatorKind::Multi(_));
                     scope_inds.push(DeclaredIndicator {
                         name:      decl.var_name,
@@ -355,6 +363,222 @@ fn field_access_on_scalar(
             search = &search[start + needle.len()..];
         }
     }
+    diags
+}
+
+/// Indicators where the `period` argument in `ind.TYPE(N)` is NOT forwarded
+/// as the `"period"` config key — it maps to other parameters or is ignored
+/// entirely. `period = 0` will NOT panic for these types.
+///
+/// - `kalman`  → params: q_pos, q_vel, r (no period key)
+/// - `gmma`    → params: short[], long[] arrays (no period key)
+/// - `ao`      → params: fast, slow (no period key)
+/// - `coppock` → params: short, long, wma (no period key)
+/// - `bop`     → no params
+/// - `obv`     → no params
+/// - `vwap`    → param: session_gap_mins
+/// - `fractal` → no params
+const PERIOD_EXEMPT: &[&str] = &[
+    "kalman", "gmma", "ao", "coppock", "bop", "obv", "vwap", "fractal",
+];
+
+/// Validate period ≥ 1 and cross-parameter constraints for indicators that
+/// would panic or produce wrong results with invalid params.
+///
+/// Only checks params the user actually provided — defaults are assumed sane.
+fn check_indicator_params(
+    var_name: &str,
+    ind_type: &str,
+    period: usize,
+    extra: &std::collections::HashMap<String, f64>,
+    lineno: usize,
+) -> Vec<LintDiagnostic> {
+    let mut diags: Vec<LintDiagnostic> = Vec::new();
+
+    // All indicators except those that don't use "period" in their config:
+    // period = 0 would be forwarded as the period key and panic in new().
+    if period == 0 && !PERIOD_EXEMPT.contains(&ind_type) {
+        diags.push(LintDiagnostic {
+            line: lineno, col: 1,
+            message: format!("'{var_name}': period must be ≥ 1, got 0"),
+            severity: "error",
+        });
+    }
+
+    // Helper: get an extra param as usize (rounded).
+    let get_u = |key: &str| extra.get(key).map(|&v| v as usize);
+    let get_f = |key: &str| extra.get(key).copied();
+
+    match ind_type {
+        // macd / ppo: fast (period) < slow.
+        "macd" | "ppo" => {
+            if let Some(slow) = get_u("slow") {
+                if period >= slow {
+                    diags.push(LintDiagnostic {
+                        line: lineno, col: 1,
+                        message: format!(
+                            "'{var_name}': {ind_type} fast period ({period}) must be < slow ({slow})"
+                        ),
+                        severity: "error",
+                    });
+                }
+            }
+        }
+        // alligator: jaw (period) > teeth > lips.
+        "alligator" => {
+            if let (Some(teeth), Some(lips)) = (get_u("teeth"), get_u("lips")) {
+                if period <= teeth {
+                    diags.push(LintDiagnostic {
+                        line: lineno, col: 1,
+                        message: format!(
+                            "'{var_name}': alligator jaw ({period}) must be > teeth ({teeth})"
+                        ),
+                        severity: "error",
+                    });
+                }
+                if teeth <= lips {
+                    diags.push(LintDiagnostic {
+                        line: lineno, col: 1,
+                        message: format!(
+                            "'{var_name}': alligator teeth ({teeth}) must be > lips ({lips})"
+                        ),
+                        severity: "error",
+                    });
+                }
+            } else if let Some(teeth) = get_u("teeth") {
+                if period <= teeth {
+                    diags.push(LintDiagnostic {
+                        line: lineno, col: 1,
+                        message: format!(
+                            "'{var_name}': alligator jaw ({period}) must be > teeth ({teeth})"
+                        ),
+                        severity: "error",
+                    });
+                }
+            }
+        }
+        // coppock: short ROC (period) < long ROC.
+        "coppock" => {
+            if let Some(long) = get_u("long") {
+                if period >= long {
+                    diags.push(LintDiagnostic {
+                        line: lineno, col: 1,
+                        message: format!(
+                            "'{var_name}': coppock short ROC ({period}) must be < long ROC ({long})"
+                        ),
+                        severity: "error",
+                    });
+                }
+            }
+        }
+        // kama: fast EMA period < slow EMA period.
+        "kama" => {
+            if let (Some(fast), Some(slow)) = (get_u("fast"), get_u("slow")) {
+                if fast >= slow {
+                    diags.push(LintDiagnostic {
+                        line: lineno, col: 1,
+                        message: format!(
+                            "'{var_name}': kama fast EMA ({fast}) must be < slow EMA ({slow})"
+                        ),
+                        severity: "error",
+                    });
+                }
+            }
+        }
+        // parabolic_sar: step > 0; max > step.
+        "parabolic_sar" => {
+            if let Some(step) = get_f("step") {
+                if step <= 0.0 {
+                    diags.push(LintDiagnostic {
+                        line: lineno, col: 1,
+                        message: format!(
+                            "'{var_name}': parabolic_sar step must be > 0, got {step}"
+                        ),
+                        severity: "error",
+                    });
+                }
+                if let Some(max) = get_f("max") {
+                    if max <= step {
+                        diags.push(LintDiagnostic {
+                            line: lineno, col: 1,
+                            message: format!(
+                                "'{var_name}': parabolic_sar max ({max}) must be > step ({step})"
+                            ),
+                            severity: "error",
+                        });
+                    }
+                }
+            }
+        }
+        // alma: offset ∈ [0, 1]; sigma > 0.
+        "alma" => {
+            if let Some(offset) = get_f("offset") {
+                if !(0.0..=1.0).contains(&offset) {
+                    diags.push(LintDiagnostic {
+                        line: lineno, col: 1,
+                        message: format!(
+                            "'{var_name}': alma offset must be in [0.0, 1.0], got {offset}"
+                        ),
+                        severity: "error",
+                    });
+                }
+            }
+            if let Some(sigma) = get_f("sigma") {
+                if sigma <= 0.0 {
+                    diags.push(LintDiagnostic {
+                        line: lineno, col: 1,
+                        message: format!(
+                            "'{var_name}': alma sigma must be > 0, got {sigma}"
+                        ),
+                        severity: "error",
+                    });
+                }
+            }
+        }
+        // tsi: second smoothing < first (period).
+        "tsi" => {
+            if let Some(second) = get_u("second") {
+                if second >= period {
+                    diags.push(LintDiagnostic {
+                        line: lineno, col: 1,
+                        message: format!(
+                            "'{var_name}': tsi second smoothing ({second}) must be < first ({period})"
+                        ),
+                        severity: "error",
+                    });
+                }
+            }
+        }
+        // uo: fast (period) < medium < slow.
+        "uo" => {
+            let medium = get_u("medium");
+            let slow   = get_u("slow");
+            if let Some(med) = medium {
+                if period >= med {
+                    diags.push(LintDiagnostic {
+                        line: lineno, col: 1,
+                        message: format!(
+                            "'{var_name}': uo fast ({period}) must be < medium ({med})"
+                        ),
+                        severity: "error",
+                    });
+                }
+                if let Some(sl) = slow {
+                    if med >= sl {
+                        diags.push(LintDiagnostic {
+                            line: lineno, col: 1,
+                            message: format!(
+                                "'{var_name}': uo medium ({med}) must be < slow ({sl})"
+                            ),
+                            severity: "error",
+                        });
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+
     diags
 }
 
@@ -638,6 +862,91 @@ if ema9[0] > 0.0 { entry = true; }
             .filter(|e| e.message.contains("H4") || e.message.contains("timeframe"))
             .collect();
         assert!(htf_errors.is_empty(), "unexpected htf errors: {htf_errors:?}");
+    }
+
+    // ── Period / cross-param checks ──────────────────────────────────────────
+
+    #[test]
+    fn lint_period_zero_is_error() {
+        let (errors, _) = script_lint("let ema0 = ind.ema(0);\nif ema0[0] > 0.0 { entry = true; }", None);
+        assert!(
+            errors.iter().any(|e| e.severity == "error" && e.message.contains("period") && e.message.contains("ema0")),
+            "expected period=0 error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn lint_period_zero_exempt_indicators_clean() {
+        // kalman, gmma, ao, bop, obv, vwap, fractal, coppock don't use period key.
+        for ind in &["kalman", "gmma", "ao", "coppock", "bop", "obv", "vwap", "fractal"] {
+            let script = format!("let x = ind.{ind}(0);\nif x[0] > 0.0 {{ entry = true; }}");
+            let (errors, _) = script_lint(&script, None);
+            let period_errors: Vec<_> = errors.iter()
+                .filter(|e| e.severity == "error" && e.message.contains("period"))
+                .collect();
+            assert!(
+                period_errors.is_empty(),
+                "ind.{ind}(0) should NOT error on period=0 (exempt), got: {period_errors:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn lint_macd_fast_ge_slow_is_error() {
+        let (errors, _) = script_lint("let m = ind.macd(26, 12);\nif m[0] > 0.0 { entry = true; }", None);
+        assert!(
+            errors.iter().any(|e| e.severity == "error" && e.message.contains("fast") && e.message.contains("slow")),
+            "expected macd fast >= slow error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn lint_macd_valid_params_clean() {
+        let (errors, _) = script_lint("let m = ind.macd(12, 26, 9);\nif m[0] > 0.0 { entry = true; }", None);
+        let param_errors: Vec<_> = errors.iter().filter(|e| e.message.contains("fast") || e.message.contains("slow")).collect();
+        assert!(param_errors.is_empty(), "valid macd should not error: {param_errors:?}");
+    }
+
+    #[test]
+    fn lint_alligator_jaw_le_teeth_is_error() {
+        let (errors, _) = script_lint("let a = ind.alligator(8, 13, 5);\nif a[0] > 0.0 { entry = true; }", None);
+        assert!(
+            errors.iter().any(|e| e.severity == "error" && e.message.contains("jaw") && e.message.contains("teeth")),
+            "expected jaw <= teeth error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn lint_alligator_valid_params_clean() {
+        let (errors, _) = script_lint("let a = ind.alligator(13, 8, 5);\nif a[0] > 0.0 { entry = true; }", None);
+        let param_errors: Vec<_> = errors.iter().filter(|e| e.message.contains("jaw") || e.message.contains("teeth") || e.message.contains("lips")).collect();
+        assert!(param_errors.is_empty(), "valid alligator should not error: {param_errors:?}");
+    }
+
+    #[test]
+    fn lint_parabolic_sar_step_zero_is_error() {
+        let (errors, _) = script_lint("let sar = ind.parabolic_sar(5, step=0.0);\nif sar[0] > 0.0 { entry = true; }", None);
+        assert!(
+            errors.iter().any(|e| e.severity == "error" && e.message.contains("step")),
+            "expected step=0 error, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn lint_period_zero_in_regime_block_is_error() {
+        let script = r#"
+regime {
+    let adx0 = ind.adx(0);
+    if adx0[0] > 25.0 { trend = "trending"; }
+}
+let ema9 = ind.ema(9);
+if ema9[0] > 0.0 { entry = true; }
+"#;
+        let (errors, _) = script_lint(script, None);
+        assert!(
+            errors.iter().any(|e| e.severity == "error" && e.message.contains("period") && e.message.contains("adx0")),
+            "expected period=0 error in regime block, got: {errors:?}"
+        );
     }
 
     #[test]

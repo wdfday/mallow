@@ -397,6 +397,13 @@ impl MtfStrategy for MtfScriptStrategy {
                     ));
                 }
                 Err(e) => {
+                    if let Some(sink) = &self.error_sink {
+                        if let Ok(mut guard) = sink.lock() {
+                            if guard.is_none() {
+                                *guard = Some(format!("regime block: {e}"));
+                            }
+                        }
+                    }
                     tracing::warn!(error = %e, "script runtime error (regime block)");
                 }
             }

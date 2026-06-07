@@ -12,9 +12,13 @@ pub(crate) const BAR_FIELDS: &[&str] = &["open", "high", "low", "close", "volume
 /// Extract a float from a `Dynamic`, MEntry-aware. Returns `None` when the
 /// value is neither a float nor an `MEntry` (so callers can pick a sensible
 /// default — `0.0` for sums, `±∞` for highest/lowest).
+///
+/// Handles `i64` (Rhai integer literals) via cast so that `avg([1, 2, 3])`
+/// produces 2.0 instead of 0.0.
 fn dyn_f(d: &Dynamic) -> Option<f64> {
     d.as_float()
         .ok()
+        .or_else(|| d.as_int().ok().map(|i| i as f64))
         .or_else(|| d.read_lock::<MEntry>().map(|e| e.primary_value()))
 }
 
@@ -112,7 +116,7 @@ pub(crate) fn build_engine() -> Engine {
     // Allows `supertrend[0] > close` (uses "value" field) AND `supertrend[0].value`.
     engine.register_type_with_name::<MEntry>("IndicatorEntry");
 
-    // Comparison: MEntry op f64  and  f64 op MEntry  (fall back to "value" field)
+    // Comparison: MEntry op f64  and  f64 op MEntry  (fall back to primary field)
     engine.register_fn(">",  |a: MEntry, b: f64| a.primary_value() > b);
     engine.register_fn(">",  |a: f64, b: MEntry| a > b.primary_value());
     engine.register_fn(">=", |a: MEntry, b: f64| a.primary_value() >= b);
@@ -126,6 +130,22 @@ pub(crate) fn build_engine() -> Engine {
     engine.register_fn("!=", |a: MEntry, b: f64| a.primary_value() != b);
     engine.register_fn("!=", |a: f64, b: MEntry| a != b.primary_value());
 
+    // Comparison: MEntry op i64  and  i64 op MEntry
+    // Rhai does NOT coerce i64 → f64 automatically, so `adx[0] > 25` (integer
+    // literal) would fail at runtime without these overloads.
+    engine.register_fn(">",  |a: MEntry, b: i64| a.primary_value() > b as f64);
+    engine.register_fn(">",  |a: i64, b: MEntry| (a as f64) > b.primary_value());
+    engine.register_fn(">=", |a: MEntry, b: i64| a.primary_value() >= b as f64);
+    engine.register_fn(">=", |a: i64, b: MEntry| (a as f64) >= b.primary_value());
+    engine.register_fn("<",  |a: MEntry, b: i64| a.primary_value() < b as f64);
+    engine.register_fn("<",  |a: i64, b: MEntry| (a as f64) < b.primary_value());
+    engine.register_fn("<=", |a: MEntry, b: i64| a.primary_value() <= b as f64);
+    engine.register_fn("<=", |a: i64, b: MEntry| (a as f64) <= b.primary_value());
+    engine.register_fn("==", |a: MEntry, b: i64| a.primary_value() == b as f64);
+    engine.register_fn("==", |a: i64, b: MEntry| (a as f64) == b.primary_value());
+    engine.register_fn("!=", |a: MEntry, b: i64| a.primary_value() != b as f64);
+    engine.register_fn("!=", |a: i64, b: MEntry| (a as f64) != b.primary_value());
+
     // Arithmetic: MEntry op f64  and  f64 op MEntry  → f64
     engine.register_fn("-", |a: MEntry, b: f64| -> f64 { a.primary_value() - b });
     engine.register_fn("-", |a: f64, b: MEntry| -> f64 { a - b.primary_value() });
@@ -138,6 +158,20 @@ pub(crate) fn build_engine() -> Engine {
     });
     engine.register_fn("/", |a: f64, b: MEntry| -> f64 {
         let b = b.primary_value(); if b == 0.0 { 0.0 } else { a / b }
+    });
+
+    // Arithmetic: MEntry op i64  and  i64 op MEntry  → f64
+    engine.register_fn("-", |a: MEntry, b: i64| -> f64 { a.primary_value() - b as f64 });
+    engine.register_fn("-", |a: i64, b: MEntry| -> f64 { a as f64 - b.primary_value() });
+    engine.register_fn("+", |a: MEntry, b: i64| -> f64 { a.primary_value() + b as f64 });
+    engine.register_fn("+", |a: i64, b: MEntry| -> f64 { a as f64 + b.primary_value() });
+    engine.register_fn("*", |a: MEntry, b: i64| -> f64 { a.primary_value() * b as f64 });
+    engine.register_fn("*", |a: i64, b: MEntry| -> f64 { a as f64 * b.primary_value() });
+    engine.register_fn("/", |a: MEntry, b: i64| -> f64 {
+        let b = b as f64; if b == 0.0 { 0.0 } else { a.primary_value() / b }
+    });
+    engine.register_fn("/", |a: i64, b: MEntry| -> f64 {
+        let b = b.primary_value(); if b == 0.0 { 0.0 } else { a as f64 / b }
     });
 
     // Comparison / arithmetic: MEntry op MEntry (both use their primary field).
@@ -313,6 +347,37 @@ pub(crate) fn build_engine() -> Engine {
 
 // ── Lookback scanner ─────────────────────────────────────────────────────────
 
+/// Walk `args` (the text after a function's opening `(`) and find the
+/// first **top-level** comma — one not nested inside `()` or `[]`.
+/// Returns the integer literal that immediately follows it, or 0 if:
+/// - no top-level comma exists before the matching `)`, or
+/// - the token after the comma is not a plain decimal integer.
+///
+/// Handles nested calls correctly: `highest(some_fn(x, y), 20)` → 20.
+fn parse_second_int_arg(args: &str) -> usize {
+    let mut depth = 0usize;
+    for (i, ch) in args.char_indices() {
+        match ch {
+            '(' | '[' => depth += 1,
+            ')' | ']' => {
+                if depth == 0 { return 0; } // end of outer call — no top-level comma
+                depth -= 1;
+            }
+            ',' if depth == 0 => {
+                let after = args[i + 1..].trim_start();
+                return after
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit())
+                    .collect::<String>()
+                    .parse()
+                    .unwrap_or(0);
+            }
+            _ => {}
+        }
+    }
+    0
+}
+
 /// Scan the cleaned script for lookback functions and return the maximum N
 /// so `bar_buf` is sized correctly at build time.
 pub(crate) fn extract_max_lookback(script: &str) -> usize {
@@ -331,18 +396,13 @@ pub(crate) fn extract_max_lookback(script: &str) -> usize {
     for (prefix, extra) in SECOND_ARG_FNS {
         let mut search = script;
         while let Some(idx) = search.find(prefix) {
-            search = &search[idx + prefix.len()..];
-            if let Some(comma) = search.find(',') {
-                let after = search[comma + 1..].trim_start();
-                let n: usize = after
-                    .chars()
-                    .take_while(|c| c.is_ascii_digit())
-                    .collect::<String>()
-                    .parse()
-                    .unwrap_or(0);
-                let needed = n + extra;
-                if needed > max_n { max_n = needed; }
-            }
+            let after_open = &search[idx + prefix.len()..];
+            let n = parse_second_int_arg(after_open);
+            let needed = n + extra;
+            if needed > max_n { max_n = needed; }
+            // Advance past this occurrence (not just prefix.len() to avoid
+            // re-matching the same call on an infinite loop when n == 0).
+            search = after_open;
         }
     }
     max_n
@@ -441,6 +501,45 @@ mod tests {
         assert!(engine.eval::<bool>("!flag(0.0) && flag(1.0)").unwrap());
     }
 
+    /// Integer arrays must work in all statistical built-ins — `avg([1,2,3])`
+    /// should return 2.0, not 0.0.  Before the `dyn_f` fix, `i64` elements were
+    /// silently dropped (treated as `None`), giving wrong results.
+    #[test]
+    fn statistics_builtins_integer_arrays() {
+        let engine = build_engine();
+
+        // avg
+        let a = engine.eval::<f64>("avg([1, 2, 3])").unwrap();
+        assert!((a - 2.0).abs() < 1e-9, "avg int = {a}");
+
+        // sum
+        let s = engine.eval::<f64>("sum([1, 2, 3, 4])").unwrap();
+        assert!((s - 10.0).abs() < 1e-9, "sum int = {s}");
+
+        // highest / lowest require n argument
+        let hi = engine.eval::<f64>("highest([3, 1, 4, 1, 5], 5)").unwrap();
+        assert!((hi - 5.0).abs() < 1e-9, "highest int = {hi}");
+        let lo = engine.eval::<f64>("lowest([3, 1, 4, 1, 5], 5)").unwrap();
+        assert!((lo - 1.0).abs() < 1e-9, "lowest int = {lo}");
+
+        // stdev of [2,4,4,4,5,5,7,9] (population) = 2.0
+        let sd = engine.eval::<f64>("stdev([2,4,4,4,5,5,7,9])").unwrap();
+        assert!((sd - 2.0).abs() < 1e-9, "stdev int = {sd}");
+
+        // zscore: same series, newest element = 9
+        // mean = 4.5, sd = 2.0 → z = (9-4.5)/2.0 = 2.25
+        let z = engine.eval::<f64>("zscore([9,1,1,1,1])").unwrap();
+        assert!((z - 2.0).abs() < 1e-9, "zscore int = {z}");
+
+        // pct_change: [110, 100] → +10%
+        let pc = engine.eval::<f64>("pct_change([110, 100], 1)").unwrap();
+        assert!((pc - 0.10).abs() < 1e-9, "pct_change int = {pc}");
+
+        // mixed int/float array must also work
+        let m = engine.eval::<f64>("avg([1, 2.0, 3])").unwrap();
+        assert!((m - 2.0).abs() < 1e-9, "avg mixed = {m}");
+    }
+
     /// Tier-1 statistics built-ins: stdev / pct_change / zscore.
     #[test]
     fn statistics_builtins() {
@@ -491,6 +590,58 @@ mod tests {
         assert!(!engine.eval::<bool>("crossed([2.0, 3.0], [0.0, 0.0])").unwrap());
     }
 
+    /// Integer literals in Rhai are `i64` — Rhai does NOT coerce i64→f64.
+    /// Without explicit `(MEntry, i64)` overloads, `adx[0] > 25` fails at
+    /// runtime with "Function not found". Verify all comparison + arithmetic
+    /// operators work with integer literals on both sides.
+    #[test]
+    fn mentry_integer_operators() {
+        use super::MEntry;
+        use std::collections::HashMap;
+
+        let engine = build_engine();
+
+        // Build an MEntry with primary value ≈ 13.5 (e.g. "value" field).
+        let mut fields = HashMap::new();
+        fields.insert("value".to_string(), 13.5_f64);
+        let entry = MEntry::new(fields, "value".to_string());
+
+        let mut scope = rhai::Scope::new();
+        scope.push("e", entry);
+
+        // Comparisons: MEntry op i64
+        assert!(engine.eval_with_scope::<bool>(&mut scope, "e > 10").unwrap(),  "e > 10");
+        assert!(!engine.eval_with_scope::<bool>(&mut scope, "e > 999").unwrap(), "e > 999 false");
+        assert!(engine.eval_with_scope::<bool>(&mut scope, "e >= 10").unwrap(),  "e >= 10");
+        assert!(engine.eval_with_scope::<bool>(&mut scope, "e < 999").unwrap(),  "e < 999");
+        assert!(engine.eval_with_scope::<bool>(&mut scope, "e <= 999").unwrap(), "e <= 999");
+        assert!(!engine.eval_with_scope::<bool>(&mut scope, "e == 0").unwrap(),  "e == 0 false");
+        assert!(engine.eval_with_scope::<bool>(&mut scope, "e != 0").unwrap(),   "e != 0");
+
+        // Comparisons: i64 op MEntry
+        assert!(engine.eval_with_scope::<bool>(&mut scope, "10 < e").unwrap(),  "10 < e");
+        assert!(engine.eval_with_scope::<bool>(&mut scope, "999 > e").unwrap(), "999 > e");
+
+        // Arithmetic: MEntry op i64 → f64  (13.5 as reference)
+        let diff = engine.eval_with_scope::<f64>(&mut scope, "e - 10").unwrap();
+        assert!((diff - 3.5).abs() < 1e-9, "e - 10 = {diff}");
+        let sum = engine.eval_with_scope::<f64>(&mut scope, "e + 0").unwrap();
+        assert!((sum - 13.5).abs() < 1e-9, "e + 0 = {sum}");
+        let prod = engine.eval_with_scope::<f64>(&mut scope, "e * 2").unwrap();
+        assert!((prod - 27.0).abs() < 1e-9, "e * 2 = {prod}");
+        let quot = engine.eval_with_scope::<f64>(&mut scope, "e / 2").unwrap();
+        assert!((quot - 6.75).abs() < 1e-9, "e / 2 = {quot}");
+        // division by zero → 0.0
+        let zero_div = engine.eval_with_scope::<f64>(&mut scope, "e / 0").unwrap();
+        assert_eq!(zero_div, 0.0, "e / 0 guard");
+
+        // Arithmetic: i64 op MEntry → f64
+        let sub2 = engine.eval_with_scope::<f64>(&mut scope, "100 - e").unwrap();
+        assert!((sub2 - 86.5).abs() < 1e-9, "100 - e = {sub2}");
+        let add2 = engine.eval_with_scope::<f64>(&mut scope, "0 + e").unwrap();
+        assert!((add2 - 13.5).abs() < 1e-9, "0 + e = {add2}");
+    }
+
     /// Windowed statistics functions must extend the bar buffer to fit `n`,
     /// otherwise `stdev(close, 50)` would silently see a too-short slice.
     #[test]
@@ -501,5 +652,42 @@ mod tests {
         assert_eq!(extract_max_lookback("p = pct_change(close, 9);"), 10);
         // whole-buffer form (no comma) contributes nothing.
         assert_eq!(extract_max_lookback("s = stdev(close);"), 0);
+    }
+
+    /// Nested function calls in the first arg must not trick the scanner into
+    /// reading a comma that belongs to the inner call instead of the outer one.
+    #[test]
+    fn lookback_scanner_nested_args() {
+        // Inner comma inside avg(open, close) must not be mistaken for the
+        // top-level comma separating arr from n.
+        assert_eq!(
+            extract_max_lookback("h = highest(avg(open, close), 20);"),
+            20,
+            "nested fn: inner comma must be skipped"
+        );
+        assert_eq!(
+            extract_max_lookback("l = lowest(some_fn(x, y), 15);"),
+            15,
+            "nested fn: inner comma must be skipped"
+        );
+        // Bracket indexing inside the first arg also contains commas in Rhai
+        // array literals — skip those too.
+        assert_eq!(
+            extract_max_lookback("m = momentum(arr, 10);"),
+            11, // extra=1 for momentum
+            "plain case still works after refactor"
+        );
+        // Variable as second arg: parse returns 0, contributes nothing.
+        assert_eq!(
+            extract_max_lookback("h = highest(close, n);"),
+            0,
+            "variable second arg contributes 0"
+        );
+        // Multiple calls: scanner should return the max across all.
+        assert_eq!(
+            extract_max_lookback("a = highest(close, 5); b = highest(avg(open, close), 30);"),
+            30,
+            "max across two calls"
+        );
     }
 }

@@ -77,6 +77,8 @@ func (h *Hand) MetricsView() handdomain.HandMetricsView {
 
 // HandRef is the runtime view of a hand: stored data + Hand runner + Exchange.
 // Used by the service layer to bridge persistence and execution.
+// Exchange is accessed directly by the service layer (e.g. SymbolsByExchange grouping)
+// rather than through HandRef methods.
 type HandRef struct {
 	Data     *handdomain.Hand
 	Runner   *Hand

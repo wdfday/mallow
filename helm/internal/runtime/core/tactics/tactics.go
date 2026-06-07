@@ -22,10 +22,15 @@ import (
 
 // MarketContext carries the current market data needed for tactical decisions.
 type MarketContext struct {
-	Price       decimal.Decimal `json:"price"`        // current market price
-	ATR         decimal.Decimal `json:"atr"`          // average true range (from herald ledger)
-	Spread      float64         `json:"spread"`       // bid-ask spread; currently always 0 (not wired to L2)
-	Volume      float64         `json:"volume"`       // recent volume; currently always 0
+	Price decimal.Decimal `json:"price"` // current market price
+	ATR   decimal.Decimal `json:"atr"`   // average true range (from herald ledger)
+	// Spread is the bid-ask spread; always 0 — not yet wired to L2 data.
+	// limitPrice() safely falls back to a 0.1% minOffset when Spread=0.
+	// Wire exchangePublicData.latestL2() here when limit-order accuracy matters.
+	Spread float64 `json:"spread"`
+	// Volume is recent volume; always 0 — not yet wired to any data source.
+	// Reserved for future volume-weighted sizing or urgency heuristics.
+	Volume      float64         `json:"volume"`
 	PositionQty decimal.Decimal `json:"position_qty"` // current open position size (0 if flat)
 	// AvailableBudget is the per-hand cap on entry notional. When positive the
 	// tactician clamps qty so qty*price ≤ AvailableBudget. Zero = no cap (legacy /
@@ -50,11 +55,11 @@ type ExecutionPlan struct {
 	TakeProfit decimal.Decimal `json:"take_profit,omitempty"`
 
 	// TrailingStop as a fraction (e.g. 0.02 = 2%); 0 = disabled.
-	// Declared but not yet wired to the execution path.
+	// Reserved — not yet wired to the execution path. See design-twap.md.
 	TrailingStop decimal.Decimal `json:"trailing_stop,omitempty"`
 
 	// Slices is the number of sub-orders for TWAP execution.
-	// Declared but not yet implemented.
+	// Reserved — not yet implemented. See design-twap.md for the TwapExecutor design.
 	Slices int `json:"slices,omitempty"`
 }
 

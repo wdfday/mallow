@@ -83,14 +83,14 @@ const (
 	SubjAccountLinked   = "helm.accounts.linked"   // triggers auto-create helm
 	SubjAccountUnlinked = "helm.accounts.unlinked" // triggers auto-delete helm
 
-	SubjHandList    = "helm.hands.list"
-	SubjHandGet     = "helm.hands.get"
-	SubjHandCreate  = "helm.hands.create"
-	SubjHandUpdate  = "helm.hands.update"
-	SubjHandDelete  = "helm.hands.delete"
-	SubjHandStart = "helm.hands.start"
-	SubjHandStop  = "helm.hands.stop"
-	SubjHandKill  = "helm.hands.kill"
+	SubjHandList   = "helm.hands.list"
+	SubjHandGet    = "helm.hands.get"
+	SubjHandCreate = "helm.hands.create"
+	SubjHandUpdate = "helm.hands.update"
+	SubjHandDelete = "helm.hands.delete"
+	SubjHandStart  = "helm.hands.start"
+	SubjHandStop   = "helm.hands.stop"
+	SubjHandKill   = "helm.hands.kill"
 
 	// JetStream subjects — all retained for audit / query.
 	// Format with account_id: fmt.Sprintf(SubjTradeFilled, accountID)
@@ -238,6 +238,10 @@ func PublishPortfolioSync(js nats.JetStreamContext, orchID, accountID, userID st
 // HelmEvent is published to helm.events.{helm_id} on every significant hand/helm
 // lifecycle event. Clients subscribe to this subject for a real-time activity feed.
 // HandID is empty for helm-level events (pause, resume, sync, …).
+//
+// Position-level fields (PositionID, EntryPrice, PnLPct) are populated only for
+// position lifecycle events (CodePositionOpened, CodePositionAdded, CodePositionClosed).
+// Order-level fields (OrderID, Price) always refer to the triggering order.
 type HelmEvent struct {
 	HelmID          string          `json:"helm_id"`
 	HandID          string          `json:"hand_id,omitempty"`
@@ -256,6 +260,11 @@ type HelmEvent struct {
 	AvailableCash   decimal.Decimal `json:"available_cash,omitzero"`
 	DeployedCapital decimal.Decimal `json:"deployed_capital,omitzero"`
 	Equity          decimal.Decimal `json:"equity,omitzero"`
+
+	// Position-level fields — populated for CodePosition* events only.
+	PositionID string          `json:"position_id,omitempty"`
+	EntryPrice decimal.Decimal `json:"entry_price,omitzero"` // avg entry price of the position
+	PnLPct     decimal.Decimal `json:"pnl_pct,omitzero"`     // realized PnL as a fraction of deployed capital (FE ×100 for %)
 }
 
 // PublishHelmEvent publishes a HelmEvent to the HELM_EVENTS JetStream stream

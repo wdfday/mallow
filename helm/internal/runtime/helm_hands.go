@@ -4,8 +4,8 @@ import (
 	"mallow/helm/internal/infra/natsapi"
 )
 
-// HandSummary is a lightweight snapshot of a hand for logging and monitoring.
-type HandSummary struct {
+// HandHeartbeat is a lightweight snapshot of a hand for logging and monitoring.
+type HandHeartbeat struct {
 	ID           string
 	Symbol       string
 	Status       string
@@ -52,12 +52,12 @@ func (r *HelmRuntime) RunningHandIDs() []string {
 }
 
 // HandSummaries returns a snapshot of all hands for heartbeat/debug logging.
-func (r *HelmRuntime) HandSummaries() []HandSummary {
+func (r *HelmRuntime) HandSummaries() []HandHeartbeat {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	out := make([]HandSummary, 0, len(r.hands))
+	out := make([]HandHeartbeat, 0, len(r.hands))
 	for _, h := range r.hands {
-		out = append(out, HandSummary{
+		out = append(out, HandHeartbeat{
 			ID:           h.id.String(),
 			Symbol:       h.Symbol,
 			Status:       h.Health().Status,

@@ -51,6 +51,8 @@ pub struct MtfScriptStrategy {
     series:           Option<HashMap<String, Vec<(i64, f64)>>>,
     candle_transform: CandleTransform,
     current_regime:   Option<RegimeState>,
+    pub error_sink:   Option<std::sync::Arc<std::sync::Mutex<Option<String>>>>,
+    persistent_state: rhai::Map,
 }
 
 fn validate_candle_kind(kind: &str) -> Result<()> {
@@ -212,7 +214,14 @@ impl MtfScriptStrategy {
                 CandleTransform::new(effective)
             },
             current_regime: None,
+            error_sink: None,
+            persistent_state: rhai::Map::new(),
         })
+    }
+
+    pub fn with_error_sink(mut self, sink: std::sync::Arc<std::sync::Mutex<Option<String>>>) -> Self {
+        self.error_sink = Some(sink);
+        self
     }
 
     /// Drain auto-collected indicator series (backtest mode). Returns empty map in live mode.
@@ -244,6 +253,7 @@ impl MtfStrategy for MtfScriptStrategy {
         self.candle_transform.reset();
         if let Some(s) = &mut self.series { s.clear(); }
         self.current_regime = None;
+        self.persistent_state.clear();
     }
 
     fn on_bars(&mut self, snap: MtfSnapshot<'_>) -> Vec<Signal> {
@@ -307,8 +317,52 @@ impl MtfStrategy for MtfScriptStrategy {
         }
 
         // ── 7. Build Rhai scope ────────────────────────────────────────────────
+        // Push order mirrors V1: output slots first, bar arrays second, indicator
+        // bindings last. Rhai resolves names from the most-recently-pushed entry,
+        // so indicators (last) win on reads — `atr[0]` finds the Array, not the
+        // scalar `atr` output slot. On write (`atr = val`), Rhai modifies the top
+        // entry (the indicator Array becomes a scalar), and `scalar_out("atr")`
+        // after the script returns the written value correctly.
         let mut scope = Scope::new();
 
+        // Regime output slots (regime block writes; main block reads).
+        scope.push("trend",       String::new());
+        scope.push("trend_value", 0.0_f64);
+        scope.push("vol",         String::new());
+        scope.push("vol_value",   0.0_f64);
+
+        // Signal output slots.
+        scope.push("entry",     false);
+        scope.push("exit",      false);
+        scope.push("long",      false);
+        scope.push("short",     false);
+        scope.push("tp",        0.0_f64);
+        scope.push("sl",        0.0_f64);
+        scope.push("trail",     0.0_f64);
+        scope.push("max_bars",  0_i64);
+        scope.push("strength",  1.0_f64);
+        scope.push("is_offset", false);
+        scope.push("reason",    String::new());
+        scope.push("atr",       0.0_f64);
+        scope.push("state",     rhai::Dynamic::from_map(self.persistent_state.clone()));
+
+        // Bar field arrays (newest bar at index [0]).
+        for field in BAR_FIELDS {
+            let arr: Array = self.bar_buf.iter().rev().map(|b| {
+                Dynamic::from_float(match *field {
+                    "open"   => b.open,
+                    "high"   => b.high,
+                    "low"    => b.low,
+                    "close"  => b.close,
+                    "volume" => b.volume,
+                    _        => 0.0,
+                })
+            }).collect();
+            scope.push_dynamic(*field, Dynamic::from_array(arr));
+        }
+
+        // Indicator bindings pushed last so they shadow same-named output slots.
+        // e.g. `let atr = ind.atr(14)` shadows the `atr` f64 above.
         for name in &self.binding_order {
             if let Some(b) = self.bindings.get(name) {
                 scope.push_dynamic(name.as_str(), Dynamic::from_array(b.to_script_array()));
@@ -329,58 +383,39 @@ impl MtfStrategy for MtfScriptStrategy {
             }
         }
 
-        // Bar field arrays (newest bar at index [0]).
-        for field in BAR_FIELDS {
-            let arr: Array = self.bar_buf.iter().rev().map(|b| {
-                Dynamic::from_float(match *field {
-                    "open"   => b.open,
-                    "high"   => b.high,
-                    "low"    => b.low,
-                    "close"  => b.close,
-                    "volume" => b.volume,
-                    _        => 0.0,
-                })
-            }).collect();
-            scope.push_dynamic(*field, Dynamic::from_array(arr));
-        }
-
-        // Regime output slots (regime block writes these; main block reads).
-        scope.push("trend",       String::new());
-        scope.push("trend_value", 0.0_f64);
-        scope.push("vol",         String::new());
-        scope.push("vol_value",   0.0_f64);
-
-        // Signal output slots.
-        scope.push("entry",     false);
-        scope.push("exit",      false);
-        scope.push("long",      false);
-        scope.push("short",     false);
-        scope.push("tp",        0.0_f64);
-        scope.push("sl",        0.0_f64);
-        scope.push("trail",     0.0_f64);
-        scope.push("max_bars",  0_i64);
-        scope.push("strength",  1.0_f64);
-        scope.push("is_offset", false);
-        scope.push("reason",    String::new());
-        scope.push("atr",       0.0_f64);
-
         // ── 8. Regime block ────────────────────────────────────────────────────
         if let Some(regime_ast) = &self.regime_ast {
-            if self.engine.run_ast_with_scope(&mut scope, regime_ast).is_ok() {
-                let trend_status = scope.get_value::<String>("trend").unwrap_or_default();
-                let trend_value  = scope.get_value::<f64>("trend_value").unwrap_or(0.0);
-                let vol_status   = scope.get_value::<String>("vol").unwrap_or_default();
-                let vol_value    = scope.get_value::<f64>("vol_value").unwrap_or(0.0);
-                self.current_regime = Some(RegimeState::new(
-                    RegimeDimension::new(trend_value, trend_status),
-                    RegimeDimension::new(vol_value,   vol_status),
-                ));
+            match self.engine.run_ast_with_scope(&mut scope, regime_ast) {
+                Ok(_) => {
+                    let trend_status = scope.get_value::<String>("trend").unwrap_or_default();
+                    let trend_value  = scope.get_value::<f64>("trend_value").unwrap_or(0.0);
+                    let vol_status   = scope.get_value::<String>("vol").unwrap_or_default();
+                    let vol_value    = scope.get_value::<f64>("vol_value").unwrap_or(0.0);
+                    self.current_regime = Some(RegimeState::new(
+                        RegimeDimension::new(trend_value, trend_status),
+                        RegimeDimension::new(vol_value,   vol_status),
+                    ));
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "script runtime error (regime block)");
+                }
             }
         }
 
         // ── 9. Main AST ────────────────────────────────────────────────────────
-        if self.engine.run_ast_with_scope(&mut scope, &self.ast).is_err() {
+        if let Err(e) = self.engine.run_ast_with_scope(&mut scope, &self.ast) {
+            if let Some(sink) = &self.error_sink {
+                if let Ok(mut guard) = sink.lock() {
+                    if guard.is_none() { *guard = Some(e.to_string()); }
+                }
+            }
+            tracing::warn!(error = %e, "script runtime error");
             return vec![];
+        }
+
+        // Persist state map for the next bar.
+        if let Some(new_state) = scope.get_value::<rhai::Map>("state") {
+            self.persistent_state = new_state;
         }
 
         // ── 10. Auto-collect indicator series ─────────────────────────────────
@@ -390,6 +425,9 @@ impl MtfStrategy for MtfScriptStrategy {
                     if let Some(fields) = binding.current_fields() {
                         if binding.is_multi() {
                             for (field, val) in &fields {
+                                if alm_indicator::field_kind(field) == alm_indicator::FieldKind::Bool {
+                                    continue;
+                                }
                                 series.entry(format!("{name}.{field}"))
                                     .or_default()
                                     .push((base_bar.timestamp, *val));

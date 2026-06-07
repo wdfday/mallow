@@ -1,7 +1,6 @@
 pub mod helper;
 pub mod http;
 pub mod registry;
-pub mod watch_evaluator;
 pub mod ws_latency;
 
 pub use helper::ResampleManager;

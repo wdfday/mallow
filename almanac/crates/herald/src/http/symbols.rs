@@ -1,20 +1,17 @@
-//! `GET /api/symbols` — symbols tracked by the ledger, with optional live indicator state.
+//! `GET /api/symbols` — symbols tracked by the ledger.
 //! `GET /api/indicators` — static indicator catalogue.
 //!
 //! ```text
 //! GET /api/symbols
 //!   → { "Binance": [{ symbol, timeframes: [{tf, bars}] }], ... }
-//! GET /api/symbols?indicators=true
-//!   → { "Binance": [{ symbol, timeframes: [{tf, bars, indicators:[...]}] }], ... }
 //! GET /api/indicators
 //!   → [{name, params, ...}, ...]
 //! ```
 
 use std::collections::BTreeMap;
 
-use axum::{extract::{Query, State}, response::Response, routing::get, Router};
-use serde::{Deserialize, Serialize};
-use serde_json::Value;
+use axum::{extract::State, response::Response, routing::get, Router};
+use serde::Serialize;
 use alm_strategy::catalog;
 
 use super::types::ok;
@@ -44,19 +41,10 @@ pub fn routes() -> Router<HttpState> {
         .route("/api/v1/indicators", get(list_indicators_catalog))
 }
 
-#[derive(Debug, Deserialize)]
-pub struct SymbolsQuery {
-    /// Include live indicator cells in the response.
-    #[serde(default)]
-    pub indicators: bool,
-}
-
 #[derive(Debug, Serialize)]
 pub struct TfInfo {
     pub tf: String,
     pub bars: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub indicators: Option<Vec<LiveIndicator>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -65,34 +53,9 @@ pub struct SymbolInfo {
     pub timeframes: Vec<TfInfo>,
 }
 
-/// One indicator output field with its semantic type (`f64` scalar vs `bool`
-/// 0/1 flag). Mirrors `alm_strategy::catalog::OutputField`.
-#[derive(Debug, Serialize)]
-pub struct FieldInfo {
-    pub name: String,
-    /// `"f64"` (scalar) | `"bool"` (0/1 flag).
-    #[serde(rename = "type")]
-    pub type_: &'static str,
-}
-
-#[derive(Debug, Serialize)]
-pub struct LiveIndicator {
-    pub canonical_key: String,
-    #[serde(rename = "type")]
-    pub type_name: String,
-    pub fields: Vec<FieldInfo>,
-    pub config: Value,
-    pub refcount: usize,
-    pub pinned: bool,
-    pub ready_since_t: Option<i64>,
-}
-
 #[utoipa::path(
     get,
     path = "/api/v1/symbols",
-    params(
-        ("indicators" = Option<bool>, Query, description = "Include live indicator cells in the response")
-    ),
     responses(
         (status = 200, description = "List of tracked symbols grouped by exchange")
     ),
@@ -100,10 +63,9 @@ pub struct LiveIndicator {
 )]
 pub async fn list_symbols(
     State(state): State<HttpState>,
-    Query(q): Query<SymbolsQuery>,
 ) -> Response {
     // Group by exchange → symbol → timeframes. Ledger keys are `"binance:BTCUSDT"`.
-    // Result shape: { "Binance": [{ symbol, timeframes: [{tf, bars, indicators?}] }] }
+    // Result shape: { "Binance": [{ symbol, timeframes: [{tf, bars}] }] }
     let mut grouped: BTreeMap<String, BTreeMap<String, Vec<TfInfo>>> = BTreeMap::new();
 
     for (key, tf) in state.ledger.keys().into_iter() {
@@ -112,28 +74,7 @@ pub async fn list_symbols(
 
         if let Some(tf_info) = state.ledger.with_state(&key, tf, |s| {
             let bars = s.bar_window.len();
-            let indicators = if q.indicators {
-                Some(
-                    s.indicators
-                        .iter()
-                        .map(|(spec, cell)| LiveIndicator {
-                            canonical_key: spec.canonical_key(),
-                            type_name: spec.name.clone(),
-                            fields: cell.field_names().iter().map(|f| FieldInfo {
-                                name: f.to_string(),
-                                type_: alm_indicator::field_kind(f).as_str(),
-                            }).collect(),
-                            config: spec.config.clone(),
-                            refcount: cell.refcount,
-                            pinned: cell.pinned,
-                            ready_since_t: cell.ready_since_t,
-                        })
-                        .collect(),
-                )
-            } else {
-                None
-            };
-            TfInfo { tf: tf.to_string(), bars, indicators }
+            TfInfo { tf: tf.to_string(), bars }
         }) {
             grouped
                 .entry(exchange)

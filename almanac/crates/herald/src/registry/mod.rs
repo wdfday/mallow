@@ -163,7 +163,6 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
             symbol = %hand.symbol, target_tf = %target_tf,
             exchange = %hand.exchange, is_future = hand.is_future,
             script_bytes = hand.script.len(),
-            indicator_handles = hand._indicator_handles.len(),
             "hand registered"
         );
         let replaced_subs = {
@@ -470,7 +469,7 @@ impl LedgerObserver for Registry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alm_ledger::{IndicatorSpec, LedgerConfig};
+    use alm_ledger::LedgerConfig;
     use alm_core::Bar;
     use tokio::sync::mpsc;
 
@@ -535,71 +534,6 @@ mod tests {
         }
         while rx.try_recv().is_ok() {}
         drop(reg);
-    }
-
-    fn peek_refcount(led: &Ledger, sym: &str, cfg: serde_json::Value) -> Option<usize> {
-        let spec = IndicatorSpec::from_config(cfg, None).unwrap();
-        led.with_state(sym, Timeframe::M1, |s| s.indicators.get(&spec).map(|c| c.refcount)).flatten()
-    }
-
-    #[test]
-    fn script_register_acquires_indicator_handles() {
-        let (led, reg, _rx) = make_registry();
-        reg.register(
-            "hand1".into(), "helm1".into(), "BTCUSDT".into(),
-            String::new(), false,
-            "let r = ind.rsi(14);\nif r[0] < 30.0 { long = true; }\nif r[0] > 70.0 { exit = true; }".into(),
-            Timeframe::M1,
-        ).unwrap();
-        assert_eq!(peek_refcount(&led, "BTCUSDT", serde_json::json!({"type":"rsi","period":14})), Some(1));
-    }
-
-    #[test]
-    fn script_multi_indicator_acquires_all_handles() {
-        let (led, reg, _rx) = make_registry();
-        reg.register(
-            "hand1".into(), "helm1".into(), "BTCUSDT".into(),
-            String::new(), false,
-"let r = ind.rsi(14);\nlet e50 = ind.ema(50);\nlet e200 = ind.ema(200);\nif r[0] < 30.0 && e50[0] > e200[0] { long = true; }\nif r[0] > 70.0 { exit = true; }".into(),
-            Timeframe::M1,
-        ).unwrap();
-        assert_eq!(peek_refcount(&led, "BTCUSDT", serde_json::json!({"type":"rsi","period":14})), Some(1));
-        assert_eq!(peek_refcount(&led, "BTCUSDT", serde_json::json!({"type":"ema","period":50})), Some(1));
-        assert_eq!(peek_refcount(&led, "BTCUSDT", serde_json::json!({"type":"ema","period":200})), Some(1));
-    }
-
-    #[test]
-    fn deregister_releases_handles() {
-        let (led, reg, _rx) = make_registry();
-        reg.register(
-            "hand1".into(), "helm1".into(), "BTCUSDT".into(),
-            String::new(), false,
-            "let r = ind.rsi(14);\nif r[0] < 30.0 { long = true; }\nif r[0] > 70.0 { exit = true; }".into(),
-            Timeframe::M1,
-        ).unwrap();
-        assert_eq!(peek_refcount(&led, "BTCUSDT", serde_json::json!({"type":"rsi","period":14})), Some(1));
-        reg.deregister("hand1");
-        assert_eq!(peek_refcount(&led, "BTCUSDT", serde_json::json!({"type":"rsi","period":14})), Some(0));
-    }
-
-    #[test]
-    fn two_hands_share_one_indicator_cell() {
-        let (led, reg, _rx) = make_registry();
-        let script = "let r = ind.rsi(14);\nif r[0] < 30.0 { long = true; }\nif r[0] > 70.0 { exit = true; }";
-        reg.register("hand1".into(), "h".into(), "BTCUSDT".into(), String::new(), false, script.into(), Timeframe::M1).unwrap();
-        reg.register("hand2".into(), "h".into(), "BTCUSDT".into(), String::new(), false, script.into(), Timeframe::M1).unwrap();
-        assert_eq!(peek_refcount(&led, "BTCUSDT", serde_json::json!({"type":"rsi","period":14})), Some(2));
-        reg.deregister("hand1");
-        assert_eq!(peek_refcount(&led, "BTCUSDT", serde_json::json!({"type":"rsi","period":14})), Some(1));
-    }
-
-    #[test]
-    fn reregister_same_hand_keeps_single_handle() {
-        let (led, reg, _rx) = make_registry();
-        let script = "let r = ind.rsi(14);\nif r[0] < 30.0 { long = true; }\nif r[0] > 70.0 { exit = true; }";
-        reg.register("hand1".into(), "h".into(), "BTCUSDT".into(), String::new(), false, script.into(), Timeframe::M1).unwrap();
-        reg.register("hand1".into(), "h".into(), "BTCUSDT".into(), String::new(), false, script.into(), Timeframe::M1).unwrap();
-        assert_eq!(peek_refcount(&led, "BTCUSDT", serde_json::json!({"type":"rsi","period":14})), Some(1));
     }
 
     #[tokio::test]

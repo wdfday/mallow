@@ -13,7 +13,6 @@ use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
 use crate::http::strategy::types::{Strategy, StrategySpec, UpdateStrategyReq};
-use crate::http::watch::WatchEntry;
 
 // ── In-memory strategy ───────────────────────────────────────────────────────────
 
@@ -506,101 +505,3 @@ impl StoreBackend {
     }
 }
 
-// ── WatchEntry persistence ────────────────────────────────────────────────────
-
-fn pg_watch_entry(row: &sqlx::postgres::PgRow) -> Result<WatchEntry> {
-    let symbols_val: Value = row.try_get("symbols").map_err(|e| anyhow!("{e}"))?;
-    let spec_val:    Value = row.try_get("spec").map_err(|e| anyhow!("{e}"))?;
-    Ok(WatchEntry {
-        id:                row.try_get::<Uuid, _>("id").map_err(|e| anyhow!("{e}"))?.to_string(),
-        symbols:           serde_json::from_value(symbols_val).map_err(|e| anyhow!("symbols: {e}"))?,
-        timeframe:         row.try_get("timeframe").map_err(|e| anyhow!("{e}"))?,
-        spec:              serde_json::from_value(spec_val).map_err(|e| anyhow!("spec: {e}"))?,
-        webhook_url:       row.try_get("webhook_url").map_err(|e| anyhow!("{e}"))?,
-        nats_subject:      row.try_get("nats_subject").map_err(|e| anyhow!("{e}"))?,
-        user_id:           row.try_get("user_id").map_err(|e| anyhow!("{e}"))?,
-        pinned_indicators: 0,
-        created_at:        row.try_get("created_at").map_err(|e| anyhow!("{e}"))?,
-    })
-}
-
-impl StoreBackend {
-    pub async fn list_watch_entries(&self) -> Result<Vec<WatchEntry>> {
-        match self {
-            StoreBackend::Mem(_) => Ok(vec![]),
-            StoreBackend::Pg(pool) => {
-                let rows = sqlx::query(
-                    "SELECT id, symbols, timeframe, spec, webhook_url, nats_subject, user_id, created_at \
-                     FROM watch_entries ORDER BY created_at ASC",
-                )
-                .fetch_all(pool)
-                .await?;
-                rows.iter().map(pg_watch_entry).collect()
-            }
-        }
-    }
-
-    pub async fn save_watch_entry(&self, entry: &WatchEntry) -> Result<()> {
-        match self {
-            StoreBackend::Mem(_) => Ok(()),
-            StoreBackend::Pg(pool) => {
-                let symbols_json = serde_json::to_value(&entry.symbols)?;
-                let spec_json    = serde_json::to_value(&entry.spec)?;
-                sqlx::query(
-                    "INSERT INTO watch_entries \
-                     (id, symbols, timeframe, spec, webhook_url, nats_subject, user_id, created_at) \
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8) \
-                     ON CONFLICT (id) DO NOTHING",
-                )
-                .bind(uid(&entry.id)?)
-                .bind(&symbols_json)
-                .bind(&entry.timeframe)
-                .bind(&spec_json)
-                .bind(&entry.webhook_url)
-                .bind(&entry.nats_subject)
-                .bind(&entry.user_id)
-                .bind(entry.created_at)
-                .execute(pool)
-                .await?;
-                Ok(())
-            }
-        }
-    }
-
-    pub async fn update_watch_entry(&self, entry: &WatchEntry) -> Result<()> {
-        match self {
-            StoreBackend::Mem(_) => Ok(()),
-            StoreBackend::Pg(pool) => {
-                let symbols_json = serde_json::to_value(&entry.symbols)?;
-                let spec_json    = serde_json::to_value(&entry.spec)?;
-                sqlx::query(
-                    "UPDATE watch_entries \
-                     SET symbols=$2, timeframe=$3, spec=$4, webhook_url=$5, nats_subject=$6 \
-                     WHERE id=$1",
-                )
-                .bind(uid(&entry.id)?)
-                .bind(&symbols_json)
-                .bind(&entry.timeframe)
-                .bind(&spec_json)
-                .bind(&entry.webhook_url)
-                .bind(&entry.nats_subject)
-                .execute(pool)
-                .await?;
-                Ok(())
-            }
-        }
-    }
-
-    pub async fn delete_watch_entry(&self, id: &str) -> Result<()> {
-        match self {
-            StoreBackend::Mem(_) => Ok(()),
-            StoreBackend::Pg(pool) => {
-                sqlx::query("DELETE FROM watch_entries WHERE id = $1")
-                    .bind(uid(id)?)
-                    .execute(pool)
-                    .await?;
-                Ok(())
-            }
-        }
-    }
-}

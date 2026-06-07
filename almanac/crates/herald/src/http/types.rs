@@ -3,8 +3,6 @@
 //! Kept in a separate module so handlers stay focused on behaviour and the
 //! wire format is easy to audit in one place.
 
-use std::collections::HashMap;
-
 use alm_core::Bar;
 use axum::{
     http::StatusCode,
@@ -12,7 +10,6 @@ use axum::{
     Json,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use utoipa::ToSchema;
 
 // ── Standard response envelopes ───────────────────────────────────────────────
@@ -116,21 +113,6 @@ pub struct CandlesResult {
     pub truncated_below: bool,
 }
 
-/// Single indicator spec used by the SSE stream endpoint.
-/// Flat form — anything `alm_indicator::IndicatorBox::from_config` accepts,
-/// plus an optional `label` to override the response key.
-///
-/// Example: `{"type":"ema","period":20}` or `{"type":"rsi","period":14,"label":"rsi14"}`.
-#[derive(Debug, Clone, Deserialize, ToSchema)]
-pub struct IndicatorConfig {
-    /// Override the key under which the series appears in the response.
-    pub label: Option<String>,
-    /// Passed verbatim to `IndicatorBox::from_config`. `"type"` is required.
-    #[serde(flatten)]
-    #[schema(value_type = Object)]
-    pub config: serde_json::Map<String, Value>,
-}
-
 /// Request body for `POST /api/v1/data/:source/:symbol`.
 /// Indicator computation is handled client-side via WASM — only raw bars are returned.
 #[derive(Debug, Deserialize, ToSchema)]
@@ -149,58 +131,3 @@ pub struct UnifiedDataResponse {
     pub candles: Option<CandlesResult>,
 }
 
-// ── Stream (POST /api/stream/:symbol) ────────────────────────────────────────
-
-/// Request body for `POST /api/stream/:symbol`.
-///
-/// Exactly one of `indicators` or `script` should be provided:
-/// - `indicators`: structured list of indicator configs (no computation)
-/// - `script`: Script using `ind.TYPE(period)` + `plot("name", value)`
-#[derive(Debug, Deserialize, ToSchema)]
-pub struct StreamRequest {
-    pub tf: Option<String>,
-    /// Structured indicator mode — returns raw cell values per bar.
-    pub indicators: Option<Vec<IndicatorConfig>>,
-    /// Script mode — script runs per bar, returns whatever was `plot()`-ed.
-    pub script: Option<String>,
-}
-
-/// Per-indicator warm-up status reported in the `status` SSE event.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct IndicatorStatus {
-    /// True when `ready_since_t` is set AND `bars_available >= warm_estimate`.
-    pub ready:          bool,
-    /// Estimated bars needed for stable convergence (EMA decay formula or exact period).
-    pub warm_estimate:  usize,
-    /// Bars currently available in the ledger window.
-    pub bars_available: usize,
-    /// How many more bars are needed. 0 when ready.
-    pub bars_needed:    usize,
-}
-
-/// First SSE event sent on every new stream connection.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct StreamStatus {
-    pub bars_available: usize,
-    /// True when every requested indicator passes its warm_estimate check.
-    pub all_ready:      bool,
-    /// Keyed by var_name (script mode) or label (structured mode).
-    pub indicators:     HashMap<String, IndicatorStatus>,
-}
-
-/// SSE bar event — OHLCV bar plus the current value of every requested indicator.
-///
-/// `indicators` is keyed by label (or canonical key). Each value is a flat map of
-/// the indicator's output fields, e.g. `{"value": 94150.0}` for EMA or
-/// `{"upper": 94800.0, "mid": 94200.0, "lower": 93600.0}` for Bollinger Bands.
-#[derive(Debug, Serialize, ToSchema)]
-pub struct BarStreamEvent {
-    pub t: i64,
-    pub o: f64,
-    pub h: f64,
-    pub l: f64,
-    pub c: f64,
-    pub v: f64,
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub indicators: HashMap<String, HashMap<String, f64>>,
-}

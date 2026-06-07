@@ -12,7 +12,7 @@ use alm_engine::types::{
 
 use alm_strategy::{LintDiagnostic, ScriptLintScope, DeclaredIndicator};
 
-use super::{backtest, data, script_validate, sse, strategy, symbols, types, watch, HttpState};
+use super::{backtest, data, script_validate, strategy, symbols, types, HttpState};
 
 // ── Security modifier ─────────────────────────────────────────────────────────
 
@@ -62,8 +62,6 @@ impl Modify for BearerAuthAddon {
         backtest::run_backtest,
         backtest::run_backtest_script,
         script_validate::validate_script,
-        sse::stream_bars,
-        sse::stream_signals,
         strategy::list_strategies,
         strategy::list_my_strategies,
         strategy::create_strategy,
@@ -71,10 +69,6 @@ impl Modify for BearerAuthAddon {
         strategy::list_strategy_chain,
         strategy::update_strategy,
         strategy::delete_strategy,
-        watch::list_watches,
-        watch::create_watch,
-        watch::get_watch,
-        watch::delete_watch,
     ),
     components(schemas(
         // Live
@@ -82,14 +76,8 @@ impl Modify for BearerAuthAddon {
         types::BarRecord,
         types::CandlesQuery,
         types::CandlesResult,
-        types::IndicatorConfig,
         types::UnifiedDataRequest,
         types::UnifiedDataResponse,
-        // Stream
-        types::StreamRequest,
-        types::StreamStatus,
-        types::IndicatorStatus,
-        types::BarStreamEvent,
         // Backtest
         BacktestRequest,
         ScriptBacktestRequest,
@@ -100,9 +88,6 @@ impl Modify for BearerAuthAddon {
         strategy::types::Strategy,
         strategy::types::CreateStrategyReq,
         strategy::types::UpdateStrategyReq,
-        // Watch
-        watch::WatchEntry,
-        watch::CreateWatchReq,
         // Script validate
         script_validate::ScriptValidateReq,
         script_validate::ScriptValidateResp,
@@ -114,8 +99,6 @@ impl Modify for BearerAuthAddon {
         (name = "live",     description = "Live ledger data"),
         (name = "backtest", description = "Backtest execution"),
         (name = "strategy", description = "Saved strategy versions"),
-        (name = "watch",    description = "Watchlist / warm-set management"),
-        (name = "stream",   description = "SSE real-time push"),
     )
 )]
 pub struct ApiDoc;

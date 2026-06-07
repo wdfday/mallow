@@ -33,35 +33,6 @@
 //! | `DELETE /api/store/strategies/:id`     | Delete                                          |
 //! | `GET  /api/store/strategies/:name/versions` | All versions for a name                   |
 //!
-//! ## Watch — signal dispatch without trade execution (noop storage)
-//!
-//! | Route                                  | Purpose                                         |
-//! |----------------------------------------|-------------------------------------------------|
-//! | `GET  /api/watch`                      | List all watch entries                          |
-//! | `POST /api/watch`                      | Create a watch entry                            |
-//! | `GET  /api/watch/:id`                  | Get one                                         |
-//! | `DELETE /api/watch/:id`                | Remove                                          |
-//!
-//! ## Stream — SSE real-time push
-//!
-//! | Route                      | Purpose                                                     |
-//! |----------------------------|-------------------------------------------------------------|
-//! | `POST /api/stream/:symbol` | Bar + indicator events for one symbol (event: `"bar"`)      |
-//! | `GET  /api/stream/signals` | All signal batches (event: `"signal"`)                      |
-//!
-//! `POST /api/stream/:symbol` body (`StreamRequest`):
-//! - `tf`: timeframe string, e.g. `"M1"` (default = herald's global TF).
-//! - `indicators`: structured list of indicator configs — raw cell values returned per bar.
-//! - `script`: Script using `ind.TYPE(period)` declarations + `plot("name", value)` calls.
-//!   Exactly one of `indicators` or `script` should be set.
-//!
-//! **MTF note:** `tf` is a single timeframe that applies to both the bar feed and all
-//! indicators. Per-indicator source-timeframe override (`source_tf`) is not yet
-//! supported on the stream endpoint — use `POST /api/data/:symbol` for multi-TF snapshots.
-//!
-//! The first event on every connection is always `"status"` (`StreamStatus`), reporting
-//! warm-up state per indicator before any `"bar"` event flows.
-//!
 //! # Cursor pagination (`POST /api/data/:symbol`)
 //!
 //! Three mutually exclusive cursor modes in the `candles` section:
@@ -81,19 +52,16 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use alm_core::Bar;
 use alm_ledger::Ledger;
 use axum::{extract::State, http::StatusCode, middleware, response::IntoResponse, routing::get, Json, Router};
 use metrics::{counter, histogram};
 use metrics_exporter_prometheus::PrometheusHandle;
 use serde_json::json;
-use tokio::sync::{broadcast, Semaphore};
+use tokio::sync::Semaphore;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
-use crate::registry::HandSignal;
-use crate::watch_evaluator::WatchEvaluator;
 use crate::ws_latency::WsLatencyTracker;
 
 pub mod admin;
@@ -101,17 +69,14 @@ mod backtest;
 pub mod data;
 mod duckdb_helpers;
 mod openapi;
-mod sse;
 mod script_validate;
 pub mod store;
 mod symbols;
 mod types;
 pub mod strategy;
-pub mod watch;
 
 pub use openapi::ApiDoc;
 pub use store::StoreBackend;
-pub use watch::{new_store as new_watch_store, WatchStore};
 
 #[cfg(test)]
 mod tests;
@@ -128,14 +93,6 @@ pub struct HttpState {
     pub backtest_semaphore: Arc<Semaphore>,
     /// CRUD store for saved strategy versions.
     pub store: StoreBackend,
-    /// In-memory watchlist store (noop — not yet wired to live bar pipeline).
-    pub watches: WatchStore,
-    /// Live bar broadcast — SSE `/api/stream/:symbol` subscribers receive from here.
-    pub bar_bcast: broadcast::Sender<Bar>,
-    /// Live signal broadcast — SSE `/api/stream/signals` subscribers receive from here.
-    pub sig_bcast: broadcast::Sender<Arc<HandSignal>>,
-    /// Watch evaluator — `delete_watch` calls `remove_watch` to eagerly free handles.
-    pub watch_evaluator: Arc<WatchEvaluator>,
     /// WebSocket delivery latency tracker — shared with `Handler`.
     pub ws_latency: Arc<WsLatencyTracker>,
     /// Prometheus metrics handle — rendered by `GET /metrics`.
@@ -151,10 +108,6 @@ impl HttpState {
         data_dir: Arc<PathBuf>,
         max_concurrent_backtests: usize,
         store: StoreBackend,
-        bar_bcast: broadcast::Sender<Bar>,
-        sig_bcast: broadcast::Sender<Arc<HandSignal>>,
-        watch_evaluator: Arc<WatchEvaluator>,
-        watches: WatchStore,
         ws_latency: Arc<WsLatencyTracker>,
         prometheus: PrometheusHandle,
     ) -> (Self, Arc<AtomicBool>) {
@@ -165,10 +118,6 @@ impl HttpState {
             data_dir,
             backtest_semaphore: Arc::new(Semaphore::new(max_concurrent_backtests.max(1))),
             store,
-            watches,
-            bar_bcast,
-            sig_bcast,
-            watch_evaluator,
             ws_latency,
             prometheus,
             ready: Arc::clone(&ready),
@@ -214,8 +163,6 @@ pub fn router(state: HttpState) -> Router {
         .merge(backtest::routes())
         .merge(script_validate::routes())
         .merge(strategy::routes())
-        .merge(watch::routes())
-        .merge(sse::routes())
         .merge(openapi::routes())
         .merge(admin::routes())
         .with_state(state)

@@ -18,7 +18,7 @@
 //!                   │
 //!             Registry (mpsc)  ──→ signal_publisher → NATS "signals"
 //!                   │
-//!           (base TF closed) ──→ BarRing + SSE bcast + NATS bars.{symbol}
+//!           (base TF closed) ──→ BarRing + NATS bars.{symbol}
 //! ```
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -34,12 +34,12 @@ use alm_core::msg::{
     BarMsg, HandInfo, HandListResponse, DeregisterMsg, HeartbeatRequest, HeartbeatResponse,
     PingResponse, ReadyEvent, RegisterMsg, ResetMsg, SignalMsg, SignalResponse,
 };
-use alm_core::{Bar, Timeframe};
+use alm_core::Timeframe;
 use alm_ledger::Ledger;
 use async_nats::{Client, jetstream};
 use futures::StreamExt;
 use prost::Message as _;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -83,12 +83,10 @@ pub struct Handler {
     registry: Arc<Registry>,
     ring: BarRing,
     /// Base timeframe — only closed bars at this TF trigger NATS publish +
-    /// SSE broadcast + Registry observer fan-out.
+    /// Registry observer fan-out.
     tf: Timeframe,
     bar_rx: BarRx,
     signal_rx: Option<mpsc::UnboundedReceiver<HandSignal>>,
-    bar_bcast: broadcast::Sender<Bar>,
-    sig_bcast: broadcast::Sender<Arc<HandSignal>>,
     /// Stable per-instance identifier — changes on every restart so consumers
     /// can detect herald restart and re-register their hands.
     herald_id: String,
@@ -108,8 +106,6 @@ impl Handler {
         tf: Timeframe,
         bar_rx: BarRx,
         signal_rx: mpsc::UnboundedReceiver<HandSignal>,
-        bar_bcast: broadcast::Sender<Bar>,
-        sig_bcast: broadcast::Sender<Arc<HandSignal>>,
         ws_latency: Arc<WsLatencyTracker>,
     ) -> Self {
         Self {
@@ -120,8 +116,6 @@ impl Handler {
             tf,
             bar_rx,
             signal_rx: Some(signal_rx),
-            bar_bcast,
-            sig_bcast,
             herald_id: Uuid::now_v7().to_string(),
             start_time: Instant::now(),
             ws_latency,
@@ -134,7 +128,6 @@ impl Handler {
         tokio::spawn(signal_publisher(
             self.client.clone(),
             rx,
-            self.sig_bcast.clone(),
             Arc::clone(&self.atomics),
         ));
 
@@ -238,7 +231,7 @@ impl Handler {
             Err(e)      => error!(%symbol, ?tf, bar_ts = ts, err = %e, "ledger.advance failed"),
         }
 
-        // Base TF only: push to ring, SSE broadcast, NATS publish.
+        // Base TF only: push to ring, NATS publish.
         if tf != self.tf {
             return;
         }
@@ -246,10 +239,7 @@ impl Handler {
         // 1. Push to 24h ring buffer.
         self.ring.push(bar.clone());
 
-        // 2. Broadcast to SSE subscribers.
-        let _ = self.bar_bcast.send(bar.clone());
-
-        // 3. Publish to NATS bars.{symbol} for downstream consumers.
+        // 2. Publish to NATS bars.{symbol} for downstream consumers.
         let bar_msg = BarMsg::from(&bar);
         let payload = bar_msg.encode_to_vec();
         let subject = format!("{}.{}", SUBJ_BARS, symbol);
@@ -482,7 +472,6 @@ impl Handler {
 async fn signal_publisher(
     client: Client,
     mut rx: mpsc::UnboundedReceiver<HandSignal>,
-    bcast: broadcast::Sender<Arc<HandSignal>>,
     atomics: Arc<HeraldAtomics>,
 ) {
     let js = jetstream::new(client);
@@ -503,9 +492,6 @@ async fn signal_publisher(
     }
 
     while let Some(batch) = rx.recv().await {
-        let batch = Arc::new(batch);
-        let _ = bcast.send(Arc::clone(&batch));
-
         let response = SignalResponse {
             signal: Some(SignalMsg::from(&batch.signal)),
             helm_id: batch.helm_id.clone(),

@@ -13,11 +13,8 @@ use tower::ServiceExt;
 
 use alm_core::{Bar, Timeframe};
 use alm_ledger::{Ledger, LedgerConfig};
-use tokio::sync::broadcast;
 
 use crate::http::{router, HttpState, StoreBackend};
-use crate::registry::HandSignal;
-use crate::watch_evaluator::WatchEvaluator;
 use crate::ws_latency::WsLatencyTracker;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -25,16 +22,6 @@ use crate::ws_latency::WsLatencyTracker;
 fn test_state() -> HttpState {
     let ledger = Arc::new(Ledger::new(LedgerConfig::default()));
     let data_dir = Arc::new(PathBuf::from("/nonexistent-test-dir"));
-    let (bar_tx, _) = broadcast::channel::<Bar>(256);
-    let (sig_tx, _) = broadcast::channel::<Arc<HandSignal>>(64);
-    let watch_store = crate::http::new_watch_store();
-    let (dispatch_tx, _dispatch_rx) = tokio::sync::mpsc::unbounded_channel();
-    let watch_eval = Arc::new(WatchEvaluator::new(
-        watch_store.clone(),
-        ledger.clone(),
-        Timeframe::M1,
-        dispatch_tx,
-    ));
     let ws_latency = Arc::new(WsLatencyTracker::new());
     let prometheus = metrics_exporter_prometheus::PrometheusBuilder::new()
         .build_recorder()
@@ -45,10 +32,6 @@ fn test_state() -> HttpState {
         data_dir,
         1,
         StoreBackend::in_memory(),
-        bar_tx,
-        sig_tx,
-        watch_eval,
-        watch_store,
         ws_latency,
         prometheus,
     );
@@ -114,21 +97,6 @@ async fn seed_strategy(state: &HttpState) -> String {
     json_body(resp).await["data"]["id"].as_str().unwrap().to_owned()
 }
 
-/// Create a watch entry in `state` and return its UUID.
-async fn seed_watch(state: &HttpState) -> String {
-    let body = serde_json::json!({
-        "symbols": ["BTCUSDT"],
-        "strategy_spec": script_spec(),
-        "webhook_url": "http://localhost:9999/hook"
-    });
-    let resp = router(state.clone())
-        .oneshot(post_json("/api/v1/watch", body))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::CREATED, "seed_watch: create failed");
-    json_body(resp).await["data"]["id"].as_str().unwrap().to_owned()
-}
-
 // ── /health ───────────────────────────────────────────────────────────────────
 
 #[tokio::test]
@@ -170,44 +138,6 @@ async fn symbols_after_advance_lists_symbol() {
     assert_eq!(tfs.len(), 1);
     assert_eq!(tfs[0]["tf"], "M1");
     assert_eq!(tfs[0]["bars"], 1);
-}
-
-#[tokio::test]
-async fn symbols_without_indicators_flag_omits_field() {
-    let state = test_state();
-    state
-        .ledger
-        .advance(Timeframe::M1, Bar::new(1_000_000, "binance:ETHUSDT", 50.0, 51.0, 49.0, 50.5, 5.0))
-        .unwrap();
-
-    let resp = router(state)
-        .oneshot(get("/api/v1/symbols?indicators=false"))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = json_body(resp).await;
-    let item = &body["data"]["Binance"].as_array().unwrap()[0];
-    let tf0 = &item["timeframes"].as_array().unwrap()[0];
-    assert!(!tf0.as_object().unwrap().contains_key("indicators"));
-}
-
-#[tokio::test]
-async fn symbols_with_indicators_flag_includes_array() {
-    let state = test_state();
-    state
-        .ledger
-        .advance(Timeframe::M1, Bar::new(1_000_000, "binance:ETHUSDT", 50.0, 51.0, 49.0, 50.5, 5.0))
-        .unwrap();
-
-    let resp = router(state)
-        .oneshot(get("/api/v1/symbols?indicators=true"))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let body = json_body(resp).await;
-    let item = &body["data"]["Binance"].as_array().unwrap()[0];
-    let tf0 = &item["timeframes"].as_array().unwrap()[0];
-    assert!(tf0["indicators"].is_array());
 }
 
 // ── /api/indicators ───────────────────────────────────────────────────────────
@@ -303,57 +233,6 @@ async fn delete_strategy_then_404() {
 
     let get_resp = router(state)
         .oneshot(get(&format!("/api/v1/strategy/strategies/{id}")))
-        .await
-        .unwrap();
-    assert_eq!(get_resp.status(), StatusCode::NOT_FOUND);
-}
-
-// ── /api/watch ────────────────────────────────────────────────────────────────
-
-#[tokio::test]
-async fn create_watch_returns_201_with_id() {
-    let state = test_state();
-    let id = seed_watch(&state).await;
-    assert!(!id.is_empty());
-}
-
-#[tokio::test]
-async fn list_watches_contains_created() {
-    let state = test_state();
-    let id = seed_watch(&state).await;
-
-    let resp = router(state).oneshot(get("/api/v1/watch")).await.unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let list = json_body(resp).await;
-    assert!(list["data"].as_array().unwrap().iter().any(|w| w["id"] == id));
-}
-
-#[tokio::test]
-async fn get_watch_by_id_returns_200() {
-    let state = test_state();
-    let id = seed_watch(&state).await;
-
-    let resp = router(state)
-        .oneshot(get(&format!("/api/v1/watch/{id}")))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    assert_eq!(json_body(resp).await["data"]["id"], id);
-}
-
-#[tokio::test]
-async fn delete_watch_then_404() {
-    let state = test_state();
-    let id = seed_watch(&state).await;
-
-    let del = router(state.clone())
-        .oneshot(delete(&format!("/api/v1/watch/{id}")))
-        .await
-        .unwrap();
-    assert_eq!(del.status(), StatusCode::NO_CONTENT);
-
-    let get_resp = router(state)
-        .oneshot(get(&format!("/api/v1/watch/{id}")))
         .await
         .unwrap();
     assert_eq!(get_resp.status(), StatusCode::NOT_FOUND);
@@ -516,36 +395,3 @@ async fn data_okx_dashed_symbol_accepted() {
     assert_eq!(b["data"]["symbol"], "BTC-USDT");
 }
 
-// ── SSE smoke tests ───────────────────────────────────────────────────────────
-
-#[tokio::test]
-async fn sse_bar_stream_content_type_is_event_stream() {
-    let resp = test_app()
-        .oneshot(post_json("/api/v1/stream/BTCUSDT", serde_json::json!({})))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let ct = resp
-        .headers()
-        .get("content-type")
-        .expect("content-type header missing")
-        .to_str()
-        .unwrap();
-    assert!(ct.contains("text/event-stream"), "unexpected content-type: {ct}");
-}
-
-#[tokio::test]
-async fn sse_signals_stream_content_type_is_event_stream() {
-    let resp = test_app()
-        .oneshot(get("/api/v1/stream/signals"))
-        .await
-        .unwrap();
-    assert_eq!(resp.status(), StatusCode::OK);
-    let ct = resp
-        .headers()
-        .get("content-type")
-        .expect("content-type header missing")
-        .to_str()
-        .unwrap();
-    assert!(ct.contains("text/event-stream"), "unexpected content-type: {ct}");
-}

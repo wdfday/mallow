@@ -424,15 +424,20 @@ impl Strategy for ScriptStrategy {
         // regime block silently leaves defaults in place — the main block still
         // runs with the previous regime cleared.
         if let Some(regime_ast) = &self.regime_ast {
-            if self.engine.run_ast_with_scope(&mut scope, regime_ast).is_ok() {
-                let trend_status = scope.get_value::<String>("trend").unwrap_or_default();
-                let trend_value  = scope.get_value::<f64>("trend_value").unwrap_or(0.0);
-                let vol_status   = scope.get_value::<String>("vol").unwrap_or_default();
-                let vol_value    = scope.get_value::<f64>("vol_value").unwrap_or(0.0);
-                self.current_regime = Some(RegimeState::new(
-                    RegimeDimension::new(trend_value, trend_status),
-                    RegimeDimension::new(vol_value,   vol_status),
-                ));
+            match self.engine.run_ast_with_scope(&mut scope, regime_ast) {
+                Ok(_) => {
+                    let trend_status = scope.get_value::<String>("trend").unwrap_or_default();
+                    let trend_value  = scope.get_value::<f64>("trend_value").unwrap_or(0.0);
+                    let vol_status   = scope.get_value::<String>("vol").unwrap_or_default();
+                    let vol_value    = scope.get_value::<f64>("vol_value").unwrap_or(0.0);
+                    self.current_regime = Some(RegimeState::new(
+                        RegimeDimension::new(trend_value, trend_status),
+                        RegimeDimension::new(vol_value,   vol_status),
+                    ));
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "script runtime error (regime block)");
+                }
             }
         }
 

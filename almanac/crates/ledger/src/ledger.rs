@@ -7,7 +7,7 @@
 //! - Writers (bar ingestion, `ensure_indicator`) take the per-state
 //!   `RwLock` write guard for the short window needed to mutate.
 //! - Readers (registry evaluate, HTTP handlers) take the read guard and
-//!   usually materialise a `SymbolSnapshot` before releasing it.
+//!   usually materialize a `SymbolSnapshot` before releasing it.
 
 use std::collections::HashMap;
 use std::sync::Arc;

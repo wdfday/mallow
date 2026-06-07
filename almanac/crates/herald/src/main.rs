@@ -7,7 +7,7 @@ mod feed;
 mod handler;
 mod ring;
 mod symbols;
-use alm_herald::{http, registry, watch_evaluator};
+use alm_herald::{http, registry};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use pyroscope_pprofrs::{pprof_backend, PprofConfig};
 use feed::rest::{gap_fill_symbol, Exchange};
@@ -22,7 +22,7 @@ use alm_ledger::{Ledger, LedgerConfig, LedgerObserver};
 use handler::Handler;
 use registry::Registry;
 use ring::BarRing;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 use tracing::{info, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -224,18 +224,7 @@ async fn main() -> Result<()> {
     ));
     ledger.subscribe(registry.clone() as Arc<dyn LedgerObserver>);
 
-    // ── Watch evaluator ───────────────────────────────────────────────────────
-    let (watch_dispatch_tx, watch_dispatch_rx) = mpsc::unbounded_channel();
-    // WatchStore is created inside HttpState; we need it before creating HttpState.
-    // Use a temporary strategy here — HttpState will share the same Arc via watch_store below.
-    let watch_store = http::watch::new_store();
-    let watch_eval = Arc::new(watch_evaluator::WatchEvaluator::new(
-        watch_store.clone(), ledger.clone(), tf, watch_dispatch_tx,
-    ));
-    ledger.subscribe(watch_eval.clone() as Arc<dyn LedgerObserver>);
-    tokio::spawn(watch_evaluator::watch_dispatcher(client.clone(), watch_dispatch_rx));
-
-    info!("ledger + registry + watch_evaluator wired");
+    info!("ledger + registry wired");
 
     // ── Store backend ─────────────────────────────────────────────────────────
     let db_url = std::env::var("HERALD_DATABASE_URL")
@@ -247,10 +236,6 @@ async fn main() -> Result<()> {
         .await?;
     http::strategy::migrate::run(&pool).await?;
     let store = http::StoreBackend::postgres(pool);
-
-    // ── SSE broadcast channels ────────────────────────────────────────────────
-    let (bar_bcast_tx, _) = broadcast::channel::<alm_core::Bar>(256);
-    let (sig_bcast_tx, _) = broadcast::channel::<std::sync::Arc<registry::HandSignal>>(64);
 
     // ── WS latency tracker — shared between Handler and HTTP ─────────────────
     let ws_latency = std::sync::Arc::new(alm_herald::WsLatencyTracker::new());
@@ -266,12 +251,9 @@ async fn main() -> Result<()> {
 
     let (http_state, ready) = http::HttpState::new(
         ledger.clone(), tf, data_dir, max_concurrent_bt, store,
-        bar_bcast_tx.clone(), sig_bcast_tx.clone(),
-        watch_eval, watch_store,
         Arc::clone(&ws_latency),
         prometheus_handle,
     );
-    http::watch::restore_from_store(&http_state).await;
 
     let router = http::router(http_state);
     let listener = tokio::net::TcpListener::bind(&http_addr).await?;
@@ -345,7 +327,7 @@ async fn main() -> Result<()> {
 
     // ── Main loop ─────────────────────────────────────────────────────────────
     let handler = Handler::new(client, ledger, registry, ring, tf, bar_rx, sig_rx,
-        bar_bcast_tx, sig_bcast_tx, ws_latency);
+        ws_latency);
     let result = handler.run().await;
     http_task.abort();
     result?;

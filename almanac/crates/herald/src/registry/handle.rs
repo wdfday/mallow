@@ -4,11 +4,10 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 use alm_core::{signal::Signal, strategy::Strategy, Bar, Timeframe};
 use alm_core::{MtfSnapshot, MtfStrategy, TfBarEvent, TfView};
-use alm_ledger::{IndicatorHandle, IndicatorSpec, Ledger};
+use alm_ledger::Ledger;
 use alm_data::aggregator::StandaloneAggregator;
-use alm_strategy::factory::IndicatorDep;
-use alm_strategy::{probe_script_htfs, script_indicator_deps, ScriptStrategy, MtfScriptStrategy};
-use tracing::{debug, info, trace, warn};
+use alm_strategy::{probe_script_htfs, ScriptStrategy, MtfScriptStrategy};
+use tracing::{debug, info, trace};
 
 // ── LiveStrategy ──────────────────────────────────────────────────────────────
 
@@ -46,10 +45,6 @@ pub struct Handle {
     pub target_tf: Timeframe,
     live: LiveStrategy,
     ledger: Arc<Ledger>,
-    /// Live indicator handles keep each declared dependency warm in the ledger
-    /// for the lifetime of the hand. On drop the handles decrement the refcount;
-    /// unused cells are evicted after `LedgerConfig::drop_grace_bars`.
-    pub(super) _indicator_handles: Vec<IndicatorHandle>,
     /// Resample subscriptions this hand acquired at register time. Released
     /// when the hand is removed from the registry. Each tuple is
     /// `(source_tf, target_tf)` matching what `Registry::register` called
@@ -123,7 +118,6 @@ impl Handle {
                     last_htf_ts,
                 },
                 ledger: Arc::clone(ledger),
-                _indicator_handles: vec![],
                 resample_subs,
             });
         }
@@ -131,9 +125,6 @@ impl Handle {
         // ── v1 path: pure single-TF, hand evaluates at target_tf ─────────────
         let mut strategy: Box<dyn Strategy> =
             Box::new(ScriptStrategy::from_script_live(&script).map_err(|e| anyhow!("{e}"))?);
-        let deps: Vec<IndicatorDep> =
-            script_indicator_deps(&serde_json::json!({ "script": &script }));
-        let handles = acquire_dep_handles(ledger, &symbol, target_tf, &deps, &hand_id);
 
         // Warm the strategy from ledger history at `target_tf`. Two cases:
         //
@@ -200,7 +191,6 @@ impl Handle {
             target_tf,
             live: LiveStrategy::V1 { strategy },
             ledger: Arc::clone(ledger),
-            _indicator_handles: handles,
             resample_subs,
         })
     }
@@ -480,39 +470,3 @@ impl SymbolGroup {
     }
 }
 
-// ── helpers ───────────────────────────────────────────────────────────────────
-
-/// Convert declared `IndicatorDep`s to live `IndicatorHandle`s anchored in the
-/// ledger. Dependencies that fail to acquire are logged and skipped — they do
-/// NOT abort registration.
-fn acquire_dep_handles(
-    ledger: &Arc<Ledger>,
-    symbol: &str,
-    tf: Timeframe,
-    deps: &[IndicatorDep],
-    hand_id: &str,
-) -> Vec<IndicatorHandle> {
-    let mut handles = Vec::with_capacity(deps.len());
-    for dep in deps {
-        let spec = match IndicatorSpec::from_config(dep.config.clone(), dep.source_tf) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!(%hand_id, config = %dep.config, err = %e,
-                      "skipping indicator dep — invalid config");
-                continue;
-            }
-        };
-        match ledger.acquire_indicator(symbol, tf, spec.clone()) {
-            Ok(h) => {
-                debug!(%hand_id, %symbol, spec = %spec.canonical_key(),
-                       "acquired ledger indicator handle");
-                handles.push(h);
-            }
-            Err(e) => {
-                warn!(%hand_id, %symbol, spec = ?spec, err = %e,
-                      "skipping indicator dep — acquire failed");
-            }
-        }
-    }
-    handles
-}

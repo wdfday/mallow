@@ -66,42 +66,30 @@ impl Strategy for DemaCrossover {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_utils::*;
     use super::*;
     use alm_core::signal::Direction;
 
-    fn bar(ts: i64, close: f64) -> Bar {
-        Bar::new(ts, "T", close * 1.005, close * 1.005, close * 0.995, close, 1000.0)
-    }
+    
 
     fn run(s: &mut dyn Strategy, bars: &[Bar]) -> Vec<(i64, Direction)> {
         bars.iter().flat_map(|b| s.on_bar(b)).map(|s| (s.timestamp, s.direction)).collect()
     }
 
-    fn trending_bars(n: usize) -> Vec<Bar> {
-        let third = n / 3;
-        (0..n).map(|i| {
-            let price = if i < third {
-                200.0 - i as f64 * 1.5
-            } else if i < third * 2 {
-                200.0 - third as f64 * 1.5 + (i - third) as f64 * 2.0
-            } else {
-                200.0 - third as f64 * 1.5 + third as f64 * 2.0 - (i - third * 2) as f64 * 2.0
-            };
-            bar(i as i64 * 60_000, price.max(10.0))
-        }).collect()
-    }
+    
 
     #[test]
     fn no_signal_before_warmup() {
         let mut s = DemaCrossover::new(10, 25);
-        for i in 0..40 {
-            assert!(s.on_bar(&bar(i, 100.0)).is_empty());
+        let Some(bars) = load_real_bars() else { return; };
+        for b in bars.iter().take(40) {
+            assert!(s.on_bar(b).is_empty());
         }
     }
     
     #[test]
     fn produces_signals() {
-        let bars = trending_bars(300);
+        let Some(bars) = load_real_bars() else { return; };
         let mut hc = DemaCrossover::new(10, 25);
         let hc_sigs = run(&mut hc, &bars);
 
@@ -110,7 +98,7 @@ mod tests {
 
     #[test]
     fn parity_reset() {
-        let bars = trending_bars(300);
+        let Some(bars) = load_real_bars() else { return; };
         let mut hc = DemaCrossover::new(10, 25);
         let r1 = run(&mut hc, &bars);
         hc.reset();
@@ -122,9 +110,9 @@ mod tests {
     fn script_parity() {
         use crate::factory::build_strategy;
         use serde_json::json;
-        use crate::test_utils::trending_bars as tb;
+        
 
-        let bars = tb(300);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = DemaCrossover::new(12, 26);
         let named_sigs = run(&mut named, &bars);

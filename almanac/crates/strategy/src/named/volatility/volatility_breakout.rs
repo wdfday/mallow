@@ -204,7 +204,7 @@ mod tests {
     #[test]
     fn keltner_breakout_script_parity() {
         // KeltnerBreakout fires every bar when close > upper or close < middle
-        let bars = trending_bars(300);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = KeltnerBreakout::new(20, 10, 2.0);
         let named_sigs = run(&mut named, &bars);
@@ -215,5 +215,38 @@ mod tests {
 
         assert!(!named_sigs.is_empty(), "keltner_breakout: must produce signals");
         assert_eq!(named_sigs, script_sigs, "script parity failed");
+    }
+
+    #[test]
+    fn bb_keltner_squeeze_script_parity() {
+        let Some(bars) = load_real_bars() else { return; };
+
+        let mut named = BbKeltnerSqueeze::new(20, 2.0, 20, 10, 1.5);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = r#"
+let bb20 = ind.bbands(20, buf=1);
+let kc20 = ind.keltner(20, 10, multiplier=1.5, buf=1);
+let squeezed = bb20[0].upper < kc20[0].upper && bb20[0].lower > kc20[0].lower;
+if state["was_squeezed"] == () {
+    state["was_squeezed"] = false;
+    state["in_position"] = false;
+}
+let squeeze_released = state["was_squeezed"] && !squeezed;
+state["was_squeezed"] = squeezed;
+if squeeze_released && close[0] > bb20[0].middle && !state["in_position"] {
+    state["in_position"] = true;
+    entry = true;
+}
+if close[0] < bb20[0].middle && state["in_position"] {
+    state["in_position"] = false;
+    exit = true;
+}
+"#;
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "bb_keltner_squeeze: must produce signals");
+        assert_eq!(named_sigs, script_sigs, "bb_keltner_squeeze script parity failed");
     }
 }

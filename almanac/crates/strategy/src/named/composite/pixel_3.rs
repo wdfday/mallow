@@ -114,3 +114,50 @@ impl Strategy for Pixel3 {
         self.window_long.clear();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn script_parity() {
+        let Some(bars) = load_real_bars() else { return; };
+
+        let mut named = Pixel3::new("BTCUSDT");
+        let named_sigs = run(&mut named, &bars);
+
+        let script = r#"
+let hh5 = highest(high, 5);
+let ll5 = lowest(low, 5);
+let mid5 = (hh5 + ll5) / 2.0;
+let hh20 = highest(high, 20);
+let ll20 = lowest(low, 20);
+let mid20 = (hh20 + ll20) / 2.0;
+let hh60 = highest(high, 60);
+let ll60 = lowest(low, 60);
+let mid60 = (hh60 + ll60) / 2.0;
+let ts5 = gt(close[0], mid5);
+let ts4 = gt(close[0], mid20);
+let ts3 = gt(close[0], mid60);
+let green_count = 0;
+if ts5 { green_count = green_count + 1; }
+if ts4 { green_count = green_count + 1; }
+if ts3 { green_count = green_count + 1; }
+if green_count >= 2 {
+    strength = green_count / 3.0;
+    entry = true;
+}
+if green_count == 0 {
+    exit = true;
+}
+"#;
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "pixel_3: must produce signals");
+        assert_parity("pixel_3 parity vs named", &named_sigs, &script_sigs);
+    }
+}

@@ -39,6 +39,7 @@ pub fn probe_script_htfs(script: &str) -> Vec<Timeframe> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_utils::*;
     use super::*;
 
     #[test]

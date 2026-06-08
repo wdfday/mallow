@@ -9,9 +9,11 @@
 use alm_core::Timeframe;
 
 use crate::script::v1::{
-    build_engine, BAR_FIELDS,
+    build_engine, BAR_FIELDS, DEFAULT_BUF_DEPTH,
     extract_candle_directives, extract_regime_block,
     try_parse_indicator_line, IndicatorKind,
+    second_arg_is_static_literal,
+    PERIOD_EXEMPT,
 };
 
 // ── Known types ───────────────────────────────────────────────────────────────
@@ -145,6 +147,12 @@ pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnos
         }
     };
 
+    const OUTPUT_VARS: &[&str] = &[
+        "long", "entry", "short", "exit",
+        "tp", "sl", "is_offset", "strength", "reason", "atr",
+        "trend", "trend_value", "vol", "vol_value",
+    ];
+
     // Collect indicator decls from inside the regime block.
     if let Some(body) = regime_body_opt.as_deref() {
         for (idx, line) in body.lines().enumerate() {
@@ -156,6 +164,19 @@ pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnos
                 diags.extend(check_indicator_params(
                     &decl.var_name, &decl.ind_type, decl.period, &decl.extra_params, lineno,
                 ));
+                if OUTPUT_VARS.contains(&decl.var_name.as_str()) {
+                    diags.push(LintDiagnostic {
+                        line:     lineno,
+                        col:      1,
+                        message:  format!(
+                            "indicator name '{}' shadows the output variable '{}'; \
+                             rename the indicator to avoid writing to the wrong variable \
+                             (e.g. use '{}_ind' or '{}_14' instead).",
+                            decl.var_name, decl.var_name, decl.var_name, decl.var_name
+                        ),
+                        severity: "warning",
+                    });
+                }
                 let multi = matches!(decl.kind, IndicatorKind::Multi(_));
                 scope_inds.push(DeclaredIndicator {
                     name:      decl.var_name,
@@ -204,6 +225,19 @@ pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnos
                     diags.extend(check_indicator_params(
                         &decl.var_name, &decl.ind_type, decl.period, &decl.extra_params, lineno,
                     ));
+                    if OUTPUT_VARS.contains(&decl.var_name.as_str()) {
+                        diags.push(LintDiagnostic {
+                            line:     lineno,
+                            col:      1,
+                            message:  format!(
+                                "indicator name '{}' shadows the output variable '{}'; \
+                                 rename the indicator to avoid writing to the wrong variable \
+                                 (e.g. use '{}_ind' or '{}_14' instead).",
+                                decl.var_name, decl.var_name, decl.var_name, decl.var_name
+                            ),
+                            severity: "warning",
+                        });
+                    }
                     let multi = matches!(decl.kind, IndicatorKind::Multi(_));
                     scope_inds.push(DeclaredIndicator {
                         name:      decl.var_name,
@@ -242,6 +276,12 @@ pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnos
             for diag in field_access_on_scalar(line, orig, &scalar_names) {
                 diags.push(diag);
             }
+            for diag in check_negative_n_builtins(line, orig) {
+                diags.push(diag);
+            }
+            for diag in check_non_literal_n_builtins(line, orig) {
+                diags.push(diag);
+            }
         }
 
         // Check regime body lines (line numbers are body-relative; add an offset
@@ -259,6 +299,12 @@ pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnos
                 }
                 let approx_line = regime_start_line + idx + 1;
                 for diag in field_access_on_scalar(line, approx_line, &scalar_names) {
+                    diags.push(diag);
+                }
+                for diag in check_negative_n_builtins(line, approx_line) {
+                    diags.push(diag);
+                }
+                for diag in check_non_literal_n_builtins(line, approx_line) {
                     diags.push(diag);
                 }
             }
@@ -366,6 +412,145 @@ fn field_access_on_scalar(
     diags
 }
 
+/// Scan a single source line for calls to builtin functions where the `n`
+/// argument (second positional parameter) is a negative integer literal.
+///
+/// Affected functions: `rising_n`, `falling_n`, `momentum`, `highest`, `lowest`.
+/// A negative `n` at runtime is silently clamped / returns a sentinel (after the
+/// CPU DoS guard), but passing a literal `-N` is almost certainly a mistake.
+fn check_negative_n_builtins(line: &str, lineno: usize) -> Vec<LintDiagnostic> {
+    const FUNCS: &[&str] = &[
+        "rising_n", "falling_n", "momentum", "highest", "lowest",
+        "stdev", "zscore", "pct_change", "slope",
+    ];
+    let mut diags = Vec::new();
+
+    for &fname in FUNCS {
+        let needle = format!("{fname}(");
+        let mut search = line;
+        let mut col_base = 0usize;
+
+        while let Some(start) = search.find(&needle) {
+            let after_open = &search[start + needle.len()..];
+
+            // Walk forward tracking paren depth to find the first top-level comma.
+            let mut depth = 1i32;
+            let mut comma_pos: Option<usize> = None;
+            for (i, ch) in after_open.char_indices() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 { break; }
+                    }
+                    ',' if depth == 1 => {
+                        comma_pos = Some(i);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+
+            if let Some(cp) = comma_pos {
+                // Text of the second argument (before the closing paren / next comma).
+                let after_comma = after_open[cp + 1..].trim_start();
+                // A negative literal looks like `-<digits>` (optionally with spaces
+                // between `-` and the digit, though that's uncommon).
+                if after_comma.starts_with('-') {
+                    let after_minus = after_comma[1..].trim_start();
+                    if after_minus.starts_with(|c: char| c.is_ascii_digit()) {
+                        diags.push(LintDiagnostic {
+                            line:    lineno,
+                            col:     col_base + start + 1,
+                            message: format!(
+                                "'{fname}': second argument (n) must be a positive integer; \
+                                 a negative literal is always treated as n ≤ 0 \
+                                 and returns a no-op/sentinel value."
+                            ),
+                            severity: "error",
+                        });
+                    }
+                }
+            }
+
+            // Advance past this call to detect further occurrences on the same line.
+            col_base += start + needle.len();
+            search = &search[start + needle.len()..];
+        }
+    }
+
+    diags
+}
+
+/// Scan a single source line for calls to lookback functions where the `n`
+/// argument (second positional parameter) is **not a static integer literal**.
+///
+/// The bar-ring buffer depth is determined at compile time by
+/// `extract_max_lookback`, which can only parse integer literals (and simple
+/// arithmetic of literals like `20 + 5`).  If `n` is a variable or a complex
+/// runtime expression the buffer will not be sized correctly, causing the
+/// affected functions to silently operate on a too-short array (or, after the
+/// runtime guard was added, to throw an explicit runtime error).
+///
+/// Emit `"error"` so the user sees it in Monaco before running the backtest.
+fn check_non_literal_n_builtins(line: &str, lineno: usize) -> Vec<LintDiagnostic> {
+    const FUNCS: &[&str] = &[
+        "highest", "lowest", "momentum", "stdev", "zscore", "pct_change",
+        "rising_n", "falling_n", "slope",
+    ];
+    let mut diags = Vec::new();
+
+    for &fname in FUNCS {
+        let needle = format!("{fname}(");
+        let mut search = line;
+        let mut col_base = 0usize;
+
+        while let Some(start) = search.find(&needle) {
+            let after_open = &search[start + needle.len()..];
+
+            // Only flag when a second arg is actually present and it is NOT a
+            // static literal.  `second_arg_is_static_literal` returns false
+            // both when there is no second arg (single-arg form like
+            // `stdev(close)`) AND when the arg is a variable/expression.
+            // Distinguish the two cases so we don't warn on the valid
+            // single-arg forms.
+            let has_comma = {
+                let mut depth = 0i32;
+                let mut found = false;
+                for ch in after_open.chars() {
+                    match ch {
+                        '(' | '[' => depth += 1,
+                        ')' | ']' => { if depth == 0 { break; } depth -= 1; }
+                        ',' if depth == 0 => { found = true; break; }
+                        _ => {}
+                    }
+                }
+                found
+            };
+
+            if has_comma && !second_arg_is_static_literal(after_open) {
+                diags.push(LintDiagnostic {
+                    line:    lineno,
+                    col:     col_base + start + 1,
+                    message: format!(
+                        "'{fname}': second argument (n) must be a static integer literal \
+                         (e.g. `{fname}(arr, 20)`) so the bar buffer can be sized at \
+                         compile time. Variables and runtime expressions are not analysed \
+                         — the buffer will default to {DEFAULT_BUF_DEPTH} bars and the \
+                         result will be wrong."
+                    ),
+                    severity: "error",
+                });
+            }
+
+            col_base += start + needle.len();
+            search   = &search[start + needle.len()..];
+        }
+    }
+
+    diags
+}
+
 /// Indicators where the `period` argument in `ind.TYPE(N)` is NOT forwarded
 /// as the `"period"` config key — it maps to other parameters or is ignored
 /// entirely. `period = 0` will NOT panic for these types.
@@ -374,13 +559,8 @@ fn field_access_on_scalar(
 /// - `gmma`    → params: short[], long[] arrays (no period key)
 /// - `ao`      → params: fast, slow (no period key)
 /// - `coppock` → params: short, long, wma (no period key)
-/// - `bop`     → no params
-/// - `obv`     → no params
-/// - `vwap`    → param: session_gap_mins
-/// - `fractal` → no params
-const PERIOD_EXEMPT: &[&str] = &[
-    "kalman", "gmma", "ao", "coppock", "bop", "obv", "vwap", "fractal",
-];
+// `PERIOD_EXEMPT` is defined once in `v1::parse` and re-exported via `v1::mod`
+// as the single source of truth shared by the linter, v1 runtime, and v2 runtime.
 
 /// Validate period ≥ 1 and cross-parameter constraints for indicators that
 /// would panic or produce wrong results with invalid params.
@@ -668,6 +848,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_utils::*;
     use super::*;
 
     /// `let x = !flag(st[1].bullish) && flag(st[0].bullish)` is a valid expression,
@@ -878,7 +1059,9 @@ if ema9[0] > 0.0 { entry = true; }
     #[test]
     fn lint_period_zero_exempt_indicators_clean() {
         // kalman, gmma, ao, bop, obv, vwap, fractal, coppock don't use period key.
-        for ind in &["kalman", "gmma", "ao", "coppock", "bop", "obv", "vwap", "fractal"] {
+        // pmo, smi, kst, parabolic_sar, uo handle period=0 with built-in defaults.
+        for ind in &["kalman", "gmma", "ao", "coppock", "bop", "obv", "vwap", "fractal",
+                     "pmo", "smi", "kst", "parabolic_sar", "uo"] {
             let script = format!("let x = ind.{ind}(0);\nif x[0] > 0.0 {{ entry = true; }}");
             let (errors, _) = script_lint(&script, None);
             let period_errors: Vec<_> = errors.iter()
@@ -964,5 +1147,204 @@ if ema9[0] > 0.0 { entry = true; }
             errors.iter().any(|e| e.severity == "error" && e.message.contains("M1")),
             "expected error for HTF M1 < base H1 in regime block, got: {errors:?}"
         );
+    }
+
+    // ── Negative n checks ────────────────────────────────────────────────────
+
+    #[test]
+    fn lint_negative_n_rising_falling_is_error() {
+        let script = r#"
+let ema9 = ind.ema(9);
+if rising_n(ema9, -3)  { entry = true; }
+if falling_n(ema9, -2) { exit  = true; }
+"#;
+        let (errors, _) = script_lint(script, None);
+        assert!(
+            errors.iter().any(|e| e.severity == "error" && e.message.contains("rising_n")),
+            "expected error for rising_n with negative n, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|e| e.severity == "error" && e.message.contains("falling_n")),
+            "expected error for falling_n with negative n, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn lint_negative_n_momentum_is_error() {
+        let script = r#"
+let rsi14 = ind.rsi(14);
+let mom = momentum(rsi14, -5);
+if mom > 0.0 { entry = true; }
+"#;
+        let (errors, _) = script_lint(script, None);
+        assert!(
+            errors.iter().any(|e| e.severity == "error" && e.message.contains("momentum")),
+            "expected error for momentum with negative n, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn lint_negative_n_highest_lowest_is_error() {
+        let script = r#"
+let ema9 = ind.ema(9);
+let hi = highest(ema9, -10);
+let lo = lowest(ema9,  -10);
+if hi > lo { entry = true; }
+"#;
+        let (errors, _) = script_lint(script, None);
+        assert!(
+            errors.iter().any(|e| e.severity == "error" && e.message.contains("highest")),
+            "expected error for highest with negative n, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|e| e.severity == "error" && e.message.contains("lowest")),
+            "expected error for lowest with negative n, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn lint_negative_n_positive_literal_is_clean() {
+        let script = r#"
+let ema9 = ind.ema(9);
+let rsi14 = ind.rsi(14);
+if rising_n(ema9, 3)      { entry = true; }
+if falling_n(ema9, 2)     { exit  = true; }
+let mom = momentum(rsi14, 5);
+let hi  = highest(ema9, 10);
+let lo  = lowest(ema9,  10);
+"#;
+        let (errors, _) = script_lint(script, None);
+        let neg_errors: Vec<_> = errors.iter()
+            .filter(|e| e.message.contains("must be a positive integer"))
+            .collect();
+        assert!(
+            neg_errors.is_empty(),
+            "positive n args should not trigger negative-n error, got: {neg_errors:?}"
+        );
+    }
+
+    // ── Non-literal n checks ─────────────────────────────────────────────────
+
+    #[test]
+    fn lint_variable_n_in_lookback_is_error() {
+        // `length` is a variable, not a literal → linter must flag it.
+        let script = r#"
+let ema9 = ind.ema(9);
+let length = 20;
+let hi = highest(ema9, length);
+let lo = lowest(ema9,  length);
+if hi > lo { entry = true; }
+"#;
+        let (errors, _) = script_lint(script, None);
+        assert!(
+            errors.iter().any(|e| e.severity == "error" && e.message.contains("highest")),
+            "expected error for highest(arr, variable), got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|e| e.severity == "error" && e.message.contains("lowest")),
+            "expected error for lowest(arr, variable), got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn lint_variable_n_momentum_stdev_zscore_is_error() {
+        let script = r#"
+let rsi14 = ind.rsi(14);
+let n = 5;
+let mom = momentum(rsi14, n);
+let sd  = stdev(rsi14, n);
+let z   = zscore(rsi14, n);
+if mom > 0.0 { entry = true; }
+"#;
+        let (errors, _) = script_lint(script, None);
+        assert!(errors.iter().any(|e| e.message.contains("momentum")), "momentum var n: {errors:?}");
+        assert!(errors.iter().any(|e| e.message.contains("stdev")),    "stdev var n: {errors:?}");
+        assert!(errors.iter().any(|e| e.message.contains("zscore")),   "zscore var n: {errors:?}");
+    }
+
+    #[test]
+    fn lint_literal_n_in_lookback_is_clean() {
+        // Static literal and constant arithmetic expression → no error.
+        let script = r#"
+let ema9 = ind.ema(9);
+let hi = highest(ema9, 20);
+let lo = lowest(ema9,  20 + 5);
+let sd = stdev(ema9, 10);
+let z  = zscore(ema9, 10);
+if hi > lo { entry = true; }
+"#;
+        let (errors, _) = script_lint(script, None);
+        let lit_errors: Vec<_> = errors.iter()
+            .filter(|e| e.message.contains("static integer literal"))
+            .collect();
+        assert!(
+            lit_errors.is_empty(),
+            "literal/constant-expr n should not trigger non-literal error: {lit_errors:?}"
+        );
+    }
+
+    #[test]
+    fn lint_single_arg_stdev_zscore_is_clean() {
+        // Single-arg forms (no n) must not be flagged.
+        let script = r#"
+let ema9 = ind.ema(9);
+let sd = stdev(ema9);
+let z  = zscore(ema9);
+if sd > 0.0 { entry = true; }
+"#;
+        let (errors, _) = script_lint(script, None);
+        let lit_errors: Vec<_> = errors.iter()
+            .filter(|e| e.message.contains("static integer literal"))
+            .collect();
+        assert!(
+            lit_errors.is_empty(),
+            "single-arg stdev/zscore should not error: {lit_errors:?}"
+        );
+    }
+
+    #[test]
+    fn lint_negative_n_in_regime_block_is_error() {
+        let script = r#"
+regime {
+    let adx14 = ind.adx(14);
+    let hi = highest(adx14, -5);
+    if hi > 25.0 { trend = "trending"; }
+}
+let ema9 = ind.ema(9);
+if ema9[0] > 0.0 { entry = true; }
+"#;
+        let (errors, _) = script_lint(script, None);
+        assert!(
+            errors.iter().any(|e| e.severity == "error" && e.message.contains("highest")),
+            "expected error for highest(-5) in regime block, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn lint_htf_indicator_name_shadows_output_var() {
+        let script = r#"
+let atr = ind.atr(14);
+if atr[0] > 1.5 { entry = true; }
+"#;
+        let (errors, _) = script_lint(script, None);
+        assert!(
+            errors.iter().any(|e| e.severity == "warning" && e.message.contains("atr")),
+            "expected warning for indicator name 'atr' shadowing output var, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn lint_period_zero_pmo_smi_kst_clean() {
+        for ind in &["pmo", "smi", "kst", "parabolic_sar", "uo"] {
+            let script = format!("let x = ind.{ind}(0);\nif x[0] > 0.0 {{ entry = true; }}");
+            let (errors, _) = script_lint(&script, None);
+            let period_errors: Vec<_> = errors.iter()
+                .filter(|e| e.severity == "error" && e.message.contains("period"))
+                .collect();
+            assert!(
+                period_errors.is_empty(),
+                "ind.{ind}(0) should NOT error on period=0 (exempt), got: {period_errors:?}"
+            );
+        }
     }
 }

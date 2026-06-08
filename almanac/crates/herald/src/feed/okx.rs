@@ -30,45 +30,55 @@ use serde::{Deserialize, Serialize};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, info, warn};
 
-use super::{BarEvent, BarTx, SUBSCRIBE_TFS};
+use super::{BarEvent, BarTx};
 use super::rest::{gap_fill_symbol, Exchange};
 
 const WS_URL: &str = "wss://ws.okx.com:8443/ws/v5/business";
 const RECONNECT: Duration = Duration::from_secs(5);
 const PING_INTERVAL: Duration = Duration::from_secs(25);
+/// Max silence before assuming a dead connection and forcing reconnect.
+/// OKX pong replies reset this; 60 s gives two missed ping cycles before acting.
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
 const RECONNECT_GAP_FILL_CONCURRENCY: usize = 3;
 
-/// Spawn a task that streams candlesticks for `symbols` across all
-/// [`SUBSCRIBE_TFS`]. Sends [`BarEvent`]s to `tx`. Auto-reconnects.
-/// On each reconnect, runs a REST gap-fill to bridge the missed bars.
-pub fn spawn(symbols: Vec<String>, tx: BarTx, ledger: Arc<Ledger>, tf: Timeframe) {
-    if symbols.is_empty() {
+/// Spawn a task that streams candlesticks for `symbol_tfs` on a single OKX connection.
+///
+/// `symbol_tfs`: per-symbol `(raw_symbol, Vec<Timeframe>)` from [`SymbolConfig::okx_symbol_tfs`].
+/// All symbols × their declared TFs are subscribed in a single `subscribe` message on connect.
+///
+/// Auto-reconnects on disconnect; runs a REST gap-fill before resuming the WS loop.
+/// Task exits when `tx` is dropped (receiver gone).
+pub fn spawn(symbol_tfs: Vec<(String, Vec<Timeframe>)>, tx: BarTx, ledger: Arc<Ledger>, tf: Timeframe) {
+    if symbol_tfs.is_empty() {
         return;
     }
     tokio::spawn(async move {
+        // Persisted across reconnects so auto-close state survives brief disconnects.
+        // On a long outage the gap-fill REST fetch bridges the missing bars anyway.
+        let mut last_forming: HashMap<String, (i64, alm_core::Bar)> = HashMap::new();
         let mut first = true;
         loop {
             if !first {
                 counter!("herald_feed_reconnects_total", "source" => "okx").increment(1);
-                // Bridge the gap caused by the disconnect before resuming WS.
-                info!(symbols = symbols.len(), "okx: reconnect gap-fill");
+                info!(symbols = symbol_tfs.len(), "okx: reconnect gap-fill");
                 let sem = Arc::new(tokio::sync::Semaphore::new(RECONNECT_GAP_FILL_CONCURRENCY));
-                let tasks: Vec<_> = symbols.iter().map(|sym| {
+                let tasks: Vec<_> = symbol_tfs.iter().map(|(sym, tfs)| {
                     let live_sym = format!("okx:{sym}");
                     let last_ts = ledger.with_state(&live_sym, tf, |s| s.last_ts).flatten();
                     let base_from_ms = last_ts.map(|ts| ts + tf.duration_ms());
                     let ledger = ledger.clone();
                     let sym = sym.clone();
+                    let tfs = tfs.clone();
                     let sem = sem.clone();
                     async move {
                         let _permit = sem.acquire_owned().await.expect("semaphore closed");
-                        gap_fill_symbol(&ledger, tf, &format!("okx:{sym}"), &sym, Exchange::Okx, base_from_ms, SUBSCRIBE_TFS).await;
+                        gap_fill_symbol(&ledger, tf, &format!("okx:{sym}"), &sym, Exchange::Okx, base_from_ms, &tfs).await;
                     }
                 }).collect();
                 futures::future::join_all(tasks).await;
             }
             first = false;
-            match run_once(&symbols, &tx).await {
+            match run_once(&symbol_tfs, &tx, &mut last_forming).await {
                 Ok(()) => {
                     gauge!("herald_feed_ws_connected", "source" => "okx").set(0.0);
                     return;
@@ -86,33 +96,37 @@ pub fn spawn(symbols: Vec<String>, tx: BarTx, ledger: Arc<Ledger>, tf: Timeframe
     });
 }
 
-async fn run_once(symbols: &[String], tx: &BarTx) -> anyhow::Result<()> {
+async fn run_once(
+    symbol_tfs: &[(String, Vec<Timeframe>)],
+    tx: &BarTx,
+    last_forming: &mut HashMap<String, (i64, alm_core::Bar)>,
+) -> anyhow::Result<()> {
     let (ws, _) = connect_async(WS_URL).await?;
     info!("okx: connected");
     gauge!("herald_feed_ws_connected", "source" => "okx").set(1.0);
     let (mut write, mut read) = ws.split();
 
-    // Subscribe to candle{interval} for every symbol × TF.
-    let args: Vec<SubArg> = symbols
+    // Subscribe to candle{interval} for every symbol × its declared TFs.
+    let args: Vec<SubArg> = symbol_tfs
         .iter()
-        .flat_map(|sym| {
-            SUBSCRIBE_TFS.iter().filter_map(|&tf| {
-                tf_to_channel(tf).map(|ch| SubArg { channel: ch.to_string(), inst_id: sym.clone() })
+        .flat_map(|(sym, tfs)| {
+            tfs.iter().filter_map(|&t| {
+                tf_to_channel(t).map(|ch| SubArg { channel: ch.to_string(), inst_id: sym.clone() })
             })
         })
         .collect();
     let n = args.len();
     let sub = SubRequest { op: "subscribe", args };
     write.send(Message::Text(serde_json::to_string(&sub)?.into())).await?;
-    info!(symbols = symbols.len(), tfs = SUBSCRIBE_TFS.len(), subscriptions = n, "okx: subscribed");
+    let total_tfs: usize = symbol_tfs.iter().map(|(_, tfs)| tfs.len()).sum();
+    info!(symbols = symbol_tfs.len(), total_tfs, subscriptions = n, "okx: subscribed");
 
     let mut ping_interval = tokio::time::interval(PING_INTERVAL);
     ping_interval.tick().await; // skip first immediate tick
 
-    // Per-session forming-bar tracker: "{instId}:{tf:?}" → (open_ts_ms, last_bar).
-    // Used to auto-close the previous bar as soon as a newer bar timestamp is seen,
-    // without waiting for OKX's ~30s delayed confirm=1.
-    let mut last_forming: HashMap<String, (i64, alm_core::Bar)> = HashMap::new();
+    // Deadline resets on every received message (data or pong).
+    // If nothing arrives for READ_TIMEOUT we assume a half-dead connection.
+    let mut read_deadline = tokio::time::Instant::now() + READ_TIMEOUT;
 
     loop {
         tokio::select! {
@@ -121,7 +135,12 @@ async fn run_once(symbols: &[String], tx: &BarTx) -> anyhow::Result<()> {
                     return Err(anyhow::anyhow!("ping failed"));
                 }
             }
+            _ = tokio::time::sleep_until(read_deadline) => {
+                warn!("okx: read timeout ({READ_TIMEOUT:?}) — reconnecting");
+                return Err(anyhow::anyhow!("read timeout"));
+            }
             msg = read.next() => {
+                read_deadline = tokio::time::Instant::now() + READ_TIMEOUT;
                 let msg = match msg {
                     Some(Ok(m)) => m,
                     Some(Err(e)) => {
@@ -136,7 +155,7 @@ async fn run_once(symbols: &[String], tx: &BarTx) -> anyhow::Result<()> {
 
                 match msg {
                     Message::Text(t) if t == "pong" => {}
-                    Message::Text(t) => handle_push(&t, tx, &mut write, &mut last_forming).await?,
+                    Message::Text(t) => handle_push(&t, tx, &mut write, last_forming).await?,
                     Message::Ping(d) => { let _ = write.send(Message::Pong(d)).await; }
                     Message::Close(_) => return Err(anyhow::anyhow!("server closed")),
                     _ => {}
@@ -196,7 +215,7 @@ async fn handle_push(
             counter!("herald_feed_bars_total", "source" => "okx", "symbol" => push.arg.inst_id.clone()).increment(1);
             // Ledger dedup (Ok(None)) handles the case where we already
             // auto-closed this bar when the next bar started forming.
-            if tx.send(BarEvent { tf, bar, closed: true, received_at_ms }).is_err() {
+            if tx.send(BarEvent { tf, bar, closed: true, received_at_ms }).await.is_err() {
                 let _ = write.close().await;
                 return Ok(());
             }
@@ -214,7 +233,7 @@ async fn handle_push(
                     );
                     counter!("herald_feed_bars_total", "source" => "okx", "symbol" => push.arg.inst_id.clone()).increment(1);
                     counter!("herald_feed_bars_auto_closed_total", "source" => "okx").increment(1);
-                    if tx.send(BarEvent { tf, bar: prev_bar, closed: true, received_at_ms }).is_err() {
+                    if tx.send(BarEvent { tf, bar: prev_bar, closed: true, received_at_ms }).await.is_err() {
                         let _ = write.close().await;
                         return Ok(());
                     }
@@ -224,7 +243,7 @@ async fn handle_push(
             }
             // Store the latest forming bar data and forward as live update.
             last_forming.insert(key, (ts, bar.clone()));
-            if tx.send(BarEvent { tf, bar, closed: false, received_at_ms }).is_err() {
+            if tx.send(BarEvent { tf, bar, closed: false, received_at_ms }).await.is_err() {
                 let _ = write.close().await;
                 return Ok(());
             }

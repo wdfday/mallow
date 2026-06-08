@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn script_parity() {
-        let bars = dip_in_uptrend_bars();
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = WilliamsRMa::new(14, 50, -80.0, -20.0);
         let named_sigs = run(&mut named, &bars);

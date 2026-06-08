@@ -40,7 +40,8 @@ pub struct HaBar {
 ///
 /// # Warmup
 /// Standard (smooth=1): trả về ngay từ bar đầu tiên (seed bar).
-/// Smooth > 1: cần `smooth × 4 - 3` bar do cascade EMA của 4 components.
+/// Smooth > 1: cần đúng `smooth` bar — 4 EMA được feed song song từ bar đầu tiên,
+/// tất cả warm up cùng lúc sau P bar.
 #[derive(Debug, Clone)]
 pub struct HeikenAshi {
     smooth: usize,
@@ -82,13 +83,22 @@ impl HeikenAshi {
     }
 
     pub fn update(&mut self, open: f64, high: f64, low: f64, close: f64) -> Option<HaBar> {
-        // Smooth input via EMA if configured
+        // Smooth input via EMA if configured.
+        //
+        // IMPORTANT: tất cả 4 EMA phải được gọi trên mỗi bar TRƯỚC KHI kiểm tra None.
+        // Nếu dùng `?` short-circuit theo chuỗi (`let so = ...?; let sh = ...?; ...`),
+        // ema_high/low/close sẽ không nhận bar trong giai đoạn warmup của ema_open,
+        // dẫn đến cascade: warmup tăng từ P lên 4P-3 và mỗi EMA seed trên một đoạn
+        // giá khác nhau — sai hoàn toàn so với Smoothed HA chuẩn.
         let (so, sh, sl, sc) = if self.smooth > 1 {
-            let so = self.ema_open.as_mut().unwrap().update(open)?;
-            let sh = self.ema_high.as_mut().unwrap().update(high)?;
-            let sl = self.ema_low.as_mut().unwrap().update(low)?;
-            let sc = self.ema_close.as_mut().unwrap().update(close)?;
-            (so, sh, sl, sc)
+            let so = self.ema_open.as_mut().unwrap().update(open);
+            let sh = self.ema_high.as_mut().unwrap().update(high);
+            let sl = self.ema_low.as_mut().unwrap().update(low);
+            let sc = self.ema_close.as_mut().unwrap().update(close);
+            match (so, sh, sl, sc) {
+                (Some(o), Some(h), Some(l), Some(c)) => (o, h, l, c),
+                _ => return None,
+            }
         } else {
             (open, high, low, close)
         };
@@ -155,18 +165,35 @@ mod tests {
     }
 
     #[test]
-    fn test_ha_smooth_requires_warmup() {
-        // Due to cascading ? (ema_open → ema_high → ema_low → ema_close), smooth=3 needs
-        // 3 + 2 + 2 + 2 = 9 bars before first value. Verify it eventually produces one.
+    fn test_ha_smooth_warmup_is_period_bars() {
+        // All 4 EMAs are fed in parallel from bar 1, so warmup = exactly `smooth` bars.
+        // smooth=3: None on bars 1-2, Some on bar 3.
         let mut ha = HeikenAshi::new(3);
-        let mut got = false;
-        for i in 0..15 {
+        let mut first_some_at = None;
+        for i in 1..=10usize {
             let p = 10.0 + i as f64;
-            if ha.update(p, p + 1.0, p - 1.0, p + 0.5).is_some() {
-                got = true;
+            let r = ha.update(p, p + 1.0, p - 1.0, p + 0.5);
+            if r.is_some() && first_some_at.is_none() {
+                first_some_at = Some(i);
             }
         }
-        assert!(got, "smooth=3 HA should produce a value within 15 bars");
+        assert_eq!(first_some_at, Some(3), "smooth=3 HA should emit first value at bar 3");
+    }
+
+    #[test]
+    fn test_ha_smooth_emas_use_correct_components() {
+        // Verify parallel warmup: ema_high should be seeded on HIGH prices from bars 1..P,
+        // not on a later slice. With a monotone rising dataset the smoothed HA high must
+        // be >= smoothed HA open (since high > open every bar).
+        let mut ha = HeikenAshi::new(3);
+        let mut last = None;
+        for i in 1..=5usize {
+            let p = 100.0 + i as f64;
+            last = ha.update(p, p + 2.0, p - 1.0, p + 1.0); // high always open+2
+        }
+        let v = last.unwrap();
+        assert!(v.high >= v.open, "HA high must be >= HA open");
+        assert!(v.high >= v.close, "HA high must be >= HA close");
     }
 
     #[test]

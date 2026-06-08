@@ -25,7 +25,11 @@ enum LiveStrategy {
     V2 {
         strategy: Box<dyn MtfStrategy>,
         declared_htfs: Vec<Timeframe>,
-        base_tf: Timeframe,
+        /// The strategy's own base TF — equals `Handle::target_tf`, which is
+        /// the TF this hand evaluates at. Distinct from the *ledger* base TF
+        /// (always M1 in production), which is the registry's `base_tf` field.
+        /// Named `eval_tf` here to prevent the two from being confused at call sites.
+        eval_tf: Timeframe,
         /// Last bar.timestamp fed into the strategy per HTF, used to detect
         /// newly-confirmed bars on each M1 tick.
         last_htf_ts: HashMap<Timeframe, i64>,
@@ -114,7 +118,7 @@ impl Handle {
                 live: LiveStrategy::V2 {
                     strategy: probe,
                     declared_htfs: htfs,
-                    base_tf: target_tf,
+                    eval_tf: target_tf,
                     last_htf_ts,
                 },
                 ledger: Arc::clone(ledger),
@@ -206,8 +210,8 @@ impl Handle {
             // V2: multi-TF — before feeding the base-TF bar we check the ledger
             // for any newly-confirmed HTF bars and deliver them first (largest TF
             // first), then the base bar. See `on_bar_v2` for the full ordering.
-            LiveStrategy::V2 { strategy, declared_htfs, base_tf, last_htf_ts } => {
-                on_bar_v2(strategy.as_mut(), bar, *base_tf, declared_htfs, last_htf_ts, &self.symbol, &self.ledger)
+            LiveStrategy::V2 { strategy, declared_htfs, eval_tf, last_htf_ts } => {
+                on_bar_v2(strategy.as_mut(), bar, *eval_tf, declared_htfs, last_htf_ts, &self.symbol, &self.ledger)
             }
         };
         if !sigs.is_empty() {
@@ -293,6 +297,16 @@ fn warmup_v2(
     let base_bars: Vec<Bar> = ledger
         .with_state(symbol, base_tf, |s| s.bar_window.iter().cloned().collect())
         .unwrap_or_default();
+
+    if base_bars.is_empty() {
+        tracing::warn!(
+            %symbol, %base_tf,
+            "v2 warmup: no base-TF history in ledger — strategy starts cold; \
+             indicators will not be warmed until the ledger window fills up. \
+             Check that parquet bootstrap completed before the first hand was registered."
+        );
+        return HashMap::new();
+    }
 
     // Load HTF windows from ledger into mutable queues for consumption.
     let mut htf_remaining: HashMap<Timeframe, std::collections::VecDeque<Bar>> = declared_htfs

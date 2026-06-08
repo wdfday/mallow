@@ -11,42 +11,54 @@ use std::time::Duration;
 use alm_core::Timeframe;
 use alm_ledger::Ledger;
 use futures::{SinkExt, StreamExt};
+use tokio::time::timeout;
 use metrics::{counter, gauge};
 use serde::Deserialize;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 use tracing::{debug, info, warn};
 
-use super::{BarEvent, BarTx, SUBSCRIBE_TFS};
+use super::{BarEvent, BarTx};
 use super::rest::{gap_fill_symbol, Exchange};
 
 const WS_BASE: &str = "wss://stream.binance.com:9443/stream";
 const RECONNECT: Duration = Duration::from_secs(5);
+/// Max silence before we assume a TCP half-open and force reconnect.
+/// Binance sends a server ping ~every 3 min; 90 s is a safe margin.
+const READ_TIMEOUT: Duration = Duration::from_secs(90);
+/// Max concurrent REST requests during reconnect gap-fill.
+/// Binance REST rate limit: 1 200 weight/min on the `/klines` endpoint
+/// (weight=1 each). 4 concurrent is conservative and avoids 429s.
+const GAP_FILL_CONCURRENCY: usize = 4;
 
-/// Spawn a task that streams klines for `symbols` across all [`SUBSCRIBE_TFS`].
-/// Sends [`BarEvent`]s to `tx`. Reconnects automatically on disconnect.
+/// Spawn a task that streams klines for `symbol_tfs` on a single combined-stream connection.
+///
+/// `symbol_tfs`: per-symbol `(raw_symbol, Vec<Timeframe>)` from [`SymbolConfig::binance_symbol_tfs`].
+/// Each symbol subscribes only its declared TFs; unknown TF strings were already filtered at parse
+/// time. All symbols × TFs share one TCP connection (Binance limit: 1 024 streams per connection).
+///
+/// Reconnects automatically on disconnect; runs a REST gap-fill before resuming the WS loop.
 /// Task exits when `tx` is dropped (receiver gone).
-/// Spawn a task that streams klines for `symbols` across all [`SUBSCRIBE_TFS`].
-/// Sends [`BarEvent`]s to `tx`. Reconnects automatically on disconnect.
-/// On each reconnect, runs a REST gap-fill to bridge the missed bars.
-pub fn spawn(symbols: Vec<String>, tx: BarTx, ledger: Arc<Ledger>, tf: Timeframe) {
-    if symbols.is_empty() {
+pub fn spawn(symbol_tfs: Vec<(String, Vec<Timeframe>)>, tx: BarTx, ledger: Arc<Ledger>, tf: Timeframe) {
+    if symbol_tfs.is_empty() {
         return;
     }
     tokio::spawn(async move {
-        let streams: Vec<String> = symbols
+        // Build combined-stream URL once — it never changes across reconnects.
+        let streams: Vec<String> = symbol_tfs
             .iter()
-            .flat_map(|s| {
-                let sym = s.to_lowercase();
-                SUBSCRIBE_TFS.iter().filter_map(move |&tf| {
-                    tf_to_interval(tf).map(|iv| format!("{}@kline_{}", sym, iv))
+            .flat_map(|(sym, tfs)| {
+                let sym = sym.to_lowercase();
+                tfs.iter().filter_map(move |&t| {
+                    tf_to_interval(t).map(|iv| format!("{}@kline_{}", sym, iv))
                 })
             })
             .collect();
         let url = format!("{}?streams={}", WS_BASE, streams.join("/"));
+        let total_tfs: usize = symbol_tfs.iter().map(|(_, tfs)| tfs.len()).sum();
         info!(
-            symbols = symbols.len(),
-            tfs = SUBSCRIBE_TFS.len(),
-            streams = streams.len(),
+            symbols = symbol_tfs.len(),
+            total_streams = streams.len(),
+            avg_tfs_per_symbol = total_tfs.checked_div(symbol_tfs.len()).unwrap_or(0),
             "binance: subscribing to combined stream"
         );
 
@@ -54,16 +66,19 @@ pub fn spawn(symbols: Vec<String>, tx: BarTx, ledger: Arc<Ledger>, tf: Timeframe
         loop {
             if !first {
                 counter!("herald_feed_reconnects_total", "source" => "binance").increment(1);
-                // Bridge the gap caused by the disconnect before resuming WS.
-                info!(symbols = symbols.len(), "binance: reconnect gap-fill");
-                let tasks: Vec<_> = symbols.iter().map(|sym| {
+                info!(symbols = symbol_tfs.len(), "binance: reconnect gap-fill");
+                let sem = Arc::new(tokio::sync::Semaphore::new(GAP_FILL_CONCURRENCY));
+                let tasks: Vec<_> = symbol_tfs.iter().map(|(sym, tfs)| {
                     let live_sym = format!("binance:{}", sym.to_uppercase());
                     let last_ts = ledger.with_state(&live_sym, tf, |s| s.last_ts).flatten();
                     let base_from_ms = last_ts.map(|ts| ts + tf.duration_ms());
                     let ledger = ledger.clone();
                     let sym = sym.clone();
+                    let tfs = tfs.clone();
+                    let sem = sem.clone();
                     async move {
-                        gap_fill_symbol(&ledger, tf, &format!("binance:{}", sym.to_uppercase()), &sym, Exchange::Binance, base_from_ms, SUBSCRIBE_TFS).await;
+                        let _permit = sem.acquire_owned().await.expect("semaphore closed");
+                        gap_fill_symbol(&ledger, tf, &format!("binance:{}", sym.to_uppercase()), &sym, Exchange::Binance, base_from_ms, &tfs).await;
                     }
                 }).collect();
                 futures::future::join_all(tasks).await;
@@ -93,15 +108,20 @@ async fn run_once(url: &str, tx: &BarTx) -> anyhow::Result<()> {
     gauge!("herald_feed_ws_connected", "source" => "binance").set(1.0);
     let (mut write, mut read) = ws.split();
 
-    while let Some(msg) = read.next().await {
-        let msg = match msg {
-            Ok(m) => m,
-            Err(e) => {
+    loop {
+        let msg = match timeout(READ_TIMEOUT, read.next()).await {
+            Ok(Some(Ok(m))) => m,
+            Ok(Some(Err(e))) => {
                 if tx.is_closed() {
                     let _ = write.close().await;
                     return Ok(());
                 }
                 return Err(e.into());
+            }
+            Ok(None) => return Err(anyhow::anyhow!("stream ended")),
+            Err(_elapsed) => {
+                warn!("binance: read timeout ({READ_TIMEOUT:?}) — reconnecting");
+                return Err(anyhow::anyhow!("read timeout"));
             }
         };
 
@@ -143,12 +163,11 @@ async fn run_once(url: &str, tx: &BarTx) -> anyhow::Result<()> {
             counter!("herald_feed_bars_total", "source" => "binance", "symbol" => sym).increment(1);
         }
 
-        if tx.send(BarEvent { tf, bar, closed: k.closed, received_at_ms }).is_err() {
+        if tx.send(BarEvent { tf, bar, closed: k.closed, received_at_ms }).await.is_err() {
             let _ = write.close().await;
             return Ok(());
         }
     }
-    Err(anyhow::anyhow!("stream ended"))
 }
 
 // ── Interval ↔ Timeframe ──────────────────────────────────────────────────────

@@ -123,7 +123,10 @@ def load_parquet(
     Returns:
         (alm_bars: dict, df: pandas.DataFrame) — cùng tuple như `make_bars`.
     """
-    pattern = str(DATA_ROOT / source / tf / symbol / f"{symbol}_{tf}_*.parquet")
+    if source == "testdata":
+        pattern = str(REPO_ROOT / "almanac/crates/data/testdata" / symbol / tf / f"{symbol}_{tf}_*.parquet")
+    else:
+        pattern = str(DATA_ROOT / source / tf / symbol / f"{symbol}_{tf}_*.parquet")
     files = sorted(glob.glob(pattern))
     if not files:
         raise FileNotFoundError(
@@ -142,7 +145,10 @@ def load_parquet(
     if end:
         df_raw = df_raw[df_raw["t"] <  int(pd.Timestamp(end,   tz="UTC").timestamp() * 1000)]
     if n is not None:
-        df_raw = df_raw.tail(n).reset_index(drop=True)
+        if source == "testdata":
+            df_raw = df_raw.head(n).reset_index(drop=True)
+        else:
+            df_raw = df_raw.tail(n).reset_index(drop=True)
 
     alm_bars = {col: df_raw[col].astype(float).tolist() if col != "t" else df_raw["t"].astype("int64").tolist() for col in keep}
 

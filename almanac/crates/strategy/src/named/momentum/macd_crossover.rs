@@ -73,7 +73,7 @@ mod tests {
 
     #[test]
     fn script_parity() {
-        let bars = slow_trend_bars();
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = MacdCrossover::new(12, 26, 9);
         let named_sigs = run(&mut named, &bars);

@@ -11,8 +11,9 @@
 //! source and exposes snapshot stats for the admin endpoint.
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::Mutex;
 use std::time::Instant;
+
+use parking_lot::Mutex;
 
 use serde::Serialize;
 
@@ -88,7 +89,6 @@ impl WsLatencyTracker {
     pub fn record(&self, source: &str, latency_ms: i64) {
         self.inner
             .lock()
-            .unwrap()
             .entry(source.to_string())
             .or_default()
             .push(source, latency_ms);
@@ -98,7 +98,6 @@ impl WsLatencyTracker {
     pub fn snapshot(&self) -> HashMap<String, SourceStats> {
         self.inner
             .lock()
-            .unwrap()
             .iter()
             .filter_map(|(src, w)| w.stats().map(|s| (src.clone(), s)))
             .collect()

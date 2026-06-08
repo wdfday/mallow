@@ -92,7 +92,7 @@ mod tests {
 
     #[test]
     fn script_parity() {
-        let bars = bb_rsi_bars();
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = BbRsiReversal::new(20, 2.0, 14, 35.0, 65.0);
         let named_sigs = run(&mut named, &bars);

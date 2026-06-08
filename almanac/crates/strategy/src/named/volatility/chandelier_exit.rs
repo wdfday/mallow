@@ -78,3 +78,47 @@ impl Strategy for ChandelierExit {
         self.prev_bull = None;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn script_parity() {
+        let Some(bars) = load_real_bars() else { return; };
+
+        let mut named = ChandelierExit::new(22, 3.0);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = r#"
+let atr22 = ind.atr(22);
+let hh = highest(high, 22);
+let stop = hh - 3.0 * atr22[0].atr;
+let bull = close[0] > stop;
+if state["in_position"] == () {
+    state["in_position"] = false;
+    state["prev_bull"] = ();
+}
+let was_bull = state["prev_bull"];
+state["prev_bull"] = bull;
+if was_bull != () {
+    if !was_bull && bull && !state["in_position"] {
+        state["in_position"] = true;
+        entry = true;
+    }
+    if was_bull && !bull && state["in_position"] {
+        state["in_position"] = false;
+        exit = true;
+    }
+}
+"#;
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "chandelier_exit: must produce signals");
+        assert_parity("chandelier_exit parity vs named", &named_sigs, &script_sigs);
+    }
+}

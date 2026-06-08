@@ -168,14 +168,19 @@ fn query_bars_before_resampled(
 
 fn timeframe_to_ms(tf: &str) -> i64 {
     match tf.to_uppercase().as_str() {
-        "M1"  =>        60_000,
-        "M5"  =>       300_000,
-        "M15" =>       900_000,
-        "M30" =>     1_800_000,
-        "H1"  =>     3_600_000,
-        "H4"  =>    14_400_000,
-        "D1"  =>    86_400_000,
-        "W1"  =>   604_800_000,
+        "M1"  =>          60_000,
+        "M3"  =>         180_000,
+        "M5"  =>         300_000,
+        "M10" =>         600_000,
+        "M15" =>         900_000,
+        "M30" =>       1_800_000,
+        "H1"  =>       3_600_000,
+        "H2"  =>       7_200_000,
+        "H4"  =>      14_400_000,
+        "H6"  =>      21_600_000,
+        "H12" =>      43_200_000,
+        "D1"  =>      86_400_000,
+        "W1"  =>     604_800_000,
         _     => 0,
     }
 }
@@ -264,7 +269,13 @@ pub fn query_bars_for_compute(
 
 fn build_parquet_expr(files: &[std::path::PathBuf]) -> String {
     let list = files.iter()
-        .map(|p| format!("'{}'", p.display()))
+        .map(|p| {
+            // Normalise separators (Windows) and escape single quotes inside the path.
+            let s = p.to_string_lossy()
+                .replace('\\', "/")
+                .replace('\'', "\\'");
+            format!("'{s}'")
+        })
         .collect::<Vec<_>>()
         .join(", ");
     format!("read_parquet([{list}])")

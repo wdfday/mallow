@@ -75,7 +75,7 @@ mod tests {
     #[test]
     fn script_parity() {
         // Wolfstein fires every bar when conditions hold (no crossover gate).
-        let bars = trending_bars(300);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = Wolfstein::new(14, 27.5, 20.5);
         let named_sigs = run(&mut named, &bars);

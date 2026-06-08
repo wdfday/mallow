@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn script_parity() {
-        let bars = trending_bars(300);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = DmiAdx::new(14, 25.0);
         let named_sigs = run(&mut named, &bars);

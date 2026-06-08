@@ -33,6 +33,9 @@ use alm_report::{BuyHoldBenchmark, monte_carlo as mc_run, portfolio_analyze, Mon
 use alm_strategy::{build_strategy, catalog::STRATEGY_KEYS, AtrSizing, FixedFractional, FixedQuantity, KellySizing};
 use serde_json::{json, Map, Value};
 
+pub mod indicators;
+
+
 // ── Internal helpers ──────────────────────────────────────────────────────────
 
 /// True when the symbol looks like a crypto pair.
@@ -1112,5 +1115,6 @@ fn alm_py(m: &Bound<PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(kalman, m)?)?;
     m.add_function(wrap_pyfunction!(monte_carlo, m)?)?;
     m.add_function(wrap_pyfunction!(list_strategies, m)?)?;
+    indicators::register_submodule(m)?;
     Ok(())
 }

@@ -16,7 +16,7 @@ import pytest
 _PARQUET_PATH = (
     pathlib.Path(__file__).parent.parent.parent  # almanac/crates/
     / "data/testdata/BTCUSDT/M1"
-    / "BTCUSDT_M1_2022-04-13_to_2026-04-12.parquet"
+    / "BTCUSDT_M1_2026-01.parquet"
 )
 
 

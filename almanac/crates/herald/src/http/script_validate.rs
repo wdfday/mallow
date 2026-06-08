@@ -37,17 +37,6 @@ use axum::{
 };
 use axum::routing::post;
 
-fn parse_timeframe(s: &str) -> Option<Timeframe> {
-    match s.to_ascii_uppercase().as_str() {
-        "M1"  => Some(Timeframe::M1),  "M3"  => Some(Timeframe::M3),
-        "M5"  => Some(Timeframe::M5),  "M15" => Some(Timeframe::M15),
-        "M30" => Some(Timeframe::M30), "H1"  => Some(Timeframe::H1),
-        "H2"  => Some(Timeframe::H2),  "H4"  => Some(Timeframe::H4),
-        "H6"  => Some(Timeframe::H6),  "H12" => Some(Timeframe::H12),
-        "D1"  => Some(Timeframe::D1),  "W1"  => Some(Timeframe::W1),
-        _ => None,
-    }
-}
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -107,12 +96,10 @@ pub async fn validate_script(
     // is fast and lint scripts are tiny; no need for spawn_blocking here.
     let base_tf = match req.base_tf.as_deref() {
         None => None,
-        Some(s) => match parse_timeframe(s) {
+        Some(s) => match crate::helper::parse_tf(s) {
             Some(tf) => Some(tf),
-            None => return err(
-                StatusCode::BAD_REQUEST,
-                format!("unknown base_tf '{s}'; expected one of: M1 M3 M5 M15 M30 H1 H2 H4 H6 H12 D1 W1"),
-            ),
+            None => return err(StatusCode::BAD_REQUEST,
+                format!("unknown base_tf '{s}'; expected one of: {}", crate::helper::valid_tf_list())),
         },
     };
     let (errors, scope) = script_lint(&req.script, base_tf);

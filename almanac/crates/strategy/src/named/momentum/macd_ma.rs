@@ -70,7 +70,7 @@ mod tests {
 
     #[test]
     fn script_parity() {
-        let bars = slow_trend_bars();
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = MacdMa::new(12, 26, 9, 50);
         let named_sigs: Vec<(i64, Direction)> = bars.iter()
@@ -79,8 +79,8 @@ mod tests {
             .collect();
 
         let script = r#"
-let mh = ind.macd(12);
-let sma50 = ind.sma(50);
+let mh = ind.macd(12, buf=1);
+let sma50 = ind.sma(50, buf=1);
 let in_pos = state["in_position"] == true;
 if !in_pos && mh[0].histogram > 0.0 && close[0] > sma50[0] {
     entry = true;
@@ -110,22 +110,22 @@ fn signal_count_debug() {
     use crate::test_utils::*;
     use alm_core::strategy::Strategy;
     
-    let slow = slow_trend_bars();
+    let Some(slow) = load_real_bars() else { return; };
     let mut ma = MacdMa::new(12, 26, 9, 50);
     let s: Vec<_> = slow.iter().flat_map(|b| ma.on_bar(b)).collect();
     eprintln!("macd_ma slow_trend_bars: {} / {}", s.len(), slow.len());
     
-    let trend400 = trending_bars(400);
+    let Some(trend400) = load_real_bars() else { return; };
     let mut te = TripleEma::new(10, 20, 50);
     let s: Vec<_> = trend400.iter().flat_map(|b| te.on_bar(b)).collect();
     eprintln!("triple_ema trending(400): {}", s.len());
     
-    let dip = dip_in_uptrend_bars();
+    let Some(dip) = load_real_bars() else { return; };
     let mut te2 = TripleEma::new(10, 20, 50);
     let s: Vec<_> = dip.iter().flat_map(|b| te2.on_bar(b)).collect();
     eprintln!("triple_ema dip: {}", s.len());
     
-    let trend300 = trending_bars(300);
+    let Some(trend300) = load_real_bars() else { return; };
     let mut c = CmoZeroCross::new(14, 50);
     let s: Vec<_> = trend300.iter().flat_map(|b| c.on_bar(b)).collect();
     eprintln!("cmo trending(300): {}", s.len());

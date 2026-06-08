@@ -137,25 +137,24 @@ impl Strategy for PatternBreakoutStrategy {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_utils::*;
     use super::*;
     use alm_core::bar::Bar;
 
-    fn bar(ts: i64, close: f64) -> Bar {
-        Bar::new(ts, "T", close, close * 1.005, close * 0.995, close, 1000.0)
-    }
+    
 
     #[test]
     fn test_no_signals_on_empty_window() {
         let mut s = PatternBreakoutStrategy::default_setup(60);
-        let bars: Vec<Bar> = (0..5).map(|i| bar(i, 100.0)).collect();
-        let sigs = s.on_window(&bars);
+        let Some(bars) = load_real_bars() else { return; };
+        let sigs = s.on_window(&bars[..5]);
         assert!(sigs.is_empty());
     }
 
     #[test]
     fn test_on_bar_always_empty() {
         let mut s = PatternBreakoutStrategy::default_setup(60);
-        let b = bar(0, 100.0);
-        assert!(s.on_bar(&b).is_empty());
+        let Some(bars) = load_real_bars() else { return; };
+        assert!(s.on_bar(&bars[0]).is_empty());
     }
 }

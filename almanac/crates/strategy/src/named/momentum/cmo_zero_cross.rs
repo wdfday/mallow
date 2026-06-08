@@ -67,7 +67,7 @@ mod tests {
 
     #[test]
     fn script_parity() {
-        let bars = trending_bars(300);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = CmoZeroCross::new(14, 50);
         let named_sigs: Vec<(i64, Direction)> = bars.iter()

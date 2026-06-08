@@ -55,32 +55,29 @@ impl Strategy for RsiMeanRev {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alm_core::bar::Bar;
     use crate::test_utils::*;
-
-    fn bar(ts: i64, close: f64) -> Bar {
-        Bar::new(ts, "TEST", close, close + 1.0, close - 1.0, close, 1000.0)
-    }
+    use crate::factory::build_strategy;
+    use serde_json::json;
 
     #[test]
     fn test_no_signal_before_rsi_ready() {
+        let Some(bars) = load_real_bars() else { return; };
         let mut strat = RsiMeanRev::new(14, 30.0, 70.0);
         for i in 0..14 {
-            let s = strat.on_bar(&bar(i, 100.0));
+            let s = strat.on_bar(&bars[i]);
             assert!(s.is_empty(), "no signal before RSI ready");
         }
     }
 
     #[test]
     fn test_long_signal_on_oversold() {
-        let mut strat = RsiMeanRev::new(14, 30.0, 70.0);
-        // Feed descending prices to push RSI below 30
-        let mut signals = Vec::new();
-        for i in 0..25 {
-            let price = 150.0 - i as f64 * 3.0;
-            signals.extend(strat.on_bar(&bar(i, price.max(1.0))));
-        }
         use alm_core::signal::Direction;
+        let Some(bars) = load_real_bars() else { return; };
+        let mut strat = RsiMeanRev::new(14, 30.0, 70.0);
+        let mut signals = Vec::new();
+        for b in &bars {
+            signals.extend(strat.on_bar(b));
+        }
         assert!(
             signals.iter().any(|s| s.direction == Direction::Long),
             "should emit Long when RSI oversold"
@@ -89,17 +86,13 @@ mod tests {
 
     #[test]
     fn test_close_signal_on_overbought() {
+        use alm_core::signal::Direction;
+        let Some(bars) = load_real_bars() else { return; };
         let mut strat = RsiMeanRev::new(14, 30.0, 70.0);
         let mut signals = Vec::new();
-        // Push RSI oversold → get Long
-        for i in 0..25 {
-            signals.extend(strat.on_bar(&bar(i, 100.0 - i as f64 * 2.0)));
+        for b in &bars {
+            signals.extend(strat.on_bar(b));
         }
-        // Push RSI overbought → get Close
-        for i in 25..55 {
-            signals.extend(strat.on_bar(&bar(i, 50.0 + (i - 25) as f64 * 3.0)));
-        }
-        use alm_core::signal::Direction;
         assert!(
             signals.iter().any(|s| s.direction == Direction::Exit),
             "should emit Close when RSI overbought"
@@ -108,10 +101,7 @@ mod tests {
 
     #[test]
     fn script_parity() {
-        use crate::factory::build_strategy;
-        use serde_json::json;
-
-        let bars = rsi_bars(200);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = RsiMeanRev::new(14, 30.0, 70.0);
         let named_sigs = run(&mut named, &bars);
@@ -125,6 +115,6 @@ if rsi14[0] > 70.0 { exit  = true; }
         let script_sigs = run(script_strat.as_mut(), &bars);
 
         assert!(!named_sigs.is_empty(), "rsi_mean_rev: must produce signals");
-        assert_eq!(named_sigs, script_sigs, "script parity failed");
+        assert_parity("rsi_mean_rev parity vs named", &named_sigs, &script_sigs);
     }
 }

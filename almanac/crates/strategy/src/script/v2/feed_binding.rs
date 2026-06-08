@@ -269,6 +269,12 @@ impl FeedVarBinding {
                     live.map = fields;
                 }
             }
+        } else {
+            // The clone's indicator hasn't warmed up yet — clear stale live
+            // values so callers don't read old projected data from a previous
+            // bucket as if it were the current live projection.
+            live.val = 0.0;
+            live.map.clear();
         }
     }
 
@@ -290,6 +296,7 @@ impl FeedVarBinding {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_utils::*;
     use super::*;
     use alm_core::Bar;
     use alm_indicator::IndicatorBox;

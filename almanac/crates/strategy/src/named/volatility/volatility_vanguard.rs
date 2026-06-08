@@ -64,3 +64,36 @@ impl Strategy for VolatilityVanguard {
         self.prev_atr = None;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn script_parity() {
+        let Some(bars) = load_real_bars() else { return; };
+
+        let mut named = VolatilityVanguard::new(20, 2.0, 14);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = r#"
+let bb20 = ind.bbands(20);
+let atr14 = ind.atr(14);
+let atr_expanding = atr14[0].atr > atr14[1].atr;
+if close[0] > bb20[0].upper && atr_expanding {
+    entry = true;
+}
+if close[0] < bb20[0].middle {
+    exit = true;
+}
+"#;
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "volatility_vanguard: must produce signals");
+        assert_parity("volatility_vanguard parity vs named", &named_sigs, &script_sigs);
+    }
+}

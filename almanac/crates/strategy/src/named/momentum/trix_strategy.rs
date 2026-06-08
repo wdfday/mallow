@@ -62,40 +62,27 @@ mod tests {
     use crate::factory::build_strategy;
     use crate::test_utils::*;
 
-    fn bar(ts: i64, close: f64) -> Bar {
-        Bar::new(ts, "T", close * 1.005, close * 1.005, close * 0.995, close, 1000.0)
-    }
+    
 
     fn run(s: &mut dyn Strategy, bars: &[Bar]) -> Vec<(i64, Direction)> {
         bars.iter().flat_map(|b| s.on_bar(b)).map(|s| (s.timestamp, s.direction)).collect()
     }
 
-    fn trending_bars(n: usize) -> Vec<Bar> {
-        let third = n / 3;
-        (0..n).map(|i| {
-            let price = if i < third {
-                200.0 - i as f64 * 1.5
-            } else if i < third * 2 {
-                200.0 - third as f64 * 1.5 + (i - third) as f64 * 2.0
-            } else {
-                200.0 - third as f64 * 1.5 + third as f64 * 2.0 - (i - third * 2) as f64 * 2.0
-            };
-            bar(i as i64 * 60_000, price.max(10.0))
-        }).collect()
-    }
+    
 
     #[test]
     fn no_signal_before_warmup() {
         let mut s = TrixStrategy::new(18, 9);
-        for i in 0..60 {
-            assert!(s.on_bar(&bar(i, 100.0)).is_empty());
+        let Some(bars) = load_real_bars() else { return; };
+        for b in bars.iter().take(60) {
+            assert!(s.on_bar(b).is_empty());
         }
     }
     
 
     #[test]
     fn parity_reset() {
-        let bars = trending_bars(300);
+        let Some(bars) = load_real_bars() else { return; };
         let mut hc = TrixStrategy::new(18, 9);
         let r1 = run(&mut hc, &bars);
         hc.reset();
@@ -106,7 +93,7 @@ mod tests {
     #[test]
     fn script_parity() {
         use alm_core::signal::Direction;
-        let bars = slow_trend_bars();
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = TrixStrategy::new(18, 9);
         let named_sigs: Vec<(i64, Direction)> = bars.iter()

@@ -67,7 +67,7 @@ mod tests {
 
     #[test]
     fn script_parity() {
-        let bars = sar_bars();
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = SarStrategy::new(0.02, 0.2);
         let named_sigs = run(&mut named, &bars);

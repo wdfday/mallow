@@ -389,30 +389,36 @@ impl StoreBackend {
             ).await;
         }
 
-        // ── Path B: global spec_hash dedup ───────────────────────────────────
-        match self {
-            StoreBackend::Mem(store) => {
-                if let Some(existing) = store.read().strategies.values()
-                    .find(|s| s.name == name && s.spec.script == spec.script)
-                    .cloned()
-                {
-                    return Ok(existing);
-                }
-            }
-            StoreBackend::Pg(pool) => {
-                let row = sqlx::query(
-                    "SELECT id, name, version, previous_id, label, spec, notes, user_id, created_at \
-                     FROM strategies WHERE spec_hash = $1 AND (user_id = $2 OR (user_id IS NULL AND $2 IS NULL))",
-                )
-                .bind(&hash)
-                .bind(user_id.as_deref())
-                .fetch_optional(pool)
-                .await?;
-                if let Some(r) = row {
-                    return pg_strategy(&r);
-                }
-            }
-        }
+        // ── Path B: spec_hash dedup — TEMPORARILY DISABLED ──────────────────
+        //
+        // Hash-based dedup was causing identical scripts (same spec_hash) to
+        // be silently reused across different backtest sessions instead of
+        // creating a new version in the chain. Disabled until the store model
+        // distinguishes between "intentional re-run" and "unchanged script".
+        //
+        // To re-enable: uncomment the block below.
+        //
+        // match self {
+        //     StoreBackend::Mem(store) => {
+        //         if let Some(existing) = store.read().strategies.values()
+        //             .find(|s| s.name == name && s.spec.script == spec.script)
+        //             .cloned()
+        //         {
+        //             return Ok(existing);
+        //         }
+        //     }
+        //     StoreBackend::Pg(pool) => {
+        //         let row = sqlx::query(
+        //             "SELECT id, name, version, previous_id, label, spec, notes, user_id, created_at \
+        //              FROM strategies WHERE spec_hash = $1 AND (user_id = $2 OR (user_id IS NULL AND $2 IS NULL))",
+        //         )
+        //         .bind(&hash)
+        //         .bind(user_id.as_deref())
+        //         .fetch_optional(pool)
+        //         .await?;
+        //         if let Some(r) = row { return pg_strategy(&r); }
+        //     }
+        // }
 
         let previous_id = match self {
             StoreBackend::Mem(store) => {

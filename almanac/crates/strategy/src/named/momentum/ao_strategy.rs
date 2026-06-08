@@ -58,7 +58,7 @@ mod tests {
 
     #[test]
     fn script_parity() {
-        let bars = slow_trend_bars();
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = AoStrategy::new(5, 34);
         let named_sigs: Vec<(i64, Direction)> = bars.iter()

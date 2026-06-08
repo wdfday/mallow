@@ -53,3 +53,38 @@ impl Strategy for HighestBreakout {
         self.closes.clear();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn script_parity() {
+        let Some(bars) = load_real_bars() else { return; };
+
+        let mut named = HighestBreakout::new(20);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = r#"
+let dummy = highest(close, 21);
+let highest_val = close[1];
+let lowest_val = close[1];
+let i = 2;
+while i <= 20 {
+    if close[i] > highest_val { highest_val = close[i]; }
+    if close[i] < lowest_val { lowest_val = close[i]; }
+    i = i + 1;
+}
+if close[0] > highest_val { entry = true; }
+if close[0] < lowest_val { exit = true; }
+"#;
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "highest_breakout: must produce signals");
+        assert_parity("highest_breakout parity vs named", &named_sigs, &script_sigs);
+    }
+}

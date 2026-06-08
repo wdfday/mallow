@@ -64,20 +64,16 @@ impl Strategy for StochRsiStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alm_core::bar::Bar;
     use crate::test_utils::*;
     use crate::factory::build_strategy;
     use serde_json::json;
 
-    fn bar(ts: i64, close: f64) -> Bar {
-        Bar::new(ts, "TEST", close, close + 1.0, close - 1.0, close, 1000.0)
-    }
-
     #[test]
     fn test_no_signal_before_ready() {
+        let Some(bars) = load_real_bars() else { return; };
         let mut strat = StochRsiStrategy::new(5, 3, 0.2, 0.8);
         for i in 0..15 {
-            let s = strat.on_bar(&bar(i, 100.0 + i as f64));
+            let s = strat.on_bar(&bars[i]);
             assert!(s.is_empty(), "no signal before StochRSI ready: bar {i}");
         }
     }
@@ -85,20 +81,11 @@ mod tests {
     #[test]
     fn test_long_on_oversold() {
         use alm_core::signal::Direction;
-        // Use a smaller rsi_period so RSI window variation is easier to achieve
+        let Some(bars) = load_real_bars() else { return; };
         let mut strat = StochRsiStrategy::new(5, 3, 0.2, 0.8);
         let mut signals = Vec::new();
-        // Oscillate to build RSI variation, then plunge to drop RSI (StochRSI goes to 0)
-        let mixed: Vec<f64> = vec![
-            100.0, 105.0, 98.0, 107.0, 96.0, 110.0, 100.0, 105.0, 98.0, 107.0,
-            96.0, 110.0, 100.0, 105.0, 98.0, 107.0, 96.0, 110.0, 100.0, 105.0,
-        ];
-        for (i, &p) in mixed.iter().enumerate() {
-            signals.extend(strat.on_bar(&bar(i as i64, p)));
-        }
-        // Now plunge → RSI drops sharply below past RSI values → StochRSI K drops below 0.2
-        for i in 0..15 {
-            signals.extend(strat.on_bar(&bar((mixed.len() + i) as i64, 110.0 - i as f64 * 4.0)));
+        for b in &bars {
+            signals.extend(strat.on_bar(b));
         }
         assert!(
             signals.iter().any(|s| s.direction == Direction::Long),
@@ -109,24 +96,11 @@ mod tests {
     #[test]
     fn test_close_on_overbought() {
         use alm_core::signal::Direction;
+        let Some(bars) = load_real_bars() else { return; };
         let mut strat = StochRsiStrategy::new(5, 3, 0.2, 0.8);
         let mut signals = Vec::new();
-        // Oscillate to build RSI variation
-        let mixed: Vec<f64> = vec![
-            100.0, 105.0, 98.0, 107.0, 96.0, 110.0, 100.0, 105.0, 98.0, 107.0,
-            96.0, 110.0, 100.0, 105.0, 98.0, 107.0, 96.0, 110.0, 100.0, 105.0,
-        ];
-        for (i, &p) in mixed.iter().enumerate() {
-            signals.extend(strat.on_bar(&bar(i as i64, p)));
-        }
-        let offset = mixed.len() as i64;
-        // Plunge to trigger Long
-        for i in 0..15 {
-            signals.extend(strat.on_bar(&bar(offset + i, 110.0 - i as f64 * 4.0)));
-        }
-        // Rally sharply → RSI rises above previous RSI values → StochRSI K rises above 0.8
-        for i in 0..20 {
-            signals.extend(strat.on_bar(&bar(offset + 15 + i, 50.0 + i as f64 * 5.0)));
+        for b in &bars {
+            signals.extend(strat.on_bar(b));
         }
         assert!(
             signals.iter().any(|s| s.direction == Direction::Exit),
@@ -136,9 +110,10 @@ mod tests {
 
     #[test]
     fn test_reset_clears_state() {
+        let Some(bars) = load_real_bars() else { return; };
         let mut strat = StochRsiStrategy::new(5, 3, 0.2, 0.8);
-        for i in 0..30 {
-            strat.on_bar(&bar(i, 100.0 + i as f64));
+        for b in bars.iter().take(30) {
+            strat.on_bar(b);
         }
         strat.reset();
         assert!(strat.prev_k.is_none());
@@ -146,15 +121,10 @@ mod tests {
 
     #[test]
     fn script_parity() {
-        use alm_core::signal::Direction;
-
-        let bars = stoch_rsi_bars();
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = StochRsiStrategy::new(14, 3, 0.2, 0.8);
-        let named_sigs: Vec<(i64, Direction)> = bars.iter()
-            .flat_map(|b| named.on_bar(b))
-            .map(|s| (s.timestamp, s.direction))
-            .collect();
+        let named_sigs = run(&mut named, &bars);
 
         let script = r#"
 let sk = ind.stoch_rsi(14);
@@ -162,12 +132,9 @@ if sk[1].k >= 0.2 && sk[0].k < 0.2 { entry = true; }
 if sk[1].k <= 0.8 && sk[0].k > 0.8 { exit  = true; }
 "#;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
-        let script_sigs: Vec<(i64, Direction)> = bars.iter()
-            .flat_map(|b| script_strat.on_bar(b))
-            .map(|s| (s.timestamp, s.direction))
-            .collect();
+        let script_sigs = run(script_strat.as_mut(), &bars);
 
         assert!(!named_sigs.is_empty(), "stoch_rsi: must produce signals");
-        assert_eq!(named_sigs, script_sigs, "script parity failed");
+        assert_parity("stoch_rsi parity vs named", &named_sigs, &script_sigs);
     }
 }

@@ -75,10 +75,14 @@ pub(crate) fn extract_regime_block(script: &str) -> anyhow::Result<(Option<Strin
             while i < bytes.len() && bytes[i] != b'\n' { i += 1; }
             continue;
         }
-        // Skip string literals (simplistic — does not handle escapes inside, but enough for our use).
+        // Skip string literals (handles escape sequences).
         if bytes[i] == b'"' {
             i += 1;
-            while i < bytes.len() && bytes[i] != b'"' { i += 1; }
+            while i < bytes.len() {
+                if bytes[i] == b'\\' { i += 2; continue; }
+                if bytes[i] == b'"' { break; }
+                i += 1;
+            }
             i = (i + 1).min(bytes.len());
             continue;
         }
@@ -102,7 +106,11 @@ pub(crate) fn extract_regime_block(script: &str) -> anyhow::Result<(Option<Strin
                     }
                     if bytes[j] == b'"' {
                         j += 1;
-                        while j < bytes.len() && bytes[j] != b'"' { j += 1; }
+                        while j < bytes.len() {
+                            if bytes[j] == b'\\' { j += 2; continue; }
+                            if bytes[j] == b'"' { break; }
+                            j += 1;
+                        }
                         j = (j + 1).min(bytes.len());
                         continue;
                     }
@@ -202,7 +210,23 @@ pub(crate) fn extract_candle_directives(
 }
 
 fn strip_line_comment(line: &str) -> &str {
-    line.split("//").next().unwrap_or(line)
+    let bytes = line.as_bytes();
+    let mut in_string = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        if in_string {
+            if bytes[i] == b'\\' { i += 2; continue; } // skip escaped char
+            if bytes[i] == b'"'  { in_string = false; }
+        } else {
+            if bytes[i] == b'"' {
+                in_string = true;
+            } else if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+                return &line[..i];
+            }
+        }
+        i += 1;
+    }
+    line
 }
 
 /// Parse one directive statement, e.g. `candle.transform("heiken_ashi");`.
@@ -473,12 +497,17 @@ pub(crate) fn indicator_json_config(
             extra.get($key).copied().unwrap_or($default)
         };
     }
+    macro_rules! pu {
+        ($key:literal, $default:expr) => {
+            (extra.get($key).copied().unwrap_or($default).max(0.0).round() as u64)
+        };
+    }
     match ind_type {
         "macd" => json!({
             "type": "macd",
             "fast": period,
-            "slow": p!("slow", 26.0) as u64,
-            "signal": p!("signal", 9.0) as u64,
+            "slow": p!("slow", 26.0).max(0.0).round() as u64,
+            "signal": p!("signal", 9.0).max(0.0).round() as u64,
         }),
         "bbands" => json!({
             "type": "bbands",
@@ -491,13 +520,13 @@ pub(crate) fn indicator_json_config(
         "stochastic" => json!({
             "type": "stochastic",
             "k_period": period,
-            "smooth_k": p!("smooth_k", 1.0) as u64,
-            "d_period": p!("d_period", 3.0) as u64,
+            "smooth_k": p!("smooth_k", 1.0).max(0.0).round() as u64,
+            "d_period": p!("d_period", 3.0).max(0.0).round() as u64,
         }),
         "stoch_rsi" => json!({
             "type": "stoch_rsi",
             "rsi_period": period,
-            "smooth_d": p!("smooth_d", 3.0) as u64,
+            "smooth_d": p!("smooth_d", 3.0).max(0.0).round() as u64,
         }),
         "supertrend" => json!({
             "type": "supertrend",
@@ -512,8 +541,8 @@ pub(crate) fn indicator_json_config(
         "kdj" => json!({
             "type": "kdj",
             "period": period,
-            "k_period": p!("k_period", 3.0) as u64,
-            "d_period": p!("d_period", 3.0) as u64,
+            "k_period": p!("k_period", 3.0).max(0.0).round() as u64,
+            "d_period": p!("d_period", 3.0).max(0.0).round() as u64,
         }),
         "gmma" => {
             if period == 0 {
@@ -524,13 +553,13 @@ pub(crate) fn indicator_json_config(
                     "type": "gmma",
                     "short": [
                         period as u64,
-                        p!("s1", 5.0) as u64, p!("s2", 8.0) as u64,
-                        p!("s3", 10.0) as u64, p!("s4", 12.0) as u64, p!("s5", 15.0) as u64,
+                        p!("s1", 5.0).max(0.0).round() as u64, p!("s2", 8.0).max(0.0).round() as u64,
+                        p!("s3", 10.0).max(0.0).round() as u64, p!("s4", 12.0).max(0.0).round() as u64, p!("s5", 15.0).max(0.0).round() as u64,
                     ],
                     "long": [
-                        p!("l0", 30.0) as u64, p!("l1", 35.0) as u64,
-                        p!("l2", 40.0) as u64, p!("l3", 45.0) as u64,
-                        p!("l4", 50.0) as u64, p!("l5", 60.0) as u64,
+                        p!("l0", 30.0).max(0.0).round() as u64, p!("l1", 35.0).max(0.0).round() as u64,
+                        p!("l2", 40.0).max(0.0).round() as u64, p!("l3", 45.0).max(0.0).round() as u64,
+                        p!("l4", 50.0).max(0.0).round() as u64, p!("l5", 60.0).max(0.0).round() as u64,
                     ],
                 })
             }
@@ -544,18 +573,18 @@ pub(crate) fn indicator_json_config(
         "trix" => json!({
             "type": "trix",
             "period": period,
-            "signal": p!("signal", 9.0) as u64,
+            "signal": p!("signal", 9.0).max(0.0).round() as u64,
         }),
         "kama" => json!({
             "type": "kama",
             "er_period": period,
-            "fast": p!("fast", 2.0) as u64,
-            "slow": p!("slow", 30.0) as u64,
+            "fast": p!("fast", 2.0).max(0.0).round() as u64,
+            "slow": p!("slow", 30.0).max(0.0).round() as u64,
         }),
         "keltner" => json!({
             "type": "keltner",
             "period": period,
-            "atr_period": p!("atr_period", 10.0) as u64,
+            "atr_period": p!("atr_period", 10.0).max(0.0).round() as u64,
             "multiplier": p!("multiplier", 2.0),
         }),
         "chop_zone" => json!({
@@ -572,7 +601,7 @@ pub(crate) fn indicator_json_config(
             "type": "chande_kroll",
             "atr_period": period,
             "factor": p!("factor", 1.5),
-            "stop_period": p!("stop_period", 9.0) as u64,
+            "stop_period": p!("stop_period", 9.0).max(0.0).round() as u64,
         }),
         // kalman: no period concept — use named params only (period arg ignored)
         "kalman" => json!({
@@ -584,65 +613,68 @@ pub(crate) fn indicator_json_config(
         "alligator" => json!({
             "type": "alligator",
             "jaw":   period,
-            "teeth": p!("teeth", 8.0) as u64,
-            "lips":  p!("lips",  5.0) as u64,
+            "teeth": p!("teeth", 8.0).max(0.0).round() as u64,
+            "lips":  p!("lips",  5.0).max(0.0).round() as u64,
         }),
         "tsi" => json!({
             "type": "tsi",
             "first":  period,
-            "second": p!("second", 13.0) as u64,
+            "second": p!("second", 13.0).max(0.0).round() as u64,
         }),
         "ppo" => json!({
             "type": "ppo",
             "fast":   period,
-            "slow":   p!("slow",   26.0) as u64,
-            "signal": p!("signal",  9.0) as u64,
+            "slow":   p!("slow",   26.0).max(0.0).round() as u64,
+            "signal": p!("signal",  9.0).max(0.0).round() as u64,
         }),
         "uo" => json!({
             "type":   "uo",
             "fast":   if period == 0 { 7 } else { period },
-            "medium": p!("medium", 14.0) as u64,
-            "slow":   p!("slow",   28.0) as u64,
+            "medium": p!("medium", 14.0).max(0.0).round() as u64,
+            "slow":   p!("slow",   28.0).max(0.0).round() as u64,
         }),
         "ao" => json!({
             "type": "ao",
             "fast": if period == 0 { 5 } else { period },
-            "slow": p!("slow", 34.0) as u64,
+            "slow": p!("slow", 34.0).max(0.0).round() as u64,
         }),
         "connors_rsi" => json!({
             "type":          "connors_rsi",
             "rsi_period":    period,
-            "streak_period": p!("streak_period",   2.0) as u64,
-            "rank_period":   p!("rank_period",   100.0) as u64,
+            "streak_period": p!("streak_period",   2.0).max(0.0).round() as u64,
+            "rank_period":   p!("rank_period",   100.0).max(0.0).round() as u64,
         }),
         "ichimoku" => json!({
             "type":     "ichimoku",
             "tenkan":   period,
-            "kijun":    p!("kijun",    26.0) as u64,
-            "senkou_b": p!("senkou_b", 52.0) as u64,
+            "kijun":    p!("kijun",    26.0).max(0.0).round() as u64,
+            "senkou_b": p!("senkou_b", 52.0).max(0.0).round() as u64,
         }),
         "volatility_ratio" => json!({"type": "volatility_ratio", "lookback": period}),
         "obv"     => json!({"type": "obv"}),
-        "vwap"    => json!({"type": "vwap"}),
+        "vwap"    => json!({
+            "type": "vwap",
+            "session_gap_mins": p!("session_gap_mins", 390.0).max(0.0).round() as u64,
+        }),
         "bop"     => json!({"type": "bop"}),
         "coppock" => json!({
             "type":  "coppock",
             "short": if period == 0 { 11 } else { period },
-            "long":  p!("long", 14.0) as u64,
-            "wma":   p!("wma",  10.0) as u64,
+            "long":  p!("long", 14.0).max(0.0).round() as u64,
+            "wma":   p!("wma",  10.0).max(0.0).round() as u64,
         }),
         "pmo" => json!({
             "type":    "pmo",
             "smooth1": if period == 0 { 35 } else { period },
-            "smooth2": p!("smooth2", 20.0) as u64,
-            "signal":  p!("signal",  10.0) as u64,
+            "smooth2": p!("smooth2", 20.0).max(0.0).round() as u64,
+            "signal":  p!("signal",  10.0).max(0.0).round() as u64,
         }),
         "smi" => json!({
             "type":    "smi",
             "period":  if period == 0 { 13 } else { period },
-            "smooth1": p!("smooth1", 25.0) as u64,
-            "smooth2": p!("smooth2",  2.0) as u64,
-            "signal":  p!("signal",   9.0) as u64,
+            "smooth1": p!("smooth1", 25.0).max(0.0).round() as u64,
+            "smooth2": p!("smooth2",  2.0).max(0.0).round() as u64,
+            "signal":  p!("signal",   9.0).max(0.0).round() as u64,
         }),
         // kst: 4-ROC + 4-SMA arrays can't be expressed positionally; the period
         // arg sets the signal line. Arrays stay at the Pring defaults (override
@@ -655,7 +687,35 @@ pub(crate) fn indicator_json_config(
     }
 }
 
+/// Indicator types where `period = 0` is valid — the positional period argument
+/// maps to other parameters or the indicator uses built-in defaults.
+///
+/// Shared by `make_indicator_box` (runtime validation), `lint.rs` (linter), and
+/// `v2/parse.rs` (v2 runtime validation) — single source of truth.
+pub(crate) const PERIOD_EXEMPT: &[&str] = &[
+    // period arg maps to other parameters or is ignored entirely:
+    "kalman", "gmma", "ao", "coppock", "bop", "obv", "vwap", "fractal",
+    // handle period=0 with built-in defaults (documented in indicator_json_config):
+    "pmo", "smi", "kst", "parabolic_sar", "uo",
+];
+
 pub(super) fn make_indicator_box(decl: &IndicatorDecl) -> Result<IndicatorBox> {
+    if decl.period == 0 && !PERIOD_EXEMPT.contains(&decl.ind_type.as_str()) {
+        anyhow::bail!(
+            "indicator '{}' (type '{}'): period must be ≥ 1, got 0",
+            decl.var_name, decl.ind_type
+        );
+    }
+    // Validate extra params: negative values would silently truncate to 0 via
+    // `f64 as u64` and produce wrong indicator config without a clear error.
+    for (key, &val) in &decl.extra_params {
+        if val < 0.0 {
+            anyhow::bail!(
+                "indicator '{}': parameter '{}' must be ≥ 0, got {}",
+                decl.var_name, key, val
+            );
+        }
+    }
     IndicatorBox::from_config(&indicator_json_config(&decl.ind_type, decl.period, &decl.extra_params))
 }
 
@@ -663,6 +723,7 @@ pub(super) fn make_indicator_box(decl: &IndicatorDecl) -> Result<IndicatorBox> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_utils::*;
     use super::*;
     use alm_core::Timeframe;
 

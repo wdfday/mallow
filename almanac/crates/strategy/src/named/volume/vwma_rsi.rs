@@ -67,7 +67,7 @@ mod tests {
 
     #[test]
     fn script_parity() {
-        let bars = trending_bars(300);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = VwmaRsi::new(20, 14, 50.0, 45.0);
         let named_sigs: Vec<(i64, Direction)> = bars.iter()

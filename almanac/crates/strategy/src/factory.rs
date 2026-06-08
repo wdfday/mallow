@@ -638,6 +638,7 @@ pub fn params_from_map(map: &std::collections::HashMap<String, f64>) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_utils::*;
     use super::*;
     use serde_json::json;
 

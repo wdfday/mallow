@@ -82,14 +82,57 @@ impl Strategy for OscillatorOverlord {
 mod tests {
     use super::*;
     use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
 
     #[test]
     fn oscillator_overlord_parity() {
-        let bars = rsi_bars(200);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut hc = OscillatorOverlord::new(14, 14, 3, 20);
         let hc_sigs = run(&mut hc, &bars);
 
         assert!(!hc_sigs.is_empty(), "oscillator_overlord: no signals");
+    }
+
+    #[test]
+    fn script_parity() {
+        let Some(bars) = load_real_bars() else { return; };
+
+        let mut named = OscillatorOverlord::new(14, 14, 3, 20);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = r#"
+let rsi14 = ind.rsi(14, buf=1);
+let st14 = ind.stochastic(14, buf=1);
+let cci20 = ind.cci(20, buf=1);
+if state["in_position"] == () {
+    state["in_position"] = false;
+}
+let os_count = 0;
+if rsi14[0] < 30.0 { os_count = os_count + 1; }
+if st14[0].k < 20.0 { os_count = os_count + 1; }
+if cci20[0] < -100.0 { os_count = os_count + 1; }
+let ob_count = 0;
+if rsi14[0] > 70.0 { ob_count = ob_count + 1; }
+if st14[0].k > 80.0 { ob_count = ob_count + 1; }
+if cci20[0] > 100.0 { ob_count = ob_count + 1; }
+if !state["in_position"] {
+    if os_count >= 2 {
+        state["in_position"] = true;
+        entry = true;
+    }
+} else {
+    if ob_count >= 2 {
+        state["in_position"] = false;
+        exit = true;
+    }
+}
+"#;
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "oscillator_overlord: must produce signals");
+        assert_parity("oscillator_overlord parity vs named", &named_sigs, &script_sigs);
     }
 }

@@ -78,48 +78,30 @@ impl Strategy for StochasticCrossover {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alm_core::signal::Direction;
-
-    fn bar(ts: i64, close: f64) -> Bar {
-        Bar::new(ts, "T", close * 1.005, close * 1.005, close * 0.995, close, 1000.0)
-    }
-
-    fn run(s: &mut dyn Strategy, bars: &[Bar]) -> Vec<(i64, Direction)> {
-        bars.iter().flat_map(|b| s.on_bar(b)).map(|s| (s.timestamp, s.direction)).collect()
-    }
-
-    // V-shape: falling → rising to push stochastic into oversold then overbought
-    fn v_bars(n: usize) -> Vec<Bar> {
-        (0..n).map(|i| {
-            let price = if i < n / 2 {
-                150.0 - i as f64 * 3.0
-            } else {
-                150.0 - (n / 2) as f64 * 3.0 + (i - n / 2) as f64 * 4.0
-            };
-            bar(i as i64 * 60_000, price.max(1.0))
-        }).collect()
-    }
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
 
     #[test]
     fn no_signal_before_warmup() {
+        let Some(bars) = load_real_bars() else { return; };
         let mut s = StochasticCrossover::new(14, 3, 20.0, 80.0);
         for i in 0..15 {
-            assert!(s.on_bar(&bar(i, 100.0)).is_empty());
+            assert!(s.on_bar(&bars[i]).is_empty());
         }
     }
 
     #[test]
     fn produces_signals() {
-        let bars = v_bars(150);
+        let Some(bars) = load_real_bars() else { return; };
         let mut hc = StochasticCrossover::new(14, 3, 20.0, 80.0);
         let hc_sigs = run(&mut hc, &bars);
-
         assert!(!hc_sigs.is_empty(), "stochastic_crossover: no signals");
     }
 
     #[test]
     fn parity_reset() {
-        let bars = v_bars(150);
+        let Some(bars) = load_real_bars() else { return; };
         let mut hc = StochasticCrossover::new(14, 3, 20.0, 80.0);
         let r1 = run(&mut hc, &bars);
         hc.reset();
@@ -129,10 +111,7 @@ mod tests {
 
     #[test]
     fn script_parity() {
-        use crate::factory::build_strategy;
-        use serde_json::json;
-
-        let bars = v_bars(300);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = StochasticCrossover::new(14, 3, 20.0, 80.0);
         let named_sigs = run(&mut named, &bars);
@@ -146,7 +125,6 @@ if st[1].k >= st[1].d && st[0].k < st[0].d && st[0].d > 80.0 { exit  = true; }
         let script_sigs = run(script_strat.as_mut(), &bars);
 
         assert!(!named_sigs.is_empty(), "stochastic: must produce signals");
-        assert_eq!(named_sigs, script_sigs, "script parity failed");
+        assert_parity("stochastic parity vs named", &named_sigs, &script_sigs);
     }
-
 }

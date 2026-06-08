@@ -78,3 +78,38 @@ impl Strategy for WaddahAttar {
         self.prev_macd_line = None;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn script_parity() {
+        let Some(bars) = load_real_bars() else { return; };
+
+        let mut named = WaddahAttar::new(12, 26, 20, 2.0);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = r#"
+let macd12 = ind.macd(12);
+let bb20 = ind.bbands(20, buf=1);
+let prev_macd = macd12[1].macd;
+let explosion = (macd12[0].macd - prev_macd) * 150.0;
+let dead_zone = bb20[0].upper - bb20[0].lower;
+if explosion > dead_zone && macd12[0].histogram > 0.0 {
+    entry = true;
+}
+if explosion < dead_zone || macd12[0].histogram < 0.0 {
+    exit = true;
+}
+"#;
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "waddah_attar: must produce signals");
+        assert_parity("waddah_attar parity vs named", &named_sigs, &script_sigs);
+    }
+}

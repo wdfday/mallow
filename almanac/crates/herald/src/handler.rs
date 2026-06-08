@@ -46,7 +46,6 @@ use uuid::Uuid;
 use alm_herald::WsLatencyTracker;
 use crate::feed::{BarEvent, BarRx};
 use crate::registry::{HandSignal, Registry};
-use crate::ring::BarRing;
 
 // ── NATS subjects ─────────────────────────────────────────────────────────────
 
@@ -81,12 +80,11 @@ pub struct Handler {
     client: Client,
     ledger: Arc<Ledger>,
     registry: Arc<Registry>,
-    ring: BarRing,
     /// Base timeframe — only closed bars at this TF trigger NATS publish +
     /// Registry observer fan-out.
     tf: Timeframe,
     bar_rx: BarRx,
-    signal_rx: Option<mpsc::UnboundedReceiver<HandSignal>>,
+    signal_rx: Option<mpsc::Receiver<HandSignal>>,
     /// Stable per-instance identifier — changes on every restart so consumers
     /// can detect herald restart and re-register their hands.
     herald_id: String,
@@ -102,17 +100,15 @@ impl Handler {
         client: Client,
         ledger: Arc<Ledger>,
         registry: Arc<Registry>,
-        ring: BarRing,
         tf: Timeframe,
         bar_rx: BarRx,
-        signal_rx: mpsc::UnboundedReceiver<HandSignal>,
+        signal_rx: mpsc::Receiver<HandSignal>,
         ws_latency: Arc<WsLatencyTracker>,
     ) -> Self {
         Self {
             client,
             ledger,
             registry,
-            ring,
             tf,
             bar_rx,
             signal_rx: Some(signal_rx),
@@ -168,7 +164,7 @@ impl Handler {
     async fn publish_ready(&self) {
         let mut symbols: Vec<String> = self.registry.list_hands()
             .into_iter()
-            .map(|(_, _, sym, _, _, _, _)| sym)
+            .map(|h| h.symbol)
             .collect::<std::collections::HashSet<_>>()
             .into_iter()
             .collect();
@@ -236,10 +232,7 @@ impl Handler {
             return;
         }
 
-        // 1. Push to 24h ring buffer.
-        self.ring.push(bar.clone());
-
-        // 2. Publish to NATS bars.{symbol} for downstream consumers.
+        // Publish to NATS bars.{symbol} for downstream consumers.
         let bar_msg = BarMsg::from(&bar);
         let payload = bar_msg.encode_to_vec();
         let subject = format!("{}.{}", SUBJ_BARS, symbol);
@@ -389,8 +382,14 @@ impl Handler {
             return;
         };
         let hands = self.registry.list_hands().into_iter()
-            .map(|(hand_id, helm_id, symbol, script, timeframe, exchange, is_future)| {
-                HandInfo { hand_id, symbol, script, timeframe, helm_id, exchange, is_future }
+            .map(|h| HandInfo {
+                hand_id:   h.hand_id,
+                helm_id:   h.helm_id,
+                symbol:    h.symbol,
+                script:    h.script,
+                timeframe: h.timeframe,
+                exchange:  h.exchange,
+                is_future: h.is_future,
             })
             .collect();
         let payload = HandListResponse { hands }.encode_to_vec();
@@ -431,8 +430,8 @@ impl Handler {
         let all_hands = self.registry.list_hands();
         let our_hands: std::collections::HashSet<&str> = all_hands
             .iter()
-            .filter(|(_, helm_id, _, _, _, _, _)| !helm_id.is_empty() && helm_id == &req.helm_id)
-            .map(|(id, ..)| id.as_str())
+            .filter(|h| !h.helm_id.is_empty() && h.helm_id == req.helm_id)
+            .map(|h| h.hand_id.as_str())
             .collect();
         let expected: std::collections::HashSet<&str> =
             req.hands.iter().map(String::as_str).collect();
@@ -471,7 +470,7 @@ impl Handler {
 
 async fn signal_publisher(
     client: Client,
-    mut rx: mpsc::UnboundedReceiver<HandSignal>,
+    mut rx: mpsc::Receiver<HandSignal>,
     atomics: Arc<HeraldAtomics>,
 ) {
     let js = jetstream::new(client);
@@ -491,41 +490,61 @@ async fn signal_publisher(
         Err(e) => warn!(err = %e, "SIGNALS stream ensure failed — helm may not be up yet; will retry on each publish"),
     }
 
+    const MAX_RETRIES: usize = 3;
+    const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
+
     while let Some(batch) = rx.recv().await {
         let response = SignalResponse {
             signal: Some(SignalMsg::from(&batch.signal)),
             helm_id: batch.helm_id.clone(),
             hand_id: batch.hand_id.clone(),
         };
-        let payload = response.encode_to_vec();
+        let payload: Vec<u8> = response.encode_to_vec();
         debug!(
             helm_id = %batch.helm_id, hand_id = %batch.hand_id,
             symbol = %batch.signal.symbol, subject = SUBJ_SIGNALS,
             "publishing signal to NATS"
         );
-        match js.publish(SUBJ_SIGNALS, payload.into()).await {
-            Ok(ack_future) => {
-                if let Err(e) = ack_future.await {
-                    error!(subject = SUBJ_SIGNALS, err = %e, "JetStream signal ack failed");
-                    counter!("herald_nats_publish_errors_total", "subject" => "signals").increment(1);
-                    atomics.nats_signals_errors.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    info!(
-                        helm_id = %batch.helm_id, hand_id = %batch.hand_id,
-                        symbol = %batch.signal.symbol, subject = SUBJ_SIGNALS,
-                        direction = ?batch.signal.direction, strength = batch.signal.strength,
-                        bar_ts = batch.bar_ts,
-                        "signal published to NATS"
-                    );
-                    counter!("herald_nats_signals_published_total").increment(1);
-                    atomics.signals_published.fetch_add(1, Ordering::Relaxed);
+
+        let mut published = false;
+        for attempt in 0..MAX_RETRIES {
+            match js.publish(SUBJ_SIGNALS, payload.clone().into()).await {
+                Ok(ack_future) => {
+                    match ack_future.await {
+                        Ok(_) => {
+                            info!(
+                                helm_id = %batch.helm_id, hand_id = %batch.hand_id,
+                                symbol = %batch.signal.symbol, subject = SUBJ_SIGNALS,
+                                direction = ?batch.signal.direction, strength = batch.signal.strength,
+                                bar_ts = batch.bar_ts,
+                                "signal published to NATS"
+                            );
+                            counter!("herald_nats_signals_published_total").increment(1);
+                            atomics.signals_published.fetch_add(1, Ordering::Relaxed);
+                            published = true;
+                            break;
+                        }
+                        Err(e) if attempt + 1 < MAX_RETRIES => {
+                            warn!(attempt = attempt + 1, err = %e, "signal ack failed — retrying");
+                            tokio::time::sleep(RETRY_DELAY).await;
+                        }
+                        Err(e) => {
+                            error!(subject = SUBJ_SIGNALS, err = %e, "JetStream signal ack failed after {MAX_RETRIES} attempts");
+                        }
+                    }
+                }
+                Err(e) if attempt + 1 < MAX_RETRIES => {
+                    warn!(attempt = attempt + 1, err = %e, "signal publish failed — retrying");
+                    tokio::time::sleep(RETRY_DELAY).await;
+                }
+                Err(e) => {
+                    error!(subject = SUBJ_SIGNALS, err = %e, "JetStream signal publish failed after {MAX_RETRIES} attempts");
                 }
             }
-            Err(e) => {
-                error!(subject = SUBJ_SIGNALS, err = %e, "JetStream signal publish failed");
-                counter!("herald_nats_publish_errors_total", "subject" => "signals").increment(1);
-                atomics.nats_signals_errors.fetch_add(1, Ordering::Relaxed);
-            }
+        }
+        if !published {
+            counter!("herald_nats_publish_errors_total", "subject" => "signals").increment(1);
+            atomics.nats_signals_errors.fetch_add(1, Ordering::Relaxed);
         }
     }
     info!("signal publisher channel closed");
@@ -534,22 +553,5 @@ async fn signal_publisher(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn parse_timeframe_str(s: &str) -> Option<Timeframe> {
-    // Must stay in sync with feed::SUBSCRIBE_TFS — the timeframes herald actually
-    // ingests. A hand can only register on a TF the ledger has bars for.
-    match s.to_ascii_uppercase().as_str() {
-        "M1"  => Some(Timeframe::M1),
-        "M3"  => Some(Timeframe::M3),
-        "M5"  => Some(Timeframe::M5),
-        "M15" => Some(Timeframe::M15),
-        "M30" => Some(Timeframe::M30),
-        "H1"  => Some(Timeframe::H1),
-        "H2"  => Some(Timeframe::H2),
-        "H4"  => Some(Timeframe::H4),
-        "H6"  => Some(Timeframe::H6),
-        "H12" => Some(Timeframe::H12),
-        "D1"  => Some(Timeframe::D1),
-        "W1"  => Some(Timeframe::W1),
-        "MN"  => Some(Timeframe::MN),
-        _ => None,
-    }
+    crate::feed::parse_tf(s)
 }

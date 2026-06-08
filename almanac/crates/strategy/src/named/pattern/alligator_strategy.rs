@@ -78,7 +78,7 @@ mod tests {
     #[test]
     fn script_parity() {
         // AlligatorStrategy fires on bullish-flag transitions; use default jaw=13 teeth=8 lips=5.
-        let bars = trending_bars(400);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = AlligatorStrategy::new(13, 8, 5);
         let named_sigs = run(&mut named, &bars);

@@ -70,7 +70,7 @@ mod tests {
 
     #[test]
     fn obv_ema_trend_parity() {
-        let bars = trending_bars(300);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut hc = ObvEmaTrend::new(20, 50);
         let hc_sigs = run(&mut hc, &bars);

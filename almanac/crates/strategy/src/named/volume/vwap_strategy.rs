@@ -141,7 +141,7 @@ mod tests {
 
     #[test]
     fn vwap_bounce_parity() {
-        let bars = vwap_bars();
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut hc = VwapBounce::new(14, 40.0, 65.0, 60);
         let hc_sigs = run(&mut hc, &bars);
@@ -151,14 +151,7 @@ mod tests {
 
     #[test]
     fn vwap_trend_parity() {
-        let bars: Vec<Bar> = (0..200).map(|i| {
-            let price = if i < 100 {
-                100.0 + i as f64 * 0.8
-            } else {
-                180.0 - (i - 100) as f64 * 0.8
-            };
-            bar(i as i64 * 60_000, price.max(1.0))
-        }).collect();
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut hc = VwapTrend::new(60);
         let hc_sigs = run(&mut hc, &bars);

@@ -88,14 +88,14 @@ impl Stochastic {
         let range = highest - lowest;
 
         let raw_k = if range > f64::EPSILON {
-            (close - lowest) / range * 100.0
+            ((close - lowest) / range * 100.0).clamp(0.0, 100.0)
         } else {
             50.0 // flat market
         };
 
         // Smooth %K (Slow Stochastic when smooth_k > 1; identity when = 1).
-        let k = self.k_smooth.update(raw_k)?;
-        self.d_smooth.update(k).map(|d| StochasticValue { k, d })
+        let k = self.k_smooth.update(raw_k)?.clamp(0.0, 100.0);
+        self.d_smooth.update(k).map(|d| StochasticValue { k, d: d.clamp(0.0, 100.0) })
     }
 
     pub fn is_ready(&self) -> bool {

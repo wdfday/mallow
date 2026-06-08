@@ -4,7 +4,7 @@ use wasm_bindgen::prelude::*;
 use serde::Serialize;
 use serde_json::json;
 
-use alm_core::{Bar, Strategy};
+use alm_core::{Bar, Strategy, Timeframe};
 use alm_indicator::{HeikenAshi, IndicatorBox};
 use alm_strategy::build_strategy;
 
@@ -14,11 +14,7 @@ pub use chart_state::ChartState;
 // ── WASM init ─────────────────────────────────────────────────────────────────
 
 #[wasm_bindgen(start)]
-pub fn init() {
-    // Redirect Rust panics to the browser console on debug builds.
-    #[cfg(feature = "console_error_panic_hook")]
-    console_error_panic_hook::set_once();
-}
+pub fn init() {}
 
 // ── Shared helpers ────────────────────────────────────────────────────────────
 
@@ -27,9 +23,6 @@ pub(crate) fn build_bars(symbol: &str, t: &[f64], o: &[f64], h: &[f64], l: &[f64
     (0..n).map(|i| Bar::new(t[i] as i64, symbol, o[i], h[i], l[i], c[i], v[i])).collect()
 }
 
-/// Serialize any `Serialize` value to `JsValue` using json-compatible mode
-/// (maps → plain JS objects, not JS `Map`). Required for serde-wasm-bindgen 0.6+
-/// where the default changed to emitting JS `Map` for HashMap/BTreeMap.
 pub(crate) fn to_js<T: serde::Serialize>(v: &T) -> JsValue {
     v.serialize(&serde_wasm_bindgen::Serializer::json_compatible())
         .unwrap_or(JsValue::NULL)
@@ -41,6 +34,23 @@ pub(crate) fn js_error(msg: &str) -> JsValue {
 
 #[derive(Serialize)]
 struct OhlcvOut { t: Vec<f64>, o: Vec<f64>, h: Vec<f64>, l: Vec<f64>, c: Vec<f64>, v: Vec<f64> }
+
+// ── Timeframe parsing ─────────────────────────────────────────────────────────
+
+/// Parse a timeframe string to [`Timeframe`] (case-insensitive).
+/// Covers all 13 variants: M1 M3 M5 M10 M15 M30 H1 H2 H4 H6 H12 D1 W1.
+fn parse_tf(s: &str) -> Option<Timeframe> {
+    match s.to_ascii_uppercase().as_str() {
+        "M1"  => Some(Timeframe::M1),  "M3"  => Some(Timeframe::M3),
+        "M5"  => Some(Timeframe::M5),  "M10" => Some(Timeframe::M10),
+        "M15" => Some(Timeframe::M15), "M30" => Some(Timeframe::M30),
+        "H1"  => Some(Timeframe::H1),  "H2"  => Some(Timeframe::H2),
+        "H4"  => Some(Timeframe::H4),  "H6"  => Some(Timeframe::H6),
+        "H12" => Some(Timeframe::H12), "D1"  => Some(Timeframe::D1),
+        "W1"  => Some(Timeframe::W1),
+        _ => None,
+    }
+}
 
 // ── Heikin-Ashi ───────────────────────────────────────────────────────────────
 
@@ -61,14 +71,23 @@ pub fn heikin_ashi(
     to_js(&out)
 }
 
-/// EMA-smoothed Heikin-Ashi. Warmup bars trimmed from output.
+/// EMA-smoothed Heikin-Ashi (Smoothed HA).
+///
+/// Mỗi thành phần OHLC được EMA(period)-smooth độc lập trước khi tính HA.
+/// Warmup = `period` bar (first `period-1` bars trả về None, bị drop khỏi output).
+/// FE phải dùng mảng `t` trả về để align — output ngắn hơn input `period-1` bar.
+///
+/// `period` phải >= 2. Truyền `period=1` là lỗi — dùng `heikin_ashi()` cho HA chuẩn.
 #[wasm_bindgen]
 pub fn smooth_ha(
     t: &[f64], o: &[f64], h: &[f64], l: &[f64], c: &[f64], v: &[f64],
     period: usize,
 ) -> JsValue {
+    if period < 2 {
+        return js_error("smooth_ha: period must be >= 2; use heikin_ashi() for standard (unsmoothed) HA");
+    }
     let n = t.len().min(o.len()).min(h.len()).min(l.len()).min(c.len()).min(v.len());
-    let mut ha = HeikenAshi::new(period.max(2));
+    let mut ha = HeikenAshi::new(period);
     let mut out = OhlcvOut { t: vec![], o: vec![], h: vec![], l: vec![], c: vec![], v: vec![] };
     for i in 0..n {
         if let Some(b) = ha.update(o[i], h[i], l[i], c[i]) {
@@ -156,35 +175,17 @@ pub fn list_indicators() -> JsValue {
     to_js(&names)
 }
 
-// ── Mini backtest engine ──────────────────────────────────────────────────────
+// ── Sizing helper (shared between single-TF and MTF engines) ─────────────────
 
-/// Run an in-memory backtest through the real [`alm_engine::Engine`] — the same
-/// engine + [`alm_report::BacktestReport`] the backend uses, so on-chart results
-/// match the server (minus Monte-Carlo / walk-forward, which stay server-side).
-///
-/// Config (JSON): `{ "initial_capital", "position_size_pct", "commission_pct", "slippage_pct" }`.
-/// Returns the full report (all metrics, equity curve, trades, regime summary) plus
-/// `indicator_series` for chart overlay.
-pub(crate) fn run_strategy(
-    symbol: &str,
-    bars: &[Bar],
-    strategy: Box<dyn Strategy>,
-    cfg: &BtConfig,
-) -> serde_json::Value {
-    use alm_engine::Engine;
+pub(crate) fn build_sizer(cfg: &BtConfig) -> alm_strategy::risk::AnySizer {
     use alm_strategy::risk::{AnySizer, AtrSizing, FixedFractional, FixedQuantity, FixedUsd, RiskFractional};
-    use alm_data::BarVecFeed;
-
-    // Mirror alm-engine `build_sizer`: explicit size_mode (helm SizeMode) first,
-    // else legacy field inference (qty > usd > risk(ATR) > pct).
     let max_slots = cfg.max_units.max(1);
     let pct = cfg.size_pct.clamp(0.01, 1.0);
     let risk = cfg.risk_per_trade.unwrap_or(0.01);
     let str_ = cfg.strength_sizing;
-    let sizer = match cfg.size_mode.as_deref() {
+    match cfg.size_mode.as_deref() {
         Some("fixed_qty")        => AnySizer::FixedQuantity(FixedQuantity::new(cfg.size_qty.unwrap_or(1.0), max_slots)),
         Some("quote_qty")        => AnySizer::FixedUsd(FixedUsd::new(cfg.size_usd.unwrap_or(0.0), max_slots)),
-        // Risk-based modes ignore strength (it would break the fixed-risk invariant).
         Some("volatility")       => AnySizer::Atr(AtrSizing::new(risk, cfg.atr_mult, max_slots).with_strength_sizing(false)),
         Some("fixed_fractional") => AnySizer::RiskFractional(RiskFractional::new(risk, max_slots).with_strength_sizing(false)),
         Some("percent_equity")   => AnySizer::FixedFractional(FixedFractional::fractional(pct, max_slots).with_strength_sizing(str_)),
@@ -199,42 +200,35 @@ pub(crate) fn run_strategy(
                 AnySizer::FixedFractional(FixedFractional::fractional(pct, max_slots).with_strength_sizing(str_))
             }
         }
-    };
-    let mut engine = Engine::sync(cfg.capital, strategy, sizer, cfg.commission, cfg.slippage);
-    if cfg.max_units > 1 {
-        engine = engine.with_pyramiding(cfg.max_units, cfg.max_position_pct);
-        if !cfg.pyramid {
-            engine = engine.with_independent_legs();
-        }
     }
-    let mut feed = BarVecFeed::new(bars.to_vec(), symbol.to_string());
-    let report = engine.run(&mut feed, 0.0);
+}
 
-    // Equity curve + trades live on the portfolio (not the report) — the chart
-    // uses them for the equity overlay and entry/exit markers.
-    let equity_curve: Vec<_> = engine.portfolio.equity_curve.iter()
+// ── Portfolio output helper (shared between Engine and MtfEngine) ─────────────
+
+/// Collect equity_curve / trades / fills from a completed engine portfolio into
+/// serialisable Vecs. Both `Engine` and `MtfEngine` expose `pub portfolio: Portfolio`.
+fn collect_portfolio(portfolio: &alm_core::Portfolio) -> (
+    Vec<serde_json::Value>,
+    Vec<serde_json::Value>,
+    Vec<serde_json::Value>,
+) {
+    let equity_curve = portfolio.equity_curve.iter()
         .map(|p| json!({ "t": p.timestamp, "equity": p.equity }))
         .collect();
-    let trades: Vec<_> = engine.portfolio.trades.iter()
+    let trades = portfolio.trades.iter()
         .map(|t| json!({
             "entry_ts": t.entry_timestamp, "exit_ts": t.exit_timestamp,
             "entry_price": t.entry_price,   "exit_price": t.exit_price,
-            "qty": t.qty,
-            "pnl": t.pnl,
-            // FRACTIONS (0.1 = 10%) — matches deep TradeResponse; FE multiplies by 100.
-            "pnl_pct": t.pnl_pct,
+            "qty": t.qty, "pnl": t.pnl,
+            "pnl_pct":  t.pnl_pct,  // fraction — FE ×100
             "commission": t.commission,
-            "mae_pct": t.mae_pct,
-            "mfe_pct": t.mfe_pct,
+            "mae_pct": t.mae_pct, "mfe_pct": t.mfe_pct,
             "bars_held": t.bars_held,
             "exit_reason": t.exit_reason.to_string(),
             "side": format!("{:?}", t.side).to_lowercase(),
         }))
         .collect();
-    // Raw fills (every order execution, in order) — lets the chart mark each
-    // pyramiding *add* that MERGE mode hides inside one averaged trade. `sym`
-    // carries the leg key (`BTCUSDT` or `BTCUSDT#2`); `leg` is its 0-based index.
-    let fills: Vec<_> = engine.portfolio.fills.iter()
+    let fills = portfolio.fills.iter()
         .map(|f| {
             let leg = f.symbol.split('#').nth(1).and_then(|s| s.parse::<usize>().ok())
                 .map(|n| n.saturating_sub(1)).unwrap_or(0);
@@ -245,17 +239,18 @@ pub(crate) fn run_strategy(
             })
         })
         .collect();
+    (equity_curve, trades, fills)
+}
 
-    // Indicator series for chart overlay — read from the strategy after the run
-    // (the engine owns it; `engine.strategy` is public).
-    let mut ind_map = serde_json::Map::new();
-    for (name, pts) in engine.strategy.take_indicator_series() {
-        let ts: Vec<i64> = pts.iter().map(|(t, _)| *t).collect();
-        let vs: Vec<f64> = pts.iter().map(|(_, v)| *v).collect();
-        ind_map.insert(name, json!({ "t": ts, "v": vs }));
-    }
-
-    let mut out = serde_json::to_value(&report).unwrap_or_else(|_| json!({}));
+/// Assemble the final backtest JSON from a report + portfolio output + indicator series.
+fn assemble_output(
+    report: serde_json::Value,
+    equity_curve: Vec<serde_json::Value>,
+    trades: Vec<serde_json::Value>,
+    fills: Vec<serde_json::Value>,
+    ind_map: serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Value {
+    let mut out = report;
     if let serde_json::Value::Object(ref mut m) = out {
         m.insert("equity_curve".into(), json!(equity_curve));
         m.insert("trades".into(), json!(trades));
@@ -265,9 +260,155 @@ pub(crate) fn run_strategy(
     out
 }
 
-/// Run a named strategy backtest client-side.
+// ── Single-TF backtest engine ─────────────────────────────────────────────────
+
+pub(crate) fn run_strategy(
+    symbol: &str,
+    bars: &[Bar],
+    strategy: Box<dyn Strategy>,
+    cfg: &BtConfig,
+) -> serde_json::Value {
+    use alm_engine::Engine;
+    use alm_data::BarVecFeed;
+
+    let sizer = build_sizer(cfg);
+    let mut engine = Engine::sync(cfg.capital, strategy, sizer, cfg.commission, cfg.slippage);
+    if cfg.max_units > 1 {
+        engine = engine.with_pyramiding(cfg.max_units, cfg.max_position_pct);
+        if !cfg.pyramid {
+            engine = engine.with_independent_legs();
+        }
+    }
+    let mut feed = BarVecFeed::new(bars.to_vec(), symbol.to_string());
+    let report = engine.run(&mut feed, 0.0);
+
+    let (equity_curve, trades, fills) = collect_portfolio(&engine.portfolio);
+
+    let mut ind_map = serde_json::Map::new();
+    for (name, pts) in engine.strategy.take_indicator_series() {
+        ind_map.insert(name, json!({
+            "t": pts.iter().map(|(t, _)| *t).collect::<Vec<_>>(),
+            "v": pts.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+        }));
+    }
+
+    assemble_output(
+        serde_json::to_value(&report).unwrap_or_else(|_| json!({})),
+        equity_curve, trades, fills, ind_map,
+    )
+}
+
+// ── MTF bars parsing ──────────────────────────────────────────────────────────
+
+/// Parse `bars_json` — a map of TF string → `{t,o,h,l,c,v}` arrays — into a
+/// `HashMap<Timeframe, Vec<Bar>>`.
 ///
-/// `strategy_name`: any name from `list_strategies()` (e.g. `"ema_cross"`, `"rsi_mean_rev"`)
+/// Expected format:
+/// ```json
+/// {
+///   "M1":  { "t": [...], "o": [...], "h": [...], "l": [...], "c": [...], "v": [...] },
+///   "H4":  { "t": [...], ... }
+/// }
+/// ```
+fn parse_tf_bars(
+    symbol: &str,
+    bars_json: &serde_json::Value,
+) -> Result<HashMap<Timeframe, Vec<Bar>>, String> {
+    let obj = bars_json.as_object()
+        .ok_or_else(|| "bars_json must be a JSON object { \"M1\": {t,o,h,l,c,v}, ... }".to_string())?;
+    let mut map = HashMap::new();
+    for (tf_str, ohlcv) in obj {
+        let tf = parse_tf(tf_str)
+            .ok_or_else(|| format!("unknown timeframe '{tf_str}' — valid: M1 M3 M5 M10 M15 M30 H1 H2 H4 H6 H12 D1 W1"))?;
+        let get = |key: &str| -> Result<Vec<f64>, String> {
+            ohlcv.get(key)
+                .and_then(|a| a.as_array())
+                .map(|a| a.iter().filter_map(|v| v.as_f64()).collect())
+                .ok_or_else(|| format!("{tf_str}.{key}: expected number array"))
+        };
+        let bars = build_bars(symbol, &get("t")?, &get("o")?, &get("h")?, &get("l")?, &get("c")?, &get("v")?);
+        map.insert(tf, bars);
+    }
+    Ok(map)
+}
+
+// ── MTF engine helpers ────────────────────────────────────────────────────────
+
+/// Run a V2 `MtfScriptStrategy` through `MtfEngine`.
+///
+/// Returns the same JSON shape as `run_strategy` (report + equity_curve +
+/// trades + fills + indicator_series). Pyramiding is not supported by MtfEngine.
+fn run_mtf_script(
+    symbol: &str,
+    strategy: alm_strategy::MtfScriptStrategy,
+    base_tf: Timeframe,
+    tf_bars: HashMap<Timeframe, Vec<Bar>>,
+    cfg: &BtConfig,
+) -> serde_json::Value {
+    use alm_engine::MtfEngine;
+    use alm_data::BarVecFeed;
+
+    let sizer = build_sizer(cfg);
+    let mut engine = MtfEngine::sync(cfg.capital, strategy, sizer, cfg.commission, cfg.slippage)
+        .with_base_tf(base_tf);
+
+    for (tf, bars) in tf_bars {
+        engine.add_feed(tf, BarVecFeed::new(bars, symbol.to_string()));
+    }
+
+    let report = engine.run(0.0);
+    let (equity_curve, trades, fills) = collect_portfolio(&engine.portfolio);
+
+    let mut ind_map = serde_json::Map::new();
+    for (name, pts) in engine.strategy.take_series() {
+        ind_map.insert(name, json!({
+            "t": pts.iter().map(|(t, _)| *t).collect::<Vec<_>>(),
+            "v": pts.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+        }));
+    }
+
+    assemble_output(
+        serde_json::to_value(&report).unwrap_or_else(|_| json!({})),
+        equity_curve, trades, fills, ind_map,
+    )
+}
+
+/// Run a named `MtfStrategy` through `MtfEngine`.
+///
+/// Named MTF strategies do not expose indicator series.
+fn run_mtf_named(
+    symbol: &str,
+    strategy: Box<dyn alm_core::MtfStrategy>,
+    base_tf: Timeframe,
+    tf_bars: HashMap<Timeframe, Vec<Bar>>,
+    cfg: &BtConfig,
+) -> serde_json::Value {
+    use alm_engine::MtfEngine;
+    use alm_data::BarVecFeed;
+
+    let sizer = build_sizer(cfg);
+    let mut engine = MtfEngine::sync(cfg.capital, strategy, sizer, cfg.commission, cfg.slippage)
+        .with_base_tf(base_tf);
+
+    for (tf, bars) in tf_bars {
+        engine.add_feed(tf, BarVecFeed::new(bars, symbol.to_string()));
+    }
+
+    let report = engine.run(0.0);
+    let (equity_curve, trades, fills) = collect_portfolio(&engine.portfolio);
+
+    assemble_output(
+        serde_json::to_value(&report).unwrap_or_else(|_| json!({})),
+        equity_curve, trades, fills,
+        serde_json::Map::new(), // named strategies don't expose indicator series
+    )
+}
+
+// ── WASM backtest exports ─────────────────────────────────────────────────────
+
+/// Run a **single-TF named** strategy backtest client-side.
+///
+/// `strategy_name`: any name from `list_strategies()` (e.g. `"ema_cross"`)
 /// `params_json`:   `{"period": 14, ...}`
 /// `config_json`:   `{"initial_capital": 10000, "position_size_pct": 1.0, ...}`
 #[wasm_bindgen]
@@ -288,14 +429,14 @@ pub fn run_backtest(
     };
     let bars = build_bars(symbol, t, o, h, l, c, v);
     let cfg = parse_config(config_json);
-    let out = run_strategy(symbol, &bars, strategy, &cfg);
-    to_js(&out)
+    to_js(&run_strategy(symbol, &bars, strategy, &cfg))
 }
 
-/// Run a script backtest client-side.
+/// Run a **single-TF V1 script** backtest client-side.
 ///
-/// `script`: Script (same syntax as herald `/api/v1/backtest/script`)
-/// `config_json`: `{"initial_capital": 10000, "position_size_pct": 1.0, ...}`
+/// Multi-timeframe (V2) scripts — those that call `ind.TYPE(period)` on a
+/// higher TF — cannot run here because only one TF feed is available.
+/// Use `run_mtf_script_backtest` instead and pass bars for every required TF.
 #[wasm_bindgen]
 pub fn run_script_backtest(
     symbol: &str,
@@ -303,14 +444,11 @@ pub fn run_script_backtest(
     t: &[f64], o: &[f64], h: &[f64], l: &[f64], c: &[f64], v: &[f64],
     config_json: &str,
 ) -> JsValue {
-    // On-chart runs on a single timeframe's bars and cannot load/warm HTF feeds,
-    // so a multi-timeframe (HTF) script is skipped here with a clear message — run
-    // it via Deep backtest instead (which loads + warms each TF from parquet).
     let htfs = alm_strategy::probe_script_htfs(script);
     if !htfs.is_empty() {
         let tfs = htfs.iter().map(|t| format!("{t:?}")).collect::<Vec<_>>().join(", ");
         return js_error(&format!(
-            "Multi-timeframe script (uses {tfs}) — on-chart is single-timeframe only. Run it with Deep backtest."
+            "Multi-timeframe script (uses {tfs}) — pass all TF bars via run_mtf_script_backtest."
         ));
     }
     let strategy = match build_strategy("script", &json!({ "script": script })) {
@@ -319,32 +457,146 @@ pub fn run_script_backtest(
     };
     let bars = build_bars(symbol, t, o, h, l, c, v);
     let cfg = parse_config(config_json);
-    let out = run_strategy(symbol, &bars, strategy, &cfg);
-    to_js(&out)
+    to_js(&run_strategy(symbol, &bars, strategy, &cfg))
 }
+
+/// Run a **multi-TF V2 script** backtest client-side.
+///
+/// `base_tf`:   base timeframe string — `"M1"`, `"M5"`, `"H1"`, etc.
+///              (M1 M3 M5 M10 M15 M30 H1 H2 H4 H6 H12 D1 W1)
+/// `bars_json`: JSON object mapping each required TF to its OHLCV arrays:
+/// ```json
+/// {
+///   "M1": { "t": [...], "o": [...], "h": [...], "l": [...], "c": [...], "v": [...] },
+///   "H4": { "t": [...], "o": [...], "h": [...], "l": [...], "c": [...], "v": [...] }
+/// }
+/// ```
+/// All timeframes declared in the script **must** be present; extra ones are ignored.
+/// `config_json`: same as `run_backtest`.
+///
+/// Also works for single-TF V2 scripts — pass only the base TF in `bars_json`.
+#[wasm_bindgen]
+pub fn run_mtf_script_backtest(
+    symbol: &str,
+    script: &str,
+    base_tf: &str,
+    bars_json: &str,
+    config_json: &str,
+) -> JsValue {
+    // Parse base TF.
+    let btf = match parse_tf(base_tf) {
+        Some(tf) => tf,
+        None => return js_error(&format!(
+            "unknown base_tf '{base_tf}' — valid: M1 M3 M5 M10 M15 M30 H1 H2 H4 H6 H12 D1 W1"
+        )),
+    };
+
+    // Build strategy.
+    let strategy = match alm_strategy::MtfScriptStrategy::from_script(script, btf) {
+        Ok(s) => s,
+        Err(e) => return js_error(&format!("script: {e}")),
+    };
+
+    // Parse all TF feeds.
+    let bars_val: serde_json::Value = match serde_json::from_str(bars_json) {
+        Ok(v) => v,
+        Err(e) => return js_error(&format!("bars_json: {e}")),
+    };
+    let mut tf_bars = match parse_tf_bars(symbol, &bars_val) {
+        Ok(m) => m,
+        Err(e) => return js_error(&e),
+    };
+
+    // Validate: every HTF the script declares must have a feed.
+    let missing: Vec<String> = strategy.declared_htfs()
+        .into_iter()
+        .filter(|tf| !tf_bars.contains_key(tf))
+        .map(|tf| format!("{tf:?}"))
+        .collect();
+    if !missing.is_empty() {
+        return js_error(&format!(
+            "script requires feeds for: {} — add them to bars_json",
+            missing.join(", ")
+        ));
+    }
+
+    // Ensure base TF has a feed (it must be in bars_json).
+    if !tf_bars.contains_key(&btf) {
+        return js_error(&format!("bars_json must include the base TF '{base_tf}'"));
+    }
+
+    let cfg = parse_config(config_json);
+
+    // Move tf_bars into a HashMap<Timeframe, Vec<Bar>> for the engine.
+    let feeds: HashMap<Timeframe, Vec<Bar>> = tf_bars.drain().collect();
+    to_js(&run_mtf_script(symbol, strategy, btf, feeds, &cfg))
+}
+
+/// Run a **multi-TF named** strategy backtest client-side.
+///
+/// `strategy_name`: any name from `list_mtf_strategies()` (e.g. `"mtf_ema_rsi"`)
+/// `params_json`:   `{}` (currently all MTF named strategies use built-in defaults)
+/// `base_tf`:       base timeframe string — same set as `run_mtf_script_backtest`
+/// `bars_json`:     same format as `run_mtf_script_backtest`
+/// `config_json`:   same as `run_backtest`
+#[wasm_bindgen]
+pub fn run_mtf_backtest(
+    symbol: &str,
+    strategy_name: &str,
+    params_json: &str,
+    base_tf: &str,
+    bars_json: &str,
+    config_json: &str,
+) -> JsValue {
+    let btf = match parse_tf(base_tf) {
+        Some(tf) => tf,
+        None => return js_error(&format!(
+            "unknown base_tf '{base_tf}' — valid: M1 M3 M5 M10 M15 M30 H1 H2 H4 H6 H12 D1 W1"
+        )),
+    };
+
+    let params: serde_json::Value = match serde_json::from_str(params_json) {
+        Ok(v) => v,
+        Err(e) => return js_error(&format!("params: {e}")),
+    };
+    let strategy = match alm_strategy::build_mtf_strategy(strategy_name, &params) {
+        Ok(s) => s,
+        Err(e) => return js_error(&format!("strategy '{strategy_name}': {e}")),
+    };
+
+    let bars_val: serde_json::Value = match serde_json::from_str(bars_json) {
+        Ok(v) => v,
+        Err(e) => return js_error(&format!("bars_json: {e}")),
+    };
+    let mut tf_bars = match parse_tf_bars(symbol, &bars_val) {
+        Ok(m) => m,
+        Err(e) => return js_error(&e),
+    };
+
+    if !tf_bars.contains_key(&btf) {
+        return js_error(&format!("bars_json must include the base TF '{base_tf}'"));
+    }
+
+    let cfg = parse_config(config_json);
+    let feeds: HashMap<Timeframe, Vec<Bar>> = tf_bars.drain().collect();
+    to_js(&run_mtf_named(symbol, strategy, btf, feeds, &cfg))
+}
+
+// ── Config / strategy catalog ─────────────────────────────────────────────────
 
 pub(crate) struct BtConfig {
     pub capital: f64,
     pub size_pct: f64,
-    /// Fixed USD notional per trade (quote_qty mode). None = unused.
     pub size_usd: Option<f64>,
-    /// Fixed absolute quantity per trade (fixed_qty mode). None = unused.
     pub size_qty: Option<f64>,
-    /// Risk fraction of equity per trade (fixed_fractional / "Risk %" mode). None = unused.
     pub risk_per_trade: Option<f64>,
-    /// ATR stop-distance multiplier for the Risk % mode (default 2.0).
     pub atr_mult: f64,
-    /// Whether signal strength scales the size (orthogonal tag).
     pub strength_sizing: bool,
-    /// Explicit sizing mode synced with helm SizeMode (fixed_fractional/volatility/percent_equity/quote_qty/fixed_qty).
     pub size_mode: Option<String>,
     pub commission: f64,
     pub slippage: f64,
-    /// Pyramiding: max accumulated legs (1 = off). Mirrors helm `MaxUnits`.
     pub max_units: usize,
-    /// Pyramiding: exposure cap as fraction of equity (0 = none). Mirrors helm `MaxPositionPct`.
     pub max_position_pct: f64,
-    /// Pyramiding mode: true (default) = MERGE (averaged), false = INDEPENDENT legs. Mirrors helm `Pyramid`.
     pub pyramid: bool,
 }
 
@@ -365,21 +617,26 @@ pub(crate) fn parse_config(config_json: &str) -> BtConfig {
         slippage:   get("slippage_pct",      0.0005),
         max_units:  get("max_units", 1.0).max(1.0) as usize,
         max_position_pct: get("max_position_pct", 0.0),
-        // Default merge (true). Accept bool or 0/1 numeric.
         pyramid: v.get("pyramid").map(|x| x.as_bool().unwrap_or_else(|| x.as_f64().unwrap_or(1.0) != 0.0)).unwrap_or(true),
     }
 }
 
-/// List all named strategy keys usable with `run_backtest`.
+/// List all single-TF named strategy keys usable with `run_backtest`.
 #[wasm_bindgen]
 pub fn list_strategies() -> JsValue {
     use alm_strategy::catalog::STRATEGY_KEYS;
     to_js(&STRATEGY_KEYS)
 }
 
+/// List all multi-TF named strategy keys usable with `run_mtf_backtest`.
+#[wasm_bindgen]
+pub fn list_mtf_strategies() -> JsValue {
+    use alm_strategy::MTF_STRATEGY_KEYS;
+    to_js(&MTF_STRATEGY_KEYS)
+}
+
 /// Full indicator catalog for editor hints: `[{name, label, category, description,
-/// params:[{name,type,default}], outputs:[{name,type}]}, ...]`. Drives autocomplete,
-/// field completion, and hover docs client-side (no server round-trip).
+/// params:[{name,type,default}], outputs:[{name,type}]}, ...]`.
 #[wasm_bindgen]
 pub fn indicator_catalog() -> JsValue {
     to_js(&alm_strategy::catalog::all())
@@ -388,25 +645,12 @@ pub fn indicator_catalog() -> JsValue {
 /// Lint a strategy script client-side (no server round-trip).
 ///
 /// Returns `{ errors: [{line, col, message, severity}], scope: {...} }`.
-/// Pass `base_tf` as e.g. `"H1"` or `null` / empty string to skip TF checks.
+/// `base_tf`: `"M1"` / `"H4"` / etc., or empty string to skip TF checks.
+/// Supports all 13 timeframes: M1 M3 M5 M10 M15 M30 H1 H2 H4 H6 H12 D1 W1.
 #[wasm_bindgen]
 pub fn validate_script(script: &str, base_tf: &str) -> JsValue {
-    use alm_core::Timeframe;
     use alm_strategy::script_lint;
-
-    let tf = match base_tf {
-        "" => None,
-        s  => match s.to_ascii_uppercase().as_str() {
-            "M1"  => Some(Timeframe::M1),  "M3"  => Some(Timeframe::M3),
-            "M5"  => Some(Timeframe::M5),  "M15" => Some(Timeframe::M15),
-            "M30" => Some(Timeframe::M30), "H1"  => Some(Timeframe::H1),
-            "H2"  => Some(Timeframe::H2),  "H4"  => Some(Timeframe::H4),
-            "H6"  => Some(Timeframe::H6),  "H12" => Some(Timeframe::H12),
-            "D1"  => Some(Timeframe::D1),  "W1"  => Some(Timeframe::W1),
-            _     => None,
-        },
-    };
-
+    let tf = if base_tf.is_empty() { None } else { parse_tf(base_tf) };
     let (errors, scope) = script_lint(script, tf);
     to_js(&json!({ "errors": errors, "scope": scope }))
 }

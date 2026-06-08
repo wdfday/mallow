@@ -35,13 +35,14 @@ fn load_btcusdt_m1() -> Option<Vec<Bar>> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .unwrap()
-        .join("data/testdata/BTCUSDT/M1/BTCUSDT_M1_2026-04-13_to_2026-04-13.parquet");
+        .join("data/testdata/BTCUSDT/M1/BTCUSDT_M1_2026-01.parquet");
     if !path.exists() {
         eprintln!("[parity] testdata missing at {}, skipping", path.display());
         return None;
     }
     let mut feed = ParquetFeed::load(&path, "BTCUSDT").ok()?;
-    let bars: Vec<Bar> = std::iter::from_fn(|| feed.next()).collect();
+    let mut bars: Vec<Bar> = std::iter::from_fn(|| feed.next()).collect();
+    bars.truncate(20000);
     if bars.len() < 200 {
         eprintln!("[parity] only {} bars in parquet, skipping", bars.len());
         return None;
@@ -69,36 +70,11 @@ fn run_script(script: &str, bars: &[Bar]) -> Vec<(i64, Direction)> {
         .collect()
 }
 
-// ── Untranslatable strategies ────────────────────────────────────────────────
-
-/// Strategies whose semantics cannot be expressed cleanly in the script DSL with the
-/// current DSL. Documenting them here keeps the coverage check honest.
 const UNTRANSLATABLE: &[(&str, &str)] = &[
-    ("heiken_ashi_color",      "Heiken-Ashi candle aggregation not exposed as a script indicator"),
-    ("heiken_ashi_breakout",   "consecutive-bar HA counter is stateful in a way the script DSL cannot express"),
-    ("heiken_ashi_harmonizer", "depends on Heiken-Ashi candles (not in script indicator set)"),
     ("kitchen_sink",           "factory does not accept 'kitchen_sink' (demonstrator only)"),
     ("pattern_breakout",       "uses on_window with alm-pattern detector; script has no window hook"),
     ("price_action_swing",     "uses raw OHLC pivot detection + ATR-trailed stop not expressible in script DSL"),
     ("orb_breakout",           "session-aware opening-range needs explicit timestamp-gap state"),
-    ("vwap_bounce",            "VWAP session reset + multi-clause exit not 1:1 with stateless script exit"),
-    ("vwap_trend",             "VWAP session reset semantics differ between named impl and script vwap"),
-    ("pixel_3",                "multi-window midpoint comparison requires custom window state"),
-    ("atr_trailing",           "trailing-stop state machine (highest_since_entry) not expressible"),
-    ("chandelier_exit",        "manual highest-high tracking + trailing stop state"),
-    ("ma_pullback",            "two-step proximity → bounce state machine outside script DSL"),
-    ("bb_squeeze",             "was_squeezed latch combined with directional break not expressible"),
-    ("bb_keltner_squeeze",     "squeeze-release latch state across bars"),
-    ("mean_reversion",         "below_band_count consecutive-bar latch state"),
-    ("volatility_squeezer",    "prev_atr expanding check + in-position gating mismatch"),
-    ("volatility_vanguard",    "prev_atr expanding check is bar-1 lookback not natively expressible cleanly"),
-    ("waddah_attar",           "prev_macd lookback × sensitivity formula deviates from any single script pattern"),
-    ("highest_breakout",       "rolling-window lookback excluding current bar — DSL highest() includes current"),
-    ("scalping_ema",           "requires ATR expansion gate inside crossover, hard to mirror exactly"),
-    ("kdj",                    "in_position state machine + per-bar prev_k > k check uses gated transitions script DSL cannot express"),
-    ("obv_ema_trend",          "needs streaming EMA-of-OBV which script ind.obv() does not expose"),
-    ("elder_ray",              "ElderRay indicator (with .bull_power/.bear_power fields) is not exposed in script DSL — ind.bull_bear has identical math but different field names; warmup also diverges"),
-    ("oscillator_overlord",    "in_position guard with state tracking causes CCI indicator formula mismatch vs backtrader"),
 ];
 
 // ── Strategy → script mapping ──────────────────────────────────────────────────
@@ -176,8 +152,8 @@ if mh[1].histogram <= 0.0 && mh[0].histogram > 0.0 { entry = true; }
 if mh[1].histogram >= 0.0 && mh[0].histogram < 0.0 { exit  = true; }
 "#),
         ("macd_ma", json!({"fast": 12, "slow": 26, "signal": 9, "ma": 50}), r#"
-let mh = ind.macd(12);
-let sma50 = ind.sma(50);
+let mh = ind.macd(12, buf=1);
+let sma50 = ind.sma(50, buf=1);
 let in_pos = state["in_position"] == true;
 if !in_pos && mh[0].histogram > 0.0 && close[0] > sma50[0] { entry = true; state["in_position"] = true; }
 if in_pos && mh[0].histogram < 0.0 { exit = true; state["in_position"] = false; }
@@ -198,6 +174,24 @@ if st[1].k >= st[1].d && st[0].k < st[0].d && st[0].d > 80.0 { exit  = true; }
 let sk = ind.stoch_rsi(14);
 if sk[1].k >= 0.2 && sk[0].k < 0.2 { entry = true; }
 if sk[1].k <= 0.8 && sk[0].k > 0.8 { exit  = true; }
+"#),
+        ("kdj", json!({"period": 9, "k_period": 3, "d_period": 3, "oversold": 20.0, "overbought": 80.0}), r#"
+let kdj9 = ind.kdj(9);
+if state["in_position"] == () {
+    state["in_position"] = false;
+}
+let in_pos = state["in_position"];
+if !in_pos {
+    if kdj9[0].k < 20.0 && kdj9[0].d < 20.0 && gt(kdj9[0].k, kdj9[1].k) {
+        state["in_position"] = true;
+        entry = true;
+    }
+} else {
+    if kdj9[0].k > 80.0 || kdj9[0].j > 100.0 {
+        state["in_position"] = false;
+        exit = true;
+    }
+}
 "#),
 
         // ── ADX / DMI / Aroon / Vortex / RWI ─────────────────────────────────
@@ -237,6 +231,11 @@ if fi[1].fisher <= fi[1].signal && fi[0].fisher > fi[0].signal { entry = true; }
 if fi[1].fisher >= fi[1].signal && fi[0].fisher < fi[0].signal { exit  = true; }
 "#),
         ("roc", json!({"period": 10}), r#"
+let roc10 = ind.roc(10);
+if roc10[1] <= 0.0 && roc10[0] > 0.0 { entry = true; }
+if roc10[1] >= 0.0 && roc10[0] < 0.0 { exit  = true; }
+"#),
+        ("kst", json!({"period": 10}), r#"
 let roc10 = ind.roc(10);
 if roc10[1] <= 0.0 && roc10[0] > 0.0 { entry = true; }
 if roc10[1] >= 0.0 && roc10[0] < 0.0 { exit  = true; }
@@ -318,6 +317,154 @@ let rsi14 = ind.rsi(14, buf=1);
 if close[0] < bb20[0].lower && rsi14[0] < 35.0 { entry = true; }
 if close[0] > bb20[0].middle || rsi14[0] > 65.0 { exit  = true; }
 "#),
+        ("atr_trailing", json!({"ema_period": 20, "atr_period": 14, "atr_multiplier": 2.0}), r#"
+let ema20 = ind.ema(20, buf=1);
+let atr14 = ind.atr(14, buf=1);
+if state["in_position"] == () {
+    state["in_position"] = false;
+    state["highest_since_entry"] = 0.0;
+    state["trailing_stop"] = 0.0;
+}
+if state["in_position"] {
+    if close[0] > state["highest_since_entry"] {
+        state["highest_since_entry"] = close[0];
+        state["trailing_stop"] = close[0] - atr14[0].atr * 2.0;
+    }
+    if close[0] < state["trailing_stop"] {
+        state["in_position"] = false;
+        state["highest_since_entry"] = 0.0;
+        state["trailing_stop"] = 0.0;
+        exit = true;
+    }
+} else {
+    if close[0] > ema20[0] {
+        state["in_position"] = true;
+        state["highest_since_entry"] = close[0];
+        state["trailing_stop"] = close[0] - atr14[0].atr * 2.0;
+        entry = true;
+    }
+}
+"#),
+        ("chandelier_exit", json!({"period": 22, "multiplier": 3.0}), r#"
+let atr22 = ind.atr(22);
+let hh = highest(high, 22);
+let stop = hh - 3.0 * atr22[0].atr;
+let bull = close[0] > stop;
+if state["in_position"] == () {
+    state["in_position"] = false;
+    state["prev_bull"] = ();
+}
+let was_bull = state["prev_bull"];
+state["prev_bull"] = bull;
+if was_bull != () {
+    if !was_bull && bull && !state["in_position"] {
+        state["in_position"] = true;
+        entry = true;
+    }
+    if was_bull && !bull && state["in_position"] {
+        state["in_position"] = false;
+        exit = true;
+    }
+}
+"#),
+        ("bb_squeeze", json!({"period": 20, "std": 2.0}), r#"
+let bb20 = ind.bbands(20);
+let squeezed = bb20[0].bandwidth < 0.04;
+if state["was_squeezed"] == () {
+    state["was_squeezed"] = false;
+}
+if squeezed {
+    state["was_squeezed"] = true;
+}
+if state["was_squeezed"] && close[0] > bb20[0].upper {
+    state["was_squeezed"] = false;
+    entry = true;
+}
+if close[0] < bb20[0].middle {
+    exit = true;
+}
+"#),
+        ("mean_reversion", json!({"bb_period": 20, "bb_std": 2.0, "rsi_period": 14, "bars": 4}), r#"
+let bb20 = ind.bbands(20);
+let rsi14 = ind.rsi(14);
+if state["below_band_count"] == () {
+    state["below_band_count"] = 0;
+    state["in_position"] = false;
+}
+let below_band_count = state["below_band_count"];
+if state["in_position"] {
+    if close[0] >= bb20[0].upper || rsi14[0] > 70.0 {
+        state["in_position"] = false;
+        state["below_band_count"] = 0;
+        exit = true;
+    }
+} else {
+    if close[0] < bb20[0].lower {
+        state["below_band_count"] = below_band_count + 1;
+    } else if close[0] > bb20[0].lower && below_band_count >= 4 {
+        state["below_band_count"] = 0;
+        state["in_position"] = true;
+        strength = ((50.0 - rsi14[0]) / 50.0).clamp(0.0, 1.0);
+        entry = true;
+    } else {
+        state["below_band_count"] = 0;
+    }
+}
+"#),
+        ("volatility_squeezer", json!({"atr_period": 14, "ma_period": 50}), r#"
+let atr14 = ind.atr(14);
+let sma50 = ind.sma(50);
+let atr_expanding = atr14[0].atr > atr14[1].atr;
+if atr_expanding && close[0] > sma50[0] {
+    entry = true;
+}
+if close[0] < sma50[0] {
+    exit = true;
+}
+"#),
+        ("volatility_vanguard", json!({"bb_period": 20, "bb_std": 2.0, "atr_period": 14}), r#"
+let bb20 = ind.bbands(20);
+let atr14 = ind.atr(14);
+let atr_expanding = atr14[0].atr > atr14[1].atr;
+if close[0] > bb20[0].upper && atr_expanding {
+    entry = true;
+}
+if close[0] < bb20[0].middle {
+    exit = true;
+}
+"#),
+        ("highest_breakout", json!({"period": 20}), r#"
+let dummy = highest(close, 21);
+let highest_val = close[1];
+let lowest_val = close[1];
+let i = 2;
+while i <= 20 {
+    if close[i] > highest_val { highest_val = close[i]; }
+    if close[i] < lowest_val { lowest_val = close[i]; }
+    i = i + 1;
+}
+if close[0] > highest_val { entry = true; }
+if close[0] < lowest_val { exit = true; }
+"#),
+        ("bb_keltner_squeeze", json!({"bb_period": 20, "bb_std": 2.0, "kc_period": 20, "kc_atr": 10, "kc_mult": 1.5}), r#"
+let bb20 = ind.bbands(20);
+let kc20 = ind.keltner(20, 10, multiplier=1.5);
+let squeezed = bb20[0].upper < kc20[0].upper && bb20[0].lower > kc20[0].lower;
+if state["was_squeezed"] == () {
+    state["was_squeezed"] = false;
+    state["in_position"] = false;
+}
+let squeeze_released = state["was_squeezed"] && !squeezed;
+state["was_squeezed"] = squeezed;
+if squeeze_released && close[0] > bb20[0].middle && !state["in_position"] {
+    state["in_position"] = true;
+    entry = true;
+}
+if close[0] < bb20[0].middle && state["in_position"] {
+    state["in_position"] = false;
+    exit = true;
+}
+"#),
 
         // ── KAMA / SAR / SuperTrend ──────────────────────────────────────────
         ("kama", json!({"er_period": 10, "fast": 2, "slow": 30}), r#"
@@ -340,6 +487,31 @@ let was_bull = st[1].bullish >= 0.5;
 let now_bull = st[0].bullish >= 0.5;
 if !was_bull && now_bull  { entry = true; }
 if  was_bull && !now_bull { exit  = true; }
+"#),
+        // ── Heiken Ashi ──────────────────────────────────────────────────────
+        ("heiken_ashi_color", json!({"smooth": 1}), r#"
+candle.transform("heiken_ashi");
+let is_bullish = close[0] >= open[0];
+let was_bullish = close[1] >= open[1];
+if is_bullish && !was_bullish { entry = true; }
+if !is_bullish && was_bullish { exit = true; }
+"#),
+        ("heiken_ashi_breakout", json!({"smooth": 1, "consecutive_bars": 2}), r#"
+candle.transform("heiken_ashi");
+if state["bull_count"] == () {
+    state["bull_count"] = 0;
+    state["bear_count"] = 0;
+}
+let is_bullish = close[0] >= open[0];
+if is_bullish {
+    state["bull_count"] = state["bull_count"] + 1;
+    state["bear_count"] = 0;
+} else {
+    state["bear_count"] = state["bear_count"] + 1;
+    state["bull_count"] = 0;
+}
+if state["bull_count"] >= 2 { entry = true; }
+if state["bear_count"] >= 2 { exit = true; }
 "#),
 
         // ── Momentum ROC variants ────────────────────────────────────────────
@@ -491,6 +663,319 @@ let ic = ind.ichimoku(9);
 if ic[1].tenkan <= ic[1].kijun && ic[0].tenkan > ic[0].kijun && ic[0].above_cloud >= 0.5 { entry = true; }
 if ic[1].tenkan >= ic[1].kijun && ic[0].tenkan < ic[0].kijun { exit = true; }
 "#),
+        ("elder_ray", json!({"period": 13}), r#"
+let er13 = ind.elder_ray(13);
+let ema_rising = er13[0].ema > er13[1].ema;
+if ema_rising && er13[0].bear_power < 0.0 && er13[0].bear_power > er13[1].bear_power { entry = true; }
+if er13[0].bull_power < 0.0 && er13[1].bull_power >= 0.0 { exit = true; }
+"#),
+        ("pixel_3", json!({}), r#"
+let hh5 = highest(high, 5);
+let ll5 = lowest(low, 5);
+let mid5 = (hh5 + ll5) / 2.0;
+let hh20 = highest(high, 20);
+let ll20 = lowest(low, 20);
+let mid20 = (hh20 + ll20) / 2.0;
+let hh60 = highest(high, 60);
+let ll60 = lowest(low, 60);
+let mid60 = (hh60 + ll60) / 2.0;
+let ts5 = gt(close[0], mid5);
+let ts4 = gt(close[0], mid20);
+let ts3 = gt(close[0], mid60);
+let green_count = 0;
+if ts5 { green_count = green_count + 1; }
+if ts4 { green_count = green_count + 1; }
+if ts3 { green_count = green_count + 1; }
+if green_count >= 2 {
+    strength = green_count / 3.0;
+    entry = true;
+}
+if green_count == 0 {
+    exit = true;
+}
+"#),
+        ("ma_pullback", json!({"ma_period": 50}), r#"
+let sma50 = ind.sma(50, buf=1);
+if state["in_position"] == () {
+    state["in_position"] = false;
+    state["near_ma"] = false;
+}
+if state["in_position"] {
+    if close[0] < sma50[0] {
+        state["in_position"] = false;
+        state["near_ma"] = false;
+        exit = true;
+    }
+} else {
+    if close[0] < sma50[0] {
+        state["near_ma"] = false;
+    } else {
+        let proximity = (close[0] - sma50[0]) / sma50[0];
+        if proximity <= 0.02 {
+            state["near_ma"] = true;
+        } else if state["near_ma"] && proximity > 0.02 {
+            state["near_ma"] = false;
+            state["in_position"] = true;
+            entry = true;
+        }
+    }
+}
+"#),
+        ("waddah_attar", json!({"fast": 12, "slow": 26, "bb_period": 20, "bb_std": 2.0}), r#"
+let macd12 = ind.macd(12);
+let bb20 = ind.bbands(20, buf=1);
+let prev_macd = macd12[1].macd;
+let explosion = (macd12[0].macd - prev_macd) * 150.0;
+let dead_zone = bb20[0].upper - bb20[0].lower;
+if explosion > dead_zone && macd12[0].histogram > 0.0 {
+    entry = true;
+}
+if explosion < dead_zone || macd12[0].histogram < 0.0 {
+    exit = true;
+}
+"#),
+        ("oscillator_overlord", json!({"rsi_period": 14, "stoch_k": 14, "stoch_d": 3, "cci_period": 20}), r#"
+let rsi14 = ind.rsi(14, buf=1);
+let st14 = ind.stochastic(14, buf=1);
+let cci20 = ind.cci(20, buf=1);
+if state["in_position"] == () {
+    state["in_position"] = false;
+}
+let os_count = 0;
+if rsi14[0] < 30.0 { os_count = os_count + 1; }
+if st14[0].k < 20.0 { os_count = os_count + 1; }
+if cci20[0] < -100.0 { os_count = os_count + 1; }
+let ob_count = 0;
+if rsi14[0] > 70.0 { ob_count = ob_count + 1; }
+if st14[0].k > 80.0 { ob_count = ob_count + 1; }
+if cci20[0] > 100.0 { ob_count = ob_count + 1; }
+if !state["in_position"] {
+    if os_count >= 2 {
+        state["in_position"] = true;
+        entry = true;
+    }
+} else {
+    if ob_count >= 2 {
+        state["in_position"] = false;
+        exit = true;
+    }
+}
+"#),
+        ("heiken_ashi_harmonizer", json!({"smooth": 1, "ema_period": 50}), r#"
+if state["ema50_count"] == () {
+    let ha_open_1 = (open[1] + close[1]) / 2.0;
+    let ha_close_1 = (open[1] + high[1] + low[1] + close[1]) / 4.0;
+    
+    let ha_close_2 = (open[0] + high[0] + low[0] + close[0]) / 4.0;
+    let ha_open_2 = (ha_open_1 + ha_close_1) / 2.0;
+    
+    state["ha_open"] = ha_open_2;
+    state["ha_close"] = ha_close_2;
+    
+    state["ema50_count"] = 2;
+    state["ema50_sum"] = close[1] + close[0];
+    state["ema50_val"] = ();
+} else {
+    let prev_ha_open = state["ha_open"];
+    let prev_ha_close = state["ha_close"];
+    let ha_close = (open[0] + high[0] + low[0] + close[0]) / 4.0;
+    let ha_open = (prev_ha_open + prev_ha_close) / 2.0;
+    state["ha_open"] = ha_open;
+    state["ha_close"] = ha_close;
+    
+    state["ema50_count"] = state["ema50_count"] + 1;
+    let count = state["ema50_count"];
+    let cur_ema50 = ();
+    if count < 50 {
+        state["ema50_sum"] = state["ema50_sum"] + close[0];
+    } else if count == 50 {
+        state["ema50_sum"] = state["ema50_sum"] + close[0];
+        let val = state["ema50_sum"] / 50.0;
+        state["ema50_val"] = val;
+        cur_ema50 = val;
+    } else {
+        let prev = state["ema50_val"];
+        let k = 2.0 / 51.0;
+        let val = close[0] * k + prev * (1.0 - k);
+        state["ema50_val"] = val;
+        cur_ema50 = val;
+    }
+    
+    if cur_ema50 != () {
+        let is_bullish = state["ha_close"] >= state["ha_open"];
+        if is_bullish && close[0] > cur_ema50 {
+            entry = true;
+        }
+        if !is_bullish || close[0] < cur_ema50 {
+            exit = true;
+        }
+    }
+}
+"#),
+        ("scalping_ema", json!({"fast": 8, "slow": 21, "atr_period": 14, "atr_ma_period": 20}), r#"
+let fast = ind.ema(8, buf=2);
+let slow = ind.ema(21, buf=2);
+let atr14 = ind.atr(14, buf=8);
+
+if state["atr_ema_count"] == () {
+    state["atr_ema_count"] = 0;
+    state["atr_ema_sum"] = 0.0;
+    state["atr_ema_val"] = ();
+    
+    let i = 7;
+    while i > 0 {
+        let val = atr14[i].atr;
+        state["atr_ema_count"] = state["atr_ema_count"] + 1;
+        state["atr_ema_sum"] = state["atr_ema_sum"] + val;
+        i = i - 1;
+    }
+}
+
+state["atr_ema_count"] = state["atr_ema_count"] + 1;
+let count = state["atr_ema_count"];
+let cur_atr = atr14[0].atr;
+let cur_atr_ema = ();
+
+if count < 20 {
+    state["atr_ema_sum"] = state["atr_ema_sum"] + cur_atr;
+} else if count == 20 {
+    state["atr_ema_sum"] = state["atr_ema_sum"] + cur_atr;
+    let val = state["atr_ema_sum"] / 20.0;
+    state["atr_ema_val"] = val;
+    cur_atr_ema = val;
+} else {
+    let prev = state["atr_ema_val"];
+    let k = 2.0 / 21.0;
+    let val = cur_atr * k + prev * (1.0 - k);
+    state["atr_ema_val"] = val;
+    cur_atr_ema = val;
+}
+
+if cur_atr_ema != () {
+    let cross_up = fast[1] <= slow[1] && fast[0] > slow[0];
+    let cross_down = fast[1] >= slow[1] && fast[0] < slow[0];
+    let atr_expanding = cur_atr > cur_atr_ema;
+    
+    if cross_up && atr_expanding {
+        let val = (fast[0] - slow[0]) / slow[0];
+        strength = val.clamp(0.0, 1.0);
+        entry = true;
+    }
+    if cross_down {
+        exit = true;
+    }
+}
+"#),
+        ("obv_ema_trend", json!({"obv_ema_period": 20, "price_ema_period": 50}), r#"
+let obv1 = ind.obv(0, buf=50);
+let ema50 = ind.ema(50, buf=1);
+
+if state["obv_ema_count"] == () {
+    state["obv_ema_count"] = 0;
+    state["obv_ema_sum"] = 0.0;
+    state["obv_ema_val"] = ();
+    
+    let i = 49;
+    while i > 0 {
+        let val = obv1[i];
+        state["obv_ema_count"] = state["obv_ema_count"] + 1;
+        let c = state["obv_ema_count"];
+        if c < 20 {
+            state["obv_ema_sum"] = state["obv_ema_sum"] + val;
+        } else if c == 20 {
+            state["obv_ema_sum"] = state["obv_ema_sum"] + val;
+            state["obv_ema_val"] = state["obv_ema_sum"] / 20.0;
+        } else {
+            let prev = state["obv_ema_val"];
+            let k = 2.0 / 21.0;
+            state["obv_ema_val"] = val * k + prev * (1.0 - k);
+        }
+        i = i - 1;
+    }
+}
+
+state["obv_ema_count"] = state["obv_ema_count"] + 1;
+let count = state["obv_ema_count"];
+let cur_obv = obv1[0];
+let cur_obv_ema = ();
+
+if count < 20 {
+    state["obv_ema_sum"] = state["obv_ema_sum"] + cur_obv;
+} else if count == 20 {
+    state["obv_ema_sum"] = state["obv_ema_sum"] + cur_obv;
+    let val = state["obv_ema_sum"] / 20.0;
+    state["obv_ema_val"] = val;
+    cur_obv_ema = val;
+} else {
+    let prev = state["obv_ema_val"];
+    let k = 2.0 / 21.0;
+    let val = cur_obv * k + prev * (1.0 - k);
+    state["obv_ema_val"] = val;
+    cur_obv_ema = val;
+}
+
+if cur_obv_ema != () {
+    let obv_bullish = cur_obv > cur_obv_ema;
+    let price_bullish = close[0] > ema50[0];
+    
+    if state["in_position"] == () {
+        state["in_position"] = false;
+    }
+    let in_pos = state["in_position"];
+    
+    if obv_bullish && price_bullish && !in_pos {
+        state["in_position"] = true;
+        entry = true;
+    }
+    if in_pos && (!obv_bullish || !price_bullish) {
+        state["in_position"] = false;
+        exit = true;
+    }
+}
+"#),
+        ("vwap_bounce", json!({"rsi_period": 14, "oversold": 40.0, "overbought": 65.0, "session_gap_mins": 60}), r#"
+let vw = ind.vwap(0, session_gap_mins=60, buf=2);
+let rsi14 = ind.rsi(14, buf=1);
+
+let above_vwap = close[0] > vw[0];
+
+if state["prev_above"] == () {
+    state["prev_above"] = above_vwap;
+} else {
+    let was_above = state["prev_above"];
+    state["prev_above"] = above_vwap;
+    
+    if !was_above && above_vwap && rsi14[0] < 50.0 {
+        entry = true;
+    }
+    if was_above && !above_vwap {
+        exit = true;
+    }
+    if rsi14[0] > 65.0 {
+        exit = true;
+    }
+}
+"#),
+        ("vwap_trend", json!({"session_gap_mins": 60}), r#"
+let vw = ind.vwap(0, session_gap_mins=60, buf=2);
+
+let vwap_rising = vw[0] > vw[1];
+let above_vwap = close[0] > vw[0];
+
+if state["in_position"] == () {
+    state["in_position"] = false;
+}
+let in_pos = state["in_position"];
+
+if above_vwap && vwap_rising && !in_pos {
+    state["in_position"] = true;
+    entry = true;
+}
+if !above_vwap && in_pos {
+    state["in_position"] = false;
+    exit = true;
+}
+"#),
     ]
 }
 
@@ -504,9 +989,27 @@ fn named_vs_script_real_data_parity() {
     let mut passed: Vec<String> = Vec::new();
     let mut failures: Vec<(String, String)> = Vec::new();
 
+    println!("----------------------------------------------------------------------");
+    println!("Parity Test Signal Statistics (20,000 bars):");
+    println!("----------------------------------------------------------------------");
+
     for (name, params, script) in rows.iter() {
         let named = run_named(name, params, &bars);
         let script_sigs = run_script(script, &bars);
+        
+        let long_count = named.iter().filter(|(_, d)| *d == alm_core::signal::Direction::Long).count();
+        let short_count = named.iter().filter(|(_, d)| *d == alm_core::signal::Direction::Short).count();
+        let exit_count = named.iter().filter(|(_, d)| *d == alm_core::signal::Direction::Exit).count();
+        
+        println!(
+            "{:<30} | Signals: {:>4} (Long: {:>4}, Short: {:>4}, Exit: {:>4})",
+            name,
+            named.len(),
+            long_count,
+            short_count,
+            exit_count
+        );
+
         if named == script_sigs {
             passed.push((*name).to_string());
         } else {
@@ -532,6 +1035,7 @@ fn named_vs_script_real_data_parity() {
         }
     }
 
+    println!("----------------------------------------------------------------------");
     eprintln!("[parity] real-data BTCUSDT M1, {} bars", bars.len());
     eprintln!("[parity] passed {} / {} translatable strategies", passed.len(), rows.len());
     eprintln!("[parity] skipped {} untranslatable strategies:", UNTRANSLATABLE.len());
@@ -568,7 +1072,7 @@ fn coverage_is_exhaustive() {
         "equilibrium_explorer", "fisher_crossover", "gmma_crossover",
         "heiken_ashi_breakout", "heiken_ashi_color", "heiken_ashi_harmonizer",
         "highest_breakout", "hma_crossover", "ichimoku_cloud", "ichimoku_cross",
-        "kama", "kdj", "keltner_breakout", "kitchen_sink", "lsma_cross",
+        "kama", "kdj", "keltner_breakout", "kitchen_sink", "kst", "lsma_cross",
         "ma_crossover", "ma_pullback", "macd_crossover", "macd_ma",
         "mean_reversion", "mfi_revert", "mfi_trend", "momentum_roc",
         "obv_ema_trend", "orb_breakout", "oscillator_overlord", "parabolic_sar",
@@ -684,3 +1188,6 @@ edit `translation_rows()` in `named_real_data_parity_tests.rs` and regenerate.
         rows.len(), UNTRANSLATABLE.len(), dir.display()
     );
 }
+
+
+

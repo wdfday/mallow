@@ -80,3 +80,53 @@ impl Strategy for MeanReversion {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn script_parity() {
+        let Some(bars) = load_real_bars() else { return; };
+
+        let mut named = MeanReversion::new(20, 2.0, 14, 4);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = r#"
+let bb20 = ind.bbands(20, buf=1);
+let rsi14 = ind.rsi(14, buf=1);
+if state["below_band_count"] == () {
+    state["below_band_count"] = 0;
+    state["in_position"] = false;
+}
+let below_band_count = state["below_band_count"];
+if state["in_position"] {
+    if close[0] >= bb20[0].upper || rsi14[0] > 70.0 {
+        state["in_position"] = false;
+        state["below_band_count"] = 0;
+        exit = true;
+    }
+} else {
+    if close[0] < bb20[0].lower {
+        state["below_band_count"] = below_band_count + 1;
+    } else if close[0] > bb20[0].lower && below_band_count >= 4 {
+        state["below_band_count"] = 0;
+        state["in_position"] = true;
+        strength = ((50.0 - rsi14[0]) / 50.0).clamp(0.0, 1.0);
+        entry = true;
+    } else {
+        state["below_band_count"] = 0;
+    }
+}
+"#;
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "mean_reversion: must produce signals");
+        assert_parity("mean_reversion parity vs named", &named_sigs, &script_sigs);
+    }
+}
+

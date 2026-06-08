@@ -70,31 +70,26 @@ mod tests {
     use crate::factory::build_strategy;
     use serde_json::json;
 
-    fn bar(ts: i64, close: f64) -> Bar {
-        Bar::new(ts, "TEST", close, close + 1.0, close - 1.0, close, 1000.0)
-    }
+    
 
     #[test]
     fn test_no_signal_before_tsi_ready() {
+        let Some(bars) = load_real_bars() else { return; };
         let mut strat = TsiStrategy::new(5, 3, -25.0, 25.0);
-        for i in 0..10 {
-            let s = strat.on_bar(&bar(i, 100.0 + i as f64));
-            assert!(s.is_empty(), "no signal before TSI ready: bar {i}");
+        for b in bars.iter().take(10) {
+            let s = strat.on_bar(b);
+            assert!(s.is_empty(), "no signal before TSI ready");
         }
     }
 
     #[test]
     fn test_long_signal_in_uptrend() {
         use alm_core::signal::Direction;
-        // Use a very wide threshold so the TSI zero-cross is easy to trigger
+        let Some(bars) = load_real_bars() else { return; };
         let mut strat = TsiStrategy::new(3, 2, -50.0, 50.0);
         let mut signals = Vec::new();
-        // Descend first (pushes TSI negative), then ascend (pushes TSI positive, crosses threshold)
-        for i in 0..30 {
-            signals.extend(strat.on_bar(&bar(i, 150.0 - i as f64 * 2.0)));
-        }
-        for i in 30..70 {
-            signals.extend(strat.on_bar(&bar(i, 90.0 + (i - 30) as f64 * 3.0)));
+        for b in &bars {
+            signals.extend(strat.on_bar(b));
         }
         assert!(
             signals.iter().any(|s| s.direction == Direction::Long),
@@ -104,9 +99,10 @@ mod tests {
 
     #[test]
     fn test_reset_clears_state() {
+        let Some(bars) = load_real_bars() else { return; };
         let mut strat = TsiStrategy::new(5, 3, -25.0, 25.0);
-        for i in 0..30 {
-            strat.on_bar(&bar(i, 100.0 + i as f64));
+        for b in bars.iter().take(30) {
+            strat.on_bar(b);
         }
         strat.reset();
         assert!(strat.prev_tsi.is_none());
@@ -116,7 +112,7 @@ mod tests {
     fn script_parity() {
         use alm_core::signal::Direction;
 
-        let bars = rsi_bars(300);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = TsiStrategy::new(25, 13, -25.0, 25.0);
         let named_sigs: Vec<(i64, Direction)> = bars.iter()

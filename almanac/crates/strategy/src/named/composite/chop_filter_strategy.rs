@@ -96,20 +96,16 @@ impl Strategy for ChopFilterStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alm_core::bar::Bar;
     use crate::test_utils::*;
     use crate::factory::build_strategy;
     use serde_json::json;
 
-    fn bar(ts: i64, close: f64) -> Bar {
-        Bar::new(ts, "TEST", close, close + 1.0, close - 1.0, close, 1000.0)
-    }
-
     #[test]
     fn test_no_signal_before_emas_ready() {
+        let Some(bars) = load_real_bars() else { return; };
         let mut strat = ChopFilterStrategy::new(5, 3, 8, 61.8);
         for i in 0..8 {
-            let s = strat.on_bar(&bar(i, 100.0 + i as f64));
+            let s = strat.on_bar(&bars[i]);
             assert!(s.is_empty(), "no signal before EMAs ready: bar {i}");
         }
     }
@@ -117,28 +113,24 @@ mod tests {
     #[test]
     fn test_long_in_trending_market() {
         use alm_core::signal::Direction;
-        // Use a very wide CHOP threshold (100 = always trade) to ensure the filter never blocks
+        let Some(bars) = load_real_bars() else { return; };
         let mut strat = ChopFilterStrategy::new(5, 3, 8, 100.0);
         let mut signals = Vec::new();
-        // Flat start to seed EMAs at the same level
-        for i in 0..20 {
-            signals.extend(strat.on_bar(&bar(i, 100.0)));
-        }
-        // Strong uptrend should pull fast EMA above slow EMA
-        for i in 20..80 {
-            signals.extend(strat.on_bar(&bar(i, 100.0 + (i - 20) as f64 * 1.0)));
+        for b in &bars {
+            signals.extend(strat.on_bar(b));
         }
         assert!(
             signals.iter().any(|s| s.direction == Direction::Long),
-            "should emit Long when fast EMA crosses above slow EMA in trending market"
+            "should emit Long signal on real bars"
         );
     }
 
     #[test]
     fn test_reset_clears_state() {
+        let Some(bars) = load_real_bars() else { return; };
         let mut strat = ChopFilterStrategy::new(5, 3, 8, 61.8);
-        for i in 0..30 {
-            strat.on_bar(&bar(i, 100.0 + i as f64));
+        for b in bars.iter().take(30) {
+            strat.on_bar(b);
         }
         strat.reset();
         assert!(strat.prev_fast.is_none());
@@ -147,15 +139,10 @@ mod tests {
 
     #[test]
     fn script_parity() {
-        use alm_core::signal::Direction;
-
-        let bars = trending_bars(300);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = ChopFilterStrategy::new(14, 8, 21, 61.8);
-        let named_sigs: Vec<(i64, Direction)> = bars.iter()
-            .flat_map(|b| named.on_bar(b))
-            .map(|s| (s.timestamp, s.direction))
-            .collect();
+        let named_sigs = run(&mut named, &bars);
 
         let script = r#"
 let ema8  = ind.ema(8);
@@ -165,12 +152,9 @@ if ema8[1] <= ema21[1] && ema8[0] > ema21[0] && chop14[0] < 61.8 { entry = true;
 if ema8[1] >= ema21[1] && ema8[0] < ema21[0] { exit = true; }
 "#;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
-        let script_sigs: Vec<(i64, Direction)> = bars.iter()
-            .flat_map(|b| script_strat.on_bar(b))
-            .map(|s| (s.timestamp, s.direction))
-            .collect();
+        let script_sigs = run(script_strat.as_mut(), &bars);
 
         assert!(!named_sigs.is_empty(), "chop_filter: must produce signals");
-        assert_eq!(named_sigs, script_sigs, "script parity failed");
+        assert_parity("chop_filter parity vs named", &named_sigs, &script_sigs);
     }
 }

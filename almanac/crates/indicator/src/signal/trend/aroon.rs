@@ -72,20 +72,18 @@ impl Aroon {
         }
 
         // bars_since_high = index of max from the end (0 = current bar)
+        let max_val = *self.highs.iter().max_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
         let bars_since_high = self.highs
             .iter()
             .rev()
-            .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-            .map(|(i, _)| i)
+            .position(|&x| (x - max_val).abs() < f64::EPSILON)
             .unwrap_or(0);
 
+        let min_val = *self.lows.iter().min_by(|a, b| a.partial_cmp(b).unwrap()).unwrap();
         let bars_since_low = self.lows
             .iter()
             .rev()
-            .enumerate()
-            .min_by(|a, b| a.1.partial_cmp(b.1).unwrap())
-            .map(|(i, _)| i)
+            .position(|&x| (x - min_val).abs() < f64::EPSILON)
             .unwrap_or(0);
 
         let up = ((self.period - bars_since_high) as f64 / self.period as f64) * 100.0;

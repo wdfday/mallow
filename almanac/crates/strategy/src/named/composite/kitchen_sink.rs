@@ -309,7 +309,7 @@ if cross_below(ema9, ema21) || rsi14[0] > 80.0 || falling_n(adx14, 2) {
 mod tests {
     use super::*;
     use crate::factory::build_strategy;
-    use crate::test_utils::{bar, run, run_signals, assert_parity, assert_signals_parity};
+    use crate::test_utils::*;
     use serde_json::json;
 
     /// Four-phase bar sequence used for parity and reset tests.
@@ -329,45 +329,12 @@ mod tests {
     ///
     /// The parity test is still valid: both named and script implementations must agree
     /// (both produce empty signal lists). Run on real M1 tick data for actual fills.
-    fn kitchen_sink_bars() -> Vec<Bar> {
-        let mut ts = 0i64;
-        let mut bars = vec![];
-
-        // Phase 1: 4200 M1 bars (70 H1), gentle uptrend 100→300
-        for i in 0..4200u32 {
-            let p = 100.0 + i as f64 * (200.0 / 4200.0);
-            bars.push(bar(ts, p));
-            ts += 60_000;
-        }
-
-        // Phase 2: 360 M1 bars (6 H1), flat 300±0.5 (BB squeeze)
-        for i in 0..360u32 {
-            let p = 300.0 + if i % 2 == 0 { 0.5 } else { -0.5 };
-            bars.push(bar(ts, p));
-            ts += 60_000;
-        }
-
-        // Phase 3: 1200 M1 bars (20 H1), sharp uptrend 300→500
-        for i in 0..1200u32 {
-            let p = 300.0 + i as f64 * (200.0 / 1200.0);
-            bars.push(bar(ts, p));
-            ts += 60_000;
-        }
-
-        // Phase 4: 600 M1 bars (10 H1), decline 500→300
-        for i in 0..600u32 {
-            let p = 500.0 - i as f64 * (200.0 / 600.0);
-            bars.push(bar(ts, p));
-            ts += 60_000;
-        }
-
-        bars
-    }
+    
 
 
     #[test]
     fn kitchen_sink_named_reset_reproducible() {
-        let bars = kitchen_sink_bars();
+        let Some(bars) = load_real_bars() else { return; };
         let mut s = KitchenSinkStrategy::new();
         let r1 = run(&mut s, &bars);
         s.reset();
@@ -386,7 +353,7 @@ mod tests {
         use crate::script::v2::MtfScriptStrategy;
         use crate::bar_resampler::TimeBarResampler;
 
-        let m1_bars = kitchen_sink_bars();
+        let Some(m1_bars) = load_real_bars() else { return; };
 
         // Aggregate M1 → H1 for the script's HTF feed.
         let mut rs = TimeBarResampler::new(Timeframe::H1.duration_ms());
@@ -451,7 +418,7 @@ mod tests {
         use crate::script::v2::MtfScriptStrategy;
         use crate::bar_resampler::TimeBarResampler;
 
-        let m1_bars = kitchen_sink_bars();
+        let Some(m1_bars) = load_real_bars() else { return; };
 
         // Aggregate M1→H1 with the same TimeBarResampler used by KitchenSinkStrategy.
         let mut rs = TimeBarResampler::new(Timeframe::H1.duration_ms());

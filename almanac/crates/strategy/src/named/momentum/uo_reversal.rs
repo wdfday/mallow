@@ -72,7 +72,7 @@ mod tests {
 
     #[test]
     fn script_parity() {
-        let bars = rsi_bars(300);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = UoReversal::new(7, 14, 28, 30.0, 70.0);
         let named_sigs: Vec<(i64, Direction)> = bars.iter()

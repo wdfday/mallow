@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn script_parity() {
-        let bars = sar_bars();
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = SupertrendStrategy::new(10, 3.0);
         let named_sigs = run(&mut named, &bars);
@@ -174,7 +174,7 @@ mod tests {
     fn supertrend_macd_script_parity() {
         // SupertrendMacd fires every bar where ST bullish AND MACD hist > 0;
         // exits every bar when ST bearish.
-        let bars = sar_bars();
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = SupertrendMacd::new(10, 3.0, 12, 26, 9);
         let named_sigs = run(&mut named, &bars);

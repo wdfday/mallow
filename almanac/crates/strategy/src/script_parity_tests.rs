@@ -17,7 +17,7 @@ use serde_json::json;
 use crate::factory::build_strategy;
 use crate::named::MaCrossover;
 use crate::test_utils::{
-    assert_parity, dip_in_uptrend_bars, rsi_bars, run, trending_bars,
+    assert_parity, run, load_real_bars,
 };
 
 // ── helpers ──────────────────────────────────────────────────────────────────
@@ -38,7 +38,7 @@ fn run_full(s: &mut dyn Strategy, bars: &[alm_core::Bar]) -> Vec<Signal> {
 /// same signals as the hardcoded `MaCrossover(5,20)` strategy.
 #[test]
 fn script_ma_cross_vs_named() {
-    let bars = trending_bars(300);
+    let Some(bars) = load_real_bars() else { return; };
 
     let mut named = MaCrossover::new(5, 20);
     let named_sigs = run_sigs(&mut named, &bars);
@@ -60,7 +60,7 @@ if cross_below(ema5, ema20) { exit  = true; }
 /// Wider EMA periods (10, 50) — exercises the warmup gap between fast and slow.
 #[test]
 fn script_ma_cross_wide_periods_vs_named() {
-    let bars = trending_bars(400);
+    let Some(bars) = load_real_bars() else { return; };
 
     let mut named = MaCrossover::new(10, 50);
     let named_sigs = run_sigs(&mut named, &bars);
@@ -83,7 +83,7 @@ if cross_below(ema10, ema50) { exit  = true; }
 /// Script RSI threshold entry/exit produces expected signals.
 #[test]
 fn script_rsi_threshold() {
-    let bars = rsi_bars(200);
+    let Some(bars) = load_real_bars() else { return; };
 
     // buf_depth=1: only need current value
     let script = r#"
@@ -104,7 +104,7 @@ if rsi14[0] > 70.0 { exit  = true; }
 /// and `stop_price` values.
 #[test]
 fn script_tp_sl_atr_based() {
-    let bars = dip_in_uptrend_bars();
+    let Some(bars) = load_real_bars() else { return; };
 
     let script_src = r#"
 let ema20 = ind.ema(20);
@@ -138,7 +138,7 @@ if close[0] < ema20[0] { exit = true; }
 /// `entry_price * 1.05`.  Verify the field is populated and within 5 % of entry.
 #[test]
 fn script_fixed_pct_tp_field_is_set() {
-    let bars = rsi_bars(200);
+    let Some(bars) = load_real_bars() else { return; };
 
     let script = r#"
 let rsi14 = ind.rsi(14);
@@ -170,7 +170,7 @@ if rsi14[0] > 70.0 { exit = true; }
 /// `reset()` must produce identical signals when the same bars are replayed.
 #[test]
 fn script_reset_parity() {
-    let bars = trending_bars(300);
+    let Some(bars) = load_real_bars() else { return; };
     let script = r#"
 let ema5  = ind.ema(5);
 let ema20 = ind.ema(20);
@@ -191,7 +191,7 @@ if cross_below(ema5, ema20) { exit  = true; }
 /// Reset with TP/SL — entry_price is cleared, TP/SL on second run match first.
 #[test]
 fn script_reset_tp_sl_parity() {
-    let bars = dip_in_uptrend_bars();
+    let Some(bars) = load_real_bars() else { return; };
     let script = r#"
 let ema20 = ind.ema(20);
 let atr14 = ind.atr(14);

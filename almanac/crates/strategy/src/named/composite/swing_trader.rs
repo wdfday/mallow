@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn script_parity() {
-        let bars = trending_bars(400);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = SwingTrader::new(20, 14, 25.0);
         let named_sigs = run(&mut named, &bars);

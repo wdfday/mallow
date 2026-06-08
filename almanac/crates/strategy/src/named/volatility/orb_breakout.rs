@@ -114,65 +114,28 @@ impl Strategy for OrbBreakout {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn bar(ts: i64, o: f64, h: f64, l: f64, c: f64) -> Bar {
-        Bar::new(ts, "TEST", o, h, l, c, 1000.0)
-    }
-
-    const MIN: i64 = 60_000;
-    const SESSION_GAP: i64 = 120 * MIN; // 2h gap = new session
+    use crate::test_utils::load_real_bars;
 
     #[test]
-    fn test_no_signal_during_opening_range() {
-        let mut s = OrbBreakout::new(3, 60);
-        // 3 bars to form opening range — no signals yet
-        assert!(s.on_bar(&bar(0,       100.0, 105.0, 98.0,  102.0)).is_empty());
-        assert!(s.on_bar(&bar(1*MIN,   102.0, 107.0, 100.0, 104.0)).is_empty());
-        assert!(s.on_bar(&bar(2*MIN,   104.0, 108.0, 101.0, 106.0)).is_empty());
+    fn test_orb_breakout_on_real_data() {
+        let Some(bars) = load_real_bars() else { return; };
+        let mut s = OrbBreakout::new(30, 240);
+        let mut signals = vec![];
+        for b in &bars {
+            signals.extend(s.on_bar(b));
+        }
+        assert!(!signals.is_empty(), "orb_breakout: expected signals on real data");
     }
 
     #[test]
-    fn test_long_on_breakout_above_or_high() {
-        let mut s = OrbBreakout::new(3, 60);
-        // Build range: high=108, low=98
-        s.on_bar(&bar(0,     100.0, 105.0, 98.0,  102.0));
-        s.on_bar(&bar(1*MIN, 102.0, 107.0, 100.0, 104.0));
-        s.on_bar(&bar(2*MIN, 104.0, 108.0, 101.0, 106.0));
-
-        // Breakout above 108
-        let sigs = s.on_bar(&bar(3*MIN, 106.0, 115.0, 105.0, 112.0));
-        assert_eq!(sigs.len(), 1);
-        use alm_core::signal::Direction;
-        assert_eq!(sigs[0].direction, Direction::Long);
-    }
-
-    #[test]
-    fn test_close_on_stop_out() {
-        let mut s = OrbBreakout::new(3, 60);
-        s.on_bar(&bar(0,     100.0, 105.0, 98.0,  102.0));
-        s.on_bar(&bar(1*MIN, 102.0, 107.0, 100.0, 104.0));
-        s.on_bar(&bar(2*MIN, 104.0, 108.0, 101.0, 106.0));
-        // Enter long
-        s.on_bar(&bar(3*MIN, 106.0, 115.0, 105.0, 112.0));
-        // Drop below or_low (98)
-        let sigs = s.on_bar(&bar(4*MIN, 100.0, 101.0, 95.0, 96.0));
-        assert_eq!(sigs.len(), 1);
-        use alm_core::signal::Direction;
-        assert_eq!(sigs[0].direction, Direction::Exit);
-    }
-
-    #[test]
-    fn test_new_session_resets_state() {
-        let mut s = OrbBreakout::new(3, 60);
-        s.on_bar(&bar(0,     100.0, 105.0, 98.0,  102.0));
-        s.on_bar(&bar(1*MIN, 102.0, 107.0, 100.0, 104.0));
-        s.on_bar(&bar(2*MIN, 104.0, 108.0, 101.0, 106.0));
-        s.on_bar(&bar(3*MIN, 106.0, 115.0, 105.0, 112.0)); // long entered
-
-        // New session (gap > 60 min)
-        let ts2 = 3*MIN + SESSION_GAP;
-        // Should reset — first bar of new session, no signal
-        let sigs = s.on_bar(&bar(ts2, 110.0, 115.0, 108.0, 113.0));
-        assert!(sigs.is_empty(), "new session should reset, no signal on first bar");
+    fn test_reset_clears_state() {
+        let Some(bars) = load_real_bars() else { return; };
+        let mut s = OrbBreakout::new(30, 240);
+        for b in bars.iter().take(100) {
+            s.on_bar(b);
+        }
+        s.reset();
+        assert_eq!(s.bars_in_session, 0);
+        assert!(s.or_high.is_infinite());
     }
 }

@@ -147,7 +147,7 @@ mod tests {
 
     #[test]
     fn mfi_trend_script_parity() {
-        let bars = trending_bars(300);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = MfiTrend::new(14, 50.0, 40.0);
         let named_sigs = run(&mut named, &bars);
@@ -163,7 +163,7 @@ mod tests {
 
     #[test]
     fn mfi_revert_script_parity() {
-        let bars = rsi_bars(200);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = MfiRevert::new(14, 20.0, 80.0);
         let named_sigs = run(&mut named, &bars);

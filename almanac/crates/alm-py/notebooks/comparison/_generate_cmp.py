@@ -221,21 +221,53 @@ class BtStrat(bt.Strategy):
         "params": {"ma_period": 50},
         "description": "MA pullback: buy when price pulls back to MA from above, exit when price drops below MA.",
         "pta_code": """\
-ma = ta.ema(close, length={ma_period})
-prev_above = close.shift(1) > ma.shift(1)
-now_touch  = close <= ma
-entries = prev_above & now_touch & (close > ma * 0.99)
-exits   = close < ma
+ma = ta.sma(close, length={ma_period})
+proximity = (close - ma) / ma
+near_ma = pd.Series(False, index=close.index)
+entries = pd.Series(False, index=close.index)
+in_pos = False
+was_near = False
+for i in range(len(close)):
+    c_val = close.iloc[i]
+    ma_val = ma.iloc[i]
+    if pd.isna(ma_val): continue
+    if in_pos:
+        if c_val < ma_val:
+            in_pos = False
+            was_near = False
+    else:
+        if c_val < ma_val:
+            was_near = False
+        else:
+            prox = (c_val - ma_val) / ma_val
+            if prox <= 0.02:
+                was_near = True
+            elif was_near and prox > 0.02:
+                was_near = False
+                in_pos = True
+                entries.iloc[i] = True
+exits = close < ma
 """,
         "bt_code": """\
 class BtStrat(bt.Strategy):
     def __init__(self):
-        self.ma = bt.indicators.EMA(self.data.close, period={ma_period})
+        self.ma = bt.indicators.SMA(self.data.close, period={ma_period})
+        self.near_ma = False
     def next(self):
-        if not self.position and self.data.close[-1] > self.ma[-1] and self.data.close[0] <= self.ma[0]:
-            self.buy()
-        elif self.position and self.data.close[0] < self.ma[0]:
-            self.close()
+        if self.position:
+            if self.data.close[0] < self.ma[0]:
+                self.close()
+                self.near_ma = False
+        else:
+            if self.data.close[0] < self.ma[0]:
+                self.near_ma = False
+            else:
+                proximity = (self.data.close[0] - self.ma[0]) / self.ma[0]
+                if proximity <= 0.02:
+                    self.near_ma = True
+                elif self.near_ma and proximity > 0.02:
+                    self.buy()
+                    self.near_ma = False
 """,
     },
 
@@ -292,8 +324,8 @@ class BtStrat(bt.Strategy):
 fast = ta.ema(close, length={fast})
 slow = ta.ema(close, length={slow})
 rsi  = ta.rsi(close, length={rsi_period})
-entries = (fast > slow) & (rsi > {rsi_entry})
-exits   = rsi < {rsi_exit}
+entries = cross_above(fast, slow) & (rsi > {rsi_entry})
+exits   = cross_below(fast, slow) | (rsi < {rsi_exit})
 """,
         "bt_code": """\
 class BtStrat(bt.Strategy):
@@ -301,9 +333,10 @@ class BtStrat(bt.Strategy):
         self.fast = bt.indicators.EMA(self.data.close, period={fast})
         self.slow = bt.indicators.EMA(self.data.close, period={slow})
         self.rsi  = bt.indicators.RSI(self.data.close, period={rsi_period})
+        self.cross = bt.indicators.CrossOver(self.fast, self.slow)
     def next(self):
-        if not self.position and self.fast > self.slow and self.rsi > {rsi_entry}: self.buy()
-        elif self.position and self.rsi < {rsi_exit}: self.close()
+        if not self.position and self.cross > 0 and self.rsi[0] > {rsi_entry}: self.buy()
+        elif self.position and (self.cross < 0 or self.rsi[0] < {rsi_exit}): self.close()
 """,
     },
 
@@ -335,7 +368,7 @@ class BtStrat(bt.Strategy):
         "pta_code": """\
 macd_df = ta.macd(close, fast={fast}, slow={slow}, signal={signal})
 hist = macd_df[f'MACDh_{{{fast}}}_{{{slow}}}_{{{signal}}}']
-ma   = ta.ema(close, length={ma})
+ma   = ta.sma(close, length={ma})
 entries = (hist > 0) & (close > ma)
 exits   = hist < 0
 """,
@@ -344,7 +377,7 @@ class BtStrat(bt.Strategy):
     def __init__(self):
         macd     = bt.indicators.MACDHisto(self.data.close, period_me1={fast}, period_me2={slow}, period_signal={signal})
         self.hist = macd.lines.histo
-        self.ma   = bt.indicators.EMA(self.data.close, period={ma})
+        self.ma   = bt.indicators.SMA(self.data.close, period={ma})
     def next(self):
         if not self.position and self.hist > 0 and self.data.close > self.ma: self.buy()
         elif self.position and self.hist < 0: self.close()
@@ -357,18 +390,18 @@ class BtStrat(bt.Strategy):
         "params": {"k_period": 14, "d_period": 3, "oversold": 20.0, "overbought": 80.0},
         "description": "Stochastic %K crosses above %D in oversold zone → long; crosses below in overbought → exit.",
         "pta_code": """\
-stoch   = ta.stoch(high, low, close, k={k_period}, d={d_period})
-k = stoch[f'STOCHk_{{{k_period}}}_{{{d_period}}}_3']
-d = stoch[f'STOCHd_{{{k_period}}}_{{{d_period}}}_3']
+stoch   = ta.stoch(high, low, close, k={k_period}, d={d_period}, smooth_k=1)
+k = stoch[f'STOCHk_{{{k_period}}}_{{{d_period}}}_1']
+d = stoch[f'STOCHd_{{{k_period}}}_{{{d_period}}}_1']
 entries = cross_above(k, d) & (d < {oversold})
 exits   = cross_below(k, d) & (d > {overbought})
 """,
         "bt_code": """\
 class BtStrat(bt.Strategy):
     def __init__(self):
-        stoch = bt.indicators.StochasticFull(self.data, period={k_period}, period_dfast={d_period})
+        stoch = bt.indicators.StochasticFull(self.data, period={k_period}, period_dfast=1, period_dslow={d_period})
         self.k = stoch.percK
-        self.d = stoch.percD
+        self.d = stoch.percDSlow
     def next(self):
         if not self.position and self.k[-1]<=self.d[-1] and self.k[0]>self.d[0] and self.d[0]<{oversold}: self.buy()
         elif self.position and self.k[-1]>=self.d[-1] and self.k[0]<self.d[0] and self.d[0]>{overbought}: self.close()
@@ -379,18 +412,18 @@ class BtStrat(bt.Strategy):
         "params": {"k": 14, "d": 3},
         "description": "Pure stochastic %K/%D crossover (no zone filter).",
         "pta_code": """\
-stoch   = ta.stoch(high, low, close, k={k}, d={d})
-k = stoch[f'STOCHk_{{{k}}}_{{{d}}}_3']
-d = stoch[f'STOCHd_{{{k}}}_{{{d}}}_3']
+stoch   = ta.stoch(high, low, close, k={k}, d={d}, smooth_k=1)
+k = stoch[f'STOCHk_{{{k}}}_{{{d}}}_1']
+d = stoch[f'STOCHd_{{{k}}}_{{{d}}}_1']
 entries = cross_above(k, d)
 exits   = cross_below(k, d)
 """,
         "bt_code": """\
 class BtStrat(bt.Strategy):
     def __init__(self):
-        stoch = bt.indicators.StochasticFull(self.data, period={k}, period_dfast={d})
+        stoch = bt.indicators.StochasticFull(self.data, period={k}, period_dfast=1, period_dslow={d})
         self.k = stoch.percK
-        self.d = stoch.percD
+        self.d = stoch.percDSlow
     def next(self):
         if not self.position and self.k[-1]<=self.d[-1] and self.k[0]>self.d[0]: self.buy()
         elif self.position and self.k[-1]>=self.d[-1] and self.k[0]<self.d[0]:   self.close()
@@ -401,8 +434,8 @@ class BtStrat(bt.Strategy):
         "params": {"k": 14, "d": 3, "ma": 50, "oversold": 20.0, "overbought": 80.0},
         "description": "Stochastic %K oversold + price above SMA → long; %K overbought → exit.",
         "pta_code": """\
-stoch = ta.stoch(high, low, close, k={k}, d={d})
-k_col = f'STOCHk_{{{k}}}_{{{d}}}_3'
+stoch = ta.stoch(high, low, close, k={k}, d={d}, smooth_k=1)
+k_col = f'STOCHk_{{{k}}}_{{{d}}}_1'
 k  = stoch[k_col]
 ma = ta.sma(close, length={ma})
 entries = (k < {oversold}) & (close > ma)
@@ -411,7 +444,7 @@ exits   = k > {overbought}
         "bt_code": """\
 class BtStrat(bt.Strategy):
     def __init__(self):
-        stoch    = bt.indicators.StochasticFull(self.data, period={k}, period_dfast={d})
+        stoch    = bt.indicators.StochasticFull(self.data, period={k}, period_dfast=1, period_dslow={d})
         self.k   = stoch.percK
         self.ma  = bt.indicators.SMA(self.data.close, period={ma})
     def next(self):
@@ -424,9 +457,9 @@ class BtStrat(bt.Strategy):
         "params": {"k": 14, "d": 3, "rsi_period": 14},
         "description": "Stochastic K cross above D AND RSI < 50 → long; K cross below D or RSI > 70 → exit.",
         "pta_code": """\
-stoch = ta.stoch(high, low, close, k={k}, d={d})
-k_col = f'STOCHk_{{{k}}}_{{{d}}}_3'
-d_col = f'STOCHd_{{{k}}}_{{{d}}}_3'
+stoch = ta.stoch(high, low, close, k={k}, d={d}, smooth_k=1)
+k_col = f'STOCHk_{{{k}}}_{{{d}}}_1'
+d_col = f'STOCHd_{{{k}}}_{{{d}}}_1'
 k   = stoch[k_col]
 d   = stoch[d_col]
 rsi = ta.rsi(close, length={rsi_period})
@@ -436,9 +469,9 @@ exits   = cross_below(k, d) | (rsi > 70)
         "bt_code": """\
 class BtStrat(bt.Strategy):
     def __init__(self):
-        stoch    = bt.indicators.StochasticFull(self.data, period={k}, period_dfast={d})
+        stoch    = bt.indicators.StochasticFull(self.data, period={k}, period_dfast=1, period_dslow={d})
         self.stk = stoch.percK
-        self.std = stoch.percD
+        self.std = stoch.percDSlow
         self.rsi = bt.indicators.RSI(self.data.close, period={rsi_period})
     def next(self):
         cross_up = self.stk[-1] <= self.std[-1] and self.stk[0] > self.std[0]
@@ -456,41 +489,78 @@ class BtStrat(bt.Strategy):
         "pta_code": """\
 ema = ta.ema(close, length={ema_period})
 atr = ta.atr(high, low, close, length={atr_period})
-trailing_stop = ema - {atr_multiplier} * atr
-entries = cross_above(close, ema)
-exits   = close < trailing_stop
+entries = pd.Series(False, index=close.index)
+exits   = pd.Series(False, index=close.index)
+in_pos = False
+highest_since_entry = 0.0
+trailing_stop = 0.0
+for i in range(len(close)):
+    c_val = close.iloc[i]
+    ema_val = ema.iloc[i]
+    atr_val = atr.iloc[i]
+    if pd.isna(ema_val) or pd.isna(atr_val): continue
+    if in_pos:
+        if c_val > highest_since_entry:
+            highest_since_entry = c_val
+            trailing_stop = highest_since_entry - atr_val * {atr_multiplier}
+        if c_val < trailing_stop:
+            in_pos = False
+            exits.iloc[i] = True
+            highest_since_entry = 0.0
+            trailing_stop = 0.0
+    else:
+        if c_val > ema_val:
+            in_pos = True
+            entries.iloc[i] = True
+            highest_since_entry = c_val
+            trailing_stop = c_val - atr_val * {atr_multiplier}
 """,
         "bt_code": """\
 class BtStrat(bt.Strategy):
     def __init__(self):
         self.ema = bt.indicators.EMA(self.data.close, period={ema_period})
         self.atr = bt.indicators.ATR(self.data, period={atr_period})
+        self.highest_since_entry = 0.0
+        self.trailing_stop = 0.0
     def next(self):
-        stop = self.ema[0] - {atr_multiplier} * self.atr[0]
-        if not self.position and self.data.close[-1]<=self.ema[-1] and self.data.close[0]>self.ema[0]: self.buy()
-        elif self.position and self.data.close[0] < stop: self.close()
+        close = self.data.close[0]
+        ema_val = self.ema[0]
+        atr_val = self.atr[0]
+        if self.position:
+            if close > self.highest_since_entry:
+                self.highest_since_entry = close
+                self.trailing_stop = self.highest_since_entry - atr_val * {atr_multiplier}
+            if close < self.trailing_stop:
+                self.close()
+                self.highest_since_entry = 0.0
+                self.trailing_stop = 0.0
+        else:
+            if close > ema_val:
+                self.buy()
+                self.highest_since_entry = close
+                self.trailing_stop = close - atr_val * {atr_multiplier}
 """,
     },
 
     "volatility_squeezer": {
         "params": {"atr_period": 14, "ma_period": 50},
-        "description": "ATR squeeze: long when price > MA and ATR is expanding (> ATR MA), exit when ATR contracts.",
+        "description": "ATR squeeze: long when price > MA and ATR is expanding, exit when price < MA.",
         "pta_code": """\
-atr    = ta.atr(high, low, close, length={atr_period})
-ma     = ta.ema(close, length={ma_period})
-atr_ma = ta.ema(atr, length={atr_period})
-entries = (close > ma) & cross_above(atr, atr_ma)
+atr     = ta.atr(high, low, close, length={atr_period})
+ma      = ta.sma(close, length={ma_period})
+entries = (close > ma) & (atr > atr.shift(1))
 exits   = close < ma
 """,
         "bt_code": """\
 class BtStrat(bt.Strategy):
     def __init__(self):
-        self.ma     = bt.indicators.EMA(self.data.close, period={ma_period})
-        self.atr    = bt.indicators.ATR(self.data, period={atr_period})
-        self.atr_ma = bt.indicators.EMA(self.atr, period={atr_period})
+        self.ma  = bt.indicators.SMA(self.data.close, period={ma_period})
+        self.atr = bt.indicators.ATR(self.data, period={atr_period})
     def next(self):
-        cross_up = self.atr[-1] <= self.atr_ma[-1] and self.atr[0] > self.atr_ma[0]
-        if not self.position and self.data.close[0] > self.ma[0] and cross_up: self.buy()
+        if len(self.ma) < {ma_period} or len(self.atr) < {atr_period} + 1:
+            return
+        atr_expanding = self.atr[0] > self.atr[-1]
+        if not self.position and self.data.close[0] > self.ma[0] and atr_expanding: self.buy()
         elif self.position and self.data.close[0] < self.ma[0]: self.close()
 """,
     },
@@ -502,9 +572,8 @@ class BtStrat(bt.Strategy):
 bb = ta.bbands(close, length={bb_period}, std={bb_std})
 bb_upper  = bb.filter(like='BBU').iloc[:,0]
 bb_middle = bb.filter(like='BBM').iloc[:,0]
-atr    = ta.atr(high, low, close, length={atr_period})
-atr_ma = ta.sma(atr, length={atr_period})
-entries = (close > bb_upper) & (atr > atr_ma)
+atr       = ta.atr(high, low, close, length={atr_period})
+entries = (close > bb_upper) & (atr > atr.shift(1))
 exits   = close < bb_middle
 """,
         "bt_code": """\
@@ -513,36 +582,46 @@ class BtStrat(bt.Strategy):
         bb = bt.indicators.BollingerBands(self.data.close, period={bb_period}, devfactor={bb_std})
         self.bbu = bb.lines.top
         self.bbm = bb.lines.mid
-        self.atr    = bt.indicators.ATR(self.data, period={atr_period})
-        self.atr_ma = bt.indicators.SMA(self.atr, period={atr_period})
+        self.atr = bt.indicators.ATR(self.data, period={atr_period})
     def next(self):
-        if not self.position and self.data.close[0] > self.bbu[0] and self.atr[0] > self.atr_ma[0]: self.buy()
+        if len(self.bbu) < {bb_period} or len(self.atr) < {atr_period} + 1:
+            return
+        atr_expanding = self.atr[0] > self.atr[-1]
+        if not self.position and self.data.close[0] > self.bbu[0] and atr_expanding: self.buy()
         elif self.position and self.data.close[0] < self.bbm[0]: self.close()
 """,
     },
 
     "volatility_ratio": {
         "params": {"lookback": 10, "threshold": 0.5},
-        "description": "Volatility ratio breakout: long when recent ATR / long-term ATR > threshold and price is rising.",
+        "description": "Volatility ratio breakout: long when VR > threshold and price is rising.",
         "pta_code": """\
-atr_short = ta.atr(high, low, close, length={lookback})
-atr_long  = ta.atr(high, low, close, length={lookback}*3)
-vr = atr_short / atr_long
-price_rising = close > close.shift({lookback})
-entries = (vr > {threshold}) & price_rising
-exits   = (vr < {threshold}) | (~price_rising)
+tr = ta.true_range(high, low, close)
+hh = high.rolling({lookback}).max()
+ll = low.rolling({lookback}).min()
+vr = tr / (hh - ll + 1e-10)
+entries = (vr > {threshold}) & (close > close.shift(1))
+exits   = vr <= {threshold}
 """,
         "bt_code": """\
+class VolatilityRatioInd(bt.Indicator):
+    lines = ('vr',)
+    params = (('lookback', {lookback}),)
+    def __init__(self):
+        self.tr = bt.indicators.TR(self.data)
+        self.hh = bt.indicators.Highest(self.data.high, period=self.p.lookback)
+        self.ll = bt.indicators.Lowest(self.data.low, period=self.p.lookback)
+        self.lines.vr = self.tr / (self.hh - self.ll + 1e-10)
+
 class BtStrat(bt.Strategy):
     def __init__(self):
-        self.atr_short = bt.indicators.ATR(self.data, period={lookback})
-        self.atr_long  = bt.indicators.ATR(self.data, period={lookback}*3)
+        self.vr = VolatilityRatioInd(self.data)
     def next(self):
-        if self.atr_long[0] == 0: return
-        vr = self.atr_short[0] / self.atr_long[0]
-        price_rising = self.data.close[0] > self.data.close[-{lookback}]
-        if not self.position and vr > {threshold} and price_rising: self.buy()
-        elif self.position and (vr < {threshold} or not price_rising): self.close()
+        if len(self.vr) < {lookback} + 1:
+            return
+        bullish_move = self.data.close[0] > self.data.close[-1]
+        if not self.position and self.vr[0] > {threshold} and bullish_move: self.buy()
+        elif self.position and self.vr[0] <= {threshold}: self.close()
 """,
     },
 
@@ -661,29 +740,32 @@ class BtStrat(bt.Strategy):
         "pta_code": """\
 bb = ta.bbands(close, length={bb_period}, std={bb_std})
 bb_upper = bb.filter(like='BBU').iloc[:,0]
+bb_middle = bb.filter(like='BBM').iloc[:,0]
 bb_lower = bb.filter(like='BBL').iloc[:,0]
-kc = ta.kc(high, low, close, length={kc_period}, scalar={kc_mult})
-kc_upper = kc[f'KCUe_{{{kc_period}}}_{{{kc_mult}}}']
-kc_lower = kc[f'KCLe_{{{kc_period}}}_{{{kc_mult}}}']
-squeeze  = (bb_upper < kc_upper) & (bb_lower > kc_lower)
-was_squeezing = squeeze.shift(1).fillna(False)
-entries = was_squeezing & (close > bb_upper)
-exits   = close < bb_lower
+kc_center = ta.ema(close, length={kc_period})
+kc_atr_val = ta.atr(high, low, close, length={kc_atr})
+kc_upper = kc_center + {kc_mult} * kc_atr_val
+kc_lower = kc_center - {kc_mult} * kc_atr_val
+squeeze = (bb_upper < kc_upper) & (bb_lower > kc_lower)
+squeeze_released = squeeze.shift(1).fillna(False) & ~squeeze
+entries = squeeze_released & (close > bb_middle)
+exits   = close < bb_middle
 """,
         "bt_code": """\
 class BtStrat(bt.Strategy):
     def __init__(self):
-        bb = bt.indicators.BollingerBands(self.data.close, period={bb_period}, devfactor={bb_std})
-        self.bbu = bb.lines.top
-        self.bbl = bb.lines.bot
+        self.bb = bt.indicators.BollingerBands(self.data.close, period={bb_period}, devfactor={bb_std})
         self.ema = bt.indicators.EMA(self.data.close, period={kc_period})
-        self.atr = bt.indicators.ATR(self.data, period={kc_period})
+        self.atr = bt.indicators.ATR(self.data, period={kc_atr})
+        self.was_squeezed = False
     def next(self):
-        kc_upper = self.ema[-1] + {kc_mult} * self.atr[-1]
-        kc_lower = self.ema[-1] - {kc_mult} * self.atr[-1]
-        was_squeeze = self.bbu[-1] < kc_upper and self.bbl[-1] > kc_lower
-        if not self.position and was_squeeze and self.data.close[0] > self.bbu[0]: self.buy()
-        elif self.position and self.data.close[0] < self.bbl[0]: self.close()
+        kc_upper = self.ema[0] + {kc_mult} * self.atr[0]
+        kc_lower = self.ema[0] - {kc_mult} * self.atr[0]
+        squeezed = self.bb.lines.top[0] < kc_upper and self.bb.lines.bot[0] > kc_lower
+        squeeze_released = self.was_squeezed and not squeezed
+        self.was_squeezed = squeezed
+        if not self.position and squeeze_released and self.data.close[0] > self.bb.lines.mid[0]: self.buy()
+        elif self.position and self.data.close[0] < self.bb.lines.mid[0]: self.close()
 """,
     },
 
@@ -704,8 +786,8 @@ exits   = cross_above(minus, plus)
 class BtStrat(bt.Strategy):
     def __init__(self):
         self.adx   = bt.indicators.AverageDirectionalMovementIndex(self.data, period={period})
-        self.plus  = bt.indicators.AverageDirectionalMovementIndexPlus(self.data, period={period})
-        self.minus = bt.indicators.AverageDirectionalMovementIndexMinus(self.data, period={period})
+        self.plus  = bt.indicators.PlusDI(self.data, period={period})
+        self.minus = bt.indicators.MinusDI(self.data, period={period})
     def next(self):
         cross_up   = self.plus[-1]<=self.minus[-1] and self.plus[0]>self.minus[0]
         cross_down = self.minus[-1]<=self.plus[-1] and self.minus[0]>self.plus[0]
@@ -728,8 +810,8 @@ exits   = adx < {short_threshold}
 class BtStrat(bt.Strategy):
     def __init__(self):
         self.adx   = bt.indicators.AverageDirectionalMovementIndex(self.data, period={adx_period})
-        self.plus  = bt.indicators.AverageDirectionalMovementIndexPlus(self.data, period={adx_period})
-        self.minus = bt.indicators.AverageDirectionalMovementIndexMinus(self.data, period={adx_period})
+        self.plus  = bt.indicators.PlusDI(self.data, period={adx_period})
+        self.minus = bt.indicators.MinusDI(self.data, period={adx_period})
     def next(self):
         if not self.position and self.adx[0] > {long_threshold} and self.plus[0] > self.minus[0]: self.buy()
         elif self.position and self.adx[0] < {short_threshold}: self.close()
@@ -765,16 +847,31 @@ class BtStrat(bt.Strategy):
         "params": {"cci_period": 20, "adx_period": 14, "adx_threshold": 25.0},
         "description": "CCI crosses above +100 AND ADX trend confirmed → long; CCI crosses below -100 → exit.",
         "pta_code": """\
-cci = ta.cci(high, low, close, length={cci_period})
+cci = pta_cci(high, low, close, length={cci_period})
 adx_df = ta.adx(high, low, close, length={adx_period})
 adx    = adx_df[f'ADX_{{{adx_period}}}']
 entries = cross_above(cci, pd.Series(100.0, index=cci.index)) & (adx > {adx_threshold})
 exits   = cross_below(cci, pd.Series(-100.0, index=cci.index))
 """,
         "bt_code": """\
+class StandardCCI(bt.Indicator):
+    lines = ('cci',)
+    params = (('period', {cci_period}), ('factor', 0.015),)
+    def __init__(self):
+        self.tp = (self.data.high + self.data.low + self.data.close) / 3.0
+        self.tp_sma = bt.indicators.SMA(self.tp, period=self.p.period)
+    def next(self):
+        tps = [self.tp[-i] for i in range(self.p.period)]
+        sma = self.tp_sma[0]
+        mad = sum(abs(x - sma) for x in tps) / self.p.period
+        if mad == 0.0:
+            self.lines.cci[0] = 0.0
+        else:
+            self.lines.cci[0] = (self.tp[0] - sma) / (self.p.factor * mad)
+
 class BtStrat(bt.Strategy):
     def __init__(self):
-        self.cci = bt.indicators.CommodityChannelIndex(self.data, period={cci_period})
+        self.cci = StandardCCI(self.data, period={cci_period})
         self.adx = bt.indicators.AverageDirectionalMovementIndex(self.data, period={adx_period})
     def next(self):
         cross_up = self.cci[-1] <= 100 and self.cci[0] > 100
@@ -815,14 +912,29 @@ class BtStrat(bt.Strategy):
         "params": {"period": 20, "entry_level": -100.0, "exit_level": 100.0},
         "description": "CCI crosses above entry_level (-100) → long; crosses above exit_level (100) → exit.",
         "pta_code": """\
-cci = ta.cci(high, low, close, length={period})
+cci = pta_cci(high, low, close, length={period})
 entries = cross_above(cci, pd.Series({entry_level}, index=cci.index))
 exits   = cross_above(cci, pd.Series({exit_level}, index=cci.index))
 """,
         "bt_code": """\
+class StandardCCI(bt.Indicator):
+    lines = ('cci',)
+    params = (('period', {period}), ('factor', 0.015),)
+    def __init__(self):
+        self.tp = (self.data.high + self.data.low + self.data.close) / 3.0
+        self.tp_sma = bt.indicators.SMA(self.tp, period=self.p.period)
+    def next(self):
+        tps = [self.tp[-i] for i in range(self.p.period)]
+        sma = self.tp_sma[0]
+        mad = sum(abs(x - sma) for x in tps) / self.p.period
+        if mad == 0.0:
+            self.lines.cci[0] = 0.0
+        else:
+            self.lines.cci[0] = (self.tp[0] - sma) / (self.p.factor * mad)
+
 class BtStrat(bt.Strategy):
     def __init__(self):
-        self.cci = bt.indicators.CommodityChannelIndex(self.data, period={period})
+        self.cci = StandardCCI(self.data, period={period})
     def next(self):
         if not self.position and self.cci[-1]<={entry_level} and self.cci[0]>{entry_level}: self.buy()
         elif self.position and self.cci[-1]<={exit_level} and self.cci[0]>{exit_level}: self.close()
@@ -946,10 +1058,10 @@ exits   = cross_below(bullish.astype(float), pd.Series(0.5, index=bullish.index)
         "bt_code": """\
 class BtStrat(bt.Strategy):
     def __init__(self):
-        self.sar = bt.indicators.ParabolicSAR(self.data, af={step}, afmax={max})
+        self.psar = CustomPSAR(self.data, step={step}, max_af={max})
     def next(self):
-        bullish_now  = self.data.close[0]  > self.sar[0]
-        bullish_prev = self.data.close[-1] > self.sar[-1]
+        bullish_now  = self.psar.lines.bullish[0] >= 0.5
+        bullish_prev = self.psar.lines.bullish[-1] >= 0.5
         if not self.position and not bullish_prev and bullish_now: self.buy()
         elif self.position and bullish_prev and not bullish_now:   self.close()
 """,
@@ -1014,10 +1126,10 @@ class BtStrat(bt.Strategy):
         "pta_code": """\
 ha_close = (close + high + low + close) / 4
 ha_open  = (close.shift(1) + high.shift(1) + low.shift(1) + close.shift(1)) / 4
-ha_green = ha_close > ha_open
+ha_green = ha_close >= ha_open
 ema      = ta.ema(close, length={ema_period})
-entries  = ha_green & (close > ema) & ~(ha_green.shift(1).fillna(True) & (close.shift(1) > ema.shift(1)))
-exits    = ~ha_green
+entries  = ha_green & (close > ema)
+exits    = ~ha_green | (close < ema)
 """,
         "bt_code": """\
 class BtStrat(bt.Strategy):
@@ -1025,13 +1137,12 @@ class BtStrat(bt.Strategy):
         self.ha  = bt.indicators.HeikinAshi(self.data)
         self.ema = bt.indicators.EMA(self.data.close, period={ema_period})
     def next(self):
-        green_now  = self.ha.lines.ha_close[0]  > self.ha.lines.ha_open[0]
-        green_prev = self.ha.lines.ha_close[-1] > self.ha.lines.ha_open[-1]
+        green_now  = self.ha.lines.ha_close[0]  >= self.ha.lines.ha_open[0]
         above_now  = self.data.close[0]  > self.ema[0]
-        above_prev = self.data.close[-1] > self.ema[-1]
-        just_entered = green_now and above_now and not (green_prev and above_prev)
-        if not self.position and just_entered: self.buy()
-        elif self.position and not green_now:  self.close()
+        if not self.position:
+            if green_now and above_now: self.buy()
+        else:
+            if not green_now or self.data.close[0] < self.ema[0]: self.close()
 """,
     },
 
@@ -1077,28 +1188,13 @@ entries = cross_above(tenkan_line, kijun_line) & (close > cloud_top)
 exits   = cross_below(tenkan_line, kijun_line)
 """,
         "bt_code": """\
-class IchimokuInd(bt.Indicator):
-    lines = ('tenkan', 'kijun', 'senkou_a', 'senkou_b',)
-    params = (('tenkan', {tenkan}), ('kijun', {kijun}), ('senkou_b', {senkou_b}),)
-    def __init__(self):
-        hh_t = bt.indicators.Highest(self.data.high, period=self.p.tenkan)
-        ll_t = bt.indicators.Lowest(self.data.low, period=self.p.tenkan)
-        self.lines.tenkan = (hh_t + ll_t) / 2.0
-        hh_k = bt.indicators.Highest(self.data.high, period=self.p.kijun)
-        ll_k = bt.indicators.Lowest(self.data.low, period=self.p.kijun)
-        self.lines.kijun = (hh_k + ll_k) / 2.0
-        self.lines.senkou_a = (self.lines.tenkan + self.lines.kijun) / 2.0
-        hh_s = bt.indicators.Highest(self.data.high, period=self.p.senkou_b)
-        ll_s = bt.indicators.Lowest(self.data.low, period=self.p.senkou_b)
-        self.lines.senkou_b = (hh_s + ll_s) / 2.0
-
 class BtStrat(bt.Strategy):
     def __init__(self):
-        self.ich = IchimokuInd(self.data)
+        self.ich = bt.indicators.Ichimoku(self.data, tenkan={tenkan}, kijun={kijun}, senkou={senkou_b})
     def next(self):
-        cross_up = self.ich.lines.tenkan[-1] <= self.ich.lines.kijun[-1] and self.ich.lines.tenkan[0] > self.ich.lines.kijun[0]
-        cross_dn = self.ich.lines.tenkan[-1] >= self.ich.lines.kijun[-1] and self.ich.lines.tenkan[0] < self.ich.lines.kijun[0]
-        cloud_top = max(self.ich.lines.senkou_a[0], self.ich.lines.senkou_b[0])
+        cross_up = self.ich.lines.tenkan_sen[-1] <= self.ich.lines.kijun_sen[-1] and self.ich.lines.tenkan_sen[0] > self.ich.lines.kijun_sen[0]
+        cross_dn = self.ich.lines.tenkan_sen[-1] >= self.ich.lines.kijun_sen[-1] and self.ich.lines.tenkan_sen[0] < self.ich.lines.kijun_sen[0]
+        cloud_top = max(self.ich.lines.senkou_span_a[0], self.ich.lines.senkou_span_b[0])
         if not self.position and cross_up and self.data.close[0] > cloud_top: self.buy()
         elif self.position and cross_dn: self.close()
 """,
@@ -1111,9 +1207,9 @@ class BtStrat(bt.Strategy):
         "description": "Williams Alligator: lips > teeth > jaw (bullish alignment) → long; inversion → exit.",
         "pta_code": """\
 mid   = (high + low) / 2
-jaw   = ta.wma(mid, length={jaw})
-teeth = ta.wma(mid, length={teeth})
-lips  = ta.wma(mid, length={lips})
+jaw   = ta.smma(mid, length={jaw}).shift(8)
+teeth = ta.smma(mid, length={teeth}).shift(5)
+lips  = ta.smma(mid, length={lips}).shift(3)
 bullish = (lips > teeth) & (teeth > jaw)
 entries = bullish & ~bullish.shift(1).fillna(True)
 exits   = ~bullish & bullish.shift(1).fillna(False)
@@ -1121,12 +1217,16 @@ exits   = ~bullish & bullish.shift(1).fillna(False)
         "bt_code": """\
 class AlligatorInd(bt.Indicator):
     lines = ('jaw', 'teeth', 'lips',)
-    params = (('jaw', {jaw}), ('teeth', {teeth}), ('lips', {lips}),)
+    params = (('jaw', {jaw}), ('teeth', {teeth}), ('lips', {lips}),
+              ('jaw_shift', 8), ('teeth_shift', 5), ('lips_shift', 3),)
     def __init__(self):
         hl2 = (self.data.high + self.data.low) / 2.0
-        self.lines.jaw   = bt.indicators.WeightedMovingAverage(hl2, period=self.p.jaw)
-        self.lines.teeth = bt.indicators.WeightedMovingAverage(hl2, period=self.p.teeth)
-        self.lines.lips  = bt.indicators.WeightedMovingAverage(hl2, period=self.p.lips)
+        jaw_raw   = bt.indicators.SMMA(hl2, period=self.p.jaw)
+        teeth_raw = bt.indicators.SMMA(hl2, period=self.p.teeth)
+        lips_raw  = bt.indicators.SMMA(hl2, period=self.p.lips)
+        self.lines.jaw   = jaw_raw(-self.p.jaw_shift)
+        self.lines.teeth = teeth_raw(-self.p.teeth_shift)
+        self.lines.lips  = lips_raw(-self.p.lips_shift)
 
 class BtStrat(bt.Strategy):
     def __init__(self):
@@ -1186,7 +1286,7 @@ exits   = aroon_up < aroon_dn
         "bt_code": """\
 class BtStrat(bt.Strategy):
     def __init__(self):
-        aroon = bt.indicators.AroonIndicator(self.data, period={period})
+        aroon = CustomAroon(self.data, period={period})
         self.aroon_up = aroon.lines.aroonup
         self.aroon_dn = aroon.lines.aroondown
     def next(self):
@@ -1241,22 +1341,9 @@ entries = (~was_above) & above_vwap & (rsi < ({oversold} + 10))
 exits   = (was_above & ~above_vwap) | (rsi > {overbought})
 """,
         "bt_code": """\
-class VWAPInd(bt.Indicator):
-    lines = ('vwap',)
-    def __init__(self):
-        tp = (self.data.high + self.data.low + self.data.close) / 3.0
-        self._tp_vol_sum = 0.0
-        self._vol_sum    = 0.0
-        self._tp  = tp
-        self._vol = self.data.volume
-    def next(self):
-        self._tp_vol_sum += self._tp[0] * self._vol[0]
-        self._vol_sum    += self._vol[0]
-        self.lines.vwap[0] = self._tp_vol_sum / self._vol_sum if self._vol_sum != 0 else self._tp[0]
-
 class BtStrat(bt.Strategy):
     def __init__(self):
-        self.vwap = VWAPInd(self.data)
+        self.vwap = ResetVWAP(self.data, session_gap_mins={session_gap_mins})
         self.rsi  = bt.indicators.RSI(self.data.close, period={rsi_period})
     def next(self):
         above_now  = self.data.close[0]  > self.vwap.lines.vwap[0]
@@ -1278,22 +1365,9 @@ entries  = above & ~above.shift(1).fillna(True)
 exits    = ~above & above.shift(1).fillna(False)
 """,
         "bt_code": """\
-class VWAPInd2(bt.Indicator):
-    lines = ('vwap',)
-    def __init__(self):
-        tp = (self.data.high + self.data.low + self.data.close) / 3.0
-        self._tp_vol_sum = 0.0
-        self._vol_sum    = 0.0
-        self._tp  = tp
-        self._vol = self.data.volume
-    def next(self):
-        self._tp_vol_sum += self._tp[0] * self._vol[0]
-        self._vol_sum    += self._vol[0]
-        self.lines.vwap[0] = self._tp_vol_sum / self._vol_sum if self._vol_sum != 0 else self._tp[0]
-
 class BtStrat(bt.Strategy):
     def __init__(self):
-        self.vwap = VWAPInd2(self.data)
+        self.vwap = ResetVWAP(self.data, session_gap_mins={session_gap_mins})
     def next(self):
         above_now  = self.data.close[0]  > self.vwap.lines.vwap[0]
         above_prev = self.data.close[-1] > self.vwap.lines.vwap[-1]
@@ -1407,7 +1481,7 @@ class BtStrat(bt.Strategy):
         "params": {"first": 25, "second": 13, "entry_threshold": -25.0, "exit_threshold": 25.0},
         "description": "TSI crosses above entry_threshold → long; crosses below exit_threshold → exit.",
         "pta_code": """\
-tsi = ta.tsi(close, fast={second}, slow={first})
+tsi = ta.tsi(close, fast={second}, slow={first}).iloc[:, 0]
 entries = cross_above(tsi, pd.Series({entry_threshold}, index=tsi.index))
 exits   = cross_below(tsi, pd.Series({exit_threshold}, index=tsi.index))
 """,
@@ -1416,7 +1490,7 @@ class TSIInd(bt.Indicator):
     lines = ('tsi',)
     params = (('slow', {first}), ('fast', {second}),)
     def __init__(self):
-        pc = self.data.close - bt.indicators.Delay(self.data.close, period=1)
+        pc = self.data.close - self.data.close(-1)
         dpc = bt.If(pc >= 0, pc, -pc)
         self.lines.tsi = bt.indicators.EMA(bt.indicators.EMA(pc, period=self.p.slow), period=self.p.fast) / \
                          (bt.indicators.EMA(bt.indicators.EMA(dpc, period=self.p.slow), period=self.p.fast) + 1e-10) * 100
@@ -1436,27 +1510,27 @@ class BtStrat(bt.Strategy):
         "params": {"period": 14, "smooth_d": 3, "oversold": 0.2, "overbought": 0.8},
         "description": "StochRSI K drops below oversold → long; rises above overbought → exit.",
         "pta_code": """\
-srsi = ta.stochrsi(close, length={period}, rsi_length={period}, k=1, d={smooth_d})
-k_col = f'STOCHRSIk_{{{period}}}_{{{period}}}_1_{{{smooth_d}}}'
-k = srsi[k_col] / 100.0  # normalize to [0,1]
+k = pta_stoch_rsi(close, period={period}, smooth_k=3)
 entries = cross_below(k, pd.Series({oversold}, index=k.index))
 exits   = cross_above(k, pd.Series({overbought}, index=k.index))
 """,
         "bt_code": """\
 class StochRSIInd(bt.Indicator):
     lines = ('k',)
-    params = (('rsi_period', {period}), ('stoch_period', {period}), ('smooth_k', 1), ('smooth_d', {smooth_d}),)
+    params = (('rsi_period', {period}), ('stoch_period', {period}), ('smooth_k', 3), ('smooth_d', {smooth_d}),)
     def __init__(self):
-        rsi = bt.indicators.RSI(self.data.close, period=self.p.rsi_period)
+        rsi = bt.indicators.RSI(self.data.close, period=self.p.rsi_period, movav=bt.indicators.SmoothedMovingAverage)
         rsi_high = bt.indicators.Highest(rsi, period=self.p.stoch_period)
         rsi_low  = bt.indicators.Lowest(rsi,  period=self.p.stoch_period)
         raw_k = (rsi - rsi_low) / (rsi_high - rsi_low + 1e-10)
-        self.lines.k = raw_k
+        self.lines.k = bt.indicators.SMA(raw_k, period=3)
 
 class BtStrat(bt.Strategy):
     def __init__(self):
         self.srsi = StochRSIInd(self.data)
     def next(self):
+        if len(self.srsi.lines.k) < {period} + 3:
+            return
         k_now  = self.srsi.lines.k[0]
         k_prev = self.srsi.lines.k[-1]
         cross_dn = k_prev >= {oversold} and k_now < {oversold}
@@ -1626,8 +1700,8 @@ exits   = (k > {overbought}) | (j > 100)
 class BtStrat(bt.Strategy):
     def __init__(self):
         stoch    = bt.indicators.StochasticFull(self.data, period={period}, period_dfast={k_period}, period_dslow={d_period})
-        self.stk = stoch.percK
-        self.std = stoch.percD
+        self.stk = stoch.percD
+        self.std = stoch.percDSlow
     def next(self):
         j = 3 * self.stk[0] - 2 * self.std[0]
         k_rising = self.stk[0] > self.stk[-1]
@@ -1662,12 +1736,12 @@ class BtStrat(bt.Strategy):
 
     "williams_r_ma": {
         "params": {"wr_period": 14, "ema_period": 50, "oversold": -80.0, "overbought": -20.0},
-        "description": "Williams %R crosses above oversold AND price > EMA → long; crosses above overbought → exit.",
+        "description": "Williams %R crosses above oversold AND price > EMA → long; enters overbought (crosses below -20) → exit.",
         "pta_code": """\
 wr  = ta.willr(high, low, close, length={wr_period})
 ema = ta.ema(close, length={ema_period})
 entries = cross_above(wr, pd.Series({oversold}, index=wr.index)) & (close > ema)
-exits   = cross_below(wr, pd.Series({overbought}, index=wr.index)) | (close < ema)
+exits   = cross_below(wr, pd.Series({overbought}, index=wr.index))
 """,
         "bt_code": """\
 class BtStrat(bt.Strategy):
@@ -1678,7 +1752,7 @@ class BtStrat(bt.Strategy):
         cross_up = self.wr[-1] <= {oversold} and self.wr[0] > {oversold}
         cross_dn = self.wr[-1] >= {overbought} and self.wr[0] < {overbought}
         if not self.position and cross_up and self.data.close[0] > self.ema[0]: self.buy()
-        elif self.position and (cross_dn or self.data.close[0] < self.ema[0]): self.close()
+        elif self.position and cross_dn: self.close()
 """,
     },
 
@@ -1695,24 +1769,6 @@ entries = cross_above(fisher, signal)
 exits   = cross_below(fisher, signal)
 """,
         "bt_code": """\
-import math as _math
-
-class FisherInd(bt.Indicator):
-    lines = ('fisher', 'signal',)
-    params = (('period', {period}),)
-    def __init__(self):
-        self.hh = bt.indicators.Highest(self.data.high, period=self.p.period)
-        self.ll = bt.indicators.Lowest(self.data.low,   period=self.p.period)
-        self._prev_fish = 0.0
-    def next(self):
-        rng = self.hh[0] - self.ll[0]
-        hl = ((self.data.high[0] + self.data.low[0]) / 2.0 - self.ll[0]) / (rng + 1e-10)
-        hl = max(min(hl, 0.999), 0.001)
-        fish = 0.5 * _math.log((1 + hl) / (1 - hl))
-        self.lines.fisher[0] = fish
-        self.lines.signal[0] = self._prev_fish
-        self._prev_fish = fish
-
 class BtStrat(bt.Strategy):
     def __init__(self):
         self.fisher_ind = FisherInd(self.data, period={period})
@@ -1763,7 +1819,7 @@ class CMOInd(bt.Indicator):
     lines = ('cmo',)
     params = (('period', {cmo_period}),)
     def __init__(self):
-        diff = self.data.close - bt.indicators.Delay(self.data.close, period=1)
+        diff = self.data.close - self.data.close(-1)
         up   = bt.If(diff > 0, diff, 0.0)
         dn   = bt.If(diff < 0, -diff, 0.0)
         self._up_sum = bt.indicators.SumN(up, period=self.p.period)
@@ -1896,8 +1952,8 @@ class MFIInd(bt.Indicator):
     def __init__(self):
         tp  = (self.data.high + self.data.low + self.data.close) / 3.0
         mf  = tp * self.data.volume
-        pos = bt.If(tp > bt.indicators.Delay(tp, period=1), mf, 0.0)
-        neg = bt.If(tp < bt.indicators.Delay(tp, period=1), mf, 0.0)
+        pos = bt.If(tp > tp(-1), mf, 0.0)
+        neg = bt.If(tp < tp(-1), mf, 0.0)
         self._pos_sum = bt.indicators.SumN(pos, period=self.p.period)
         self._neg_sum = bt.indicators.SumN(neg, period=self.p.period)
     def next(self):
@@ -1929,8 +1985,8 @@ class MFIInd2(bt.Indicator):
     def __init__(self):
         tp  = (self.data.high + self.data.low + self.data.close) / 3.0
         mf  = tp * self.data.volume
-        pos = bt.If(tp > bt.indicators.Delay(tp, period=1), mf, 0.0)
-        neg = bt.If(tp < bt.indicators.Delay(tp, period=1), mf, 0.0)
+        pos = bt.If(tp > tp(-1), mf, 0.0)
+        neg = bt.If(tp < tp(-1), mf, 0.0)
         self._pos_sum = bt.indicators.SumN(pos, period=self.p.period)
         self._neg_sum = bt.indicators.SumN(neg, period=self.p.period)
     def next(self):
@@ -1951,7 +2007,7 @@ class BtStrat(bt.Strategy):
     # ── Waddah Attar ──────────────────────────────────────────────────────────
 
     "waddah_attar": {
-        "params": {"fast": 20, "slow": 40, "bb_period": 20, "bb_std": 2.0},
+        "params": {"fast": 12, "slow": 26, "bb_period": 20, "bb_std": 2.0},
         "description": "Waddah Attar explosion: (MACD diff × 150) > BB width AND hist > 0 → long.",
         "pta_code": """\
 macd_df  = ta.macd(close, fast={fast}, slow={slow}, signal=9)
@@ -1990,7 +2046,7 @@ rsi   = ta.rsi(close, length={rsi_period})
 hh    = high.rolling({stoch_k}).max()
 ll    = low.rolling({stoch_k}).min()
 stk   = (close - ll) / (hh - ll + 1e-10) * 100.0
-cci   = ta.cci(high, low, close, length={cci_period})
+cci   = pta_cci(high, low, close, length={cci_period})
 rsi_os = rsi < 30.0
 stk_os = stk < 20.0
 cci_os = cci < -100.0
@@ -2009,12 +2065,27 @@ class StochasticRaw(bt.Indicator):
         ll = bt.indicators.Lowest(self.data.low, period=self.p.period)
         self.lines.k = 100.0 * (self.data.close - ll) / (hh - ll + 1e-10)
 
+class StandardCCI(bt.Indicator):
+    lines = ('cci',)
+    params = (('period', {cci_period}), ('factor', 0.015),)
+    def __init__(self):
+        self.tp = (self.data.high + self.data.low + self.data.close) / 3.0
+        self.tp_sma = bt.indicators.SMA(self.tp, period=self.p.period)
+    def next(self):
+        tps = [self.tp[-i] for i in range(self.p.period)]
+        sma = self.tp_sma[0]
+        mad = sum(abs(x - sma) for x in tps) / self.p.period
+        if mad == 0.0:
+            self.lines.cci[0] = 0.0
+        else:
+            self.lines.cci[0] = (self.tp[0] - sma) / (self.p.factor * mad)
+
 class BtStrat(bt.Strategy):
     def __init__(self):
         self.rsi  = bt.indicators.RSI(self.data.close, period={rsi_period})
         self.stk_ind = StochasticRaw(self.data, period={stoch_k})
         self.stk  = self.stk_ind.lines.k
-        self.cci  = bt.indicators.CommodityChannelIndex(self.data, period={cci_period})
+        self.cci  = StandardCCI(self.data, period={cci_period})
     def next(self):
         os_count = int(self.rsi[0] < 30.0) + int(self.stk[0] < 20.0) + int(self.cci[0] < -100.0)
         ob_count = int(self.rsi[0] > 70.0) + int(self.stk[0] > 80.0) + int(self.cci[0] > 100.0)
@@ -2029,8 +2100,8 @@ class BtStrat(bt.Strategy):
         "description": "Price > 200 EMA + Stoch oversold recovery + MACD hist positive → long.",
         "pta_code": """\
 ema   = ta.ema(close, length={ema_period})
-stoch = ta.stoch(high, low, close, k={stoch_k}, d={stoch_d})
-k_col = f'STOCHk_{{{stoch_k}}}_{{{stoch_d}}}_3'
+stoch = ta.stoch(high, low, close, k={stoch_k}, d={stoch_d}, smooth_k=1)
+k_col = f'STOCHk_{{{stoch_k}}}_{{{stoch_d}}}_1'
 stk   = stoch[k_col]
 macd_df = ta.macd(close, fast={macd_fast}, slow={macd_slow}, signal={macd_signal})
 hist    = macd_df[f'MACDh_{{{macd_fast}}}_{{{macd_slow}}}_{{{macd_signal}}}']
@@ -2054,10 +2125,10 @@ class BtStrat(bt.Strategy):
 
     "trend_follower": {
         "params": {"fast_ma": 50, "slow_ma": 200, "macd_fast": 12, "macd_slow": 26, "macd_signal": 9},
-        "description": "EMA(50) > EMA(200) AND MACD hist > 0 → long; either reverses → exit.",
+        "description": "SMA(50) > SMA(200) AND MACD hist > 0 → long; either reverses → exit.",
         "pta_code": """\
-fast = ta.ema(close, length={fast_ma})
-slow = ta.ema(close, length={slow_ma})
+fast = ta.sma(close, length={fast_ma})
+slow = ta.sma(close, length={slow_ma})
 macd_df = ta.macd(close, fast={macd_fast}, slow={macd_slow}, signal={macd_signal})
 hist    = macd_df[f'MACDh_{{{macd_fast}}}_{{{macd_slow}}}_{{{macd_signal}}}']
 entries = (fast > slow) & (hist > 0)
@@ -2066,8 +2137,8 @@ exits   = (fast < slow) | (hist < 0)
         "bt_code": """\
 class BtStrat(bt.Strategy):
     def __init__(self):
-        self.fast = bt.indicators.EMA(self.data.close, period={fast_ma})
-        self.slow = bt.indicators.EMA(self.data.close, period={slow_ma})
+        self.fast = bt.indicators.SMA(self.data.close, period={fast_ma})
+        self.slow = bt.indicators.SMA(self.data.close, period={slow_ma})
         macd = bt.indicators.MACDHisto(self.data.close, period_me1={macd_fast}, period_me2={macd_slow}, period_signal={macd_signal})
         self.hist = macd.lines.histo
     def next(self):
@@ -2084,23 +2155,140 @@ class BtStrat(bt.Strategy):
         "pta_code": """\
 ema = ta.ema(close, length={ema_trend})
 atr = ta.atr(high, low, close, length={atr_period})
-# Local low: close is lowest in swing_bars window
-local_low = low == low.rolling({swing_bars}).min()
-near_ema  = (close - ema).abs() < atr
-entries   = local_low & near_ema & (close > ema)
-exits     = close < ema
+entries_list = []
+exits_list = []
+swing_high = float('-inf')
+swing_low = float('inf')
+in_position = False
+stop_level = 0.0
+swing_bars = {swing_bars}
+cap = swing_bars * 2 + 1
+window = []
+for i in range(len(close)):
+    curr_close = close.iloc[i]
+    curr_high = high.iloc[i]
+    curr_low = low.iloc[i]
+    curr_open = O.iloc[i]
+    curr_ema = ema.iloc[i]
+    curr_atr = atr.iloc[i]
+    window.append({{"high": curr_high, "low": curr_low, "close": curr_close, "open": curr_open}})
+    if len(window) > cap:
+        window.pop(0)
+    entry = False
+    exit = False
+    if len(window) == cap and not pd.isna(curr_ema) and not pd.isna(curr_atr):
+        mid_idx = swing_bars
+        mid_high = window[mid_idx]["high"]
+        is_ph = True
+        for j in range(swing_bars):
+            if window[j]["high"] >= mid_high or window[2 * swing_bars - j]["high"] >= mid_high:
+                is_ph = False
+                break
+        if is_ph:
+            swing_high = mid_high
+        mid_low = window[mid_idx]["low"]
+        is_pl = True
+        for j in range(swing_bars):
+            if window[j]["low"] <= mid_low or window[2 * swing_bars - j]["low"] <= mid_low:
+                is_pl = False
+                break
+        if is_pl:
+            swing_low = mid_low
+        if swing_high != float('-inf') and swing_low != float('inf'):
+            above_trend = curr_close > curr_ema
+            if not in_position:
+                if curr_close > swing_high and above_trend:
+                    in_position = True
+                    stop_level = swing_low
+                    entry = True
+                else:
+                    body = abs(curr_close - curr_open)
+                    lower_wick = min(curr_open, curr_close) - curr_low
+                    upper_wick = curr_high - max(curr_open, curr_close)
+                    is_pin = body > 0.0 and lower_wick > 2.0 * body and upper_wick < body
+                    near_support = abs(curr_close - swing_low) < curr_atr * 0.5
+                    if is_pin and near_support and above_trend:
+                        in_position = True
+                        stop_level = curr_low - curr_atr * 0.5
+                        entry = True
+            else:
+                if curr_close < stop_level:
+                    in_position = False
+                    exit = True
+                else:
+                    if swing_low > stop_level:
+                        stop_level = swing_low
+    entries_list.append(entry)
+    exits_list.append(exit)
+entries = pd.Series(entries_list, index=close.index)
+exits = pd.Series(exits_list, index=close.index)
 """,
         "bt_code": """\
 class BtStrat(bt.Strategy):
     def __init__(self):
         self.ema = bt.indicators.EMA(self.data.close, period={ema_trend})
         self.atr = bt.indicators.ATR(self.data, period={atr_period})
-        self.ll  = bt.indicators.Lowest(self.data.low, period={swing_bars})
+        self.window = []
+        self.swing_high = float('-inf')
+        self.swing_low = float('inf')
+        self.stop_level = 0.0
     def next(self):
-        local_low = self.data.low[0] == self.ll[0]
-        near_ema  = abs(self.data.close[0] - self.ema[0]) < self.atr[0]
-        if not self.position and local_low and near_ema and self.data.close[0] > self.ema[0]: self.buy()
-        elif self.position and self.data.close[0] < self.ema[0]: self.close()
+        if len(self.ema) < {ema_trend} or len(self.atr) < {atr_period}:
+            return
+        self.window.append({{
+            "high": self.data.high[0],
+            "low": self.data.low[0],
+            "close": self.data.close[0],
+            "open": self.data.open[0]
+        }})
+        cap = {swing_bars} * 2 + 1
+        if len(self.window) > cap:
+            self.window.pop(0)
+        if len(self.window) < cap:
+            return
+        mid_idx = {swing_bars}
+        mid_high = self.window[mid_idx]["high"]
+        is_ph = True
+        for j in range({swing_bars}):
+            if self.window[j]["high"] >= mid_high or self.window[2 * {swing_bars} - j]["high"] >= mid_high:
+                is_ph = False
+                break
+        if is_ph:
+            self.swing_high = mid_high
+        mid_low = self.window[mid_idx]["low"]
+        is_pl = True
+        for j in range({swing_bars}):
+            if self.window[j]["low"] <= mid_low or self.window[2 * {swing_bars} - j]["low"] <= mid_low:
+                is_pl = False
+                break
+        if is_pl:
+            self.swing_low = mid_low
+        if self.swing_high == float('-inf') or self.swing_low == float('inf'):
+            return
+        above_trend = self.data.close[0] > self.ema[0]
+        if not self.position:
+            if self.data.close[0] > self.swing_high and above_trend:
+                self.buy()
+                self.stop_level = self.swing_low
+            else:
+                curr_close = self.data.close[0]
+                curr_open = self.data.open[0]
+                curr_high = self.data.high[0]
+                curr_low = self.data.low[0]
+                body = abs(curr_close - curr_open)
+                lower_wick = min(curr_open, curr_close) - curr_low
+                upper_wick = curr_high - max(curr_open, curr_close)
+                is_pin = body > 0.0 and lower_wick > 2.0 * body and upper_wick < body
+                near_support = abs(curr_close - self.swing_low) < self.atr[0] * 0.5
+                if is_pin and near_support and above_trend:
+                    self.buy()
+                    self.stop_level = curr_low - self.atr[0] * 0.5
+        else:
+            if self.data.close[0] < self.stop_level:
+                self.close()
+            else:
+                if self.swing_low > self.stop_level:
+                    self.stop_level = self.swing_low
 """,
     },
 
@@ -2110,24 +2298,54 @@ class BtStrat(bt.Strategy):
         "params": {"range_bars": 30, "session_gap_mins": 60},
         "description": "ORB: break above opening range high (first N bars) → long; below range low → exit.",
         "pta_code": """\
-# Proxy: highest close breakout over range_bars (ORB proxy without session logic)
-period = {range_bars}
-range_high = high.rolling(period).max().shift(1)
-range_low  = low.rolling(period).min().shift(1)
-entries    = close > range_high
-exits      = close < range_low
+time_diff = close.index.to_series().diff().dt.total_seconds() / 60.0
+is_new_session = time_diff.fillna(True) > {session_gap_mins}
+session_id = is_new_session.cumsum()
+cumcount = close.groupby(session_id).cumcount()
+high_in_session = high.groupby(session_id).expanding().max().reset_index(level=0, drop=True)
+low_in_session = low.groupby(session_id).expanding().min().reset_index(level=0, drop=True)
+or_high_val = high_in_session.where(cumcount == {range_bars} - 1).groupby(session_id).ffill()
+or_low_val = low_in_session.where(cumcount == {range_bars} - 1).groupby(session_id).ffill()
+range_ready = cumcount >= {range_bars}
+entries = range_ready & (close > or_high_val)
+exits   = close < or_low_val
 """,
         "bt_code": """\
 class BtStrat(bt.Strategy):
     def __init__(self):
-        self.hh = bt.indicators.Highest(self.data.high, period={range_bars})
-        self.ll = bt.indicators.Lowest(self.data.low,   period={range_bars})
+        self.last_ts = None
+        self.bars_in_session = 0
+        self.or_high = float('-inf')
+        self.or_low = float('inf')
+        self.range_ready = False
     def next(self):
-        # use prior bar's high/low range (shift(1) equivalent)
-        range_high = self.hh[-1]
-        range_low  = self.ll[-1]
-        if not self.position and self.data.close[0] > range_high: self.buy()
-        elif self.position and self.data.close[0] < range_low:    self.close()
+        curr_dt = self.data.datetime.datetime(0)
+        is_new_session = False
+        if self.last_ts is None:
+            is_new_session = True
+        else:
+            diff_mins = (curr_dt - self.last_ts).total_seconds() / 60.0
+            if diff_mins > {session_gap_mins}:
+                is_new_session = True
+        self.last_ts = curr_dt
+        if is_new_session:
+            self.bars_in_session = 0
+            self.or_high = float('-inf')
+            self.or_low = float('inf')
+            self.range_ready = False
+        if not self.range_ready:
+            self.bars_in_session += 1
+            if self.data.high[0] > self.or_high:
+                self.or_high = self.data.high[0]
+            if self.data.low[0] < self.or_low:
+                self.or_low = self.data.low[0]
+            if self.bars_in_session >= {range_bars}:
+                self.range_ready = True
+            return
+        if not self.position and self.data.close[0] > self.or_high:
+            self.buy()
+        elif self.position and self.data.close[0] < self.or_low:
+            self.close()
 """,
     },
 
@@ -2190,38 +2408,36 @@ tr = pd.concat([
     (high - close.shift(1)).abs(),
     (low - close.shift(1)).abs()
 ], axis=1).max(axis=1)
-atr = tr.rolling({period}).mean()
 rwi_h = pd.Series(0.0, index=close.index)
 rwi_l = pd.Series(0.0, index=close.index)
 for n in range(2, {period} + 1):
     sqrt_n = n ** 0.5
-    rh = (high - low.shift(n)) / (atr * sqrt_n)
-    rl = (high.shift(n) - low) / (atr * sqrt_n)
+    atr_n = tr.rolling(n).mean()
+    rh = (high - low.shift(n)) / (atr_n * sqrt_n)
+    rl = (high.shift(n) - low) / (atr_n * sqrt_n)
     rwi_h = pd.concat([rwi_h, rh], axis=1).max(axis=1)
     rwi_l = pd.concat([rwi_l, rl], axis=1).max(axis=1)
 entries = rwi_h > {threshold}
-exits   = rwi_l > {threshold}
+exits   = (rwi_l > {threshold}) & (~entries)
 """,
         "bt_code": """\
 class RwiInd(bt.Indicator):
     lines = ('rwi_high', 'rwi_low',)
     params = (('period', {period}),)
     def __init__(self):
-        tr = bt.indicators.TrueRange(self.data)
-        self.sma_tr = bt.indicators.SMA(tr, period=self.p.period)
+        self.tr = bt.indicators.TrueRange(self.data)
     def next(self):
         if len(self) < self.p.period + 1:
-            self.lines.rwi_high[0] = 0.0
-            self.lines.rwi_low[0] = 0.0
-            return
-        atr = self.sma_tr[0]
-        if atr == 0.0:
             self.lines.rwi_high[0] = 0.0
             self.lines.rwi_low[0] = 0.0
             return
         rwi_h = 0.0
         rwi_l = 0.0
         for n in range(2, self.p.period + 1):
+            tr_sum = sum(self.tr[-i] for i in range(n))
+            atr = tr_sum / n
+            if atr <= 1e-10:
+                continue
             past_low = self.data.low[-n]
             past_high = self.data.high[-n]
             sqrt_n = n ** 0.5
@@ -2236,8 +2452,12 @@ class BtStrat(bt.Strategy):
     def __init__(self):
         self.rwi = RwiInd(self.data, period={period})
     def next(self):
-        if not self.position and self.rwi.lines.rwi_high[0] > {threshold}: self.buy()
-        elif self.position and self.rwi.lines.rwi_low[0] > {threshold}:   self.close()
+        if self.rwi.lines.rwi_high[0] > {threshold}:
+            if not self.position:
+                self.buy()
+        elif self.rwi.lines.rwi_low[0] > {threshold}:
+            if self.position:
+                self.close()
 """,
     },
 
@@ -2294,24 +2514,41 @@ class BtStrat(bt.Strategy):
         "params": {"period": 13, "smooth1": 25, "smooth2": 2, "signal_period": 9, "oversold": -40.0, "overbought": 40.0},
         "description": "SMI crosses above oversold → long; crosses above overbought → exit.",
         "pta_code": """\
-# SMI proxy using stochastic as base
-stoch = ta.stoch(high, low, close, k={period}, d=3)
-k_col = f'STOCHk_{{{period}}}_3_3'
-stk   = stoch[k_col]
-# Normalize to SMI range (-100 to +100)
-smi   = (stk - 50) * 2
-entries = cross_above(smi, pd.Series({oversold}, index=smi.index))
-exits   = smi > {overbought}
+hh = high.rolling({period}).max()
+ll = low.rolling({period}).min()
+midpoint = (hh + ll) / 2.0
+d = close - midpoint
+ds = ta.ema(ta.ema(d, length={smooth1}), length={smooth2})
+dhl = ta.ema(ta.ema(hh - ll, length={smooth1}), length={smooth2})
+smi = 100 * ds / (0.5 * dhl + 1e-10)
+signal = ta.ema(smi, length={signal_period})
+entries = cross_above(smi, signal) & (smi.shift(1) < {oversold})
+exits   = (smi > {overbought}) | cross_below(smi, signal)
 """,
         "bt_code": """\
+class SMIInd(bt.Indicator):
+    lines = ('smi', 'signal',)
+    params = (('period', {period}), ('smooth1', {smooth1}), ('smooth2', {smooth2}), ('signal_period', {signal_period}),)
+    def __init__(self):
+        hh = bt.indicators.Highest(self.data.high, period=self.p.period)
+        ll = bt.indicators.Lowest(self.data.low, period=self.p.period)
+        midpoint = (hh + ll) / 2.0
+        d = self.data.close - midpoint
+        ds = bt.indicators.EMA(bt.indicators.EMA(d, period=self.p.smooth1), period=self.p.smooth2)
+        hl = hh - ll
+        dhl = bt.indicators.EMA(bt.indicators.EMA(hl, period=self.p.smooth1), period=self.p.smooth2)
+        self.lines.smi = 100.0 * ds / (0.5 * dhl + 1e-10)
+        self.lines.signal = bt.indicators.EMA(self.lines.smi, period=self.p.signal_period)
+
 class BtStrat(bt.Strategy):
     def __init__(self):
-        stoch    = bt.indicators.StochasticFull(self.data, period={period}, period_dfast=3)
-        self.smi = (stoch.percK - 50) * 2
+        self.smi = SMIInd(self.data)
     def next(self):
-        cross_up = self.smi[-1] <= {oversold} and self.smi[0] > {oversold}
-        if not self.position and cross_up: self.buy()
-        elif self.position and self.smi[0] > {overbought}: self.close()
+        if len(self) < 2: return
+        crossed_above = self.smi.lines.smi[-1] <= self.smi.lines.signal[-1] and self.smi.lines.smi[0] > self.smi.lines.signal[0]
+        crossed_below = self.smi.lines.smi[-1] >= self.smi.lines.signal[-1] and self.smi.lines.smi[0] < self.smi.lines.signal[0]
+        if not self.position and crossed_above and self.smi.lines.smi[-1] < {oversold}: self.buy()
+        elif self.position and (self.smi.lines.smi[0] > {overbought} or crossed_below): self.close()
 """,
     },
 
@@ -2373,6 +2610,47 @@ class BtStrat(bt.Strategy):
 """,
     },
 
+    "pixel_3": {
+        "params": {},
+        "description": "Pixel 3 strategy based on rolling high/low midpoint thresholds.",
+        "pta_code": """\
+mid5 = (high.rolling(5).max() + low.rolling(5).min()) / 2
+mid20 = (high.rolling(20).max() + low.rolling(20).min()) / 2
+mid60 = (high.rolling(60).max() + low.rolling(60).min()) / 2
+ts5 = close > mid5
+ts4 = close > mid20
+ts3 = close > mid60
+green_count = ts5.astype(int) + ts4.astype(int) + ts3.astype(int)
+entries = green_count >= 2
+exits = green_count == 0
+""",
+        "bt_code": """\
+class BtStrat(bt.Strategy):
+    def __init__(self):
+        hh5 = bt.indicators.Highest(self.data.high, period=5)
+        ll5 = bt.indicators.Lowest(self.data.low, period=5)
+        self.mid5 = (hh5 + ll5) / 2.0
+        
+        hh20 = bt.indicators.Highest(self.data.high, period=20)
+        ll20 = bt.indicators.Lowest(self.data.low, period=20)
+        self.mid20 = (hh20 + ll20) / 2.0
+        
+        hh60 = bt.indicators.Highest(self.data.high, period=60)
+        ll60 = bt.indicators.Lowest(self.data.low, period=60)
+        self.mid60 = (hh60 + ll60) / 2.0
+        
+    def next(self):
+        ts5 = self.data.close[0] > self.mid5[0]
+        ts4 = self.data.close[0] > self.mid20[0]
+        ts3 = self.data.close[0] > self.mid60[0]
+        green_count = int(ts5) + int(ts4) + int(ts3)
+        if not self.position and green_count >= 2:
+            self.buy()
+        elif self.position and green_count == 0:
+            self.close()
+""",
+    },
+
 }
 
 
@@ -2393,16 +2671,17 @@ from _shared import load_parquet, vbt_run
 
 CAPITAL, COMM, SLIP = 10_000.0, 0.0, 0.0
 try:
-    ALM_BARS, DF = load_parquet('BTCUSDT', 'H1', 'BinanceFlat', n=2000)
+    ALM_BARS, DF = load_parquet('BTCUSDT', 'M1', 'testdata', n=20000)
 except FileNotFoundError:
     from _shared import make_bars
-    ALM_BARS, DF = make_bars(n=2000, trend=0.0008, noise=0.006, seed=42)
-    print("WARNING: BinanceFlat parquet not found — using synthetic data")
+    ALM_BARS, DF = make_bars(n=20000, trend=0.0008, noise=0.006, seed=42)
+    print("WARNING: testdata parquet not found — using synthetic data")
 
 close = DF['close']
 high  = DF['high']
 low   = DF['low']
 vol   = DF['volume']
+O     = DF['open']
 C = close.values;  H = high.values;  L = low.values;  V = vol.values
 print(f"Loaded {len(C)} bars: {DF.index[0].date()} -> {DF.index[-1].date()}")
 """
@@ -2413,14 +2692,206 @@ def fillna(a):
     return s.ffill().bfill().fillna(0).values
 
 def cross_above(a, b):
-    a = pd.Series(a.values if hasattr(a,'values') else a, dtype=float)
-    b = pd.Series(b.values if hasattr(b,'values') else b, dtype=float)
-    return ((a.shift(1) <= b.shift(1)) & (a > b)).fillna(False)
+    a_s = a if isinstance(a, pd.Series) else pd.Series(a, dtype=float)
+    b_s = b if isinstance(b, pd.Series) else pd.Series(b, dtype=float)
+    return ((a_s.shift(1) <= b_s.shift(1)) & (a_s > b_s)).fillna(False)
 
 def cross_below(a, b):
-    a = pd.Series(a.values if hasattr(a,'values') else a, dtype=float)
-    b = pd.Series(b.values if hasattr(b,'values') else b, dtype=float)
-    return ((a.shift(1) >= b.shift(1)) & (a < b)).fillna(False)
+    a_s = a if isinstance(a, pd.Series) else pd.Series(a, dtype=float)
+    b_s = b if isinstance(b, pd.Series) else pd.Series(b, dtype=float)
+    return ((a_s.shift(1) >= b_s.shift(1)) & (a_s < b_s)).fillna(False)
+
+def pta_cci(high, low, close, length=20, factor=0.015):
+    tp = (high + low + close) / 3.0
+    tp_sma = tp.rolling(length).mean()
+    mad = tp.rolling(length).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
+    return (tp - tp_sma) / (factor * mad + 1e-10)
+
+def pta_stoch_rsi(close, period=14, smooth_k=3):
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = (-delta).clip(lower=0)
+    avg_gain = np.zeros(len(close))
+    avg_loss = np.zeros(len(close))
+    avg_gain[period] = np.mean(gain.values[1:period+1])
+    avg_loss[period] = np.mean(loss.values[1:period+1])
+    alpha = 1.0 / period
+    for i in range(period + 1, len(close)):
+        avg_gain[i] = gain.values[i] * alpha + avg_gain[i-1] * (1.0 - alpha)
+        avg_loss[i] = loss.values[i] * alpha + avg_loss[i-1] * (1.0 - alpha)
+    rs = avg_gain / (avg_loss + 1e-10)
+    rsi = 100.0 - (100.0 / (1.0 + rs))
+    rsi = rsi / 100.0
+    rsi[:period] = np.nan
+    rsi_s = pd.Series(rsi, index=close.index)
+    rsi_low = rsi_s.rolling(period).min()
+    rsi_high = rsi_s.rolling(period).max()
+    raw_k = (rsi_s - rsi_low) / (rsi_high - rsi_low + 1e-10)
+    k = raw_k.rolling(smooth_k).mean()
+    return k
+
+class CustomPSAR(bt.Indicator):
+    lines = ('psar', 'bullish')
+    params = (('step', 0.02), ('max_af', 0.2))
+    
+    def __init__(self):
+        self.sar = None
+        self.ep = None
+        self.af = self.p.step
+        self.is_bullish = True
+        self.prev_high = None
+        self.prev_low = None
+        self.prev_high2 = None
+        self.prev_low2 = None
+        
+    def next(self):
+        high = self.data.high[0]
+        low = self.data.low[0]
+        
+        if self.prev_high is None:
+            self.prev_high = high
+            self.prev_low = low
+            self.lines.psar[0] = float('nan')
+            self.lines.bullish[0] = 0.0
+            return
+            
+        if self.sar is None:
+            self.sar = min(self.prev_low, low)
+            self.ep = high
+            self.is_bullish = True
+            self.af = self.p.step
+            self.prev_high2 = self.prev_high
+            self.prev_low2 = self.prev_low
+            self.prev_high = high
+            self.prev_low = low
+            self.lines.psar[0] = self.sar
+            self.lines.bullish[0] = 1.0
+            return
+            
+        prev_sar = self.sar
+        prev_ep = self.ep
+        
+        new_sar = prev_sar + self.af * (prev_ep - prev_sar)
+        
+        if self.is_bullish:
+            new_sar = min(new_sar, self.prev_low)
+            if self.prev_low2 is not None:
+                new_sar = min(new_sar, self.prev_low2)
+            if low < new_sar:
+                self.is_bullish = False
+                new_sar = prev_ep
+                self.ep = low
+                self.af = self.p.step
+            else:
+                if high > prev_ep:
+                    self.ep = high
+                    self.af = min(self.af + self.p.step, self.p.max_af)
+                else:
+                    self.ep = prev_ep
+        else:
+            new_sar = max(new_sar, self.prev_high)
+            if self.prev_high2 is not None:
+                new_sar = max(new_sar, self.prev_high2)
+            if high > new_sar:
+                self.is_bullish = True
+                new_sar = prev_ep
+                self.ep = high
+                self.af = self.p.step
+            else:
+                if low < prev_ep:
+                    self.ep = low
+                    self.af = min(self.af + self.p.step, self.p.max_af)
+                else:
+                    self.ep = prev_ep
+                    
+        self.sar = new_sar
+        self.prev_high2 = self.prev_high
+        self.prev_low2 = self.prev_low
+        self.prev_high = high
+        self.prev_low = low
+        
+        self.lines.psar[0] = new_sar
+        self.lines.bullish[0] = 1.0 if self.is_bullish else 0.0
+
+class CustomAroon(bt.Indicator):
+    lines = ('aroonup', 'aroondown',)
+    params = (('period', 25),)
+    
+    def __init__(self):
+        self.addminperiod(self.p.period + 1)
+        
+    def next(self):
+        highs = [self.data.high[-i] for i in range(self.p.period + 1)]
+        lows = [self.data.low[-i] for i in range(self.p.period + 1)]
+        
+        max_val = max(highs)
+        min_val = min(lows)
+        
+        hhidx = 0
+        for idx, val in enumerate(highs):
+            if abs(val - max_val) < 1e-9:
+                hhidx = idx
+                
+        llidx = 0
+        for idx, val in enumerate(lows):
+            if abs(val - min_val) < 1e-9:
+                llidx = idx
+                
+        self.lines.aroonup[0] = 100.0 * (self.p.period - hhidx) / self.p.period
+        self.lines.aroondown[0] = 100.0 * (self.p.period - llidx) / self.p.period
+
+class ResetVWAP(bt.Indicator):
+    lines = ('vwap',)
+    params = (('session_gap_mins', 60),)
+    
+    def __init__(self):
+        self._tp = (self.data.high + self.data.low + self.data.close) / 3.0
+        self._vol = self.data.volume
+        self._tp_vol_sum = 0.0
+        self._vol_sum = 0.0
+        
+    def next(self):
+        if len(self) > 1:
+            dt_now = self.data.datetime.datetime(0)
+            dt_prev = self.data.datetime.datetime(-1)
+            gap = (dt_now - dt_prev).total_seconds() / 60.0
+            if gap > self.p.session_gap_mins:
+                self._tp_vol_sum = 0.0
+                self._vol_sum = 0.0
+                
+        self._tp_vol_sum += self._tp[0] * self._vol[0]
+        self._vol_sum += self._vol[0]
+        self.lines.vwap[0] = self._tp_vol_sum / self._vol_sum if self._vol_sum > 0 else self.data.close[0]
+
+import math as _math
+class FisherInd(bt.Indicator):
+    lines = ('fisher', 'signal',)
+    params = (('period', 10),)
+    
+    def __init__(self):
+        self.midpoint = (self.data.high + self.data.low) / 2.0
+        self.hh = bt.indicators.Highest(self.midpoint, period=self.p.period)
+        self.ll = bt.indicators.Lowest(self.midpoint, period=self.p.period)
+        self.value = 0.0
+        self.fisher = 0.0
+        
+    def next(self):
+        mid = self.midpoint[0]
+        hh = self.hh[0]
+        ll = self.ll[0]
+        rng = hh - ll
+        
+        raw = 2.0 * (mid - ll) / rng - 1.0 if rng > 1e-10 else 0.0
+        val = 0.33 * raw + 0.67 * self.value
+        val = max(min(val, 0.999), -0.999)
+        
+        fish = 0.5 * _math.log((1.0 + val) / (1.0 - val)) + 0.5 * self.fisher
+        
+        self.lines.fisher[0] = fish
+        self.lines.signal[0] = self.fisher
+        
+        self.value = val
+        self.fisher = fish
 
 """
 
@@ -2824,7 +3295,7 @@ def build_notebook(strategy_name: str, impl: dict) -> dict:
             f"RHAI_SCRIPT = \"\"\"{escaped}\"\"\"",
             f"script_result = alm_py.run_script_backtest(",
             f"    'BTCUSDT', RHAI_SCRIPT, ALM_BARS,",
-            f"    initial_capital=CAPITAL, commission_pct=COMM, slippage_pct=SLIP",
+            f"    initial_capital=CAPITAL, commission_pct=COMM, slippage_pct=SLIP, lot_size=0.0, strength_sizing=False",
             f")",
             f"print(f\"alm_py (script): {{script_result['total_trades']}} trades, "
             f"return={{script_result['total_return_pct']:.2f}}%, "

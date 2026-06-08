@@ -18,8 +18,10 @@ use metrics::{counter, histogram};
 /// Minimum gap between OKX REST pages (history-candles limit: 20 req/2s).
 /// 250 ms → max 4 req/s, well under the quota.
 const OKX_PAGE_DELAY: Duration = Duration::from_millis(250);
-/// Back-off on 429.
+/// Back-off delay on 429 (doubles each retry up to MAX).
 const OKX_RETRY_DELAY: Duration = Duration::from_secs(2);
+/// Maximum 429 retries per page before giving up.
+const OKX_MAX_RETRIES: u32 = 8;
 
 /// Bars per Binance REST page (max 1 000).
 const BINANCE_PAGE: i64 = 1_000;
@@ -159,6 +161,7 @@ pub async fn fetch_okx(symbol: &str, tf: Timeframe, from_ms: i64, to_ms: i64) ->
     let mut bars: Vec<Bar> = Vec::new();
     let mut cursor = to_ms;
 
+    let mut retry_count = 0u32;
     loop {
         let http_resp = client
             .get(OKX_CANDLES)
@@ -174,11 +177,17 @@ pub async fn fetch_okx(symbol: &str, tf: Timeframe, from_ms: i64, to_ms: i64) ->
 
         let status = http_resp.status();
         if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
-            let body = http_resp.text().await.unwrap_or_default();
-            warn!(symbol, ?tf, %bar_param, %body, "okx REST 429 — backing off");
-            sleep(OKX_RETRY_DELAY).await;
+            retry_count += 1;
+            if retry_count > OKX_MAX_RETRIES {
+                let body = http_resp.text().await.unwrap_or_default();
+                anyhow::bail!("okx REST 429 for {symbol} after {OKX_MAX_RETRIES} retries: {body}");
+            }
+            let delay = OKX_RETRY_DELAY * (1u32 << (retry_count - 1).min(5));
+            warn!(symbol, ?tf, %bar_param, retry = retry_count, ?delay, "okx REST 429 — backing off");
+            sleep(delay).await;
             continue; // retry same cursor
         }
+        retry_count = 0; // reset on success
         if !status.is_success() {
             let body = http_resp.text().await.unwrap_or_default();
             anyhow::bail!("okx REST {status} for {symbol} bar={bar_param}: {body}");

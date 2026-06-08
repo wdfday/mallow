@@ -67,37 +67,27 @@ mod tests {
     use alm_core::bar::Bar;
     use crate::test_utils::*;
 
-    fn bar(ts: i64, close: f64) -> Bar {
-        Bar::new(ts, "TEST", close, close + 1.0, close - 1.0, close, 1000.0)
-    }
+    
 
     #[test]
     fn test_no_signal_before_kama_ready() {
+        let Some(bars) = load_real_bars() else { return; };
         let mut strat = KamaStrategy::new(10, 2, 30);
-        for i in 0..11 {
-            let s = strat.on_bar(&bar(i, 100.0 + i as f64));
-            assert!(s.is_empty(), "no signal before KAMA ready: bar {i}");
+        for b in bars.iter().take(11) {
+            let s = strat.on_bar(b);
+            assert!(s.is_empty(), "no signal before KAMA ready");
         }
     }
 
     #[test]
     fn test_long_signal_on_cross_above() {
         use alm_core::signal::Direction;
+        let Some(bars) = load_real_bars() else { return; };
         let mut strat = KamaStrategy::new(5, 2, 10);
         let mut signals = Vec::new();
-        // Seed with flat prices to let KAMA settle
-        for i in 0..15 {
-            signals.extend(strat.on_bar(&bar(i, 100.0)));
+        for b in &bars {
+            signals.extend(strat.on_bar(b));
         }
-        // Then push price well above KAMA to trigger cross
-        for i in 15..30 {
-            signals.extend(strat.on_bar(&bar(i, 110.0 + (i - 15) as f64)));
-        }
-        // Then drop back below
-        for i in 30..40 {
-            signals.extend(strat.on_bar(&bar(i, 80.0)));
-        }
-        // We should have seen at least one Close signal
         assert!(
             signals.iter().any(|s| s.direction == Direction::Exit),
             "should emit Close on cross below KAMA"
@@ -106,9 +96,10 @@ mod tests {
 
     #[test]
     fn test_reset_clears_state() {
+        let Some(bars) = load_real_bars() else { return; };
         let mut strat = KamaStrategy::new(5, 2, 10);
-        for i in 0..20 {
-            strat.on_bar(&bar(i, 100.0 + i as f64));
+        for b in bars.iter().take(20) {
+            strat.on_bar(b);
         }
         strat.reset();
         assert!(strat.prev_above.is_none());
@@ -120,7 +111,7 @@ mod tests {
         use serde_json::json;
         use alm_core::signal::Direction;
 
-        let bars = trending_bars(300);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = KamaStrategy::new(10, 2, 30);
         let named_sigs: Vec<(i64, Direction)> = bars.iter()

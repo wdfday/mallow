@@ -72,7 +72,7 @@ mod tests {
     #[test]
     fn script_parity() {
         // RWI fires every bar where rwi_high > 1 (entry) or rwi_low > 1 (exit).
-        let bars = trending_bars(400);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = RwiStrategy::new(14, 1.0);
         let named_sigs = run(&mut named, &bars);

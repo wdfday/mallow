@@ -106,7 +106,7 @@ mod tests {
     #[test]
     fn script_parity() {
         // Uses slow_trend_bars to force EMA(50) cross above EMA(200).
-        let bars = slow_trend_bars();
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = TrendTransition::new(50, 200, 14, 25.0);
         let named_sigs = run(&mut named, &bars);

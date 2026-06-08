@@ -36,7 +36,7 @@ use super::parse::{
     try_parse_indicator_line, CandleDirective, DEFAULT_BUF_DEPTH,
 };
 use super::engine::{build_engine, BAR_FIELDS};
-use crate::script::v1::{MEntry, scalar_out};
+use crate::script::v1::{MEntry, scalar_out, bool_out};
 
 // ── MtfScriptStrategy ─────────────────────────────────────────────────────────
 
@@ -224,9 +224,15 @@ impl MtfScriptStrategy {
         self
     }
 
-    /// Drain auto-collected indicator series (backtest mode). Returns empty map in live mode.
+    /// Drain auto-collected indicator series (backtest mode). The inner map is
+    /// cleared but the collection remains active — subsequent bars continue to
+    /// be collected so that repeated calls (e.g. walk-forward) each get their
+    /// own slice.  Returns an empty map in live mode (`series` is `None`).
     pub fn take_series(&mut self) -> HashMap<String, Vec<(i64, f64)>> {
-        self.series.take().unwrap_or_default()
+        match &mut self.series {
+            Some(m) => std::mem::take(m),
+            None    => HashMap::new(),
+        }
     }
 
     /// All HTFs declared by `ind.*(period, "TF")` lines in the script.
@@ -460,10 +466,9 @@ impl MtfStrategy for MtfScriptStrategy {
         let reason    = scope.get_value::<String>("reason").filter(|s| !s.is_empty());
         let atr       = scalar_out(&scope, "atr").filter(|&v| v > 0.0);
 
-        let go_long  = scope.get_value::<bool>("long").unwrap_or(false)
-                    || scope.get_value::<bool>("entry").unwrap_or(false);
-        let go_short = scope.get_value::<bool>("short").unwrap_or(false);
-        let go_exit  = scope.get_value::<bool>("exit").unwrap_or(false);
+        let go_long  = bool_out(&scope, "long") || bool_out(&scope, "entry");
+        let go_short = bool_out(&scope, "short");
+        let go_exit  = bool_out(&scope, "exit");
 
         if go_long {
             let mut sig = Signal::long(base_bar.timestamp, symbol, strength);
@@ -504,6 +509,7 @@ impl MtfStrategy for MtfScriptStrategy {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_utils::*;
     use super::*;
 
     fn mk_bar(ts: i64, c: f64) -> Bar {

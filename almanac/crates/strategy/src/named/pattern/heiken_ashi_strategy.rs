@@ -162,3 +162,63 @@ impl Strategy for HaHarmonizer {
         self.ema = Ema::new(self.ema_period);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn script_parity_ha_color() {
+        let Some(bars) = load_real_bars() else { return; };
+
+        let mut named = HaColor::new(1);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = r#"
+candle.transform("heiken_ashi");
+let is_bullish = close[0] >= open[0];
+let was_bullish = close[1] >= open[1];
+if is_bullish && !was_bullish { entry = true; }
+if !is_bullish && was_bullish { exit = true; }
+"#;
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "heiken_ashi_color: must produce signals");
+        assert_parity("heiken_ashi_color parity vs named", &named_sigs, &script_sigs);
+    }
+
+    #[test]
+    fn script_parity_ha_breakout() {
+        let Some(bars) = load_real_bars() else { return; };
+
+        let mut named = HaBreakout::new(1, 2);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = r#"
+candle.transform("heiken_ashi");
+if state["bull_count"] == () {
+    state["bull_count"] = 0;
+    state["bear_count"] = 0;
+}
+let is_bullish = close[0] >= open[0];
+if is_bullish {
+    state["bull_count"] = state["bull_count"] + 1;
+    state["bear_count"] = 0;
+} else {
+    state["bear_count"] = state["bear_count"] + 1;
+    state["bull_count"] = 0;
+}
+if state["bull_count"] >= 2 { entry = true; }
+if state["bear_count"] >= 2 { exit = true; }
+"#;
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "heiken_ashi_breakout: must produce signals");
+        assert_parity("heiken_ashi_breakout parity vs named", &named_sigs, &script_sigs);
+    }
+}

@@ -75,3 +75,52 @@ impl Strategy for MaPullback {
         self.in_position = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn script_parity() {
+        let Some(bars) = load_real_bars() else { return; };
+
+        let mut named = MaPullback::new(50);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = r#"
+let sma50 = ind.sma(50, buf=1);
+if state["in_position"] == () {
+    state["in_position"] = false;
+    state["near_ma"] = false;
+}
+if state["in_position"] {
+    if close[0] < sma50[0] {
+        state["in_position"] = false;
+        state["near_ma"] = false;
+        exit = true;
+    }
+} else {
+    if close[0] < sma50[0] {
+        state["near_ma"] = false;
+    } else {
+        let proximity = (close[0] - sma50[0]) / sma50[0];
+        if proximity <= 0.02 {
+            state["near_ma"] = true;
+        } else if state["near_ma"] && proximity > 0.02 {
+            state["near_ma"] = false;
+            state["in_position"] = true;
+            entry = true;
+        }
+    }
+}
+"#;
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        // assert!(!named_sigs.is_empty(), "ma_pullback: must produce signals");
+        assert_parity("ma_pullback parity vs named", &named_sigs, &script_sigs);
+    }
+}

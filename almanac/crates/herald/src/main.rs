@@ -5,9 +5,7 @@ static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 mod feed;
 mod handler;
-mod ring;
-mod symbols;
-use alm_herald::{http, registry};
+use alm_herald::{config::symbols, http, registry};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use pyroscope_pprofrs::{pprof_backend, PprofConfig};
 use feed::rest::{gap_fill_symbol, Exchange};
@@ -21,7 +19,6 @@ use alm_engine::data::{find_parquet_files, load_bars};
 use alm_ledger::{Ledger, LedgerConfig, LedgerObserver};
 use handler::Handler;
 use registry::Registry;
-use ring::BarRing;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 use tracing_subscriber::layer::SubscriberExt;
@@ -29,44 +26,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| "alm_herald=info,alm_ledger=info".into());
-
-    let fmt_layer = tracing_subscriber::fmt::layer();
-
-    // ── OpenTelemetry OTLP tracing (optional) ─────────────────────────────────
-    // Only enabled when OTEL_EXPORTER_OTLP_ENDPOINT is set and non-empty.
-    // If the env var is absent or empty, herald runs without OTLP tracing.
-    let otel_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
-        .ok()
-        .filter(|s| !s.is_empty());
-
-    if let Some(ref endpoint) = otel_endpoint {
-        match init_tracer(endpoint) {
-            Ok(tracer) => {
-                let otel_layer = tracing_opentelemetry::layer().with_tracer(tracer);
-                tracing_subscriber::registry()
-                    .with(env_filter)
-                    .with(fmt_layer)
-                    .with(otel_layer)
-                    .init();
-                info!(endpoint = %endpoint, "OpenTelemetry OTLP tracing enabled");
-            }
-            Err(e) => {
-                // Fall back to plain logging if OTLP setup fails — don't crash.
-                tracing_subscriber::registry()
-                    .with(env_filter)
-                    .with(fmt_layer)
-                    .init();
-                warn!(err = %e, "OTLP tracer init failed — falling back to plain logging");
-            }
-        }
-    } else {
-        tracing_subscriber::registry()
-            .with(env_filter)
-            .with(fmt_layer)
-            .init();
-    };
+    setup_logging();
 
     // Install Prometheus recorder globally. Must happen before any metrics
     // are emitted. The handle is shared with the HTTP layer for rendering.
@@ -131,8 +91,8 @@ async fn main() -> Result<()> {
         }
         Ok(None) => {
             let mut cfg = symbols::SymbolConfig::default();
-            cfg.binance = parse_symbol_list("HERALD_BINANCE_SYMBOLS");
-            cfg.okx     = parse_symbol_list("HERALD_OKX_SYMBOLS");
+            cfg.set_binance_from_strings(parse_symbol_list("HERALD_BINANCE_SYMBOLS"));
+            cfg.set_okx_from_strings(parse_symbol_list("HERALD_OKX_SYMBOLS"));
             cfg
         }
         Err(e) => {
@@ -161,81 +121,56 @@ async fn main() -> Result<()> {
     // Loads historical bars before any observer is subscribed — no signals fire
     // during bootstrap (registry is not yet wired to the ledger).
     if !startup_symbols.is_empty() {
-        // HERALD_WARM_BARS: max M1 bars to load per symbol (1 bar = 1 min).
-        // Default 2000 ≈ 33h, sized to match the M1 ledger capacity in
-        // `LedgerConfig::default()`. Higher values are silently capped by the
-        // ledger's sliding window, so the extra disk I/O is wasted.
-        // Set to 0 to skip bootstrap entirely.
-        let warm_bars: i64 = std::env::var("HERALD_WARM_BARS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(2000);
-
-        if warm_bars > 0 && data_dir.exists() {
-            info!(symbols = startup_symbols.len(), warm_bars, "bootstrapping M1 from parquet");
-
-            let now_ms = chrono::Utc::now().timestamp_millis();
-            let from_ms = now_ms - warm_bars * 60_000;
-            // Daily parquet files contain ~1440 M1 bars each.
-            let files_needed = (warm_bars as usize / 1440) + 2;
-
-            use rayon::prelude::*;
-            startup_symbols.par_iter().for_each(|sym| {
-                let (_, raw_sym) = crate::symbols::SymbolConfig::split_prefix(sym);
-                let parquet_sym = raw_sym.replace('-', "");
-                let all_files = find_parquet_files(&data_dir, &parquet_sym, Some("M1"), None);
-                if all_files.is_empty() {
-                    warn!(symbol = %sym, "no M1 parquet files — skipping bootstrap");
-                    return;
-                }
-                let files: Vec<_> = all_files.into_iter().rev().take(files_needed).rev().collect();
-                match load_bars(&files, &parquet_sym, Some(from_ms), None, false, "") {
-                    Ok(mut feed) => {
-                        let bars = std::iter::from_fn(move || {
-                            feed.next().map(|mut bar| { bar.symbol = sym.clone(); bar })
-                        });
-                        match ledger.bootstrap_symbol(sym, tf, bars) {
-                            Ok(rep) => info!(symbol = %sym, bars = rep.fed, "parquet bootstrap done"),
-                            Err(e) => warn!(symbol = %sym, err = %e, "parquet bootstrap failed"),
-                        }
-                    }
-                    Err(e) => warn!(symbol = %sym, err = %e, "parquet bootstrap failed"),
-                }
-            });
-        } else if warm_bars == 0 {
-            info!("HERALD_WARM_BARS=0 — skipping bootstrap");
-        } else {
-            warn!(data_dir = %data_dir.display(), "data_dir not found — skipping bootstrap");
-        }
+        bootstrap_parquet(&ledger, tf, &startup_symbols, &data_dir);
     }
 
-    // ── ResampleManager ───────────────────────────────────────────────────────
+    // ── Observer registration — ORDER IS CRITICAL ─────────────────────────────
     //
-    // Drives base→HTF aggregation for hands that need TFs the WS feed doesn't
-    // publish directly. Subscribed BEFORE the registry so HTF advances appear
-    // in the observer fan-out by the time hands react to them.
+    // Observers are called synchronously in registration order on every closed bar.
+    //
+    // INVARIANT: ResampleManager MUST be subscribed BEFORE Registry.
+    //
+    // Reason: when a base-TF (M1) bar closes, ResampleManager calls
+    // ledger.advance(HTF, htf_bar) for any completed HTF bucket.  That inner
+    // advance fans out to the same observer list — so Registry.on_advance(HTF)
+    // fires **inside** the ResampleManager call, before Registry.on_advance(M1)
+    // runs.  V2 multi-TF strategies rely on this guarantee: HTF bars are already
+    // in the ledger window by the time the M1 evaluation begins.
+    //
+    // If the order were reversed, M1 evaluation would see the *previous* HTF bar
+    // (stale by one bucket), causing off-by-one errors in multi-TF signals.
     let resample_mgr = alm_herald::helper::resample::ResampleManager::new(Arc::downgrade(&ledger));
-    ledger.subscribe(resample_mgr.clone() as Arc<dyn LedgerObserver>);
+    ledger.subscribe(resample_mgr.clone() as Arc<dyn LedgerObserver>); // ← must be first
 
-    let (sig_tx, sig_rx) = mpsc::unbounded_channel();
+    // Bounded signal channel — if the publisher falls behind (NATS slow),
+    // the registry drops signals rather than growing memory without bound.
+    let (sig_tx, sig_rx) = mpsc::channel(1024);
     let registry = Arc::new(Registry::with_default_scripts(
         ledger.clone(), resample_mgr.clone(), tf, sig_tx,
         default_live_scripts(),
     ));
-    ledger.subscribe(registry.clone() as Arc<dyn LedgerObserver>);
+    ledger.subscribe(registry.clone() as Arc<dyn LedgerObserver>); // ← must be second
 
     info!("ledger + registry wired");
 
     // ── Store backend ─────────────────────────────────────────────────────────
-    let db_url = std::env::var("HERALD_DATABASE_URL")
-        .unwrap_or_else(|_| "postgres://mallow:mallow-dev@localhost:5432/herald?sslmode=disable".into());
-    info!("connecting to PostgreSQL: {}", db_url);
-    let pool = sqlx::postgres::PgPoolOptions::new()
-        .max_connections(10)
-        .connect(&db_url)
-        .await?;
-    http::strategy::migrate::run(&pool).await?;
-    let store = http::StoreBackend::postgres(pool);
+    // PostgreSQL is optional. When HERALD_DATABASE_URL is unset herald falls
+    // back to an in-memory store (strategies are not persisted across restarts).
+    let store = match std::env::var("HERALD_DATABASE_URL").ok() {
+        Some(db_url) => {
+            info!("connecting to PostgreSQL strategy store: {db_url}");
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(10)
+                .connect(&db_url)
+                .await?;
+            http::strategy::migrate::run(&pool).await?;
+            http::StoreBackend::postgres(pool)
+        }
+        None => {
+            info!("HERALD_DATABASE_URL not set — using in-memory strategy store (not persisted)");
+            http::StoreBackend::in_memory()
+        }
+    };
 
     // ── WS latency tracker — shared between Handler and HTTP ─────────────────
     let ws_latency = std::sync::Arc::new(alm_herald::WsLatencyTracker::new());
@@ -264,22 +199,21 @@ async fn main() -> Result<()> {
         }
     });
 
-    // ── 24h ring buffer ───────────────────────────────────────────────────────
-    let ring = BarRing::new();
-
     // ── WebSocket ingesters (start before gap-fill) ───────────────────────────
-    // Bars that close during gap-fill queue in the unbounded channel.
+    // Bars that close during gap-fill queue in the channel.
     // handler.run() drains them after gap-fill; SymbolState::advance() silently
     // skips any duplicates that overlap with REST-fetched bars.
-    let (bar_tx, bar_rx) = mpsc::unbounded_channel();
+    let (bar_tx, bar_rx) = mpsc::channel(feed::BAR_CHANNEL_CAP);
 
-    if !sym_cfg.binance.is_empty() {
-        info!(symbols = ?sym_cfg.binance, "starting Binance WebSocket ingester");
-        feed::binance::spawn(sym_cfg.binance.clone(), bar_tx.clone(), ledger.clone(), tf);
+    let binance_stfs = sym_cfg.binance_symbol_tfs();
+    if !binance_stfs.is_empty() {
+        info!(symbols = binance_stfs.len(), "starting Binance WebSocket ingester");
+        feed::binance::spawn(binance_stfs, bar_tx.clone(), ledger.clone(), tf);
     }
-    if !sym_cfg.okx.is_empty() {
-        info!(symbols = ?sym_cfg.okx, "starting OKX WebSocket ingester");
-        feed::okx::spawn(sym_cfg.okx.clone(), bar_tx.clone(), ledger.clone(), tf);
+    let okx_stfs = sym_cfg.okx_symbol_tfs();
+    if !okx_stfs.is_empty() {
+        info!(symbols = okx_stfs.len(), "starting OKX WebSocket ingester");
+        feed::okx::spawn(okx_stfs, bar_tx.clone(), ledger.clone(), tf);
     }
     if sym_cfg.binance.is_empty() && sym_cfg.okx.is_empty() {
         warn!("no symbols configured — herald will receive no live bars");
@@ -287,38 +221,10 @@ async fn main() -> Result<()> {
     drop(bar_tx);
 
     // ── REST gap-fill ─────────────────────────────────────────────────────────
-    // For the base TF (M1): close the gap from the last parquet bar to now.
-    // For every other subscribed TF: fetch the last WINDOW_BARS bars directly.
-    //
-    // OKX REST rate limit is 20 req/2s for public endpoints. Each symbol
-    // fetches one request per subscribed TF serially, so running all OKX
-    // symbols in parallel easily triggers 429s. We use a semaphore to cap
-    // concurrent OKX gap-fills at 3. Binance is more generous — run parallel.
+    // Closes the gap from the last parquet bar to now for every symbol before
+    // the main handler loop starts processing live WS bars.
     if !startup_symbols.is_empty() {
-        // OKX: max 3 concurrent gap-fills
-        const OKX_CONCURRENCY: usize = 3;
-        let okx_sem = Arc::new(tokio::sync::Semaphore::new(OKX_CONCURRENCY));
-
-        info!("starting REST gap-fill for {} symbol(s)", startup_symbols.len());
-        let gap_tasks: Vec<_> = startup_symbols.iter().map(|sym| {
-            let ledger = ledger.clone();
-            let sym = sym.clone();
-            let last_ts = ledger.with_state(&sym, tf, |s| s.last_ts).flatten();
-            let base_from_ms = last_ts.map(|ts| ts + tf.duration_ms());
-            let (exchange_str, raw_sym) = crate::symbols::SymbolConfig::split_prefix(&sym);
-            let exchange = if exchange_str == "okx" { Exchange::Okx } else { Exchange::Binance };
-            let raw_sym = raw_sym.to_string();
-            let okx_sem = okx_sem.clone();
-            tokio::spawn(async move {
-                let _permit = if matches!(exchange, Exchange::Okx) {
-                    Some(okx_sem.acquire_owned().await.expect("semaphore closed"))
-                } else {
-                    None
-                };
-                gap_fill_symbol(&ledger, tf, &sym, &raw_sym, exchange, base_from_ms, feed::SUBSCRIBE_TFS).await;
-            })
-        }).collect();
-        futures::future::join_all(gap_tasks).await;
+        start_gap_fill(ledger.clone(), tf, &startup_symbols).await;
     }
 
     // Mark service ready — /health now returns 200 OK.
@@ -326,8 +232,7 @@ async fn main() -> Result<()> {
     info!("gap-fill complete — herald ready (ready=true, /health → 200 OK)");
 
     // ── Main loop ─────────────────────────────────────────────────────────────
-    let handler = Handler::new(client, ledger, registry, ring, tf, bar_rx, sig_rx,
-        ws_latency);
+    let handler = Handler::new(client, ledger, registry, tf, bar_rx, sig_rx, ws_latency);
     let result = handler.run().await;
     http_task.abort();
     result?;
@@ -335,7 +240,143 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Startup helpers ───────────────────────────────────────────────────────────
+
+/// Configure the global tracing subscriber.
+///
+/// Tries OTLP when `OTEL_EXPORTER_OTLP_ENDPOINT` is set; falls back to plain
+/// stdout logging on failure. Must be called once before any `info!` / `warn!`.
+fn setup_logging() {
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "alm_herald=info,alm_ledger=info".into());
+    let fmt_layer = tracing_subscriber::fmt::layer();
+
+    let otel_endpoint = std::env::var("OTEL_EXPORTER_OTLP_ENDPOINT")
+        .ok()
+        .filter(|s| !s.is_empty());
+
+    if let Some(ref endpoint) = otel_endpoint {
+        match init_tracer(endpoint) {
+            Ok(tracer) => {
+                tracing_subscriber::registry()
+                    .with(env_filter)
+                    .with(fmt_layer)
+                    .with(tracing_opentelemetry::layer().with_tracer(tracer))
+                    .init();
+                tracing::info!(endpoint = %endpoint, "OpenTelemetry OTLP tracing enabled");
+            }
+            Err(e) => {
+                tracing_subscriber::registry()
+                    .with(env_filter)
+                    .with(fmt_layer)
+                    .init();
+                tracing::warn!(err = %e, "OTLP tracer init failed — falling back to plain logging");
+            }
+        }
+    } else {
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .init();
+    }
+}
+
+/// Load M1 bars from local Parquet files into the ledger before live ingestion starts.
+///
+/// `HERALD_WARM_BARS` controls how many M1 bars to load per symbol (default 2000 ≈ 33h).
+/// The ledger's sliding window silently caps values above its capacity, so loading more
+/// than the window size wastes I/O without benefit. Set to 0 to skip entirely.
+///
+/// Runs in parallel over symbols via Rayon. No observers are subscribed yet, so
+/// no signals fire during this phase.
+fn bootstrap_parquet(
+    ledger: &Arc<Ledger>,
+    tf: Timeframe,
+    startup_symbols: &[String],
+    data_dir: &std::path::Path,
+) {
+    let warm_bars: i64 = std::env::var("HERALD_WARM_BARS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2000);
+
+    if warm_bars == 0 {
+        info!("HERALD_WARM_BARS=0 — skipping bootstrap");
+        return;
+    }
+    if !data_dir.exists() {
+        warn!(data_dir = %data_dir.display(), "data_dir not found — skipping bootstrap");
+        return;
+    }
+
+    info!(symbols = startup_symbols.len(), warm_bars, "bootstrapping M1 from parquet");
+
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let from_ms = now_ms - warm_bars * 60_000;
+    // Daily Parquet files hold ~1440 M1 bars; +2 for boundary overlap.
+    let files_needed = (warm_bars as usize / 1440) + 2;
+
+    use rayon::prelude::*;
+    startup_symbols.par_iter().for_each(|sym| {
+        let (_, raw_sym) = symbols::SymbolConfig::split_prefix(sym);
+        let parquet_sym = raw_sym.replace('-', "");
+        let all_files = find_parquet_files(data_dir, &parquet_sym, Some("M1"), None);
+        if all_files.is_empty() {
+            warn!(symbol = %sym, "no M1 parquet files — skipping bootstrap");
+            return;
+        }
+        let files: Vec<_> = all_files.into_iter().rev().take(files_needed).rev().collect();
+        match load_bars(&files, &parquet_sym, Some(from_ms), None, false, "") {
+            Ok(mut feed) => {
+                let bars = std::iter::from_fn(move || {
+                    feed.next().map(|mut bar| { bar.symbol = sym.clone(); bar })
+                });
+                match ledger.bootstrap_symbol(sym, tf, bars) {
+                    Ok(rep) => info!(symbol = %sym, bars = rep.fed, "parquet bootstrap done"),
+                    Err(e) => warn!(symbol = %sym, err = %e, "parquet bootstrap failed"),
+                }
+            }
+            Err(e) => warn!(symbol = %sym, err = %e, "parquet bootstrap failed"),
+        }
+    });
+}
+
+/// Fetch recent bars via REST to fill the gap between the last Parquet bar and now.
+///
+/// For the base TF: fills from `last_known_ts + 1` to the current time.
+/// For all other subscribed TFs: fetches a fixed trailing window of bars.
+///
+/// OKX public REST is rate-limited to 20 req/2s — concurrent OKX gap-fills are
+/// capped at 3 via semaphore. Binance symbols run fully parallel.
+///
+/// WS bars that arrive during gap-fill queue in the unbounded channel and are
+/// drained by `Handler::run` afterwards; duplicates are silently skipped by
+/// `SymbolState::advance`.
+async fn start_gap_fill(ledger: Arc<Ledger>, tf: Timeframe, startup_symbols: &[String]) {
+    const OKX_CONCURRENCY: usize = 3;
+    let okx_sem = Arc::new(tokio::sync::Semaphore::new(OKX_CONCURRENCY));
+
+    info!("starting REST gap-fill for {} symbol(s)", startup_symbols.len());
+    let gap_tasks: Vec<_> = startup_symbols.iter().map(|sym| {
+        let ledger = ledger.clone();
+        let sym = sym.clone();
+        let last_ts = ledger.with_state(&sym, tf, |s| s.last_ts).flatten();
+        let base_from_ms = last_ts.map(|ts| ts + tf.duration_ms());
+        let (exchange_str, raw_sym) = symbols::SymbolConfig::split_prefix(&sym);
+        let exchange = if exchange_str == "okx" { Exchange::Okx } else { Exchange::Binance };
+        let raw_sym = raw_sym.to_string();
+        let okx_sem = okx_sem.clone();
+        tokio::spawn(async move {
+            let _permit = if matches!(exchange, Exchange::Okx) {
+                Some(okx_sem.acquire_owned().await.expect("semaphore closed"))
+            } else {
+                None
+            };
+            gap_fill_symbol(&ledger, tf, &sym, &raw_sym, exchange, base_from_ms, feed::SUBSCRIBE_TFS).await;
+        })
+    }).collect();
+    futures::future::join_all(gap_tasks).await;
+}
 
 fn parse_symbol_list(env_key: &str) -> Vec<String> {
     std::env::var(env_key)

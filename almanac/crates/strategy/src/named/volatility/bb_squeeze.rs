@@ -65,3 +65,42 @@ impl Strategy for BbSqueeze {
         self.was_squeezed = false;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn script_parity() {
+        let Some(bars) = load_real_bars() else { return; };
+
+        let mut named = BbSqueeze::new(20, 2.0);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = r#"
+let bb20 = ind.bbands(20, buf=1);
+let squeezed = bb20[0].bandwidth < 0.04;
+if state["was_squeezed"] == () {
+    state["was_squeezed"] = false;
+}
+if squeezed {
+    state["was_squeezed"] = true;
+}
+if state["was_squeezed"] && close[0] > bb20[0].upper {
+    state["was_squeezed"] = false;
+    entry = true;
+}
+if close[0] < bb20[0].middle {
+    exit = true;
+}
+"#;
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "bb_squeeze: must produce signals");
+        assert_parity("bb_squeeze parity vs named", &named_sigs, &script_sigs);
+    }
+}

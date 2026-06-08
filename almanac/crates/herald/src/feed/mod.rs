@@ -34,27 +34,15 @@ pub struct BarEvent {
     pub received_at_ms: i64,
 }
 
-pub type BarTx = mpsc::UnboundedSender<BarEvent>;
-pub type BarRx = mpsc::UnboundedReceiver<BarEvent>;
+/// Bounded bar channel capacity.
+/// Sized to absorb a brief burst (all symbols × a few ticks) while applying
+/// backpressure to the WS feed when the handler loop falls behind.
+pub const BAR_CHANNEL_CAP: usize = 512;
+
+pub type BarTx = mpsc::Sender<BarEvent>;
+pub type BarRx = mpsc::Receiver<BarEvent>;
 
 // ── Subscribed TF set ─────────────────────────────────────────────────────────
 
-/// Timeframes subscribed on every live WebSocket connection.
-///
-/// All of these are natively supported by both Binance and OKX.
-/// M10 and H8 are excluded — no native kline on either exchange.
-pub const SUBSCRIBE_TFS: &[Timeframe] = &[
-    Timeframe::M1,
-    Timeframe::M3,
-    Timeframe::M5,
-    Timeframe::M15,
-    Timeframe::M30,
-    Timeframe::H1,
-    Timeframe::H2,
-    Timeframe::H4,
-    Timeframe::H6,
-    Timeframe::H12,
-    Timeframe::D1,
-    Timeframe::W1,
-    Timeframe::MN,
-];
+/// Re-export from `config::timeframe` — the source of truth for live-subscribable TFs.
+pub use alm_herald::config::timeframe::{parse_tf, SUBSCRIBE_TFS};

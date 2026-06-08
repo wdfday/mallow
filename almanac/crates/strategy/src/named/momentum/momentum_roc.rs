@@ -153,7 +153,7 @@ mod tests {
     #[test]
     fn momentum_roc_script_parity() {
         // Fires every bar where ROC > 2.0 AND close > EMA(50); exit when either fails.
-        let bars = trending_bars(300);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = MomentumRoc::new(10, 50, 2.0, 0.0);
         let named_sigs = run(&mut named, &bars);
@@ -169,7 +169,7 @@ mod tests {
     #[test]
     fn dual_momentum_script_parity() {
         // Fires every bar when both ROC(10) > 0 AND ROC(30) > 0.
-        let bars = trending_bars(300);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = DualMomentum::new(10, 30);
         let named_sigs = run(&mut named, &bars);

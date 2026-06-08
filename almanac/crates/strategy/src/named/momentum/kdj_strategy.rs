@@ -71,17 +71,45 @@ mod tests {
 
     #[test]
     fn kdj_hc_produces_signals() {
-        let warmup: Vec<Bar> = (0..40).map(|i| bar(i as i64 * 60_000, 100.0)).collect();
-        let offset = warmup.len() as i64 * 60_000;
-        let v_shape: Vec<Bar> = rsi_bars(200)
-            .into_iter()
-            .map(|b| bar(b.timestamp + offset, b.close))
-            .collect();
-        let bars: Vec<Bar> = warmup.into_iter().chain(v_shape).collect();
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut hc = KdjStrategy::new(9, 3, 3, 20.0, 80.0);
         let hc_sigs = run(&mut hc, &bars);
         assert!(!hc_sigs.is_empty(), "kdj: no signals");
     }
 
+    #[test]
+    fn script_parity() {
+        use crate::factory::build_strategy;
+        use serde_json::json;
+
+        let Some(bars) = load_real_bars() else { return; };
+
+        let mut named = KdjStrategy::new(9, 3, 3, 20.0, 80.0);
+        let named_sigs = run(&mut named, &bars);
+        let script = r#"
+let kdj9 = ind.kdj(9);
+if state["in_position"] == () {
+    state["in_position"] = false;
+}
+let in_pos = state["in_position"];
+if !in_pos {
+    if kdj9[0].k < 20.0 && kdj9[0].d < 20.0 && gt(kdj9[0].k, kdj9[1].k) {
+        state["in_position"] = true;
+        entry = true;
+    }
+} else {
+    if kdj9[0].k > 80.0 || kdj9[0].j > 100.0 {
+        state["in_position"] = false;
+        exit = true;
+    }
+}
+"#;
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "kdj: must produce signals");
+        assert_parity("kdj parity vs named", &named_sigs, &script_sigs);
+    }
 }

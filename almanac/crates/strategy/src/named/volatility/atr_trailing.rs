@@ -87,3 +87,53 @@ impl Strategy for AtrTrailingStop {
         self.highest_since_entry = 0.0;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn script_parity() {
+        let Some(bars) = load_real_bars() else { return; };
+
+        let mut named = AtrTrailingStop::new(20, 14, 2.0);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = r#"
+let ema20 = ind.ema(20, buf=1);
+let atr14 = ind.atr(14, buf=1);
+if state["in_position"] == () {
+    state["in_position"] = false;
+    state["highest_since_entry"] = 0.0;
+    state["trailing_stop"] = 0.0;
+}
+if state["in_position"] {
+    if close[0] > state["highest_since_entry"] {
+        state["highest_since_entry"] = close[0];
+        state["trailing_stop"] = close[0] - atr14[0].atr * 2.0;
+    }
+    if close[0] < state["trailing_stop"] {
+        state["in_position"] = false;
+        state["highest_since_entry"] = 0.0;
+        state["trailing_stop"] = 0.0;
+        exit = true;
+    }
+} else {
+    if close[0] > ema20[0] {
+        state["in_position"] = true;
+        state["highest_since_entry"] = close[0];
+        state["trailing_stop"] = close[0] - atr14[0].atr * 2.0;
+        entry = true;
+    }
+}
+"#;
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "atr_trailing: must produce signals");
+        assert_parity("atr_trailing parity vs named", &named_sigs, &script_sigs);
+    }
+}

@@ -90,28 +90,28 @@ impl Strategy for ScalpingEma {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_utils::*;
     use super::*;
 
-    fn bar(ts: i64, c: f64) -> Bar {
-        Bar::new(ts, "T", c, c * 1.01, c * 0.99, c, 1000.0)
-    }
+    
 
     #[test]
     fn test_scalping_ema_no_signal_before_warmup() {
         let mut s = ScalpingEma::new(8, 21, 14, 20);
-        for i in 0..20 {
-            assert!(s.on_bar(&bar(i, 100.0)).is_empty());
+        let Some(bars) = load_real_bars() else { return; };
+        for b in bars.iter().take(20) {
+            assert!(s.on_bar(b).is_empty());
         }
     }
 
     #[test]
     fn test_scalping_ema_long_on_cross() {
+        let Some(bars) = load_real_bars() else { return; };
         let mut s = ScalpingEma::new(3, 7, 3, 5);
-        // Downtrend first (so fast < slow)
-        for i in 0..10 { s.on_bar(&bar(i, 100.0 - i as f64)); }
-        // Sharp upturn to force cross
         let mut sigs = vec![];
-        for i in 10..30 { sigs.extend(s.on_bar(&bar(i, 80.0 + (i - 10) as f64 * 5.0))); }
+        for b in &bars {
+            sigs.extend(s.on_bar(b));
+        }
         use alm_core::signal::Direction;
         assert!(sigs.iter().any(|s| s.direction == Direction::Long));
     }

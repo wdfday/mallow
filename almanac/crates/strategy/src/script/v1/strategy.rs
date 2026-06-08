@@ -318,6 +318,18 @@ pub(crate) fn scalar_out(scope: &Scope, name: &str) -> Option<f64> {
         .or_else(|| scope.get_value::<i64>(name).map(|v| v as f64))
 }
 
+/// Read a boolean output var, tolerating `i64` (`1`/`0`) and `f64` (`1.0`/`0.0`).
+///
+/// Signal vars (`long`, `short`, `exit`, `entry`) are initially pushed as `bool`,
+/// but a user writing `long = 1` reassigns them to `i64`. `get_value::<bool>`
+/// then returns `None` (type mismatch) → signal silently dropped. This helper
+/// accepts any truthy representation: `true`, `1`, `1.0` all fire the signal.
+pub(crate) fn bool_out(scope: &Scope, name: &str) -> bool {
+    scope.get_value::<bool>(name).unwrap_or(false)
+        || scope.get_value::<i64>(name).map(|v| v != 0).unwrap_or(false)
+        || scope.get_value::<f64>(name).map(|v| v > 0.5).unwrap_or(false)
+}
+
 // ── Strategy impl ─────────────────────────────────────────────────────────────
 
 impl Strategy for ScriptStrategy {
@@ -474,10 +486,9 @@ impl Strategy for ScriptStrategy {
         let reason    = scope.get_value::<String>("reason").filter(|s| !s.is_empty());
         let atr       = scalar_out(&scope, "atr").filter(|&v| v > 0.0);
 
-        let go_long  = scope.get_value::<bool>("long").unwrap_or(false)
-                    || scope.get_value::<bool>("entry").unwrap_or(false);
-        let go_short = scope.get_value::<bool>("short").unwrap_or(false);
-        let go_exit  = scope.get_value::<bool>("exit").unwrap_or(false);
+        let go_long  = bool_out(&scope, "long") || bool_out(&scope, "entry");
+        let go_short = bool_out(&scope, "short");
+        let go_exit  = bool_out(&scope, "exit");
 
         if go_long {
             let mut sig = Signal::long(bar.timestamp, &bar.symbol, strength);
@@ -560,6 +571,7 @@ pub fn script_indicator_deps(params: &serde_json::Value) -> Vec<crate::factory::
 
 #[cfg(test)]
 mod tests {
+    use crate::test_utils::*;
     use super::*;
     use alm_core::bar::Bar;
 
@@ -657,6 +669,42 @@ if atr14[0] < atr14[1] { exit = true; }
             .with_error_sink(std::sync::Arc::clone(&sink));
         for i in 0..120 { let _ = s.on_bar(&make_bar(i)); }
         assert!(sink.lock().unwrap().is_none(), "runtime error: {:?}", sink.lock().unwrap());
+    }
+
+    /// Signal vars (`long`, `short`, `exit`) must fire whether the user writes
+    /// `long = true`, `long = 1` (i64), or `long = 1.0` (f64). Without `bool_out`
+    /// the i64/f64 forms were silently swallowed because `get_value::<bool>`
+    /// returns `None` on a type mismatch.
+    #[test]
+    fn bool_output_tolerates_int_and_float() {
+        for (label, script) in [
+            ("bool true",  "long = true;"),
+            ("int 1",      "long = 1;"),
+            ("float 1.0",  "long = 1.0;"),
+            ("entry bool", "entry = true;"),
+            ("entry int",  "entry = 1;"),
+        ] {
+            let mut s = ScriptStrategy::from_script(script).expect("should compile");
+            let mut sigs = vec![];
+            for i in 0..3 { sigs = s.on_bar(&make_bar(i)); if !sigs.is_empty() { break; } }
+            assert!(
+                sigs.iter().any(|s| matches!(s.direction, alm_core::signal::Direction::Long)),
+                "{label}: expected long signal but got none (long=1 silently dropped?)"
+            );
+        }
+
+        // `short` and `exit` with integer form
+        let mut s_short = ScriptStrategy::from_script("short = 1;").unwrap();
+        let mut s_exit  = ScriptStrategy::from_script("exit = 1;").unwrap();
+        let mut got_short = false;
+        let mut got_exit  = false;
+        for i in 0..3 {
+            let b = make_bar(i);
+            if s_short.on_bar(&b).iter().any(|s| matches!(s.direction, alm_core::signal::Direction::Short)) { got_short = true; }
+            if s_exit.on_bar(&b).iter().any(|s| matches!(s.direction, alm_core::signal::Direction::Exit)) { got_exit = true; }
+        }
+        assert!(got_short, "short = 1 must fire a short signal");
+        assert!(got_exit,  "exit = 1 must fire an exit signal");
     }
 
     /// Rhai stores `tp = 100` as an i64, not f64. `scalar_out` must still pick it

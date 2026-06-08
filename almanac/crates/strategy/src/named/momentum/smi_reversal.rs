@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn script_parity() {
-        let bars = rsi_bars(300);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = SmiReversal::new(13, 25, 2, 9, -40.0, 40.0);
         let named_sigs = run(&mut named, &bars);

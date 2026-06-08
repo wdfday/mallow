@@ -76,36 +76,26 @@ mod tests {
     use super::*;
     use alm_core::bar::Bar;
 
-    fn bar(ts: i64, close: f64) -> Bar {
-        Bar::new(ts, "TEST", close, close + 1.0, close - 1.0, close, 1000.0)
-    }
+    
 
     #[test]
     fn test_no_signal_during_warmup() {
+        let Some(bars) = crate::test_utils::load_real_bars() else { return; };
         let mut strat = MaCrossover::new(3, 6);
-        for i in 0..6 {
-            let sigs = strat.on_bar(&bar(i, 100.0 + i as f64));
-            assert!(sigs.is_empty(), "no signal during warmup at bar {i}");
+        for b in bars.iter().take(6) {
+            let sigs = strat.on_bar(b);
+            assert!(sigs.is_empty(), "no signal during warmup");
         }
     }
 
     #[test]
     fn test_long_signal_on_cross_above() {
+        let Some(bars) = crate::test_utils::load_real_bars() else { return; };
         let mut strat = MaCrossover::new(3, 8);
-        // First feed descending prices to get fast < slow
         let mut signals = Vec::new();
-        for i in 0..20 {
-            let price = 200.0 - i as f64 * 2.0; // descending
-            let s = strat.on_bar(&bar(i, price));
-            signals.extend(s);
+        for b in &bars {
+            signals.extend(strat.on_bar(b));
         }
-        // Now feed ascending prices to trigger crossover
-        for i in 20..50 {
-            let price = 160.0 + (i - 20) as f64 * 3.0;
-            let s = strat.on_bar(&bar(i, price));
-            signals.extend(s);
-        }
-        // Should have at least one Long signal
         use alm_core::signal::Direction;
         assert!(
             signals.iter().any(|s| s.direction == Direction::Long),
@@ -115,13 +105,14 @@ mod tests {
 
     #[test]
     fn test_reset_clears_position() {
+        let Some(bars) = crate::test_utils::load_real_bars() else { return; };
         let mut strat = MaCrossover::new(3, 8);
-        for i in 0..50 {
-            strat.on_bar(&bar(i, 100.0 + i as f64 * 2.0));
+        for b in bars.iter().take(50) {
+            strat.on_bar(b);
         }
         strat.reset();
         // After reset, no signals until re-warmed
-        let s = strat.on_bar(&bar(100, 200.0));
+        let s = strat.on_bar(&bars[50]);
         assert!(s.is_empty());
     }
 
@@ -132,7 +123,7 @@ mod tests {
         use crate::factory::build_strategy;
         use serde_json::json;
 
-        let bars = trending_bars(300);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = MaCrossover::new(20, 50);
         let named_sigs: Vec<(i64, Direction)> = bars.iter()

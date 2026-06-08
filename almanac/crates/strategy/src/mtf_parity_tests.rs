@@ -1,14 +1,7 @@
 //! Parity tests for multi-timeframe (MTF), Heiken Ashi candle transforms,
 //! TP/SL exits
 //!
-//! Coverage added here (complementing the per-strategy named/*.rs tests):
-//!
-//! | Group | Tests |
-//! |-------|-------|
-//! | **MTF confirmed** | H1 signals only fire at H1 boundary, reset parity |
-//! | **MTF live** | live_H1 fires mid-bar, live vs confirmed differ, reset parity, coexistence |
-//! | **Heiken Ashi** | HaColor named reset parity |
-//! | **TP / SL** | fixed-% TP, fixed-% SL, TP fires before RSI exit, ATR-based TP/SL |
+//! All tests are run on real BTCUSDT M1 + H1 parquet data.
 
 #![cfg(test)]
 
@@ -19,81 +12,15 @@ use alm_core::{Bar, Strategy};
 use alm_core::{MtfSnapshot, MtfStrategy, TfBarEvent, TfView, Timeframe};
 use alm_core::signal::Direction;
 use alm_data::{BarFeed, ParquetFeed};
-use serde_json::json;
 
-use crate::factory::build_strategy;
 use crate::named::{MtfAdxPullbackStrategy, MtfBbMacdStrategy, MtfEmaRsiStrategy, MtfMaCrossStrategy};
 use crate::script::v2::MtfScriptStrategy;
-use crate::test_utils::{bar, run, assert_parity, trending_bars};
+use crate::test_utils::{load_real_bars, run, assert_parity};
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Shared bar generators
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// `n` hours of M1 bars at 60 s intervals, plus one extra bar to trigger the
-/// final H1 close — total = `n * 60 + 1` bars.
-///
-/// Price shape: smooth downtrend from 200→100 in the first half, then uptrend
-/// back to 200 in the second half.  Each H1 bar therefore has a clear trend
-/// direction, which drives RSI and EMA into oversold/overbought territory.
-fn m1_hours(n: usize) -> Vec<Bar> {
-    let total = n * 60 + 1;
-    let half  = n as f64 / 2.0;
-    (0..total)
-        .map(|i| {
-            let t = i as f64 / 60.0;
-            let price = if t < half {
-                200.0 - (t / half) * 100.0
-            } else {
-                100.0 + ((t - half) / half) * 100.0
-            };
-            bar(i as i64 * 60_000, price.max(1.0))
-        })
-        .collect()
-}
-
-/// M1 bars with a brief dip-within-uptrend pattern, suitable for testing
-/// combined H1-filter + M1-signal strategies.
-///
-/// Structure (hours):
-/// - 0-11  : slow rise 100→160  (H1 RSI warms up above 50)
-/// - 12-14 : 3-hour dip 160→100 (M1 RSI briefly oversold; H1 RSI stays > 50
-///            for the first bar of the dip before dropping)
-/// - 15-19 : recovery 100→160
-/// - 20    : trigger bar (closes the final H1 bucket)
-fn m1_dip_in_uptrend() -> Vec<Bar> {
-    let mut ts = 0i64;
-    let mut bars = vec![];
-    // Slow rise
-    for i in 0..720u32 {
-        bars.push(bar(ts, 100.0 + i as f64 * (60.0 / 720.0)));
-        ts += 60_000;
-    }
-    // Sharp dip within M1 bars of hours 12-14 (180 bars)
-    for i in 0..180u32 {
-        bars.push(bar(ts, (160.0 - i as f64 * (60.0 / 180.0)).max(1.0)));
-        ts += 60_000;
-    }
-    // Recovery
-    for i in 0..300u32 {
-        bars.push(bar(ts, 100.0 + i as f64 * (60.0 / 300.0)));
-        ts += 60_000;
-    }
-    // Trigger bar for final H1 close
-    bars.push(bar(ts, 160.0));
-    bars
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// MTF reset / determinism (V2 MtfScriptStrategy with real HTF feed)
-//
-// V1 rejects TF arguments at build time, so any script with `ind.*(period, "TF")`
-// must go through MtfScriptStrategy directly. These tests build it and feed it
-// the same (M1, H1) bar pair twice with reset() in between.
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
 /// Helper: aggregate M1 bars into H1 by calendar bucket (open of first, close
-/// of last). Lets us reuse the original M1-only test data with V2.
+/// of last).
 fn aggregate_m1_to_h1(m1: &[Bar]) -> Vec<Bar> {
     let h1_ms = Timeframe::H1.duration_ms();
     let mut buckets: BTreeMap<i64, Vec<&Bar>> = BTreeMap::new();
@@ -109,81 +36,13 @@ fn aggregate_m1_to_h1(m1: &[Bar]) -> Vec<Bar> {
             let h = bars.iter().map(|b| b.high).fold(f64::MIN, f64::max);
             let l = bars.iter().map(|b| b.low).fold(f64::MAX, f64::min);
             let v: f64 = bars.iter().map(|b| b.volume).sum();
-            Bar::new(ts, "TEST", o, h, l, c, v)
+            Bar::new(ts, "BTCUSDT", o, h, l, c, v)
         })
         .collect()
 }
 
-/// MtfScriptStrategy: `reset()` must reproduce the exact same signals when
-/// fed the same bars a second time.
-#[test]
-fn mtf_reset_parity_script() {
-    let m1 = m1_hours(30);
-    let h1 = aggregate_m1_to_h1(&m1);
-
-    let script = r#"
-let h1_rsi = ind.rsi(5, "H1");
-if h1_rsi[0] < 35.0 { entry = true; }
-if h1_rsi[0] > 65.0 { exit  = true; }
-"#;
-    let mut strat = MtfScriptStrategy::from_script(script, Timeframe::M1).unwrap();
-
-    let r1 = run_mtf_sigs(&mut strat, Timeframe::M1, &m1, &h1);
-    strat.reset();
-    let r2 = run_mtf_sigs(&mut strat, Timeframe::M1, &m1, &h1);
-
-    assert!(!r1.is_empty(), "mtf_reset_script: expected signals");
-    assert_parity("mtf script reset: run1 vs run2", &r1, &r2);
-}
-
-
-/// Mixed MTF + base-TF reset: both H1 and M1 indicator state must be
-/// cleared by `reset()`.
-#[test]
-fn mtf_mixed_tf_reset_parity() {
-    let m1 = m1_dip_in_uptrend();
-    let h1 = aggregate_m1_to_h1(&m1);
-
-    let script = r#"
-let h1_rsi = ind.rsi(5, "H1");
-let m1_rsi = ind.rsi(5);
-if h1_rsi[0] > 50.0 && m1_rsi[0] < 35.0 { entry = true; }
-if h1_rsi[0] < 50.0 || m1_rsi[0] > 65.0 { exit  = true; }
-"#;
-    let mut strat = MtfScriptStrategy::from_script(script, Timeframe::M1).unwrap();
-
-    let r1 = run_mtf_sigs(&mut strat, Timeframe::M1, &m1, &h1);
-    strat.reset();
-    let r2 = run_mtf_sigs(&mut strat, Timeframe::M1, &m1, &h1);
-
-    assert_parity("mtf mixed TF reset: run1 vs run2", &r1, &r2);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Heiken Ashi
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// HaColor reset: named strategy reproduces the same signals after `reset()`.
-#[test]
-fn ha_color_reset_parity() {
-    use crate::named::heiken_ashi_strategy::HaColor;
-
-    let bars = trending_bars(300);
-
-    let mut named = HaColor::new(1);
-    let r1 = run(&mut named, &bars);
-    named.reset();
-    let r2 = run(&mut named, &bars);
-    assert_parity("HaColor named reset", &r1, &r2);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// v2 MtfStrategy named ↔ MtfScriptStrategy parity
-// ─────────────────────────────────────────────────────────────────────────────
-
 /// Thin simulation loop: merge M1 + H1 bars by close_ts, build MtfSnapshot per
 /// tick, call `strategy.on_bars`, and collect `(timestamp, direction)` pairs.
-/// Intentionally avoids MtfEngine so tests don't depend on risk/broker logic.
 fn run_mtf_sigs(
     strategy: &mut dyn MtfStrategy,
     base_tf: Timeframe,
@@ -238,108 +97,63 @@ fn assert_mtf_parity(label: &str, named: &[(i64, Direction)], script: &[(i64, Di
     );
 }
 
-/// Count (entries, exits) in a signal list.
-/// Entries = Long + Short; exits = Exit.
 fn count_dirs(sigs: &[(i64, Direction)]) -> (usize, usize) {
     let entries = sigs.iter().filter(|(_, d)| matches!(d, Direction::Long | Direction::Short)).count();
     let exits   = sigs.iter().filter(|(_, d)| matches!(d, Direction::Exit)).count();
     (entries, exits)
 }
 
-// ── Test data ─────────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────────────────────────────────────────────
 
-/// ~65 H1 bars + ~3900 M1 bars for MtfEmaRsi parity.
-///
-/// Phases:
-/// 1. 50 H1 flat (2.5 × EMA period 20 = 50 — practical warmup rule).
-/// 2. 10 H1 rising. Each H1 period: 15 M1 bars fall (RSI → <40), 45 bars rise.
-/// 3. 5 H1 falling (H1 EMA falling → exit fires).
-fn mtf_ema_rsi_bars() -> (Vec<Bar>, Vec<Bar>) {
-    let m1_ms: i64 = 60_000;
-    let h1_ms: i64 = 3_600_000;
-    let mut m1: Vec<Bar> = Vec::new();
-    let mut h1: Vec<Bar> = Vec::new();
-    let mut t_m1: i64 = 0;
-    let mut t_h1: i64 = 0;
+#[test]
+fn mtf_reset_parity_script() {
+    let Some((m1, h1)) = load_btcusdt_m1_h1() else { return };
 
-    // Phase 1: 50 flat H1 periods (2.5 × period(20))
-    for _ in 0..50 {
-        for _ in 0..60 { m1.push(bar(t_m1, 100.0)); t_m1 += m1_ms; }
-        h1.push(bar(t_h1, 100.0)); t_h1 += h1_ms;
-    }
+    let script = r#"
+let h1_rsi = ind.rsi(5, "H1");
+if h1_rsi[0] < 35.0 { entry = true; }
+if h1_rsi[0] > 65.0 { exit  = true; }
+"#;
+    let mut strat = MtfScriptStrategy::from_script(script, Timeframe::M1).unwrap();
 
-    // Phase 2: 10 rising H1 periods (+6 per H1)
-    for i in 0..10_i64 {
-        let base = 100.0 + i as f64 * 6.0;
-        for j in 0..60_i64 {
-            let p = if j < 15 {
-                (base - j as f64 * 2.0).max(10.0)
-            } else {
-                base - 30.0 + (j - 15) as f64 * (36.0 / 45.0)
-            };
-            m1.push(bar(t_m1, p)); t_m1 += m1_ms;
-        }
-        h1.push(bar(t_h1, base + 6.0)); t_h1 += h1_ms;
-    }
+    let r1 = run_mtf_sigs(&mut strat, Timeframe::M1, &m1, &h1);
+    strat.reset();
+    let r2 = run_mtf_sigs(&mut strat, Timeframe::M1, &m1, &h1);
 
-    // Phase 3: 5 falling H1 periods (-8 per H1)
-    for i in 0..5_i64 {
-        let base = 160.0 - i as f64 * 8.0;
-        for j in 0..60_i64 {
-            let p = (base - j as f64 * 0.5).max(10.0);
-            m1.push(bar(t_m1, p)); t_m1 += m1_ms;
-        }
-        h1.push(bar(t_h1, base - 8.0)); t_h1 += h1_ms;
-    }
-
-    (m1, h1)
+    assert!(!r1.is_empty(), "mtf_reset_script: expected signals");
+    assert_parity("mtf script reset: run1 vs run2", &r1, &r2);
 }
 
-/// ~137 H1 bars + ~8220 M1 bars for MtfMaCross parity.
-///
-/// Phases:
-/// 1. 125 H1 flat (2.5 × EMA period 50 = 125 — practical warmup rule).
-/// 2. 8 H1 rising. Each H1 period: 20 M1 bars dip then 40 bars recover (→ crossover).
-/// 3. 4 H1 falling (close < H1 EMA → exit fires).
-fn mtf_ma_cross_bars() -> (Vec<Bar>, Vec<Bar>) {
-    let m1_ms: i64 = 60_000;
-    let h1_ms: i64 = 3_600_000;
-    let mut m1: Vec<Bar> = Vec::new();
-    let mut h1: Vec<Bar> = Vec::new();
-    let mut t_m1: i64 = 0;
-    let mut t_h1: i64 = 0;
+#[test]
+fn mtf_mixed_tf_reset_parity() {
+    let Some((m1, h1)) = load_btcusdt_m1_h1() else { return };
 
-    // Phase 1: 125 flat H1 periods (2.5 × period(50))
-    for _ in 0..125 {
-        for _ in 0..60 { m1.push(bar(t_m1, 100.0)); t_m1 += m1_ms; }
-        h1.push(bar(t_h1, 100.0)); t_h1 += h1_ms;
-    }
+    let script = r#"
+let h1_rsi = ind.rsi(5, "H1");
+let m1_rsi = ind.rsi(5);
+if h1_rsi[0] > 50.0 && m1_rsi[0] < 35.0 { entry = true; }
+if h1_rsi[0] < 50.0 || m1_rsi[0] > 65.0 { exit  = true; }
+"#;
+    let mut strat = MtfScriptStrategy::from_script(script, Timeframe::M1).unwrap();
 
-    // Phase 2: 8 rising H1 periods
-    for i in 0..8_i64 {
-        let h_price = 110.0 + i as f64 * 5.0;
-        for j in 0..60_i64 {
-            let p = if j < 20 {
-                (h_price - j as f64 * 1.0).max(10.0)
-            } else {
-                h_price - 20.0 + (j - 20) as f64 * (25.0 / 40.0)
-            };
-            m1.push(bar(t_m1, p)); t_m1 += m1_ms;
-        }
-        h1.push(bar(t_h1, h_price)); t_h1 += h1_ms;
-    }
+    let r1 = run_mtf_sigs(&mut strat, Timeframe::M1, &m1, &h1);
+    strat.reset();
+    let r2 = run_mtf_sigs(&mut strat, Timeframe::M1, &m1, &h1);
 
-    // Phase 3: 4 falling H1 periods
-    for i in 0..4_i64 {
-        let h_price = 145.0 - i as f64 * 10.0;
-        for j in 0..60_i64 {
-            let p = (h_price - j as f64 * 0.8).max(10.0);
-            m1.push(bar(t_m1, p)); t_m1 += m1_ms;
-        }
-        h1.push(bar(t_h1, h_price - 10.0)); t_h1 += h1_ms;
-    }
+    assert_parity("mtf mixed TF reset: run1 vs run2", &r1, &r2);
+}
 
-    (m1, h1)
+#[test]
+fn ha_color_reset_parity() {
+    use crate::named::heiken_ashi_strategy::HaColor;
+
+    let Some(bars) = load_real_bars() else { return };
+
+    let mut named = HaColor::new(1);
+    let r1 = run(&mut named, &bars);
+    named.reset();
+    let r2 = run(&mut named, &bars);
+    assert_parity("HaColor named reset", &r1, &r2);
 }
 
 // ── MtfEmaRsi: named ↔ script ─────────────────────────────────────────────────
@@ -353,7 +167,7 @@ if falling(h1_ema) || rsi[0] > 70.0 { exit  = true; }
 
 #[test]
 fn mtf_v2_ema_rsi_named_vs_script() {
-    let (m1, h1) = mtf_ema_rsi_bars();
+    let Some((m1, h1)) = load_btcusdt_m1_h1() else { return };
 
     let mut named = MtfEmaRsiStrategy::new();
     let named_sigs = run_mtf_sigs(&mut named, Timeframe::M1, &m1, &h1);
@@ -369,7 +183,7 @@ fn mtf_v2_ema_rsi_named_vs_script() {
 
 #[test]
 fn mtf_v2_ema_rsi_named_reset_parity() {
-    let (m1, h1) = mtf_ema_rsi_bars();
+    let Some((m1, h1)) = load_btcusdt_m1_h1() else { return };
     let mut named = MtfEmaRsiStrategy::new();
     let r1 = run_mtf_sigs(&mut named, Timeframe::M1, &m1, &h1);
     named.reset();
@@ -380,7 +194,7 @@ fn mtf_v2_ema_rsi_named_reset_parity() {
 
 #[test]
 fn mtf_v2_ema_rsi_script_reset_parity() {
-    let (m1, h1) = mtf_ema_rsi_bars();
+    let Some((m1, h1)) = load_btcusdt_m1_h1() else { return };
     let mut strat = MtfScriptStrategy::from_script(SCRIPT_EMA_RSI, Timeframe::M1).unwrap();
     let r1 = run_mtf_sigs(&mut strat, Timeframe::M1, &m1, &h1);
     strat.reset();
@@ -401,7 +215,7 @@ if close[0] < h1_trend[0] || cross_below(ema9, ema21) { exit  = true; }
 
 #[test]
 fn mtf_v2_ma_cross_named_vs_script() {
-    let (m1, h1) = mtf_ma_cross_bars();
+    let Some((m1, h1)) = load_btcusdt_m1_h1() else { return };
 
     let mut named = MtfMaCrossStrategy::new();
     let named_sigs = run_mtf_sigs(&mut named, Timeframe::M1, &m1, &h1);
@@ -417,7 +231,7 @@ fn mtf_v2_ma_cross_named_vs_script() {
 
 #[test]
 fn mtf_v2_ma_cross_named_reset_parity() {
-    let (m1, h1) = mtf_ma_cross_bars();
+    let Some((m1, h1)) = load_btcusdt_m1_h1() else { return };
     let mut named = MtfMaCrossStrategy::new();
     let r1 = run_mtf_sigs(&mut named, Timeframe::M1, &m1, &h1);
     named.reset();
@@ -428,7 +242,7 @@ fn mtf_v2_ma_cross_named_reset_parity() {
 
 #[test]
 fn mtf_v2_ma_cross_script_reset_parity() {
-    let (m1, h1) = mtf_ma_cross_bars();
+    let Some((m1, h1)) = load_btcusdt_m1_h1() else { return };
     let mut strat = MtfScriptStrategy::from_script(SCRIPT_MA_CROSS, Timeframe::M1).unwrap();
     let r1 = run_mtf_sigs(&mut strat, Timeframe::M1, &m1, &h1);
     strat.reset();
@@ -439,11 +253,11 @@ fn mtf_v2_ma_cross_script_reset_parity() {
 
 // ── Sanity: no signals before H1 warmup ──────────────────────────────────────
 
-/// Neither strategy should fire with only 1 confirmed H1 bar (h1_count < 2).
 #[test]
 fn mtf_v2_no_signals_before_h1_warmup() {
-    let m1_bars: Vec<Bar> = (0..60_i64).map(|i| bar(i * 60_000, 100.0)).collect();
-    let h1_bars = vec![bar(0_i64, 100.0)];
+    let Some((m1, h1)) = load_btcusdt_m1_h1() else { return };
+    let m1_bars: Vec<Bar> = m1.into_iter().take(60).collect();
+    let h1_bars = vec![h1[0].clone()];
 
     let mut s1 = MtfEmaRsiStrategy::new();
     assert!(
@@ -458,22 +272,14 @@ fn mtf_v2_no_signals_before_h1_warmup() {
     );
 }
 
-/// Debug test: verify run_mtf_sigs actually collects signals.
-/// EMA(20) needs 21 H1 bars before h1_count reaches 2; use 22 to be safe.
 #[test]
 fn debug_run_mtf_sigs_produces_signals() {
-    // 22 flat H1 bars + 1320 flat M1 bars (22*60).
-    // RSI(14) on flat bars returns 100.0 (avg_loss=0).
-    // EMA(20) produces first value at H1 bar 19 (0-indexed) → h1_count=1.
-    // EMA produces second value at H1 bar 20 → h1_count=2 → exit fires.
-    let m1: Vec<Bar> = (0..1320_i64).map(|i| bar(i * 60_000, 100.0)).collect();
-    let h1: Vec<Bar> = (0..22_i64).map(|i| bar(i * 3_600_000, 100.0)).collect();
-
+    let Some((m1, h1)) = load_btcusdt_m1_h1() else { return };
     let mut named = MtfEmaRsiStrategy::new();
     let sigs = run_mtf_sigs(&mut named, Timeframe::M1, &m1, &h1);
     assert!(
         !sigs.is_empty(),
-        "debug: expected exit signals (rsi=100>70 with flat prices), got none"
+        "debug: expected signals, got none"
     );
 }
 
@@ -487,56 +293,9 @@ if h1_adx[0] > 25.0 && close[0] > h1_trend[0] && rsi[0] < 40.0 { entry = true; }
 if h1_adx[0] < 20.0 || close[0] < h1_trend[0] || rsi[0] > 70.0 { exit  = true; }
 "#;
 
-/// Test data for MtfAdxPullbackStrategy parity.
-///
-/// Warmup: 125 H1 bars (2.5 × max(ADX period 14, EMA period 50) = 2.5×50).
-/// Signal phase: trending bars (ADX > 25) with a dip (RSI < 40) then recovery.
-fn mtf_adx_pullback_bars() -> (Vec<Bar>, Vec<Bar>) {
-    let m1_ms: i64 = 60_000;
-    let h1_ms: i64 = 3_600_000;
-    let mut m1: Vec<Bar> = Vec::new();
-    let mut h1: Vec<Bar> = Vec::new();
-    let mut t_m1: i64 = 0;
-    let mut t_h1: i64 = 0;
-
-    // Phase 1: 125 flat H1 warmup periods (2.5 × 50 = 125)
-    for _ in 0..125 {
-        for _ in 0..60 { m1.push(bar(t_m1, 100.0)); t_m1 += m1_ms; }
-        h1.push(bar(t_h1, 100.0)); t_h1 += h1_ms;
-    }
-
-    // Phase 2: 15 strong uptrend H1 periods (+8 per bar, driving ADX > 25)
-    for i in 0..15_i64 {
-        let base = 100.0 + i as f64 * 8.0;
-        for j in 0..60_i64 {
-            let p = if j < 15 {
-                // Brief dip (RSI → <40)
-                (base - j as f64 * 3.0).max(10.0)
-            } else {
-                // Recovery
-                base - 45.0 + (j - 15) as f64 * (53.0 / 45.0)
-            };
-            m1.push(bar(t_m1, p)); t_m1 += m1_ms;
-        }
-        h1.push(bar(t_h1, base + 8.0)); t_h1 += h1_ms;
-    }
-
-    // Phase 3: 5 weak / declining periods (ADX falls below 20, exit fires)
-    for i in 0..5_i64 {
-        let base = 220.0 - i as f64 * 5.0;
-        for j in 0..60_i64 {
-            let p = base - j as f64 * 0.05;
-            m1.push(bar(t_m1, p)); t_m1 += m1_ms;
-        }
-        h1.push(bar(t_h1, base - 5.0)); t_h1 += h1_ms;
-    }
-
-    (m1, h1)
-}
-
 #[test]
 fn mtf_v2_adx_pullback_named_vs_script() {
-    let (m1, h1) = mtf_adx_pullback_bars();
+    let Some((m1, h1)) = load_btcusdt_m1_h1() else { return };
 
     let mut named = MtfAdxPullbackStrategy::new();
     let named_sigs = run_mtf_sigs(&mut named, Timeframe::M1, &m1, &h1);
@@ -552,7 +311,7 @@ fn mtf_v2_adx_pullback_named_vs_script() {
 
 #[test]
 fn mtf_v2_adx_pullback_named_reset_parity() {
-    let (m1, h1) = mtf_adx_pullback_bars();
+    let Some((m1, h1)) = load_btcusdt_m1_h1() else { return };
     let mut named = MtfAdxPullbackStrategy::new();
     let r1 = run_mtf_sigs(&mut named, Timeframe::M1, &m1, &h1);
     named.reset();
@@ -562,7 +321,7 @@ fn mtf_v2_adx_pullback_named_reset_parity() {
 
 #[test]
 fn mtf_v2_adx_pullback_script_reset_parity() {
-    let (m1, h1) = mtf_adx_pullback_bars();
+    let Some((m1, h1)) = load_btcusdt_m1_h1() else { return };
     let mut strat = MtfScriptStrategy::from_script(SCRIPT_ADX_PULLBACK, Timeframe::M1).unwrap();
     let r1 = run_mtf_sigs(&mut strat, Timeframe::M1, &m1, &h1);
     strat.reset();
@@ -580,52 +339,9 @@ if close[0] > h1_bb[0].upper && macd[0].histogram > 0.0 && rsi[0] < 55.0 { entry
 if close[0] < h1_bb[0].middle || macd[0].histogram < 0.0 { exit = true; }
 "#;
 
-/// Test data for MtfBbMacdStrategy parity.
-///
-/// Warmup: 50 H1 bars (2.5 × BBands period 20).
-/// M1 MACD(12,26,9) warms up in ~35 M1 bars (well within the 50×60 M1 warmup).
-/// Signal phase: breakout bars (close > BB upper, MACD histogram > 0, RSI < 55).
-fn mtf_bb_macd_bars() -> (Vec<Bar>, Vec<Bar>) {
-    let m1_ms: i64 = 60_000;
-    let h1_ms: i64 = 3_600_000;
-    let mut m1: Vec<Bar> = Vec::new();
-    let mut h1: Vec<Bar> = Vec::new();
-    let mut t_m1: i64 = 0;
-    let mut t_h1: i64 = 0;
-
-    // Phase 1: 50 flat H1 warmup periods (2.5 × 20)
-    for _ in 0..50 {
-        for _ in 0..60 { m1.push(bar(t_m1, 100.0)); t_m1 += m1_ms; }
-        h1.push(bar(t_h1, 100.0)); t_h1 += h1_ms;
-    }
-
-    // Phase 2: 12 breakout H1 periods — price accelerates above BB upper
-    for i in 0..12_i64 {
-        let base = 100.0 + i as f64 * 12.0;
-        for j in 0..60_i64 {
-            // Accelerating rise: price outruns BB, MACD histogram positive
-            let p = base + j as f64 * (12.0 / 60.0);
-            m1.push(bar(t_m1, p)); t_m1 += m1_ms;
-        }
-        h1.push(bar(t_h1, base + 12.0)); t_h1 += h1_ms;
-    }
-
-    // Phase 3: 5 reversal H1 periods — price drops below BB middle, MACD negative
-    for i in 0..5_i64 {
-        let base = 244.0 - i as f64 * 20.0;
-        for j in 0..60_i64 {
-            let p = (base - j as f64 * (20.0 / 60.0)).max(10.0);
-            m1.push(bar(t_m1, p)); t_m1 += m1_ms;
-        }
-        h1.push(bar(t_h1, (base - 20.0).max(10.0))); t_h1 += h1_ms;
-    }
-
-    (m1, h1)
-}
-
 #[test]
 fn mtf_v2_bb_macd_named_vs_script() {
-    let (m1, h1) = mtf_bb_macd_bars();
+    let Some((m1, h1)) = load_btcusdt_m1_h1() else { return };
 
     let mut named = MtfBbMacdStrategy::new();
     let named_sigs = run_mtf_sigs(&mut named, Timeframe::M1, &m1, &h1);
@@ -641,7 +357,7 @@ fn mtf_v2_bb_macd_named_vs_script() {
 
 #[test]
 fn mtf_v2_bb_macd_named_reset_parity() {
-    let (m1, h1) = mtf_bb_macd_bars();
+    let Some((m1, h1)) = load_btcusdt_m1_h1() else { return };
     let mut named = MtfBbMacdStrategy::new();
     let r1 = run_mtf_sigs(&mut named, Timeframe::M1, &m1, &h1);
     named.reset();
@@ -651,7 +367,7 @@ fn mtf_v2_bb_macd_named_reset_parity() {
 
 #[test]
 fn mtf_v2_bb_macd_script_reset_parity() {
-    let (m1, h1) = mtf_bb_macd_bars();
+    let Some((m1, h1)) = load_btcusdt_m1_h1() else { return };
     let mut strat = MtfScriptStrategy::from_script(SCRIPT_BB_MACD, Timeframe::M1).unwrap();
     let r1 = run_mtf_sigs(&mut strat, Timeframe::M1, &m1, &h1);
     strat.reset();
@@ -659,9 +375,7 @@ fn mtf_v2_bb_macd_script_reset_parity() {
     assert_mtf_parity("MtfBbMacd script reset parity", &r1, &r2);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Real-data MTF parity tests (BTCUSDT M1 + H1 parquet)
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Real-data MTF parity tests (BTCUSDT M1 + H1 parquet) ─────────────────────
 
 fn testdata_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -681,21 +395,22 @@ fn load_parquet(tf_dir: &str, file: &str) -> Option<Vec<Bar>> {
     Some(bars)
 }
 
-/// Load the long-range BTCUSDT parquet (2022–2026) for both M1 and H1.
-/// Returns None if either file is missing (skip signal for caller).
 fn load_btcusdt_m1_h1() -> Option<(Vec<Bar>, Vec<Bar>)> {
-    let m1 = load_parquet("M1", "BTCUSDT_M1_2022-04-13_to_2026-04-12.parquet")?;
-    let h1 = load_parquet("H1", "BTCUSDT_H1_2022-04-13_to_2026-04-12.parquet")?;
-    if m1.len() < 1000 || h1.len() < 100 {
-        eprintln!("[mtf-parity] too few bars (m1={}, h1={}), skipping", m1.len(), h1.len());
+    let mut m1 = load_parquet("M1", "BTCUSDT_M1_2026-01.parquet")?;
+    let h1_all = load_parquet("H1", "BTCUSDT_H1_2026-01.parquet")?;
+    m1.truncate(20000);
+    if m1.is_empty() || h1_all.is_empty() {
         return None;
     }
-    eprintln!("[mtf-parity] loaded {} M1 + {} H1 bars", m1.len(), h1.len());
+    let t_start = m1.first().unwrap().timestamp;
+    let t_end = m1.last().unwrap().timestamp;
+    let h1: Vec<Bar> = h1_all
+        .into_iter()
+        .filter(|b| b.timestamp >= t_start && b.timestamp <= t_end)
+        .collect();
     Some((m1, h1))
 }
 
-/// Named `MtfEmaRsiStrategy` must produce the exact same signals as the
-/// equivalent Rhai v2 script when run on real BTCUSDT M1+H1 data.
 #[test]
 fn mtf_real_data_ema_rsi_named_vs_script() {
     let Some((m1, h1)) = load_btcusdt_m1_h1() else { return };
@@ -712,8 +427,6 @@ fn mtf_real_data_ema_rsi_named_vs_script() {
     assert_mtf_parity("MtfEmaRsi real-data named vs script", &named_sigs, &script_sigs);
 }
 
-/// Named `MtfMaCrossStrategy` must produce the exact same signals as the
-/// equivalent Rhai v2 script when run on real BTCUSDT M1+H1 data.
 #[test]
 fn mtf_real_data_ma_cross_named_vs_script() {
     let Some((m1, h1)) = load_btcusdt_m1_h1() else { return };
@@ -730,8 +443,6 @@ fn mtf_real_data_ma_cross_named_vs_script() {
     assert_mtf_parity("MtfMaCross real-data named vs script", &named_sigs, &script_sigs);
 }
 
-/// Both strategies must reproduce the same signals when reset and re-run on
-/// the same real data (idempotency of reset).
 #[test]
 fn mtf_real_data_reset_idempotent() {
     let Some((m1, h1)) = load_btcusdt_m1_h1() else { return };

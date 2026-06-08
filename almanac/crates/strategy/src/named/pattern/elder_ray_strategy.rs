@@ -75,11 +75,34 @@ mod tests {
 
     #[test]
     fn elder_ray_parity() {
-        let bars = elder_ray_bars();
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut hc = ElderRayStrategy::new(13);
         let hc_sigs = run(&mut hc, &bars);
 
         assert!(!hc_sigs.is_empty(), "elder_ray: no signals");
+    }
+
+    #[test]
+    fn script_parity() {
+        use crate::factory::build_strategy;
+        use serde_json::json;
+
+        let Some(bars) = load_real_bars() else { return; };
+
+        let mut named = ElderRayStrategy::new(13);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = r#"
+let er13 = ind.elder_ray(13);
+let ema_rising = er13[0].ema > er13[1].ema;
+if ema_rising && er13[0].bear_power < 0.0 && er13[0].bear_power > er13[1].bear_power { entry = true; }
+if er13[0].bull_power < 0.0 && er13[1].bull_power >= 0.0 { exit = true; }
+"#;
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "elder_ray: must produce signals");
+        assert_parity("elder_ray parity vs named", &named_sigs, &script_sigs);
     }
 }

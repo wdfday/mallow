@@ -98,13 +98,13 @@ impl Kdj {
         };
 
         let rsv = if (highest - lowest).abs() > f64::EPSILON {
-            (close - lowest) / (highest - lowest) * 100.0
+            ((close - lowest) / (highest - lowest) * 100.0).clamp(0.0, 100.0)
         } else {
             50.0
         };
 
-        let k = self.k_sma.update(rsv)?;
-        let d = self.d_sma.update(k)?;
+        let k = self.k_sma.update(rsv)?.clamp(0.0, 100.0);
+        let d = self.d_sma.update(k)?.clamp(0.0, 100.0);
         let j = 3.0 * k - 2.0 * d;
 
         Some(KdjValue { k, d, j })

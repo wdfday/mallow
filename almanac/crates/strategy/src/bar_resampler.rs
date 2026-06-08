@@ -257,6 +257,7 @@ impl TimeBarResampler {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_utils::*;
     use super::*;
 
     // ── parse_timeframe_ms ────────────────────────────────────────────────────

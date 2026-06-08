@@ -62,3 +62,36 @@ impl Strategy for VolatilitySqueezer {
         self.prev_atr = None;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn script_parity() {
+        let Some(bars) = load_real_bars() else { return; };
+
+        let mut named = VolatilitySqueezer::new(14, 50);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = r#"
+let atr14 = ind.atr(14);
+let sma50 = ind.sma(50);
+let atr_expanding = atr14[0].atr > atr14[1].atr;
+if atr_expanding && close[0] > sma50[0] {
+    entry = true;
+}
+if close[0] < sma50[0] {
+    exit = true;
+}
+"#;
+        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
+        let script_sigs = run(script_strat.as_mut(), &bars);
+
+        assert!(!named_sigs.is_empty(), "volatility_squeezer: must produce signals");
+        assert_parity("volatility_squeezer parity vs named", &named_sigs, &script_sigs);
+    }
+}

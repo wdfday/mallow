@@ -88,7 +88,7 @@ mod tests {
     #[test]
     fn script_parity() {
         // CmfEmaTrend fires every bar (no in_position gate).
-        let bars = cmf_bars();
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = CmfEmaTrend::new(20, 50, 0.1, 0.1);
         let named_sigs = run(&mut named, &bars);

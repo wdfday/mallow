@@ -19,6 +19,7 @@ pub(super) use crate::script::v1::{
     CandleDirective,
     DEFAULT_BUF_DEPTH,
     extract_max_lookback,
+    PERIOD_EXEMPT,
 };
 
 // Shared parser internals reused from v1 (single source of truth). v2 only
@@ -151,6 +152,21 @@ fn map_indicator_type(type_str: &str) -> (String, FieldExtract) {
 // ── JSON config / factory ─────────────────────────────────────────────────────
 
 pub(super) fn make_indicator_box(decl: &IndicatorDecl) -> Result<IndicatorBox> {
+    // Mirror v1's validation — same rules apply regardless of which engine parses the script.
+    if decl.period == 0 && !PERIOD_EXEMPT.contains(&decl.ind_type.as_str()) {
+        anyhow::bail!(
+            "indicator '{}' (type '{}'): period must be ≥ 1, got 0",
+            decl.var_name, decl.ind_type
+        );
+    }
+    for (key, &val) in &decl.extra_params {
+        if val < 0.0 {
+            anyhow::bail!(
+                "indicator '{}': parameter '{}' must be ≥ 0, got {}",
+                decl.var_name, key, val
+            );
+        }
+    }
     IndicatorBox::from_config(&indicator_json_config(&decl.ind_type, decl.period, &decl.extra_params))
 }
 
@@ -158,6 +174,7 @@ pub(super) fn make_indicator_box(decl: &IndicatorDecl) -> Result<IndicatorBox> {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_utils::*;
     use super::*;
     use alm_core::Timeframe;
 

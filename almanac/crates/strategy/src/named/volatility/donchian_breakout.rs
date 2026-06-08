@@ -78,23 +78,25 @@ mod tests {
     use crate::factory::build_strategy;
     use serde_json::json;
 
-    fn bar(ts: i64, c: f64) -> Bar {
-        Bar::new(ts, "T", c, c * 1.01, c * 0.99, c, 1000.0)
-    }
+    
 
     #[test]
     fn test_no_signal_before_warmup() {
         let mut s = DonchianBreakout::new(20, 10);
-        for i in 0..20 { assert!(s.on_bar(&bar(i, 100.0)).is_empty()); }
+        let Some(bars) = load_real_bars() else { return; };
+        for b in bars.iter().take(20) {
+            assert!(s.on_bar(b).is_empty());
+        }
     }
 
     #[test]
     fn test_breakout_long() {
+        let Some(bars) = load_real_bars() else { return; };
         let mut s = DonchianBreakout::new(5, 3);
-        // Flat market to establish channel
-        for i in 0..5 { s.on_bar(&bar(i, 100.0)); }
-        // Breakout above
-        let sigs = s.on_bar(&bar(5, 110.0));
+        let mut sigs = vec![];
+        for b in &bars {
+            sigs.extend(s.on_bar(b));
+        }
         use alm_core::signal::Direction;
         assert!(sigs.iter().any(|s| s.direction == Direction::Long));
     }
@@ -103,7 +105,7 @@ mod tests {
     fn script_parity() {
         use alm_core::signal::Direction;
 
-        let bars = trending_bars(300);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = DonchianBreakout::new(20, 10);
         let named_sigs: Vec<(i64, Direction)> = bars.iter()

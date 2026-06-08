@@ -126,6 +126,7 @@ impl LiveBucketAggregator {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_utils::*;
     use super::*;
     use alm_core::Timeframe;
 

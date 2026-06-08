@@ -55,12 +55,11 @@ impl Strategy for AroonTrend {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_utils::*;
     use super::*;
     use alm_core::signal::Direction;
 
-    fn bar(ts: i64, h: f64, l: f64) -> Bar {
-        Bar::new(ts, "T", h, h, l, (h + l) / 2.0, 1000.0)
-    }
+    
 
     fn ohlcv(ts: i64, close: f64) -> Bar {
         Bar::new(ts, "T", close * 1.005, close * 1.005, close * 0.995, close, 1000.0)
@@ -70,29 +69,20 @@ mod tests {
         bars.iter().flat_map(|b| s.on_bar(b)).map(|s| (s.timestamp, s.direction)).collect()
     }
 
-    fn trending_bars(n: usize) -> Vec<Bar> {
-        let third = n / 3;
-        (0..n).map(|i| {
-            let price = if i < third {
-                200.0 - i as f64 * 1.5
-            } else if i < third * 2 {
-                200.0 - third as f64 * 1.5 + (i - third) as f64 * 2.0
-            } else {
-                200.0 - third as f64 * 1.5 + third as f64 * 2.0 - (i - third * 2) as f64 * 2.0
-            };
-            ohlcv(i as i64 * 60_000, price.max(10.0))
-        }).collect()
-    }
+    
 
     #[test]
     fn test_aroon_no_signal_warmup() {
         let mut s = AroonTrend::new(25, 70.0, 30.0);
-        for i in 0..25 { assert!(s.on_bar(&bar(i, 100.0 + i as f64, 99.0)).is_empty()); }
+        let Some(bars) = load_real_bars() else { return; };
+        for b in bars.iter().take(25) {
+            assert!(s.on_bar(b).is_empty());
+        }
     }
     
     #[test]
     fn parity_reset() {
-        let bars = trending_bars(300);
+        let Some(bars) = load_real_bars() else { return; };
         let mut hc = AroonTrend::new(25, 70.0, 30.0);
         let r1 = run(&mut hc, &bars);
         hc.reset();
@@ -105,7 +95,7 @@ mod tests {
         use crate::factory::build_strategy;
         use serde_json::json;
 
-        let bars = trending_bars(400);
+        let Some(bars) = load_real_bars() else { return; };
 
         let mut named = AroonTrend::new(25, 70.0, 30.0);
         let named_sigs: Vec<(i64, Direction)> = bars.iter()

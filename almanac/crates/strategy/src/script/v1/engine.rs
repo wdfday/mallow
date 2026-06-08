@@ -1,4 +1,4 @@
-use rhai::{Array, Dynamic, Engine};
+use rhai::{Array, Dynamic, Engine, EvalAltResult};
 
 use super::binding::MEntry;
 
@@ -111,6 +111,20 @@ const MULTI_FIELDS: &[&str] = &[
 
 pub(crate) fn build_engine() -> Engine {
     let mut engine = Engine::new();
+
+    // ── Exact f64 comparisons (override Rhai's epsilon comparison) ───────────
+    engine.register_fn("==", |a: f64, b: f64| a == b);
+    engine.register_fn("!=", |a: f64, b: f64| a != b);
+    engine.register_fn("<",  |a: f64, b: f64| a < b);
+    engine.register_fn("<=", |a: f64, b: f64| a <= b);
+    engine.register_fn(">",  |a: f64, b: f64| a > b);
+    engine.register_fn(">=", |a: f64, b: f64| a >= b);
+    engine.register_fn("eq",  |a: f64, b: f64| a == b);
+    engine.register_fn("ne",  |a: f64, b: f64| a != b);
+    engine.register_fn("lt",  |a: f64, b: f64| a < b);
+    engine.register_fn("lte", |a: f64, b: f64| a <= b);
+    engine.register_fn("gt",  |a: f64, b: f64| a > b);
+    engine.register_fn("gte", |a: f64, b: f64| a >= b);
 
     // ── MEntry — multi-output indicator element ──────────────────────────────
     // Allows `supertrend[0] > close` (uses "value" field) AND `supertrend[0].value`.
@@ -238,12 +252,19 @@ pub(crate) fn build_engine() -> Engine {
     engine.register_fn("flag", |v: f64| -> bool { v > 0.5 });
 
     // rising_n / falling_n — monotonically rising/falling for last n bars.
+    // SAFETY: `n` must be validated as positive *before* the `as usize` cast.
+    // A negative `n` would wrap to `usize::MAX`, and the subsequent `n + 1`
+    // would overflow back to 0 in release mode, making the length guard
+    // `a.len() < 0` always false — then `(0..usize::MAX).all(...)` spins a
+    // core to 100 % forever (CPU DoS). Guard: return false for n ≤ 0.
     engine.register_fn("rising_n", |a: Array, n: i64| -> bool {
+        if n <= 0 { return false; }
         let n = n as usize;
         if a.len() < n + 1 { return false; }
         (0..n).all(|i| get_f(a.get(i)) > get_f(a.get(i + 1)))
     });
     engine.register_fn("falling_n", |a: Array, n: i64| -> bool {
+        if n <= 0 { return false; }
         let n = n as usize;
         if a.len() < n + 1 { return false; }
         (0..n).all(|i| get_f(a.get(i)) < get_f(a.get(i + 1)))
@@ -255,23 +276,87 @@ pub(crate) fn build_engine() -> Engine {
         if n < 2 { return 0.0; }
         (get_f(a.get(0)) - get_f(a.get(n - 1))) / (n - 1) as f64
     });
+    // Two-arg form: slope(arr, n) computes over the first n elements.
+    // Allows extract_max_lookback to size bar_buf correctly.
+    engine.register_fn("slope", |a: Array, n: i64| -> Result<f64, Box<EvalAltResult>> {
+        if n <= 0 { return Ok(0.0); }
+        let n = n as usize;
+        if a.len() < n {
+            return Err(format!(
+                "slope: bar buffer ({} bars) is smaller than requested n={n}. \
+                 Use a literal integer for n.",
+                a.len()
+            ).into());
+        }
+        if n < 2 { return Ok(0.0); }
+        Ok((get_f(a.get(0)) - get_f(a.get(n - 1))) / (n - 1) as f64)
+    });
 
     // momentum — absolute change vs N bars ago: arr[0] - arr[n].
-    engine.register_fn("momentum", |a: Array, n: i64| -> f64 {
-        get_f(a.get(0)) - get_f(a.get(n as usize))
+    // n ≤ 0: return 0.0 (no change / invalid lookback).
+    engine.register_fn("momentum", |a: Array, n: i64| -> Result<f64, Box<EvalAltResult>> {
+        if n <= 0 { return Ok(0.0); }
+        let n = n as usize;
+        if a.len() <= n {
+            return Err(format!(
+                "momentum: bar buffer ({} bars) is too small for lookback n={n} \
+                 (needs at least {} bars). Use a literal integer for n.",
+                a.len(), n + 1
+            ).into());
+        }
+        Ok(get_f(a.get(0)) - get_f(a.get(n)))
     });
 
     // ── Lookback ─────────────────────────────────────────────────────────────
-    engine.register_fn("highest", |arr: Array, n: i64| -> f64 {
-        arr.iter().take(n as usize).map(|d| dyn_f(d).unwrap_or(f64::NEG_INFINITY)).fold(f64::NEG_INFINITY, f64::max)
+    // n ≤ 0: empty window → NEG_INFINITY / INFINITY sentinel (consistent with
+    // an empty take()).
+    //
+    // SAFETY — buffer-size guard: if the array is smaller than `n` the bar
+    // buffer was not sized correctly (most likely because `n` was supplied as
+    // a variable/expression and `extract_max_lookback` could not parse it).
+    // Returning a value silently in this case would produce completely wrong
+    // technical-analysis results without any visible error. We throw a Rhai
+    // runtime error instead so the problem is surfaced immediately.
+    //
+    // Note: this guard triggers only when arr.len() < n *and* n > arr.len()
+    // (i.e. the buffer is genuinely under-sized, not just "few early bars").
+    // The warm-up mechanism pre-fills the bar ring to `bar_buf_depth` before
+    // the strategy starts producing signals, so at signal time arr.len() ==
+    // bar_buf_depth.  When bar_buf_depth < n the linter should have already
+    // reported an error; this is the last-resort safety net.
+    engine.register_fn("highest", |arr: Array, n: i64| -> Result<f64, Box<EvalAltResult>> {
+        if n <= 0 { return Ok(f64::NEG_INFINITY); }
+        let n = n as usize;
+        if arr.len() < n {
+            return Err(format!(
+                "highest: bar buffer ({} bars) is smaller than requested lookback n={n}. \
+                 Use a literal integer for n so the buffer can be sized automatically, \
+                 e.g. `highest(close, {n})`.",
+                arr.len()
+            ).into());
+        }
+        Ok(arr.iter().take(n).map(|d| dyn_f(d).unwrap_or(f64::NEG_INFINITY)).fold(f64::NEG_INFINITY, f64::max))
     });
-    engine.register_fn("lowest", |arr: Array, n: i64| -> f64 {
-        arr.iter().take(n as usize).map(|d| dyn_f(d).unwrap_or(f64::INFINITY)).fold(f64::INFINITY, f64::min)
+    engine.register_fn("lowest", |arr: Array, n: i64| -> Result<f64, Box<EvalAltResult>> {
+        if n <= 0 { return Ok(f64::INFINITY); }
+        let n = n as usize;
+        if arr.len() < n {
+            return Err(format!(
+                "lowest: bar buffer ({} bars) is smaller than requested lookback n={n}. \
+                 Use a literal integer for n so the buffer can be sized automatically, \
+                 e.g. `lowest(close, {n})`.",
+                arr.len()
+            ).into());
+        }
+        Ok(arr.iter().take(n).map(|d| dyn_f(d).unwrap_or(f64::INFINITY)).fold(f64::INFINITY, f64::min))
     });
 
     // ── Array aggregation ────────────────────────────────────────────────────
     engine.register_fn("avg", |arr: Array| -> f64 {
-        if arr.is_empty() { return 0.0; }
+        // Empty array → NaN: the script is gate-guarded by warm-up so this
+        // should never occur at signal time; returning NaN makes misconfiguration
+        // loud (NaN comparisons always false) instead of silently producing 0.0.
+        if arr.is_empty() { return f64::NAN; }
         let s: f64 = arr.iter().map(|d| dyn_f(d).unwrap_or(0.0)).sum();
         s / arr.len() as f64
     });
@@ -282,14 +367,32 @@ pub(crate) fn build_engine() -> Engine {
     // ── Volatility / statistics ──────────────────────────────────────────────
     // stdev — population standard deviation over the whole buffer or first `n` bars.
     engine.register_fn("stdev", |arr: Array| -> f64 { mean_std(&arr, arr.len()).1 });
-    engine.register_fn("stdev", |arr: Array, n: i64| -> f64 {
-        mean_std(&arr, n.max(0) as usize).1
+    engine.register_fn("stdev", |arr: Array, n: i64| -> Result<f64, Box<EvalAltResult>> {
+        if n <= 0 { return Ok(0.0); }
+        let n = n as usize;
+        if arr.len() < n {
+            return Err(format!(
+                "stdev: bar buffer ({} bars) is smaller than requested window n={n}. \
+                 Use a literal integer for n.",
+                arr.len()
+            ).into());
+        }
+        Ok(mean_std(&arr, n).1)
     });
     // pct_change — percentage change vs `n` bars ago: (a[0] - a[n]) / a[n].
-    engine.register_fn("pct_change", |arr: Array, n: i64| -> f64 {
+    engine.register_fn("pct_change", |arr: Array, n: i64| -> Result<f64, Box<EvalAltResult>> {
+        if n <= 0 { return Ok(0.0); }
+        let n = n as usize;
+        if arr.len() <= n {
+            return Err(format!(
+                "pct_change: bar buffer ({} bars) is too small for lookback n={n} \
+                 (needs at least {} bars). Use a literal integer for n.",
+                arr.len(), n + 1
+            ).into());
+        }
         let cur  = get_f(arr.get(0));
-        let past = get_f(arr.get(n.max(0) as usize));
-        if past == 0.0 { 0.0 } else { (cur - past) / past }
+        let past = get_f(arr.get(n));
+        Ok(if past == 0.0 { 0.0 } else { (cur - past) / past })
     });
     // zscore — (a[0] - mean) / stdev over the whole buffer or first `n` bars.
     // Returns 0.0 when stdev is 0 (flat series) to avoid div-by-zero.
@@ -297,14 +400,28 @@ pub(crate) fn build_engine() -> Engine {
         let (mean, sd, _) = mean_std(&arr, arr.len());
         if sd == 0.0 { 0.0 } else { (get_f(arr.get(0)) - mean) / sd }
     });
-    engine.register_fn("zscore", |arr: Array, n: i64| -> f64 {
-        let (mean, sd, _) = mean_std(&arr, n.max(0) as usize);
-        if sd == 0.0 { 0.0 } else { (get_f(arr.get(0)) - mean) / sd }
+    engine.register_fn("zscore", |arr: Array, n: i64| -> Result<f64, Box<EvalAltResult>> {
+        if n <= 0 { return Ok(0.0); }
+        let n = n as usize;
+        if arr.len() < n {
+            return Err(format!(
+                "zscore: bar buffer ({} bars) is smaller than requested window n={n}. \
+                 Use a literal integer for n.",
+                arr.len()
+            ).into());
+        }
+        let (mean, sd, _) = mean_std(&arr, n);
+        Ok(if sd == 0.0 { 0.0 } else { (get_f(arr.get(0)) - mean) / sd })
     });
 
     // ── Scalar math ──────────────────────────────────────────────────────────
     engine.register_fn("abs",   |v: f64| -> f64 { v.abs() });
-    engine.register_fn("sqrt",  |v: f64| -> f64 { v.sqrt() });
+    engine.register_fn("sqrt",  |v: f64| -> Result<f64, Box<EvalAltResult>> {
+        if v < 0.0 {
+            return Err(format!("sqrt: argument must be ≥ 0, got {v}").into());
+        }
+        Ok(v.sqrt())
+    });
     engine.register_fn("pow",   |v: f64, e: f64| -> f64 { v.powf(e) });
     engine.register_fn("round", |v: f64| -> f64 { v.round() });
     engine.register_fn("floor", |v: f64| -> f64 { v.floor() });
@@ -316,6 +433,36 @@ pub(crate) fn build_engine() -> Engine {
         if v > 0.0 { 1.0 } else if v < 0.0 { -1.0 } else { 0.0 }
     });
 
+    // i64 overloads — Rhai integer literals are i64; without these,
+    // `min(arr[0], 70)` fails at runtime with "Function not found".
+    engine.register_fn("abs",   |v: i64| -> i64 { v.abs() });
+    engine.register_fn("round", |v: i64| -> i64 { v });
+    engine.register_fn("floor", |v: i64| -> i64 { v });
+    engine.register_fn("ceil",  |v: i64| -> i64 { v });
+    engine.register_fn("sign",  |v: i64| -> i64 {
+        if v > 0 { 1 } else if v < 0 { -1 } else { 0 }
+    });
+    engine.register_fn("min",   |a: i64, b: i64| -> i64 { a.min(b) });
+    engine.register_fn("max",   |a: i64, b: i64| -> i64 { a.max(b) });
+    engine.register_fn("min",   |a: f64, b: i64| -> f64 { a.min(b as f64) });
+    engine.register_fn("min",   |a: i64, b: f64| -> f64 { (a as f64).min(b) });
+    engine.register_fn("max",   |a: f64, b: i64| -> f64 { a.max(b as f64) });
+    engine.register_fn("max",   |a: i64, b: f64| -> f64 { (a as f64).max(b) });
+    engine.register_fn("clamp", |v: i64, lo: i64, hi: i64| -> i64 { v.clamp(lo, hi) });
+    engine.register_fn("clamp", |v: f64, lo: i64, hi: i64| -> f64 {
+        v.clamp(lo as f64, hi as f64)
+    });
+    engine.register_fn("pow",   |v: f64, e: i64| -> Result<f64, Box<EvalAltResult>> {
+        let exp = i32::try_from(e)
+            .map_err(|_| format!("pow: exponent {e} is out of i32 range (must be in -2147483648..=2147483647)"))?;
+        Ok(v.powi(exp))
+    });
+    engine.register_fn("pow",   |v: i64, e: i64| -> Result<f64, Box<EvalAltResult>> {
+        let exp = i32::try_from(e)
+            .map_err(|_| format!("pow: exponent {e} is out of i32 range (must be in -2147483648..=2147483647)"))?;
+        Ok((v as f64).powi(exp))
+    });
+
     // ── Debug ────────────────────────────────────────────────────────────────
     engine.register_fn("log", |msg: String| {
         tracing::debug!(rhai = %msg);
@@ -324,8 +471,10 @@ pub(crate) fn build_engine() -> Engine {
     // ── Plot ─────────────────────────────────────────────────────────────────
     // `plot("name", value)` is a no-op hint: declared indicators are already
     // auto-collected into `take_indicator_series()` without needing plot calls.
-    engine.register_fn("plot", |_name: String, _value: f64|  {});
-    engine.register_fn("plot", |_name: String, _value: bool| {});
+    engine.register_fn("plot", |_name: String, _value: f64|   {});
+    engine.register_fn("plot", |_name: String, _value: bool|  {});
+    engine.register_fn("plot", |_name: String, _value: i64|   {});
+    engine.register_fn("plot", |_name: String, _value: MEntry| {});
 
     // ── Multi-output field extractors ────────────────────────────────────────
     // Register as BOTH a free function AND an Array property getter so that
@@ -354,28 +503,109 @@ pub(crate) fn build_engine() -> Engine {
 /// - the token after the comma is not a plain decimal integer.
 ///
 /// Handles nested calls correctly: `highest(some_fn(x, y), 20)` → 20.
-fn parse_second_int_arg(args: &str) -> usize {
+/// Evaluate a simple constant-integer expression consisting of non-negative
+/// integer literals combined with `+`, `-`, `*`, `/` operators (no parens,
+/// no variables).  Returns `None` when the expression contains identifiers or
+/// unsupported syntax.
+///
+/// Examples: `"20"` → `Some(20)`, `"20 + 5"` → `Some(25)`,
+///           `"3 * 10"` → `Some(30)`, `"length"` → `None`.
+pub(crate) fn eval_const_int_expr(expr: &str) -> Option<usize> {
+    let expr = expr.trim();
+    if expr.is_empty() { return None; }
+
+    // Plain non-negative integer literal.
+    if expr.chars().all(|c| c.is_ascii_digit()) {
+        return expr.parse().ok();
+    }
+
+    // Scan right-to-left for + / - at the top level (lowest precedence, handle
+    // left-associativity by taking the rightmost split point).
+    let bytes = expr.as_bytes();
+    let mut depth = 0i32;
+    let mut split: Option<(usize, u8)> = None;
+    for (i, &b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => depth -= 1,
+            b'+' | b'-' if depth == 0 && i > 0 => { split = Some((i, b)); }
+            _ => {}
+        }
+    }
+    if let Some((pos, op)) = split {
+        let left  = eval_const_int_expr(&expr[..pos])?;
+        let right = eval_const_int_expr(&expr[pos + 1..])?;
+        return match op {
+            b'+' => Some(left.saturating_add(right)),
+            b'-' => left.checked_sub(right),
+            _    => None,
+        };
+    }
+
+    // No + / - → look for * / / at the top level (left-to-right, first hit).
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'*' {
+            let left  = eval_const_int_expr(&expr[..i])?;
+            let right = eval_const_int_expr(&expr[i + 1..])?;
+            return Some(left.saturating_mul(right));
+        }
+        if b == b'/' && i > 0 {
+            let left  = eval_const_int_expr(&expr[..i])?;
+            let right = eval_const_int_expr(&expr[i + 1..])?;
+            if right == 0 { return None; }
+            return Some(left / right);
+        }
+    }
+
+    None
+}
+
+/// Extract the text of the second top-level argument from the argument list
+/// that starts right after the opening `(` of a call. Stops at the matching
+/// `)` for the outer call. Returns `None` if there is no second argument.
+fn second_arg_text(args: &str) -> Option<&str> {
     let mut depth = 0usize;
+    let mut comma_byte: Option<usize> = None;
     for (i, ch) in args.char_indices() {
         match ch {
             '(' | '[' => depth += 1,
             ')' | ']' => {
-                if depth == 0 { return 0; } // end of outer call — no top-level comma
+                if depth == 0 {
+                    // End of the outer call — stop here.
+                    if let Some(cb) = comma_byte {
+                        return Some(args[cb + 1..i].trim());
+                    }
+                    return None;
+                }
                 depth -= 1;
             }
             ',' if depth == 0 => {
-                let after = args[i + 1..].trim_start();
-                return after
-                    .chars()
-                    .take_while(|c| c.is_ascii_digit())
-                    .collect::<String>()
-                    .parse()
-                    .unwrap_or(0);
+                if comma_byte.is_none() {
+                    comma_byte = Some(i);
+                    // Don't break — we still need to find the matching `)`.
+                }
             }
             _ => {}
         }
     }
-    0
+    // Comma found but no closing `)` (caller passed only the inner args string).
+    comma_byte.map(|cb| args[cb + 1..].trim())
+}
+
+fn parse_second_int_arg(args: &str) -> usize {
+    second_arg_text(args)
+        .and_then(eval_const_int_expr)
+        .unwrap_or(0)
+}
+
+/// Return `true` when the second argument of the call is a static integer
+/// expression (all operands are integer literals, no identifiers).  Used by
+/// the linter to detect variable / dynamic `n` arguments.
+pub(crate) fn second_arg_is_static_literal(args: &str) -> bool {
+    match second_arg_text(args) {
+        Some(text) => eval_const_int_expr(text).is_some(),
+        None       => false,
+    }
 }
 
 /// Scan the cleaned script for lookback functions and return the maximum N
@@ -390,6 +620,7 @@ pub(crate) fn extract_max_lookback(script: &str) -> usize {
         ("falling_n(",  1),
         ("stdev(",      0), // windowed form stdev(arr, n) → needs n bars
         ("zscore(",     0), // windowed form zscore(arr, n) → needs n bars
+        ("slope(",      0), // two-arg form slope(arr, n) → needs n bars
     ];
 
     let mut max_n = 0usize;
@@ -412,6 +643,7 @@ pub(crate) fn extract_max_lookback(script: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
+    use crate::test_utils::*;
     use super::*;
     use std::collections::HashMap;
     use alm_indicator::IndicatorBox;
@@ -642,6 +874,37 @@ mod tests {
         assert!((add2 - 13.5).abs() < 1e-9, "0 + e = {add2}");
     }
 
+    /// Negative `n` in `rising_n` / `falling_n` previously wrapped `n as usize`
+    /// to `usize::MAX`, then `(0..usize::MAX).all(...)` would spin a CPU core
+    /// forever (CPU DoS). `momentum` / `highest` / `lowest` with negative n had
+    /// similar cast bugs (correctness, not DoS). All must return a safe sentinel.
+    #[test]
+    fn negative_n_is_safe_not_infinite_loop() {
+        let engine = build_engine();
+
+        // rising_n / falling_n with n ≤ 0 must return false immediately.
+        assert!(!engine.eval::<bool>("rising_n([3.0, 2.0, 1.0], -1)").unwrap(),  "rising_n n=-1");
+        assert!(!engine.eval::<bool>("rising_n([3.0, 2.0, 1.0],  0)").unwrap(),  "rising_n n=0");
+        assert!(!engine.eval::<bool>("falling_n([1.0, 2.0, 3.0], -1)").unwrap(), "falling_n n=-1");
+        assert!(!engine.eval::<bool>("falling_n([1.0, 2.0, 3.0],  0)").unwrap(), "falling_n n=0");
+
+        // Positive n still works correctly.
+        assert!(engine.eval::<bool>("rising_n([3.0, 2.0, 1.0], 2)").unwrap(),  "rising_n n=2 should be true");
+        assert!(!engine.eval::<bool>("rising_n([1.0, 2.0, 3.0], 2)").unwrap(), "rising_n n=2 falling array");
+
+        // momentum with n ≤ 0 → 0.0.
+        let m = engine.eval::<f64>("momentum([5.0, 3.0, 1.0], -1)").unwrap();
+        assert_eq!(m, 0.0, "momentum n=-1 must be 0.0");
+        let m0 = engine.eval::<f64>("momentum([5.0, 3.0, 1.0], 0)").unwrap();
+        assert_eq!(m0, 0.0, "momentum n=0 must be 0.0");
+
+        // highest / lowest with n ≤ 0 → sentinel, not incorrect result.
+        let hi = engine.eval::<f64>("highest([1.0, 2.0, 3.0], -1)").unwrap();
+        assert_eq!(hi, f64::NEG_INFINITY, "highest n=-1 → NEG_INFINITY");
+        let lo = engine.eval::<f64>("lowest([1.0, 2.0, 3.0], -1)").unwrap();
+        assert_eq!(lo, f64::INFINITY, "lowest n=-1 → INFINITY");
+    }
+
     /// Windowed statistics functions must extend the bar buffer to fit `n`,
     /// otherwise `stdev(close, 50)` would silently see a too-short slice.
     #[test]
@@ -689,5 +952,145 @@ mod tests {
             30,
             "max across two calls"
         );
+    }
+
+    /// Constant-expression evaluation for the second arg of lookback functions.
+    #[test]
+    fn eval_const_int_expr_basic() {
+        // Plain literals.
+        assert_eq!(eval_const_int_expr("20"),    Some(20));
+        assert_eq!(eval_const_int_expr(" 5 "),   Some(5));
+        assert_eq!(eval_const_int_expr("0"),      Some(0));
+
+        // Simple arithmetic.
+        assert_eq!(eval_const_int_expr("20 + 5"),  Some(25));
+        assert_eq!(eval_const_int_expr("30 - 5"),  Some(25));
+        assert_eq!(eval_const_int_expr("4 * 5"),   Some(20));
+        assert_eq!(eval_const_int_expr("20 / 4"),  Some(5));
+
+        // Chained operators (left-associative via rightmost +/- split).
+        assert_eq!(eval_const_int_expr("10 + 5 + 3"), Some(18));
+        assert_eq!(eval_const_int_expr("20 - 3 - 2"), Some(15));
+
+        // Variables and identifiers → None.
+        assert_eq!(eval_const_int_expr("n"),       None);
+        assert_eq!(eval_const_int_expr("length"),  None);
+        assert_eq!(eval_const_int_expr("20 + n"),  None);
+
+        // Division by zero → None.
+        assert_eq!(eval_const_int_expr("10 / 0"),  None);
+    }
+
+    /// Lookback scanner now evaluates simple constant-arithmetic expressions
+    /// in the second arg position (e.g. `highest(close, 20 + 5)`).
+    #[test]
+    fn lookback_scanner_constant_expression_second_arg() {
+        assert_eq!(
+            extract_max_lookback("h = highest(close, 20 + 5);"),
+            25,
+            "20 + 5 should evaluate to 25"
+        );
+        assert_eq!(
+            extract_max_lookback("h = highest(close, 3 * 10);"),
+            30,
+            "3 * 10 should evaluate to 30"
+        );
+        // Variable still contributes 0 (cannot evaluate statically).
+        assert_eq!(
+            extract_max_lookback("h = highest(close, length);"),
+            0,
+            "variable second arg still contributes 0"
+        );
+    }
+
+    /// `second_arg_is_static_literal` distinguishes static integer expressions
+    /// from variables / complex runtime expressions.
+    #[test]
+    fn second_arg_is_static_literal_detection() {
+        // Literal → true.
+        assert!(second_arg_is_static_literal("close, 20)"),  "literal 20");
+        assert!(second_arg_is_static_literal("arr, 20 + 5)"), "expr 20+5");
+        assert!(second_arg_is_static_literal("arr, 3 * 10)"), "expr 3*10");
+
+        // Variable → false.
+        assert!(!second_arg_is_static_literal("close, n)"),      "variable n");
+        assert!(!second_arg_is_static_literal("close, length)"), "variable length");
+        assert!(!second_arg_is_static_literal("arr, n + 5)"),    "mixed expr+var");
+
+        // No second arg → false.
+        assert!(!second_arg_is_static_literal("close)"),  "no comma");
+    }
+
+    /// Runtime guard: highest / lowest / etc. throw an error when the array is
+    /// smaller than n (under-buffered due to variable n or expression n).
+    #[test]
+    fn runtime_guard_underbuffered_throws_error() {
+        let engine = build_engine();
+
+        // A 3-element array with n=10 → under-buffered → Rhai error.
+        assert!(
+            engine.eval::<f64>("highest([1.0, 2.0, 3.0], 10)").is_err(),
+            "highest: under-buffered should error"
+        );
+        assert!(
+            engine.eval::<f64>("lowest([1.0, 2.0, 3.0], 10)").is_err(),
+            "lowest: under-buffered should error"
+        );
+        assert!(
+            engine.eval::<f64>("stdev([1.0, 2.0, 3.0], 10)").is_err(),
+            "stdev: under-buffered should error"
+        );
+        assert!(
+            engine.eval::<f64>("zscore([1.0, 2.0, 3.0], 10)").is_err(),
+            "zscore: under-buffered should error"
+        );
+        assert!(
+            engine.eval::<f64>("pct_change([1.0, 2.0, 3.0], 10)").is_err(),
+            "pct_change: under-buffered should error"
+        );
+        assert!(
+            engine.eval::<f64>("momentum([1.0, 2.0, 3.0], 10)").is_err(),
+            "momentum: under-buffered should error"
+        );
+
+        // A sufficiently sized array must still work correctly.
+        let hi = engine.eval::<f64>("highest([5.0, 3.0, 1.0], 3)").unwrap();
+        assert!((hi - 5.0).abs() < 1e-9, "highest correct result");
+        let lo = engine.eval::<f64>("lowest([5.0, 3.0, 1.0], 3)").unwrap();
+        assert!((lo - 1.0).abs() < 1e-9, "lowest correct result");
+    }
+
+    /// i64 overloads for scalar math — Rhai integer literals are i64.
+    #[test]
+    fn scalar_math_i64_overloads() {
+        let engine = build_engine();
+        assert_eq!(engine.eval::<i64>("abs(-5)").unwrap(),     5);
+        assert_eq!(engine.eval::<i64>("min(3, 7)").unwrap(),   3);
+        assert_eq!(engine.eval::<i64>("max(3, 7)").unwrap(),   7);
+        assert_eq!(engine.eval::<f64>("min(3.0, 7)").unwrap(), 3.0);
+        assert_eq!(engine.eval::<f64>("max(3, 7.0)").unwrap(), 7.0);
+        assert_eq!(engine.eval::<i64>("clamp(10, 0, 5)").unwrap(), 5);
+        assert_eq!(engine.eval::<i64>("sign(-3)").unwrap(), -1);
+        assert_eq!(engine.eval::<i64>("sign(0)").unwrap(),   0);
+        assert_eq!(engine.eval::<i64>("sign(3)").unwrap(),   1);
+        // pow with integer exponent
+        let p = engine.eval::<f64>("pow(2.0, 3)").unwrap();
+        assert!((p - 8.0).abs() < 1e-9, "pow(2.0, 3) = {p}");
+    }
+
+    /// sqrt of negative number throws a Rhai error instead of producing NaN.
+    #[test]
+    fn sqrt_negative_throws_error() {
+        let engine = build_engine();
+        assert!(engine.eval::<f64>("sqrt(-1.0)").is_err(), "sqrt(-1) should error");
+        let ok = engine.eval::<f64>("sqrt(4.0)").unwrap();
+        assert!((ok - 2.0).abs() < 1e-9, "sqrt(4) = {ok}");
+    }
+
+    /// Two-arg slope is scanned by extract_max_lookback.
+    #[test]
+    fn slope_two_arg_is_scanned() {
+        assert_eq!(extract_max_lookback("s = slope(close, 20);"), 20);
+        assert_eq!(extract_max_lookback("s = slope(close);"),      0);
     }
 }

@@ -26,9 +26,12 @@ export const heikin_ashi: (a: number, b: number, c: number, d: number, e: number
 export const indicator_catalog: () => any;
 export const init: () => void;
 export const list_indicators: () => any;
+export const list_mtf_strategies: () => any;
 export const list_strategies: () => any;
 export const run_backtest: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number, s: number, t: number) => any;
 export const run_indicators: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => any;
+export const run_mtf_backtest: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number) => any;
+export const run_mtf_script_backtest: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number) => any;
 export const run_script_backtest: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number, q: number, r: number) => any;
 export const smooth_ha: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number) => any;
 export const validate_script: (a: number, b: number, c: number, d: number) => any;

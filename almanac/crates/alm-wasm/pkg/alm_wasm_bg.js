@@ -331,8 +331,7 @@ export function heikin_ashi(t, o, h, l, c, v) {
 
 /**
  * Full indicator catalog for editor hints: `[{name, label, category, description,
- * params:[{name,type,default}], outputs:[{name,type}]}, ...]`. Drives autocomplete,
- * field completion, and hover docs client-side (no server round-trip).
+ * params:[{name,type,default}], outputs:[{name,type}]}, ...]`.
  * @returns {any}
  */
 export function indicator_catalog() {
@@ -354,7 +353,16 @@ export function list_indicators() {
 }
 
 /**
- * List all named strategy keys usable with `run_backtest`.
+ * List all multi-TF named strategy keys usable with `run_mtf_backtest`.
+ * @returns {any}
+ */
+export function list_mtf_strategies() {
+    const ret = wasm.list_mtf_strategies();
+    return ret;
+}
+
+/**
+ * List all single-TF named strategy keys usable with `run_backtest`.
  * @returns {any}
  */
 export function list_strategies() {
@@ -363,9 +371,9 @@ export function list_strategies() {
 }
 
 /**
- * Run a named strategy backtest client-side.
+ * Run a **single-TF named** strategy backtest client-side.
  *
- * `strategy_name`: any name from `list_strategies()` (e.g. `"ema_cross"`, `"rsi_mean_rev"`)
+ * `strategy_name`: any name from `list_strategies()` (e.g. `"ema_cross"`)
  * `params_json`:   `{"period": 14, ...}`
  * `config_json`:   `{"initial_capital": 10000, "position_size_pct": 1.0, ...}`
  * @param {string} symbol
@@ -442,10 +450,82 @@ export function run_indicators(symbol, t, o, h, l, c, v, config_json) {
 }
 
 /**
- * Run a script backtest client-side.
+ * Run a **multi-TF named** strategy backtest client-side.
  *
- * `script`: Script (same syntax as herald `/api/v1/backtest/script`)
- * `config_json`: `{"initial_capital": 10000, "position_size_pct": 1.0, ...}`
+ * `strategy_name`: any name from `list_mtf_strategies()` (e.g. `"mtf_ema_rsi"`)
+ * `params_json`:   `{}` (currently all MTF named strategies use built-in defaults)
+ * `base_tf`:       base timeframe string — same set as `run_mtf_script_backtest`
+ * `bars_json`:     same format as `run_mtf_script_backtest`
+ * `config_json`:   same as `run_backtest`
+ * @param {string} symbol
+ * @param {string} strategy_name
+ * @param {string} params_json
+ * @param {string} base_tf
+ * @param {string} bars_json
+ * @param {string} config_json
+ * @returns {any}
+ */
+export function run_mtf_backtest(symbol, strategy_name, params_json, base_tf, bars_json, config_json) {
+    const ptr0 = passStringToWasm0(symbol, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(strategy_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passStringToWasm0(params_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passStringToWasm0(base_tf, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ptr4 = passStringToWasm0(bars_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len4 = WASM_VECTOR_LEN;
+    const ptr5 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len5 = WASM_VECTOR_LEN;
+    const ret = wasm.run_mtf_backtest(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5);
+    return ret;
+}
+
+/**
+ * Run a **multi-TF V2 script** backtest client-side.
+ *
+ * `base_tf`:   base timeframe string — `"M1"`, `"M5"`, `"H1"`, etc.
+ *              (M1 M3 M5 M10 M15 M30 H1 H2 H4 H6 H12 D1 W1)
+ * `bars_json`: JSON object mapping each required TF to its OHLCV arrays:
+ * ```json
+ * {
+ *   "M1": { "t": [...], "o": [...], "h": [...], "l": [...], "c": [...], "v": [...] },
+ *   "H4": { "t": [...], "o": [...], "h": [...], "l": [...], "c": [...], "v": [...] }
+ * }
+ * ```
+ * All timeframes declared in the script **must** be present; extra ones are ignored.
+ * `config_json`: same as `run_backtest`.
+ *
+ * Also works for single-TF V2 scripts — pass only the base TF in `bars_json`.
+ * @param {string} symbol
+ * @param {string} script
+ * @param {string} base_tf
+ * @param {string} bars_json
+ * @param {string} config_json
+ * @returns {any}
+ */
+export function run_mtf_script_backtest(symbol, script, base_tf, bars_json, config_json) {
+    const ptr0 = passStringToWasm0(symbol, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(script, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passStringToWasm0(base_tf, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ptr3 = passStringToWasm0(bars_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len3 = WASM_VECTOR_LEN;
+    const ptr4 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len4 = WASM_VECTOR_LEN;
+    const ret = wasm.run_mtf_script_backtest(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4);
+    return ret;
+}
+
+/**
+ * Run a **single-TF V1 script** backtest client-side.
+ *
+ * Multi-timeframe (V2) scripts — those that call `ind.TYPE(period)` on a
+ * higher TF — cannot run here because only one TF feed is available.
+ * Use `run_mtf_script_backtest` instead and pass bars for every required TF.
  * @param {string} symbol
  * @param {string} script
  * @param {Float64Array} t
@@ -481,7 +561,13 @@ export function run_script_backtest(symbol, script, t, o, h, l, c, v, config_jso
 }
 
 /**
- * EMA-smoothed Heikin-Ashi. Warmup bars trimmed from output.
+ * EMA-smoothed Heikin-Ashi (Smoothed HA).
+ *
+ * Mỗi thành phần OHLC được EMA(period)-smooth độc lập trước khi tính HA.
+ * Warmup = `period` bar (first `period-1` bars trả về None, bị drop khỏi output).
+ * FE phải dùng mảng `t` trả về để align — output ngắn hơn input `period-1` bar.
+ *
+ * `period` phải >= 2. Truyền `period=1` là lỗi — dùng `heikin_ashi()` cho HA chuẩn.
  * @param {Float64Array} t
  * @param {Float64Array} o
  * @param {Float64Array} h
@@ -512,7 +598,8 @@ export function smooth_ha(t, o, h, l, c, v, period) {
  * Lint a strategy script client-side (no server round-trip).
  *
  * Returns `{ errors: [{line, col, message, severity}], scope: {...} }`.
- * Pass `base_tf` as e.g. `"H1"` or `null` / empty string to skip TF checks.
+ * `base_tf`: `"M1"` / `"H4"` / etc., or empty string to skip TF checks.
+ * Supports all 13 timeframes: M1 M3 M5 M10 M15 M30 H1 H2 H4 H6 H12 D1 W1.
  * @param {string} script
  * @param {string} base_tf
  * @returns {any}

@@ -2,18 +2,16 @@ package handler
 
 import (
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/nats-io/nats.go"
-
-	"gateway/internal/service"
 )
 
 // Handler holds shared dependencies for all route handlers.
 type Handler struct {
-	NC         *nats.Conn
-	Strategist *service.StrategistClient
-	HeraldURL  string
+	NC        *nats.Conn
+	HeraldURL string
 }
 
 func (h *Handler) SwaggerIndex(c *gin.Context) {
@@ -167,14 +165,6 @@ func (h *Handler) SwaggerIndex(c *gin.Context) {
           <a class="button" href="/swagger/gateway/index.html">Open Swagger UI</a>
         </div>
       </article>
-      <article class="card">
-        <p class="eyebrow">Strategist</p>
-        <h2>AI agent and chat</h2>
-        <p>ADK-powered trading assistant. Chat via <code>POST /api/chat</code> (sync) or <code>/api/chat/stream</code> (SSE). Raw proxy at <code>/api/v1/strategist</code>.</p>
-        <div class="actions">
-          <a class="button" href="/api/v1/strategist/ui/">Open ADK Web UI</a>
-        </div>
-      </article>
     </section>
   </main>
 </body>
@@ -195,9 +185,15 @@ func (h *Handler) Health(c *gin.Context) {
 	natsOK := h.NC != nil && h.NC.IsConnected()
 
 	heraldOK := false
-	if resp, err := http.Get(h.HeraldURL + "/health"); err == nil {
-		heraldOK = resp.StatusCode == http.StatusOK
-		resp.Body.Close()
+	{
+		// Use a short-timeout client — /health is probed frequently by load
+		// balancers. http.DefaultClient has no timeout; a hung herald would
+		// block every health probe goroutine indefinitely.
+		hc := &http.Client{Timeout: 3 * time.Second}
+		if resp, err := hc.Get(h.HeraldURL + "/health"); err == nil {
+			heraldOK = resp.StatusCode == http.StatusOK
+			resp.Body.Close()
+		}
 	}
 
 	status := "ok"

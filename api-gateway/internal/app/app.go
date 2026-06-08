@@ -38,7 +38,7 @@ func Run(ctx context.Context) {
 	// ── NATS ────────────────────────────────────────────────────────────
 	nc, err := nats.Connect(cfg.NatsURL,
 		nats.RetryOnFailedConnect(true),
-		nats.MaxReconnects(10),
+		nats.MaxReconnects(-1), // infinite reconnect — gateway must not stop routing after 10 failures
 	)
 	if err != nil {
 		log.Fatalf("nats connect failed: %v", err)
@@ -57,9 +57,8 @@ func Run(ctx context.Context) {
 
 	// ── Handler & Router ────────────────────────────────────────────────
 	h := &handler.Handler{
-		NC:         nc,
-		Strategist: service.NewStrategistClient(cfg.StrategistURL),
-		HeraldURL:  cfg.HeraldURL,
+		NC:        nc,
+		HeraldURL: cfg.HeraldURL,
 	}
 	identityClient := service.NewIdentityClient(cfg.IdentityURL, cfg.ServiceSecret)
 	r := buildRouter(cfg, h, rdb, identityClient)

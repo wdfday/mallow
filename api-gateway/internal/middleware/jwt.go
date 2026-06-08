@@ -29,6 +29,7 @@ type JWTAuthConfig struct {
 
 type jwksCache struct {
 	mu         sync.RWMutex
+	refreshMu  sync.Mutex // serialises concurrent refresh calls (S7 thundering-herd fix)
 	keysByKid  map[string]ed25519.PublicKey
 	keysNoKid  []ed25519.PublicKey
 	expiresAt  time.Time
@@ -265,9 +266,24 @@ func (c *jwksCache) resolveFromJWKS(token *jwt.Token, jwksURL string, ttl time.D
 	c.mu.RLock()
 	expiresAt := c.expiresAt
 	c.mu.RUnlock()
+
 	if expiresAt.IsZero() || now.After(expiresAt) {
-		if err := c.refresh(jwksURL, ttl); err != nil {
-			return nil, err
+		// Serialise concurrent refresh calls with refreshMu so that only one
+		// goroutine hits the identity JWKS endpoint at a time. The inner
+		// double-check prevents redundant fetches once the winner has set a
+		// new expiresAt (thundering-herd fix for S7).
+		c.refreshMu.Lock()
+		c.mu.RLock()
+		stale := c.expiresAt.IsZero() || now.After(c.expiresAt)
+		c.mu.RUnlock()
+		if stale {
+			err := c.refresh(jwksURL, ttl)
+			c.refreshMu.Unlock()
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			c.refreshMu.Unlock()
 		}
 	}
 

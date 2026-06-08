@@ -738,16 +738,3 @@ func (h *Handler) Register(c *gin.Context) {}
 // @Success      200   {object}  map[string]interface{}
 // @Router       /api/v1/auth/refresh [post]
 func (h *Handler) RefreshToken(c *gin.Context) {}
-
-// ── Strategist ────────────────────────────────────────────────────────────────
-
-// GetStrategistUI godoc
-//
-// @Summary      Strategist ADK Web UI
-// @Description  Serves the Google ADK development UI for the trading assistant agent.
-// @Tags         Strategist
-// @Security     BearerAuth
-// @Produce      text/html
-// @Success      200  {string}  string
-// @Router       /api/v1/strategist/ui/ [get]
-func (h *Handler) GetStrategistUI(c *gin.Context) {}

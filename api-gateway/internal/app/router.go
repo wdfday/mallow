@@ -22,13 +22,13 @@ func buildRouter(cfg config.Config, h *handler.Handler, rdb *redis.Client, ident
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(pkgtelemetry.GinMiddleware("gateway"))
+	r.Use(middleware.StripTrustedHeaders()) // must be first — strips X-User-* before any proxy sees them
 	r.Use(middleware.CORS(cfg.CORSOrigins))
-	r.Use(middleware.RateLimiter(cfg.RateLimitPerMinute))
+	r.Use(middleware.RateLimiter(rdb, cfg.RateLimitPerMinute))
 
 	// ── Proxies ─────────────────────────────────────────────────────────
 	identityProxy := handler.IdentityProxy(cfg.IdentityURL)
 	helmProxy := handler.HelmProxy(cfg.HelmURL)
-	strategistProxy := handler.StrategistProxy(cfg.StrategistURL)
 	heraldProxy := handler.HeraldProxy(cfg.HeraldURL)
 
 	// ── JWT middleware ───────────────────────────────────────────────────
@@ -77,7 +77,7 @@ func buildRouter(cfg config.Config, h *handler.Handler, rdb *redis.Client, ident
 	r.Any("/api/v1/accounts/*path", jwtAuth, injectHeaders, helmProxy)
 	r.Any("/api/v1/broker-connections", jwtAuth, injectHeaders, helmProxy)
 	r.Any("/api/v1/broker-connections/*path", jwtAuth, injectHeaders, helmProxy)
-	r.Any("/api/v1/strategist/*path", jwtAuth, injectHeaders, strategistProxy)
+
 
 	// Protected endpoints
 	api := r.Group("/api/v1", jwtAuth, injectHeaders)

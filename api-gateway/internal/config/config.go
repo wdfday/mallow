@@ -15,7 +15,6 @@ type Config struct {
 	JWTJWKSURL         string
 	JWTIssuer          string
 	JWKSCacheTTL       string
-	StrategistURL      string
 	IdentityURL        string
 	HelmURL            string
 	HeraldURL          string
@@ -29,12 +28,11 @@ func Load() Config {
 		Port:               envOr("PORT", "8080"),
 		RateLimitPerMinute: envInt("RATE_LIMIT_PER_MINUTE", 500),
 		NatsURL:            envOr("NATS_URL", "nats://localhost:4222"),
-		JWTSecret:          envOr("JWT_SECRET", "mallow-dev-secret-change-in-prod"),
+		JWTSecret:          os.Getenv("JWT_SECRET"), // no default — empty string disables HMAC fallback
 		JWTPublicKey:       envOr("JWT_PUBLIC_KEY", ""),
 		JWTJWKSURL:         envOr("JWT_JWKS_URL", ""),
 		JWTIssuer:          envOr("JWT_ISSUER", ""),
 		JWKSCacheTTL:       envOr("JWT_JWKS_CACHE_TTL", "5m"),
-		StrategistURL:      envOr("STRATEGIST_URL", "http://127.0.0.1:8081"),
 		IdentityURL:        envOr("IDENTITY_URL", "http://127.0.0.1:8082"),
 		HelmURL:            envOr("HELM_URL", "http://127.0.0.1:8084"),
 		HeraldURL:          envOr("HERALD_URL", "http://127.0.0.1:8090"),

@@ -106,21 +106,32 @@ func (c *Client) GetOrder(ctx context.Context, creds exchange.Credentials, order
 
 // algoOrderData is the shared struct for both active and history algo order responses.
 type algoOrderData struct {
-	AlgoId   string `json:"algoId"`
-	InstId   string `json:"instId"`
-	Side     string `json:"side"`
-	OrdType  string `json:"ordType"`
-	State    string `json:"state"`
-	Sz       string `json:"sz"`
-	ActualSz string `json:"actualSz"`
-	ActualPx string `json:"actualPx"`
+	AlgoId     string `json:"algoId"`
+	InstId     string `json:"instId"`
+	Side       string `json:"side"`
+	OrdType    string `json:"ordType"`
+	State      string `json:"state"`
+	Sz         string `json:"sz"`
+	ActualSz   string `json:"actualSz"`
+	ActualPx   string `json:"actualPx"`
+	ActualSide string `json:"actualSide"` // "sl" or "tp" — which leg triggered (history only)
 }
 
-// getAlgoOrder fetches an algo (OCO/conditional) order.
-// Checks active orders first (/api/v5/trade/orders-algo) with ordType.
-// If not found (order already triggered/expired), falls back to history
-// (/api/v5/trade/orders-algo-history) so the poller can detect fills that
-// WS delivery missed during a disconnect.
+// getAlgoOrder fetches an algo (OCO/conditional) order by algoId.
+//
+// OKX exposes three relevant endpoints:
+//
+//	GET /api/v5/trade/order-algo          — "Get Algo Order Details": single-order
+//	                                        lookup by algoId; no ordType required;
+//	                                        returns any state (live, effective, canceled).
+//	GET /api/v5/trade/orders-algo-pending — active (live) algo orders list; ordType required.
+//	GET /api/v5/trade/orders-algo-history — triggered/expired history; ordType required.
+//
+// Strategy:
+//  1. Try the details endpoint first — authoritative, no ordType guessing.
+//  2. If that returns nothing (edge-case: very recently placed order not yet indexed),
+//     fall back to the pending list with both ordType variants.
+//  3. Fall back to history (ordType variants) so we can classify fills that WS missed.
 func (c *Client) getAlgoOrder(ctx context.Context, creds exchange.Credentials, orderID, instID, algoID string) (*exchange.OrderResult, error) {
 	type algoResp struct {
 		okxEnvelope
@@ -128,7 +139,7 @@ func (c *Client) getAlgoOrder(ctx context.Context, creds exchange.Credentials, o
 	}
 
 	toResult := func(d algoOrderData) *exchange.OrderResult {
-		return &exchange.OrderResult{
+		r := &exchange.OrderResult{
 			ID:        orderID,
 			Symbol:    d.InstId,
 			Side:      exchange.OrderSide(d.Side),
@@ -137,13 +148,30 @@ func (c *Client) getAlgoOrder(ctx context.Context, creds exchange.Credentials, o
 			FilledQty: parseDecimal(d.ActualSz),
 			FilledAvg: parseDecimal(d.ActualPx),
 		}
+		// actualSide ("sl"/"tp") is only populated in history after the order triggers.
+		// Store it in the Tag field so applyBracketStates can log which leg fired.
+		if d.ActualSide != "" {
+			r.Tag = d.ActualSide
+		}
+		return r
 	}
 
-	// ── 1. Active orders ──────────────────────────────────────────────────────
-	// OKX requires ordType for /api/v5/trade/orders-algo. Try both oco and
-	// conditional so we handle whichever type this bracket was placed as.
+	// ── 1. Details endpoint (primary) ─────────────────────────────────────────
+	// GET /api/v5/trade/order-algo?algoId=xxx — works for any state, no ordType.
+	// This is the canonical single-order lookup; the list endpoints below are
+	// fallbacks for the rare case where this returns empty.
+	detailPath := fmt.Sprintf("/api/v5/trade/order-algo?algoId=%s", algoID)
+	var detailResp algoResp
+	if err := c.doRequest(ctx, creds, http.MethodGet, detailPath, nil, &detailResp); err == nil &&
+		detailResp.Code == "0" && len(detailResp.Data) > 0 {
+		return toResult(detailResp.Data[0]), nil
+	}
+
+	// ── 2. Active (pending) list fallback ─────────────────────────────────────
+	// /api/v5/trade/orders-algo-pending requires ordType; try both OCO and
+	// conditional. Used when the details endpoint is slow to index a new order.
 	for _, ordType := range []string{"oco", "conditional"} {
-		activePath := fmt.Sprintf("/api/v5/trade/orders-algo?ordType=%s&algoId=%s&instId=%s", ordType, algoID, instID)
+		activePath := fmt.Sprintf("/api/v5/trade/orders-algo-pending?ordType=%s&algoId=%s&instId=%s", ordType, algoID, instID)
 		var activeResp algoResp
 		if err := c.doRequest(ctx, creds, http.MethodGet, activePath, nil, &activeResp); err == nil &&
 			activeResp.Code == "0" && len(activeResp.Data) > 0 {
@@ -151,11 +179,9 @@ func (c *Client) getAlgoOrder(ctx context.Context, creds exchange.Credentials, o
 		}
 	}
 
-	// ── 2. History fallback ───────────────────────────────────────────────────
-	// Once an OCO/conditional is triggered or expired it leaves the active list.
-	// The history endpoint returns it with state=effective/canceled.
-	// 51603 "Order does not exist" from history means this ordType has no record
-	// for this algoId — try the next type before giving up.
+	// ── 3. History fallback ───────────────────────────────────────────────────
+	// Once triggered or expired the order leaves pending and appears here.
+	// 51603 "Order does not exist" means this ordType has no record — try next.
 	for _, ordType := range []string{"oco", "conditional"} {
 		histPath := fmt.Sprintf("/api/v5/trade/orders-algo-history?algoId=%s&instId=%s&ordType=%s", algoID, instID, ordType)
 		var histResp algoResp
@@ -172,9 +198,7 @@ func (c *Client) getAlgoOrder(ctx context.Context, creds exchange.Credentials, o
 			return toResult(histResp.Data[0]), nil
 		}
 	}
-	// Not found in active or either history type — the algo order has definitively
-	// vanished from the exchange (triggered, expired, or purged). Signal the caller
-	// to treat the associated poslog leg as externally closed.
+	// Not found anywhere — definitively gone (triggered, expired, or purged).
 	return &exchange.OrderResult{ID: orderID, Status: "not_found"}, nil
 }
 

@@ -13,16 +13,16 @@ import (
 // ── Statistical performance ───────────────────────────────────────────────────
 
 // ReturnStats holds standard risk-adjusted return metrics.
-// All ratios use daily log-returns; annualised with 252 trading days.
+// All ratios use daily log-returns; annualized with 365/252 trading days.
 type ReturnStats struct {
 	TotalReturnPct   float64 `json:"total_return_pct"`
-	CAGR             float64 `json:"cagr_pct"`     // annualised growth rate; 0 if uptime < 1 day
+	CAGR             float64 `json:"cagr_pct"`     // annualized growth rate; 0 if uptime < 1 day
 	SharpeRatio      float64 `json:"sharpe_ratio"` // 0 if < 2 data points
 	SortinoRatio     float64 `json:"sortino_ratio"`
 	CalmarRatio      float64 `json:"calmar_ratio"` // CAGR / MaxDrawdownPct; 0 if no drawdown
 	MaxDrawdownPct   float64 `json:"max_drawdown_pct"`
 	CurrentDDPct     float64 `json:"current_drawdown_pct"`
-	VolatilityAnnPct float64 `json:"volatility_ann_pct"` // annualised daily-return std-dev
+	VolatilityAnnPct float64 `json:"volatility_ann_pct"` // annualized daily-return std-dev
 }
 
 // TradeStats summarises closed round-trip trades.

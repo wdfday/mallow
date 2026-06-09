@@ -185,21 +185,60 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 			// Determine whether the SL or TP leg of the OCO filled by comparing
 			// the fill price to the saved levels. Side == "buy" means entry was
 			// a long (exit sell): SL is below entry, TP is above entry.
+			//
+			// Primary: strict directional check (fill clearly past the level).
+			// Fallback: proximity — when the exchange uses market-price execution
+			// (e.g. OKX tpOrdPx=-1), the actual fill can be 1-2 ticks inside the
+			// trigger (64.40 fill on a 64.41 TP trigger). Strict check fails; pick
+			// whichever level the fill is closest to. This is safe because a real
+			// TP fill is always closer to TP than to SL, and vice versa.
 			closeSource = "bracket_exit" // fallback if levels unavailable
 			if el.StopLoss.IsPositive() && el.TakeProfit.IsPositive() {
-				if el.Side == "buy" { // long: SL ≤ fill ≤ TP
+				if el.Side == "buy" { // long: SL below entry, TP above entry
 					if cumulativeAvgPrice.LessThanOrEqual(el.StopLoss) {
 						closeSource = "sl"
 					} else if cumulativeAvgPrice.GreaterThanOrEqual(el.TakeProfit) {
 						closeSource = "tp"
+					} else {
+						// Market-execution slippage: classify by proximity.
+						distSL := cumulativeAvgPrice.Sub(el.StopLoss).Abs()
+						distTP := cumulativeAvgPrice.Sub(el.TakeProfit).Abs()
+						if distTP.LessThanOrEqual(distSL) {
+							closeSource = "tp"
+						} else {
+							closeSource = "sl"
+						}
 					}
-				} else { // short: TP ≤ fill ≤ SL
+				} else { // short: TP below entry, SL above entry
 					if cumulativeAvgPrice.GreaterThanOrEqual(el.StopLoss) {
 						closeSource = "sl"
 					} else if cumulativeAvgPrice.LessThanOrEqual(el.TakeProfit) {
 						closeSource = "tp"
+					} else {
+						distSL := cumulativeAvgPrice.Sub(el.StopLoss).Abs()
+						distTP := cumulativeAvgPrice.Sub(el.TakeProfit).Abs()
+						if distTP.LessThanOrEqual(distSL) {
+							closeSource = "tp"
+						} else {
+							closeSource = "sl"
+						}
 					}
 				}
+			}
+			switch closeSource {
+			case "tp":
+				slog.Info("hand: TP triggered — take-profit bracket filled",
+					"hand_id", h.id, "symbol", symbol, "order_id", orderID,
+					"fill_price", cumulativeAvgPrice, "tp_level", el.TakeProfit)
+			case "sl":
+				slog.Info("hand: SL triggered — stop-loss bracket filled",
+					"hand_id", h.id, "symbol", symbol, "order_id", orderID,
+					"fill_price", cumulativeAvgPrice, "sl_level", el.StopLoss)
+			default:
+				slog.Info("hand: bracket exit filled (TP/SL level unknown)",
+					"hand_id", h.id, "symbol", symbol, "order_id", orderID,
+					"fill_price", cumulativeAvgPrice,
+					"sl_level", el.StopLoss, "tp_level", el.TakeProfit)
 			}
 		case source == "kill":
 			closeSource = "kill"

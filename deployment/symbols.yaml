@@ -1,6 +1,16 @@
 # Single source of truth for live-ingestion symbol lists.
 # Both herald (WebSocket) and hist-data (daily crawl) read from this file.
 # Add/remove symbols here — both services pick up on next restart.
+#
+# TF syntax (two forms, backward-compatible):
+#
+#   - BTCUSDT                          # shorthand — subscribes all supported TFs
+#   - symbol: BTCUSDT                  # explicit TF list
+#     timeframes: [M1, H1, H4, D1]
+#
+# Supported TFs (native WS kline on both Binance and OKX):
+#   M1  M3  M5  M15  M30  H1  H2  H4  H6  H12  D1  W1  MN
+# Note: M10 is not available on either exchange's kline stream.
 
 binance:
   - BTCUSDT

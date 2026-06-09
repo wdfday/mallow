@@ -186,8 +186,8 @@ services:
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8090/health"]
       interval: 15s
-      timeout: 5s
-      retries: 5
+      timeout: 120s
+      retries: 10
       # gap-fill: 20 symbols × 13 TF × ~1s/call ≈ 4-5 min; allow 8 min for slow networks.
       start_period: 480s
 

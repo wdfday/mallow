@@ -117,6 +117,15 @@ build-wasm:
     rm -f almanac/crates/alm-wasm/pkg/.gitignore
     cp -r almanac/crates/alm-wasm/pkg/. mallow-client/vendor/alm-wasm/
 
+# Copy already-built pkg/ artifacts into mallow-client/vendor/alm-wasm (no recompile).
+# Use after build-wasm when you only changed non-Rust files and want a fast sync.
+sync-wasm:
+    @test -f almanac/crates/alm-wasm/pkg/alm_wasm_bg.wasm || \
+      (echo "pkg/ not found — run 'just build-wasm' first" && exit 1)
+    rm -f almanac/crates/alm-wasm/pkg/.gitignore
+    cp -r almanac/crates/alm-wasm/pkg/. mallow-client/vendor/alm-wasm/
+    @echo "synced pkg/ → mallow-client/vendor/alm-wasm/"
+
 # ── Specs ─────────────────────────────────────────────────────────────────────
 
 # Generate OpenAPI/Swagger specs for all (or specific) services → specs/

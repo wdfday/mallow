@@ -216,7 +216,7 @@ func (r *HelmRuntime) applyLifecycleEvent(ctx context.Context, ev exchange.Order
 }
 
 // runFillProcessor drains wsFillQueue in batch on each wsFillSignal wakeup.
-// Batching amortises the per-event overhead when fill bursts arrive (e.g.
+// Batching amortizes the per-event overhead when fill bursts arrive (e.g.
 // multiple partial fills from OKX OCO execution).
 func (r *HelmRuntime) runFillProcessor(ctx context.Context) {
 	defer safe.Recover()
@@ -237,7 +237,7 @@ func (r *HelmRuntime) runFillProcessor(ctx context.Context) {
 }
 
 // applyWsFill processes a single WS fill event.
-// Full fills are routed to the owning hand (poslog + metrics + exit logic).
+// Fulfills are routed to the owning hand (poslog + metrics + exit logic).
 // Partial fills are applied incrementally to the portfolio and tracked for REST dedup.
 func (r *HelmRuntime) applyWsFill(ev exchange.WsFillEvent) {
 	// Normalise commission to quote currency and adjust qty for buys where fee is paid in the base asset or standard non-quote assets like BNB.

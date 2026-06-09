@@ -51,16 +51,16 @@ type SymbolFilterStore interface {
 // On a cache miss (QtyStep == 0, symbol not prewarm-ed), it fetches from the
 // exchange on-demand with a short timeout and caches the result. This prevents
 // LOT_SIZE errors when a new symbol starts trading before PrewarmFilters ran.
-func (rt *HelmRuntime) filtersFor(ctx context.Context, symbol string) exchange.SymbolFilters {
-	if rt.FilterStore == nil {
+func (r *HelmRuntime) filtersFor(ctx context.Context, symbol string) exchange.SymbolFilters {
+	if r.FilterStore == nil {
 		return exchange.SymbolFilters{}
 	}
-	f := rt.FilterStore.GetFilters(symbol)
+	f := r.FilterStore.GetFilters(symbol)
 	if f.QtyStep.IsPositive() {
 		return f
 	}
 	// Cache miss — lazy fetch from exchange.
-	sip, ok := rt.Exchange.(exchange.SymbolInfoProvider)
+	sip, ok := r.Exchange.(exchange.SymbolInfoProvider)
 	if !ok {
 		return f
 	}
@@ -75,7 +75,7 @@ func (rt *HelmRuntime) filtersFor(ctx context.Context, symbol string) exchange.S
 	slog.Info("filtersFor: lazy-fetched symbol filters",
 		"symbol", symbol,
 		"qty_step", fetched.QtyStep, "price_tick", fetched.PriceTick)
-	rt.FilterStore.SetFilters(symbol, fetched)
+	r.FilterStore.SetFilters(symbol, fetched)
 	return fetched
 }
 

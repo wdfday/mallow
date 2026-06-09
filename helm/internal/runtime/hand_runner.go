@@ -37,7 +37,12 @@ func (h *Hand) run(ctx context.Context) {
 
 // runLoop is the actual select loop; extracted so pprof.Do labels cover the entire goroutine lifetime.
 func (h *Hand) runLoop(ctx context.Context) {
-	pollTicker := time.NewTicker(5 * time.Second)
+	// bracketPollInterval — how often the REST bracket poller queries exit-order states.
+	// WS catches fills in < 1s; polling is a fallback for missed events, so
+	// 30s is sufficient and avoids hammering the exchange REST API.
+	// Must be ≥ bracketPollGrace (30s) so newly placed brackets are never queried on
+	// their first tick (OKX orders-algo propagation lag would return not_found).
+	pollTicker := time.NewTicker(30 * time.Second)
 	defer pollTicker.Stop()
 	staleTicker := time.NewTicker(30 * time.Second)
 	defer staleTicker.Stop()
@@ -670,37 +675,55 @@ func (h *Hand) runPlaceREST(ctx context.Context, pp *pendingPlace) {
 			}
 		balanceDone:
 			if freeQty.IsZero() {
-				// Base asset is completely gone — position closed externally
-				// (OCO triggered, manual sell, etc.). Skip PlaceOrder entirely and
-				// let applyPlaceResult close the poslog leg.
-				slog.Warn("hand: pre-exit balance check — base asset gone, skipping PlaceOrder",
-					"hand_id", h.id, "symbol", pp.sig.Symbol, "poslog_qty", pp.orderQty)
-				pp.positionGoneAtExchange = true
-				pp.cancelledBracketIDs = bracketIDs
-
-				// Try to recover the actual OCO fill price so applyPlaceResult
-				// can record the real exit price instead of falling back to
-				// lastKnownPrice (dust exit). With the corrected getAlgoOrder
-				// query (ordType required) this should now find the filled leg.
+				// Balance is zero after cancel + retry. Two distinct causes:
+				//   A. Exchange triggered the OCO concurrently → position really closed
+				//   B. OKX balance unfreeze lag (we cancelled the OCO ourselves; the
+				//      exchange confirms cancel but takes > 600ms to reflect in balance)
+				//
+				// Distinguish by querying the OCO order status:
+				//   • "filled"    → genuine external close (case A)
+				//   • "cancelled" → helm-initiated cancel confirmed; balance just slow
+				//                   to unfreeze (case B) → use poslog qty for PlaceOrder
+				//   • anything else / error → treat as position gone (safe default)
 				for _, id := range bracketIDs {
 					r, qErr := h.helmRuntime.Exchange.GetOrder(ctx, h.helmRuntime.Creds, id)
 					if qErr != nil || r == nil {
 						continue
 					}
 					if r.Status == "filled" && r.FilledQty.IsPositive() && r.FilledAvg.IsPositive() {
+						// Case A: exchange triggered the OCO → recover fill price.
 						pp.ocoFillPrice = r.FilledAvg
 						pp.ocoFillQty = r.FilledQty
 						pp.ocoFillSide = string(r.Side)
 						if pp.ocoFillSide == "" {
 							pp.ocoFillSide = "sell"
 						}
-						slog.Info("hand: OCO fill recovered from exchange",
+						slog.Info("hand: OCO fill recovered from exchange (balance=0 after cancel)",
 							"hand_id", h.id, "symbol", pp.sig.Symbol,
 							"order_id", id, "price", r.FilledAvg, "qty", r.FilledQty)
 						break
 					}
+					if r.Status == "canceled" || r.Status == "cancelled" {
+						// Case B: helm-initiated cancel confirmed; OKX balance is
+						// eventually consistent. Use poslog qty so PlaceOrder can
+						// proceed — OKX will have freed the balance by the time the
+						// REST call lands (~50-200ms network round-trip).
+						slog.Info("hand: OCO cancel confirmed — OKX balance lag; using poslog qty for exit",
+							"hand_id", h.id, "symbol", pp.sig.Symbol,
+							"order_id", id, "poslog_qty", pp.orderQty)
+						freeQty = pp.orderQty
+						break
+					}
 				}
-				return
+				if freeQty.IsZero() {
+					// Balance still zero and no "cancelled" OCO found to explain it.
+					// Position is genuinely gone (external close, manual sell, etc.).
+					slog.Warn("hand: pre-exit balance check — base asset gone, skipping PlaceOrder",
+						"hand_id", h.id, "symbol", pp.sig.Symbol, "poslog_qty", pp.orderQty)
+					pp.positionGoneAtExchange = true
+					pp.cancelledBracketIDs = bracketIDs
+					return
+				}
 			}
 			useQty := freeQty
 			if pp.orderQty.IsPositive() && pp.orderQty.LessThan(freeQty) {
@@ -997,7 +1020,31 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 			h.completeWsFillFromREST(ctx, result.ID, sig.Symbol, reply.Side,
 				restQty, result.FilledAvg, restCommission, pending, isExitOrder)
 		} else {
-			h.applyFill(ctx, result.ID, sig.Symbol, reply.Side, restQty, result.FilledAvg, restCommission, "rest")
+			// REST FilledQty is cumulative; applyFill adds partialApplied on top (VWAP merge).
+			// If WS partial fills were already applied to the portfolio via MarkPartialApplied +
+			// r.ReportFill, subtract that accumulated qty/commission before calling applyFill
+			// so the function receives the delta (remaining qty), not the full cumulative total.
+			//
+			// Without this: cumulativeQty = restCumulative + partialApplied = double-count.
+			// With this:    cumulativeQty = (restCumulative - partial) + partial = restCumulative ✓
+			h.mu.RLock()
+			partial := h.partialApplied[result.ID]
+			h.mu.RUnlock()
+			fillQty := restQty
+			fillCommission := restCommission
+			if partial.Qty.IsPositive() {
+				if d := restQty.Sub(partial.Qty); d.IsPositive() {
+					fillQty = d
+				} else {
+					fillQty = decimal.Zero
+				}
+				if d := restCommission.Sub(partial.Commission); d.IsPositive() {
+					fillCommission = d
+				} else {
+					fillCommission = decimal.Zero
+				}
+			}
+			h.applyFill(ctx, result.ID, sig.Symbol, reply.Side, fillQty, result.FilledAvg, fillCommission, "rest")
 		}
 	}
 

@@ -366,16 +366,6 @@ type SnapshotPageResp struct {
 	Metadata  AnalyticsMetaResp `json:"metadata,omitempty"`
 }
 
-// SnapshotToResp converts a JetStream perf.PortfolioSnapshot (legacy reader).
-// New callers prefer SnapshotRowToResp which carries the full PG row.
-func SnapshotToResp(s perf.PortfolioSnapshot) SnapshotResp {
-	pos := make([]SnapshotPositionResp, len(s.Positions))
-	for i, p := range s.Positions {
-		pos[i] = SnapshotPositionResp{Symbol: p.Symbol, Side: p.Side, Qty: p.Qty, AvgPrice: p.AvgPrice}
-	}
-	return SnapshotResp{HelmID: s.HelmID, TS: s.TS, Cash: s.Cash, Positions: pos}
-}
-
 // SnapshotRowToResp converts a PG perflog.SnapshotRow into SnapshotResp.
 // Positions are decoded from JSONB; on decode failure the slice stays empty
 // (row is still returned so the audit view doesn't lose context).

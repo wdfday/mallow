@@ -244,7 +244,7 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 	// cancelled order ID from exitLevels and let the fills close the leg normally.
 	// If no fills arrive, the next portfolio sync will catch the desync.
 	if affectedLeg != nil && affectedLeg.Phase == position.PhaseExiting {
-		slog.Info("hand: bracket cancel while exiting — OCO counterpart auto-cancel, ignoring",
+		slog.Info("hand: bracket cancelled on TP/SL trigger — OCO counterpart auto-cancelled by exchange",
 			"hand_id", h.id, "symbol", affectedSymbol, "order_id", orderID)
 		h.mu.Lock()
 		if lv, ok := h.exitLevels[affectedSymbol]; ok {
@@ -546,11 +546,24 @@ type bracketState struct {
 // All non-pending IDs are checked (not just the first) so that exchanges with two-legged
 // OCO brackets (e.g. Binance: separate TP + SL order IDs) can surface the filled leg even
 // when the cancelled leg is polled first.
+// bracketPollGrace is the minimum age a bracket must be before checkBracketOrders
+// will poll it via REST. Newly placed orders are not yet visible in OKX's active
+// or history endpoints — polling them immediately returns not_found, which the
+// poller would otherwise treat as an external close (→ EXT_CLOSE).
+const bracketPollGrace = 30 * time.Second
+
 func (h *Hand) fetchBracketStates(ctx context.Context) []bracketState {
 	h.mu.RLock()
 	var checks []bracketState
+	now := time.Now()
 	for sym, lv := range h.exitLevels {
 		if len(lv.ExchangeOrderIDs) == 0 {
+			continue
+		}
+		// Skip symbols whose bracket was placed too recently — the exchange may not
+		// have propagated the order yet, so GetOrder/getAlgoOrder would return
+		// not_found and falsely trigger pollExternalClose.
+		if !lv.PlacedAt.IsZero() && now.Sub(lv.PlacedAt) < bracketPollGrace {
 			continue
 		}
 		for _, id := range lv.ExchangeOrderIDs {
@@ -625,9 +638,15 @@ func (h *Hand) applyBracketStates(ctx context.Context, checks []bracketState) {
 				if closeSide == "" {
 					closeSide = "sell"
 				}
+				legLabel := "bracket"
+				if c.result.Tag == "tp" {
+					legLabel = "TP"
+				} else if c.result.Tag == "sl" {
+					legLabel = "SL"
+				}
 				slog.Info("checkBracketOrders: bracket filled (WS missed) — applying poll fill",
 					"hand_id", h.id, "symbol", c.symbol, "order_id", c.id,
-					"qty", c.result.FilledQty, "avg", c.result.FilledAvg)
+					"leg", legLabel, "qty", c.result.FilledQty, "avg", c.result.FilledAvg)
 				h.applyFill(ctx, c.id, c.symbol, closeSide,
 					c.result.FilledQty, c.result.FilledAvg, decimal.Zero, "bracket_poll")
 			} else {

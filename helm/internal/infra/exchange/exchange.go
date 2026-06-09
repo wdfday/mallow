@@ -136,6 +136,10 @@ type OrderResult struct {
 	// actual received qty is FilledQty - Commission, not FilledQty.
 	Commission      decimal.Decimal
 	CommissionAsset string
+	// Tag is an exchange-specific metadata field for extra context.
+	// OKX uses it to carry actualSide ("sl"/"tp") from algo order history,
+	// so the poller can log which bracket leg triggered.
+	Tag string
 }
 
 // PositionResult is a position currently held at the exchange.

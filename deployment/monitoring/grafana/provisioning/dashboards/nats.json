@@ -1,0 +1,133 @@
+{
+  "__inputs": [],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" }
+  ],
+  "annotations": { "list": [] },
+  "description": "NATS Server — connection count, CPU/memory usage, message throughput, and JetStream status",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }, "id": 100, "title": "Overview", "type": "row" },
+
+    { "type": "stat", "id": 1,
+      "title": "Connections",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "auto" },
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "color": { "mode": "thresholds" } } },
+      "targets": [{ "expr": "nats_connections", "legendFormat": "connections", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "type": "stat", "id": 2,
+      "title": "CPU Usage",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none", "textMode": "auto" },
+      "fieldConfig": { "defaults": { "unit": "percent", "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 60 }, { "color": "red", "value": 85 }] }, "color": { "mode": "thresholds" } } },
+      "targets": [{ "expr": "nats_cpu", "legendFormat": "cpu", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "type": "stat", "id": 3,
+      "title": "Memory Usage",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none", "textMode": "auto" },
+      "fieldConfig": { "defaults": { "unit": "bytes", "color": { "mode": "fixed", "fixedColor": "purple" } } },
+      "targets": [{ "expr": "nats_mem", "legendFormat": "mem", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "type": "stat", "id": 4,
+      "title": "Messages In / Sec",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "fieldConfig": { "defaults": { "unit": "pps", "color": { "mode": "fixed", "fixedColor": "green" } } },
+      "targets": [{ "expr": "rate(nats_msgs_in[2m])", "legendFormat": "msgs/sec", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "type": "stat", "id": 5,
+      "title": "Slow Consumers",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "auto" },
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] }, "color": { "mode": "thresholds" }, "unit": "short" } },
+      "targets": [{ "expr": "nats_slow_consumers", "legendFormat": "slow consumers", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "type": "stat", "id": 6,
+      "title": "JetStream File Store",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none", "textMode": "auto" },
+      "fieldConfig": { "defaults": { "unit": "bytes", "color": { "mode": "fixed", "fixedColor": "orange" } } },
+      "targets": [{ "expr": "nats_jetstream_file_store_bytes", "legendFormat": "file store", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 }, "id": 101, "title": "NATS Message & Data Throughput", "type": "row" },
+
+    { "type": "timeseries", "id": 10,
+      "title": "Message Rate (msgs/sec)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": { "unit": "pps", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "expr": "rate(nats_msgs_in[2m])", "legendFormat": "Incoming msgs", "refId": "A" },
+        { "expr": "rate(nats_msgs_out[2m])", "legendFormat": "Outgoing msgs", "refId": "B" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "type": "timeseries", "id": 11,
+      "title": "Data Rate (bytes/sec)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": { "unit": "Bps", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "expr": "rate(nats_bytes_in[2m])", "legendFormat": "Bytes In", "refId": "A" },
+        { "expr": "rate(nats_bytes_out[2m])", "legendFormat": "Bytes Out", "refId": "B" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 }, "id": 102, "title": "JetStream & System Stats", "type": "row" },
+
+    { "type": "timeseries", "id": 20,
+      "title": "JetStream Storage Usage",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "expr": "nats_jetstream_file_store_bytes", "legendFormat": "File Store Bytes", "refId": "A" },
+        { "expr": "nats_jetstream_memory_store_bytes", "legendFormat": "Memory Store Bytes", "refId": "B" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "type": "timeseries", "id": 21,
+      "title": "NATS CPU & Memory Usage",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": { "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [
+        { "expr": "nats_cpu", "legendFormat": "CPU %", "refId": "A" },
+        { "expr": "nats_mem", "legendFormat": "Memory (bytes)", "refId": "B" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["nats", "trading", "infrastructure"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "NATS Server Metrics",
+  "uid": "nats-server-metrics",
+  "version": 1
+}

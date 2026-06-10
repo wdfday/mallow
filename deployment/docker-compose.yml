@@ -258,6 +258,28 @@ services:
   # Monitoring — LGTP stack  (docker compose --profile monitoring up -d)
   # ═══════════════════════════════════════════════════════════════════
 
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: postgres-exporter
+    profiles: ["monitoring"]
+    environment:
+      DATA_SOURCE_NAME: "postgresql://mallow:${POSTGRES_PASSWORD:-mallow-dev}@postgres:5432/identity?sslmode=disable"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: redis-exporter
+    profiles: ["monitoring"]
+    environment:
+      REDIS_ADDR: "redis://redis:6379"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
   # Prometheus — metrics
   prometheus:
     image: prom/prometheus:latest

@@ -1,0 +1,124 @@
+{
+  "__inputs": [],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" },
+    { "type": "datasource", "id": "prometheus", "name": "Prometheus", "version": "1.0.0" }
+  ],
+  "annotations": { "list": [] },
+  "description": "Redis Cache — clients, memory usage, processed commands rate, keys count, and keyspace hit ratio",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }, "id": 100, "title": "Overview", "type": "row" },
+
+    { "type": "stat", "id": 1,
+      "title": "Redis Up",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background", "graphMode": "none", "textMode": "auto" },
+      "fieldConfig": { "defaults": { "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }], "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }, "color": { "mode": "thresholds" } } },
+      "targets": [{ "expr": "redis_up", "legendFormat": "redis status", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "type": "stat", "id": 2,
+      "title": "Clients",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none", "textMode": "auto" },
+      "fieldConfig": { "defaults": { "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "color": { "mode": "thresholds" } } },
+      "targets": [{ "expr": "redis_connected_clients", "legendFormat": "clients", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "type": "stat", "id": 3,
+      "title": "Used Memory",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none", "textMode": "auto" },
+      "fieldConfig": { "defaults": { "unit": "bytes", "color": { "mode": "fixed", "fixedColor": "purple" } } },
+      "targets": [{ "expr": "redis_memory_used_bytes", "legendFormat": "used memory", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "type": "stat", "id": 4,
+      "title": "Command Rate / Sec",
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "fieldConfig": { "defaults": { "unit": "ops", "color": { "mode": "fixed", "fixedColor": "green" } } },
+      "targets": [{ "expr": "rate(redis_commands_processed_total[2m])", "legendFormat": "ops", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "type": "stat", "id": 5,
+      "title": "Keyspace Ratio",
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none", "textMode": "auto" },
+      "fieldConfig": { "defaults": { "unit": "percent", "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 85 }, { "color": "green", "value": 95 }] }, "color": { "mode": "thresholds" } } },
+      "targets": [{ "expr": "rate(redis_keyspace_hits_total[5m]) / (rate(redis_keyspace_hits_total[5m]) + rate(redis_keyspace_misses_total[5m]) + 1) * 100", "legendFormat": "hit ratio", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "type": "stat", "id": 6,
+      "title": "Total Keys",
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 1 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none", "textMode": "auto" },
+      "fieldConfig": { "defaults": { "unit": "short", "color": { "mode": "fixed", "fixedColor": "orange" } } },
+      "targets": [{ "expr": "sum(redis_db_keys)", "legendFormat": "keys", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 5 }, "id": 101, "title": "Clients & Memory Performance", "type": "row" },
+
+    { "type": "timeseries", "id": 10,
+      "title": "Connected Clients",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 }, "color": { "mode": "fixed", "fixedColor": "blue" } } },
+      "targets": [{ "expr": "redis_connected_clients", "legendFormat": "Connected Clients", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "type": "timeseries", "id": 11,
+      "title": "Memory Usage vs Max Limit",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": { "unit": "bytes", "custom": { "lineWidth": 2, "fillOpacity": 5 } } },
+      "targets": [
+        { "expr": "redis_memory_used_bytes", "legendFormat": "Used memory", "refId": "A" },
+        { "expr": "redis_memory_max_bytes", "legendFormat": "Max memory", "refId": "B" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 14 }, "id": 102, "title": "Throughput & Database Keys", "type": "row" },
+
+    { "type": "timeseries", "id": 20,
+      "title": "Command Execution Rate (ops)",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 15 },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": { "unit": "ops", "custom": { "lineWidth": 2, "fillOpacity": 10 }, "color": { "mode": "fixed", "fixedColor": "green" } } },
+      "targets": [{ "expr": "rate(redis_commands_processed_total[2m])", "legendFormat": "commands/sec", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "type": "timeseries", "id": 21,
+      "title": "Keys Count by Database",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 15 },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [{ "expr": "redis_db_keys", "legendFormat": "{{db}}", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["redis", "trading", "infrastructure"],
+  "templating": { "list": [] },
+  "time": { "from": "now-1h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Redis Cache Metrics",
+  "uid": "redis-cache-metrics",
+  "version": 1
+}

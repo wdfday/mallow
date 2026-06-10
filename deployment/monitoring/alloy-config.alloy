@@ -111,6 +111,28 @@ prometheus.scrape "gateway" {
   forward_to      = [prometheus.remote_write.default.receiver]
 }
 
+prometheus.scrape "nats" {
+  targets         = [{ __address__ = "nats:8222" }]
+  metrics_path    = "/metrics"
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.default.receiver]
+}
+
+prometheus.scrape "postgres" {
+  targets         = [{ __address__ = "postgres-exporter:9187" }]
+  metrics_path    = "/metrics"
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.default.receiver]
+}
+
+prometheus.scrape "redis" {
+  targets         = [{ __address__ = "redis-exporter:9121" }]
+  metrics_path    = "/metrics"
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.default.receiver]
+}
+
+
 prometheus.remote_write "default" {
   endpoint {
     url = "http://prometheus:9090/api/v1/write"

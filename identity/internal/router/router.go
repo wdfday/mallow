@@ -52,7 +52,6 @@ func Register(p Params) {
 	r.Use(gin.Recovery())
 	r.Use(pkgtelemetry.GinMiddleware("identity"))
 	r.Use(middleware.NewCORS(p.Config.CORS.AllowedOrigins))
-	r.Use(middleware.GlobalRateLimiter(200, 50))
 
 	// Build auth middleware.
 	authMiddle := middleware.NewMiddleware(p.JWTService, p.UserService)

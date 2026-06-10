@@ -79,7 +79,6 @@ ENV RUST_LOG=alm_herald=info,alm_ledger=info
 
 EXPOSE 8090
 
-HEALTHCHECK --interval=10s --timeout=5s --start-period=20s --retries=3 \
-    CMD wget -qO- http://localhost:8090/health || exit 1
+# Healthcheck defined in docker-compose.yml, not here
 
 CMD ["herald"]

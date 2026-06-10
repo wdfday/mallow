@@ -150,6 +150,7 @@ pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnos
     const OUTPUT_VARS: &[&str] = &[
         "long", "entry", "short", "exit",
         "tp", "sl", "is_offset", "strength", "reason", "atr",
+        "trail", "max_bars",
         "trend", "trend_value", "vol", "vol_value",
     ];
 
@@ -335,6 +336,7 @@ pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnos
             // signal outputs
             "long", "entry", "short", "exit",
             "tp", "sl", "is_offset", "strength", "reason", "atr",
+            "trail", "max_bars",
             // regime outputs (writable in regime block, readable everywhere)
             "trend", "trend_value",
             "vol",   "vol_value",
@@ -421,7 +423,7 @@ fn field_access_on_scalar(
 fn check_negative_n_builtins(line: &str, lineno: usize) -> Vec<LintDiagnostic> {
     const FUNCS: &[&str] = &[
         "rising_n", "falling_n", "momentum", "highest", "lowest",
-        "stdev", "zscore", "pct_change", "slope",
+        "stdev", "zscore", "pct_change", "slope", "avg", "sum",
     ];
     let mut diags = Vec::new();
 
@@ -496,7 +498,7 @@ fn check_negative_n_builtins(line: &str, lineno: usize) -> Vec<LintDiagnostic> {
 fn check_non_literal_n_builtins(line: &str, lineno: usize) -> Vec<LintDiagnostic> {
     const FUNCS: &[&str] = &[
         "highest", "lowest", "momentum", "stdev", "zscore", "pct_change",
-        "rising_n", "falling_n", "slope",
+        "rising_n", "falling_n", "slope", "avg", "sum",
     ];
     let mut diags = Vec::new();
 
@@ -1346,5 +1348,54 @@ if atr[0] > 1.5 { entry = true; }
                 "ind.{ind}(0) should NOT error on period=0 (exempt), got: {period_errors:?}"
             );
         }
+    }
+
+    #[test]
+    fn lint_avg_sum_errors_and_clean() {
+        let script = r#"
+let ema9 = ind.ema(9);
+let bad_avg = avg(ema9, -5);
+let bad_sum = sum(ema9, -10);
+let n = 5;
+let var_avg = avg(ema9, n);
+let var_sum = sum(ema9, n);
+let good_avg = avg(ema9, 5);
+let good_sum = sum(ema9, 10);
+let single_avg = avg(ema9);
+let single_sum = sum(ema9);
+if good_avg > 0.0 { entry = true; }
+"#;
+        let (errors, _) = script_lint(script, None);
+        // Assert negative n errors
+        assert!(errors.iter().any(|e| e.severity == "error" && e.message.contains("'avg'") && e.message.contains("positive integer")), "avg negative n check failed: {errors:?}");
+        assert!(errors.iter().any(|e| e.severity == "error" && e.message.contains("'sum'") && e.message.contains("positive integer")), "sum negative n check failed: {errors:?}");
+
+        // Assert variable n errors
+        assert!(errors.iter().any(|e| e.severity == "error" && e.message.contains("'avg'") && e.message.contains("static integer literal")), "avg var n check failed: {errors:?}");
+        assert!(errors.iter().any(|e| e.severity == "error" && e.message.contains("'sum'") && e.message.contains("static integer literal")), "sum var n check failed: {errors:?}");
+
+        // Filter errors related to good_avg, good_sum, single_avg, single_sum
+        let unexpected: Vec<_> = errors.iter()
+            .filter(|e| e.message.contains("good_avg") || e.message.contains("good_sum") || e.message.contains("single_avg") || e.message.contains("single_sum"))
+            .collect();
+        assert!(unexpected.is_empty(), "unexpected errors for valid/single-arg forms: {unexpected:?}");
+    }
+
+    #[test]
+    fn lint_trail_max_bars_shadowing() {
+        let script = r#"
+let trail = ind.ema(9);
+let max_bars = ind.rsi(14);
+if trail[0] > max_bars[0] { entry = true; }
+"#;
+        let (errors, _) = script_lint(script, None);
+        assert!(
+            errors.iter().any(|e| e.severity == "warning" && e.message.contains("trail")),
+            "expected warning for indicator name 'trail' shadowing, got: {errors:?}"
+        );
+        assert!(
+            errors.iter().any(|e| e.severity == "warning" && e.message.contains("max_bars")),
+            "expected warning for indicator name 'max_bars' shadowing, got: {errors:?}"
+        );
     }
 }

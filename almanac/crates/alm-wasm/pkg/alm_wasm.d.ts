@@ -100,8 +100,11 @@ export class ChartState {
      * (`long`/`short`/`exit` + TP/SL) are collected into the snapshot's
      * `signals` array as bars stream in.
      *
-     * The script's own `candle.transform` directive is honoured independently
-     * of the chart-level candle transform — script always operates on raw bars.
+     * The script/backtest ALWAYS evaluate on **raw** OHLCV, independent of the
+     * chart-level candle transform (HA toggle is display-only). This keeps the
+     * on-chart strategy result identical to the deep backtest. The script's own
+     * `candle.transform` directive is handled internally by `ScriptStrategy` on
+     * the raw bars — that's separate from the display toggle.
      *
      * Replays all current bars through the script. O(n).
      * Returns `null` on success, `{error}` on script compile failure.
@@ -147,18 +150,9 @@ export function list_indicators(): any;
 export function list_mtf_strategies(): any;
 
 /**
- * List all single-TF named strategy keys usable with `run_backtest`.
+ * List all single-TF named strategy keys usable with `ChartState::backtest_named`.
  */
 export function list_strategies(): any;
-
-/**
- * Run a **single-TF named** strategy backtest client-side.
- *
- * `strategy_name`: any name from `list_strategies()` (e.g. `"ema_cross"`)
- * `params_json`:   `{"period": 14, ...}`
- * `config_json`:   `{"initial_capital": 10000, "position_size_pct": 1.0, ...}`
- */
-export function run_backtest(symbol: string, strategy_name: string, params_json: string, t: Float64Array, o: Float64Array, h: Float64Array, l: Float64Array, c: Float64Array, v: Float64Array, config_json: string): any;
 
 /**
  * Compute indicators over a bar series.
@@ -167,45 +161,6 @@ export function run_backtest(symbol: string, strategy_name: string, params_json:
  * Returns: `{ label: { field: (number|null)[] } }`
  */
 export function run_indicators(symbol: string, t: Float64Array, o: Float64Array, h: Float64Array, l: Float64Array, c: Float64Array, v: Float64Array, config_json: string): any;
-
-/**
- * Run a **multi-TF named** strategy backtest client-side.
- *
- * `strategy_name`: any name from `list_mtf_strategies()` (e.g. `"mtf_ema_rsi"`)
- * `params_json`:   `{}` (currently all MTF named strategies use built-in defaults)
- * `base_tf`:       base timeframe string — same set as `run_mtf_script_backtest`
- * `bars_json`:     same format as `run_mtf_script_backtest`
- * `config_json`:   same as `run_backtest`
- */
-export function run_mtf_backtest(symbol: string, strategy_name: string, params_json: string, base_tf: string, bars_json: string, config_json: string): any;
-
-/**
- * Run a **multi-TF V2 script** backtest client-side.
- *
- * `base_tf`:   base timeframe string — `"M1"`, `"M5"`, `"H1"`, etc.
- *              (M1 M3 M5 M10 M15 M30 H1 H2 H4 H6 H12 D1 W1)
- * `bars_json`: JSON object mapping each required TF to its OHLCV arrays:
- * ```json
- * {
- *   "M1": { "t": [...], "o": [...], "h": [...], "l": [...], "c": [...], "v": [...] },
- *   "H4": { "t": [...], "o": [...], "h": [...], "l": [...], "c": [...], "v": [...] }
- * }
- * ```
- * All timeframes declared in the script **must** be present; extra ones are ignored.
- * `config_json`: same as `run_backtest`.
- *
- * Also works for single-TF V2 scripts — pass only the base TF in `bars_json`.
- */
-export function run_mtf_script_backtest(symbol: string, script: string, base_tf: string, bars_json: string, config_json: string): any;
-
-/**
- * Run a **single-TF V1 script** backtest client-side.
- *
- * Multi-timeframe (V2) scripts — those that call `ind.TYPE(period)` on a
- * higher TF — cannot run here because only one TF feed is available.
- * Use `run_mtf_script_backtest` instead and pass bars for every required TF.
- */
-export function run_script_backtest(symbol: string, script: string, t: Float64Array, o: Float64Array, h: Float64Array, l: Float64Array, c: Float64Array, v: Float64Array, config_json: string): any;
 
 /**
  * EMA-smoothed Heikin-Ashi (Smoothed HA).

@@ -83,58 +83,34 @@ impl SuperTrend {
         let basic_upper = hl2 + self.multiplier * atr;
         let basic_lower = hl2 - self.multiplier * atr;
 
-        // Final upper band: tighten only; never widen when price is above it
-        let final_upper = match (self.prev_upper, self.prev_close) {
-            (Some(pu), Some(pc)) => {
-                if basic_upper < pu || pc > pu {
-                    basic_upper
-                } else {
-                    pu
-                }
-            }
-            _ => basic_upper,
-        };
-
-        // Final lower band: lift only; never drop when price is below it
-        let final_lower = match (self.prev_lower, self.prev_close) {
-            (Some(pl), Some(pc)) => {
-                if basic_lower > pl || pc < pl {
-                    basic_lower
-                } else {
-                    pl
-                }
-            }
-            _ => basic_lower,
-        };
-
-        // SuperTrend value and direction
-        let (st, is_bullish) = match (self.prev_supertrend, self.prev_is_bullish) {
-            (Some(_prev_st), Some(prev_bull)) => {
+        let (final_lower, final_upper, is_bullish) = match (self.prev_lower, self.prev_upper, self.prev_is_bullish) {
+            (Some(pl), Some(pu), Some(prev_bull)) => {
                 if prev_bull {
-                    // Was bullish: stay bullish unless close drops below lower band
-                    if close < final_lower {
-                        (final_upper, false)
+                    // Was bullish: flip to bearish if close drops below trailing lower band
+                    if close < pl {
+                        (basic_lower, basic_upper, false)
                     } else {
-                        (final_lower, true)
+                        let fl = if basic_lower > pl { basic_lower } else { pl };
+                        (fl, basic_upper, true)
                     }
                 } else {
-                    // Was bearish: turn bullish if close breaks above upper band
-                    if close > final_upper {
-                        (final_lower, true)
+                    // Was bearish: flip to bullish if close breaks above trailing upper band
+                    if close > pu {
+                        (basic_lower, basic_upper, true)
                     } else {
-                        (final_upper, false)
+                        let fu = if basic_upper < pu { basic_upper } else { pu };
+                        (basic_lower, fu, false)
                     }
                 }
             }
             _ => {
-                // First value: determine initial direction from close vs bands
-                if close > final_lower {
-                    (final_lower, true)
-                } else {
-                    (final_upper, false)
-                }
+                // First value: determine initial direction
+                let is_bull = close > basic_lower;
+                (basic_lower, basic_upper, is_bull)
             }
         };
+
+        let st = if is_bullish { final_lower } else { final_upper };
 
         self.prev_close = Some(close);
         self.prev_upper = Some(final_upper);

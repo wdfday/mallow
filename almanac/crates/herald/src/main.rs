@@ -27,6 +27,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 #[tokio::main]
 async fn main() -> Result<()> {
     setup_logging();
+    install_panic_logger();
 
     // Install Prometheus recorder globally. Must happen before any metrics
     // are emitted. The handle is shared with the HTTP layer for rendering.
@@ -64,14 +65,22 @@ async fn main() -> Result<()> {
         .unwrap_or(Timeframe::M1);
 
     info!(url = %host_url, user = ?nats_user, ?tf, "connecting to NATS");
-    let client = match (nats_user.as_deref(), nats_pass.as_deref()) {
+    let nats_opts = match (nats_user.as_deref(), nats_pass.as_deref()) {
         (Some(u), Some(p)) => {
-            async_nats::ConnectOptions::with_user_and_password(u.into(), p.into())
-                .connect(&host_url)
-                .await?
+            async_nats::ConnectOptions::with_user_and_password(u.to_string(), p.to_string())
         }
-        _ => async_nats::connect(&host_url).await?,
+        _ => async_nats::ConnectOptions::new(),
     };
+    // Log every connection event (disconnect / lame-duck / closed). If a NATS event
+    // ends the subscription streams, the run loop's `else` arm would otherwise exit
+    // silently — this makes the cause visible. (max_reconnects defaults to None =
+    // unlimited in async-nats 0.47, so the client never gives up on its own.)
+    let client = nats_opts
+        .event_callback(|event| async move {
+            warn!(?event, "NATS connection event");
+        })
+        .connect(&host_url)
+        .await?;
     info!("connected to NATS");
     metrics::gauge!("herald_nats_connected").set(1.0);
 
@@ -241,6 +250,36 @@ async fn main() -> Result<()> {
 }
 
 // ── Startup helpers ───────────────────────────────────────────────────────────
+
+/// Route panics through `tracing` so they land in the same log stream as
+/// INFO/WARN. The default panic hook writes to stderr only, which the log
+/// aggregator may not capture — a panicking task then dies invisibly (the
+/// "process gone, no trace" symptom). Fires for both spawned tasks and main,
+/// regardless of unwind/abort.
+fn install_panic_logger() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let payload = info.payload();
+        let msg = payload
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or("<non-string panic payload>");
+        let location = info
+            .location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "<unknown>".into());
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        tracing::error!(
+            panic.message = %msg,
+            panic.location = %location,
+            thread = ?std::thread::current().name(),
+            backtrace = %backtrace,
+            "THREAD PANIC",
+        );
+        default_hook(info);
+    }));
+}
 
 /// Configure the global tracing subscriber.
 ///

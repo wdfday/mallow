@@ -1135,6 +1135,7 @@ fn dump_named_rhai_examples() {
     use std::fs;
 
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/examples/named");
+
     fs::create_dir_all(&dir).expect("create named/ dir");
 
     let rows = translation_rows();

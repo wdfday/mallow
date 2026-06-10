@@ -110,6 +110,11 @@ impl LiveBucketAggregator {
         (self.bars_in_bucket as f64 / expected).min(1.0)
     }
 
+    /// Return the timeframe duration in milliseconds.
+    pub(super) fn tf_ms(&self) -> i64 {
+        self.tf_ms
+    }
+
     /// Clear forming state. Called when a real HTF feed bar arrives — the
     /// bucket is now closed for real, so the live projection resets.
     pub(super) fn reset(&mut self) {

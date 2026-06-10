@@ -360,8 +360,34 @@ pub(crate) fn build_engine() -> Engine {
         let s: f64 = arr.iter().map(|d| dyn_f(d).unwrap_or(0.0)).sum();
         s / arr.len() as f64
     });
+    engine.register_fn("avg", |arr: Array, n: i64| -> Result<f64, Box<EvalAltResult>> {
+        if n <= 0 { return Ok(0.0); }
+        let n = n as usize;
+        if arr.len() < n {
+            return Err(format!(
+                "avg: bar buffer ({} bars) is smaller than requested window n={n}. \
+                 Use a literal integer for n.",
+                arr.len()
+            ).into());
+        }
+        let s: f64 = arr.iter().take(n).map(|d| dyn_f(d).unwrap_or(0.0)).sum();
+        Ok(s / n as f64)
+    });
     engine.register_fn("sum", |arr: Array| -> f64 {
         arr.iter().map(|d| dyn_f(d).unwrap_or(0.0)).sum()
+    });
+    engine.register_fn("sum", |arr: Array, n: i64| -> Result<f64, Box<EvalAltResult>> {
+        if n <= 0 { return Ok(0.0); }
+        let n = n as usize;
+        if arr.len() < n {
+            return Err(format!(
+                "sum: bar buffer ({} bars) is smaller than requested window n={n}. \
+                 Use a literal integer for n.",
+                arr.len()
+            ).into());
+        }
+        let s: f64 = arr.iter().take(n).map(|d| dyn_f(d).unwrap_or(0.0)).sum();
+        Ok(s)
     });
 
     // ── Volatility / statistics ──────────────────────────────────────────────
@@ -621,6 +647,8 @@ pub(crate) fn extract_max_lookback(script: &str) -> usize {
         ("stdev(",      0), // windowed form stdev(arr, n) → needs n bars
         ("zscore(",     0), // windowed form zscore(arr, n) → needs n bars
         ("slope(",      0), // two-arg form slope(arr, n) → needs n bars
+        ("avg(",        0), // windowed form avg(arr, n) → needs n bars
+        ("sum(",        0), // windowed form sum(arr, n) → needs n bars
     ];
 
     let mut max_n = 0usize;
@@ -799,6 +827,36 @@ mod tests {
         // [9,1,1,1,1] → mean 2.6, sd 3.2; z = (9-2.6)/3.2 = 2.0.
         let z = engine.eval::<f64>("zscore([9.0,1.0,1.0,1.0,1.0])").unwrap();
         assert!((z - 2.0).abs() < 1e-9, "zscore = {z}");
+    }
+
+    /// Windowed avg and sum overloads.
+    #[test]
+    fn statistics_builtins_windowed_avg_sum() {
+        let engine = build_engine();
+
+        // avg with n
+        let a1 = engine.eval::<f64>("avg([1, 2, 3, 4, 5], 3)").unwrap();
+        assert!((a1 - 2.0).abs() < 1e-9, "avg(3) = {a1}");
+
+        let a2 = engine.eval::<f64>("avg([10.0, 20.0, 30.0], 2)").unwrap();
+        assert!((a2 - 15.0).abs() < 1e-9, "avg(2) = {a2}");
+
+        // sum with n
+        let s1 = engine.eval::<f64>("sum([1, 2, 3, 4, 5], 3)").unwrap();
+        assert!((s1 - 6.0).abs() < 1e-9, "sum(3) = {s1}");
+
+        let s2 = engine.eval::<f64>("sum([10.0, 20.0, 30.0], 2)").unwrap();
+        assert!((s2 - 30.0).abs() < 1e-9, "sum(2) = {s2}");
+
+        // n <= 0 returns 0.0
+        assert_eq!(engine.eval::<f64>("avg([1, 2, 3], 0)").unwrap(), 0.0);
+        assert_eq!(engine.eval::<f64>("sum([1, 2, 3], 0)").unwrap(), 0.0);
+        assert_eq!(engine.eval::<f64>("avg([1, 2, 3], -5)").unwrap(), 0.0);
+        assert_eq!(engine.eval::<f64>("sum([1, 2, 3], -5)").unwrap(), 0.0);
+
+        // size smaller than n returns error
+        assert!(engine.eval::<f64>("avg([1, 2], 3)").is_err());
+        assert!(engine.eval::<f64>("sum([1, 2], 3)").is_err());
     }
 
     /// Tier-2 convenience built-ins: sign / crossed / within.

@@ -596,7 +596,7 @@ pub fn all() -> Vec<IndicatorMeta> {
                 p_int("period", 10),
                 p_float_desc("multiplier", 3.0, "ATR multiplier for band width"),
             ],
-            outputs: vec!["value", "bullish"],
+            outputs: vec!["value", "bullish", "bearish"],
             multi: true, primary: "value",
             declaration: "let st10 = ind.supertrend(10, multiplier=3.0);",
             example: "if flag(st10[0].bullish) && !flag(st10[1].bullish) { long = 1; }",

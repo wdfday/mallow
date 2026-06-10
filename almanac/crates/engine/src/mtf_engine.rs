@@ -149,7 +149,7 @@ pub struct MtfEngine<S: MtfStrategy, R: RiskManager> {
     last_price: f64,
     intra_bar_mode: IntraBarMode,
     position_trackers: HashMap<String, PositionTracker>,
-    pending_signal_levels: HashMap<String, (Option<f64>, Option<f64>, Option<f64>, Option<usize>)>,
+    pending_signal_levels: HashMap<String, (Option<f64>, Option<f64>, Option<f64>, Option<usize>, bool)>,
     single_entry: bool,
     /// Warm-up boundary (Unix ms, base-bar open). Base bars before this only warm
     /// indicators (via `on_bars`); no trading / equity. `None` = trade from the start.
@@ -519,7 +519,7 @@ impl<S: MtfStrategy, R: RiskManager> MtfEngine<S, R> {
                             || signal.trailing_stop_pct.is_some() || signal.max_bars_held.is_some() {
                             self.pending_signal_levels.insert(
                                 signal.symbol.clone(),
-                                (signal.target_price, signal.stop_price, signal.trailing_stop_pct, signal.max_bars_held),
+                                (signal.target_price, signal.stop_price, signal.trailing_stop_pct, signal.max_bars_held, signal.is_offset),
                             );
                         }
                         let side = match signal.direction {
@@ -546,6 +546,7 @@ impl<S: MtfStrategy, R: RiskManager> MtfEngine<S, R> {
             .map_or(false, |p| p.qty.abs() > f64::EPSILON);
         if still_open {
             let sig_levels = self.pending_signal_levels.remove(&fill.symbol);
+            let (tp, sl, trail, max_bars, is_offset) = sig_levels.unwrap_or((None, None, None, None, false));
             self.position_trackers
                 .entry(fill.symbol.clone())
                 .or_insert_with(|| {
@@ -554,8 +555,8 @@ impl<S: MtfStrategy, R: RiskManager> MtfEngine<S, R> {
                         .positions
                         .get(&fill.symbol)
                         .map_or(true, |p| p.qty > 0.0);
-                    let (tp, sl, trail, max_bars) = sig_levels.unwrap_or((None, None, None, None));
-                    PositionTracker::with_levels(fill.price, sl, tp, trail, max_bars, is_long)
+                    let (tp_abs, sl_abs) = resolve_offset_levels(fill.price, tp, sl, is_offset, is_long);
+                    PositionTracker::with_levels(fill.price, sl_abs, tp_abs, trail, max_bars, is_long)
                 });
         } else {
             self.pending_signal_levels.remove(&fill.symbol);
@@ -578,6 +579,24 @@ fn push_bounded<T>(buf: &mut VecDeque<T>, v: T, cap: usize) {
     while buf.len() > cap {
         buf.pop_front();
     }
+}
+
+/// Resolve signal-level TP/SL to absolute prices. When `is_offset`, target/stop are
+/// magnitudes whose side depends on direction (long → TP above / SL below; short →
+/// TP below / SL above). When not offset they are already absolute and returned as-is.
+fn resolve_offset_levels(
+    price: f64,
+    target: Option<f64>,
+    stop: Option<f64>,
+    is_offset: bool,
+    is_long: bool,
+) -> (Option<f64>, Option<f64>) {
+    if !is_offset {
+        return (target, stop);
+    }
+    let tp = target.map(|d| if is_long { price + d.abs() } else { price - d.abs() });
+    let sl = stop.map(|d| if is_long { price - d.abs() } else { price + d.abs() });
+    (tp, sl)
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────────

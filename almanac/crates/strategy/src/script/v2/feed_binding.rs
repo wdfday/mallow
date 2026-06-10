@@ -113,6 +113,7 @@ pub(in crate::script) struct FeedVarBinding {
     buf_depth: usize,
     /// Live state — present iff `enable_live` was set at construction time.
     live: Option<LiveState>,
+    last_confirmed_ts: Option<i64>,
 }
 
 struct LiveState {
@@ -153,6 +154,7 @@ impl FeedVarBinding {
             history: History::new(extract, buf_depth),
             buf_depth,
             live,
+            last_confirmed_ts: None,
         })
     }
 
@@ -182,6 +184,7 @@ impl FeedVarBinding {
     /// Returns `true` when the confirmed history buffer has reached its
     /// target depth (script can be invoked safely).
     pub(in crate::script) fn feed_confirmed(&mut self, bar: &Bar) -> bool {
+        self.last_confirmed_ts = Some(bar.timestamp);
         if let Some(fields) = self.ind.update(bar) {
             self.history.push(&fields, self.buf_depth);
         }
@@ -252,6 +255,14 @@ impl FeedVarBinding {
         if self.target_tf.is_none() {
             return;
         }
+        // Skip if this base bar belongs to an already-confirmed bucket.
+        let tf_ms = live.agg.tf_ms();
+        let bucket_start = base_bar.timestamp.div_euclid(tf_ms) * tf_ms;
+        if let Some(last_confirmed) = self.last_confirmed_ts {
+            if bucket_start <= last_confirmed {
+                return;
+            }
+        }
         live.agg.accumulate(base_bar);
         live.fill_ratio = live.agg.fill_ratio();
         let Some(forming) = live.agg.peek() else { return; };
@@ -291,6 +302,7 @@ impl FeedVarBinding {
             live.map.clear();
             live.fill_ratio = 0.0;
         }
+        self.last_confirmed_ts = None;
     }
 }
 

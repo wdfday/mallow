@@ -285,20 +285,24 @@ impl ScriptSlot {
         }
     }
 
-    /// Build indicator series aligned to `bar_count` (null-padded for warmup).
+    /// Build indicator series aligned to the display bars (matched by timestamp).
     ///
     /// Keys: `var_name` for single-output, `var_name.field` for multi-output —
     /// matching the server-side `take_indicator_series` naming convention.
-    fn indicator_map(&self, bar_count: usize) -> HashMap<String, HashMap<String, Vec<Value>>> {
+    fn indicator_map(&self, display_bars: &[Bar]) -> HashMap<String, HashMap<String, Vec<Value>>> {
         let mut out: HashMap<String, HashMap<String, Vec<Value>>> = HashMap::new();
         let Some(series) = self.strategy.series() else { return out };
 
         for (key, vals) in series {
-            // `key` is already `var_name` (single) or `var_name.field` (multi).
-            // Wrap into the same {field: [values]} shape as named indicators.
-            let null_count = bar_count.saturating_sub(vals.len());
-            let mut v: Vec<Value> = vec![Value::Null; null_count];
-            v.extend(vals.iter().map(|(_, f)| f64_to_json(*f)));
+            let val_map: HashMap<i64, f64> = vals.iter().cloned().collect();
+            let mut v: Vec<Value> = Vec::with_capacity(display_bars.len());
+            for bar in display_bars {
+                if let Some(&val) = val_map.get(&bar.timestamp) {
+                    v.push(f64_to_json(val));
+                } else {
+                    v.push(Value::Null);
+                }
+            }
 
             // Flatten into the snapshot's indicator map format:
             // top-level key = full series key, inner map = {"value": [...]}
@@ -378,8 +382,11 @@ impl ChartState {
     /// (`long`/`short`/`exit` + TP/SL) are collected into the snapshot's
     /// `signals` array as bars stream in.
     ///
-    /// The script's own `candle.transform` directive is honoured independently
-    /// of the chart-level candle transform — script always operates on raw bars.
+    /// The script/backtest ALWAYS evaluate on **raw** OHLCV, independent of the
+    /// chart-level candle transform (HA toggle is display-only). This keeps the
+    /// on-chart strategy result identical to the deep backtest. The script's own
+    /// `candle.transform` directive is handled internally by `ScriptStrategy` on
+    /// the raw bars — that's separate from the display toggle.
     ///
     /// Replays all current bars through the script. O(n).
     /// Returns `null` on success, `{error}` on script compile failure.
@@ -506,9 +513,21 @@ impl ChartState {
     /// Append a single bar. Feeds it through the candle transform (if any)
     /// incrementally, then through existing indicator instances. O(indicators).
     pub fn add_tail(&mut self, t: f64, o: f64, h: f64, l: f64, c: f64, v: f64) -> JsValue {
-        let bar = Bar::new(t as i64, &self.symbol, o, h, l, c, v);
+        let timestamp = t as i64;
+        let bar = Bar::new(timestamp, &self.symbol, o, h, l, c, v);
+
+        // If the new bar has the same timestamp as the last bar, it represents an update
+        // to the active forming bar (live ticking). Update in-place and rebuild indicators.
+        if let Some(last) = self.bars.last_mut() {
+            if last.timestamp == timestamp {
+                *last = bar;
+                self.rebuild_transform();
+                return self.snapshot();
+            }
+        }
+
         self.bars.push(bar.clone());
-        // Script slot always gets raw bars (handles its own transform internally).
+        // Script slot always gets RAW bars (display transform must not affect it).
         if let Some(ss) = &mut self.script_slot { ss.feed(&bar); }
         if self.transform_period > 0 {
             if let Some(ha) = &mut self.ha {
@@ -546,7 +565,7 @@ impl ChartState {
         t: &[f64], o: &[f64], h: &[f64], l: &[f64], c: &[f64], v: &[f64],
     ) -> JsValue {
         let new_bars = build_bars(&self.symbol, t, o, h, l, c, v);
-        // Script slot gets raw bars first.
+        // Script slot always gets RAW bars (display transform must not affect it).
         if let Some(ss) = &mut self.script_slot {
             for bar in &new_bars { ss.feed(bar); }
         }
@@ -660,6 +679,8 @@ impl ChartState {
             Err(e) => return js_error(&format!("script: {e}")),
         };
         let cfg = parse_config(config_json);
+        // Backtest ALWAYS runs on RAW bars — the chart-level candle transform is
+        // display-only and must not change the result. (Same data as deep backtest.)
         let out = run_strategy(&self.symbol, &self.bars, Box::new(strategy), &cfg);
         crate::to_js(&out)
     }
@@ -683,6 +704,7 @@ impl ChartState {
             Err(e) => return js_error(&format!("strategy '{strategy_name}': {e}")),
         };
         let cfg = parse_config(config_json);
+        // Backtest ALWAYS runs on RAW bars (see backtest()).
         let out = run_strategy(&self.symbol, &self.bars, strategy, &cfg);
         crate::to_js(&out)
     }
@@ -723,7 +745,8 @@ impl ChartState {
     /// only), pass `&self.bars` to all `slot.rebuild()` calls and keep `t_bars` for
     /// display only. Not done yet — evaluate when the distinction becomes user-visible.
     fn rebuild_transform(&mut self) {
-        // Script slot always replays raw bars regardless of chart-level transform.
+        // Script slot always replays RAW bars — the chart-level transform is
+        // display-only and must not change the strategy result.
         if let Some(ss) = &mut self.script_slot {
             ss.rebuild(&self.bars);
         }
@@ -782,10 +805,10 @@ impl ChartState {
             })
             .collect();
 
-        // Script slot indicators — keyed against raw bar count; merged last so
+        // Script slot indicators — keyed against display bar count; merged last so
         // script keys take priority on collision with named slots.
         if let Some(ss) = &self.script_slot {
-            for (key, inner) in ss.indicator_map(self.bars.len()) {
+            for (key, inner) in ss.indicator_map(display) {
                 indicators.insert(key, inner);
             }
         }

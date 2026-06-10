@@ -334,6 +334,7 @@ pub(crate) fn bool_out(scope: &Scope, name: &str) -> bool {
 
 impl Strategy for ScriptStrategy {
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
+        self.current_regime = None;
         let Some(bar_owned) = self.candle_transform.apply(bar) else {
             return vec![];
         };
@@ -1026,6 +1027,35 @@ if cross_below(ema9, ema21) { exit = true; }
             let _ = s.on_bar(&make_bar(i));
         }
         assert!(Strategy::current_regime(&s).is_none());
+    }
+
+    #[test]
+    fn regime_block_runtime_error_clears_regime_state() {
+        use alm_core::strategy::Strategy;
+        let script = r#"
+regime {
+    let ema9 = ind.ema(9);
+    if close[0] > 100.5 {
+        // dynamic division by zero throws runtime error
+        let x = 1 / 0;
+        trend = "trending";
+    } else {
+        trend = "ranging";
+    }
+}
+if close[0] > 0.0 { entry = true; }
+"#;
+        let mut s = ScriptStrategy::from_script(script).unwrap();
+        // Feed 15 bars for warmup (close = 100.0, else branch runs successfully)
+        for i in 0..15 {
+            let _ = s.on_bar(&Bar::new(i * 60_000, "T", 100.0, 100.0, 100.0, 100.0, 1.0));
+        }
+        let regime = Strategy::current_regime(&s).expect("regime should be populated");
+        assert_eq!(regime.trend.status, "ranging");
+
+        // Feed next bar (close = 101.0, triggers division by zero)
+        let _ = s.on_bar(&Bar::new(15 * 60_000, "T", 101.0, 101.0, 101.0, 101.0, 1.0));
+        assert!(Strategy::current_regime(&s).is_none(), "regime state should be cleared on runtime error");
     }
 
     #[test]

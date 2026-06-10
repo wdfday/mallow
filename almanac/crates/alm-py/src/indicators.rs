@@ -341,7 +341,7 @@ pub fn aroon_osc(high: Vec<f64>, low: Vec<f64>, period: usize) -> PyResult<Vec<O
 #[pyo3(signature = (high, low, period=14))]
 pub fn vortex(high: Vec<f64>, low: Vec<f64>, period: usize) -> PyResult<(Vec<Option<f64>>, Vec<Option<f64>>)> {
     let cfg = json!({ "type": "vortex", "period": period });
-    run_indicator_to_tup2(&cfg, &high, &high, &low, &high, &high, "plus", "minus")
+    run_indicator_to_tup2(&cfg, &high, &high, &low, &high, &high, "plus_vi", "minus_vi")
 }
 
 #[pyfunction]
@@ -392,7 +392,7 @@ pub fn kdj(
 #[pyo3(signature = (close, q_pos=0.001, q_vel=0.001, r=1.0))]
 pub fn kalman(close: Vec<f64>, q_pos: f64, q_vel: f64, r: f64) -> PyResult<(Vec<Option<f64>>, Vec<Option<f64>>)> {
     let cfg = json!({ "type": "kalman", "q_pos": q_pos, "q_vel": q_vel, "r": r });
-    run_indicator_to_tup2(&cfg, &close, &close, &close, &close, &close, "pos", "vel")
+    run_indicator_to_tup2(&cfg, &close, &close, &close, &close, &close, "value", "velocity")
 }
 
 // ── Momentum / Oscillators ───────────────────────────────────────────────────
@@ -454,7 +454,7 @@ pub fn tsi(
     second: usize,
 ) -> PyResult<(Vec<Option<f64>>, Vec<Option<f64>>, Vec<Option<f64>>)> {
     let cfg = json!({ "type": "tsi", "first": first, "second": second });
-    run_indicator_to_tup3(&cfg, &close, &close, &close, &close, &close, "tsi", "signal", "histogram")
+    run_indicator_to_tup3(&cfg, &close, &close, &close, &close, &close, "value", "signal", "histogram")
 }
 
 #[pyfunction]
@@ -482,21 +482,154 @@ pub fn fisher(
 }
 
 #[pyfunction]
-#[pyo3(signature = (close, roc_periods=None, roc_smas=None, signal=None))]
+#[pyo3(signature = (close, roc_periods=None, sma_periods=None, signal=None))]
 pub fn kst(
     py: Python<'_>,
     close: Vec<f64>,
     roc_periods: Option<Vec<usize>>,
-    roc_smas: Option<Vec<usize>>,
+    sma_periods: Option<Vec<usize>>,
     signal: Option<usize>,
 ) -> PyResult<PyObject> {
     let mut map = serde_json::Map::new();
     map.insert("type".to_string(), json!("kst"));
     if let Some(p) = roc_periods { map.insert("roc_periods".to_string(), json!(p)); }
-    if let Some(s) = roc_smas { map.insert("roc_smas".to_string(), json!(s)); }
+    if let Some(s) = sma_periods { map.insert("sma_periods".to_string(), json!(s)); }
     if let Some(sig) = signal { map.insert("signal".to_string(), json!(sig)); }
     let cfg = Value::Object(map);
     run_indicator_to_dict(py, &cfg, &close, &close, &close, &close, &close)
+}
+
+#[pyfunction]
+#[pyo3(signature = (close, smooth1=35, smooth2=20, signal=10))]
+pub fn pmo(
+    close: Vec<f64>,
+    smooth1: usize,
+    smooth2: usize,
+    signal: usize,
+) -> PyResult<(Vec<Option<f64>>, Vec<Option<f64>>, Vec<Option<f64>>)> {
+    let cfg = json!({
+        "type": "pmo",
+        "smooth1": smooth1,
+        "smooth2": smooth2,
+        "signal": signal
+    });
+    run_indicator_to_tup3(&cfg, &close, &close, &close, &close, &close, "pmo", "signal", "histogram")
+}
+
+#[pyfunction]
+#[pyo3(signature = (close, fast=12, slow=26, signal=9))]
+pub fn ppo(
+    close: Vec<f64>,
+    fast: usize,
+    slow: usize,
+    signal: usize,
+) -> PyResult<(Vec<Option<f64>>, Vec<Option<f64>>, Vec<Option<f64>>)> {
+    let cfg = json!({
+        "type": "ppo",
+        "fast": fast,
+        "slow": slow,
+        "signal": signal
+    });
+    run_indicator_to_tup3(&cfg, &close, &close, &close, &close, &close, "ppo", "signal", "histogram")
+}
+
+#[pyfunction]
+#[pyo3(signature = (open, high, low, close, period=10))]
+pub fn rvi(
+    open: Vec<f64>,
+    high: Vec<f64>,
+    low: Vec<f64>,
+    close: Vec<f64>,
+    period: usize,
+) -> PyResult<(Vec<Option<f64>>, Vec<Option<f64>>)> {
+    let cfg = json!({ "type": "rvi", "period": period });
+    run_indicator_to_tup2(&cfg, &open, &high, &low, &close, &open, "rvi", "signal")
+}
+
+#[pyfunction]
+#[pyo3(signature = (high, low, close, period=13, smooth1=25, smooth2=2, signal=9))]
+pub fn smi(
+    high: Vec<f64>,
+    low: Vec<f64>,
+    close: Vec<f64>,
+    period: usize,
+    smooth1: usize,
+    smooth2: usize,
+    signal: usize,
+) -> PyResult<(Vec<Option<f64>>, Vec<Option<f64>>)> {
+    let cfg = json!({
+        "type": "smi",
+        "period": period,
+        "smooth1": smooth1,
+        "smooth2": smooth2,
+        "signal": signal
+    });
+    run_indicator_to_tup2(&cfg, &close, &high, &low, &close, &close, "smi", "signal")
+}
+
+#[pyfunction]
+#[pyo3(signature = (high, low, close, fast=7, medium=14, slow=28))]
+pub fn uo(
+    high: Vec<f64>,
+    low: Vec<f64>,
+    close: Vec<f64>,
+    fast: usize,
+    medium: usize,
+    slow: usize,
+) -> PyResult<Vec<Option<f64>>> {
+    let cfg = json!({
+        "type": "uo",
+        "fast": fast,
+        "medium": medium,
+        "slow": slow
+    });
+    run_indicator_to_list(&cfg, &close, &high, &low, &close, &close)
+}
+
+#[pyfunction]
+#[pyo3(signature = (close, rsi_period=3, streak_period=2, rank_period=100))]
+pub fn connors_rsi(
+    close: Vec<f64>,
+    rsi_period: usize,
+    streak_period: usize,
+    rank_period: usize,
+) -> PyResult<Vec<Option<f64>>> {
+    let cfg = json!({
+        "type": "connors_rsi",
+        "rsi_period": rsi_period,
+        "streak_period": streak_period,
+        "rank_period": rank_period
+    });
+    run_indicator_to_list(&cfg, &close, &close, &close, &close, &close)
+}
+
+#[pyfunction]
+#[pyo3(signature = (high, low, fast=5, slow=34))]
+pub fn ao(
+    high: Vec<f64>,
+    low: Vec<f64>,
+    fast: usize,
+    slow: usize,
+) -> PyResult<Vec<Option<f64>>> {
+    let cfg = json!({ "type": "ao", "fast": fast, "slow": slow });
+    run_indicator_to_list(&cfg, &high, &high, &low, &high, &high)
+}
+
+#[pyfunction]
+#[pyo3(signature = (close, short=11, long=14, wma=10))]
+pub fn coppock(
+    close: Vec<f64>,
+    short: usize,
+    long: usize,
+    wma: usize,
+) -> PyResult<Vec<Option<f64>>> {
+    let cfg = json!({
+        "type": "coppock",
+        "short": short,
+        "long": long,
+        "wma": wma
+    });
+    run_indicator_to_list(&cfg, &close, &close, &close, &close, &close)
 }
 
 // ── Volume ───────────────────────────────────────────────────────────────────
@@ -625,21 +758,45 @@ pub fn elder_ray(
     low: Vec<f64>,
     close: Vec<f64>,
     period: usize,
-) -> PyResult<(Vec<Option<f64>>, Vec<Option<f64>>)> {
+) -> PyResult<(Vec<Option<f64>>, Vec<Option<f64>>, Vec<Option<f64>>)> {
     let cfg = json!({ "type": "elder_ray", "period": period });
-    run_indicator_to_tup2(&cfg, &close, &high, &low, &close, &close, "bull", "bear")
+    run_indicator_to_tup3(&cfg, &close, &high, &low, &close, &close, "bull_power", "bear_power", "ema")
 }
 
 #[pyfunction]
-#[pyo3(signature = (high, low, close, tenkan=9, kijun=26, senkou=52, chikou=26))]
+pub fn fractal(
+    high: Vec<f64>,
+    low: Vec<f64>,
+) -> PyResult<(
+    Vec<Option<f64>>,
+    Vec<Option<f64>>,
+    Vec<Option<f64>>,
+    Vec<Option<f64>>,
+)> {
+    let cfg = json!({ "type": "fractal" });
+    run_indicator_to_tup4(
+        &cfg,
+        &high,
+        &high,
+        &low,
+        &high,
+        &high,
+        "bullish",
+        "bearish",
+        "fractal_high",
+        "fractal_low",
+    )
+}
+
+#[pyfunction]
+#[pyo3(signature = (high, low, close, tenkan=9, kijun=26, senkou_b=52))]
 pub fn ichimoku(
     high: Vec<f64>,
     low: Vec<f64>,
     close: Vec<f64>,
     tenkan: usize,
     kijun: usize,
-    senkou: usize,
-    chikou: usize,
+    senkou_b: usize,
 ) -> PyResult<(
     Vec<Option<f64>>,
     Vec<Option<f64>>,
@@ -651,8 +808,7 @@ pub fn ichimoku(
         "type": "ichimoku",
         "tenkan": tenkan,
         "kijun": kijun,
-        "senkou": senkou,
-        "chikou": chikou
+        "senkou_b": senkou_b
     });
     run_indicator_to_tup5(
         &cfg,
@@ -670,23 +826,68 @@ pub fn ichimoku(
 }
 
 #[pyfunction]
+#[pyo3(signature = (open, high, low, close, smooth=1))]
 pub fn heiken_ashi(
     open: Vec<f64>,
     high: Vec<f64>,
     low: Vec<f64>,
     close: Vec<f64>,
+    smooth: usize,
 ) -> PyResult<(
     Vec<Option<f64>>,
     Vec<Option<f64>>,
     Vec<Option<f64>>,
     Vec<Option<f64>>,
 )> {
-    let cfg = json!({ "type": "heiken_ashi" });
-    run_indicator_to_tup4(&cfg, &open, &high, &low, &close, &open, "open", "high", "low", "close")
+    let n = close.len();
+    let mut out_open = Vec::with_capacity(n);
+    let mut out_high = Vec::with_capacity(n);
+    let mut out_low = Vec::with_capacity(n);
+    let mut out_close = Vec::with_capacity(n);
+
+    let mut ha = alm_indicator::HeikenAshi::new(smooth);
+
+    for i in 0..n {
+        let o = open.get(i).copied().unwrap_or(0.0);
+        let h = high.get(i).copied().unwrap_or(0.0);
+        let l = low.get(i).copied().unwrap_or(0.0);
+        let c = close.get(i).copied().unwrap_or(0.0);
+
+        if let Some(bar) = ha.update(o, h, l, c) {
+            out_open.push(Some(bar.open));
+            out_high.push(Some(bar.high));
+            out_low.push(Some(bar.low));
+            out_close.push(Some(bar.close));
+        } else {
+            out_open.push(None);
+            out_high.push(None);
+            out_low.push(None);
+            out_close.push(None);
+        }
+    }
+
+    Ok((out_open, out_high, out_low, out_close))
 }
 
 define_scalar_hlc!(chop, "chop", (high, low, close, period=14));
 define_scalar_hlc!(volatility_ratio, "volatility_ratio", (high, low, close, period=14));
+
+#[pyfunction]
+#[pyo3(signature = (high, low, close, ema_period=34, threshold=5.0))]
+pub fn chop_zone(
+    high: Vec<f64>,
+    low: Vec<f64>,
+    close: Vec<f64>,
+    ema_period: usize,
+    threshold: f64,
+) -> PyResult<(Vec<Option<f64>>, Vec<Option<f64>>)> {
+    let cfg = json!({
+        "type": "chop_zone",
+        "ema_period": ema_period,
+        "threshold": threshold
+    });
+    run_indicator_to_tup2(&cfg, &close, &high, &low, &close, &close, "angle", "zone")
+}
 
 #[pyfunction]
 #[pyo3(signature = (high, low, close, period=14))]
@@ -703,59 +904,78 @@ pub fn supertrend(
     close: Vec<f64>,
     period: usize,
     multiplier: f64,
-) -> PyResult<(
-    Vec<Option<f64>>,
-    Vec<Option<f64>>,
-    Vec<Option<f64>>,
-    Vec<Option<f64>>,
-)> {
+) -> PyResult<(Vec<Option<f64>>, Vec<Option<f64>>, Vec<Option<f64>>)> {
     let cfg = json!({ "type": "supertrend", "period": period, "multiplier": multiplier });
-    run_indicator_to_tup4(&cfg, &close, &high, &low, &close, &close, "trend", "direction", "long", "short")
+    run_indicator_to_tup3(&cfg, &close, &high, &low, &close, &close, "value", "bullish", "bearish")
 }
 
 #[pyfunction]
-#[pyo3(signature = (high, low, close, period=22, k=3.0))]
+#[pyo3(signature = (high, low, close, period=22, multiplier=3.0))]
 pub fn chandelier(
     high: Vec<f64>,
     low: Vec<f64>,
     close: Vec<f64>,
     period: usize,
-    k: f64,
-) -> PyResult<(Vec<Option<f64>>, Vec<Option<f64>>)> {
-    let cfg = json!({ "type": "chandelier", "period": period, "k": k });
-    run_indicator_to_tup2(&cfg, &close, &high, &low, &close, &close, "long", "short")
+    multiplier: f64,
+) -> PyResult<(Vec<Option<f64>>, Vec<Option<f64>>, Vec<Option<f64>>)> {
+    let cfg = json!({ "type": "chandelier_exit", "period": period, "multiplier": multiplier });
+    run_indicator_to_tup3(&cfg, &close, &high, &low, &close, &close, "long_stop", "short_stop", "atr")
 }
 
 #[pyfunction]
-#[pyo3(signature = (high, low, close, period=10, max_min_period=20, k=2.0))]
-pub fn chande_kroll(
+#[pyo3(signature = (high, low, close, period=22, multiplier=3.0))]
+pub fn chandelier_exit(
     high: Vec<f64>,
     low: Vec<f64>,
     close: Vec<f64>,
     period: usize,
-    max_min_period: usize,
-    k: f64,
-) -> PyResult<(Vec<Option<f64>>, Vec<Option<f64>>)> {
-    let cfg = json!({
-        "type": "chande_kroll",
-        "period": period,
-        "max_min_period": max_min_period,
-        "k": k
-    });
-    run_indicator_to_tup2(&cfg, &close, &high, &low, &close, &close, "long", "short")
+    multiplier: f64,
+) -> PyResult<(Vec<Option<f64>>, Vec<Option<f64>>, Vec<Option<f64>>)> {
+    chandelier(high, low, close, period, multiplier)
 }
 
 #[pyfunction]
-#[pyo3(signature = (high, low, close, step=0.02, max_step=0.2))]
+#[pyo3(signature = (high, low, close, atr_period=10, factor=1.5, stop_period=9))]
+pub fn chande_kroll(
+    high: Vec<f64>,
+    low: Vec<f64>,
+    close: Vec<f64>,
+    atr_period: usize,
+    factor: f64,
+    stop_period: usize,
+) -> PyResult<(Vec<Option<f64>>, Vec<Option<f64>>)> {
+    let cfg = json!({
+        "type": "chande_kroll",
+        "atr_period": atr_period,
+        "factor": factor,
+        "stop_period": stop_period
+    });
+    run_indicator_to_tup2(&cfg, &close, &high, &low, &close, &close, "stop_long", "stop_short")
+}
+
+#[pyfunction]
+#[pyo3(signature = (high, low, close, step=0.02, max=0.2))]
+pub fn parabolic_sar(
+    high: Vec<f64>,
+    low: Vec<f64>,
+    close: Vec<f64>,
+    step: f64,
+    max: f64,
+) -> PyResult<(Vec<Option<f64>>, Vec<Option<f64>>)> {
+    let cfg = json!({ "type": "parabolic_sar", "step": step, "max": max });
+    run_indicator_to_tup2(&cfg, &close, &high, &low, &close, &close, "sar", "bullish")
+}
+
+#[pyfunction]
+#[pyo3(signature = (high, low, close, step=0.02, max=0.2))]
 pub fn psar(
     high: Vec<f64>,
     low: Vec<f64>,
     close: Vec<f64>,
     step: f64,
-    max_step: f64,
+    max: f64,
 ) -> PyResult<(Vec<Option<f64>>, Vec<Option<f64>>)> {
-    let cfg = json!({ "type": "psar", "step": step, "max_step": max_step });
-    run_indicator_to_tup2(&cfg, &close, &high, &low, &close, &close, "sar", "trend")
+    parabolic_sar(high, low, close, step, max)
 }
 
 // ── Module registration ───────────────────────────────────────────────────────
@@ -807,6 +1027,14 @@ pub fn register_submodule(m: &Bound<PyModule>) -> PyResult<()> {
     sub.add_function(wrap_pyfunction!(bull_bear, &sub)?)?;
     sub.add_function(wrap_pyfunction!(fisher, &sub)?)?;
     sub.add_function(wrap_pyfunction!(kst, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(pmo, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(ppo, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(rvi, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(smi, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(uo, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(connors_rsi, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(ao, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(coppock, &sub)?)?;
 
     // Volume
     sub.add_function(wrap_pyfunction!(vwap, &sub)?)?;
@@ -822,14 +1050,18 @@ pub fn register_submodule(m: &Bound<PyModule>) -> PyResult<()> {
     // Pattern / Regime / Risk
     sub.add_function(wrap_pyfunction!(rwi, &sub)?)?;
     sub.add_function(wrap_pyfunction!(elder_ray, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(fractal, &sub)?)?;
     sub.add_function(wrap_pyfunction!(ichimoku, &sub)?)?;
     sub.add_function(wrap_pyfunction!(heiken_ashi, &sub)?)?;
     sub.add_function(wrap_pyfunction!(chop, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(chop_zone, &sub)?)?;
     sub.add_function(wrap_pyfunction!(volatility_ratio, &sub)?)?;
     sub.add_function(wrap_pyfunction!(atr, &sub)?)?;
     sub.add_function(wrap_pyfunction!(supertrend, &sub)?)?;
     sub.add_function(wrap_pyfunction!(chandelier, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(chandelier_exit, &sub)?)?;
     sub.add_function(wrap_pyfunction!(chande_kroll, &sub)?)?;
+    sub.add_function(wrap_pyfunction!(parabolic_sar, &sub)?)?;
     sub.add_function(wrap_pyfunction!(psar, &sub)?)?;
 
     m.add_submodule(&sub)?;

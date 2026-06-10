@@ -243,8 +243,11 @@ export class ChartState {
      * (`long`/`short`/`exit` + TP/SL) are collected into the snapshot's
      * `signals` array as bars stream in.
      *
-     * The script's own `candle.transform` directive is honoured independently
-     * of the chart-level candle transform — script always operates on raw bars.
+     * The script/backtest ALWAYS evaluate on **raw** OHLCV, independent of the
+     * chart-level candle transform (HA toggle is display-only). This keeps the
+     * on-chart strategy result identical to the deep backtest. The script's own
+     * `candle.transform` directive is handled internally by `ScriptStrategy` on
+     * the raw bars — that's separate from the display toggle.
      *
      * Replays all current bars through the script. O(n).
      * Returns `null` on success, `{error}` on script compile failure.
@@ -362,54 +365,11 @@ export function list_mtf_strategies() {
 }
 
 /**
- * List all single-TF named strategy keys usable with `run_backtest`.
+ * List all single-TF named strategy keys usable with `ChartState::backtest_named`.
  * @returns {any}
  */
 export function list_strategies() {
     const ret = wasm.list_strategies();
-    return ret;
-}
-
-/**
- * Run a **single-TF named** strategy backtest client-side.
- *
- * `strategy_name`: any name from `list_strategies()` (e.g. `"ema_cross"`)
- * `params_json`:   `{"period": 14, ...}`
- * `config_json`:   `{"initial_capital": 10000, "position_size_pct": 1.0, ...}`
- * @param {string} symbol
- * @param {string} strategy_name
- * @param {string} params_json
- * @param {Float64Array} t
- * @param {Float64Array} o
- * @param {Float64Array} h
- * @param {Float64Array} l
- * @param {Float64Array} c
- * @param {Float64Array} v
- * @param {string} config_json
- * @returns {any}
- */
-export function run_backtest(symbol, strategy_name, params_json, t, o, h, l, c, v, config_json) {
-    const ptr0 = passStringToWasm0(symbol, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passStringToWasm0(strategy_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ptr2 = passStringToWasm0(params_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len2 = WASM_VECTOR_LEN;
-    const ptr3 = passArrayF64ToWasm0(t, wasm.__wbindgen_malloc);
-    const len3 = WASM_VECTOR_LEN;
-    const ptr4 = passArrayF64ToWasm0(o, wasm.__wbindgen_malloc);
-    const len4 = WASM_VECTOR_LEN;
-    const ptr5 = passArrayF64ToWasm0(h, wasm.__wbindgen_malloc);
-    const len5 = WASM_VECTOR_LEN;
-    const ptr6 = passArrayF64ToWasm0(l, wasm.__wbindgen_malloc);
-    const len6 = WASM_VECTOR_LEN;
-    const ptr7 = passArrayF64ToWasm0(c, wasm.__wbindgen_malloc);
-    const len7 = WASM_VECTOR_LEN;
-    const ptr8 = passArrayF64ToWasm0(v, wasm.__wbindgen_malloc);
-    const len8 = WASM_VECTOR_LEN;
-    const ptr9 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len9 = WASM_VECTOR_LEN;
-    const ret = wasm.run_backtest(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5, ptr6, len6, ptr7, len7, ptr8, len8, ptr9, len9);
     return ret;
 }
 
@@ -446,117 +406,6 @@ export function run_indicators(symbol, t, o, h, l, c, v, config_json) {
     const ptr7 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
     const len7 = WASM_VECTOR_LEN;
     const ret = wasm.run_indicators(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5, ptr6, len6, ptr7, len7);
-    return ret;
-}
-
-/**
- * Run a **multi-TF named** strategy backtest client-side.
- *
- * `strategy_name`: any name from `list_mtf_strategies()` (e.g. `"mtf_ema_rsi"`)
- * `params_json`:   `{}` (currently all MTF named strategies use built-in defaults)
- * `base_tf`:       base timeframe string — same set as `run_mtf_script_backtest`
- * `bars_json`:     same format as `run_mtf_script_backtest`
- * `config_json`:   same as `run_backtest`
- * @param {string} symbol
- * @param {string} strategy_name
- * @param {string} params_json
- * @param {string} base_tf
- * @param {string} bars_json
- * @param {string} config_json
- * @returns {any}
- */
-export function run_mtf_backtest(symbol, strategy_name, params_json, base_tf, bars_json, config_json) {
-    const ptr0 = passStringToWasm0(symbol, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passStringToWasm0(strategy_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ptr2 = passStringToWasm0(params_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len2 = WASM_VECTOR_LEN;
-    const ptr3 = passStringToWasm0(base_tf, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len3 = WASM_VECTOR_LEN;
-    const ptr4 = passStringToWasm0(bars_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len4 = WASM_VECTOR_LEN;
-    const ptr5 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len5 = WASM_VECTOR_LEN;
-    const ret = wasm.run_mtf_backtest(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5);
-    return ret;
-}
-
-/**
- * Run a **multi-TF V2 script** backtest client-side.
- *
- * `base_tf`:   base timeframe string — `"M1"`, `"M5"`, `"H1"`, etc.
- *              (M1 M3 M5 M10 M15 M30 H1 H2 H4 H6 H12 D1 W1)
- * `bars_json`: JSON object mapping each required TF to its OHLCV arrays:
- * ```json
- * {
- *   "M1": { "t": [...], "o": [...], "h": [...], "l": [...], "c": [...], "v": [...] },
- *   "H4": { "t": [...], "o": [...], "h": [...], "l": [...], "c": [...], "v": [...] }
- * }
- * ```
- * All timeframes declared in the script **must** be present; extra ones are ignored.
- * `config_json`: same as `run_backtest`.
- *
- * Also works for single-TF V2 scripts — pass only the base TF in `bars_json`.
- * @param {string} symbol
- * @param {string} script
- * @param {string} base_tf
- * @param {string} bars_json
- * @param {string} config_json
- * @returns {any}
- */
-export function run_mtf_script_backtest(symbol, script, base_tf, bars_json, config_json) {
-    const ptr0 = passStringToWasm0(symbol, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passStringToWasm0(script, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ptr2 = passStringToWasm0(base_tf, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len2 = WASM_VECTOR_LEN;
-    const ptr3 = passStringToWasm0(bars_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len3 = WASM_VECTOR_LEN;
-    const ptr4 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len4 = WASM_VECTOR_LEN;
-    const ret = wasm.run_mtf_script_backtest(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4);
-    return ret;
-}
-
-/**
- * Run a **single-TF V1 script** backtest client-side.
- *
- * Multi-timeframe (V2) scripts — those that call `ind.TYPE(period)` on a
- * higher TF — cannot run here because only one TF feed is available.
- * Use `run_mtf_script_backtest` instead and pass bars for every required TF.
- * @param {string} symbol
- * @param {string} script
- * @param {Float64Array} t
- * @param {Float64Array} o
- * @param {Float64Array} h
- * @param {Float64Array} l
- * @param {Float64Array} c
- * @param {Float64Array} v
- * @param {string} config_json
- * @returns {any}
- */
-export function run_script_backtest(symbol, script, t, o, h, l, c, v, config_json) {
-    const ptr0 = passStringToWasm0(symbol, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len0 = WASM_VECTOR_LEN;
-    const ptr1 = passStringToWasm0(script, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len1 = WASM_VECTOR_LEN;
-    const ptr2 = passArrayF64ToWasm0(t, wasm.__wbindgen_malloc);
-    const len2 = WASM_VECTOR_LEN;
-    const ptr3 = passArrayF64ToWasm0(o, wasm.__wbindgen_malloc);
-    const len3 = WASM_VECTOR_LEN;
-    const ptr4 = passArrayF64ToWasm0(h, wasm.__wbindgen_malloc);
-    const len4 = WASM_VECTOR_LEN;
-    const ptr5 = passArrayF64ToWasm0(l, wasm.__wbindgen_malloc);
-    const len5 = WASM_VECTOR_LEN;
-    const ptr6 = passArrayF64ToWasm0(c, wasm.__wbindgen_malloc);
-    const len6 = WASM_VECTOR_LEN;
-    const ptr7 = passArrayF64ToWasm0(v, wasm.__wbindgen_malloc);
-    const len7 = WASM_VECTOR_LEN;
-    const ptr8 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
-    const len8 = WASM_VECTOR_LEN;
-    const ret = wasm.run_script_backtest(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5, ptr6, len6, ptr7, len7, ptr8, len8);
     return ret;
 }
 

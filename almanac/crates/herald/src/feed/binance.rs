@@ -87,6 +87,7 @@ pub fn spawn(symbol_tfs: Vec<(String, Vec<Timeframe>)>, tx: BarTx, ledger: Arc<L
             match run_once(&url, &tx).await {
                 Ok(()) => {
                     gauge!("herald_feed_ws_connected", "source" => "binance").set(0.0);
+                    warn!("binance: feed task stopping (bar channel closed — herald shutting down?)");
                     return;
                 }
                 Err(e) => {

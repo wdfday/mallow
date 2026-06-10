@@ -155,7 +155,19 @@ impl Handler {
                 Some(msg) = ping_sub.next()             => self.handle_ping(msg).await,
                 Some(msg) = heartbeat_sub.next()        => self.handle_heartbeat(msg).await,
                 Some(msg) = stats_sub.next()            => self.handle_stats(msg).await,
-                else => break,
+                else => {
+                    // All event sources ended: the bar feed channel closed AND every
+                    // NATS subscription stream returned None. Previously this exited
+                    // Ok(()) silently → container restarted with no trace. Make it
+                    // loud so the cause is visible in logs.
+                    error!(
+                        herald_id = %self.herald_id,
+                        "herald run loop EXITING: all event sources ended (bar feed closed \
+                         + all NATS subscriptions closed) — likely NATS gave up reconnecting \
+                         or all feed tasks died"
+                    );
+                    break;
+                }
             }
         }
         Ok(())
@@ -188,8 +200,16 @@ impl Handler {
         let symbol = bar.symbol.clone();
         let ts = bar.timestamp;
 
-        // Forming bar — update live_bar in ledger only, no observer fan-out.
+        // Forming bar — update live_bar in ledger (no observer fan-out, so
+        // strategies still evaluate only on closed bars). Publish per-TF to
+        // bars.live.{tf}.{symbol} so the gateway/chart can tick the current candle
+        // at whatever timeframe is being viewed.
         if !closed {
+            let payload = BarMsg::from(&bar).encode_to_vec();
+            let subject = format!("{}.live.{}.{}", SUBJ_BARS, tf, symbol);
+            if let Err(e) = self.client.publish(subject, payload.into()).await {
+                debug!(%symbol, ?tf, err = %e, "failed to publish forming bar to NATS");
+            }
             self.ledger.advance_live(tf, bar);
             return;
         }
@@ -227,15 +247,12 @@ impl Handler {
             Err(e)      => error!(%symbol, ?tf, bar_ts = ts, err = %e, "ledger.advance failed"),
         }
 
-        // Base TF only: push to ring, NATS publish.
-        if tf != self.tf {
-            return;
-        }
-
-        // Publish to NATS bars.{symbol} for downstream consumers.
+        // Publish closed bars per-TF to bars.{tf}.{symbol} for downstream consumers
+        // (gateway/chart subscribe the viewing TF). Signal generation already
+        // happened via ledger.advance above (every TF), independent of this publish.
         let bar_msg = BarMsg::from(&bar);
         let payload = bar_msg.encode_to_vec();
-        let subject = format!("{}.{}", SUBJ_BARS, symbol);
+        let subject = format!("{}.{}.{}", SUBJ_BARS, tf, symbol);
         if let Err(e) = self.client.publish(subject.clone(), payload.into()).await {
             error!(%symbol, err = %e, "failed to publish bar to NATS");
             counter!("herald_nats_publish_errors_total", "subject" => "bars").increment(1);

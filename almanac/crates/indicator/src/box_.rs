@@ -586,6 +586,7 @@ impl IndicatorBox {
                 let mut m = HashMap::new();
                 m.insert("value".into(), v.value);
                 m.insert("bullish".into(), if v.is_bullish { 1.0 } else { 0.0 });
+                m.insert("bearish".into(), if v.is_bullish { 0.0 } else { 1.0 });
                 Some(m)
             }
             Self::Donchian(i) => {
@@ -805,7 +806,7 @@ impl IndicatorBox {
             Self::Atr(_)       => &["atr", "tr"],
             Self::BBands(_)    => &["upper", "middle", "lower", "bandwidth", "percent_b"],
             Self::Keltner(_)   => &["upper", "middle", "lower"],
-            Self::SuperTrend(_) => &["value", "bullish"],
+            Self::SuperTrend(_) => &["value", "bullish", "bearish"],
             Self::Donchian(_)  => &["upper", "middle", "lower"],
             Self::ChopZone(_)  => &["angle", "zone"],
             Self::ChandelierExit(_) => &["long_stop", "short_stop", "atr"],
@@ -950,7 +951,7 @@ impl IndicatorBox {
             Self::Atr(_)             => "ind.atr(14)[0] → .atr (default, Wilder-smoothed true range)  ·  .tr (raw true range of the bar)",
             Self::BBands(_)     => "ind.bbands(20, 2.0)[0] → .middle (default)  ·  .upper  ·  .lower  ·  .bandwidth  ·  .percent_b",
             Self::Keltner(_)    => "ind.keltner(20, 10, 2.0)[0] → .middle (default)  ·  .upper  ·  .lower",
-            Self::SuperTrend(_) => "ind.supertrend(10, 3.0)[0] → .value (default)  ·  .bullish  (1.0 = bullish, 0.0 = bearish)",
+            Self::SuperTrend(_) => "ind.supertrend(10, 3.0)[0] → .value (default)  ·  .bullish  (1.0 = bullish, 0.0 = bearish)  ·  .bearish  (1.0 = bearish, 0.0 = bullish)",
             Self::Donchian(_)   => "ind.donchian(20)[0] → .middle (default)  ·  .upper  ·  .lower",
             Self::Chop(_)            => "ind.chop(14)[0]  → scalar 0–100  (>61.8 = choppy, <38.2 = trending)",
             Self::ChopZone(_)       => "ind.chop_zone(34, 5.0)[0] → .zone (default)  ·  .angle  (1=trending up, 0=choppy, -1=trending down)",

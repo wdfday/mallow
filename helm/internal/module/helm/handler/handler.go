@@ -8,7 +8,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
-	"github.com/nats-io/nats.go"
 
 	"mallow/helm/internal/infra/eventlog"
 	"mallow/helm/internal/infra/orderlog"
@@ -50,7 +49,6 @@ type Handler struct {
 	svc       HelmService
 	handMgr   HandManager
 	reg       *runtime.Registry
-	nc        *nats.Conn
 	fillLog   *perflog.FillLog
 	posLog    poslog.Log
 	orderLog  orderlog.Log
@@ -62,7 +60,6 @@ func New(
 	svc HelmService,
 	handMgr HandManager,
 	reg *runtime.Registry,
-	nc *nats.Conn,
 	fillLog *perflog.FillLog,
 	posLog poslog.Log,
 	orderLog orderlog.Log,
@@ -73,7 +70,6 @@ func New(
 		svc:       svc,
 		handMgr:   handMgr,
 		reg:       reg,
-		nc:        nc,
 		fillLog:   fillLog,
 		posLog:    posLog,
 		orderLog:  orderLog,
@@ -125,7 +121,6 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 		o.GET("/:id/orders", h.orders)
 		o.GET("/:id/orders/history", h.ordersHistory)
 		o.GET("/:id/events/history", h.eventsHistory)
-		o.GET("/:id/events", h.events)
 
 		ex := o.Group("/:id/exchange")
 		{
@@ -922,7 +917,7 @@ type orderHistoryResp struct {
 // @Param hand_id query string false "filter by hand"
 // @Param status query string false "filter by status (placed|filled|cancelled)"
 // @Param limit query int false "max rows (default 100)"
-// @Success 200 {object} shared.SuccessResponse
+// @Success 200 {object} shared.SuccessResponse[[]orderHistoryResp]
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/orders/history [get]
 func (h *Handler) ordersHistory(c *gin.Context) {

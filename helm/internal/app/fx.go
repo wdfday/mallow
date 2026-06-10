@@ -182,14 +182,13 @@ func newOrchHandler(
 	svc *orchservice.Service,
 	handMgr *service.Service,
 	reg *runtime.Registry,
-	nc *nats.Conn,
 	fillLog *perflog.FillLog,
 	posLog poslog.Log,
 	orderLog orderlog.Log,
 	analytics *analyticsservice.Service,
 	evLog eventlog.Log,
 ) *orchhandler.Handler {
-	return orchhandler.New(svc, handMgr, reg, nc, fillLog, posLog, orderLog, analytics, evLog)
+	return orchhandler.New(svc, handMgr, reg, fillLog, posLog, orderLog, analytics, evLog)
 }
 
 func newOrderlogReader(db *sql.DB) orderlog.Log {
@@ -285,13 +284,12 @@ func newAccountHandler(
 	helmSvc *orchservice.Service,
 	handMgr *service.Service,
 	reg *runtime.Registry,
-	nc *nats.Conn,
 	fillLog *perflog.FillLog,
 	snapshotReader perflog.SnapshotReader,
 	posLog poslog.Log,
 	logger *slog.Logger,
 ) *accountHandler.Handler {
-	return accountHandler.NewHandler(svc, helmSvc, handMgr, reg, nc, fillLog, snapshotReader, posLog, logger)
+	return accountHandler.NewHandler(svc, helmSvc, handMgr, reg, fillLog, snapshotReader, posLog, logger)
 }
 
 func newServer(orchH *orchhandler.Handler, handH *handhandler.Handler, accountH *accountHandler.Handler, brokerH *brokerHandler.BrokerConnectionHandler) *gin.Engine {

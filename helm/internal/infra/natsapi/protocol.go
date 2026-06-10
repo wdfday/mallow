@@ -87,10 +87,11 @@ const (
 	SubjHandGet    = "helm.hands.get"
 	SubjHandCreate = "helm.hands.create"
 	SubjHandUpdate = "helm.hands.update"
-	SubjHandDelete = "helm.hands.delete"
-	SubjHandStart  = "helm.hands.start"
-	SubjHandStop   = "helm.hands.stop"
-	SubjHandKill   = "helm.hands.kill"
+	// Hands are never hard-deleted — they are kept for review. Lifecycle is
+	// stop / kill / release only. (No helm.hands.delete subject.)
+	SubjHandStart = "helm.hands.start"
+	SubjHandStop  = "helm.hands.stop"
+	SubjHandKill  = "helm.hands.kill"
 
 	// JetStream subjects — all retained for audit / query.
 	// Format with account_id: fmt.Sprintf(SubjTradeFilled, accountID)

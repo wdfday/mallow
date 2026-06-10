@@ -31,7 +31,6 @@ func (h *NATSHandler) Subscribe(nc *nats.Conn) error {
 		natsapi.SubjHandGet:    h.get,
 		natsapi.SubjHandCreate: h.create,
 		natsapi.SubjHandUpdate: h.update,
-		natsapi.SubjHandDelete: h.delete,
 		natsapi.SubjHandStart:  h.start,
 		natsapi.SubjHandStop:   h.stop,
 		natsapi.SubjHandKill:   h.kill,
@@ -239,23 +238,6 @@ func (h *NATSHandler) update(msg *nats.Msg) {
 	}
 	bi, _ = h.handMgr.Get(id)
 	_ = msg.Respond(natsapi.ReplyOK(bi.Summary()))
-}
-
-func (h *NATSHandler) delete(msg *nats.Msg) {
-	id, err := parseUUID(msg.Data)
-	if err != nil {
-		_ = msg.Respond(natsapi.ReplyErr("invalid json or id"))
-		return
-	}
-	if _, ok := h.enforceHandOwner(msg, id); !ok {
-		return
-	}
-	if err := h.handMgr.Delete(id); err != nil {
-		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
-		return
-	}
-	slog.Info("nats: hand deleted", "id", id)
-	_ = msg.Respond(natsapi.ReplyOK(handDto.HandActionResp{Status: "deleted", ID: id.String()}))
 }
 
 func (h *NATSHandler) start(msg *nats.Msg) {

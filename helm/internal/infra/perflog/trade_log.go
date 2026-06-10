@@ -37,7 +37,7 @@ func (l *jsTradeLog) Append(ctx context.Context, t perf.TradeRecord) error {
 	if err != nil {
 		return fmt.Errorf("trade_log marshal: %w", err)
 	}
-	msg := nats.NewMsg(fmt.Sprintf("%s.%s", tradeSubjBase, t.HandID))
+	msg := nats.NewMsg(fmt.Sprintf("%s.%s.%s", tradeSubjBase, t.HelmID, t.HandID))
 	msg.Data = data
 	// Dedup key: hand + entry + exit timestamps — natural round-trip identity.
 	msg.Header.Set(nats.MsgIdHdr, fmt.Sprintf("%s-%d-%d",
@@ -95,7 +95,7 @@ func (l *jsTradeLog) Since(ctx context.Context, handID string, after time.Time) 
 }
 
 func (l *jsTradeLog) drainTrades(ctx context.Context, handID string, maxMsgs int, opts []nats.SubOpt) ([]perf.TradeRecord, error) {
-	subj := fmt.Sprintf("%s.%s", tradeSubjBase, handID)
+	subj := fmt.Sprintf("%s.*.%s", tradeSubjBase, handID)
 	sub, err := l.js.SubscribeSync(subj, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("trade_log subscribe %q: %w", subj, err)

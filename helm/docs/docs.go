@@ -123,7 +123,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Time-cursor pagination over HELM_EQUITY JetStream stream, fan-out across all hands under the account's helm.",
+                "description": "Forward-filled equity curve bucketed by resolution, from equity_snapshots (PostgreSQL).",
                 "produces": [
                     "application/json"
                 ],
@@ -141,8 +141,14 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "RFC3339 cursor (exclusive); omit for all",
+                        "description": "RFC3339 start (inclusive); default 30 days ago",
                         "name": "after",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "RFC3339 end (inclusive); default now",
+                        "name": "before",
                         "in": "query"
                     },
                     {
@@ -187,21 +193,21 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/accounts/{id}/events": {
+        "/api/v1/accounts/{id}/exchange/account": {
             "get": {
                 "security": [
                     {
                         "BearerAuth": []
                     }
                 ],
-                "description": "Subscribes to helm.events.{helmID} and streams behavioral events (signals, orders, fills, lifecycle).",
+                "description": "Calls the exchange REST API directly and returns cash, equity, positions and per-asset balances.",
                 "produces": [
-                    "text/event-stream"
+                    "application/json"
                 ],
                 "tags": [
                     "accounts"
                 ],
-                "summary": "Stream real-time helm events for an account via SSE",
+                "summary": "Get live exchange account snapshot for an account",
                 "parameters": [
                     {
                         "type": "string",
@@ -213,9 +219,9 @@ const docTemplate = `{
                 ],
                 "responses": {
                     "200": {
-                        "description": "SSE stream",
+                        "description": "OK",
                         "schema": {
-                            "type": "string"
+                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ExchangeAccountResp"
                         }
                     },
                     "400": {
@@ -224,8 +230,20 @@ const docTemplate = `{
                             "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
                         }
                     },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    },
+                    "502": {
+                        "description": "Bad Gateway",
                         "schema": {
                             "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
                         }
@@ -421,7 +439,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Time-cursor pagination over PORTFOLIO_SNAPSHOTS JetStream stream.",
+                "description": "Cursor-based pagination over equity_snapshots (PostgreSQL). Helm-level snapshots only.",
                 "produces": [
                     "application/json"
                 ],
@@ -439,8 +457,8 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "RFC3339 cursor (exclusive); omit for all",
-                        "name": "after",
+                        "description": "RFC3339 cursor (exclusive); omit for newest-first",
+                        "name": "before",
                         "in": "query"
                     },
                     {
@@ -456,122 +474,6 @@ const docTemplate = `{
                         "description": "OK",
                         "schema": {
                             "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_SnapshotPageResp"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "503": {
-                        "description": "Service Unavailable",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/api/v1/accounts/{id}/stream/fills": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Each SSE data frame is a JSON-encoded TransactionMsg published to trade.filled.{accountID}.",
-                "produces": [
-                    "text/event-stream"
-                ],
-                "tags": [
-                    "accounts"
-                ],
-                "summary": "Stream real-time order fills for an account via SSE",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Account ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "SSE stream",
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "503": {
-                        "description": "Service Unavailable",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/api/v1/accounts/{id}/stream/portfolio": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Each SSE data frame is a JSON-encoded PortfolioSyncEvent published to portfolio.synced.{accountID}.",
-                "produces": [
-                    "text/event-stream"
-                ],
-                "tags": [
-                    "accounts"
-                ],
-                "summary": "Stream real-time portfolio sync events for an account via SSE",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Account ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "SSE stream",
-                        "schema": {
-                            "type": "string"
                         }
                     },
                     "400": {
@@ -898,61 +800,6 @@ const docTemplate = `{
                         }
                     }
                 }
-            },
-            "delete": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "hands"
-                ],
-                "summary": "Delete hand",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Hand ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_hand_dto_HandActionResp"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "403": {
-                        "description": "Forbidden",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    }
-                }
             }
         },
         "/api/v1/hands/{id}/activity": {
@@ -962,7 +809,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns the last 200 signal/order events for a hand in chronological order",
+                "description": "Persistent events for this hand from PostgreSQL, newest first. Supports ?limit= (default 100) and ?before= (RFC3339 cursor for pagination).",
                 "produces": [
                     "text/plain",
                     "application/json"
@@ -979,13 +826,26 @@ const docTemplate = `{
                         "name": "id",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "default": 100,
+                        "description": "Max events to return",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Return events before this RFC3339 timestamp (pagination cursor)",
+                        "name": "before",
+                        "in": "query"
                     }
                 ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_runtime_ActivityEntry"
+                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_readmodel_EventRecord"
                         }
                     },
                     "401": {
@@ -998,6 +858,120 @@ const docTemplate = `{
                         "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/hands/{id}/allocate-capital": {
+            "post": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "hands"
+                ],
+                "summary": "Allocate capital",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Hand ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "description": "Capital allocation request",
+                        "name": "request",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_module_hand_dto.AllocateCapitalReq"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_hand_domain_HandSummary"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    },
+                    "422": {
+                        "description": "Unprocessable Entity",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_module_hand_dto.CapitalOverflow"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/hands/{id}/equity": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "hands"
+                ],
+                "summary": "Per-hand equity curve",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Hand ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Preset: 24h|7d|30d|mtd|ytd|all",
+                        "name": "period",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Bucket size: 1m|5m|15m|1h|4h|1d (default 1m)",
+                        "name": "resolution",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_EquityPageResp"
                         }
                     }
                 }
@@ -1017,57 +991,6 @@ const docTemplate = `{
                     "hands"
                 ],
                 "summary": "Kill hand — stop and flatten all positions",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Hand ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_hand_dto_HandActionResp"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/api/v1/hands/{id}/pause": {
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "hands"
-                ],
-                "summary": "Pause hand",
                 "parameters": [
                     {
                         "type": "string",
@@ -1146,108 +1069,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/hands/{id}/restart": {
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "hands"
-                ],
-                "summary": "Restart hand — stop then start (re-registers with signal herald)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Hand ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_hand_dto_HandActionResp"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/api/v1/hands/{id}/resume": {
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "hands"
-                ],
-                "summary": "Resume hand",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Hand ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_hand_dto_HandActionResp"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
         "/api/v1/hands/{id}/start": {
             "post": {
                 "security": [
@@ -1286,6 +1107,95 @@ const docTemplate = `{
                     },
                     "401": {
                         "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/hands/{id}/stats": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    },
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json",
+                    "application/json"
+                ],
+                "tags": [
+                    "hands",
+                    "hands"
+                ],
+                "summary": "Per-hand KPIs",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Hand ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "integer",
+                        "default": 0,
+                        "description": "Cursor from previous page (0 = start)",
+                        "name": "cursor",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 100,
+                        "description": "Page size",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Hand ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Preset: 24h|7d|30d|mtd|ytd|all",
+                        "name": "period",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "RFC3339 inclusive lower bound",
+                        "name": "after",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "RFC3339 exclusive upper bound",
+                        "name": "before",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_StatsResp"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
                         }
@@ -1355,15 +1265,20 @@ const docTemplate = `{
                 "security": [
                     {
                         "BearerAuth": []
+                    },
+                    {
+                        "BearerAuth": []
                     }
                 ],
                 "produces": [
+                    "application/json",
                     "application/json"
                 ],
                 "tags": [
+                    "hands",
                     "hands"
                 ],
-                "summary": "List closed trades for a hand (poslog-backed, cursor paging)",
+                "summary": "Per-hand KPIs",
                 "parameters": [
                     {
                         "type": "string",
@@ -1385,13 +1300,38 @@ const docTemplate = `{
                         "description": "Page size",
                         "name": "limit",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Hand ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Preset: 24h|7d|30d|mtd|ytd|all",
+                        "name": "period",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "RFC3339 inclusive lower bound",
+                        "name": "after",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "RFC3339 exclusive upper bound",
+                        "name": "before",
+                        "in": "query"
                     }
                 ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_TradesPageResp"
+                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_StatsResp"
                         }
                     },
                     "400": {
@@ -1711,7 +1651,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/helms/{id}/events": {
+        "/api/v1/helms/{id}/events/history": {
             "get": {
                 "security": [
                     {
@@ -1719,12 +1659,12 @@ const docTemplate = `{
                     }
                 ],
                 "produces": [
-                    "text/event-stream"
+                    "application/json"
                 ],
                 "tags": [
                     "helms"
                 ],
-                "summary": "Stream real-time helm behavioral events via SSE",
+                "summary": "Paged helm event history (newest-first, backward time cursor)",
                 "parameters": [
                     {
                         "type": "string",
@@ -1732,23 +1672,36 @@ const docTemplate = `{
                         "name": "id",
                         "in": "path",
                         "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter to a single hand",
+                        "name": "hand_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "RFC3339 cursor (exclusive upper bound); omit for latest",
+                        "name": "before",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 100,
+                        "description": "Page size",
+                        "name": "limit",
+                        "in": "query"
                     }
                 ],
                 "responses": {
                     "200": {
-                        "description": "SSE stream",
+                        "description": "OK",
                         "schema": {
-                            "type": "string"
+                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_EventsPageResp"
                         }
                     },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "503": {
-                        "description": "Service Unavailable",
+                    "404": {
+                        "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
                         }
@@ -1800,6 +1753,52 @@ const docTemplate = `{
                     },
                     "502": {
                         "description": "Bad Gateway",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/helms/{id}/exchange/metrics": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns HTTP latency/error stats (PlaceOrder, GetOrder, CancelOrder, SyncAccount, Ping)\nand WebSocket stream health (event counts, idle time, reconnect count).",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "exchange"
+                ],
+                "summary": "Get exchange instrumentation metrics",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ExchangeMetricsResp"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
                         "schema": {
                             "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
                         }
@@ -1982,6 +1981,52 @@ const docTemplate = `{
                 }
             }
         },
+        "/api/v1/helms/{id}/exchange/ping": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Measures HTTP round-trip latency (via a dummy GetOrder call) and returns\nthe current WebSocket stream idle time from the metrics snapshot.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "exchange"
+                ],
+                "summary": "Ping the exchange and report latency",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ExchangePingResp"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
         "/api/v1/helms/{id}/exchange/price": {
             "get": {
                 "security": [
@@ -2156,7 +2201,7 @@ const docTemplate = `{
                 "tags": [
                     "helms"
                 ],
-                "summary": "Kill orchestrator — flatten all hand positions and halt",
+                "summary": "Disable orchestrator — flatten all hand positions and disable",
                 "parameters": [
                     {
                         "type": "string",
@@ -2228,6 +2273,58 @@ const docTemplate = `{
                         "description": "Bad Request",
                         "schema": {
                             "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/helms/{id}/orders/history": {
+            "get": {
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "helms"
+                ],
+                "summary": "List persisted order history for a helm",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "filter by hand",
+                        "name": "hand_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "filter by status (placed|filled|cancelled)",
+                        "name": "status",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "description": "max rows (default 100)",
+                        "name": "limit",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-array_internal_module_helm_handler_orderHistoryResp"
                         }
                     },
                     "404": {
@@ -2436,15 +2533,20 @@ const docTemplate = `{
                 "security": [
                     {
                         "BearerAuth": []
+                    },
+                    {
+                        "BearerAuth": []
                     }
                 ],
                 "produces": [
+                    "application/json",
                     "application/json"
                 ],
                 "tags": [
+                    "helms",
                     "helms"
                 ],
-                "summary": "List portfolio snapshots for a helm (from PORTFOLIO_SNAPSHOTS stream)",
+                "summary": "Aggregated KPIs over closed trades for a helm",
                 "parameters": [
                     {
                         "type": "string",
@@ -2465,13 +2567,120 @@ const docTemplate = `{
                         "description": "Page size",
                         "name": "limit",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Preset: 24h|7d|30d|mtd|ytd|all",
+                        "name": "period",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "RFC3339 inclusive lower bound (overrides preset.after)",
+                        "name": "after",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "RFC3339 exclusive upper bound (overrides preset.before)",
+                        "name": "before",
+                        "in": "query"
                     }
                 ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_SnapshotPageResp"
+                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_StatsResp"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/helms/{id}/stats": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    },
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json",
+                    "application/json"
+                ],
+                "tags": [
+                    "helms",
+                    "helms"
+                ],
+                "summary": "Aggregated KPIs over closed trades for a helm",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "RFC3339 cursor (exclusive); omit for all",
+                        "name": "after",
+                        "in": "query"
+                    },
+                    {
+                        "type": "integer",
+                        "default": 100,
+                        "description": "Page size",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "id",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
+                        "description": "Preset: 24h|7d|30d|mtd|ytd|all",
+                        "name": "period",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "RFC3339 inclusive lower bound (overrides preset.after)",
+                        "name": "after",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "RFC3339 exclusive upper bound (overrides preset.before)",
+                        "name": "before",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_StatsResp"
                         }
                     },
                     "404": {
@@ -2496,7 +2705,7 @@ const docTemplate = `{
                 "tags": [
                     "helms"
                 ],
-                "summary": "List closed trades for a helm (all hands, JetStream-backed)",
+                "summary": "List closed trades for a helm (PostgreSQL-backed, all analytical fields)",
                 "parameters": [
                     {
                         "type": "string",
@@ -2506,15 +2715,15 @@ const docTemplate = `{
                         "required": true
                     },
                     {
-                        "type": "integer",
-                        "description": "JetStream sequence cursor (0 = from start)",
-                        "name": "cursor",
+                        "type": "string",
+                        "description": "RFC3339 exit_at cursor (exclusive); omit for newest",
+                        "name": "before",
                         "in": "query"
                     },
                     {
                         "type": "integer",
                         "default": 100,
-                        "description": "Page size",
+                        "description": "Page size (max 500)",
                         "name": "limit",
                         "in": "query"
                     }
@@ -2548,7 +2757,7 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
-                "description": "Returns the last 200 signal/order events for a hand in chronological order",
+                "description": "Persistent events for this hand from PostgreSQL, newest first. Supports ?limit= (default 100) and ?before= (RFC3339 cursor for pagination).",
                 "produces": [
                     "text/plain",
                     "application/json"
@@ -2558,11 +2767,26 @@ const docTemplate = `{
                     "hands"
                 ],
                 "summary": "Get hand activity log",
+                "parameters": [
+                    {
+                        "type": "integer",
+                        "default": 100,
+                        "description": "Max events to return",
+                        "name": "limit",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Return events before this RFC3339 timestamp (pagination cursor)",
+                        "name": "before",
+                        "in": "query"
+                    }
+                ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_runtime_ActivityEntry"
+                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_readmodel_EventRecord"
                         }
                     },
                     "401": {
@@ -2576,12 +2800,71 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
                         }
+                    },
+                    "503": {
+                        "description": "Service Unavailable",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
                     }
                 }
             }
         }
     },
     "definitions": {
+        "internal_module_helm_handler.orderHistoryResp": {
+            "type": "object",
+            "properties": {
+                "client_order_id": {
+                    "type": "string"
+                },
+                "exchange_order_id": {
+                    "type": "string"
+                },
+                "filled_price": {
+                    "type": "string"
+                },
+                "filled_qty": {
+                    "type": "string"
+                },
+                "hand_id": {
+                    "type": "string"
+                },
+                "is_close": {
+                    "type": "boolean"
+                },
+                "order_type": {
+                    "type": "string"
+                },
+                "placed_at": {
+                    "type": "string"
+                },
+                "position_id": {
+                    "type": "string"
+                },
+                "price": {
+                    "type": "string"
+                },
+                "qty": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "side": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "symbol": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
         "mallow_helm_internal_module_account_dto.AccountResponse": {
             "type": "object",
             "properties": {
@@ -2663,6 +2946,31 @@ const docTemplate = `{
                 }
             }
         },
+        "mallow_helm_internal_module_hand_domain.HandGuardConfig": {
+            "type": "object",
+            "properties": {
+                "max_avg_loss_pct": {
+                    "description": "MaxAvgLossPct auto-stops the hand when avg(PnL over window) / AllocatedCapital\ndrops below -X. Catches consistent small losses even if the total is modest.",
+                    "type": "number"
+                },
+                "max_consec_loss": {
+                    "description": "MaxConsecLoss auto-stops the hand after N consecutive losing trades.\nResets to 0 on any winning trade.",
+                    "type": "integer"
+                },
+                "max_single_loss_pct": {
+                    "description": "MaxSingleLossPct auto-stops the hand when any single trade in the window\nlost more than X of AllocatedCapital. Guards against blow-up trades.",
+                    "type": "number"
+                },
+                "max_total_loss_pct": {
+                    "description": "MaxTotalLossPct auto-stops the hand when sum(PnL over window) / AllocatedCapital\ndrops below -X. e.g. 0.05 = stop when the window's cumulative loss exceeds 5%.",
+                    "type": "number"
+                },
+                "window_trades": {
+                    "description": "WindowTrades is the number of most-recent closed trades to evaluate.\n0 disables all edge-degradation checks below.",
+                    "type": "integer"
+                }
+            }
+        },
         "mallow_helm_internal_module_hand_domain.HandHealthView": {
             "type": "object",
             "properties": {
@@ -2692,6 +3000,9 @@ const docTemplate = `{
         "mallow_helm_internal_module_hand_domain.HandMetricsView": {
             "type": "object",
             "properties": {
+                "latest_signal_lag_ms": {
+                    "type": "integer"
+                },
                 "loss_count": {
                     "type": "integer"
                 },
@@ -2704,11 +3015,20 @@ const docTemplate = `{
                 "orders_placed": {
                     "type": "integer"
                 },
+                "signal_queue_depth": {
+                    "type": "integer"
+                },
+                "signals_dropped": {
+                    "type": "integer"
+                },
                 "signals_filtered": {
                     "type": "integer"
                 },
                 "signals_received": {
                     "type": "integer"
+                },
+                "total_commission": {
+                    "type": "number"
                 },
                 "total_pnl": {
                     "type": "number"
@@ -2721,48 +3041,33 @@ const docTemplate = `{
                 }
             }
         },
-        "mallow_helm_internal_module_hand_domain.HandRiskConfig": {
-            "type": "object",
-            "properties": {
-                "max_avg_loss_pct": {
-                    "description": "MaxAvgLossPct pauses the hand when avg(PnL over window) / AllocatedCapital\ndrops below -X. Catches consistent small losses even if the total is modest.",
-                    "type": "number"
-                },
-                "max_consec_loss": {
-                    "description": "MaxConsecLoss pauses the hand after N consecutive losing trades.\nResets to 0 on any winning trade.",
-                    "type": "integer"
-                },
-                "max_single_loss_pct": {
-                    "description": "MaxSingleLossPct pauses the hand when any single trade in the window\nlost more than X of AllocatedCapital. Guards against blow-up trades.",
-                    "type": "number"
-                },
-                "max_total_loss_pct": {
-                    "description": "MaxTotalLossPct pauses the hand when sum(PnL over window) / AllocatedCapital\ndrops below -X. e.g. 0.05 = pause when the window's cumulative loss exceeds 5%.",
-                    "type": "number"
-                },
-                "window_trades": {
-                    "description": "WindowTrades is the number of most-recent closed trades to evaluate.\n0 disables all edge-degradation checks below.",
-                    "type": "integer"
-                }
-            }
-        },
         "mallow_helm_internal_module_hand_domain.HandStatus": {
             "type": "string",
             "enum": [
                 "stopped",
                 "running",
-                "paused"
+                "killed",
+                "released"
             ],
+            "x-enum-comments": {
+                "HandStatusKilled": "terminal: positions flattened, capital returned",
+                "HandStatusReleased": "terminal: positions orphaned, capital returned"
+            },
             "x-enum-varnames": [
                 "HandStatusStopped",
                 "HandStatusRunning",
-                "HandStatusPaused"
+                "HandStatusKilled",
+                "HandStatusReleased"
             ]
         },
         "mallow_helm_internal_module_hand_domain.HandSummary": {
             "type": "object",
             "properties": {
                 "allocated_capital": {
+                    "type": "number"
+                },
+                "available_cash": {
+                    "description": "allocated + realized_pnl - deployed",
                     "type": "number"
                 },
                 "created_at": {
@@ -2783,6 +3088,13 @@ const docTemplate = `{
                 "id": {
                     "type": "string"
                 },
+                "legs": {
+                    "description": "active position legs currently held",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/mallow_helm_internal_module_hand_domain.LegView"
+                    }
+                },
                 "market": {
                     "$ref": "#/definitions/mallow_helm_internal_module_hand_domain.MarketType"
                 },
@@ -2799,7 +3111,7 @@ const docTemplate = `{
                     "$ref": "#/definitions/mallow_helm_internal_module_hand_domain.PositionConfig"
                 },
                 "risk": {
-                    "$ref": "#/definitions/mallow_helm_internal_module_hand_domain.HandRiskConfig"
+                    "$ref": "#/definitions/mallow_helm_internal_module_hand_domain.HandGuardConfig"
                 },
                 "running": {
                     "type": "boolean"
@@ -2838,6 +3150,42 @@ const docTemplate = `{
                 "HandTypeDCA",
                 "HandTypeGrid"
             ]
+        },
+        "mallow_helm_internal_module_hand_domain.LegView": {
+            "type": "object",
+            "properties": {
+                "deployed_capital": {
+                    "type": "number"
+                },
+                "entry_price": {
+                    "type": "number"
+                },
+                "opened_at": {
+                    "type": "string"
+                },
+                "phase": {
+                    "description": "entering | adding | open | exiting",
+                    "type": "string"
+                },
+                "position_id": {
+                    "type": "string"
+                },
+                "qty": {
+                    "type": "number"
+                },
+                "side": {
+                    "type": "string"
+                },
+                "stop_loss": {
+                    "type": "number"
+                },
+                "symbol": {
+                    "type": "string"
+                },
+                "take_profit": {
+                    "type": "number"
+                }
+            }
         },
         "mallow_helm_internal_module_hand_domain.LimitFallback": {
             "type": "string",
@@ -2911,7 +3259,7 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "risk_per_trade_pct": {
-                    "description": "RiskPerTradePct: fraction of allocated capital risked per trade.\nUsed by: fixed_fractional, volatility.  e.g. 0.01 = 1%.",
+                    "description": "RiskPerTradePct: the fixed fraction f of equity risked per trade (Ralph Vince).\nUsed by: fixed_fractional, volatility.  e.g. 0.01 = risk 1% of equity per trade.",
                     "type": "number"
                 },
                 "size_mode": {
@@ -2922,12 +3270,8 @@ const docTemplate = `{
                         }
                     ]
                 },
-                "unit_capital": {
-                    "description": "UnitCapital: fixed USDT amount per entry unit.\nUsed by: percent_equity (takes priority over UnitPct when non-zero).",
-                    "type": "number"
-                },
                 "unit_pct": {
-                    "description": "UnitPct: fraction of allocated capital per entry unit.\nUsed by: percent_equity (fallback when UnitCapital is zero).  e.g. 0.10 = 10%.",
+                    "description": "UnitPct: fraction of allocated equity deployed per entry unit.\nUsed by: percent_equity.  e.g. 0.10 = 10% of allocated equity per unit.",
                     "type": "number"
                 }
             }
@@ -2942,11 +3286,11 @@ const docTemplate = `{
                 "volatility"
             ],
             "x-enum-comments": {
-                "SizeModeFixedFractional": "scale unit by signal confidence",
-                "SizeModeFixedQty": "fixed base quantity",
-                "SizeModePercentEquity": "fixed % of equity",
-                "SizeModeQuoteQty": "fixed quote spend per trade",
-                "SizeModeVolatility": "ATR-based risk parity"
+                "SizeModeFixedFractional": "Ralph Vince: risk f×equity / stop (SL → ATR fallback)",
+                "SizeModeFixedQty": "fixed base quantity (× signal strength)",
+                "SizeModePercentEquity": "notional: UnitPct × equity (× strength)",
+                "SizeModeQuoteQty": "fixed quote spend per trade (× signal strength)",
+                "SizeModeVolatility": "fixed_fractional with the stop forced to ATR"
             },
             "x-enum-varnames": [
                 "SizeModeFixedFractional",
@@ -2989,9 +3333,70 @@ const docTemplate = `{
                 }
             }
         },
+        "mallow_helm_internal_module_hand_dto.AllocateCapitalReq": {
+            "type": "object",
+            "required": [
+                "amount"
+            ],
+            "properties": {
+                "amount": {
+                    "type": "number"
+                }
+            }
+        },
+        "mallow_helm_internal_module_hand_dto.CapitalOverflow": {
+            "type": "object",
+            "properties": {
+                "available": {
+                    "type": "number"
+                },
+                "error": {
+                    "type": "string"
+                },
+                "helm_equity": {
+                    "type": "number"
+                },
+                "requested": {
+                    "type": "number"
+                },
+                "suggestions": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/mallow_helm_internal_module_hand_dto.CapitalSuggestion"
+                    }
+                },
+                "total_allocated": {
+                    "type": "number"
+                }
+            }
+        },
+        "mallow_helm_internal_module_hand_dto.CapitalSuggestion": {
+            "type": "object",
+            "properties": {
+                "allocated": {
+                    "type": "number"
+                },
+                "deployed": {
+                    "type": "number"
+                },
+                "hand_id": {
+                    "type": "string"
+                },
+                "name": {
+                    "type": "string"
+                },
+                "reducible_by": {
+                    "type": "number"
+                },
+                "suggested_target": {
+                    "type": "number"
+                }
+            }
+        },
         "mallow_helm_internal_module_hand_dto.CreateHandReq": {
             "type": "object",
             "required": [
+                "allocated_capital",
                 "name",
                 "strategy",
                 "symbols"
@@ -3001,9 +3406,8 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "allocated_capital": {
-                    "description": "AllocatedCapital is the hand's fixed capital budget (quote currency, e.g. USDT).\nZero means the hand draws from full helm equity without isolation.",
-                    "type": "number",
-                    "minimum": 0
+                    "description": "AllocatedCapital is the hand's fixed capital budget (quote currency, e.g. USDT).\nMust be greater than zero.",
+                    "type": "number"
                 },
                 "futures": {
                     "$ref": "#/definitions/mallow_helm_internal_module_hand_dto.FuturesDTO"
@@ -3059,7 +3463,7 @@ const docTemplate = `{
                     "$ref": "#/definitions/mallow_helm_internal_module_hand_dto.PositionDTO"
                 },
                 "risk": {
-                    "$ref": "#/definitions/mallow_helm_internal_module_hand_dto.HandRiskConfigDTO"
+                    "$ref": "#/definitions/mallow_helm_internal_module_hand_dto.HandGuardConfigDTO"
                 },
                 "signal_ttl_sec": {
                     "description": "SignalTTLSec: max age of a signal before discard. 0 = default (10s), -1 = disable.",
@@ -3121,7 +3525,7 @@ const docTemplate = `{
                 }
             }
         },
-        "mallow_helm_internal_module_hand_dto.HandRiskConfigDTO": {
+        "mallow_helm_internal_module_hand_dto.HandGuardConfigDTO": {
             "type": "object",
             "properties": {
                 "max_avg_loss_pct": {
@@ -3169,8 +3573,9 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "risk_per_trade_pct": {
+                    "description": "RiskPerTradePct: fraction of equity risked per trade (Ralph Vince). Capped at 0.1\n(10%) — risking more than that per trade is reckless, one stop-out near-wipes the book.",
                     "type": "number",
-                    "maximum": 1
+                    "maximum": 0.1
                 },
                 "size_mode": {
                     "enum": [
@@ -3185,10 +3590,6 @@ const docTemplate = `{
                             "$ref": "#/definitions/mallow_helm_internal_module_hand_domain.SizeMode"
                         }
                     ]
-                },
-                "unit_capital": {
-                    "type": "number",
-                    "minimum": 0
                 },
                 "unit_pct": {
                     "type": "number",
@@ -3233,8 +3634,7 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "allocated_capital": {
-                    "type": "number",
-                    "minimum": 0
+                    "type": "number"
                 },
                 "name": {
                     "type": "string",
@@ -3245,7 +3645,7 @@ const docTemplate = `{
                     "$ref": "#/definitions/mallow_helm_internal_module_hand_dto.PositionDTO"
                 },
                 "risk": {
-                    "$ref": "#/definitions/mallow_helm_internal_module_hand_dto.HandRiskConfigDTO"
+                    "$ref": "#/definitions/mallow_helm_internal_module_hand_dto.HandGuardConfigDTO"
                 },
                 "signal_ttl_sec": {
                     "type": "integer",
@@ -3265,6 +3665,31 @@ const docTemplate = `{
                 }
             }
         },
+        "mallow_helm_internal_module_helm_dto.AnalyticsMetaResp": {
+            "type": "object",
+            "properties": {
+                "generated_at": {
+                    "type": "string"
+                },
+                "persister_lag_s": {
+                    "type": "number"
+                },
+                "source": {
+                    "type": "string"
+                }
+            }
+        },
+        "mallow_helm_internal_module_helm_dto.AssetBalanceResp": {
+            "type": "object",
+            "properties": {
+                "asset": {
+                    "type": "string"
+                },
+                "free": {
+                    "type": "number"
+                }
+            }
+        },
         "mallow_helm_internal_module_helm_dto.EquityPageResp": {
             "type": "object",
             "properties": {
@@ -3273,6 +3698,9 @@ const docTemplate = `{
                 },
                 "limit": {
                     "type": "integer"
+                },
+                "metadata": {
+                    "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.AnalyticsMetaResp"
                 },
                 "next": {
                     "type": "string"
@@ -3288,13 +3716,43 @@ const docTemplate = `{
         "mallow_helm_internal_module_helm_dto.EquityPointResp": {
             "type": "object",
             "properties": {
+                "cash": {
+                    "type": "number"
+                },
                 "equity": {
                     "type": "number"
                 },
                 "hand_id": {
                     "type": "string"
                 },
+                "realized_pnl": {
+                    "type": "number"
+                },
                 "ts": {
+                    "type": "string"
+                },
+                "unrealized_pnl": {
+                    "type": "number"
+                }
+            }
+        },
+        "mallow_helm_internal_module_helm_dto.EventsPageResp": {
+            "type": "object",
+            "properties": {
+                "events": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/mallow_helm_internal_readmodel.EventRecord"
+                    }
+                },
+                "has_more": {
+                    "type": "boolean"
+                },
+                "limit": {
+                    "type": "integer"
+                },
+                "next": {
+                    "description": "RFC3339 cursor; empty = no more",
                     "type": "string"
                 }
             }
@@ -3302,6 +3760,12 @@ const docTemplate = `{
         "mallow_helm_internal_module_helm_dto.ExchangeAccountResp": {
             "type": "object",
             "properties": {
+                "balances": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.AssetBalanceResp"
+                    }
+                },
                 "cash": {
                     "type": "number"
                 },
@@ -3313,6 +3777,55 @@ const docTemplate = `{
                     "items": {
                         "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.ExchangePositionResp"
                     }
+                }
+            }
+        },
+        "mallow_helm_internal_module_helm_dto.ExchangeActionMetricsResp": {
+            "type": "object",
+            "properties": {
+                "avg_ms": {
+                    "type": "number"
+                },
+                "calls": {
+                    "type": "integer"
+                },
+                "error_rate": {
+                    "type": "number"
+                },
+                "errors": {
+                    "type": "integer"
+                },
+                "max_ms": {
+                    "type": "number"
+                },
+                "min_ms": {
+                    "type": "number"
+                }
+            }
+        },
+        "mallow_helm_internal_module_helm_dto.ExchangeMetricsResp": {
+            "type": "object",
+            "properties": {
+                "cancel_order": {
+                    "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.ExchangeActionMetricsResp"
+                },
+                "exchange": {
+                    "type": "string"
+                },
+                "get_order": {
+                    "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.ExchangeActionMetricsResp"
+                },
+                "ping_last_ms": {
+                    "type": "number"
+                },
+                "place_order": {
+                    "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.ExchangeActionMetricsResp"
+                },
+                "sync_account": {
+                    "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.ExchangeActionMetricsResp"
+                },
+                "ws": {
+                    "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.ExchangeWSMetricsResp"
                 }
             }
         },
@@ -3342,6 +3855,22 @@ const docTemplate = `{
                 }
             }
         },
+        "mallow_helm_internal_module_helm_dto.ExchangePingResp": {
+            "type": "object",
+            "properties": {
+                "exchange": {
+                    "type": "string"
+                },
+                "latency_ms": {
+                    "description": "HTTP round-trip measured now",
+                    "type": "number"
+                },
+                "ws_idle_sec": {
+                    "description": "seconds since last WS event",
+                    "type": "number"
+                }
+            }
+        },
         "mallow_helm_internal_module_helm_dto.ExchangePositionResp": {
             "type": "object",
             "properties": {
@@ -3367,6 +3896,30 @@ const docTemplate = `{
                 },
                 "symbol": {
                     "type": "string"
+                }
+            }
+        },
+        "mallow_helm_internal_module_helm_dto.ExchangeWSMetricsResp": {
+            "type": "object",
+            "properties": {
+                "balance_events": {
+                    "type": "integer"
+                },
+                "fill_events": {
+                    "type": "integer"
+                },
+                "idle_sec": {
+                    "description": "seconds since last WS event; 0 = never received",
+                    "type": "number"
+                },
+                "lifecycle_events": {
+                    "type": "integer"
+                },
+                "stream_errors": {
+                    "type": "integer"
+                },
+                "stream_starts": {
+                    "type": "integer"
                 }
             }
         },
@@ -3426,6 +3979,26 @@ const docTemplate = `{
                 }
             }
         },
+        "mallow_helm_internal_module_helm_dto.GroupedKPIResp": {
+            "type": "object",
+            "properties": {
+                "avg_r": {
+                    "type": "number"
+                },
+                "key": {
+                    "type": "string"
+                },
+                "n_trades": {
+                    "type": "integer"
+                },
+                "net_pnl": {
+                    "type": "number"
+                },
+                "win_rate": {
+                    "type": "number"
+                }
+            }
+        },
         "mallow_helm_internal_module_helm_dto.HelmDetailResp": {
             "type": "object",
             "properties": {
@@ -3441,7 +4014,8 @@ const docTemplate = `{
                 "created_at": {
                     "type": "string"
                 },
-                "enabled": {
+                "halted": {
+                    "description": "Halted is true when the runtime risk manager has tripped a circuit-breaker\n(max drawdown or daily loss limit). New entries are blocked; exits still pass.\nAuthoritative from the runtime; also reflected in Status=\"halted\" after DB persist.",
                     "type": "boolean"
                 },
                 "hands": {
@@ -3461,9 +4035,6 @@ const docTemplate = `{
                 },
                 "paused": {
                     "type": "boolean"
-                },
-                "portfolio": {
-                    "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.PortfolioConfigDTO"
                 },
                 "risk": {
                     "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.RiskConfigDTO"
@@ -3494,17 +4065,11 @@ const docTemplate = `{
                 "created_at": {
                     "type": "string"
                 },
-                "enabled": {
-                    "type": "boolean"
-                },
                 "id": {
                     "type": "string"
                 },
                 "name": {
                     "type": "string"
-                },
-                "portfolio": {
-                    "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.PortfolioConfigDTO"
                 },
                 "risk": {
                     "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.RiskConfigDTO"
@@ -3589,27 +4154,19 @@ const docTemplate = `{
                 }
             }
         },
-        "mallow_helm_internal_module_helm_dto.PortfolioConfigDTO": {
-            "type": "object",
-            "properties": {
-                "max_position_pct": {
-                    "type": "number",
-                    "maximum": 1
-                },
-                "max_positions": {
-                    "type": "integer",
-                    "minimum": 1
-                },
-                "reserve_ratio": {
-                    "type": "number",
-                    "minimum": 0
-                }
-            }
-        },
         "mallow_helm_internal_module_helm_dto.PortfolioResp": {
             "type": "object",
             "properties": {
+                "allocated_to_hands": {
+                    "description": "Hand-allocation aggregates (cross-hand).",
+                    "type": "number"
+                },
+                "available_cash": {
+                    "description": "Deprecated alias of Cash, kept for backward-compat. FE should prefer Cash.",
+                    "type": "number"
+                },
                 "cash": {
+                    "description": "Capital fields (broker-account truth).",
                     "type": "number"
                 },
                 "current_drawdown_pct": {
@@ -3618,7 +4175,12 @@ const docTemplate = `{
                 "daily_pnl": {
                     "type": "number"
                 },
+                "deployed_capital": {
+                    "description": "entry-cost basis of open positions",
+                    "type": "number"
+                },
                 "equity": {
+                    "description": "cash + Σ MtM positions",
                     "type": "number"
                 },
                 "initial_capital": {
@@ -3636,11 +4198,23 @@ const docTemplate = `{
                         "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.PositionResp"
                     }
                 },
+                "realized_pnl": {
+                    "description": "Σ closed-trade PnL since hydrate",
+                    "type": "number"
+                },
                 "total_return_pct": {
                     "type": "number"
                 },
                 "total_trades": {
                     "type": "integer"
+                },
+                "unallocated_capital": {
+                    "description": "Cash − AllocatedToHands; \"free to assign to a new hand\"",
+                    "type": "number"
+                },
+                "unrealized_pnl": {
+                    "description": "Σ open-position MtM delta",
+                    "type": "number"
                 },
                 "win_rate_pct": {
                     "type": "number"
@@ -3683,6 +4257,14 @@ const docTemplate = `{
                 "max_drawdown_pct": {
                     "type": "number",
                     "maximum": 1
+                },
+                "max_gross_exposure_pct": {
+                    "type": "number",
+                    "maximum": 20
+                },
+                "max_positions": {
+                    "type": "integer",
+                    "minimum": 1
                 }
             }
         },
@@ -3694,6 +4276,9 @@ const docTemplate = `{
                 },
                 "limit": {
                     "type": "integer"
+                },
+                "metadata": {
+                    "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.AnalyticsMetaResp"
                 },
                 "next": {
                     "type": "string"
@@ -3729,6 +4314,9 @@ const docTemplate = `{
                 "cash": {
                     "type": "number"
                 },
+                "equity": {
+                    "type": "number"
+                },
                 "hand_id": {
                     "type": "string"
                 },
@@ -3741,42 +4329,169 @@ const docTemplate = `{
                         "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.SnapshotPositionResp"
                     }
                 },
+                "realized_pnl": {
+                    "type": "number"
+                },
                 "ts": {
                     "type": "string"
+                },
+                "unrealized_pnl": {
+                    "type": "number"
+                }
+            }
+        },
+        "mallow_helm_internal_module_helm_dto.StatsResp": {
+            "type": "object",
+            "properties": {
+                "avg_holding_seconds": {
+                    "type": "integer"
+                },
+                "avg_loss": {
+                    "type": "number"
+                },
+                "avg_win": {
+                    "type": "number"
+                },
+                "by_exit": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.GroupedKPIResp"
+                    }
+                },
+                "by_symbol": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.GroupedKPIResp"
+                    }
+                },
+                "commission": {
+                    "type": "number"
+                },
+                "expectancy": {
+                    "type": "number"
+                },
+                "expectancy_r": {
+                    "type": "number"
+                },
+                "gross_loss": {
+                    "type": "number"
+                },
+                "gross_profit": {
+                    "type": "number"
+                },
+                "largest_loss": {
+                    "type": "number"
+                },
+                "largest_win": {
+                    "type": "number"
+                },
+                "metadata": {
+                    "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.AnalyticsMetaResp"
+                },
+                "n_trades": {
+                    "type": "integer"
+                },
+                "net_pnl": {
+                    "type": "number"
+                },
+                "profit_factor": {
+                    "type": "number"
+                },
+                "win_rate": {
+                    "type": "number"
                 }
             }
         },
         "mallow_helm_internal_module_helm_dto.TradeResp": {
             "type": "object",
             "properties": {
+                "commission": {
+                    "description": "total entry+exit fees",
+                    "type": "number"
+                },
+                "entry_order_id": {
+                    "type": "string"
+                },
                 "entry_price": {
                     "type": "number"
                 },
                 "entry_time": {
                     "type": "string"
                 },
+                "exit_order_id": {
+                    "type": "string"
+                },
                 "exit_price": {
                     "type": "number"
+                },
+                "exit_reason": {
+                    "description": "signal/sl/tp/kill/bracket_exit/external/release",
+                    "type": "string"
                 },
                 "exit_time": {
                     "type": "string"
                 },
+                "gross_pnl": {
+                    "description": "(exit-entry)*qty, no fees",
+                    "type": "number"
+                },
                 "hand_id": {
                     "type": "string"
                 },
-                "pnl": {
+                "helm_id": {
+                    "type": "string"
+                },
+                "holding_seconds": {
+                    "description": "exit - entry",
+                    "type": "integer"
+                },
+                "id": {
+                    "description": "PG row id (empty if reading from poslog)",
+                    "type": "string"
+                },
+                "n_entries": {
+                    "description": "1 for non-pyramid; 1+adds for pyramid",
+                    "type": "integer"
+                },
+                "net_pnl": {
+                    "description": "gross_pnl − commission",
+                    "type": "number"
+                },
+                "planned_risk": {
                     "type": "number"
                 },
                 "pnl_pct": {
+                    "description": "net_pnl / (entry_price × qty), computed",
                     "type": "number"
                 },
                 "qty": {
                     "type": "number"
                 },
+                "r_multiple": {
+                    "description": "net_pnl / planned_risk",
+                    "type": "number"
+                },
+                "regime_state": {
+                    "type": "string"
+                },
                 "side": {
+                    "description": "entry side: buy/sell",
+                    "type": "string"
+                },
+                "stop_loss_price": {
+                    "type": "number"
+                },
+                "strategy": {
                     "type": "string"
                 },
                 "symbol": {
+                    "type": "string"
+                },
+                "take_profit_price": {
+                    "type": "number"
+                },
+                "timeframe": {
+                    "description": "M1/M5/H1/...",
                     "type": "string"
                 }
             }
@@ -3790,8 +4505,12 @@ const docTemplate = `{
                 "limit": {
                     "type": "integer"
                 },
+                "metadata": {
+                    "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.AnalyticsMetaResp"
+                },
                 "next": {
-                    "type": "integer"
+                    "description": "unified string cursor; empty = no more",
+                    "type": "string"
                 },
                 "trades": {
                     "type": "array",
@@ -3809,15 +4528,12 @@ const docTemplate = `{
                     "maxLength": 128,
                     "minLength": 1
                 },
-                "portfolio": {
-                    "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.PortfolioConfigDTO"
-                },
                 "risk": {
                     "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.RiskConfigDTO"
                 }
             }
         },
-        "mallow_helm_internal_runtime.ActivityEntry": {
+        "mallow_helm_internal_readmodel.EventRecord": {
             "type": "object",
             "properties": {
                 "at": {
@@ -3827,7 +4543,18 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "direction": {
-                    "description": "signal direction (long/short/close/…)",
+                    "type": "string"
+                },
+                "hand_id": {
+                    "type": "string"
+                },
+                "helm_id": {
+                    "type": "string"
+                },
+                "id": {
+                    "type": "integer"
+                },
+                "msg": {
                     "type": "string"
                 },
                 "order_id": {
@@ -3840,16 +4567,15 @@ const docTemplate = `{
                     "type": "number"
                 },
                 "reason": {
-                    "description": "human-readable detail (filter cause, rejection message, error)",
                     "type": "string"
                 },
                 "side": {
                     "type": "string"
                 },
-                "strength": {
-                    "type": "number"
-                },
                 "symbol": {
+                    "type": "string"
+                },
+                "user_id": {
                     "type": "string"
                 }
             }
@@ -3876,6 +4602,26 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "data": {},
+                "detail": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "integer"
+                }
+            }
+        },
+        "mallow_helm_internal_shared.SuccessResponse-array_internal_module_helm_handler_orderHistoryResp": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/internal_module_helm_handler.orderHistoryResp"
+                    }
+                },
                 "detail": {
                     "type": "string"
                 },
@@ -3967,13 +4713,13 @@ const docTemplate = `{
                 }
             }
         },
-        "mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_runtime_ActivityEntry": {
+        "mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_readmodel_EventRecord": {
             "type": "object",
             "properties": {
                 "data": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/mallow_helm_internal_runtime.ActivityEntry"
+                        "$ref": "#/definitions/mallow_helm_internal_readmodel.EventRecord"
                     }
                 },
                 "detail": {
@@ -4089,6 +4835,23 @@ const docTemplate = `{
                 }
             }
         },
+        "mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_EventsPageResp": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.EventsPageResp"
+                },
+                "detail": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "integer"
+                }
+            }
+        },
         "mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ExchangeAccountResp": {
             "type": "object",
             "properties": {
@@ -4106,11 +4869,45 @@ const docTemplate = `{
                 }
             }
         },
+        "mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ExchangeMetricsResp": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.ExchangeMetricsResp"
+                },
+                "detail": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "integer"
+                }
+            }
+        },
         "mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ExchangeOrderResp": {
             "type": "object",
             "properties": {
                 "data": {
                     "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.ExchangeOrderResp"
+                },
+                "detail": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "integer"
+                }
+            }
+        },
+        "mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ExchangePingResp": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.ExchangePingResp"
                 },
                 "detail": {
                     "type": "string"
@@ -4213,6 +5010,23 @@ const docTemplate = `{
             "properties": {
                 "data": {
                     "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.SnapshotPageResp"
+                },
+                "detail": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "integer"
+                }
+            }
+        },
+        "mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_StatsResp": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.StatsResp"
                 },
                 "detail": {
                     "type": "string"

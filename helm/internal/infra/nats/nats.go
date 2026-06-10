@@ -87,10 +87,12 @@ func NewJetStream(nc *nats.Conn) (nats.JetStreamContext, error) {
 		},
 		// PORTFOLIO_SYNC: REST sync notifications (was fire-and-forget nc.Publish).
 		// 1 day retention so missed syncs are replayed on reconnect.
+		// FileStorage so the stream survives NATS restarts (MemoryStorage caused
+		// "stream not found" at the gateway on any NATS/helm restart).
 		{
 			Name:     "PORTFOLIO_SYNC",
 			Subjects: []string{"portfolio.synced.>"},
-			Storage:  nats.MemoryStorage,
+			Storage:  nats.FileStorage,
 			MaxAge:   24 * time.Hour,
 		},
 		// HELM_EQUITY: periodic helm-level portfolio snapshots (cash, equity, positions).

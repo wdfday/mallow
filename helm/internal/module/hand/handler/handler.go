@@ -458,7 +458,7 @@ func (h *Handler) release(c *gin.Context) {
 // @Param id path string true "Hand ID"
 // @Param limit query int false "Max events to return" default(100)
 // @Param before query string false "Return events before this RFC3339 timestamp (pagination cursor)"
-// @Success 200 {object} shared.SuccessResponse[[]eventlog.Event]
+// @Success 200 {object} shared.SuccessResponse[[]readmodel.EventRecord]
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 404 {object} shared.ErrorResponse
 // @Failure 503 {object} shared.ErrorResponse
@@ -687,7 +687,7 @@ func (h *Handler) Metrics(c *gin.Context) {
 // @Success 200 {object} shared.SuccessResponse[handdomain.HandSummary]
 // @Failure 400 {object} shared.ErrorResponse
 // @Failure 401 {object} shared.ErrorResponse
-// @Failure 422 {object} shared.CapitalOverflow
+// @Failure 422 {object} dto.CapitalOverflow
 // @Router /api/v1/hands/{id}/allocate-capital [post]
 func (h *Handler) allocateCapital(c *gin.Context) {
 	userID, ok := callerUserID(c)

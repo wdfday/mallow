@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/nats-io/nats.go"
 
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/perflog"
@@ -25,15 +24,14 @@ import (
 
 // Handler manages account endpoints.
 type Handler struct {
-	service     accountservice.Service
-	helmSvc     HelmLookup
-	handMgr     HandLister
-	reg         *runtime.Registry
-	nc          *nats.Conn
-	fillLog      *perflog.FillLog
+	service        accountservice.Service
+	helmSvc        HelmLookup
+	handMgr        HandLister
+	reg            *runtime.Registry
+	fillLog        *perflog.FillLog
 	snapshotReader perflog.SnapshotReader
-	posLog       poslog.Log
-	logger      *slog.Logger
+	posLog         poslog.Log
+	logger         *slog.Logger
 }
 
 // NewHandler constructs an account handler.
@@ -42,7 +40,6 @@ func NewHandler(
 	helmSvc HelmLookup,
 	handMgr HandLister,
 	reg *runtime.Registry,
-	nc *nats.Conn,
 	fillLog *perflog.FillLog,
 	snapshotReader perflog.SnapshotReader,
 	posLog poslog.Log,
@@ -53,7 +50,6 @@ func NewHandler(
 		helmSvc:        helmSvc,
 		handMgr:        handMgr,
 		reg:            reg,
-		nc:             nc,
 		fillLog:        fillLog,
 		snapshotReader: snapshotReader,
 		posLog:         posLog,
@@ -74,9 +70,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		accounts.GET("/:id/fills", h.fills)
 		accounts.GET("/:id/snapshots", h.snapshots)
 		accounts.GET("/:id/equity", h.equity)
-		accounts.GET("/:id/events", h.events)
-		accounts.GET("/:id/stream/fills", h.streamFills)
-		accounts.GET("/:id/stream/portfolio", h.streamPortfolio)
 		accounts.GET("/:id/exchange/account", h.exchangeAccount)
 	}
 }

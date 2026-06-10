@@ -146,7 +146,7 @@ Single source of truth: `proto/market.proto`. Generated Go code in `helm/interna
 | `engine.register` / `engine.deregister` / `engine.list` / `engine.ping` / `engine.heartbeat` | req/rep | Hand registration / control against herald registry |
 | `engine.ready` | JetStream publish | Herald announces readiness on startup |
 | `helm.helms.*` | req/rep | Helm CRUD + control: `list` `get` `update` `enable` `disable` `pause` `resume` `kill` `halt.reset` `portfolio` `positions` `trades` `orders` |
-| `helm.hands.*` | req/rep | Hand CRUD + control: `list` `get` `create` `update` `delete` `start` `stop` `restart` `pause` `resume` `kill` |
+| `helm.hands.*` | req/rep | Hand CRUD + control: `list` `get` `create` `update` `start` `stop` `kill` (no `delete`/`pause`/`resume`/`restart` — hands are kept for review) |
 | `helm.accounts.linked` | publish | Broker account linked → helm auto-creates disabled Helm |
 | `helm.accounts.unlinked` | publish | Broker account unlinked → helm auto-deletes Helm |
 | `helm.events.{helm_id}` | publish | Helm lifecycle / runtime events (status transitions, errors) |
@@ -375,19 +375,21 @@ helm/
 - **SignalDispatcher**: routes incoming `SignalResponse` from herald to the correct Hand channel by `bot_id`.
 - **Registry** (`runtime.Registry`): in-memory map of `helm_id → HelmRuntime`. `SpawnAll` on startup; `Get` for dispatch.
 
-**Hand lifecycle states:** `stopped → running → paused → stopped` via start/stop/pause/resume. Plus: `kill` (stop + flatten this hand's positions at exchange) and `release` (stop + emit `position_orphaned` poslog events, leaving positions live at exchange).
+**Hand lifecycle states:** `stopped → running → stopped` via start/stop. Plus: `kill` (stop + flatten this hand's positions at exchange) and `release` (stop + emit `position_orphaned` poslog events, leaving positions live at exchange). Hands are **never hard-deleted** — kept for review; there is no delete/pause/resume/restart for a hand (pausing is a helm-level cascade-stop).
 
 **Helm lifecycle states:** `active` / `paused` (cascade-stops all hands) / `halted` (after kill; reset with `POST /halt/reset`) / `disabled` (admin soft-lock).
 
 **HTTP API** (Gin, port `API_ADDR` default `localhost:8084`; proxied at `/api/v1/...` by the gateway):
 - `GET|PUT /api/v1/helms/:id` · `GET /api/v1/helms`
 - `POST /api/v1/helms/:id/{enable,disable,pause,resume,kill}` · `POST /api/v1/helms/:id/halt/reset`
-- `GET /api/v1/helms/:id/{portfolio,positions,trades,orders}`
-- `GET /api/v1/helms/:id/exchange/{account,price}` · `POST|GET|DELETE /api/v1/helms/:id/exchange/orders`
-- `POST /api/v1/hands` · `GET /api/v1/hands` · `GET|PUT|DELETE /api/v1/hands/:id`
-- `POST /api/v1/hands/:id/{start,stop,restart,pause,resume,kill,release}`
-- `GET|POST /api/v1/accounts` · `GET|PUT|DELETE /api/v1/accounts/:id` · `GET /api/v1/accounts/:id/events` (SSE)
-- `GET|POST /api/v1/broker-connections` · `GET|PUT|DELETE /api/v1/broker-connections/:id`
+- `GET /api/v1/helms/:id/{portfolio,positions,trades,fills,snapshots,equity,stats,orders}` · `GET /api/v1/helms/:id/orders/history` · `GET /api/v1/helms/:id/events/history` (paged, backward time cursor)
+- `GET /api/v1/helms/:id/exchange/{account,price,metrics,ping}` · `POST|GET|DELETE /api/v1/helms/:id/exchange/orders`
+- `POST /api/v1/hands` · `GET /api/v1/hands` · `GET|PUT /api/v1/hands/:id` (no DELETE — hands kept for review) · `GET /api/v1/hands/:id/{activity,trades,stats,equity}`
+- `POST /api/v1/hands/:id/{start,stop,kill,release}` · `POST /api/v1/hands/:id/allocate-capital`
+- `GET /api/v1/accounts` · `GET /api/v1/accounts/:id` (read-only; derived from broker-connections) · `GET /api/v1/accounts/:id/{portfolio,positions,trades,fills,snapshots,equity}`
+- broker-connections: `GET /providers` · `POST /api/v1/broker-connections/{okx,binance,alpaca,bybit}` · `GET|PUT|DELETE /api/v1/broker-connections/:id` · `POST /api/v1/broker-connections/:id/{activate,deactivate,test,rotate-key,rebroker}`
+
+> Live streaming (bars, helm/trade/account events) is served by the **gateway WebSocket** `/api/v1/stream`, not by per-service SSE. The old SSE endpoints (`helms/:id/events`, `accounts/:id/{events,stream/*}`) were removed.
 - `GET /metrics` (Prometheus) · `GET /health` · `GET /swagger/*`
 
 **NATS API**: same operations exposed via subjects under `helm.helms.*` / `helm.hands.*`. CallerMeta (`caller_user_id`, `caller_svc`) embedded in all user-scoped request payloads.

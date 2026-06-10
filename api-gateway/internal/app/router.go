@@ -11,17 +11,20 @@ import (
 	_ "gateway/docs" // generated swagger docs
 	"gateway/internal/config"
 	"gateway/internal/handler"
+	"gateway/internal/metrics"
 	"gateway/internal/middleware"
 	"gateway/internal/service"
+	"gateway/internal/ws"
 	pkgtelemetry "mallow/pkg/telemetry"
 
 	"github.com/gin-gonic/gin"
 )
 
-func buildRouter(cfg config.Config, h *handler.Handler, rdb *redis.Client, identityClient *service.IdentityClient) *gin.Engine {
+func buildRouter(cfg config.Config, h *handler.Handler, rdb *redis.Client, identityClient *service.IdentityClient, hub *ws.Hub) *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
 	r.Use(pkgtelemetry.GinMiddleware("gateway"))
+	r.Use(metrics.Middleware())             // record per-request metrics for /metrics
 	r.Use(middleware.StripTrustedHeaders()) // must be first — strips X-User-* before any proxy sees them
 	r.Use(middleware.CORS(cfg.CORSOrigins))
 	r.Use(middleware.RateLimiter(rdb, cfg.RateLimitPerMinute))
@@ -51,6 +54,7 @@ func buildRouter(cfg config.Config, h *handler.Handler, rdb *redis.Client, ident
 
 	// ── Public routes ────────────────────────────────────────────────────
 	r.GET("/health", h.Health)
+	r.GET("/metrics", metrics.Handler) // Prometheus exposition
 	r.GET("/swagger", h.SwaggerIndex)
 	r.GET("/docs", h.SwaggerIndex)
 	r.GET("/swagger/gateway/*any", ginSwagger.WrapHandler(swaggerFiles.Handler))
@@ -78,6 +82,11 @@ func buildRouter(cfg config.Config, h *handler.Handler, rdb *redis.Client, ident
 	r.Any("/api/v1/broker-connections", jwtAuth, injectHeaders, helmProxy)
 	r.Any("/api/v1/broker-connections/*path", jwtAuth, injectHeaders, helmProxy)
 
+	// Realtime WebSocket fan-out (bars + scoped account events). The bearer token
+	// arrives via Sec-WebSocket-Protocol (browsers can't set Authorization on WS),
+	// so WSBearerFromProtocol copies it to Authorization before jwtAuth validates.
+	// No injectHeaders — the hub reads user_id straight from the gin context.
+	r.GET("/api/v1/stream", middleware.WSBearerFromProtocol(), jwtAuth, hub.HandleStream)
 
 	// Protected endpoints
 	api := r.Group("/api/v1", jwtAuth, injectHeaders)

@@ -16,6 +16,7 @@ import (
 	"gateway/internal/config"
 	"gateway/internal/handler"
 	"gateway/internal/service"
+	"gateway/internal/ws"
 	pkgtelemetry "mallow/pkg/telemetry"
 )
 
@@ -61,7 +62,17 @@ func Run(ctx context.Context) {
 		HeraldURL: cfg.HeraldURL,
 	}
 	identityClient := service.NewIdentityClient(cfg.IdentityURL, cfg.ServiceSecret)
-	r := buildRouter(cfg, h, rdb, identityClient)
+
+	// JetStream context for replayable account streams. Non-fatal if unavailable —
+	// the hub then serves market data only and logs per connection.
+	js, err := nc.JetStream()
+	if err != nil {
+		slog.Warn("jetstream unavailable, account streaming disabled", "err", err)
+	}
+	helmClient := service.NewHelmClient(nc)
+	hub := ws.NewHub(nc, js, helmClient, cfg.CORSOrigins)
+
+	r := buildRouter(cfg, h, rdb, identityClient, hub)
 
 	// ── HTTP server ─────────────────────────────────────────────────────
 	addr := fmt.Sprintf(":%s", cfg.Port)

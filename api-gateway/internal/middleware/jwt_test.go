@@ -193,7 +193,7 @@ func TestIsBlacklisted(t *testing.T) {
 // ─── JWTAuth middleware ──────────────────────────────────────────────────────
 
 func TestJWTAuth_NoAuthorizationHeader(t *testing.T) {
-	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, nil))
+	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, nil, nil))
 	w := get(r, "")
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
@@ -202,26 +202,26 @@ func TestJWTAuth_WrongPrefix(t *testing.T) {
 	claims := validClaims("user-1", "jti-1", "sid-1")
 	token := makeHMACToken(t, testSecret, claims)
 
-	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, nil))
+	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, nil, nil))
 	w := get(r, "Token "+token)
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 }
 
 func TestJWTAuth_ExpiredToken(t *testing.T) {
 	token := makeHMACToken(t, testSecret, expiredClaims("user-1", "jti-1"))
-	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, nil))
+	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, nil, nil))
 	assert.Equal(t, http.StatusUnauthorized, get(r, bearer(token)).Code)
 }
 
 func TestJWTAuth_InvalidSignature(t *testing.T) {
 	token := makeHMACToken(t, "wrong-secret", validClaims("user-1", "jti-1", "sid-1"))
-	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, nil))
+	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, nil, nil))
 	assert.Equal(t, http.StatusUnauthorized, get(r, bearer(token)).Code)
 }
 
 func TestJWTAuth_ValidHMAC_PassesThrough(t *testing.T) {
 	token := makeHMACToken(t, testSecret, validClaims("user-1", "jti-1", "sid-1"))
-	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, nil))
+	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, nil, nil))
 	assert.Equal(t, http.StatusOK, get(r, bearer(token)).Code)
 }
 
@@ -232,7 +232,7 @@ func TestJWTAuth_ValidHMAC_SetsContextValues(t *testing.T) {
 	var capturedUserID string
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.GET("/test", JWTAuth(JWTAuthConfig{Secret: testSecret}, nil), func(c *gin.Context) {
+	r.GET("/test", JWTAuth(JWTAuthConfig{Secret: testSecret}, nil, nil), func(c *gin.Context) {
 		capturedUserID = c.GetString("user_id")
 		c.Status(http.StatusOK)
 	})
@@ -246,7 +246,7 @@ func TestJWTAuth_WrongIssuer(t *testing.T) {
 	claims["iss"] = "evil-issuer"
 	token := makeHMACToken(t, testSecret, claims)
 
-	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret, Issuer: "expected-issuer"}, nil))
+	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret, Issuer: "expected-issuer"}, nil, nil))
 	w := get(r, bearer(token))
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 	assert.Contains(t, w.Body.String(), "invalid issuer")
@@ -257,7 +257,7 @@ func TestJWTAuth_CorrectIssuer(t *testing.T) {
 	claims["iss"] = "my-issuer"
 	token := makeHMACToken(t, testSecret, claims)
 
-	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret, Issuer: "my-issuer"}, nil))
+	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret, Issuer: "my-issuer"}, nil, nil))
 	assert.Equal(t, http.StatusOK, get(r, bearer(token)).Code)
 }
 
@@ -270,7 +270,7 @@ func TestJWTAuth_JTIBlacklisted_NotChecked(t *testing.T) {
 	require.NoError(t, rdb.Set(ctx, fmt.Sprintf("blacklist:jti:%s", jti), "logout", 0).Err())
 
 	token := makeHMACToken(t, testSecret, validClaims("user-1", jti, "sid-1"))
-	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, rdb))
+	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, rdb, nil))
 	assert.Equal(t, http.StatusOK, get(r, bearer(token)).Code)
 }
 
@@ -281,7 +281,7 @@ func TestJWTAuth_UserBlacklisted(t *testing.T) {
 	require.NoError(t, rdb.Set(ctx, fmt.Sprintf("blacklist:user:%s", sub), "ban", 0).Err())
 
 	token := makeHMACToken(t, testSecret, validClaims(sub, "jti-fresh", "sid-1"))
-	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, rdb))
+	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, rdb, nil))
 	w := get(r, bearer(token))
 	assert.Equal(t, http.StatusUnauthorized, w.Code)
 	assert.Contains(t, w.Body.String(), "token revoked")
@@ -296,7 +296,7 @@ func TestJWTAuth_SIDBlacklisted_DoesNotBlockAccessToken(t *testing.T) {
 	require.NoError(t, rdb.Set(ctx, fmt.Sprintf("blacklist:sid:%s", sid), "revoked", 0).Err())
 
 	token := makeHMACToken(t, testSecret, validClaims("user-1", "jti-fresh", sid))
-	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, rdb))
+	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, rdb, nil))
 	assert.Equal(t, http.StatusOK, get(r, bearer(token)).Code)
 }
 
@@ -305,14 +305,14 @@ func TestJWTAuth_RedisDown_FailsOpen(t *testing.T) {
 	mr.SetError("REDIS_DOWN")
 
 	token := makeHMACToken(t, testSecret, validClaims("user-1", "jti-1", "sid-1"))
-	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, rdb))
+	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, rdb, nil))
 	// fail open: Redis errors should not block valid tokens
 	assert.Equal(t, http.StatusOK, get(r, bearer(token)).Code)
 }
 
 func TestJWTAuth_NilRedis_SkipsBlacklistCheck(t *testing.T) {
 	token := makeHMACToken(t, testSecret, validClaims("user-1", "jti-1", "sid-1"))
-	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, nil))
+	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, nil, nil))
 	assert.Equal(t, http.StatusOK, get(r, bearer(token)).Code)
 }
 
@@ -321,7 +321,7 @@ func TestJWTAuth_EmailNotVerified(t *testing.T) {
 	claims["email_verified"] = false
 	token := makeHMACToken(t, testSecret, claims)
 
-	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, nil))
+	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, nil, nil))
 	w := get(r, bearer(token))
 	assert.Equal(t, http.StatusForbidden, w.Code)
 	assert.Contains(t, w.Body.String(), "email not verified")
@@ -332,14 +332,14 @@ func TestJWTAuth_EmailVerifiedTrue(t *testing.T) {
 	claims["email_verified"] = true
 	token := makeHMACToken(t, testSecret, claims)
 
-	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, nil))
+	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, nil, nil))
 	assert.Equal(t, http.StatusOK, get(r, bearer(token)).Code)
 }
 
 func TestJWTAuth_EmailVerifiedAbsent_NotChecked(t *testing.T) {
 	// When email_verified is absent from token, the check is skipped
 	token := makeHMACToken(t, testSecret, validClaims("user-1", "jti-1", "sid-1"))
-	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, nil))
+	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, nil, nil))
 	assert.Equal(t, http.StatusOK, get(r, bearer(token)).Code)
 }
 
@@ -349,7 +349,7 @@ func TestJWTAuth_EdDSA_LocalPublicKey(t *testing.T) {
 	pub, priv := generateEdDSA(t)
 	token := makeEdDSAToken(t, priv, validClaims("user-ed", "jti-ed", "sid-ed"), "k1")
 
-	r := newRouter(JWTAuth(JWTAuthConfig{PublicKeyPEM: edPublicKeyToPEM(pub)}, nil))
+	r := newRouter(JWTAuth(JWTAuthConfig{PublicKeyPEM: edPublicKeyToPEM(pub)}, nil, nil))
 	assert.Equal(t, http.StatusOK, get(r, bearer(token)).Code)
 }
 
@@ -358,7 +358,7 @@ func TestJWTAuth_EdDSA_WrongLocalKey(t *testing.T) {
 	wrongPub, _ := generateEdDSA(t)
 	token := makeEdDSAToken(t, priv, validClaims("user-ed", "jti-ed", "sid-ed"), "")
 
-	r := newRouter(JWTAuth(JWTAuthConfig{PublicKeyPEM: edPublicKeyToPEM(wrongPub)}, nil))
+	r := newRouter(JWTAuth(JWTAuthConfig{PublicKeyPEM: edPublicKeyToPEM(wrongPub)}, nil, nil))
 	assert.Equal(t, http.StatusUnauthorized, get(r, bearer(token)).Code)
 }
 
@@ -370,7 +370,7 @@ func TestJWTAuth_EdDSA_JWKS_KnownKID(t *testing.T) {
 	defer srv.Close()
 
 	token := makeEdDSAToken(t, priv, validClaims("user-jwks", "jti-jwks", "sid-jwks"), kid)
-	r := newRouter(JWTAuth(JWTAuthConfig{JWKSURL: srv.URL}, nil))
+	r := newRouter(JWTAuth(JWTAuthConfig{JWKSURL: srv.URL}, nil, nil))
 	assert.Equal(t, http.StatusOK, get(r, bearer(token)).Code)
 }
 
@@ -383,7 +383,7 @@ func TestJWTAuth_EdDSA_JWKS_UnknownKID(t *testing.T) {
 	defer srv.Close()
 
 	token := makeEdDSAToken(t, priv2, validClaims("user-1", "jti-1", "sid-1"), "unknown-kid")
-	r := newRouter(JWTAuth(JWTAuthConfig{JWKSURL: srv.URL}, nil))
+	r := newRouter(JWTAuth(JWTAuthConfig{JWKSURL: srv.URL}, nil, nil))
 	assert.Equal(t, http.StatusUnauthorized, get(r, bearer(token)).Code)
 }
 
@@ -400,7 +400,7 @@ func TestJWTAuth_EdDSA_JWKS_CacheServedOnSecondRequest(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	mw := JWTAuth(JWTAuthConfig{JWKSURL: srv.URL, CacheTTL: 10 * time.Minute}, nil)
+	mw := JWTAuth(JWTAuthConfig{JWKSURL: srv.URL, CacheTTL: 10 * time.Minute}, nil, nil)
 	r := newRouter(mw)
 
 	token := makeEdDSAToken(t, priv, validClaims("u", "j", "s"), kid)
@@ -417,7 +417,7 @@ func TestJWTAuth_EdDSA_JWKS_Unavailable(t *testing.T) {
 
 	_, priv := generateEdDSA(t)
 	token := makeEdDSAToken(t, priv, validClaims("u", "j", "s"), "some-kid")
-	r := newRouter(JWTAuth(JWTAuthConfig{JWKSURL: srv.URL}, nil))
+	r := newRouter(JWTAuth(JWTAuthConfig{JWKSURL: srv.URL}, nil, nil))
 	assert.Equal(t, http.StatusUnauthorized, get(r, bearer(token)).Code)
 }
 

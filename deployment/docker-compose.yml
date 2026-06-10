@@ -130,7 +130,7 @@ services:
       TELEGRAM_GENERAL_BOT_TOKEN: ${TELEGRAM_GENERAL_BOT_TOKEN:-}
       TELEGRAM_BOT_USERNAME: ${TELEGRAM_BOT_USERNAME:-}
       TELEGRAM_ALLOWED_CHATS: ${TELEGRAM_ALLOWED_CHATS:-}
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-tempo:4317}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8082/health"]
@@ -175,8 +175,11 @@ services:
       HERALD_WARM_BARS: ${HERALD_WARM_BARS:-2000}
       HERALD_SYMBOLS_FILE: /config/symbols.yaml
       RUST_LOG: ${HERALD_RUST_LOG:-alm_herald=info,alm_ledger=info}
+      # Full backtraces on panic — the panic hook logs them via tracing so they
+      # appear in the log stream (diagnosing silent exit-0 restarts).
+      RUST_BACKTRACE: ${RUST_BACKTRACE:-1}
       PYROSCOPE_URL: ${PYROSCOPE_URL:-}
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-tempo:4317}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     volumes:
       # Parquet files live at mallow/data/ on the host;
       # mount at /data so HERALD_DATA_DIR=/data resolves correctly.
@@ -215,7 +218,7 @@ services:
       LOG_FORMAT: ${LOG_FORMAT:-json}
       LOG_FILE: ${HELM_LOG_FILE:-}
       PYROSCOPE_URL: ${PYROSCOPE_URL:-http://pyroscope:4040}
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-tempo:4317}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8084/health"]
       interval: 10s
@@ -238,13 +241,6 @@ services:
     container_name: gateway
     ports:
       - "8080:8080"
-    depends_on:
-      nats:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      herald:
-        condition: service_healthy
     environment:
       PORT: "8080"
       NATS_URL: nats://gateway:${NATS_PASS_GATEWAY:-gateway-dev}@nats:4222
@@ -255,7 +251,7 @@ services:
       HERALD_URL: ${HERALD_URL:-http://herald:8090}
       REDIS_URL: redis://redis:6379
       GIN_MODE: ${GIN_MODE:-release}
-      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-tempo:4317}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-}
     restart: unless-stopped
 
   # ═══════════════════════════════════════════════════════════════════

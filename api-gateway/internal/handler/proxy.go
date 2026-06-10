@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"log/slog"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -8,6 +9,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"gateway/internal/metrics"
 )
 
 // heraldTransport is used for the herald reverse proxy.
@@ -85,6 +88,11 @@ func newProxy(rawURL string, rewritePath ...func(string) string) gin.HandlerFunc
 	}
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.ModifyResponse = stripUpstreamCORS
+	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
+		metrics.ProxyError(target.Host)
+		slog.Warn("gateway upstream proxy error", "upstream", target.Host, "err", err)
+		w.WriteHeader(http.StatusBadGateway)
+	}
 	var rewrite func(string) string
 	if len(rewritePath) > 0 {
 		rewrite = rewritePath[0]

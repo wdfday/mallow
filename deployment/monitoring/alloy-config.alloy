@@ -104,6 +104,13 @@ prometheus.scrape "herald" {
   forward_to      = [prometheus.remote_write.default.receiver]
 }
 
+prometheus.scrape "gateway" {
+  targets         = [{ __address__ = "gateway:8080" }]
+  metrics_path    = "/metrics"
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.default.receiver]
+}
+
 prometheus.remote_write "default" {
   endpoint {
     url = "http://prometheus:9090/api/v1/write"

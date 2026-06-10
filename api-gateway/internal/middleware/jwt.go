@@ -17,6 +17,8 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/redis/go-redis/v9"
+
+	"gateway/internal/metrics"
 )
 
 type JWTAuthConfig struct {
@@ -96,6 +98,7 @@ func JWTAuth(cfg JWTAuthConfig, rdb *redis.Client, fallback BlacklistFallback) g
 				"reason", "missing_or_invalid_authorization_header",
 				"auth_prefix", authPrefix(auth),
 			)
+			metrics.AuthRejection("missing_header")
 			c.AbortWithStatusJSON(http.StatusUnauthorized, errResp(http.StatusUnauthorized, "UNAUTHORIZED", "missing or invalid Authorization header"))
 			return
 		}
@@ -116,6 +119,7 @@ func JWTAuth(cfg JWTAuthConfig, rdb *redis.Client, fallback BlacklistFallback) g
 				attrs = append(attrs, "detail", err.Error())
 			}
 			slog.Warn("gateway auth rejected request", attrs...)
+			metrics.AuthRejection("invalid_token")
 			c.AbortWithStatusJSON(http.StatusUnauthorized, errResp(http.StatusUnauthorized, "UNAUTHORIZED", "invalid token"))
 			return
 		}
@@ -128,6 +132,7 @@ func JWTAuth(cfg JWTAuthConfig, rdb *redis.Client, fallback BlacklistFallback) g
 				"alg", tokenMeta.Alg,
 				"kid", tokenMeta.Kid,
 			)
+			metrics.AuthRejection("invalid_claims")
 			c.AbortWithStatusJSON(http.StatusUnauthorized, errResp(http.StatusUnauthorized, "UNAUTHORIZED", "invalid claims"))
 			return
 		}
@@ -143,6 +148,7 @@ func JWTAuth(cfg JWTAuthConfig, rdb *redis.Client, fallback BlacklistFallback) g
 					"kid", tokenMeta.Kid,
 					"sub", claims["sub"],
 				)
+				metrics.AuthRejection("invalid_issuer")
 				c.AbortWithStatusJSON(http.StatusUnauthorized, errResp(http.StatusUnauthorized, "UNAUTHORIZED", "invalid issuer"))
 				return
 			}
@@ -178,6 +184,7 @@ func JWTAuth(cfg JWTAuthConfig, rdb *redis.Client, fallback BlacklistFallback) g
 					"sub", sub,
 					"sid", sid,
 				)
+				metrics.AuthRejection("token_revoked")
 				c.AbortWithStatusJSON(http.StatusUnauthorized, errResp(http.StatusUnauthorized, "TOKEN_REVOKED", "token revoked"))
 				return
 			}
@@ -190,6 +197,7 @@ func JWTAuth(cfg JWTAuthConfig, rdb *redis.Client, fallback BlacklistFallback) g
 					"reason", "email_not_verified",
 					"sub", claims["sub"],
 				)
+				metrics.AuthRejection("email_not_verified")
 				c.AbortWithStatusJSON(http.StatusForbidden, errResp(http.StatusForbidden, "FORBIDDEN", "email not verified"))
 				return
 			}

@@ -53,9 +53,13 @@ func NewJetStream(nc *nats.Conn) (nats.JetStreamContext, error) {
 			MaxMsgs:  10_000,
 		},
 		{
-			Name:       "TRADE_FILLS",
-			Subjects:   []string{"trade.filled.>"},
-			Storage:    nats.FileStorage,
+			Name:     "TRADE_FILLS",
+			Subjects: []string{"trade.filled.>"},
+			Storage:  nats.FileStorage,
+			// Fills are persisted to Postgres by TradePersister; this stream only
+			// needs to cover the WS/consumer replay window. 30d matches
+			// HELM_POSITIONS and bounds growth (was unbounded).
+			MaxAge:     30 * 24 * time.Hour,
 			Duplicates: 24 * time.Hour,
 		},
 		{
@@ -110,14 +114,19 @@ func NewJetStream(nc *nats.Conn) (nats.JetStreamContext, error) {
 	return js, nil
 }
 
-
 func ensureStream(js nats.JetStreamContext, cfg nats.StreamConfig) error {
 	_, err := js.AddStream(&cfg)
 	if err == nil {
 		return nil
 	}
-	if _, infoErr := js.StreamInfo(cfg.Name); infoErr == nil {
-		return nil // stream already exists
+	if _, infoErr := js.StreamInfo(cfg.Name); infoErr != nil {
+		return fmt.Errorf("create stream %s: %w", cfg.Name, err)
 	}
-	return fmt.Errorf("create stream %s: %w", cfg.Name, err)
+	// Stream already exists — apply mutable config changes (e.g. MaxAge) so the
+	// code stays the source of truth across redeploys. Immutable changes (storage
+	// type, subject narrowing) will fail; log and continue rather than block boot.
+	if _, upErr := js.UpdateStream(&cfg); upErr != nil {
+		slog.Warn("stream exists, update skipped", "stream", cfg.Name, "err", upErr)
+	}
+	return nil
 }

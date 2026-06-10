@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 
+	"mallow/helm/internal/infra/eventlog"
 	"mallow/helm/internal/infra/orderlog"
 	"mallow/helm/internal/infra/perflog"
 	"mallow/helm/internal/infra/poslog"
@@ -54,6 +55,7 @@ type Handler struct {
 	posLog    poslog.Log
 	orderLog  orderlog.Log
 	analytics *analyticsservice.Service
+	eventLog  eventlog.Log
 }
 
 func New(
@@ -65,6 +67,7 @@ func New(
 	posLog poslog.Log,
 	orderLog orderlog.Log,
 	analytics *analyticsservice.Service,
+	eventLog eventlog.Log,
 ) *Handler {
 	return &Handler{
 		svc:       svc,
@@ -75,6 +78,7 @@ func New(
 		posLog:    posLog,
 		orderLog:  orderLog,
 		analytics: analytics,
+		eventLog:  eventLog,
 	}
 }
 
@@ -120,6 +124,7 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 		o.GET("/:id/stats", h.stats)
 		o.GET("/:id/orders", h.orders)
 		o.GET("/:id/orders/history", h.ordersHistory)
+		o.GET("/:id/events/history", h.eventsHistory)
 		o.GET("/:id/events", h.events)
 
 		ex := o.Group("/:id/exchange")
@@ -584,6 +589,67 @@ func (h *Handler) trades(c *gin.Context) {
 		resp.Trades = append(resp.Trades, dto.TradelogToResp(r))
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Trades retrieved successfully", resp)
+}
+
+// eventsHistory godoc
+// @Summary Paged helm event history (newest-first, backward time cursor)
+// @Tags helms
+// @Security BearerAuth
+// @Produce json
+// @Param id path string true "Helm ID"
+// @Param hand_id query string false "Filter to a single hand"
+// @Param before query string false "RFC3339 cursor (exclusive upper bound); omit for latest"
+// @Param limit query int false "Page size" default(100)
+// @Success 200 {object} shared.SuccessResponse[dto.EventsPageResp]
+// @Failure 404 {object} shared.ErrorResponse
+// @Router /api/v1/helms/{id}/events/history [get]
+func (h *Handler) eventsHistory(c *gin.Context) {
+	userID, ok := callerUserID(c)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		shared.RespondWithError(c, http.StatusBadRequest, "invalid id")
+		return
+	}
+	if err := h.svc.CheckOwner(id, userID); err != nil {
+		shared.RespondWithError(c, http.StatusNotFound, "not found")
+		return
+	}
+	if h.eventLog == nil {
+		shared.RespondWithError(c, http.StatusServiceUnavailable, "event log unavailable")
+		return
+	}
+
+	_, limit := parsePage(c)
+	filter := readmodel.EventFilter{HelmID: id, Limit: limit}
+	if hs := c.Query("hand_id"); hs != "" {
+		if hid, perr := uuid.Parse(hs); perr == nil {
+			filter.HandID = &hid
+		}
+	}
+	if bs := c.Query("before"); bs != "" {
+		if t, perr := time.Parse(time.RFC3339, bs); perr == nil {
+			filter.Before = t
+		}
+	}
+
+	events, err := h.eventLog.Query(c.Request.Context(), filter)
+	if err != nil {
+		shared.RespondWithError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	// Events come newest-first. A full page implies there may be older rows; the
+	// next page starts before the oldest row returned (backward time cursor).
+	resp := dto.EventsPageResp{Events: events, Limit: limit}
+	if limit > 0 && len(events) == limit {
+		resp.HasMore = true
+		resp.Next = events[len(events)-1].At.Format(time.RFC3339Nano)
+	}
+
+	shared.RespondWithSuccess(c, http.StatusOK, "Events retrieved successfully", resp)
 }
 
 // fills godoc

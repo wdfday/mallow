@@ -187,8 +187,9 @@ func newOrchHandler(
 	posLog poslog.Log,
 	orderLog orderlog.Log,
 	analytics *analyticsservice.Service,
+	evLog eventlog.Log,
 ) *orchhandler.Handler {
-	return orchhandler.New(svc, handMgr, reg, nc, fillLog, posLog, orderLog, analytics)
+	return orchhandler.New(svc, handMgr, reg, nc, fillLog, posLog, orderLog, analytics, evLog)
 }
 
 func newOrderlogReader(db *sql.DB) orderlog.Log {

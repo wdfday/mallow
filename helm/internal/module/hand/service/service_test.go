@@ -71,13 +71,14 @@ func (r *stubHandRepo) Update(id uuid.UUID, fn func(*domain.Hand) error) error {
 	}
 	return fn(v)
 }
-func (r *stubHandRepo) Delete(id uuid.UUID) error {
+func (r *stubHandRepo) DeleteByHelm(helmID uuid.UUID) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, ok := r.rows[id]; !ok {
-		return fmt.Errorf("hand %q not found", id)
+	for id, h := range r.rows {
+		if h.HelmID == helmID {
+			delete(r.rows, id)
+		}
 	}
-	delete(r.rows, id)
 	return nil
 }
 

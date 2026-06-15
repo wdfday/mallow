@@ -19,6 +19,11 @@ import (
 	"mallow/helm/internal/safe"
 )
 
+// authErrThreshold is the number of consecutive ErrClassAuth responses from PlaceOrder
+// before the helm self-pauses and the broker connection is marked error. A value of 3
+// tolerates transient 401s (exchange glitch, clock skew) while catching real revocations.
+const authErrThreshold = 3
+
 func (h *Hand) run(ctx context.Context) {
 	defer safe.Recover()
 	defer close(h.done)
@@ -56,9 +61,6 @@ func (h *Hand) runLoop(ctx context.Context) {
 		// Draining fills first guarantees the close is booked, so the SL-cancel then finds the
 		// leg already gone and is correctly ignored.
 		select {
-		case sig := <-h.UrgentSignals:
-			h.handleSignal(ctx, sig)
-			continue
 		case <-h.fillSignal:
 			h.drainFills(ctx)
 			continue
@@ -75,8 +77,6 @@ func (h *Hand) runLoop(ctx context.Context) {
 		}
 
 		select {
-		case sig := <-h.UrgentSignals:
-			h.handleSignal(ctx, sig)
 		case sig := <-h.Signals:
 			h.handleSignal(ctx, sig)
 		case <-h.fillSignal:
@@ -846,6 +846,20 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 			Reason:    err.Error(),
 			Msg:       "order: placement failed",
 		})
+		// Auth error mid-run: credentials were revoked or expired at the exchange.
+		// Use a streak counter so a single transient 401 (clock skew, exchange glitch) does
+		// not trigger a full pause. Only after authErrThreshold consecutive auth failures do
+		// we self-pause the helm and mark the broker connection as error.
+		if exchange.ClassifyGeneric(err) == exchange.ErrClassAuth {
+			streak := h.helmRuntime.authErrStreak.Add(1)
+			if streak >= authErrThreshold {
+				h.helmRuntime.authErrStreak.Store(0) // reset so re-entry after resume starts fresh
+				h.helmRuntime.TriggerAuthError(
+					fmt.Sprintf("exchange rejected credentials (%d consecutive auth failures): %s", streak, err.Error()),
+				)
+			}
+			return
+		}
 		// Auto-pause when a sizing/lot constraint causes a persistent entry failure.
 		// Only stop if this hand has no open position — if we already hold a position
 		// the failure is on a scale-in or exit, which should not stop the hand.
@@ -886,6 +900,8 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 		return
 	}
 	h.metrics.ordersPlaced.Add(1)
+	// Successful placement — credentials are valid; reset the auth error streak.
+	h.helmRuntime.authErrStreak.Store(0)
 
 	// Use exchange-confirmed base qty for tracking; reply.Qty is zero in quote_qty mode.
 	orderedQty := reply.Qty
@@ -999,53 +1015,19 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 		}
 	}
 
-	if result.Status == "filled" {
-		// Mark as seen AND check if WS already processed this fill.
-		// When WS beats REST (fill event arrives before PlaceOrder returns),
-		// seenFills already has the ID. We must NOT call applyFill again (double
-		// ReportFill = double portfolio debit). However, the WS path ran applyFill
-		// before pendingOrderPos/pendingExits were populated, so it could NOT:
-		//   - transition the leg PhaseEntering → PhaseOpen (publishOrderFilled returned early)
-		//   - place an OCO bracket (pendingExits was empty at WS time)
-		// completeWsFillFromREST performs those two steps without touching the portfolio.
-		h.mu.Lock()
-		_, wsAlreadyApplied := h.seenFills[result.ID]
-		h.seenFills[result.ID] = time.Now()
-		h.mu.Unlock()
-
-		// Compute restQty and restCommission here (needed by both branches).
-		restQty, restCommission := h.helmRuntime.normalizeCommission(result.Symbol, result.Side, result.FilledQty, result.FilledAvg, result.Commission, result.CommissionAsset)
-
-		if wsAlreadyApplied {
-			h.completeWsFillFromREST(ctx, result.ID, sig.Symbol, reply.Side,
-				restQty, result.FilledAvg, restCommission, pending, isExitOrder)
-		} else {
-			// REST FilledQty is cumulative; applyFill adds partialApplied on top (VWAP merge).
-			// If WS partial fills were already applied to the portfolio via MarkPartialApplied +
-			// r.ReportFill, subtract that accumulated qty/commission before calling applyFill
-			// so the function receives the delta (remaining qty), not the full cumulative total.
-			//
-			// Without this: cumulativeQty = restCumulative + partialApplied = double-count.
-			// With this:    cumulativeQty = (restCumulative - partial) + partial = restCumulative ✓
-			h.mu.RLock()
-			partial := h.partialApplied[result.ID]
-			h.mu.RUnlock()
-			fillQty := restQty
-			fillCommission := restCommission
-			if partial.Qty.IsPositive() {
-				if d := restQty.Sub(partial.Qty); d.IsPositive() {
-					fillQty = d
-				} else {
-					fillQty = decimal.Zero
-				}
-				if d := restCommission.Sub(partial.Commission); d.IsPositive() {
-					fillCommission = d
-				} else {
-					fillCommission = decimal.Zero
-				}
-			}
-			h.applyFill(ctx, result.ID, sig.Symbol, reply.Side, fillQty, result.FilledAvg, fillCommission, "rest")
-		}
+	// WS-before-ACK recovery: if a WS fill arrived before pendingOrderPos/pendingExits
+	// were set, applyFill cached the fill data in wsFillCache. Use that data (not the
+	// REST ack, which returns status="submitted" with qty=0 after the ACK refactor) to
+	// complete the poslog transition and bracket placement without re-touching the portfolio.
+	h.mu.Lock()
+	cached, hasCached := h.wsFillCache[result.ID]
+	if hasCached {
+		delete(h.wsFillCache, result.ID)
+	}
+	h.mu.Unlock()
+	if hasCached {
+		h.completeWsFillFromREST(ctx, result.ID, sig.Symbol, reply.Side,
+			cached.qty, cached.price, cached.commission, pending, isExitOrder)
 	}
 
 }

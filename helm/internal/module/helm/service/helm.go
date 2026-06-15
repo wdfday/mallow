@@ -2,6 +2,7 @@ package service
 
 import (
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/google/uuid"
@@ -85,7 +86,8 @@ func (s *Service) RotateCredsForAccount(accountID uuid.UUID, newCreds exchange.C
 }
 
 // DeleteForAccount tears down and removes the orchestrator linked to accountID.
-// Called by the NATS account.unlinked event handler.
+// Called by broker connection delete — performs a full sweep:
+// runtime teardown, in-memory purge, DB hand rows, helm row, JetStream subjects.
 func (s *Service) DeleteForAccount(accountID uuid.UUID) error {
 	cfg, err := s.repo.GetByAccountID(accountID)
 	if err != nil {
@@ -94,10 +96,22 @@ func (s *Service) DeleteForAccount(accountID uuid.UUID) error {
 	botIDs := s.spawner.Teardown(cfg.ID)
 	if s.hands != nil {
 		if len(botIDs) > 0 {
-			s.hands.StopBots(botIDs) // deregister from herald + stop running bots
+			s.hands.StopBots(botIDs)
 		}
-		s.hands.PurgeBots(botIDs) // remove from in-memory map
+		s.hands.PurgeBots(botIDs)
+		if delErr := s.hands.DeleteBotsByHelm(cfg.ID); delErr != nil {
+			slog.Warn("helm: DeleteForAccount: failed to hard-delete hand rows (non-fatal)",
+				"helm_id", cfg.ID, "err", delErr)
+		}
 	}
+	// Purge PostgreSQL audit tables (fills, trades, orders, equity_snapshots, helm_events).
+	if s.purger != nil {
+		if err := s.purger.PurgeByHelm(cfg.ID, cfg.AccountID); err != nil {
+			slog.Warn("helm: DeleteForAccount: PG audit purge failed (non-fatal)",
+				"helm_id", cfg.ID, "err", err)
+		}
+	}
+	s.spawner.PurgeHelmData(cfg.ID, cfg.AccountID)
 	return s.repo.Delete(cfg.ID)
 }
 

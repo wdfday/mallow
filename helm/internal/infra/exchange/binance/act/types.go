@@ -29,6 +29,49 @@ func isBinanceCode(err error, code int64) bool {
 	return false
 }
 
+// ClassifyError implements exchange.ErrorClassifier using Binance API error codes.
+// Extracts common.APIError from the error chain; falls back to ClassifyGeneric when absent.
+func (c *Client) ClassifyError(err error) exchange.ErrClass {
+	var apiErr *common.APIError
+	if !errors.As(err, &apiErr) {
+		return exchange.ClassifyGeneric(err)
+	}
+	switch apiErr.Code {
+	case -2014, -2015, -2008: // API-key format invalid, invalid key/IP/permissions, no internet
+		return exchange.ErrClassAuth
+	case -1003, -1015: // too many requests, too many new orders
+		return exchange.ErrClassRateLimit
+	case -4014, -4131: // insufficient available balance, margin insufficient
+		return exchange.ErrClassInsufficientBalance
+	case -2010: // new order rejected (can be balance or lot-size)
+		msg := strings.ToLower(apiErr.Message)
+		if strings.Contains(msg, "balance") || strings.Contains(msg, "insufficient") {
+			return exchange.ErrClassInsufficientBalance
+		}
+		return exchange.ErrClassUnknown
+	case -1013: // filter failure: LOT_SIZE / PRICE_FILTER / MIN_NOTIONAL
+		msg := strings.ToLower(apiErr.Message)
+		switch {
+		case strings.Contains(msg, "price"):
+			return exchange.ErrClassPriceFilter
+		default:
+			return exchange.ErrClassLotSize
+		}
+	case -1100, -1111: // illegal qty chars, qty not multiple of stepSize
+		return exchange.ErrClassLotSize
+	case -2013: // order does not exist
+		return exchange.ErrClassOrderNotFound
+	case -1121: // invalid symbol
+		return exchange.ErrClassInvalidSymbol
+	case -1001, -1007: // internal error, timeout waiting for response
+		return exchange.ErrClassNetwork
+	case -1008: // server overloaded
+		return exchange.ErrClassServerError
+	default:
+		return exchange.ClassifyGeneric(err)
+	}
+}
+
 // ── Parse helpers ─────────────────────────────────────────────────────────────
 
 func parseDecimal(s string) decimal.Decimal {

@@ -125,3 +125,11 @@ func (r *gormRepository) SoftDelete(ctx context.Context, id string) error {
 	}
 	return nil
 }
+
+func (r *gormRepository) HardDelete(ctx context.Context, id string) error {
+	result := r.db.WithContext(ctx).Unscoped().Delete(&domain.Account{}, "id = ?", id)
+	if result.Error != nil {
+		return result.Error
+	}
+	return nil
+}

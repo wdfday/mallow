@@ -140,6 +140,16 @@ func (s *Service) Disable(id uuid.UUID) error {
 	return nil
 }
 
+// MarkError sets the helm status to error to indicate a credential failure detected
+// mid-run. The runtime is already paused by TriggerAuthError before this is called.
+// Recover by rotating credentials (RotateKey auto-resumes).
+func (s *Service) MarkError(id uuid.UUID) error {
+	return s.repo.Update(id, func(o *domain.Helm) error {
+		o.Status = domain.HelmStatusError
+		return nil
+	})
+}
+
 // ResetHalt clears the risk-manager halt flag and restores the orchestrator to active.
 // Does NOT automatically restart hands — caller must call Resume or Start each hand manually.
 func (s *Service) ResetHalt(id uuid.UUID) error {

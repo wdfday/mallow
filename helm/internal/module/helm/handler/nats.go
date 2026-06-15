@@ -38,7 +38,6 @@ func (h *NATSHandler) Subscribe(nc *nats.Conn) error {
 		natsapi.SubjOrchDisable:   h.disable,
 		natsapi.SubjOrchPause:     h.pause,
 		natsapi.SubjOrchResume:    h.resume,
-		natsapi.SubjOrchKill:      h.kill,
 		natsapi.SubjOrchResetHalt: h.resetHalt,
 		natsapi.SubjOrchPortfolio: h.portfolio,
 		natsapi.SubjOrchPositions: h.positions,
@@ -257,30 +256,6 @@ func (h *NATSHandler) resume(msg *nats.Msg) {
 	}
 	slog.Info("nats: orchestrator resumed", "id", id, "caller_svc", caller.CallerSvc, "caller_user_id", caller.CallerUserID)
 	_ = msg.Respond(natsapi.ReplyOK(helmDto.ActionResp{Status: "resumed", ID: id}))
-}
-
-func (h *NATSHandler) kill(msg *nats.Msg) {
-	caller := natsapi.ParseCaller(msg.Data)
-	userID, err := uuid.Parse(caller.CallerUserID)
-	if err != nil {
-		_ = msg.Respond(natsapi.ReplyErr("missing caller_user_id"))
-		return
-	}
-	id, err := natsapi.ParseID(msg.Data)
-	if err != nil {
-		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
-		return
-	}
-	if err := h.svc.CheckOwner(id, userID); err != nil {
-		_ = msg.Respond(natsapi.ReplyErr("not found"))
-		return
-	}
-	if err := h.svc.Disable(id); err != nil {
-		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
-		return
-	}
-	slog.Info("nats: orchestrator disabled via kill", "id", id, "caller_svc", caller.CallerSvc, "caller_user_id", caller.CallerUserID)
-	_ = msg.Respond(natsapi.ReplyOK(helmDto.ActionResp{Status: "disabled", ID: id}))
 }
 
 func (h *NATSHandler) resetHalt(msg *nats.Msg) {

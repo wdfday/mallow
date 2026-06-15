@@ -48,8 +48,16 @@ type Hand struct {
 	leverageApplied   map[string]bool // symbols where SetLeverage has been called
 
 	// ── Inbound channels ─────────────────────────────────────────────────────
-	Signals       chan Signal   // buf=1, drain-replace; always latest non-urgent signal
-	UrgentSignals chan Signal   // buf=4; exit signals, never silently dropped
+	Signals chan Signal // buf=1, drain-replace; always latest non-urgent signal
+	// UrgentSignals is a priority injection channel for agent-driven signals.
+	// Intent: a NATS consumer (agentic layer) publishes directly here to intervene
+	// in a running hand — e.g. force-exit, redirect, or override strategy — without
+	// competing with the drain-replace Signals channel (which drops stale market signals).
+	// The run loop drains UrgentSignals before Signals so agent intent always wins.
+	//
+	// DEFERRED: channel is allocated but not yet wired. All signals currently route
+	// through Signals. Revisit when the NATS agentic injection path is designed.
+	UrgentSignals chan Signal
 	eventBus      *handEventBus // nil in production; non-nil only when EnableEventSink() is called (tests)
 
 	// Fill mailbox — an UNBOUNDED queue, not a fixed channel. A WS fill must never be
@@ -81,6 +89,11 @@ type Hand struct {
 	// (WS + REST for the same order) are silently dropped. Entries are pruned
 	// after 2 minutes — well beyond the ~100ms WS delivery window.
 	seenFills map[string]time.Time
+
+	// wsFillCache stores fill data for WS fills that arrived before the REST ack
+	// populated pendingOrderPos/pendingExits (WS-before-REST race). Keyed by orderID.
+	// applyPlaceResult reads and deletes entries to complete poslog + bracket placement.
+	wsFillCache map[string]cachedWsFill
 
 	// partialApplied accumulates incremental fill qty that the exchange pushed via
 	// WS OrderEventPartialFill events and that the registry applied directly to the
@@ -166,6 +179,15 @@ type partialAppliedState struct {
 	Qty        decimal.Decimal
 	Cost       decimal.Decimal // sum(qty * price)
 	Commission decimal.Decimal // sum(commission)
+}
+
+// cachedWsFill stores fill data from a WS fill that arrived before the REST ack
+// populated pendingOrderPos/pendingExits. applyPlaceResult reads and deletes it to
+// complete the poslog transition and bracket placement without re-touching the portfolio.
+type cachedWsFill struct {
+	qty        decimal.Decimal
+	price      decimal.Decimal
+	commission decimal.Decimal
 }
 
 // exitPending holds raw SL/TP from the signal, stored in pendingExits[orderID]

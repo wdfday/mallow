@@ -510,16 +510,18 @@ func (h *Hand) checkExits() {
 			Msg:       "order: local exit trigger activated",
 		})
 
-		// Delete exitLevels only after signal is successfully enqueued.
-		// If UrgentSignals is full, we keep the level intact and retry next tick.
+		// Drain-replace into Signals so the exit is processed on the next run-loop tick.
 		select {
-		case h.UrgentSignals <- Signal{Symbol: sym, Direction: strategy.DirExit, Strength: 1.0, ReceivedAt: time.Now()}:
-			h.mu.Lock()
-			delete(h.exitLevels, sym)
-			h.mu.Unlock()
+		case <-h.Signals:
 		default:
-			slog.Warn("exit monitor: urgent channel full, will retry next tick", "hand_id", h.id, "symbol", sym)
 		}
+		select {
+		case h.Signals <- Signal{Symbol: sym, Direction: strategy.DirExit, Strength: 1.0, ReceivedAt: time.Now()}:
+		default:
+		}
+		h.mu.Lock()
+		delete(h.exitLevels, sym)
+		h.mu.Unlock()
 	}
 }
 

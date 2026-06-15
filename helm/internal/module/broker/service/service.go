@@ -28,10 +28,6 @@ type BrokerConnectionService interface {
 	// Delete soft-deletes a broker connection and deactivates the linked account.
 	Delete(ctx context.Context, id uuid.UUID, userID uuid.UUID) error
 
-	// ReBroker changes the broker connection linked to an account and notifies the runtime.
-	// accountID is the Account; newBrokerID is the new BrokerConnection to attach.
-	ReBroker(ctx context.Context, accountID uuid.UUID, newBrokerID uuid.UUID, userID uuid.UUID) error
-
 	// Activate marks a broker connection as active.
 	Activate(ctx context.Context, id uuid.UUID, userID uuid.UUID) error
 
@@ -54,6 +50,11 @@ type BrokerConnectionService interface {
 	// detected sub-accounts (e.g. Binance spot + futures_usdm) have a matching
 	// Account + Helm row. Safe to call on startup — ensureLinkedAccount is idempotent.
 	SyncAllAccounts(ctx context.Context) error
+
+	// MarkCredentialError marks the broker connection linked to accountID as error status.
+	// Called internally when a running HelmRuntime detects an ErrClassAuth response from
+	// the exchange mid-run. No ownership check — internal use only.
+	MarkCredentialError(ctx context.Context, accountID uuid.UUID, reason string) error
 }
 
 // RotateKeyRequest carries the new plaintext credentials for a key rotation.

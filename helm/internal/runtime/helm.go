@@ -127,13 +127,32 @@ type HelmRuntime struct {
 	// ── WS fill stream lifecycle ─────────────────────────────────────────────
 	// fillStreamCancel cancels the per-runtime WS stream context so RotateCreds
 	// can disconnect and reconnect with new credentials without touching hands.
+	// fillDrainCancel cancels the appCtx used by runFillProcessor / runLifecycleProcessor
+	// (set only when StartFillStreaming starts the drain goroutines).
 	fillStreamMu     sync.Mutex
 	fillStreamCancel context.CancelFunc
+	fillDrainCancel  context.CancelFunc
+
+	// authErrStreak counts consecutive ErrClassAuth responses from PlaceOrder.
+	// Reset to 0 on any successful PlaceOrder. TriggerAuthError fires only after
+	// authErrThreshold consecutive failures to tolerate transient 401s (clock skew, exchange glitch).
+	authErrStreak atomic.Int32
+
+	// onCredentialError is called (once, in a goroutine) when the exchange rejects our
+	// credentials mid-run (ErrClassAuth from PlaceOrder or WS auth failure). The runtime
+	// self-pauses first; the callback is responsible for persisting the error state in DB.
+	// Set by the registry at spawn time via Registry.SetCredentialErrorHook.
+	onCredentialError func(accountID uuid.UUID, reason string)
 
 	// ── Fill idempotency ─────────────────────────────────────────────────────
 	// dedup owns the gap-recovery trade-id set and the REST-fill-published order-id set,
 	// preventing double-apply / double-publish of the same fill (see fillDedup).
 	dedup *fillDedup
+
+	// ── Event counters ───────────────────────────────────────────────────────
+	// eventCounts accumulates per-code event totals for /metrics.
+	// Keys are int (event code constant); values are *atomic.Int64.
+	eventCounts sync.Map
 }
 
 // NewHelmRuntime creates a HelmRuntime and starts its circuit-breaker reset ticker.
@@ -200,6 +219,10 @@ func (r *HelmRuntime) EmitEvent(ev natsapi.HelmEvent) {
 	ev.UserID = r.UserID.String()
 	ev.At = time.Now().UTC()
 
+	// Increment per-code event counter for /metrics.
+	v, _ := r.eventCounts.LoadOrStore(ev.Code, new(atomic.Int64))
+	v.(*atomic.Int64).Add(1)
+
 	args := []any{"helm_id", r.HelmID, "code", ev.Code}
 	if ev.HandID != "" {
 		args = append(args, "hand_id", ev.HandID)
@@ -225,6 +248,17 @@ func (r *HelmRuntime) EmitEvent(ev natsapi.HelmEvent) {
 	if r.js != nil {
 		natsapi.PublishHelmEvent(r.js, r.HelmID.String(), ev)
 	}
+}
+
+// EventCodeCounts returns a snapshot of per-event-code totals since the runtime started.
+// Keys are event code constants (e.g. CodeSignalReceived = 10000); values are counts.
+func (r *HelmRuntime) EventCodeCounts() map[int]int64 {
+	m := make(map[int]int64)
+	r.eventCounts.Range(func(k, v any) bool {
+		m[k.(int)] = v.(*atomic.Int64).Load()
+		return true
+	})
+	return m
 }
 
 // ReconcileHand runs on-demand reconciliation for a single hand.

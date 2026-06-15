@@ -22,17 +22,25 @@ import (
 // appCtx governs drain goroutine lifetime; a separate per-stream context controls
 // the WS connection so it can be replaced on RotateFillStream without stopping drains.
 func (r *HelmRuntime) StartFillStreaming(appCtx context.Context) {
-	streamCtx, cancel := context.WithCancel(appCtx)
+	drainCtx, drainCancel := context.WithCancel(appCtx)
+
+	streamCtx, streamCancel := context.WithCancel(drainCtx)
 	r.fillStreamMu.Lock()
-	r.fillStreamCancel = cancel
+	r.fillStreamCancel = streamCancel
+	r.fillDrainCancel = drainCancel
 	r.fillStreamMu.Unlock()
 
 	if !r.connectStream(streamCtx) {
-		cancel()
+		streamCancel()
+		drainCancel()
+		r.fillStreamMu.Lock()
+		r.fillStreamCancel = nil
+		r.fillDrainCancel = nil
+		r.fillStreamMu.Unlock()
 		return
 	}
-	go r.runLifecycleProcessor(appCtx)
-	go r.runFillProcessor(appCtx)
+	go r.runLifecycleProcessor(drainCtx)
+	go r.runFillProcessor(drainCtx)
 }
 
 // RotateFillStream replaces credentials and reconnects the WS stream.
@@ -380,6 +388,7 @@ func (r *HelmRuntime) tradeFillMsg(botID string, ev exchange.WsFillEvent) natsap
 		Side:      string(ev.Side),
 		Qty:       ev.FilledQty,
 		AvgPrice:  ev.FilledAvg,
+		Fee:       ev.Commission,
 		FilledAt:  ev.Timestamp,
 	}
 }

@@ -14,8 +14,9 @@ type CreateHandReq struct {
 	Market    domain.MarketType `json:"market" binding:"omitempty,oneof=spot futures"`
 	HelmID    uuid.UUID         `json:"helm_id"`
 	AccountID uuid.UUID         `json:"account_id"`
-	Symbols   []string          `json:"symbols" binding:"required,min=1"`
-	Strategy  StrategyDTO       `json:"strategy" binding:"required"`
+	// Only symbols[0] is dispatched to herald — single-symbol per hand. Multi-symbol deferred.
+	Symbols  []string    `json:"symbols" binding:"required,min=1,max=1"`
+	Strategy StrategyDTO `json:"strategy" binding:"required"`
 	// AllocatedCapital is the hand's fixed capital budget (quote currency, e.g. USDT).
 	// Must be greater than zero.
 	AllocatedCapital float64 `json:"allocated_capital" binding:"required,gt=0"`
@@ -55,22 +56,16 @@ func (r CreateHandReq) ToDomain() domain.HandConfig {
 	return cfg
 }
 
-// UpdateHandReq allows patching Name, AllocatedCapital, SignalTTLSec, Position sizing, and Guard.
-// Symbols, Strategy, Type, and Market are immutable after creation.
+// UpdateHandReq allows patching Name, Position sizing, and Guard.
+// Immutable after creation: symbols, strategy, type, market, allocated_capital (use /allocate-capital).
 type UpdateHandReq struct {
-	Name             string              `json:"name" binding:"omitempty,min=1,max=128"`
-	AllocatedCapital float64             `json:"allocated_capital,omitempty" binding:"omitempty,gt=0"`
-	SignalTTLSec     int                 `json:"signal_ttl_sec,omitempty" binding:"omitempty,min=-1,max=3600"`
-	Position         *PositionDTO        `json:"position"`
-	Guard            *HandGuardConfigDTO `json:"risk"`
+	Name     string              `json:"name" binding:"omitempty,min=1,max=128"`
+	Position *PositionDTO        `json:"position"`
+	Guard    *HandGuardConfigDTO `json:"risk"`
 }
 
 func (r UpdateHandReq) ToDomain() domain.HandConfig {
-	cfg := domain.HandConfig{
-		Name:             r.Name,
-		AllocatedCapital: decimal.NewFromFloat(r.AllocatedCapital),
-		SignalTTLSec:     r.SignalTTLSec,
-	}
+	cfg := domain.HandConfig{Name: r.Name}
 	if r.Position != nil {
 		cfg.Position = positionToDomain(*r.Position)
 	}

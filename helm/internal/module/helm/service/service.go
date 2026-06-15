@@ -27,6 +27,9 @@ type RuntimeSpawner interface {
 	// RotateCreds updates credentials in-place and reconnects the WS stream.
 	// Running hands are not interrupted.
 	RotateCreds(id uuid.UUID, newCreds exchange.Credentials)
+	// PurgeHelmData removes all JetStream messages scoped to this helm/account.
+	// Called during hard-delete so no audit data lingers after the user removes a broker connection.
+	PurgeHelmData(helmID, accountID uuid.UUID)
 }
 
 // CredentialFetcher fetches decrypted exchange credentials for a given account.
@@ -45,6 +48,15 @@ type HandLifecycle interface {
 	ReleaseBots(ids []string)
 	// PurgeBots removes hands from the in-memory map after their helm is deleted.
 	PurgeBots(ids []string)
+	// DeleteBotsByHelm hard-deletes all Hand rows for a helm from the DB.
+	// Called during helm teardown so broker connection delete is a clean sweep.
+	DeleteBotsByHelm(helmID uuid.UUID) error
+}
+
+// DataPurger removes all audit-trail rows from PostgreSQL for a given helm/account.
+// Called during hard-delete so the DB is fully cleaned up alongside JetStream.
+type DataPurger interface {
+	PurgeByHelm(helmID, accountID uuid.UUID) error
 }
 
 // Service handles CRUD for helm configs (helms table).
@@ -54,6 +66,7 @@ type Service struct {
 	spawner RuntimeSpawner
 	hands   HandLifecycle
 	creds   CredentialFetcher
+	purger  DataPurger // optional; nil = skip PG audit cleanup
 }
 
 // New creates a Service.
@@ -69,6 +82,11 @@ func (s *Service) SetHandLifecycle(bl HandLifecycle) {
 // SetCredentialFetcher injects the credential-fetching port used by Enable to spawn runtimes.
 func (s *Service) SetCredentialFetcher(cf CredentialFetcher) {
 	s.creds = cf
+}
+
+// SetDataPurger injects the DataPurger used during helm hard-delete.
+func (s *Service) SetDataPurger(p DataPurger) {
+	s.purger = p
 }
 
 // Get returns a single orchestrator config.

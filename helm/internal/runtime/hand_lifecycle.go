@@ -72,6 +72,7 @@ func NewHand(
 		pollCh:          make(chan pollBatch, 1),
 		placeResultCh:   make(chan *pendingPlace, 16),
 		seenFills:       make(map[string]time.Time),
+		wsFillCache:     make(map[string]cachedWsFill),
 
 		partialApplied:  make(map[string]partialAppliedState),
 		orders:          make([]domain.Order, 0, 256),

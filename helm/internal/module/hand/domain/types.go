@@ -15,6 +15,7 @@ type HandStatus string
 const (
 	HandStatusStopped  HandStatus = "stopped"
 	HandStatusRunning  HandStatus = "running"
+	HandStatusPaused   HandStatus = "paused"   // user-paused: deregistered from herald, capital held, restartable
 	HandStatusKilled   HandStatus = "killed"   // terminal: positions flattened, capital returned
 	HandStatusReleased HandStatus = "released" // terminal: positions orphaned, capital returned
 )

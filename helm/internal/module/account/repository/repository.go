@@ -15,5 +15,6 @@ type Repository interface {
 	Update(ctx context.Context, account *domain.Account) error
 	UpdateColumns(ctx context.Context, id string, columns map[string]any) error
 	SoftDelete(ctx context.Context, id string) error
+	HardDelete(ctx context.Context, id string) error
 	CountByUserID(ctx context.Context, userID string, filters domain.ListAccountsFilter) (int64, error)
 }

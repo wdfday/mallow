@@ -71,6 +71,10 @@ type Registry struct {
 	// ── Signal routing ────────────────────────────────────────────────────
 	dispatcher *SignalDispatcher // wired via SetDispatcher after startup; nil before
 	metrics    registryMetrics   // routing miss counters, exported via DispatchStats
+
+	// onCredentialError is set once at startup via SetCredentialErrorHook.
+	// Propagated to each runtime at Spawn; nil = no-op.
+	onCredentialError func(accountID uuid.UUID, reason string)
 }
 
 // NewRegistry creates an empty Registry.
@@ -97,6 +101,15 @@ func (r *Registry) SetSyncStore(store SyncStore) {
 func (r *Registry) SetPosLog(log poslog.Log) {
 	r.mu.Lock()
 	r.posLog = log
+	r.mu.Unlock()
+}
+
+// SetCredentialErrorHook wires a callback that fires when a running HelmRuntime detects
+// an exchange auth error (ErrClassAuth from PlaceOrder or WS). Called once at startup
+// from the broker module so it can persist the connection status change.
+func (r *Registry) SetCredentialErrorHook(fn func(accountID uuid.UUID, reason string)) {
+	r.mu.Lock()
+	r.onCredentialError = fn
 	r.mu.Unlock()
 }
 

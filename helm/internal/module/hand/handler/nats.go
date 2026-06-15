@@ -33,6 +33,8 @@ func (h *NATSHandler) Subscribe(nc *nats.Conn) error {
 		natsapi.SubjHandUpdate: h.update,
 		natsapi.SubjHandStart:  h.start,
 		natsapi.SubjHandStop:   h.stop,
+		natsapi.SubjHandPause:  h.natsPause,
+		natsapi.SubjHandResume: h.natsResume,
 		natsapi.SubjHandKill:   h.kill,
 	}
 	for subj, fn := range routes {
@@ -183,10 +185,11 @@ func (h *NATSHandler) create(msg *nats.Msg) {
 		_ = msg.Respond(natsapi.ReplyErr(overflow.Error))
 		return
 	}
-	if err := handservice.CheckSymbolConflict(h.handMgr.ListByHelm(cfg.HelmID), cfg.Symbols, ""); err != nil {
-		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
-		return
-	}
+	// multi-hand same-symbol allowed — net qty vs per-hand qty gap deferred
+	// if err := handservice.CheckSymbolConflict(h.handMgr.ListByHelm(cfg.HelmID), cfg.Symbols, ""); err != nil {
+	// 	_ = msg.Respond(natsapi.ReplyErr(err.Error()))
+	// 	return
+	// }
 	instance, err := h.handMgr.Create(cfg)
 	if err != nil {
 		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
@@ -214,29 +217,12 @@ func (h *NATSHandler) update(msg *nats.Msg) {
 	if _, ok := h.enforceHandOwner(msg, id); !ok {
 		return
 	}
-	bi, err := h.handMgr.Get(id)
-	if err != nil {
-		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
-		return
-	}
 	patch := raw.UpdateHandReq.ToDomain()
-	if raw.AllocatedCapital > 0 {
-		rt, err := h.reg.Get(bi.Data.HelmID)
-		if err != nil {
-			_ = msg.Respond(natsapi.ReplyErr("helm runtime not available"))
-			return
-		}
-		// Use .Cash consistent with the HTTP handler.
-		if overflow, _ := handservice.CheckCapitalAllocation(rt.Portfolio.Summary().Cash.InexactFloat64(), h.handMgr.ListByHelm(bi.Data.HelmID), patch.AllocatedCapital, id.String()); overflow != nil {
-			_ = msg.Respond(natsapi.ReplyErr(overflow.Error))
-			return
-		}
-	}
 	if err := h.handMgr.Update(id, patch); err != nil {
 		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
 		return
 	}
-	bi, _ = h.handMgr.Get(id)
+	bi, _ := h.handMgr.Get(id)
 	_ = msg.Respond(natsapi.ReplyOK(bi.Summary()))
 }
 
@@ -289,6 +275,40 @@ func (h *NATSHandler) kill(msg *nats.Msg) {
 	}
 	slog.Warn("nats: hand killed", "id", id)
 	_ = msg.Respond(natsapi.ReplyOK(handDto.HandActionResp{Status: "killed", ID: id.String()}))
+}
+
+func (h *NATSHandler) natsPause(msg *nats.Msg) {
+	id, err := parseUUID(msg.Data)
+	if err != nil {
+		_ = msg.Respond(natsapi.ReplyErr("invalid json or id"))
+		return
+	}
+	if _, ok := h.enforceHandOwner(msg, id); !ok {
+		return
+	}
+	if err := h.handMgr.Pause(id); err != nil {
+		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
+		return
+	}
+	slog.Info("nats: hand paused", "id", id)
+	_ = msg.Respond(natsapi.ReplyOK(handDto.HandActionResp{Status: "paused", ID: id.String()}))
+}
+
+func (h *NATSHandler) natsResume(msg *nats.Msg) {
+	id, err := parseUUID(msg.Data)
+	if err != nil {
+		_ = msg.Respond(natsapi.ReplyErr("invalid json or id"))
+		return
+	}
+	if _, ok := h.enforceHandOwner(msg, id); !ok {
+		return
+	}
+	if err := h.handMgr.Resume(id); err != nil {
+		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
+		return
+	}
+	slog.Info("nats: hand resumed", "id", id)
+	_ = msg.Respond(natsapi.ReplyOK(handDto.HandActionResp{Status: "running", ID: id.String()}))
 }
 
 func parseUUID(data []byte) (uuid.UUID, error) {

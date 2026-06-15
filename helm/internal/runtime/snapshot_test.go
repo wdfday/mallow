@@ -7,6 +7,7 @@ package runtime_test
 // go test -v -run TestSnapshot ./internal/runtime/ -count=1
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -34,6 +35,7 @@ func buildSnapshotRuntime(ex *simExchange, capital float64) *runtime.HelmRuntime
 		"sim", pf, rm, ex, exchange.Credentials{}, nil, time.Now(),
 	)
 	rm.SetUnitCounter(rt.OpenUnitCount)
+	rt.StartFillStreaming(context.Background())
 	return rt
 }
 

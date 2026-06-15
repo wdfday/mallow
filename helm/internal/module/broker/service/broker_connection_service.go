@@ -499,56 +499,15 @@ func (s *brokerConnectionService) RotateKey(ctx context.Context, id, userID uuid
 			if err := s.helmCreator.RotateCredsForAccount(ctx, accounts[i].ID, rotateReq); err != nil {
 				slog.Warn("broker: helm creds rotate failed (non-fatal)", "account_id", accounts[i].ID, "err", err)
 			}
+			// Auto-resume if the helm was halted by a credential error — new key is valid.
+			// No-op if helm is in any other state (respects user-initiated pauses).
+			if err := s.helmCreator.ResumeErrorForAccount(ctx, accounts[i].ID); err != nil {
+				slog.Warn("broker: helm auto-resume after rotate-key failed (non-fatal)", "account_id", accounts[i].ID, "err", err)
+			}
 		}
 	}
 
 	return conn, nil
-}
-
-// ReBroker changes the broker connection linked to an existing account.
-func (s *brokerConnectionService) ReBroker(ctx context.Context, accountID, newBrokerID, userID uuid.UUID) error {
-	account, err := s.accountRepo.GetByID(ctx, accountID.String())
-	if err != nil {
-		return fmt.Errorf("account not found: %w", err)
-	}
-	if account.UserID != userID {
-		return fmt.Errorf("unauthorized")
-	}
-
-	newBroker, err := s.GetByID(ctx, newBrokerID, userID)
-	if err != nil {
-		return fmt.Errorf("broker connection not found: %w", err)
-	}
-
-	account.BrokerConnectionID = &newBrokerID
-	if err := s.accountRepo.Update(ctx, account); err != nil {
-		return fmt.Errorf("failed to update account broker link: %w", err)
-	}
-
-	// Respawn helm runtime with new broker credentials.
-	creds, err := s.buildCreds(newBroker)
-	if err != nil {
-		slog.Warn("broker: rebroker respawn skipped — decrypt failed", "account_id", accountID, "err", err)
-		return nil
-	}
-	pp := ""
-	if creds.Passphrase != nil {
-		pp = *creds.Passphrase
-	}
-	if err := s.helmCreator.AutoCreateForAccount(ctx, HelmAutoCreateReq{
-		UserID:      account.UserID,
-		AccountID:   account.ID,
-		AccountName: account.AccountName,
-		BrokerType:  string(newBroker.BrokerType),
-		AccountType: string(account.AccountType),
-		APIKey:      creds.APIKey,
-		APISecret:   creds.APISecret,
-		Passphrase:  pp,
-		Paper:       newBroker.IsPaper,
-	}); err != nil {
-		slog.Warn("broker: helm respawn after rebroker failed (non-fatal)", "account_id", accountID, "err", err)
-	}
-	return nil
 }
 
 func (s *brokerConnectionService) Delete(ctx context.Context, id, userID uuid.UUID) error {
@@ -557,12 +516,12 @@ func (s *brokerConnectionService) Delete(ctx context.Context, id, userID uuid.UU
 		return err
 	}
 
-	var linkedAccount *accountDomain.Account
+	// Collect ALL accounts linked to this connection (Binance can have spot + futures_usdm).
+	var linkedAccounts []accountDomain.Account
 	accounts, _ := s.accountRepo.ListByUserID(ctx, userID.String(), accountDomain.ListAccountsFilter{})
 	for i := range accounts {
 		if accounts[i].BrokerConnectionID != nil && *accounts[i].BrokerConnectionID == conn.ID {
-			linkedAccount = &accounts[i]
-			break
+			linkedAccounts = append(linkedAccounts, accounts[i])
 		}
 	}
 
@@ -570,14 +529,15 @@ func (s *brokerConnectionService) Delete(ctx context.Context, id, userID uuid.UU
 		return err
 	}
 
-	if linkedAccount != nil {
-		linkedAccount.IsActive = false
-		linkedAccount.BrokerConnectionID = nil
-		if err := s.accountRepo.Update(ctx, linkedAccount); err != nil {
-			slog.Warn("broker: failed to deactivate linked account (non-fatal)", "account_id", linkedAccount.ID, "err", err)
+	for i := range linkedAccounts {
+		acc := &linkedAccounts[i]
+		// Full sweep: runtime teardown → hand rows → helm row → JetStream subjects.
+		if err := s.helmCreator.AutoDeleteForAccount(ctx, acc.ID); err != nil {
+			slog.Warn("broker: helm teardown failed (non-fatal)", "account_id", acc.ID, "err", err)
 		}
-		if err := s.helmCreator.AutoDeleteForAccount(ctx, linkedAccount.ID); err != nil {
-			slog.Warn("broker: helm teardown failed (non-fatal)", "account_id", linkedAccount.ID, "err", err)
+		// Hard-delete the account row — user no longer wants any data.
+		if err := s.accountRepo.HardDelete(ctx, acc.ID.String()); err != nil {
+			slog.Warn("broker: failed to hard-delete linked account (non-fatal)", "account_id", acc.ID, "err", err)
 		}
 	}
 	return nil
@@ -598,7 +558,46 @@ func (s *brokerConnectionService) Deactivate(ctx context.Context, id, userID uui
 		return err
 	}
 	conn.Status = domain.BrokerConnectionStatusDisconnected
-	return s.repo.Update(ctx, conn)
+	if err := s.repo.Update(ctx, conn); err != nil {
+		return err
+	}
+	// Pause the live helm so it stops accepting signals while the connection is inactive.
+	accounts, _ := s.accountRepo.ListByUserID(ctx, conn.UserID.String(), accountDomain.ListAccountsFilter{})
+	for i := range accounts {
+		if accounts[i].BrokerConnectionID != nil && *accounts[i].BrokerConnectionID == conn.ID {
+			if err := s.helmCreator.PauseForAccount(ctx, accounts[i].ID); err != nil {
+				slog.Warn("broker: deactivate — helm pause failed (non-fatal)", "account_id", accounts[i].ID, "err", err)
+			}
+		}
+	}
+	return nil
+}
+
+// MarkCredentialError marks the broker connection linked to accountID as error status.
+// Internal use only — called by the runtime credential-error hook (no ownership check).
+func (s *brokerConnectionService) MarkCredentialError(ctx context.Context, accountID uuid.UUID, reason string) error {
+	account, err := s.accountRepo.GetByID(ctx, accountID.String())
+	if err != nil {
+		return fmt.Errorf("credential error: account not found: %w", err)
+	}
+	if account.BrokerConnectionID == nil {
+		return fmt.Errorf("credential error: account %s has no broker connection", accountID)
+	}
+	conn, err := s.repo.GetByID(ctx, *account.BrokerConnectionID)
+	if err != nil {
+		return fmt.Errorf("credential error: broker connection not found: %w", err)
+	}
+	conn.Status = domain.BrokerConnectionStatusError
+	if updateErr := s.repo.Update(ctx, conn); updateErr != nil {
+		return fmt.Errorf("credential error: failed to persist error status: %w", updateErr)
+	}
+	slog.Warn("broker: credential error detected — connection marked error",
+		"broker_connection_id", conn.ID, "account_id", accountID, "reason", reason)
+	// Also mark the helm as error so the UI surfaces the state clearly.
+	if err := s.helmCreator.MarkErrorForAccount(ctx, accountID); err != nil {
+		slog.Warn("broker: credential error — helm status update failed (non-fatal)", "account_id", accountID, "err", err)
+	}
+	return nil
 }
 
 func (s *brokerConnectionService) TestConnection(ctx context.Context, id, userID uuid.UUID) error {

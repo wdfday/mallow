@@ -109,7 +109,6 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 		o.POST("/:id/disable", h.disable)
 		o.POST("/:id/pause", h.pause)
 		o.POST("/:id/resume", h.resume)
-		o.POST("/:id/kill", h.kill)
 		o.POST("/:id/halt/reset", h.resetHalt)
 		o.GET("/:id/portfolio", h.portfolio)
 		o.GET("/:id/positions", h.positions)
@@ -386,38 +385,6 @@ func (h *Handler) resume(c *gin.Context) {
 		return
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Orchestrator resumed successfully", dto.ActionResp{Status: "resumed", ID: id})
-}
-
-// kill godoc
-// @Summary Disable orchestrator — flatten all hand positions and disable
-// @Tags helms
-// @Security BearerAuth
-// @Produce json
-// @Param id path string true "Orchestrator ID"
-// @Success 200 {object} shared.SuccessResponse[dto.ActionResp]
-// @Failure 400 {object} shared.ErrorResponse
-// @Failure 401 {object} shared.ErrorResponse
-// @Failure 404 {object} shared.ErrorResponse
-// @Router /api/v1/helms/{id}/kill [post]
-func (h *Handler) kill(c *gin.Context) {
-	userID, ok := callerUserID(c)
-	if !ok {
-		return
-	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, "invalid id")
-		return
-	}
-	if err := h.svc.CheckOwner(id, userID); err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "not found")
-		return
-	}
-	if err := h.svc.Disable(id); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
-		return
-	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Orchestrator disabled successfully", dto.ActionResp{Status: "disabled", ID: id})
 }
 
 // resetHalt godoc

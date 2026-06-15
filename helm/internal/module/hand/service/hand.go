@@ -225,28 +225,6 @@ func (s *Service) Update(id uuid.UUID, patch domain.HandConfig) error {
 	return nil
 }
 
-func (s *Service) Delete(id uuid.UUID) error {
-	bi, err := s.getOrLoad(id)
-	if err != nil {
-		return err
-	}
-	if bi.Runner.IsRunning() {
-		return fmt.Errorf("hand %q is running — stop it first", id)
-	}
-	if rt, _ := s.registry.Get(bi.Data.HelmID); rt != nil {
-		rt.RemoveHand(id.String())
-	}
-	if err := s.repo.Delete(id); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	delete(s.hands, id)
-	delete(s.terminated, id)
-	s.mu.Unlock()
-	slog.Info("hand deleted", "id", id)
-	return nil
-}
-
 // validateSizingConfig enforces cross-field invariants for sizing modes.
 // Called after Defaults() so SizeMode is always non-empty.
 func validateSizingConfig(p domain.PositionConfig) error {

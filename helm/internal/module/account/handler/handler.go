@@ -76,6 +76,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 // ── helpers ────────────────────────────────────────────────────────────────
 
+// deprecated sets standard RFC 8594 deprecation headers on the response.
+// useInstead should be the preferred replacement path, e.g. "GET /api/v1/helms/:id/portfolio".
+func deprecated(c *gin.Context, useInstead string) {
+	c.Header("Deprecation", "true")
+	c.Header("X-Deprecated-Use-Instead", useInstead)
+}
+
 func parsePage(c *gin.Context) (page, limit int) {
 	page, _ = strconv.Atoi(c.DefaultQuery("page", "1"))
 	limit, _ = strconv.Atoi(c.DefaultQuery("limit", "100"))
@@ -183,7 +190,7 @@ func (h *Handler) getAccount(c *gin.Context) {
 
 // portfolio godoc
 // @Summary Get live portfolio for an account
-// @Description Returns real-time portfolio summary from the helm runtime (cash, equity, positions, drawdown, win rate).
+// @Description Deprecated: use GET /api/v1/helms/:id/portfolio instead. Returns real-time portfolio summary from the helm runtime.
 // @Tags accounts
 // @Security BearerAuth
 // @Produce json
@@ -192,8 +199,10 @@ func (h *Handler) getAccount(c *gin.Context) {
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 404 {object} shared.ErrorResponse
 // @Failure 503 {object} shared.ErrorResponse
+// @Deprecated
 // @Router /api/v1/accounts/{id}/portfolio [get]
 func (h *Handler) portfolio(c *gin.Context) {
+	deprecated(c, "GET /api/v1/helms/:id/portfolio")
 	rt, ok := h.requireRuntime(c)
 	if !ok {
 		return
@@ -205,7 +214,7 @@ func (h *Handler) portfolio(c *gin.Context) {
 
 // positions godoc
 // @Summary List open positions for an account
-// @Description Returns live open positions from the helm runtime.
+// @Description Deprecated: positions are included in GET /api/v1/helms/:id/portfolio. Returns live open positions from the helm runtime.
 // @Tags accounts
 // @Security BearerAuth
 // @Produce json
@@ -214,8 +223,10 @@ func (h *Handler) portfolio(c *gin.Context) {
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 404 {object} shared.ErrorResponse
 // @Failure 503 {object} shared.ErrorResponse
+// @Deprecated
 // @Router /api/v1/accounts/{id}/positions [get]
 func (h *Handler) positions(c *gin.Context) {
+	deprecated(c, "GET /api/v1/helms/:id/portfolio (positions included)")
 	rt, ok := h.requireRuntime(c)
 	if !ok {
 		return
@@ -227,7 +238,7 @@ func (h *Handler) positions(c *gin.Context) {
 
 // trades godoc
 // @Summary List closed trades for an account
-// @Description Cursor-based pagination over HELM_TRADES JetStream stream (fan-out across all hands).
+// @Description Deprecated: use GET /api/v1/helms/:id/trades instead. Cursor-based pagination over HELM_TRADES JetStream stream.
 // @Tags accounts
 // @Security BearerAuth
 // @Produce json
@@ -239,8 +250,10 @@ func (h *Handler) positions(c *gin.Context) {
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 404 {object} shared.ErrorResponse
 // @Failure 503 {object} shared.ErrorResponse
+// @Deprecated
 // @Router /api/v1/accounts/{id}/trades [get]
 func (h *Handler) trades(c *gin.Context) {
+	deprecated(c, "GET /api/v1/helms/:id/trades")
 	_, helmID, ok := h.resolveAccountHelm(c)
 	if !ok {
 		return
@@ -282,7 +295,7 @@ func (h *Handler) trades(c *gin.Context) {
 
 // fills godoc
 // @Summary List order fills for an account
-// @Description Time-cursor pagination over TRADE_FILLS JetStream stream. Pass `after` (RFC3339) from previous response to page forward.
+// @Description Deprecated: use GET /api/v1/helms/:id/fills instead. Time-cursor pagination over TRADE_FILLS JetStream stream.
 // @Tags accounts
 // @Security BearerAuth
 // @Produce json
@@ -294,8 +307,10 @@ func (h *Handler) trades(c *gin.Context) {
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 404 {object} shared.ErrorResponse
 // @Failure 503 {object} shared.ErrorResponse
+// @Deprecated
 // @Router /api/v1/accounts/{id}/fills [get]
 func (h *Handler) fills(c *gin.Context) {
+	deprecated(c, "GET /api/v1/helms/:id/fills")
 	accountID, ok := h.resolveAccount(c)
 	if !ok {
 		return
@@ -332,7 +347,7 @@ func (h *Handler) fills(c *gin.Context) {
 
 // snapshots godoc
 // @Summary List portfolio snapshots for an account
-// @Description Cursor-based pagination over equity_snapshots (PostgreSQL). Helm-level snapshots only.
+// @Description Deprecated: use GET /api/v1/helms/:id/snapshots instead. Cursor-based pagination over equity_snapshots (PostgreSQL).
 // @Tags accounts
 // @Security BearerAuth
 // @Produce json
@@ -344,8 +359,10 @@ func (h *Handler) fills(c *gin.Context) {
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 404 {object} shared.ErrorResponse
 // @Failure 503 {object} shared.ErrorResponse
+// @Deprecated
 // @Router /api/v1/accounts/{id}/snapshots [get]
 func (h *Handler) snapshots(c *gin.Context) {
+	deprecated(c, "GET /api/v1/helms/:id/snapshots")
 	_, helmID, ok := h.resolveAccountHelm(c)
 	if !ok {
 		return
@@ -382,7 +399,7 @@ func (h *Handler) snapshots(c *gin.Context) {
 
 // equity godoc
 // @Summary Equity curve for an account
-// @Description Forward-filled equity curve bucketed by resolution, from equity_snapshots (PostgreSQL).
+// @Description Deprecated: use GET /api/v1/helms/:id/equity instead. Forward-filled equity curve bucketed by resolution.
 // @Tags accounts
 // @Security BearerAuth
 // @Produce json
@@ -395,8 +412,10 @@ func (h *Handler) snapshots(c *gin.Context) {
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 404 {object} shared.ErrorResponse
 // @Failure 503 {object} shared.ErrorResponse
+// @Deprecated
 // @Router /api/v1/accounts/{id}/equity [get]
 func (h *Handler) equity(c *gin.Context) {
+	deprecated(c, "GET /api/v1/helms/:id/equity")
 	_, helmID, ok := h.resolveAccountHelm(c)
 	if !ok {
 		return
@@ -446,7 +465,7 @@ func (h *Handler) equity(c *gin.Context) {
 
 // exchangeAccount godoc
 // @Summary Get live exchange account snapshot for an account
-// @Description Calls the exchange REST API directly and returns cash, equity, positions and per-asset balances.
+// @Description Deprecated: use GET /api/v1/helms/:id/exchange/account instead. Calls the exchange REST API directly.
 // @Tags accounts
 // @Security BearerAuth
 // @Produce json
@@ -457,8 +476,10 @@ func (h *Handler) equity(c *gin.Context) {
 // @Failure 404 {object} shared.ErrorResponse
 // @Failure 502 {object} shared.ErrorResponse
 // @Failure 503 {object} shared.ErrorResponse
+// @Deprecated
 // @Router /api/v1/accounts/{id}/exchange/account [get]
 func (h *Handler) exchangeAccount(c *gin.Context) {
+	deprecated(c, "GET /api/v1/helms/:id/exchange/account")
 	rt, ok := h.requireRuntime(c)
 	if !ok {
 		return

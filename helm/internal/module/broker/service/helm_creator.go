@@ -33,4 +33,17 @@ type HelmCreator interface {
 	// RotateCredsForAccount updates the in-flight credentials for the Helm linked
 	// to accountID and reconnects the WS stream without interrupting running hands.
 	RotateCredsForAccount(ctx context.Context, accountID uuid.UUID, req HelmAutoCreateReq) error
+
+	// PauseForAccount pauses the Helm linked to accountID (cascade-stops all hands).
+	// Called when a broker connection is deactivated so the runtime halts cleanly.
+	PauseForAccount(ctx context.Context, accountID uuid.UUID) error
+
+	// MarkErrorForAccount sets the Helm linked to accountID to error status.
+	// Called when a credential error is detected mid-run.
+	MarkErrorForAccount(ctx context.Context, accountID uuid.UUID) error
+
+	// ResumeErrorForAccount resumes the Helm linked to accountID only if its current
+	// status is error. No-op if the helm is in any other state (prevents unintended
+	// resumption of user-initiated pauses). Called after a successful key rotation.
+	ResumeErrorForAccount(ctx context.Context, accountID uuid.UUID) error
 }

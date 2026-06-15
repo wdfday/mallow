@@ -10,6 +10,7 @@ package act
 //   Converters         — OKX native → exchange.OrderResult / exchange.OrderSide / status string
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -45,6 +46,50 @@ func parseTimestampMs(s string) int64 {
 type okxEnvelope struct {
 	Code string `json:"code"` // "0" on success
 	Msg  string `json:"msg"`
+}
+
+// okxRejectedError carries a per-order error code from OKX (sCode / sMsg fields).
+// Returned by PlaceOrder when outer code == "0" but per-order sCode != "0",
+// allowing MeteredExchange.classifyErr to use errors.As for precise classification.
+type okxRejectedError struct {
+	SCode string
+	SMsg  string
+}
+
+func (e *okxRejectedError) Error() string {
+	return fmt.Sprintf("okx order rejected: sCode=%s sMsg=%s", e.SCode, e.SMsg)
+}
+
+// ClassifyError implements exchange.ErrorClassifier using OKX per-order sCodes.
+func (c *Client) ClassifyError(err error) exchange.ErrClass {
+	var oe *okxRejectedError
+	if !errors.As(err, &oe) {
+		return exchange.ClassifyGeneric(err)
+	}
+	return classifyOKXSCode(oe.SCode)
+}
+
+// classifyOKXSCode maps OKX V5 per-order sCodes to an ErrClass.
+// Reference: https://www.okx.com/docs-v5/en/#error-code
+func classifyOKXSCode(sCode string) exchange.ErrClass {
+	switch sCode {
+	case "50111", "50113", "50119": // invalid API key, invalid sign, invalid broker
+		return exchange.ErrClassAuth
+	case "50014", "50018": // rate limit exceeded, account suspended
+		return exchange.ErrClassRateLimit
+	case "51006", "51008", "51100", "51131", "51300": // insufficient balance / margin
+		return exchange.ErrClassInsufficientBalance
+	case "51001": // instrument ID does not exist
+		return exchange.ErrClassInvalidSymbol
+	case "51003", "51121", "51203": // order qty below min / out of range
+		return exchange.ErrClassLotSize
+	case "51010": // order does not exist
+		return exchange.ErrClassOrderNotFound
+	case "50000", "50001", "50002": // body empty / server unavailable / overloaded
+		return exchange.ErrClassServerError
+	default:
+		return exchange.ErrClassUnknown
+	}
 }
 
 // ── Order request types ───────────────────────────────────────────────────────

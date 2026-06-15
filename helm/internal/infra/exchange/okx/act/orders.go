@@ -68,8 +68,9 @@ func (c *Client) PlaceOrder(ctx context.Context, creds exchange.Credentials, req
 	// OKX may return outer code="0" but per-order sCode != "0" when the trading
 	// engine rejects the order after initial validation (e.g. insufficient balance
 	// detected post-routing). In that case OrdID is empty — treat as a placement error.
+	// Wrap as okxRejectedError so MeteredExchange.classifyErr can extract the sCode.
 	if d := resp.Data[0]; d.SCode != "" && d.SCode != "0" {
-		return nil, fmt.Errorf("okx order rejected: sCode=%s sMsg=%s", d.SCode, d.SMsg)
+		return nil, fmt.Errorf("place order: %w", &okxRejectedError{SCode: d.SCode, SMsg: d.SMsg})
 	}
 
 	return &exchange.OrderResult{

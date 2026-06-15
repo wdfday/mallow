@@ -196,20 +196,9 @@ func (h *Hand) L2() (exchange.L2Snapshot, bool) {
 // Inbox — called by Registry/Runtime to deliver external events
 // ---------------------------------------------------------------------------
 
-// DeliverSignal enqueues a signal onto the appropriate hand channel.
-// Urgent signals (close/exit) are buffered; regular signals drain-replace
-// so the hand always sees the latest, never a stale one.
+// DeliverSignal enqueues a signal onto the hand's signal channel (drain-replace).
+// All signals including urgent exit signals go through the same channel for now.
 func (h *Hand) DeliverSignal(sig Signal) {
-	if sig.IsUrgent() {
-		select {
-		case h.UrgentSignals <- sig:
-		default:
-			slog.Error("hand urgent signal channel full, dropping close signal",
-				"hand_id", h.id, "symbol", sig.Symbol)
-		}
-		return
-	}
-
 	select {
 	case <-h.Signals:
 	default:

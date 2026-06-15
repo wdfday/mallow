@@ -29,9 +29,10 @@ type HandService interface {
 	ListByHelmLive(helmID uuid.UUID) []domain.HandSummary
 	Create(cfg domain.HandConfig) (*runtime.HandRef, error)
 	Update(id uuid.UUID, patch domain.HandConfig) error
-	Delete(id uuid.UUID) error
 	Start(id uuid.UUID) error
 	Stop(id uuid.UUID) error
+	Pause(id uuid.UUID) error
+	Resume(id uuid.UUID) error
 	Kill(ctx context.Context, id uuid.UUID) error
 	Release(ctx context.Context, id uuid.UUID) error
 	RunningHands() []*runtime.HandRef

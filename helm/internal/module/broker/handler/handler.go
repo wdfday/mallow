@@ -47,7 +47,6 @@ func (h *BrokerConnectionHandler) RegisterRoutes(router *gin.Engine) {
 		protected.POST("/:id/deactivate", h.Deactivate)
 		protected.POST("/:id/test", h.TestConnection)
 		protected.POST("/:id/rotate-key", h.RotateKey)
-		protected.POST("/:id/rebroker", h.ReBroker)
 	}
 }
 
@@ -292,29 +291,6 @@ func (h *BrokerConnectionHandler) RotateKey(c *gin.Context) {
 		return
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "API key rotated successfully", dto.ToBrokerConnectionResponse(conn))
-}
-
-func (h *BrokerConnectionHandler) ReBroker(c *gin.Context) {
-	userID, err := getUserIDFromContext(c)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusUnauthorized, err.Error())
-		return
-	}
-	newBrokerID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, "invalid broker connection ID")
-		return
-	}
-	var req dto.ReBrokerRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
-		return
-	}
-	if err := h.service.ReBroker(c.Request.Context(), req.AccountID, newBrokerID, userID); err != nil {
-		shared.HandleError(c, err)
-		return
-	}
-	shared.RespondWithSuccessNoData(c, http.StatusOK, "Broker updated successfully")
 }
 
 func getUserIDFromContext(c *gin.Context) (uuid.UUID, error) {

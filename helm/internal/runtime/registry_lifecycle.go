@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
@@ -50,9 +51,16 @@ func (r *Registry) Spawn(cfg *helmdomain.Helm, exchCfg helmdomain.ExchangeConfig
 	rt := NewHelmRuntime(cfg.ID, cfg.AccountID, cfg.UserID, brokerType, pf, riskMgr, ex, creds, cfg.LastSyncedAt, cfg.CreatedAt)
 	rt.FilterStore = r.market.filterViewFor(ex.Name())
 	// Restore pause state so signal gating survives a restart.
-	if cfg.Status == helmdomain.HelmStatusPaused || cfg.Status == helmdomain.HelmStatusHalted {
+	// HelmStatusError also starts paused — credentials must be rotated before resuming.
+	if cfg.Status == helmdomain.HelmStatusPaused ||
+		cfg.Status == helmdomain.HelmStatusHalted ||
+		cfg.Status == helmdomain.HelmStatusError {
 		rt.paused = true
 	}
+	// Wire credential-error callback so auth failures mid-run propagate to the broker service.
+	r.mu.RLock()
+	rt.onCredentialError = r.onCredentialError
+	r.mu.RUnlock()
 
 	// Wire the registry-owned per-exchange public data; all helms on the same
 	// exchange share one bucket and see price + L2 updates immediately.
@@ -121,6 +129,35 @@ func (r *Registry) Teardown(id uuid.UUID) []string {
 		slog.Info("runtime: torn down", "helm_id", id, "hands_orphaned", len(handIDs))
 	}
 	return handIDs
+}
+
+// PurgeHelmData removes JetStream messages scoped to this helm and account.
+// Called during hard-delete (broker connection removal) so no audit data lingers.
+// Errors are logged and ignored — purge is best-effort.
+func (r *Registry) PurgeHelmData(helmID, accountID uuid.UUID) {
+	if r.js == nil {
+		return
+	}
+	hid := helmID.String()
+	aid := accountID.String()
+	purges := []struct {
+		stream  string
+		subject string
+	}{
+		{"HELM_POSITIONS", "helm.pos." + hid + ".>"},
+		{"HELM_TRADES", "helm.trades." + hid + ".>"},
+		{"HELM_EVENTS", "helm.events." + hid},
+		{"HELM_EQUITY", "helm.equity." + hid + ".>"},
+		{"TRADE_FILLS", "trade.filled." + aid},
+		{"PORTFOLIO_SYNC", "portfolio.synced." + aid},
+	}
+	for _, p := range purges {
+		if err := r.js.PurgeStream(p.stream, &nats.StreamPurgeRequest{Subject: p.subject}); err != nil {
+			slog.Warn("registry: PurgeHelmData: stream purge failed (non-fatal)",
+				"stream", p.stream, "subject", p.subject, "err", err)
+		}
+	}
+	slog.Info("registry: helm JetStream data purged", "helm_id", hid, "account_id", aid)
 }
 
 // StartFillStreaming starts account fill listeners for all runtimes whose exchange

@@ -118,6 +118,10 @@ type ExchangeMetrics struct {
 	PingLastNanos atomic.Int64
 
 	WS WSMetrics // WebSocket stream health
+
+	// ErrorsByClass counts errors by class (ErrClassUnknown … ErrClassServerError).
+	// Incremented by MeteredExchange on every non-nil error from PlaceOrder / GetOrder / CancelOrder.
+	ErrorsByClass [ErrClassCount]atomic.Int64
 }
 
 // ── MeteredExchange ───────────────────────────────────────────────────────────
@@ -137,10 +141,29 @@ func NewMeteredExchange(inner Exchange) *MeteredExchange {
 
 func (m *MeteredExchange) Name() string { return m.inner.Name() }
 
+// classifyErr uses the adapter's ErrorClassifier if available, otherwise ClassifyGeneric.
+func (m *MeteredExchange) classifyErr(err error) ErrClass {
+	if err == nil {
+		return ErrClassUnknown
+	}
+	if c, ok := m.inner.(ErrorClassifier); ok {
+		return c.ClassifyError(err)
+	}
+	return ClassifyGeneric(err)
+}
+
+func (m *MeteredExchange) recordErrClass(err error) {
+	if err == nil {
+		return
+	}
+	m.Metrics.ErrorsByClass[m.classifyErr(err)].Add(1)
+}
+
 func (m *MeteredExchange) PlaceOrder(ctx context.Context, creds Credentials, req OrderRequest) (*OrderResult, error) {
 	start := time.Now()
 	res, err := m.inner.PlaceOrder(ctx, creds, req)
 	m.Metrics.PlaceOrder.record(time.Since(start), err)
+	m.recordErrClass(err)
 	return res, err
 }
 
@@ -148,6 +171,7 @@ func (m *MeteredExchange) GetOrder(ctx context.Context, creds Credentials, order
 	start := time.Now()
 	res, err := m.inner.GetOrder(ctx, creds, orderID)
 	m.Metrics.GetOrder.record(time.Since(start), err)
+	m.recordErrClass(err)
 	return res, err
 }
 
@@ -155,6 +179,7 @@ func (m *MeteredExchange) CancelOrder(ctx context.Context, creds Credentials, or
 	start := time.Now()
 	err := m.inner.CancelOrder(ctx, creds, orderID)
 	m.Metrics.CancelOrder.record(time.Since(start), err)
+	m.recordErrClass(err)
 	return err
 }
 
@@ -198,6 +223,8 @@ type MetricsSnapshot struct {
 	SyncAccount ActionSnapshot `json:"sync_account"`
 	PingLastMs  float64        `json:"ping_last_ms"`
 	WS          WSSnapshot     `json:"ws"`
+	// ErrorsByClass counts errors per class; index == ErrClass constant.
+	ErrorsByClass [ErrClassCount]int64 `json:"errors_by_class"`
 }
 
 // WSSnapshot is the serializable form of WSMetrics.
@@ -248,6 +275,10 @@ func (m *MeteredExchange) Snapshot() MetricsSnapshot {
 	if idle > 0 {
 		idleSec = idle.Seconds()
 	}
+	var errByClass [ErrClassCount]int64
+	for i := range errByClass {
+		errByClass[i] = m.Metrics.ErrorsByClass[i].Load()
+	}
 	return MetricsSnapshot{
 		Name:        m.Name(),
 		PlaceOrder:  snapshotAction(&m.Metrics.PlaceOrder),
@@ -263,6 +294,7 @@ func (m *MeteredExchange) Snapshot() MetricsSnapshot {
 			BalanceEvents:   ws.BalanceEvents.Load(),
 			IdleSec:         idleSec,
 		},
+		ErrorsByClass: errByClass,
 	}
 }
 

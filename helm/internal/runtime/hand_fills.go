@@ -85,6 +85,15 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 	bracketQty := cumulativeQty
 	h.mu.Lock()
 	posIDForBracket = h.pendingOrderPos[orderID]
+	// WS-before-REST: pendingOrderPos is not yet set because PlaceOrder has not returned.
+	// Cache fill data so applyPlaceResult can complete poslog + bracket after the REST ack.
+	if posIDForBracket == "" {
+		h.wsFillCache[orderID] = cachedWsFill{
+			qty:        cumulativeQty,
+			price:      cumulativeAvgPrice,
+			commission: cumulativeCommission,
+		}
+	}
 	if pending, ok := h.pendingExits[orderID]; ok {
 		delete(h.pendingExits, orderID)
 
@@ -405,18 +414,12 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 		})
 	}
 
-	// ── 6. REST-path fill publish ─────────────────────────────────────────────
-	// source="ws"  → registry_fills.go already published with real exchange TradeID.
-	// source="rest" → WS echo will arrive ~100ms later and publish with real TradeID.
-	//                 If WS doesn't arrive, helm_sync.go picks it up (same real TradeID
-	//                 → JetStream dedup by Nats-Msg-Id catches the sync re-publish).
-	//                 So we skip publish here to avoid the synthetic orderID "ack" event.
-	// other sources (poll, kill, …) → no WS echo expected; publish now so consumers
-	//                 get near-realtime fills. MarkOrderFillPublished blocks Sync() re-publish.
+	// ── 6. Non-WS fill publish ────────────────────────────────────────────────
+	// source="ws"  → registry_fills.go already published with real TradeID + fee.
+	// other sources (poll, kill, …) → no WS echo expected; publish now.
+	//                 MarkOrderFillPublished blocks Sync() re-publish.
 	if source != "ws" {
 		h.helmRuntime.RemoveOrderTracking(orderID)
-	}
-	if source != "ws" && source != "rest" {
 		if h.helmRuntime.js != nil {
 			natsapi.PublishTradeFill(h.helmRuntime.js, natsapi.TransactionMsg{
 				HelmID:    h.helmID.String(),
@@ -430,6 +433,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 				Side:      side,
 				Qty:       qty,
 				AvgPrice:  price,
+				Fee:       commission,
 				FilledAt:  time.Now().UTC(),
 			})
 			h.helmRuntime.MarkOrderFillPublished(orderID)

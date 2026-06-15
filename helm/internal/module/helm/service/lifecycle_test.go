@@ -151,8 +151,8 @@ func (m *mockSpawner) SyncOne(id uuid.UUID) {
 	m.syncedOne = append(m.syncedOne, id)
 }
 
-func (m *mockSpawner) RotateCreds(_ uuid.UUID, _ exchange.Credentials) {
-}
+func (m *mockSpawner) RotateCreds(_ uuid.UUID, _ exchange.Credentials) {}
+func (m *mockSpawner) PurgeHelmData(_, _ uuid.UUID)                    {}
 
 type mockBotLifecycle struct {
 	stopped  []string
@@ -162,11 +162,12 @@ type mockBotLifecycle struct {
 	purged   []string
 }
 
-func (m *mockBotLifecycle) StopBots(ids []string)    { m.stopped = append(m.stopped, ids...) }
-func (m *mockBotLifecycle) StartBots(ids []string)   { m.started = append(m.started, ids...) }
-func (m *mockBotLifecycle) KillBots(ids []string)    { m.killed = append(m.killed, ids...) }
-func (m *mockBotLifecycle) ReleaseBots(ids []string) { m.released = append(m.released, ids...) }
-func (m *mockBotLifecycle) PurgeBots(ids []string)   { m.purged = append(m.purged, ids...) }
+func (m *mockBotLifecycle) StopBots(ids []string)              { m.stopped = append(m.stopped, ids...) }
+func (m *mockBotLifecycle) StartBots(ids []string)             { m.started = append(m.started, ids...) }
+func (m *mockBotLifecycle) KillBots(ids []string)              { m.killed = append(m.killed, ids...) }
+func (m *mockBotLifecycle) ReleaseBots(ids []string)           { m.released = append(m.released, ids...) }
+func (m *mockBotLifecycle) PurgeBots(ids []string)             { m.purged = append(m.purged, ids...) }
+func (m *mockBotLifecycle) DeleteBotsByHelm(_ uuid.UUID) error { return nil }
 
 // ── test helpers ─────────────────────────────────────────────────────────────
 

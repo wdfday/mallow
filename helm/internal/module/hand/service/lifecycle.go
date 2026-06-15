@@ -48,6 +48,53 @@ func (s *Service) Stop(id uuid.UUID) error {
 	})
 }
 
+// Pause deregisters the hand from herald and persists status=paused.
+// Capital stays allocated. The hand can be resumed later.
+// Differs from helm-level pause (StopBots) which is transient and does not persist.
+func (s *Service) Pause(id uuid.UUID) error {
+	bi, err := s.getOrLoad(id)
+	if err != nil {
+		return err
+	}
+	if bi.Data.Status.IsTerminal() {
+		return fmt.Errorf("hand %q is %s — terminal hands cannot be paused", id, bi.Data.Status)
+	}
+	if bi.Data.Status == domain.HandStatusPaused {
+		return nil // idempotent
+	}
+	s.heraldDeregister(id)
+	bi.Runner.Stop()
+	bi.Data.Status = domain.HandStatusPaused
+	return s.repo.Update(id, func(d *domain.Hand) error {
+		d.Status = domain.HandStatusPaused
+		return nil
+	})
+}
+
+// Resume re-registers a paused hand with herald and starts it running.
+// Only works when the hand is in paused state; returns an error otherwise.
+func (s *Service) Resume(id uuid.UUID) error {
+	bi, err := s.getOrLoad(id)
+	if err != nil {
+		return err
+	}
+	if bi.Data.Status != domain.HandStatusPaused {
+		return fmt.Errorf("hand %q is %s — only paused hands can be resumed", id, bi.Data.Status)
+	}
+	if rt, _ := s.registry.Get(bi.Data.HelmID); rt != nil && rt.IsPaused() {
+		return fmt.Errorf("helm %q is paused — resume the helm first", bi.Data.HelmID)
+	}
+	if err := s.heraldRegister(id, bi.Data); err != nil {
+		return fmt.Errorf("hand resume: %w", err)
+	}
+	bi.Runner.Start()
+	bi.Data.Status = domain.HandStatusRunning
+	return s.repo.Update(id, func(d *domain.Hand) error {
+		d.Status = domain.HandStatusRunning
+		return nil
+	})
+}
+
 func (s *Service) Kill(ctx context.Context, id uuid.UUID) error {
 	bi, err := s.getOrLoad(id)
 	if err != nil {
@@ -116,6 +163,7 @@ func (s *Service) StopBots(ids []string) {
 }
 
 // StartBots cascade-starts hands in-memory only (no DB persist). Called by helm resume.
+// Skips hands that are user-paused (status=paused) — those require an explicit Resume call.
 func (s *Service) StartBots(ids []string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -124,13 +172,15 @@ func (s *Service) StartBots(ids []string) {
 		if err != nil {
 			continue
 		}
-		if bi, ok := s.hands[id]; ok && !bi.Runner.IsRunning() {
-			if err := s.heraldRegister(id, bi.Data); err != nil {
-				slog.Error("hand start bot: herald register failed", "hand_id", id, "err", err)
-				continue
-			}
-			bi.Runner.Start()
+		bi, ok := s.hands[id]
+		if !ok || bi.Runner.IsRunning() || bi.Data.Status == domain.HandStatusPaused {
+			continue
 		}
+		if err := s.heraldRegister(id, bi.Data); err != nil {
+			slog.Error("hand start bot: herald register failed", "hand_id", id, "err", err)
+			continue
+		}
+		bi.Runner.Start()
 	}
 }
 
@@ -145,6 +195,12 @@ func (s *Service) PurgeBots(ids []string) {
 		}
 		delete(s.hands, id)
 	}
+}
+
+// DeleteBotsByHelm hard-deletes all Hand rows in the DB for the given helm.
+// Called during broker connection delete so the sweep is complete.
+func (s *Service) DeleteBotsByHelm(helmID uuid.UUID) error {
+	return s.repo.DeleteByHelm(helmID)
 }
 
 // KillBots cascade-kills hands (flatten positions + stop) and persists stopped status to DB. Called by helm kill.

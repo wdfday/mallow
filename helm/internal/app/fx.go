@@ -18,6 +18,7 @@ import (
 	"mallow/helm/internal/infra/orderlog"
 	"mallow/helm/internal/infra/perflog"
 	"mallow/helm/internal/infra/poslog"
+	"mallow/helm/internal/infra/purge"
 	"mallow/helm/internal/infra/tradelog"
 	accountmodule "mallow/helm/internal/module/account"
 	accountHandler "mallow/helm/internal/module/account/handler"
@@ -117,6 +118,7 @@ var Module = fx.Options(
 	fx.Invoke(startFillPersister),
 	fx.Invoke(wireHandLifecycle),
 	fx.Invoke(wireCredentialFetcher),
+	fx.Invoke(wireDataPurger),
 	fx.Invoke(wireSyncStore),
 	fx.Invoke(wirePosLog),
 	fx.Invoke(wireTradeLog),
@@ -378,6 +380,11 @@ func wireHandLifecycle(helmSvc *orchservice.Service, handMgr *service.Service) {
 // a runtime that was torn down by a previous Disable call.
 func wireCredentialFetcher(helmSvc *orchservice.Service, brokerSvc brokerservice.BrokerConnectionService) {
 	helmSvc.SetCredentialFetcher(orchservice.BrokerCredentialAdapter{BrokerSvc: brokerSvc})
+}
+
+// wireDataPurger injects the PostgreSQL audit-data purger used during helm hard-delete.
+func wireDataPurger(helmSvc *orchservice.Service, db *gorm.DB) {
+	helmSvc.SetDataPurger(purge.New(db))
 }
 
 // wireSyncStore injects the HelmRepo as the SyncStore for last-sync persistence.

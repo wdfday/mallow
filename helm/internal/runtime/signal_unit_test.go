@@ -45,13 +45,14 @@ import (
 // ── simExchange ───────────────────────────────────────────────────────────────
 
 // simExchange is an in-memory exchange that immediately fills every order.
-// PlaceOrder captures the request, assigns a sequential ID, and returns
-// Status="filled" so hand_runner.go/hand_fills.go applies the fill synchronously.
+// It implements AccountStreamer so fills flow through the WS path (fills are
+// authoritative via WS only — REST ACK refactor).
 type simExchange struct {
 	mu        sync.Mutex
 	placed    []exchange.OrderRequest
-	fillPrice decimal.Decimal // price returned on every fill; defaults to 50_000
-	placeErr  error           // if non-nil, PlaceOrder returns this error
+	fillPrice decimal.Decimal            // price returned on every fill; defaults to 50_000
+	placeErr  error                      // if non-nil, PlaceOrder returns this error
+	onFill    func(exchange.WsFillEvent) // registered by StreamOrders; nil until StartFillStreaming is called
 }
 
 func newSim(fillPrice float64) *simExchange {
@@ -62,8 +63,8 @@ func (s *simExchange) Name() string { return "sim" }
 
 func (s *simExchange) PlaceOrder(_ context.Context, _ exchange.Credentials, req exchange.OrderRequest) (*exchange.OrderResult, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.placeErr != nil {
+		s.mu.Unlock()
 		return nil, s.placeErr
 	}
 	id := fmt.Sprintf("sim-%d", len(s.placed)+1)
@@ -76,15 +77,51 @@ func (s *simExchange) PlaceOrder(_ context.Context, _ exchange.Credentials, req 
 		price = decimal.NewFromFloat(50_000)
 	}
 	s.placed = append(s.placed, req)
-	return &exchange.OrderResult{
+	onFill := s.onFill
+	s.mu.Unlock()
+
+	result := &exchange.OrderResult{
 		ID:        id,
 		Symbol:    req.Symbol,
 		Side:      req.Side,
-		Status:    "filled",
+		Status:    "submitted", // ACK only; fill comes via simulated WS event below
 		Qty:       qty,
-		FilledQty: qty,
-		FilledAvg: price,
-	}, nil
+		FilledQty: decimal.Zero,
+		FilledAvg: decimal.Zero,
+	}
+
+	// Fire a simulated WS fill event so the WS path delivers the fill.
+	if onFill != nil {
+		go onFill(exchange.WsFillEvent{
+			OrderID:       id,
+			ClientOrderID: req.ClientOrderID,
+			Symbol:        req.Symbol,
+			Side:          req.Side,
+			FilledQty:     qty,
+			FilledAvg:     price,
+			TradeID:       "sim-trade-" + id,
+			Timestamp:     time.Now(),
+		})
+	}
+
+	return result, nil
+}
+
+// StreamOrders implements exchange.AccountStreamer so StartFillStreaming can start
+// the fill-drain goroutines for this sim runtime.
+func (s *simExchange) StreamOrders(
+	_ context.Context,
+	_ exchange.Credentials,
+	_ func(exchange.OrderLifecycleEvent),
+	onFill func(exchange.WsFillEvent),
+	_ func(exchange.BalanceEvent),
+	_ func(exchange.PositionEvent),
+	_ func(exchange.RiskEvent),
+) error {
+	s.mu.Lock()
+	s.onFill = onFill
+	s.mu.Unlock()
+	return nil
 }
 
 func (s *simExchange) placed0() exchange.OrderRequest {
@@ -121,6 +158,8 @@ func (s *simExchange) ListPositions(_ context.Context, _ exchange.Credentials) (
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 // buildSimRuntime wires a HelmRuntime backed by simExchange.
+// StartFillStreaming is called so the WS fill-drain goroutines are running —
+// fills are now authoritative via the WS path only (REST ACK refactor).
 func buildSimRuntime(ex exchange.Exchange, capital float64, maxPositions int) *runtime.HelmRuntime {
 	pf := portfolio.New(decimal.NewFromFloat(capital))
 	cfg := risk.Config{
@@ -134,6 +173,7 @@ func buildSimRuntime(ex exchange.Exchange, capital float64, maxPositions int) *r
 		"sim", pf, rm, ex, exchange.Credentials{}, nil, time.Now(),
 	)
 	rm.SetUnitCounter(rt.OpenUnitCount)
+	rt.StartFillStreaming(context.Background())
 	return rt
 }
 
@@ -670,9 +710,9 @@ func TestSignal_HaltedHelm_NotForwarded(t *testing.T) {
 		t.Fatal("expected DispatchHandSignal to return true for urgent signal")
 	}
 
-	// Verify the hand's urgent signal channel has the exit signal
+	// Verify the exit signal was delivered via the regular Signals channel.
 	select {
-	case s := <-h.UrgentSignals:
+	case s := <-h.Signals:
 		if s.Direction != strategy.DirExit {
 			t.Fatalf("expected urgent exit signal, got: %v", s)
 		}

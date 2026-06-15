@@ -113,11 +113,6 @@ type UpdateBrokerConnectionRequest struct {
 	Notes      *string `json:"notes,omitempty"`
 }
 
-// ReBrokerRequest is the body for POST /broker-connections/{id}/rebroker.
-type ReBrokerRequest struct {
-	AccountID uuid.UUID `json:"account_id" binding:"required"`
-}
-
 // RotateKeyRequest is the body for POST /broker-connections/{id}/rotate-key.
 // Validates the new credentials with the broker before persisting.
 type RotateKeyRequest struct {

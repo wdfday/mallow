@@ -22,6 +22,7 @@ import (
 	helmDomain "mallow/helm/internal/module/helm/domain"
 	helmDto "mallow/helm/internal/module/helm/dto"
 	helmService "mallow/helm/internal/module/helm/service"
+	"mallow/helm/internal/runtime"
 	internalService "mallow/helm/internal/service"
 )
 
@@ -47,6 +48,7 @@ var Module = fx.Module("broker",
 		// Handler
 		provideBrokerConnectionHandler,
 	),
+	fx.Invoke(wireCredentialErrorHook),
 )
 
 func provideBrokerRegistry(
@@ -118,9 +120,49 @@ func (a *helmCreatorAdapter) RotateCredsForAccount(_ context.Context, accountID 
 	return a.svc.RotateCredsForAccount(accountID, creds)
 }
 
+func (a *helmCreatorAdapter) PauseForAccount(_ context.Context, accountID uuid.UUID) error {
+	h, err := a.svc.GetByAccount(accountID)
+	if err != nil {
+		return err
+	}
+	return a.svc.Pause(h.ID)
+}
+
+func (a *helmCreatorAdapter) MarkErrorForAccount(_ context.Context, accountID uuid.UUID) error {
+	h, err := a.svc.GetByAccount(accountID)
+	if err != nil {
+		return err
+	}
+	return a.svc.MarkError(h.ID)
+}
+
+func (a *helmCreatorAdapter) ResumeErrorForAccount(_ context.Context, accountID uuid.UUID) error {
+	h, err := a.svc.GetByAccount(accountID)
+	if err != nil {
+		return err
+	}
+	if h.Status != helmDomain.HelmStatusError {
+		return nil // not in error state — don't touch user-initiated pauses
+	}
+	return a.svc.Resume(h.ID)
+}
+
 func provideBrokerConnectionHandler(
 	svc service2.BrokerConnectionService,
 	logger *slog.Logger,
 ) *handler.BrokerConnectionHandler {
 	return handler.NewBrokerConnectionHandler(svc, logger)
+}
+
+// wireCredentialErrorHook sets the registry callback that fires when a running
+// HelmRuntime receives an exchange auth error. The hook marks the broker connection
+// as error in the DB (via brokerSvc.MarkCredentialError) so the UI can surface it.
+// The helm is already self-paused by TriggerAuthError before this callback runs.
+func wireCredentialErrorHook(reg *runtime.Registry, brokerSvc service2.BrokerConnectionService) {
+	reg.SetCredentialErrorHook(func(accountID uuid.UUID, reason string) {
+		if err := brokerSvc.MarkCredentialError(context.Background(), accountID, reason); err != nil {
+			slog.Error("credential error hook: failed to mark broker connection error",
+				"account_id", accountID, "err", err)
+		}
+	})
 }

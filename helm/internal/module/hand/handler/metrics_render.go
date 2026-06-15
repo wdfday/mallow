@@ -11,6 +11,9 @@ import (
 	"strings"
 
 	"github.com/shopspring/decimal"
+
+	"mallow/helm/internal/infra/exchange"
+	"mallow/helm/internal/runtime"
 )
 
 // renderPrometheus builds the full /metrics exposition for all live runtimes.
@@ -119,6 +122,37 @@ func renderPrometheus(reg RuntimeRegistry, runningHands int) string {
 			out.WriteString(formatMetric("helm_exchange_cancel_order_errors_total", float64(snap.CancelOrder.Errors), exLabels))
 			out.WriteString(formatMetric("helm_exchange_cancel_order_latency_avg_ms", snap.CancelOrder.AvgMs, exLabels))
 			out.WriteString(formatMetric("helm_exchange_ping_last_ms", snap.PingLastMs, exLabels))
+
+			// Per-class error breakdown — only emit classes with non-zero counts.
+			for cl, count := range snap.ErrorsByClass {
+				if count == 0 {
+					continue
+				}
+				ecLabels := map[string]string{
+					"helm_id":    rt.HelmID.String(),
+					"account_id": rt.AccountID.String(),
+					"exchange":   snap.Name,
+					"class":      exchange.ErrClassName[cl],
+				}
+				out.WriteString(formatMetric("helm_exchange_api_errors_total", float64(count), ecLabels))
+			}
+		}
+
+		// Runtime event counters — helm_events_total{helm_id, code, name}
+		for code, count := range rt.EventCodeCounts() {
+			if count == 0 {
+				continue
+			}
+			name, ok := runtime.CodeNames[code]
+			if !ok {
+				name = fmt.Sprintf("code_%d", code)
+			}
+			evLabels := map[string]string{
+				"helm_id": rt.HelmID.String(),
+				"code":    fmt.Sprintf("%d", code),
+				"name":    name,
+			}
+			out.WriteString(formatMetric("helm_events_total", float64(count), evLabels))
 		}
 	}
 

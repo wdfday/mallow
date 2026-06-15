@@ -93,6 +93,8 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 		b.GET("/:id/equity", h.equity)
 		b.POST("/:id/start", h.start)
 		b.POST("/:id/stop", h.stop)
+		b.POST("/:id/pause", h.pause)
+		b.POST("/:id/resume", h.resume)
 		b.POST("/:id/kill", h.kill)
 		b.POST("/:id/release", h.release)
 		b.POST("/:id/allocate-capital", h.allocateCapital)
@@ -152,10 +154,11 @@ func (h *Handler) create(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, overflow)
 		return
 	}
-	if err := handservice.CheckSymbolConflict(h.handMgr.ListByHelm(helmID), cfg.Symbols, ""); err != nil {
-		shared.RespondWithError(c, http.StatusConflict, err.Error())
-		return
-	}
+	// multi-hand same-symbol allowed — net qty vs per-hand qty gap deferred
+	// if err := handservice.CheckSymbolConflict(h.handMgr.ListByHelm(helmID), cfg.Symbols, ""); err != nil {
+	// 	shared.RespondWithError(c, http.StatusConflict, err.Error())
+	// 	return
+	// }
 	instance, err := h.handMgr.Create(cfg)
 	if err != nil {
 		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
@@ -295,7 +298,7 @@ func (h *Handler) update(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, helmID, err := h.checkHandOwner(c.Param("id"), userID)
+	id, _, err := h.checkHandOwner(c.Param("id"), userID)
 	if err != nil {
 		shared.RespondWithError(c, http.StatusNotFound, "not found")
 		return
@@ -308,19 +311,6 @@ func (h *Handler) update(c *gin.Context) {
 	}
 
 	patch := req.ToDomain()
-
-	// Validate capital allocation when sizing changes.
-	if req.AllocatedCapital > 0 {
-		rt, err := h.reg.Get(helmID)
-		if err != nil {
-			shared.RespondWithError(c, http.StatusBadRequest, "helm runtime not available")
-			return
-		}
-		if overflow, _ := handservice.CheckCapitalAllocation(rt.Portfolio.Summary().Cash.InexactFloat64(), h.handMgr.ListByHelm(helmID), patch.AllocatedCapital, id.String()); overflow != nil {
-			c.JSON(http.StatusUnprocessableEntity, overflow)
-			return
-		}
-	}
 
 	if err := h.handMgr.Update(id, patch); err != nil {
 		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
@@ -440,6 +430,60 @@ func (h *Handler) release(c *gin.Context) {
 		return
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Hand released successfully", dto.HandActionResp{Status: "released", ID: id.String()})
+}
+
+// pause godoc
+// @Summary Pause a hand
+// @Description Deregister from herald and persist paused status. Capital stays allocated. Use resume to restart.
+// @Tags hands
+// @Produce json
+// @Param id path string true "Hand ID"
+// @Success 200 {object} shared.SuccessResponse[dto.HandActionResp]
+// @Failure 400 {object} shared.ErrorResponse
+// @Failure 404 {object} shared.ErrorResponse
+// @Router /api/v1/hands/{id}/pause [post]
+func (h *Handler) pause(c *gin.Context) {
+	userID, ok := callerUserID(c)
+	if !ok {
+		return
+	}
+	id, _, err := h.checkHandOwner(c.Param("id"), userID)
+	if err != nil {
+		shared.RespondWithError(c, http.StatusNotFound, "not found")
+		return
+	}
+	if err := h.handMgr.Pause(id); err != nil {
+		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	shared.RespondWithSuccess(c, http.StatusOK, "Hand paused successfully", dto.HandActionResp{Status: "paused", ID: id.String()})
+}
+
+// resume godoc
+// @Summary Resume a paused hand
+// @Description Re-register with herald and resume signal processing. Only works when hand is paused.
+// @Tags hands
+// @Produce json
+// @Param id path string true "Hand ID"
+// @Success 200 {object} shared.SuccessResponse[dto.HandActionResp]
+// @Failure 400 {object} shared.ErrorResponse
+// @Failure 404 {object} shared.ErrorResponse
+// @Router /api/v1/hands/{id}/resume [post]
+func (h *Handler) resume(c *gin.Context) {
+	userID, ok := callerUserID(c)
+	if !ok {
+		return
+	}
+	id, _, err := h.checkHandOwner(c.Param("id"), userID)
+	if err != nil {
+		shared.RespondWithError(c, http.StatusNotFound, "not found")
+		return
+	}
+	if err := h.handMgr.Resume(id); err != nil {
+		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
+		return
+	}
+	shared.RespondWithSuccess(c, http.StatusOK, "Hand resumed successfully", dto.HandActionResp{Status: "running", ID: id.String()})
 }
 
 // Metrics writes Prometheus-style text metrics for all runtimes.

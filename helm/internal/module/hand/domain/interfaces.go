@@ -10,6 +10,6 @@ type HandRepo interface {
 	Get(id uuid.UUID) (*Hand, error)
 	All() []*Hand
 	AllByHelm(helmID uuid.UUID) []*Hand
-	Delete(id uuid.UUID) error
+	DeleteByHelm(helmID uuid.UUID) error
 	Update(id uuid.UUID, fn func(*Hand) error) error
 }

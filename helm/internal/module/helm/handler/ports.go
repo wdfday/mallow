@@ -17,8 +17,7 @@ type HelmService interface {
 	ListByUser(userID uuid.UUID) ([]*helmdomain.Helm, error)
 	CheckOwner(id, userID uuid.UUID) error
 	Enable(id uuid.UUID) error
-	// Disable flattens all open positions, tears down the runtime, and marks the
-	// helm disabled. Both /disable and /kill routes map to this operation.
+	// Disable flattens all open positions, tears down the runtime, and marks the helm disabled.
 	Disable(id uuid.UUID) error
 	Pause(id uuid.UUID) error
 	Resume(id uuid.UUID) error

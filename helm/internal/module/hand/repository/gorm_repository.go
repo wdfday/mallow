@@ -42,15 +42,8 @@ func (r *GORMHandRepo) AllByHelm(helmID uuid.UUID) []*domain.Hand {
 	return sliceToDomain(models)
 }
 
-func (r *GORMHandRepo) Delete(id uuid.UUID) error {
-	res := r.db.Delete(&handModel{}, "id = ?", id.String())
-	if res.Error != nil {
-		return res.Error
-	}
-	if res.RowsAffected == 0 {
-		return fmt.Errorf("hand %q not found", id)
-	}
-	return nil
+func (r *GORMHandRepo) DeleteByHelm(helmID uuid.UUID) error {
+	return r.db.Delete(&handModel{}, "helm_id = ?", helmID.String()).Error
 }
 
 func (r *GORMHandRepo) Update(id uuid.UUID, fn func(*domain.Hand) error) error {

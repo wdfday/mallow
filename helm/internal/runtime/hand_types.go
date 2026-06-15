@@ -81,11 +81,12 @@ const (
 	CodePositionExtClosed = 10209 // position externally closed (user manual exit at exchange detected via bracket order cancel)
 
 	// Helm lifecycle codes.
-	CodeHelmPaused   = 10300 // helm paused — all hands will ignore signals
-	CodeHelmResumed  = 10301 // helm resumed
-	CodeHelmSynced   = 10302 // portfolio synced from exchange
-	CodeHelmHalted   = 10303 // helm halted by risk manager
-	CodeHelmUnhalted = 10304 // helm halt reset (manual)
+	CodeHelmPaused          = 10300 // helm paused — all hands will ignore signals
+	CodeHelmResumed         = 10301 // helm resumed
+	CodeHelmSynced          = 10302 // portfolio synced from exchange
+	CodeHelmHalted          = 10303 // helm halted by risk manager
+	CodeHelmUnhalted        = 10304 // helm halt reset (manual)
+	CodeHelmCredentialError = 10305 // exchange credential rejected mid-run (auth error); helm auto-paused
 
 	// Reconciler codes — startup gap recovery.
 	CodeReconcileRestored      = 10400 // order / position confirmed still live at exchange after restart
@@ -110,6 +111,57 @@ const (
 	CodeReconcileComplete    = 10405 // reconcile finished — summary of all outcomes (hands checked, fills applied, …)
 	CodeReconcileEquityDrift = 10406 // post-reconcile equity cross-check: helm portfolio diverges from exchange balance by > 1%
 )
+
+// CodeNames maps event code constants to their human-readable label for Prometheus metrics.
+var CodeNames = map[int]string{
+	CodeSignalReceived:         "signal_received",
+	CodeSignalStale:            "signal_stale",
+	CodeSignalHelmPaused:       "signal_helm_paused",
+	CodeSignalRateLimited:      "signal_rate_limited",
+	CodeSignalDoNothing:        "signal_do_nothing",
+	CodeSignalMaxUnits:         "signal_max_units",
+	CodeSignalRejected:         "signal_rejected",
+	CodeSignalNoPosition:       "signal_no_position",
+	CodeOrderPlaced:            "order_placed",
+	CodeOrderFilled:            "order_filled",
+	CodeOrderFailed:            "order_failed",
+	CodeOrderPartialCancel:     "order_partial_cancel",
+	CodeOrderLimitTimeout:      "order_limit_timeout",
+	CodeOrderLimitReprice:      "order_limit_reprice",
+	CodeOrderLimitFallback:     "order_limit_fallback",
+	CodeOrderCancelled:         "order_cancelled",
+	CodeOrderExitTriggered:     "order_exit_triggered",
+	CodeOrderExitPlaced:        "order_exit_placed",
+	CodeOrderDustExit:          "order_dust_exit",
+	CodeOrderExitFailed:        "order_exit_failed",
+	CodeHandAutoStopped:        "hand_auto_stopped",
+	CodeHandStarted:            "hand_started",
+	CodeHandStopped:            "hand_stopped",
+	CodeHandKilled:             "hand_killed",
+	CodeHandReleased:           "hand_released",
+	CodeHandLeverageSet:        "hand_leverage_set",
+	CodePositionExtClosed:      "position_ext_closed",
+	CodeHelmPaused:             "helm_paused",
+	CodeHelmResumed:            "helm_resumed",
+	CodeHelmSynced:             "helm_synced",
+	CodeHelmHalted:             "helm_halted",
+	CodeHelmUnhalted:           "helm_unhalted",
+	CodeHelmCredentialError:    "helm_credential_error",
+	CodeReconcileRestored:      "reconcile_restored",
+	CodeReconcileFillApplied:   "reconcile_fill_applied",
+	CodeReconcileCancelled:     "reconcile_cancelled",
+	CodeReconcileExternalClose: "reconcile_external_close",
+	CodeReconcileFailed:        "reconcile_failed",
+	CodeReconcileComplete:      "reconcile_complete",
+	CodeReconcileEquityDrift:   "reconcile_equity_drift",
+	CodePositionOpened:         "position_opened",
+	CodePositionAdded:          "position_added",
+	CodePositionClosed:         "position_closed",
+	CodePositionEntering:       "position_entering",
+	CodePositionAdding:         "position_adding",
+	CodePositionEnterCancelled: "position_enter_cancelled",
+	CodePositionAddCancelled:   "position_add_cancelled",
+}
 
 // ── handEventBus — test-only broadcast ───────────────────────────────────────
 

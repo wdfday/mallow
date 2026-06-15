@@ -120,6 +120,7 @@ func BuildHandComponents(b *domain.Hand) (strategy.Strategy, *tactics.Tactician)
 		sizingMode = tactics.SizingPercentEquity
 	}
 
+	strengthSizing := b.Position.StrengthSizing == nil || *b.Position.StrengthSizing
 	sc := tactics.SizingConfig{
 		Mode:            sizingMode,
 		UnitPct:         b.Position.UnitPct,
@@ -127,6 +128,7 @@ func BuildHandComponents(b *domain.Hand) (strategy.Strategy, *tactics.Tactician)
 		MaxPositionPct:  b.Position.MaxPositionPct,
 		FixedQty:        b.Position.FixedQty,
 		FixedQuoteQty:   b.Position.FixedQuoteQty,
+		StrengthSizing:  strengthSizing,
 	}
 	tact := tactics.New(sc)
 

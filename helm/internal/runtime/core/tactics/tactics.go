@@ -142,6 +142,11 @@ type SizingConfig struct {
 
 	// FixedQuoteQty is used only by SizingQuoteQty.
 	FixedQuoteQty decimal.Decimal `json:"fixed_quote_qty"`
+
+	// StrengthSizing: when true, notional modes multiply size by signal strength.
+	// Defaults to true; set false to trade at full declared size regardless of confidence.
+	// Risk-based modes (fixed_fractional, volatility) always ignore this.
+	StrengthSizing bool `json:"strength_sizing"`
 }
 
 // DefaultSizingConfig returns conservative defaults (fixed_fractional, 10% unit).

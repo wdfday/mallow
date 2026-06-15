@@ -21,6 +21,15 @@ func New(sizing SizingConfig) *Tactician {
 	return &Tactician{sizing: sizing}
 }
 
+// scaleStrength multiplies v by signal strength when StrengthSizing is enabled.
+// Used only by notional modes; risk-based modes bypass this entirely.
+func (t *Tactician) scaleStrength(v decimal.Decimal, sig strategy.Signal) decimal.Decimal {
+	if !t.sizing.StrengthSizing {
+		return v
+	}
+	return v.Mul(strengthFactor(sig))
+}
+
 // UpdateEquity sets the total account equity used for percentage-based sizing.
 // Called by ProcessTrade before every Plan() invocation.
 func (t *Tactician) UpdateEquity(equity decimal.Decimal) {
@@ -59,7 +68,7 @@ func (t *Tactician) Plan(intent strategy.Intent, ctx MarketContext) ExecutionPla
 		(intent.Action == strategy.ActionEnterLong ||
 			intent.Action == strategy.ActionEnterShort ||
 			intent.Action == strategy.ActionScaleIn) {
-		plan.QuoteQty = t.sizing.FixedQuoteQty.Mul(strengthFactor(intent.Signal))
+		plan.QuoteQty = t.scaleStrength(t.sizing.FixedQuoteQty, intent.Signal)
 		// Capital isolation: clamp QuoteQty to AvailableBudget for entries.
 		if ctx.AvailableBudget.IsPositive() && plan.QuoteQty.GreaterThan(ctx.AvailableBudget) {
 			plan.QuoteQty = ctx.AvailableBudget
@@ -110,8 +119,7 @@ func (t *Tactician) size(intent strategy.Intent, ctx MarketContext) decimal.Deci
 	switch t.sizing.Mode {
 	case SizingFixedQty:
 		// Fixed-qty bypasses all capital logic — return immediately without clamping.
-		// Scaled by signal strength like the other notional modes.
-		return t.sizing.FixedQty.Mul(strengthFactor(intent.Signal))
+		return t.scaleStrength(t.sizing.FixedQty, intent.Signal)
 
 	case SizingPercentEquity:
 		// Notional sizing: deploy UnitPct × equity, scaled by signal strength.
@@ -122,7 +130,7 @@ func (t *Tactician) size(intent strategy.Intent, ctx MarketContext) decimal.Deci
 				"symbol", intent.Signal.Symbol)
 			return decimal.Zero
 		}
-		qty = unit.Mul(strengthFactor(intent.Signal)).Div(ctx.Price)
+		qty = t.scaleStrength(unit, intent.Signal).Div(ctx.Price)
 
 	default: // fixed_fractional (Ralph Vince) and volatility
 		// NOTE: the risk-based modes deliberately do NOT scale by strength — their size

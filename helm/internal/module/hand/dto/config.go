@@ -26,6 +26,9 @@ type PositionDTO struct {
 	// (10%) — risking more than that per trade is reckless, one stop-out near-wipes the book.
 	RiskPerTradePct float64 `json:"risk_per_trade_pct,omitempty" binding:"omitempty,gt=0,lte=0.1"`
 	MaxPositionPct  float64 `json:"max_position_pct,omitempty" binding:"omitempty,gt=0,lte=1"`
+	// StrengthSizing scales notional modes (percent_equity, fixed_qty, quote_qty) by
+	// signal strength. Omit or set true to keep the default (on). Risk-based modes ignore it.
+	StrengthSizing *bool `json:"strength_sizing,omitempty"`
 }
 
 // HandGuardConfigDTO is the API representation of per-hand edge-degradation settings.
@@ -58,6 +61,7 @@ func positionToDomain(d PositionDTO) domain.PositionConfig {
 		Pyramid:         d.Pyramid,
 		RiskPerTradePct: d.RiskPerTradePct,
 		MaxPositionPct:  d.MaxPositionPct,
+		StrengthSizing:  d.StrengthSizing,
 	}
 }
 

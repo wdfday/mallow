@@ -171,6 +171,12 @@ type PositionConfig struct {
 	// MaxPositionPct: hard cap on total open exposure as a fraction of equity.
 	// Legacy fallback — prefer AllocatedCapital for isolation.
 	MaxPositionPct float64 `json:"max_position_pct,omitempty"`
+
+	// StrengthSizing: when true (default), notional modes (percent_equity, fixed_qty,
+	// quote_qty) multiply size by signal strength [0–1]. Risk-based modes
+	// (fixed_fractional, volatility) always ignore this flag.
+	// nil → true (backward-compatible with rows written before this field existed).
+	StrengthSizing *bool `json:"strength_sizing,omitempty"`
 }
 
 func (p PositionConfig) Value() (driver.Value, error) { return jsonValue(p) }

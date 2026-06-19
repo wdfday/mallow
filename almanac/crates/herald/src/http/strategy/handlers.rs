@@ -154,7 +154,7 @@ pub async fn delete_strategy(State(state): State<HttpState>, Path(id): Path<Stri
     get,
     path = "/api/v1/strategy/my",
     responses(
-        (status = 200, description = "Latest version of each strategy owned by the caller"),
+        (status = 200, description = "All versions of each strategy owned by the caller, grouped by name (newest first per group)"),
         (status = 401, description = "Missing X-User-ID header")
     ),
     tag = "strategy"
@@ -166,35 +166,9 @@ pub async fn list_my_strategies(
     let Some(user_id) = headers.get("x-user-id").and_then(|v| v.to_str().ok()) else {
         return bad_req("missing X-User-ID header");
     };
-    match state.store.list_my_strategies(user_id).await {
-        Ok(items) => ok(items),
-        Err(e)    => server_err(e),
-    }
-}
-
-#[utoipa::path(
-    get,
-    path = "/api/v1/strategy/strategies/{id}/chain",
-    params(
-        ("id" = String, Path, description = "Any version UUID in the lineage"),
-    ),
-    responses(
-        (status = 200, description = "All versions in the lineage owned by caller, version DESC"),
-        (status = 401, description = "Missing X-User-ID header")
-    ),
-    tag = "strategy"
-)]
-pub async fn list_strategy_chain(
-    State(state): State<HttpState>,
-    Path(id): Path<String>,
-    headers: HeaderMap,
-) -> Response {
-    let Some(user_id) = headers.get("x-user-id").and_then(|v| v.to_str().ok()) else {
-        return bad_req("missing X-User-ID header");
-    };
-    match state.store.list_strategy_chain(&id, user_id).await {
-        Ok(items) => ok(items),
-        Err(e)    => server_err(e),
+    match state.store.list_my_chains(user_id).await {
+        Ok(chains) => ok(chains),
+        Err(e)     => server_err(e),
     }
 }
 

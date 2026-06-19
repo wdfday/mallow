@@ -71,13 +71,29 @@ async fn main() -> Result<()> {
         }
         _ => async_nats::ConnectOptions::new(),
     };
-    // Log every connection event (disconnect / lame-duck / closed). If a NATS event
-    // ends the subscription streams, the run loop's `else` arm would otherwise exit
-    // silently — this makes the cause visible. (max_reconnects defaults to None =
-    // unlimited in async-nats 0.47, so the client never gives up on its own.)
+    // Log every NATS connection event. Use appropriate levels:
+    //   Connected / Reconnected → info  (normal lifecycle)
+    //   Disconnected / LameDuckMode → warn  (transient, client will reconnect)
+    //   Closed / ClientError → error  (terminal — run loop will exit)
+    // (max_reconnects defaults to None = unlimited in async-nats 0.47,
+    // so the client never gives up on its own unless explicitly closed.)
     let client = nats_opts
         .event_callback(|event| async move {
-            warn!(?event, "NATS connection event");
+            use async_nats::Event;
+            match &event {
+                // Normal lifecycle — info only.
+                Event::Connected | Event::Draining => {
+                    tracing::info!(?event, "NATS connection event");
+                }
+                // Transient — client will auto-reconnect.
+                Event::Disconnected | Event::LameDuckMode | Event::SlowConsumer(_) => {
+                    tracing::warn!(?event, "NATS connection event");
+                }
+                // Terminal or error — run loop subscriptions will close.
+                Event::Closed | Event::ServerError(_) | Event::ClientError(_) => {
+                    tracing::error!(?event, "NATS connection event");
+                }
+            }
         })
         .connect(&host_url)
         .await?;
@@ -130,7 +146,9 @@ async fn main() -> Result<()> {
     // Loads historical bars before any observer is subscribed — no signals fire
     // during bootstrap (registry is not yet wired to the ledger).
     if !startup_symbols.is_empty() {
+        let t0 = std::time::Instant::now();
         bootstrap_parquet(&ledger, tf, &startup_symbols, &data_dir);
+        info!(symbols = startup_symbols.len(), elapsed_ms = t0.elapsed().as_millis(), "bootstrap from parquet complete");
     }
 
     // ── Observer registration — ORDER IS CRITICAL ─────────────────────────────
@@ -185,9 +203,10 @@ async fn main() -> Result<()> {
     let ws_latency = std::sync::Arc::new(alm_herald::WsLatencyTracker::new());
 
     // ── HTTP server ───────────────────────────────────────────────────────────
-    // Bind and start serving immediately so the container responds to health
-    // checks during warm-up.  The `/health` endpoint returns 503 until `ready`
-    // is set to true after REST gap-fill completes.
+    // Bind and start serving immediately.
+    // /health → always 200 (liveness); Docker healthcheck uses this — process is never
+    //           killed during gap-fill.
+    // /ready  → 503 until ready=true (readiness); use for traffic gating.
     let http_addr = std::env::var("HERALD_HTTP_ADDR").unwrap_or_else(|_| "0.0.0.0:8090".into());
     let max_concurrent_bt: usize = std::env::var("HERALD_MAX_BACKTESTS")
         .ok().and_then(|s| s.parse().ok()).unwrap_or(4);
@@ -201,7 +220,7 @@ async fn main() -> Result<()> {
 
     let router = http::router(http_state);
     let listener = tokio::net::TcpListener::bind(&http_addr).await?;
-    info!(addr = %http_addr, "herald HTTP listening (ready=false, /health → 503 until gap-fill done)");
+    info!(addr = %http_addr, "herald HTTP listening (/health=liveness always-200, /ready=readiness 503 until gap-fill done)");
     let http_task = tokio::spawn(async move {
         if let Err(e) = axum::serve(listener, router).await {
             warn!(error = %e, "herald HTTP server exited");
@@ -233,19 +252,84 @@ async fn main() -> Result<()> {
     // Closes the gap from the last parquet bar to now for every symbol before
     // the main handler loop starts processing live WS bars.
     if !startup_symbols.is_empty() {
+        let t0 = std::time::Instant::now();
+        info!(symbols = startup_symbols.len(), "REST gap-fill starting");
         start_gap_fill(ledger.clone(), tf, &startup_symbols).await;
+        info!(symbols = startup_symbols.len(), elapsed_ms = t0.elapsed().as_millis(), "REST gap-fill complete");
     }
 
-    // Mark service ready — /health now returns 200 OK.
+    // Mark service ready — /ready now returns 200 OK.
     ready.store(true, std::sync::atomic::Ordering::Relaxed);
-    info!("gap-fill complete — herald ready (ready=true, /health → 200 OK)");
+    info!("herald ready (ready=true, /ready → 200 OK)");
+
+    // ── Signal handlers ───────────────────────────────────────────────────────
+    // CRITICAL: without explicit SIGTERM/SIGINT handlers, the OS default is to
+    // kill the process immediately with no Rust code running — panic hooks and
+    // exit-path tracing calls are never reached.  docker stop sends SIGTERM
+    // first; without a handler it is completely silent in the log stream.
+    let mut sigterm = tokio::signal::unix::signal(
+        tokio::signal::unix::SignalKind::terminate(),
+    ).expect("failed to install SIGTERM handler");
+    let mut sigint = tokio::signal::unix::signal(
+        tokio::signal::unix::SignalKind::interrupt(),
+    ).expect("failed to install SIGINT handler");
+
+    let pid = std::process::id();
+    tracing::info!(pid, "herald main loop starting");
 
     // ── Main loop ─────────────────────────────────────────────────────────────
     let handler = Handler::new(client, ledger, registry, tf, bar_rx, sig_rx, ws_latency);
-    let result = handler.run().await;
-    http_task.abort();
-    result?;
 
+    // Race the handler loop against OS shutdown signals.
+    // Without this select, SIGTERM kills the process before any Rust code runs.
+    let shutdown_reason: &str;
+    let result: anyhow::Result<()> = tokio::select! {
+        r = handler.run() => {
+            shutdown_reason = "handler loop exited";
+            r
+        }
+        _ = sigterm.recv() => {
+            shutdown_reason = "SIGTERM";
+            Ok(())
+        }
+        _ = sigint.recv() => {
+            shutdown_reason = "SIGINT";
+            Ok(())
+        }
+    };
+    http_task.abort();
+
+    // Log the exit reason explicitly through tracing BEFORE returning.
+    // Without this, both exit paths are silent:
+    //   Ok(())  → main() returns Ok, process exits 0 with no log.
+    //   Err(e)  → result? propagates, anyhow prints to stderr only (not tracing),
+    //             which log collectors may not capture.
+    match &result {
+        Ok(()) if shutdown_reason == "handler loop exited" => {
+            tracing::error!(
+                pid, shutdown_reason,
+                "herald main loop exited cleanly — bar feed channel closed (all WS ingesters exited)"
+            );
+        }
+        Ok(()) => {
+            tracing::error!(pid, shutdown_reason, "herald received shutdown signal — exiting");
+        }
+        Err(e) => {
+            tracing::error!(pid, shutdown_reason, err = %e, err_debug = ?e,
+                "herald main loop exited with error");
+        }
+    }
+
+    // Flush stdout/stderr so log collectors (Loki via Docker) see the exit log
+    // before the process exits.  tracing_subscriber writes synchronously but the
+    // kernel pipe buffer may not have been drained yet if we exit too fast.
+    {
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+        let _ = std::io::stderr().flush();
+    }
+
+    result?;
     Ok(())
 }
 

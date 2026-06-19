@@ -202,32 +202,26 @@ pub(crate) fn build_sizer(cfg: &BtConfig) -> alm_strategy::risk::AnySizer {
     }
 }
 
-// ── Portfolio output helper (shared between Engine and MtfEngine) ─────────────
+// ── Portfolio output helper ───────────────────────────────────────────────────
 
-/// Collect equity_curve / trades / fills from a completed engine portfolio into
-/// serialisable Vecs. Both `Engine` and `MtfEngine` expose `pub portfolio: Portfolio`.
-fn collect_portfolio(portfolio: &alm_core::Portfolio) -> (
-    Vec<serde_json::Value>,
-    Vec<serde_json::Value>,
-    Vec<serde_json::Value>,
-) {
-    let equity_curve = portfolio.equity_curve.iter()
-        .map(|p| json!({ "t": p.timestamp, "equity": p.equity }))
-        .collect();
-    let trades = portfolio.trades.iter()
+fn collect_trades(portfolio: &alm_core::Portfolio) -> Vec<serde_json::Value> {
+    portfolio.trades.iter()
         .map(|t| json!({
             "entry_ts": t.entry_timestamp, "exit_ts": t.exit_timestamp,
-            "entry_price": t.entry_price,   "exit_price": t.exit_price,
+            "entry_price": t.entry_price,  "exit_price": t.exit_price,
             "qty": t.qty, "pnl": t.pnl,
-            "pnl_pct":  t.pnl_pct,  // fraction — FE ×100
+            "pnl_pct": t.pnl_pct,  // fraction — FE ×100
             "commission": t.commission,
             "mae_pct": t.mae_pct, "mfe_pct": t.mfe_pct,
             "bars_held": t.bars_held,
             "exit_reason": t.exit_reason.to_string(),
             "side": format!("{:?}", t.side).to_lowercase(),
         }))
-        .collect();
-    let fills = portfolio.fills.iter()
+        .collect()
+}
+
+fn collect_fills(portfolio: &alm_core::Portfolio) -> Vec<serde_json::Value> {
+    portfolio.fills.iter()
         .map(|f| {
             let leg = f.symbol.split('#').nth(1).and_then(|s| s.parse::<usize>().ok())
                 .map(|n| n.saturating_sub(1)).unwrap_or(0);
@@ -237,26 +231,169 @@ fn collect_portfolio(portfolio: &alm_core::Portfolio) -> (
                 "sym": f.symbol, "leg": leg,
             })
         })
-        .collect();
-    (equity_curve, trades, fills)
+        .collect()
 }
 
-/// Assemble the final backtest JSON from a report + portfolio output + indicator series.
-fn assemble_output(
-    report: serde_json::Value,
-    equity_curve: Vec<serde_json::Value>,
+/// Build the full nested BacktestResponse JSON that the FE `BacktestReport` interface expects.
+///
+/// The flat `alm_report::BacktestReport` fields are mapped to the same nested sections
+/// produced by the server-side `engine/src/backtest/response.rs::build()`.
+/// Legacy flat aliases (`total_return_pct`, `sharpe_ratio`, `max_drawdown_pct`,
+/// `win_rate_pct`, `total_trades`) are kept at the top level for backward compat.
+fn assemble_nested_output(
+    report: alm_report::BacktestReport,
+    portfolio: &alm_core::Portfolio,
     trades: Vec<serde_json::Value>,
     fills: Vec<serde_json::Value>,
     ind_map: serde_json::Map<String, serde_json::Value>,
 ) -> serde_json::Value {
-    let mut out = report;
-    if let serde_json::Value::Object(ref mut m) = out {
-        m.insert("equity_curve".into(), json!(equity_curve));
-        m.insert("trades".into(), json!(trades));
-        m.insert("fills".into(), json!(fills));
-        m.insert("indicator_series".into(), serde_json::Value::Object(ind_map));
-    }
-    out
+    // curves.equity — {t, v} format matching CurvePoint interface
+    let equity_curve: Vec<serde_json::Value> = portfolio.equity_curve.iter()
+        .map(|p| json!({ "t": p.timestamp, "v": p.equity }))
+        .collect();
+
+    // curves.drawdown — peak-tracked drawdown as fraction at each bar
+    let mut peak = portfolio.initial_capital;
+    let drawdown_curve: Vec<serde_json::Value> = portfolio.equity_curve.iter()
+        .map(|p| {
+            if p.equity > peak { peak = p.equity; }
+            let dd = if peak > 0.0 { (p.equity - peak) / peak } else { 0.0 };
+            json!({ "t": p.timestamp, "v": dd })
+        })
+        .collect();
+
+    // exposure_pct: fraction of backtest duration spent in a position
+    let exposure_pct = {
+        let total_ms = portfolio.equity_curve
+            .last()
+            .and_then(|last| portfolio.equity_curve.first().map(|f| last.timestamp - f.timestamp))
+            .unwrap_or(0);
+        let held_ms: i64 = portfolio.trades.iter()
+            .map(|t| t.exit_timestamp - t.entry_timestamp)
+            .sum();
+        if total_ms > 0 { held_ms as f64 / total_ms as f64 * 100.0 } else { 0.0 }
+    };
+
+    // monthly_returns: (year, month, pct) → [year, month, pct]
+    let monthly: Vec<[f64; 3]> = report.monthly_returns.iter()
+        .map(|&(y, m, r)| [y as f64, m as f64, r])
+        .collect();
+    // yearly_returns: (year, pct) → [year, pct]
+    let yearly: Vec<[f64; 2]> = report.yearly_returns.iter()
+        .map(|&(y, r)| [y as f64, r])
+        .collect();
+
+    json!({
+        "strategy": report.strategy,
+        "symbol": report.symbol,
+        "timeframe": report.timeframe.to_string(),
+        "bar_count": portfolio.equity_curve.len(),
+
+        // Legacy flat aliases — kept so any FE path that reads these directly still works
+        "total_return_pct": report.total_return_pct,
+        "sharpe_ratio": report.sharpe_ratio,
+        "max_drawdown_pct": report.max_drawdown_pct,
+        "win_rate_pct": report.win_rate_pct,
+        "total_trades": report.total_trades,
+
+        // ── Nested sections matching BacktestResponse / FE BacktestReport interface ──
+
+        "capital": {
+            "initial": report.initial_capital,
+            "final_equity": report.final_equity,
+        },
+        "returns": {
+            "total_pct": report.total_return_pct,
+            "cagr_pct": report.cagr_pct,
+            "annualized_volatility_pct": report.annualized_volatility_pct,
+        },
+        "risk_adjusted": {
+            "sharpe":          report.sharpe_ratio,
+            "sortino":         report.sortino_ratio,
+            "calmar":          report.calmar_ratio,
+            "serenity":        report.serenity_ratio,
+            "omega":           report.omega_ratio,
+            "tail_ratio":      report.tail_ratio,
+            "recovery_factor": report.recovery_factor,
+            "var_95":          report.var_95,
+            "cvar_95":         report.cvar_95,
+        },
+        "drawdown": {
+            "max_pct":           report.max_drawdown_pct,
+            "max_duration_bars": report.max_dd_duration_bars,
+            "avg_pct":           report.avg_drawdown_pct,
+            "ulcer_index":       report.ulcer_index,
+        },
+        "trade_stats": {
+            "total":                   report.total_trades,
+            "win_rate_pct":            report.win_rate_pct,
+            "profit_factor":           report.profit_factor,
+            "payoff_ratio":            report.payoff_ratio,
+            "expectancy":              report.expectancy,
+            "breakeven_win_rate_pct":  report.breakeven_win_rate_pct,
+            "gross_profit_usd":        report.gross_profit_usd,
+            "gross_loss_usd":          report.gross_loss_usd,
+            "avg_win_pct":             report.avg_win_pct,
+            "avg_loss_pct":            report.avg_loss_pct,
+            "avg_duration_hours":      report.avg_trade_duration_hours,
+            "avg_bars_held_winners":   report.avg_bars_held_winners,
+            "avg_bars_held_losers":    report.avg_bars_held_losers,
+            "max_consecutive_wins":    report.max_consecutive_wins,
+            "max_consecutive_losses":  report.max_consecutive_losses,
+            "largest_win_pct":         report.largest_win_pct,
+            "largest_loss_pct":        report.largest_loss_pct,
+            "mfe_capture_ratio":       report.mfe_capture_ratio,
+            "exit_reasons": {
+                "signal":        report.exit_reasons.signal,
+                "stop_loss":     report.exit_reasons.stop_loss,
+                "take_profit":   report.exit_reasons.take_profit,
+                "trailing_stop": report.exit_reasons.trailing_stop,
+                "max_bars":      report.exit_reasons.max_bars,
+                "end_of_data":   report.exit_reasons.end_of_data,
+            },
+        },
+        "distribution": {
+            "skewness":        report.skewness,
+            "excess_kurtosis": report.excess_kurtosis,
+            "sqn":             report.sqn,
+            "psr":             report.psr,
+        },
+        "long_short": {
+            "long_trades":        report.long_stats.count,
+            "long_win_rate_pct":  report.long_stats.win_rate * 100.0,
+            "long_profit_factor": report.long_stats.profit_factor,
+            "short_trades":       report.short_stats.count,
+            "short_win_rate_pct": report.short_stats.win_rate * 100.0,
+            "short_profit_factor": report.short_stats.profit_factor,
+        },
+        "excursion": {
+            "avg_mae_pct":  report.avg_mae_pct,
+            "avg_mfe_pct":  report.avg_mfe_pct,
+            "mae_mfe_ratio": report.mae_mfe_ratio,
+        },
+        "activity": {
+            "trades_per_year":     report.trades_per_year,
+            "exposure_pct":        exposure_pct,
+            "total_commission_usd": report.total_commission_paid,
+            "kelly_pct":           report.kelly_pct,
+        },
+        "curves": {
+            "equity":            equity_curve,
+            "drawdown":          drawdown_curve,
+            "rolling_sharpe":    report.rolling_sharpe,
+            "rolling_sharpe_std": report.rolling_sharpe_std,
+            "rolling_drawdown":  report.rolling_drawdown,
+        },
+        "calendar": {
+            "monthly_returns": monthly,
+            "yearly_returns":  yearly,
+        },
+        "regime_summary": report.regime_summary,
+
+        "trades":           trades,
+        "fills":            fills,
+        "indicator_series": serde_json::Value::Object(ind_map),
+    })
 }
 
 // ── Single-TF backtest engine ─────────────────────────────────────────────────
@@ -281,7 +418,8 @@ pub(crate) fn run_strategy(
     let mut feed = BarVecFeed::new(bars.to_vec(), symbol.to_string());
     let report = engine.run(&mut feed, 0.0);
 
-    let (equity_curve, trades, fills) = collect_portfolio(&engine.portfolio);
+    let trades = collect_trades(&engine.portfolio);
+    let fills  = collect_fills(&engine.portfolio);
 
     let mut ind_map = serde_json::Map::new();
     for (name, pts) in engine.strategy.take_indicator_series() {
@@ -291,10 +429,7 @@ pub(crate) fn run_strategy(
         }));
     }
 
-    assemble_output(
-        serde_json::to_value(&report).unwrap_or_else(|_| json!({})),
-        equity_curve, trades, fills, ind_map,
-    )
+    assemble_nested_output(report, &engine.portfolio, trades, fills, ind_map)
 }
 
 // ── Config / strategy catalog ─────────────────────────────────────────────────

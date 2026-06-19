@@ -51,7 +51,7 @@ use alm_strategy::probe_script_htfs;
 use dashmap::DashMap;
 use parking_lot::{Mutex, RwLock};
 use tokio::sync::mpsc;
-use tracing::{debug, info, trace, warn};
+use tracing::{debug, info, warn};
 
 use crate::helper::ResampleManager;
 
@@ -330,7 +330,7 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
         let gate_ms = self.freshness_gate_ms.load(Ordering::Relaxed);
         let is_stale = age_ms > gate_ms || from_future;
 
-        trace!(%symbol, ?tf, bar_ts = outcome.ts, close_ts, age_ms, from_future, is_stale,
+        debug!(%symbol, ?tf, bar_ts = outcome.ts, close_ts, age_ms, from_future, is_stale,
                "evaluate_and_publish");
 
         // Fetch the confirmed bar from the ledger's ring buffer.
@@ -403,10 +403,23 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
             "symbol" => symbol.to_string(), "tf" => tf.to_string(),
         ).record(eval_us as f64);
 
-        if emitted.is_empty() { return; }
+        if emitted.is_empty() {
+            let n_bots = {
+                match self.groups.get(symbol) {
+                    Some(entry) => entry.value().lock().count_for_tf(tf),
+                    None => 0,
+                }
+            };
+            debug!(%symbol, tf = %tf.to_string(), bar_ts = outcome.ts, n_bots, "bar evaluated — no signal emitted");
+            return;
+        }
 
         if is_stale {
-            debug!(%symbol, age_ms, freshness_gate_ms = gate_ms, "stale bar — suppressing signals");
+            info!(
+                %symbol, tf = %tf.to_string(), age_ms,
+                freshness_gate_ms = gate_ms, n_suppressed = emitted.len(),
+                "stale bar — suppressing signals"
+            );
             metrics::counter!(
                 "herald_registry_signals_total",
                 "result" => "stale", "symbol" => symbol.to_string(),
@@ -419,14 +432,30 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
             "result" => "emitted", "symbol" => symbol.to_string(),
         ).increment(emitted.len() as u64);
 
+        // Bar-close → signal latency: time from bar close until signal is ready
+        // to be dispatched. Measures strategy evaluation + channel send overhead.
+        metrics::histogram!(
+            "herald_bar_to_signal_latency_ms",
+            "symbol" => symbol.to_string(), "tf" => tf.to_string(),
+        ).record(age_ms as f64);
+
         // Signal timestamp = bar close time, not open.
         for (hand_id, helm_id, mut signal) in emitted {
             signal.timestamp = close_ts;
-            debug!(
+            let dir = format!("{:?}", signal.direction);
+            metrics::counter!(
+                "herald_signals_emitted_direction_total",
+                "symbol"    => symbol.to_string(),
+                "tf"        => tf.to_string(),
+                "direction" => dir.clone(),
+            ).increment(1);
+            info!(
                 hand_id = %hand_id, helm_id = %helm_id,
-                %symbol, direction = ?signal.direction, strength = signal.strength,
+                %symbol, tf = %tf.to_string(),
+                direction = %dir, strength = signal.strength,
                 bar_open_ts = outcome.ts, signal_ts = close_ts,
-                "forwarding signal to publisher"
+                age_ms,
+                "signal emitted"
             );
             match self.signal_tx.try_send(HandSignal {
                 hand_id: hand_id.clone(), helm_id: helm_id.clone(),
@@ -502,6 +531,7 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
 
 impl LedgerObserver for Registry {
     fn on_advance(&self, symbol: &str, tf: Timeframe, outcome: &AdvanceOutcome) {
+        debug!(symbol, tf = %tf.to_string(), bar_ts = outcome.ts, "ledger observer triggered");
         self.evaluate_and_publish(symbol, tf, outcome);
     }
 }

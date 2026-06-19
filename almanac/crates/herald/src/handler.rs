@@ -23,7 +23,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use metrics::{counter, gauge, histogram};
 
@@ -72,7 +72,23 @@ pub struct HeraldAtomics {
     pub signals_published:     AtomicU64,
     pub nats_bars_errors:      AtomicU64,
     pub nats_signals_errors:   AtomicU64,
+    /// Unix-ms of the last bar event received (any TF, forming or closed).
+    /// Zero until the first bar arrives. Used by the watchdog to detect feed stall.
+    pub last_bar_at_ms:        AtomicU64,
 }
+
+/// Silence threshold for the bar watchdog: log a warning if no bars have been
+/// received for this long. OKX/Binance typically push at least one forming bar
+/// every minute, so 3 minutes means something is genuinely stuck.
+const BAR_WATCHDOG_SECS: u64 = 180;
+
+/// Max time to spend awaiting a forming-bar NATS publish.
+/// Forming bars are high-frequency fire-and-forget — if NATS is slow we
+/// skip rather than cascading backpressure all the way back to the WS feed.
+const FORMING_BAR_PUBLISH_TIMEOUT: Duration = Duration::from_millis(200);
+
+/// Threshold for warning about slow closed-bar NATS publishes.
+const SLOW_PUBLISH_WARN_MS: u128 = 500;
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
@@ -121,11 +137,12 @@ impl Handler {
 
     pub async fn run(mut self) -> anyhow::Result<()> {
         let rx = self.signal_rx.take().expect("signal_rx present at run()");
-        tokio::spawn(signal_publisher(
+        let publisher_task = tokio::spawn(signal_publisher(
             self.client.clone(),
             rx,
             Arc::clone(&self.atomics),
         ));
+        tokio::pin!(publisher_task);
 
         let mut reset_sub      = self.client.subscribe(SUBJ_RESET).await?;
         let mut register_sub   = self.client.subscribe(SUBJ_REGISTER).await?;
@@ -145,29 +162,169 @@ impl Handler {
             "herald ready (WebSocket ingestion mode)"
         );
 
+        // Watchdog: fires every BAR_WATCHDOG_SECS. If no bar has been received since
+        // the last tick, the WS feed is likely stalled and we log a warning.
+        let watchdog_interval = std::time::Duration::from_secs(BAR_WATCHDOG_SECS);
+        let mut watchdog = tokio::time::interval(watchdog_interval);
+        watchdog.tick().await; // skip the immediate first tick
+
+        let mut watchdog_stall_count = 0u32;
         loop {
             tokio::select! {
-                Some(event) = self.bar_rx.recv()        => self.handle_bar_event(event).await,
-                Some(msg) = reset_sub.next()            => self.handle_reset(msg).await,
-                Some(msg) = register_sub.next()         => self.handle_register(msg).await,
-                Some(msg) = deregister_sub.next()       => self.handle_deregister(msg).await,
-                Some(msg) = list_sub.next()             => self.handle_list(msg).await,
-                Some(msg) = ping_sub.next()             => self.handle_ping(msg).await,
-                Some(msg) = heartbeat_sub.next()        => self.handle_heartbeat(msg).await,
-                Some(msg) = stats_sub.next()            => self.handle_stats(msg).await,
-                else => {
-                    // All event sources ended: the bar feed channel closed AND every
-                    // NATS subscription stream returned None. Previously this exited
-                    // Ok(()) silently → container restarted with no trace. Make it
-                    // loud so the cause is visible in logs.
-                    error!(
-                        herald_id = %self.herald_id,
-                        "herald run loop EXITING: all event sources ended (bar feed closed \
-                         + all NATS subscriptions closed) — likely NATS gave up reconnecting \
-                         or all feed tasks died"
-                    );
+                // bar_rx closing is the only true terminal condition: it means all WS
+                // feed tasks (binance + okx) have exited. At that point herald has no
+                // live data source and must restart to reconnect.
+                event = self.bar_rx.recv() => match event {
+                    Some(event) => self.handle_bar_event(event).await,
+                    None => {
+                        error!(
+                            herald_id = %self.herald_id,
+                            "bar feed channel closed — all WS ingesters exited; herald exiting"
+                        );
+                        break;
+                    }
+                },
+
+                // NATS subscriptions return None when the server stalls or the
+                // connection is temporarily interrupted. Previously this would
+                // silently disable the arm; if all subs closed simultaneously the
+                // `else` arm fired and herald exited with Ok(()).
+                //
+                // Fix: resubscribe immediately on None. If NATS is genuinely gone
+                // the subscribe() call will return Err and propagate — giving a
+                // clear error rather than a silent exit.
+                msg = reset_sub.next() => match msg {
+                    Some(msg) => self.handle_reset(msg).await,
+                    None => {
+                        warn!(subject = SUBJ_RESET, "NATS subscription closed — resubscribing");
+                        reset_sub = self.client.subscribe(SUBJ_RESET).await?;
+                    }
+                },
+                msg = register_sub.next() => match msg {
+                    Some(msg) => self.handle_register(msg).await,
+                    None => {
+                        warn!(subject = SUBJ_REGISTER, "NATS subscription closed — resubscribing");
+                        register_sub = self.client.subscribe(SUBJ_REGISTER).await?;
+                    }
+                },
+                msg = deregister_sub.next() => match msg {
+                    Some(msg) => self.handle_deregister(msg).await,
+                    None => {
+                        warn!(subject = SUBJ_DEREGISTER, "NATS subscription closed — resubscribing");
+                        deregister_sub = self.client.subscribe(SUBJ_DEREGISTER).await?;
+                    }
+                },
+                msg = list_sub.next() => match msg {
+                    Some(msg) => self.handle_list(msg).await,
+                    None => {
+                        warn!(subject = SUBJ_LIST, "NATS subscription closed — resubscribing");
+                        list_sub = self.client.subscribe(SUBJ_LIST).await?;
+                    }
+                },
+                msg = ping_sub.next() => match msg {
+                    Some(msg) => self.handle_ping(msg).await,
+                    None => {
+                        warn!(subject = SUBJ_PING, "NATS subscription closed — resubscribing");
+                        ping_sub = self.client.subscribe(SUBJ_PING).await?;
+                    }
+                },
+                msg = heartbeat_sub.next() => match msg {
+                    Some(msg) => self.handle_heartbeat(msg).await,
+                    None => {
+                        warn!(subject = SUBJ_HEARTBEAT, "NATS subscription closed — resubscribing");
+                        heartbeat_sub = self.client.subscribe(SUBJ_HEARTBEAT).await?;
+                    }
+                },
+                msg = stats_sub.next() => match msg {
+                    Some(msg) => self.handle_stats(msg).await,
+                    None => {
+                        warn!(subject = SUBJ_STATS, "NATS subscription closed — resubscribing");
+                        stats_sub = self.client.subscribe(SUBJ_STATS).await?;
+                    }
+                },
+
+                _ = watchdog.tick() => {
+                    let last_ms = self.atomics.last_bar_at_ms.load(Ordering::Relaxed);
+                    let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+                    let bars_published = self.atomics.bars_published.load(Ordering::Relaxed);
+                    let nats_errs = self.atomics.nats_bars_errors.load(Ordering::Relaxed);
+
+                    if last_ms == 0 {
+                        warn!(
+                            herald_id = %self.herald_id,
+                            watchdog_secs = BAR_WATCHDOG_SECS,
+                            "watchdog: no bars received yet since startup — WS feed may not be connected"
+                        );
+                    } else {
+                        let elapsed_secs = now_ms.saturating_sub(last_ms) / 1000;
+                        if elapsed_secs >= BAR_WATCHDOG_SECS {
+                            watchdog_stall_count += 1;
+                            if watchdog_stall_count >= 3 {
+                                error!(
+                                    herald_id = %self.herald_id,
+                                    elapsed_secs,
+                                    watchdog_secs = BAR_WATCHDOG_SECS,
+                                    stall_ticks = watchdog_stall_count,
+                                    bars_published_total = bars_published,
+                                    nats_bars_errors_total = nats_errs,
+                                    "watchdog: feed STALLED for 3+ consecutive ticks — WS feed likely dead"
+                                );
+                                counter!("herald_feed_stalled_total").increment(1);
+                            } else {
+                                warn!(
+                                    herald_id = %self.herald_id,
+                                    elapsed_secs,
+                                    watchdog_secs = BAR_WATCHDOG_SECS,
+                                    bars_published_total = bars_published,
+                                    nats_bars_errors_total = nats_errs,
+                                    "watchdog: no bars received — WS feed may be stalled or bar channel is backed up"
+                                );
+                            }
+                        } else {
+                            watchdog_stall_count = 0;
+                            let hand_count = self.registry.hand_count();
+                            let unique_syms = self.ledger.keys()
+                                .into_iter()
+                                .map(|(s, _)| s)
+                                .collect::<std::collections::HashSet<_>>()
+                                .len();
+                            gauge!("herald_ledger_symbols").set(unique_syms as f64);
+                            info!(
+                                herald_id = %self.herald_id,
+                                bars_published_total = bars_published,
+                                nats_bars_errors_total = nats_errs,
+                                secs_since_last_bar = elapsed_secs,
+                                hand_count,
+                                unique_syms,
+                                "herald alive"
+                            );
+                        }
+                    }
+
+                    // Warn when NATS error rate is elevated (closed bar publish failures).
+                    if nats_errs > 0 {
+                        warn!(
+                            herald_id = %self.herald_id,
+                            nats_bars_errors_total = nats_errs,
+                            "watchdog: NATS publish errors detected — check NATS connectivity"
+                        );
+                    }
+                },
+
+                result = &mut publisher_task => {
+                    match result {
+                        Ok(()) => error!(
+                            herald_id = %self.herald_id,
+                            "signal publisher task exited unexpectedly — all future signals will be dropped; herald shutting down"
+                        ),
+                        Err(e) => error!(
+                            herald_id = %self.herald_id,
+                            err = %e,
+                            "signal publisher task panicked — herald shutting down"
+                        ),
+                    }
                     break;
-                }
+                },
             }
         }
         Ok(())
@@ -199,16 +356,37 @@ impl Handler {
         let BarEvent { tf, bar, closed, received_at_ms } = event;
         let symbol = bar.symbol.clone();
         let ts = bar.timestamp;
+        self.atomics.last_bar_at_ms.store(received_at_ms as u64, Ordering::Relaxed);
 
         // Forming bar — update live_bar in ledger (no observer fan-out, so
         // strategies still evaluate only on closed bars). Publish per-TF to
         // bars.live.{tf}.{symbol} so the gateway/chart can tick the current candle
         // at whatever timeframe is being viewed.
+        //
+        // IMPORTANT: forming bars are high-frequency (multiple per second across all
+        // symbols). We use a timeout instead of unbounded await to break the cascade:
+        //   NATS stall → publish blocks → handler loop stalls → bar channel fills →
+        //   tx.send().await in feed task blocks → WS read loop starved → OKX timeout →
+        //   reconnect storm.
+        // Dropping a forming-bar publish under NATS pressure is acceptable — clients
+        // will see slightly stale live candles until NATS recovers.
         if !closed {
             let payload = BarMsg::from(&bar).encode_to_vec();
             let subject = format!("{}.live.{}.{}", SUBJ_BARS, tf, symbol);
-            if let Err(e) = self.client.publish(subject, payload.into()).await {
-                debug!(%symbol, ?tf, err = %e, "failed to publish forming bar to NATS");
+            match tokio::time::timeout(
+                FORMING_BAR_PUBLISH_TIMEOUT,
+                self.client.publish(subject, payload.into()),
+            ).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => debug!(%symbol, ?tf, err = %e, "forming bar publish failed"),
+                Err(_timeout) => {
+                    warn!(
+                        %symbol, ?tf,
+                        timeout_ms = FORMING_BAR_PUBLISH_TIMEOUT.as_millis(),
+                        "forming bar NATS publish timed out — NATS is slow, skipping to avoid cascade"
+                    );
+                    counter!("herald_nats_publish_errors_total", "subject" => "bars.live").increment(1);
+                }
             }
             self.ledger.advance_live(tf, bar);
             return;
@@ -230,20 +408,20 @@ impl Handler {
 
         match advance_result {
             Ok(Some(_)) => {
-                let unique_syms = self.ledger.keys()
-                    .into_iter()
-                    .map(|(s, _)| s)
-                    .collect::<std::collections::HashSet<_>>()
-                    .len();
-                gauge!("herald_ledger_symbols").set(unique_syms as f64);
-                debug!(
-                    %symbol, ?tf, bar_ts = ts,
-                    open = bar.open, high = bar.high, low = bar.low,
-                    close = bar.close, vol = bar.volume,
+                counter!(
+                    "herald_bars_confirmed_total",
+                    "source" => source.to_string(),
+                    "symbol" => symbol.clone(),
+                    "tf"     => tf.to_string(),
+                ).increment(1);
+                info!(
+                    %symbol, tf = %tf.to_string(), bar_ts = ts,
+                    close = bar.close, latency_ms,
+                    advance_us,
                     "bar confirmed"
                 );
             }
-            Ok(None)    => debug!(%symbol, ?tf, bar_ts = ts, "bar skipped (dup/out-of-order)"),
+            Ok(None)    => debug!(%symbol, ?tf, bar_ts = ts, closed = true, "bar skipped (dup/out-of-order)"),
             Err(e)      => error!(%symbol, ?tf, bar_ts = ts, err = %e, "ledger.advance failed"),
         }
 
@@ -253,11 +431,19 @@ impl Handler {
         let bar_msg = BarMsg::from(&bar);
         let payload = bar_msg.encode_to_vec();
         let subject = format!("{}.{}.{}", SUBJ_BARS, tf, symbol);
+        let publish_start = Instant::now();
         if let Err(e) = self.client.publish(subject.clone(), payload.into()).await {
             error!(%symbol, err = %e, "failed to publish bar to NATS");
             counter!("herald_nats_publish_errors_total", "subject" => "bars").increment(1);
             self.atomics.nats_bars_errors.fetch_add(1, Ordering::Relaxed);
         } else {
+            let publish_ms = publish_start.elapsed().as_millis();
+            if publish_ms > SLOW_PUBLISH_WARN_MS {
+                warn!(
+                    %symbol, ?tf, publish_ms,
+                    "closed bar NATS publish took too long — NATS may be backing up"
+                );
+            }
             debug!(%symbol, nats_subject = %subject, "bar published to NATS");
             counter!("herald_nats_bars_published_total", "symbol" => symbol.clone()).increment(1);
             self.atomics.bars_published.fetch_add(1, Ordering::Relaxed);
@@ -267,6 +453,7 @@ impl Handler {
     // ── herald.stats ─────────────────────────────────────────────────────────
 
     async fn handle_stats(&self, msg: async_nats::Message) {
+        debug!(subject = SUBJ_STATS, msg_bytes = msg.payload.len(), "handle_stats");
         let Some(reply) = msg.reply else {
             warn!("herald.stats without reply subject — ignoring");
             return;
@@ -278,6 +465,13 @@ impl Handler {
             .collect::<std::collections::HashSet<_>>()
             .len();
 
+        let last_bar_at_ms = self.atomics.last_bar_at_ms.load(Ordering::Relaxed);
+        let now_ms = chrono::Utc::now().timestamp_millis() as u64;
+        let secs_since_last_bar = if last_bar_at_ms == 0 {
+            None
+        } else {
+            Some(now_ms.saturating_sub(last_bar_at_ms) / 1000)
+        };
         let data = serde_json::json!({
             "herald_id":              self.herald_id,
             "uptime_ms":              self.start_time.elapsed().as_millis() as u64,
@@ -287,6 +481,8 @@ impl Handler {
             "signals_published_total":self.atomics.signals_published.load(Ordering::Relaxed),
             "nats_bars_errors_total": self.atomics.nats_bars_errors.load(Ordering::Relaxed),
             "nats_signals_errors_total": self.atomics.nats_signals_errors.load(Ordering::Relaxed),
+            "last_bar_at_ms":         last_bar_at_ms,
+            "secs_since_last_bar":    secs_since_last_bar,
         });
         let resp = serde_json::json!({"ok": true, "data": data}).to_string();
         let _ = self.client.publish(reply, resp.into_bytes().into()).await;
@@ -310,6 +506,7 @@ impl Handler {
     // ── engine.register ──────────────────────────────────────────────────────
 
     async fn handle_register(&self, msg: async_nats::Message) {
+        debug!(subject = SUBJ_REGISTER, msg_bytes = msg.payload.len(), "handle_register");
         let req = match RegisterMsg::decode(msg.payload.as_ref()) {
             Ok(r) => r,
             Err(e) => { error!(err = %e, "failed to decode RegisterMsg"); return; }
@@ -377,6 +574,7 @@ impl Handler {
     // ── engine.deregister ────────────────────────────────────────────────────
 
     async fn handle_deregister(&self, msg: async_nats::Message) {
+        debug!(subject = SUBJ_DEREGISTER, msg_bytes = msg.payload.len(), "handle_deregister");
         let req = match DeregisterMsg::decode(msg.payload.as_ref()) {
             Ok(r) => r,
             Err(e) => { error!(err = %e, "failed to decode DeregisterMsg"); return; }
@@ -394,6 +592,7 @@ impl Handler {
     // ── engine.list ──────────────────────────────────────────────────────────
 
     async fn handle_list(&self, msg: async_nats::Message) {
+        debug!(subject = SUBJ_LIST, msg_bytes = msg.payload.len(), "handle_list");
         let Some(reply) = msg.reply else {
             warn!("engine.list without reply subject — ignoring");
             return;
@@ -416,6 +615,7 @@ impl Handler {
     // ── engine.ping ───────────────────────────────────────────────────────────
 
     async fn handle_ping(&self, msg: async_nats::Message) {
+        debug!(subject = SUBJ_PING, msg_bytes = msg.payload.len(), "handle_ping");
         let Some(reply) = msg.reply else { return; };
         let resp = PingResponse {
             ok: true,
@@ -560,6 +760,12 @@ async fn signal_publisher(
             }
         }
         if !published {
+            error!(
+                helm_id = %batch.helm_id, hand_id = %batch.hand_id,
+                symbol = %batch.signal.symbol, direction = ?batch.signal.direction,
+                bar_ts = batch.bar_ts,
+                "signal DROPPED after {MAX_RETRIES} publish attempts — trading bot will not receive this signal"
+            );
             counter!("herald_nats_publish_errors_total", "subject" => "signals").increment(1);
             atomics.nats_signals_errors.fetch_add(1, Ordering::Relaxed);
         }

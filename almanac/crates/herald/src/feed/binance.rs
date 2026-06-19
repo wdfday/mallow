@@ -62,11 +62,11 @@ pub fn spawn(symbol_tfs: Vec<(String, Vec<Timeframe>)>, tx: BarTx, ledger: Arc<L
             "binance: subscribing to combined stream"
         );
 
-        let mut first = true;
+        let mut reconnect_n: u32 = 0;
         loop {
-            if !first {
+            if reconnect_n > 0 {
                 counter!("herald_feed_reconnects_total", "source" => "binance").increment(1);
-                info!(symbols = symbol_tfs.len(), "binance: reconnect gap-fill");
+                info!(symbols = symbol_tfs.len(), reconnect_n, "binance: reconnect gap-fill");
                 let sem = Arc::new(tokio::sync::Semaphore::new(GAP_FILL_CONCURRENCY));
                 let tasks: Vec<_> = symbol_tfs.iter().map(|(sym, tfs)| {
                     let live_sym = format!("binance:{}", sym.to_uppercase());
@@ -83,19 +83,20 @@ pub fn spawn(symbol_tfs: Vec<(String, Vec<Timeframe>)>, tx: BarTx, ledger: Arc<L
                 }).collect();
                 futures::future::join_all(tasks).await;
             }
-            first = false;
             match run_once(&url, &tx).await {
                 Ok(()) => {
                     gauge!("herald_feed_ws_connected", "source" => "binance").set(0.0);
-                    warn!("binance: feed task stopping (bar channel closed — herald shutting down?)");
+                    info!(symbols = symbol_tfs.len(), reconnect_n, "binance: feed task exiting (bar channel closed)");
                     return;
                 }
                 Err(e) => {
                     gauge!("herald_feed_ws_connected", "source" => "binance").set(0.0);
                     if tx.is_closed() {
+                        info!(symbols = symbol_tfs.len(), reconnect_n, "binance: feed task exiting (bar channel closed after error)");
                         return;
                     }
-                    warn!(err = %e, wait_secs = RECONNECT.as_secs(), "binance: disconnected, reconnecting");
+                    reconnect_n += 1;
+                    warn!(err = %e, reconnect_n, wait_secs = RECONNECT.as_secs(), "binance: disconnected, reconnecting");
                     tokio::time::sleep(RECONNECT).await;
                 }
             }
@@ -159,7 +160,7 @@ async fn run_once(url: &str, tx: &BarTx) -> anyhow::Result<()> {
             k.volume,
         );
         if k.closed {
-            debug!(symbol = %bar.symbol, ?tf, close = bar.close, "binance: bar closed");
+            info!(symbol = %bar.symbol, ?tf, close = bar.close, "binance: bar closed");
             let sym = env.data.symbol.to_uppercase();
             counter!("herald_feed_bars_total", "source" => "binance", "symbol" => sym).increment(1);
         }

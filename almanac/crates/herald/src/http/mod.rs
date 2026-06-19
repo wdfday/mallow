@@ -9,7 +9,8 @@
 //!
 //! | Route                        | Purpose                                                                      |
 //! |------------------------------|------------------------------------------------------------------------------|
-//! | `GET  /health`               | Health check                                                                 |
+//! | `GET  /health`               | Liveness probe — always 200 while the process is alive                       |
+//! | `GET  /ready`                | Readiness probe — 503 during gap-fill warmup, 200 once ready                 |
 //! | `GET  /api/symbols`          | Symbols tracked by the ledger; `?indicators=true` adds live cells per symbol |
 //! | `GET  /api/indicators`       | Indicator catalogue (static metadata)                                        |
 //! | `POST /api/data/:symbol`     | OHLCV + indicator snapshot; transparent Parquet fallback for historical pages |
@@ -146,7 +147,10 @@ async fn record_request_metrics(
         "method" => method.clone(),
         "path"   => path.clone(),
     ).record(duration_ms);
-    if status >= 500 {
+    // /health and /ready are polled by Docker + monitoring every few seconds.
+    // Log them at debug to avoid flooding WARN during normal warmup / polling.
+    let is_probe = path == "/health" || path == "/ready";
+    if status >= 500 && !is_probe {
         tracing::warn!(method, path, status, duration_ms, "http request");
     } else {
         tracing::debug!(method, path, status, duration_ms, "http request");
@@ -157,6 +161,7 @@ async fn record_request_metrics(
 pub fn router(state: HttpState) -> Router {
     Router::new()
         .route("/health", get(health))
+        .route("/ready", get(ready))
         .route("/metrics", get(prometheus_metrics))
         .merge(symbols::routes())
         .merge(data::routes())
@@ -172,7 +177,15 @@ pub fn router(state: HttpState) -> Router {
         .layer(middleware::from_fn(record_request_metrics))
 }
 
-async fn health(State(state): State<HttpState>) -> impl IntoResponse {
+/// Liveness probe — always 200 while the process is alive.
+/// Used by Docker healthcheck so the container is never killed during gap-fill.
+async fn health() -> impl IntoResponse {
+    (StatusCode::OK, Json(json!({ "ok": true, "service": "herald" })))
+}
+
+/// Readiness probe — 503 during bootstrap/gap-fill, 200 once ready.
+/// Used by load balancers / API gateway to gate traffic.
+async fn ready(State(state): State<HttpState>) -> impl IntoResponse {
     if state.ready.load(Ordering::Relaxed) {
         (StatusCode::OK, Json(json!({ "ok": true, "service": "herald" })))
     } else {

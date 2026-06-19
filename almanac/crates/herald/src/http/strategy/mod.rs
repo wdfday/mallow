@@ -5,9 +5,8 @@
 //! ```text
 //! GET    /api/v1/strategy/strategies                    list all versions
 //! POST   /api/v1/strategy/strategies                    create (or new version)
-//! GET    /api/v1/strategy/my                            latest version per name (caller only)
+//! GET    /api/v1/strategy/my                            all versions grouped by name (caller only)
 //! GET    /api/v1/strategy/strategies/:id                get by UUID
-//! GET    /api/v1/strategy/strategies/:id/chain          full version lineage (caller only)
 //! PUT    /api/v1/strategy/strategies/:id                update label / notes
 //! DELETE /api/v1/strategy/strategies/:id                delete version
 //! ```
@@ -35,6 +34,4 @@ pub fn routes() -> Router<HttpState> {
             get(list_my_strategies))
         .route("/api/v1/strategy/strategies/:id",
             get(get_strategy).put(update_strategy).delete(delete_strategy))
-        .route("/api/v1/strategy/strategies/:id/chain",
-            get(list_strategy_chain))
 }

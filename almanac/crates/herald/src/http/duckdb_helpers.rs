@@ -15,6 +15,23 @@ use alm_engine::data::find_parquet_files;
 
 use super::types::BarRecord;
 
+// ── Input validation ─────────────────────────────────────────────────────────
+
+/// Reject symbols/timeframes with characters that could escape a file-glob path
+/// or a DuckDB `read_parquet([...])` expression.
+fn validate_duckdb_input(symbol: &str, timeframe: &str) -> anyhow::Result<()> {
+    if symbol.is_empty() || symbol.len() > 64 {
+        anyhow::bail!("invalid symbol length (1-64 chars required): {:?}", symbol);
+    }
+    if !symbol.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, ':' | '-' | '_' | '.')) {
+        anyhow::bail!("symbol contains disallowed characters: {:?}", symbol);
+    }
+    if timeframe_to_ms(timeframe) == 0 && timeframe.to_uppercase() != "M1" {
+        anyhow::bail!("unknown timeframe: {:?}", timeframe);
+    }
+    Ok(())
+}
+
 // ── Parquet fallback helpers ──────────────────────────────────────────────────
 
 /// Query bars with `t < before_ms` from Parquet files, newest `limit` bars.
@@ -29,6 +46,7 @@ pub fn query_bars_before(
     before_ms: i64,
     limit: usize,
 ) -> anyhow::Result<Vec<BarRecord>> {
+    validate_duckdb_input(symbol, timeframe)?;
     let files = find_parquet_files(data_dir, symbol, Some(timeframe), None);
     if files.is_empty() {
         if timeframe.to_uppercase() != "M1" {
@@ -84,6 +102,11 @@ fn detect_bar_gaps(bars: &[BarRecord], timeframe: &str, symbol: &str, source: &s
             gap_count, total_bars = bars.len(),
             "duckdb result: gaps found in returned bars",
         );
+        counter!(
+            "herald_duckdb_gaps_total",
+            "symbol"    => symbol.to_string(),
+            "timeframe" => timeframe.to_string(),
+        ).increment(gap_count as u64);
     }
 }
 
@@ -201,6 +224,7 @@ pub fn query_bars_for_compute(
     to_ms: i64,
     limit: usize,
 ) -> anyhow::Result<Vec<Bar>> {
+    validate_duckdb_input(parquet_symbol, timeframe)?;
     let files = find_parquet_files(data_dir, parquet_symbol, Some(timeframe), None);
     let (files, resample) = if files.is_empty() && timeframe.to_uppercase() != "M1" {
         let m1 = find_parquet_files(data_dir, parquet_symbol, Some("M1"), None);

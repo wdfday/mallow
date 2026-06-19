@@ -29,6 +29,8 @@ const BINANCE_PAGE: i64 = 1_000;
 const OKX_PAGE: i64 = 300;
 /// Bars fetched per TF on startup (fills the default ledger window).
 const WINDOW_BARS: i64 = 1_000;
+/// Maximum time to wait for a single REST fetch during gap-fill.
+const GAP_FILL_TIMEOUT: Duration = Duration::from_secs(60);
 
 // ── Binance ───────────────────────────────────────────────────────────────────
 
@@ -276,7 +278,14 @@ pub async fn gap_fill_symbol(
                 expected_bars = (to_ms - from_ms) / tf_ms,
                 "gap-fill: base TF {label}"
             );
-            let result = fetch_tf(&exchange, rest_sym, base_tf, from_ms, to_ms).await;
+            let result = tokio::time::timeout(
+                GAP_FILL_TIMEOUT,
+                fetch_tf(&exchange, rest_sym, base_tf, from_ms, to_ms),
+            ).await.unwrap_or_else(|_| {
+                warn!(symbol = live_sym, ?base_tf, timeout_secs = 60u64, "gap-fill: REST fetch timed out — skipping");
+                counter!("herald_gap_fill_timeouts_total", "symbol" => live_sym.to_string()).increment(1);
+                Err(anyhow::anyhow!("gap-fill fetch timeout after 60s"))
+            });
             advance_bars(ledger, result, live_sym, base_tf, label);
         }
     }
@@ -288,7 +297,14 @@ pub async fn gap_fill_symbol(
         let to_ms  = (now_ms / tf_ms) * tf_ms;
         let from_ms = to_ms - WINDOW_BARS * tf_ms;
         info!(symbol = live_sym, ?tf, bars = WINDOW_BARS, "gap-fill: fetching HTF window");
-        let result = fetch_tf(&exchange, rest_sym, tf, from_ms, to_ms).await;
+        let result = tokio::time::timeout(
+            GAP_FILL_TIMEOUT,
+            fetch_tf(&exchange, rest_sym, tf, from_ms, to_ms),
+        ).await.unwrap_or_else(|_| {
+            warn!(symbol = live_sym, ?tf, timeout_secs = 60u64, "gap-fill: REST fetch timed out — skipping");
+            counter!("herald_gap_fill_timeouts_total", "symbol" => live_sym.to_string()).increment(1);
+            Err(anyhow::anyhow!("gap-fill fetch timeout after 60s"))
+        });
         advance_bars(ledger, result, live_sym, tf, "HTF window");
     }
     histogram!("herald_gap_fill_duration_ms",

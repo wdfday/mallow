@@ -97,26 +97,22 @@ impl StoreBackend {
         }
     }
 
-    /// Latest version of each strategy owned by `user_id`.
-    pub async fn list_my_strategies(&self, user_id: &str) -> Result<Vec<Strategy>> {
-        match self {
+    /// All versions of every strategy owned by `user_id`, grouped by name.
+    /// Each group is sorted newest-first; groups are sorted by name.
+    pub async fn list_my_chains(&self, user_id: &str) -> Result<Vec<Vec<Strategy>>> {
+        let all: Vec<Strategy> = match self {
             StoreBackend::Mem(store) => {
                 let r = store.read();
-                // For each name keep only the highest version.
-                let mut latest: HashMap<String, Strategy> = HashMap::new();
-                for s in r.strategies.values().filter(|s| s.user_id.as_deref() == Some(user_id)) {
-                    latest.entry(s.name.clone())
-                        .and_modify(|cur| { if s.version > cur.version { *cur = s.clone(); } })
-                        .or_insert_with(|| s.clone());
-                }
-                let mut items: Vec<Strategy> = latest.into_values().collect();
-                items.sort_by(|a, b| a.name.cmp(&b.name));
-                Ok(items)
+                let mut items: Vec<Strategy> = r.strategies.values()
+                    .filter(|s| s.user_id.as_deref() == Some(user_id))
+                    .cloned()
+                    .collect();
+                items.sort_by(|a, b| a.name.cmp(&b.name).then(b.version.cmp(&a.version)));
+                items
             }
             StoreBackend::Pg(pool) => {
                 let rows = sqlx::query(
-                    "SELECT DISTINCT ON (name) \
-                       id, name, version, previous_id, label, spec, notes, user_id, created_at \
+                    "SELECT id, name, version, previous_id, label, spec, notes, user_id, created_at \
                      FROM strategies \
                      WHERE user_id = $1 \
                      ORDER BY name ASC, version DESC",
@@ -124,9 +120,19 @@ impl StoreBackend {
                 .bind(user_id)
                 .fetch_all(pool)
                 .await?;
-                rows.iter().map(pg_strategy).collect()
+                rows.iter().map(pg_strategy).collect::<Result<Vec<_>>>()?
+            }
+        };
+
+        // Group consecutive rows by name (already sorted by name).
+        let mut chains: Vec<Vec<Strategy>> = Vec::new();
+        for s in all {
+            match chains.last_mut() {
+                Some(chain) if chain[0].name == s.name => chain.push(s),
+                _ => chains.push(vec![s]),
             }
         }
+        Ok(chains)
     }
 
     /// All versions of a single strategy name.
@@ -350,13 +356,13 @@ impl StoreBackend {
     /// Two resolution paths depending on `strategy_id`:
     ///
     /// **`strategy_id = Some(id)`** — compare against that specific version:
-    /// - Same script → return the referenced version (no new row).
+    /// - Same script → return the referenced version unchanged (no new row).
     /// - Different script → create next version; `previous_id = strategy_id`.
     ///
-    /// **`strategy_id = None`** — global spec_hash dedup across all versions of `name`:
-    /// - Matching hash found → return existing row unchanged.
-    /// - No match → create next version; `previous_id` points to the latest
-    ///   existing version for `name` (None if this is the first version).
+    /// **`strategy_id = None`** — always create a new version; `previous_id`
+    /// points to the latest existing version for `name` (None if first version).
+    /// No dedup is performed — two strategies with identical scripts are valid
+    /// (different users, rollback intent, independent authorship).
     pub async fn upsert_strategy(
         &self,
         name: String,
@@ -389,37 +395,7 @@ impl StoreBackend {
             ).await;
         }
 
-        // ── Path B: spec_hash dedup — TEMPORARILY DISABLED ──────────────────
-        //
-        // Hash-based dedup was causing identical scripts (same spec_hash) to
-        // be silently reused across different backtest sessions instead of
-        // creating a new version in the chain. Disabled until the store model
-        // distinguishes between "intentional re-run" and "unchanged script".
-        //
-        // To re-enable: uncomment the block below.
-        //
-        // match self {
-        //     StoreBackend::Mem(store) => {
-        //         if let Some(existing) = store.read().strategies.values()
-        //             .find(|s| s.name == name && s.spec.script == spec.script)
-        //             .cloned()
-        //         {
-        //             return Ok(existing);
-        //         }
-        //     }
-        //     StoreBackend::Pg(pool) => {
-        //         let row = sqlx::query(
-        //             "SELECT id, name, version, previous_id, label, spec, notes, user_id, created_at \
-        //              FROM strategies WHERE spec_hash = $1 AND (user_id = $2 OR (user_id IS NULL AND $2 IS NULL))",
-        //         )
-        //         .bind(&hash)
-        //         .bind(user_id.as_deref())
-        //         .fetch_optional(pool)
-        //         .await?;
-        //         if let Some(r) = row { return pg_strategy(&r); }
-        //     }
-        // }
-
+        // ── Path B: no dedup — always create a new version ──────────────────
         let previous_id = match self {
             StoreBackend::Mem(store) => {
                 store.read().strategies.values()

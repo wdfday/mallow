@@ -66,7 +66,6 @@ impl Modify for BearerAuthAddon {
         strategy::list_my_strategies,
         strategy::create_strategy,
         strategy::get_strategy,
-        strategy::list_strategy_chain,
         strategy::update_strategy,
         strategy::delete_strategy,
     ),

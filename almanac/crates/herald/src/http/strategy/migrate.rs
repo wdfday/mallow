@@ -18,8 +18,7 @@ CREATE TABLE IF NOT EXISTS strategies (
     notes       TEXT,
     user_id     TEXT,
     created_at  BIGINT  NOT NULL,
-    UNIQUE (name, version),
-    UNIQUE (spec_hash, user_id)
+    UNIQUE (name, version)
 );
 
 CREATE TABLE IF NOT EXISTS watch_entries (
@@ -161,14 +160,14 @@ ALTER TABLE strategies ADD COLUMN IF NOT EXISTS previous_id UUID REFERENCES stra
 ALTER TABLE strategies ADD COLUMN IF NOT EXISTS user_id TEXT;
 ALTER TABLE watch_entries ADD COLUMN IF NOT EXISTS user_id TEXT;
 
--- Drop old global spec_hash unique, replace with per-user unique.
+-- Drop all spec_hash unique constraints (dedup removed — every save is a new version).
 DO $$ BEGIN
     ALTER TABLE strategies DROP CONSTRAINT IF EXISTS strategies_spec_hash_key;
 EXCEPTION WHEN undefined_object THEN NULL;
 END $$;
 DO $$ BEGIN
-    ALTER TABLE strategies ADD CONSTRAINT strategies_spec_hash_user_id_key UNIQUE (spec_hash, user_id);
-EXCEPTION WHEN duplicate_table THEN NULL;
+    ALTER TABLE strategies DROP CONSTRAINT IF EXISTS strategies_spec_hash_user_id_key;
+EXCEPTION WHEN undefined_object THEN NULL;
 END $$;
 "#;
 

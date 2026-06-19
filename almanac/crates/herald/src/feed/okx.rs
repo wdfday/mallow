@@ -28,7 +28,7 @@ use futures::{SinkExt, StreamExt};
 use metrics::{counter, gauge};
 use serde::{Deserialize, Serialize};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use tracing::{debug, info, warn};
+use tracing::{debug, error, info, warn};
 
 use super::{BarEvent, BarTx};
 use super::rest::{gap_fill_symbol, Exchange};
@@ -56,11 +56,11 @@ pub fn spawn(symbol_tfs: Vec<(String, Vec<Timeframe>)>, tx: BarTx, ledger: Arc<L
         // Persisted across reconnects so auto-close state survives brief disconnects.
         // On a long outage the gap-fill REST fetch bridges the missing bars anyway.
         let mut last_forming: HashMap<String, (i64, alm_core::Bar)> = HashMap::new();
-        let mut first = true;
+        let mut reconnect_n: u32 = 0;
         loop {
-            if !first {
+            if reconnect_n > 0 {
                 counter!("herald_feed_reconnects_total", "source" => "okx").increment(1);
-                info!(symbols = symbol_tfs.len(), "okx: reconnect gap-fill");
+                info!(symbols = symbol_tfs.len(), reconnect_n, "okx: reconnect gap-fill");
                 let sem = Arc::new(tokio::sync::Semaphore::new(RECONNECT_GAP_FILL_CONCURRENCY));
                 let tasks: Vec<_> = symbol_tfs.iter().map(|(sym, tfs)| {
                     let live_sym = format!("okx:{sym}");
@@ -77,18 +77,20 @@ pub fn spawn(symbol_tfs: Vec<(String, Vec<Timeframe>)>, tx: BarTx, ledger: Arc<L
                 }).collect();
                 futures::future::join_all(tasks).await;
             }
-            first = false;
             match run_once(&symbol_tfs, &tx, &mut last_forming).await {
                 Ok(()) => {
                     gauge!("herald_feed_ws_connected", "source" => "okx").set(0.0);
+                    info!(symbols = symbol_tfs.len(), reconnect_n, "okx: feed task exiting (bar channel closed)");
                     return;
                 }
                 Err(e) => {
                     gauge!("herald_feed_ws_connected", "source" => "okx").set(0.0);
                     if tx.is_closed() {
+                        info!(symbols = symbol_tfs.len(), reconnect_n, "okx: feed task exiting (bar channel closed after error)");
                         return;
                     }
-                    warn!(err = %e, wait_secs = RECONNECT.as_secs(), "okx: disconnected, reconnecting");
+                    reconnect_n += 1;
+                    warn!(err = %e, reconnect_n, wait_secs = RECONNECT.as_secs(), "okx: disconnected, reconnecting");
                     tokio::time::sleep(RECONNECT).await;
                 }
             }
@@ -154,10 +156,15 @@ async fn run_once(
                 };
 
                 match msg {
-                    Message::Text(t) if t == "pong" => {}
+                    Message::Text(t) if t == "pong" => {
+                        debug!("okx: pong received");
+                    }
                     Message::Text(t) => handle_push(&t, tx, &mut write, last_forming).await?,
                     Message::Ping(d) => { let _ = write.send(Message::Pong(d)).await; }
-                    Message::Close(_) => return Err(anyhow::anyhow!("server closed")),
+                    Message::Close(frame) => {
+                        warn!(reason = ?frame, "okx: server sent Close frame");
+                        return Err(anyhow::anyhow!("server closed connection"));
+                    }
                     _ => {}
                 }
             }
@@ -174,7 +181,22 @@ async fn handle_push(
     // Capture arrival time before JSON parse.
     let received_at_ms = super::now_ms();
 
+    // OKX sends subscription acks and error events that are not candle pushes.
+    // Parse them explicitly so nothing is silently swallowed.
     let Ok(push) = serde_json::from_str::<CandlePush>(text) else {
+        // Log non-data frames at debug so we can diagnose unexpected messages.
+        // Known expected frames: {"event":"subscribe",...}, {"event":"error",...}.
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
+            if let Some(event) = v.get("event").and_then(|e| e.as_str()) {
+                if event == "error" {
+                    error!(frame = text, "okx: error event from server");
+                } else {
+                    debug!(event, "okx: non-data frame");
+                }
+            } else {
+                debug!(frame = %&text[..text.len().min(200)], "okx: unparseable frame");
+            }
+        }
         return Ok(());
     };
     let Some(tf) = channel_to_tf(&push.arg.channel) else {
@@ -226,7 +248,7 @@ async fn handle_push(
             if let Some((prev_ts, prev_bar)) = last_forming.remove(&key) {
                 if ts > prev_ts {
                     let delay_ms = received_at_ms - (prev_ts + tf.duration_ms());
-                    debug!(
+                    info!(
                         symbol = %prev_bar.symbol, ?tf, close = prev_bar.close,
                         delay_ms,
                         "okx: bar auto-closed (next bar arrived)"

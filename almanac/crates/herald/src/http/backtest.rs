@@ -209,20 +209,27 @@ pub async fn run_backtest_mtf(
         htf      = ?req.htf_timeframes,
         "HTTP MTF backtest request",
     );
+    const BACKTEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
     let data_dir = Arc::clone(&state.data_dir);
     let t0 = std::time::Instant::now();
-    let result = tokio::task::spawn_blocking(move || backtest::run_mtf(req, &data_dir)).await;
+    let task = tokio::task::spawn_blocking(move || backtest::run_mtf(req, &data_dir));
+    let result = tokio::time::timeout(BACKTEST_TIMEOUT, task).await;
     let elapsed_ms = t0.elapsed().as_millis() as f64;
     match result {
-        Ok(Ok(report)) => {
+        Err(_elapsed) => {
+            warn!(elapsed_ms, timeout_secs = 300u64, "MTF backtest timed out");
+            metrics::counter!("herald_backtest_timeouts_total").increment(1);
+            err(StatusCode::REQUEST_TIMEOUT, "backtest timed out — reduce date range or try again")
+        }
+        Ok(Ok(Ok(report))) => {
             histogram!("herald_backtest_duration_ms").record(elapsed_ms);
             ok(report)
         }
-        Ok(Err(e)) => {
+        Ok(Ok(Err(e))) => {
             warn!(error = %e, "MTF backtest failed");
             err(StatusCode::BAD_REQUEST, e.to_string())
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             error!(error = %e, "MTF backtest spawn_blocking panicked");
             err(StatusCode::INTERNAL_SERVER_ERROR, "internal engine error")
         }
@@ -250,23 +257,31 @@ fn try_acquire(state: &HttpState) -> Option<BacktestPermit> {
 }
 
 /// Run the engine on a blocking thread. Returns `Ok(report)` or `Err(error_response)`.
+/// Times out after 300 s — an infinite Rhai loop won't block the server forever.
 pub(super) async fn run_blocking(
     data_dir: Arc<std::path::PathBuf>,
     req: BacktestRequest,
 ) -> Result<BacktestResponse, Response> {
+    const BACKTEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
     let t0 = std::time::Instant::now();
-    let result = tokio::task::spawn_blocking(move || backtest::run(req, &data_dir)).await;
+    let task = tokio::task::spawn_blocking(move || backtest::run(req, &data_dir));
+    let result = tokio::time::timeout(BACKTEST_TIMEOUT, task).await;
     let elapsed_ms = t0.elapsed().as_millis() as f64;
     match result {
-        Ok(Ok(resp)) => {
+        Err(_elapsed) => {
+            warn!(elapsed_ms, timeout_secs = 300u64, "backtest timed out");
+            metrics::counter!("herald_backtest_timeouts_total").increment(1);
+            Err(err(StatusCode::REQUEST_TIMEOUT, "backtest timed out — reduce date range or try again"))
+        }
+        Ok(Ok(Ok(resp))) => {
             histogram!("herald_backtest_duration_ms").record(elapsed_ms);
             Ok(resp)
         }
-        Ok(Err(e)) => {
+        Ok(Ok(Err(e))) => {
             warn!(error = %e, "backtest failed");
             Err(err(StatusCode::BAD_REQUEST, e.to_string()))
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             error!(error = %e, "backtest spawn_blocking panicked");
             Err(err(StatusCode::INTERNAL_SERVER_ERROR, "internal engine error"))
         }

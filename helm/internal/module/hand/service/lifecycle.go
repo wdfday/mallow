@@ -20,9 +20,6 @@ func (s *Service) Start(id uuid.UUID) error {
 	if bi.Data.Status.IsTerminal() {
 		return fmt.Errorf("hand %q is %s — terminal hands cannot be restarted", id, bi.Data.Status)
 	}
-	if rt, _ := s.registry.Get(bi.Data.HelmID); rt != nil && rt.IsPaused() {
-		return fmt.Errorf("helm %q is paused — resume it first", bi.Data.HelmID)
-	}
 	if err := s.heraldRegister(id, bi.Data); err != nil {
 		return fmt.Errorf("hand start: %w", err)
 	}
@@ -48,74 +45,28 @@ func (s *Service) Stop(id uuid.UUID) error {
 	})
 }
 
-// Pause deregisters the hand from herald and persists status=paused.
-// Capital stays allocated. The hand can be resumed later.
-// Differs from helm-level pause (StopBots) which is transient and does not persist.
-func (s *Service) Pause(id uuid.UUID) error {
-	bi, err := s.getOrLoad(id)
-	if err != nil {
-		return err
-	}
-	if bi.Data.Status.IsTerminal() {
-		return fmt.Errorf("hand %q is %s — terminal hands cannot be paused", id, bi.Data.Status)
-	}
-	if bi.Data.Status == domain.HandStatusPaused {
-		return nil // idempotent
-	}
-	s.heraldDeregister(id)
-	bi.Runner.Stop()
-	bi.Data.Status = domain.HandStatusPaused
-	return s.repo.Update(id, func(d *domain.Hand) error {
-		d.Status = domain.HandStatusPaused
-		return nil
-	})
-}
-
-// Resume re-registers a paused hand with herald and starts it running.
-// Only works when the hand is in paused state; returns an error otherwise.
-func (s *Service) Resume(id uuid.UUID) error {
-	bi, err := s.getOrLoad(id)
-	if err != nil {
-		return err
-	}
-	if bi.Data.Status != domain.HandStatusPaused {
-		return fmt.Errorf("hand %q is %s — only paused hands can be resumed", id, bi.Data.Status)
-	}
-	if rt, _ := s.registry.Get(bi.Data.HelmID); rt != nil && rt.IsPaused() {
-		return fmt.Errorf("helm %q is paused — resume the helm first", bi.Data.HelmID)
-	}
-	if err := s.heraldRegister(id, bi.Data); err != nil {
-		return fmt.Errorf("hand resume: %w", err)
-	}
-	bi.Runner.Start()
-	bi.Data.Status = domain.HandStatusRunning
-	return s.repo.Update(id, func(d *domain.Hand) error {
-		d.Status = domain.HandStatusRunning
-		return nil
-	})
-}
-
+// Kill stops the hand and immediately flattens all open positions at market.
+// The hand becomes terminal (HandStatusKilled) and cannot be restarted.
 func (s *Service) Kill(ctx context.Context, id uuid.UUID) error {
 	bi, err := s.getOrLoad(id)
 	if err != nil {
 		return err
 	}
+	if bi.Data.Status.IsTerminal() {
+		return fmt.Errorf("hand %q is already terminal (%s)", id, bi.Data.Status)
+	}
 	s.heraldDeregister(id)
 	bi.Runner.Kill(ctx)
-	finalMetrics := bi.Runner.MetricsView() // snapshot before removing
-	bi.Data.Status = domain.HandStatusKilled
 
 	if rt, _ := s.registry.Get(bi.Data.HelmID); rt != nil {
 		rt.RemoveHand(id.String())
 	}
 	s.mu.Lock()
 	delete(s.hands, id)
-	s.terminated[id] = bi.Data // keep for List() — no DB round-trip needed
 	s.mu.Unlock()
 
 	return s.repo.Update(id, func(d *domain.Hand) error {
 		d.Status = domain.HandStatusKilled
-		d.FinalMetrics = &finalMetrics
 		return nil
 	})
 }
@@ -135,7 +86,6 @@ func (s *Service) Release(ctx context.Context, id uuid.UUID) error {
 	}
 	s.mu.Lock()
 	delete(s.hands, id)
-	s.terminated[id] = bi.Data // keep for List() — no DB round-trip needed
 	s.mu.Unlock()
 
 	return s.repo.Update(id, func(d *domain.Hand) error {
@@ -163,7 +113,8 @@ func (s *Service) StopBots(ids []string) {
 }
 
 // StartBots cascade-starts hands in-memory only (no DB persist). Called by helm resume.
-// Skips hands that are user-paused (status=paused) — those require an explicit Resume call.
+// Only restarts hands whose DB status is still `running` (i.e. hands stopped by helm cascade,
+// not hands explicitly stopped by the user — those have status=stopped and are skipped).
 func (s *Service) StartBots(ids []string) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -173,7 +124,7 @@ func (s *Service) StartBots(ids []string) {
 			continue
 		}
 		bi, ok := s.hands[id]
-		if !ok || bi.Runner.IsRunning() || bi.Data.Status == domain.HandStatusPaused {
+		if !ok || bi.Runner.IsRunning() || bi.Data.Status == domain.HandStatusStopped {
 			continue
 		}
 		if err := s.heraldRegister(id, bi.Data); err != nil {

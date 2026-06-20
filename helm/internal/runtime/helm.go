@@ -105,12 +105,6 @@ type HelmRuntime struct {
 	resetTicker  *time.Ticker
 	stopCh       chan struct{} // closed by Stop() to exit background goroutines
 
-	// ── Snapshot hint ────────────────────────────────────────────────────────
-	// snapshotDirty is set to 1 by MarkSnapshotDirty() (called after fills)
-	// so the snapshot loop emits sooner than snapshotHeartbeat.
-	// The snapshot goroutine owns correctness; fills only provide a timing hint.
-	snapshotDirty atomic.Int32
-
 	// syncScheduled is 1 while a debounced post-order REST sync is pending.
 	// Set by MarkSyncDirty (after fills); coalesces a fill burst into a single sync.
 	syncScheduled atomic.Int32

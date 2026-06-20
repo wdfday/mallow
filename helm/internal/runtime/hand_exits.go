@@ -237,15 +237,23 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 	}
 	h.mu.Unlock()
 
-	// Case 3: external cancel while leg is already exiting (PhaseExiting).
-	// This is the expected OCO counterpart auto-cancel: Binance (and some others)
-	// automatically cancel the SL leg when TP fills, and vice versa. The fills for
-	// the triggered leg are still in-flight — do NOT orphan. Instead, drop the
-	// cancelled order ID from exitLevels and let the fills close the leg normally.
-	// If no fills arrive, the next portfolio sync will catch the desync.
-	if affectedLeg != nil && affectedLeg.Phase == position.PhaseExiting {
-		slog.Info("hand: bracket cancelled on TP/SL trigger — OCO counterpart auto-cancelled by exchange",
-			"hand_id", h.id, "symbol", affectedSymbol, "order_id", orderID)
+	// Case 3: OCO counterpart auto-cancel — drop the cancelled ID and let the
+	// triggered leg's fill close the position normally.
+	//
+	// Covers two sub-cases:
+	//   a) PhaseExiting: helm placed a signal exit order; Binance auto-cancels the
+	//      resting bracket partner (SL cancelled when TP fills, or vice versa).
+	//   b) PhaseOpen: a bracket leg (SL or TP) triggered and the exchange auto-cancelled
+	//      its OCO partner. This happens when helm reconnects after downtime and the WS
+	//      delivers the cancel event BEFORE the fill event for the triggered leg.
+	//      In both sub-cases the fill is still in-flight via WS, or will be caught by
+	//      the bracket poller's next GetOrder on the remaining IDs.
+	//
+	// Do NOT orphan here — the fill will close the leg. If the fill is genuinely missing
+	// (e.g. tryRecoverBracketFill missed it), the next portfolio sync detects the desync.
+	if affectedLeg != nil && (affectedLeg.Phase == position.PhaseExiting || affectedLeg.Phase == position.PhaseOpen) {
+		slog.Info("hand: bracket cancelled — OCO counterpart auto-cancel (partner triggered or fill in-flight)",
+			"hand_id", h.id, "symbol", affectedSymbol, "order_id", orderID, "phase", affectedLeg.Phase)
 		h.mu.Lock()
 		if lv, ok := h.exitLevels[affectedSymbol]; ok {
 			filtered := lv.ExchangeOrderIDs[:0]
@@ -598,8 +606,23 @@ func (h *Hand) pollExternalClose(ctx context.Context, orderID string) {
 // canceled/expired externally means the position likely closed → HandleExitOrderCanceled.
 func (h *Hand) applyBracketStates(ctx context.Context, checks []bracketState) {
 	// When multiple IDs were checked for the same symbol (e.g. Binance OCO: TP + SL as
-	// separate orders), pick the best result per symbol: prefer "filled" so we close with
-	// the real execution price instead of falling through to the external-close path.
+	// separate orders), pick the best result per symbol using a priority ranking:
+	//   filled  >  active (new/pending/partial)  >  terminal (cancelled/not_found/error)
+	//
+	// Without the active > terminal tier, a Binance OCO poll that returns
+	// [SL: "not_found", TP: "new"] in that order would select SL (first-wins) and
+	// falsely trigger pollExternalClose, writing KindPositionOrphaned to the poslog
+	// even though the position is still live at the exchange.
+	bracketIsActive := func(c bracketState) bool {
+		if c.err != nil || c.result == nil {
+			return false
+		}
+		switch c.result.Status {
+		case "new", "partially_filled", "pending_new", "submitted", "accepted", "pending":
+			return true
+		}
+		return false
+	}
 	best := make(map[string]bracketState, len(checks))
 	for _, c := range checks {
 		prev, ok := best[c.symbol]
@@ -607,10 +630,14 @@ func (h *Hand) applyBracketStates(ctx context.Context, checks []bracketState) {
 			best[c.symbol] = c
 			continue
 		}
-		// Upgrade if current is filled and previous is not.
 		prevFilled := prev.err == nil && prev.result != nil && prev.result.Status == "filled"
 		curFilled := c.err == nil && c.result != nil && c.result.Status == "filled"
-		if curFilled && !prevFilled {
+		switch {
+		case curFilled && !prevFilled:
+			best[c.symbol] = c
+		case !prevFilled && !curFilled && bracketIsActive(c) && !bracketIsActive(prev):
+			// Upgrade from a terminal/error result to a known-active order — the position
+			// is still open, so the active result is authoritative.
 			best[c.symbol] = c
 		}
 	}

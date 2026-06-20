@@ -86,8 +86,8 @@ func (c *SignalClient) SubscribeSignals(cb func(resp *SignalResponse, receivedAt
 			)
 		}
 
-		cb(&resp, receivedAt)
 		_ = msg.Ack()
+		cb(&resp, receivedAt)
 	},
 		nats.Durable(signalConsumer),
 		nats.DeliverAll(),

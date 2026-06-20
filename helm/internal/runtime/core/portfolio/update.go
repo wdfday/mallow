@@ -24,6 +24,12 @@ func minDecimal(a, b decimal.Decimal) decimal.Decimal {
 // A sell that brings Qty to zero removes the position from the map.
 func (p *Portfolio) ApplyFill(fill Fill) {
 	p.mu.Lock()
+	defer func() {
+		eq := p.equityLocked()
+		if eq.GreaterThan(p.peakEquity) {
+			p.peakEquity = eq
+		}
+	}()
 	defer p.mu.Unlock()
 
 	// Cash impact.
@@ -156,9 +162,9 @@ func (p *Portfolio) UpdatePrice(symbol string, price decimal.Decimal) {
 // ApplySync replaces portfolio state wholesale with authoritative data from
 // the exchange REST API. Called on helm create, enable, and every SYNC_INTERVAL.
 //
-// It does NOT touch equityCurve, trades, or peakEquity — those are updated
-// only via fills (ApplyFill / RecordEquity) to prevent broker-sync moments
-// with temporarily inflated unrealized gains from setting a false peak.
+// It does NOT touch trades or peakEquity — peakEquity advances only via fills
+// (ApplyFill) to prevent broker-sync moments with temporarily inflated unrealized
+// gains from setting a false peak.
 // SyncCash overrides the portfolio's cash balance with the value reported by
 // the exchange. Called on balance-push WS events so the portfolio converges to
 // the broker's authoritative free balance (which includes fees not tracked locally).
@@ -208,13 +214,7 @@ func (p *Portfolio) ApplySync(cash decimal.Decimal, positions []SyncedPosition) 
 			EntryCommission: entryComm,
 		}
 	}
-	// NOTE: peakEquity is intentionally NOT updated here. Broker syncs can happen
-	// at moments when unrealized gains are temporarily high, creating an inflated
-	// high-water mark that makes subsequent drawdown measurements wrong.
-	// peakEquity advances only via fills: ApplyFill → RecordEquity (helm_trading.go).
-	//
-	// First-sync initialisation: if no fills have been recorded yet (peakEquity == 0),
-	// seed the peak from the synced equity so the drawdown gate has a sensible baseline.
+	// First-sync initialisation: seed peakEquity from synced equity if no fills yet.
 	if p.peakEquity.IsZero() {
 		p.peakEquity = p.equityLocked()
 	}
@@ -251,23 +251,6 @@ func (p *Portfolio) RestorePosition(symbol, side string, qty, avgPrice, currentP
 		MarketValue:     mv,
 		EntryTimestamp:  entryTimestamp,
 		EntryCommission: entryComm,
-	}
-}
-
-// RecordEquity appends a timestamped equity snapshot to the equity curve.
-// Also updates peakEquity if the current equity exceeds it.
-func (p *Portfolio) RecordEquity(ts time.Time) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	eq := p.equityLocked()
-	p.equityCurve = append(p.equityCurve, EquityPoint{
-		Timestamp: ts,
-		Equity:    eq,
-		Cash:      p.cash,
-	})
-	if eq.GreaterThan(p.peakEquity) {
-		p.peakEquity = eq
 	}
 }
 

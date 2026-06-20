@@ -68,10 +68,20 @@ const (
 	codeHelmUnhalted = 10304
 )
 
+// skipPersist lists event codes that are too noisy to store in helm_events.
+var skipPersist = map[int]bool{
+	10302: true, // helm_synced — sync heartbeat every SYNC_INTERVAL, no audit value
+}
+
 func (p *Persister) handleMsg(msg *nats.Msg) {
 	var ev natsapi.HelmEvent
 	if err := json.Unmarshal(msg.Data, &ev); err != nil {
 		slog.Warn("eventlog persister: unmarshal failed", "err", err)
+		_ = msg.Ack()
+		return
+	}
+
+	if skipPersist[ev.Code] {
 		_ = msg.Ack()
 		return
 	}

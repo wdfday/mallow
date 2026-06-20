@@ -254,7 +254,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 		case source == "release":
 			closeSource = "release"
 		case source == "dust_exit":
-			closeSource = "dust"
+			closeSource = "external"
 		default:
 			// rest / ws / poll / partial_cancel — all mean a strategy DirExit
 			// signal or local exit monitor triggered the closing order.
@@ -1027,11 +1027,26 @@ func (h *Hand) resolvePendingExit(
 		}
 		if anchor.IsPositive() {
 			prec := priceTick(h.helmRuntime.filtersFor(ctx, symbol).PriceTick)
+			// Offsets are magnitudes (positive values) from the Rhai script convention.
+			// Apply direction-aware sign: for a long, SL is below anchor and TP is above;
+			// for a short, SL is above anchor and TP is below.
+			// Using Abs() makes the code robust to scripts that already send signed values.
+			isBuy := pending.Side == "buy"
 			if !pending.StopOffset.IsZero() {
-				resolved.StopLoss = anchor.Add(pending.StopOffset).Round(prec)
+				dist := pending.StopOffset.Abs()
+				if isBuy {
+					resolved.StopLoss = anchor.Sub(dist).Round(prec) // long SL below entry
+				} else {
+					resolved.StopLoss = anchor.Add(dist).Round(prec) // short SL above entry
+				}
 			}
 			if !pending.TakeProfitOffset.IsZero() {
-				resolved.TakeProfit = anchor.Add(pending.TakeProfitOffset).Round(prec)
+				dist := pending.TakeProfitOffset.Abs()
+				if isBuy {
+					resolved.TakeProfit = anchor.Add(dist).Round(prec) // long TP above entry
+				} else {
+					resolved.TakeProfit = anchor.Sub(dist).Round(prec) // short TP below entry
+				}
 			}
 		}
 		offsetResolved = true

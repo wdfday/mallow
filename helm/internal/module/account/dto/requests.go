@@ -18,8 +18,6 @@ type UpdateAccountRequest struct {
 	Currency          *string `json:"currency,omitempty" binding:"omitempty,len=3"`
 	IsActive          *bool   `json:"isActive,omitempty"`
 	IncludeInNetWorth *bool   `json:"includeInNetWorth,omitempty"`
-	SyncStatus        *string `json:"syncStatus,omitempty" binding:"omitempty,oneof=active error disconnected"`
-	SyncErrorMessage  *string `json:"syncErrorMessage,omitempty"`
 }
 
 // ListAccountsRequest represents query parameters for listing accounts.

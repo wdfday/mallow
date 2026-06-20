@@ -466,18 +466,30 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 }
 
 // reconcileOpenLeg confirms an open leg still exists at the exchange.
+// When the position is gone, it first tries to recover a bracket fill (SL/TP triggered
+// during downtime) so the trade is recorded with the real execution price. Falls back to
+// emitExternalClose (price=0, no PnL) only when no bracket fill can be found.
+//
+// Dust-after-OCO case: the exchange may report a tiny residual balance for the symbol
+// even after an OCO bracket fully executed (rounding at fill, minimum lot mismatch).
+// When bracket order IDs are known, always check them — a "filled" bracket status means
+// the position was closed by the OCO regardless of any dust, and we should record the real
+// trade rather than restoring the position and letting RecoverBrackets handle it later.
 func (r *DefaultReconciler) reconcileOpenLeg(
 	ctx context.Context,
-	_ *HelmRuntime,
+	orch *HelmRuntime,
 	hand *Hand,
 	leg *position.LegState,
 	positions map[string]exchange.PositionResult,
 ) (ReconcileAction, error) {
 	pos, exists := positions[leg.Symbol]
 	if !exists || pos.Qty.IsZero() {
-		// Position was closed externally while app was down.
-		// Cancel any dangling OCO bracket orders so the exchange doesn't hold
-		// orphaned bracket orders that could trigger on unrelated future positions.
+		// Position fully gone — try bracket fill recovery first.
+		if action, err := r.tryRecoverBracketFill(ctx, orch, hand, leg); action != "" {
+			return action, err
+		}
+
+		// No bracket fill found — cancel any dangling OCO orders and record as external close.
 		hand.mu.Lock()
 		hand.cancelExitOrders(ctx, leg.Symbol, "")
 		hand.mu.Unlock()
@@ -493,6 +505,25 @@ func (r *DefaultReconciler) reconcileOpenLeg(
 		})
 		return ReconcileExternalClose, nil
 	}
+
+	// Position balance exists at exchange (may be full size or dust after partial OCO fill).
+	// Check bracket orders first: a "filled" bracket means the OCO executed during downtime
+	// and only residual dust remains. Record the real trade now so RecoverBrackets does not
+	// incorrectly treat the TP auto-cancel as an external close.
+	if len(leg.ExchangeOrderIDs) > 0 {
+		if action, err := r.tryRecoverBracketFill(ctx, orch, hand, leg); action != "" {
+			hand.emitEvent(natsapi.HelmEvent{
+				Code:   CodeReconcileFillApplied,
+				Symbol: leg.Symbol,
+				Qty:    pos.Qty,
+				Reason: "bracket OCO triggered during downtime — position closed (residual dust may remain at exchange)",
+				Msg:    "reconcile: bracket fill recovered; position closed",
+			})
+			return action, err
+		}
+	}
+
+	// No bracket fill → position is genuinely still open.
 	hand.emitEvent(natsapi.HelmEvent{
 		Code:   CodeReconcileRestored,
 		Symbol: leg.Symbol,
@@ -502,6 +533,135 @@ func (r *DefaultReconciler) reconcileOpenLeg(
 		Msg:    "reconcile: position restored",
 	})
 	return ReconcileRestored, nil
+}
+
+// tryRecoverBracketFill queries each bracket order ID stored in the poslog to find a fill
+// that occurred while helm was down. When found it emits KindPositionClosed with the real
+// execution price and generates a trade record, giving accurate PnL instead of the zero-price
+// external-close fallback.
+//
+// Returns ("", nil) when no filled bracket is found so the caller can fall back normally.
+func (r *DefaultReconciler) tryRecoverBracketFill(
+	ctx context.Context,
+	orch *HelmRuntime,
+	hand *Hand,
+	leg *position.LegState,
+) (ReconcileAction, error) {
+	if len(leg.ExchangeOrderIDs) == 0 {
+		return "", nil
+	}
+
+	for _, orderID := range leg.ExchangeOrderIDs {
+		exOrder, err := orch.Exchange.GetOrder(ctx, orch.Creds, orderID)
+		if err != nil || exOrder == nil {
+			slog.Debug("reconcile: bracket GetOrder failed or not found",
+				"hand_id", hand.id, "order_id", orderID, "err", err)
+			continue
+		}
+		if exOrder.Status != "filled" || !exOrder.FilledQty.IsPositive() || !exOrder.FilledAvg.IsPositive() {
+			continue
+		}
+
+		// Determine exit reason from exchange tag, falling back to price comparison.
+		exitReason := "external"
+		switch exOrder.Tag {
+		case "tp":
+			exitReason = "tp"
+		case "sl":
+			exitReason = "sl"
+		default:
+			if leg.TakeProfit.IsPositive() && exOrder.FilledAvg.GreaterThanOrEqual(leg.TakeProfit) {
+				exitReason = "tp"
+			} else if leg.StopLoss.IsPositive() && exOrder.FilledAvg.LessThanOrEqual(leg.StopLoss) {
+				exitReason = "sl"
+			}
+		}
+
+		var pnl decimal.Decimal
+		if leg.EntryPrice.IsPositive() {
+			if leg.Side == "buy" {
+				pnl = exOrder.FilledAvg.Sub(leg.EntryPrice).Mul(exOrder.FilledQty)
+			} else {
+				pnl = leg.EntryPrice.Sub(exOrder.FilledAvg).Mul(exOrder.FilledQty)
+			}
+		}
+
+		if err := r.emitBracketFill(ctx, hand, leg, exOrder, exitReason, pnl); err != nil {
+			return ReconcileFailed, fmt.Errorf("reconcile: bracket fill recovery failed: %w", err)
+		}
+
+		slog.Info("reconcile: bracket fill recovered",
+			"hand_id", hand.id, "symbol", leg.Symbol,
+			"order_id", orderID, "exit_reason", exitReason,
+			"fill_price", exOrder.FilledAvg, "fill_qty", exOrder.FilledQty, "pnl", pnl)
+		hand.emitEvent(natsapi.HelmEvent{
+			Code:    CodeReconcileFillApplied,
+			Symbol:  leg.Symbol,
+			OrderID: orderID,
+			Qty:     exOrder.FilledQty,
+			Price:   exOrder.FilledAvg,
+			Reason:  fmt.Sprintf("bracket %s filled during downtime — recovered with real fill price", exitReason),
+			Msg:     "reconcile: bracket fill recovered",
+		})
+		return ReconcileFillApplied, nil
+	}
+
+	return "", nil
+}
+
+// emitBracketFill writes KindPositionClosed to the poslog with real fill data and appends
+// a trade record. Used by tryRecoverBracketFill to produce accurate PnL when a bracket
+// order triggered while helm was down.
+func (r *DefaultReconciler) emitBracketFill(
+	ctx context.Context,
+	hand *Hand,
+	leg *position.LegState,
+	exOrder *exchange.OrderResult,
+	exitReason string,
+	pnl decimal.Decimal,
+) error {
+	cp := poslog.PositionClosedPayload{
+		OrderID:         leg.PositionID,
+		Symbol:          leg.Symbol,
+		Side:            leg.Side,
+		Qty:             exOrder.FilledQty.String(),
+		EntryPrice:      leg.EntryPrice.String(),
+		EntryAt:         leg.OpenedAt,
+		ClosePrice:      exOrder.FilledAvg.String(),
+		RealizedPnL:     pnl.String(),
+		ExitReason:      exitReason,
+		EntryOrderID:    leg.PositionID,
+		ExitOrderID:     exOrder.ID,
+		DeployedCapital: decimalToString(leg.DeployedCapital),
+	}
+	if leg.StopLoss.IsPositive() {
+		cp.StopLossPrice = leg.StopLoss.String()
+	}
+	if leg.TakeProfit.IsPositive() {
+		cp.TakeProfitPrice = leg.TakeProfit.String()
+	}
+
+	payload, err := json.Marshal(cp)
+	if err != nil {
+		return err
+	}
+	// Deterministic ID: safe to re-run if reconciler crashes mid-write.
+	// JetStream dedup prevents double-recording on retry.
+	if err := r.log.Publish(ctx, poslog.Event{
+		ID:         hand.id.String() + "_bracketfill_" + leg.PositionID + "_" + exOrder.ID,
+		HandID:     hand.id.String(),
+		HelmID:     hand.helmID.String(),
+		PositionID: leg.PositionID,
+		Kind:       poslog.KindPositionClosed,
+		Payload:    payload,
+		At:         time.Now().UTC(),
+	}); err != nil {
+		return err
+	}
+
+	// Persist the trade record (no-op when TradeLog is not configured).
+	hand.appendTradeRecord(ctx, cp, decimal.Zero, time.Now().UTC())
+	return nil
 }
 
 // ── poslog emit helpers ───────────────────────────────────────────────────────

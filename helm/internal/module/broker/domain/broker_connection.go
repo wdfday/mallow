@@ -49,11 +49,6 @@ type BrokerConnection struct {
 	// Paper trading flag
 	IsPaper bool `gorm:"default:false;column:is_paper" json:"is_paper"`
 
-	// External account info (fetched from broker)
-	ExternalAccountID     *string `gorm:"type:varchar(100);column:external_account_id" json:"external_account_id,omitempty"`
-	ExternalAccountNumber *string `gorm:"type:varchar(100);column:external_account_number" json:"external_account_number,omitempty"`
-	ExternalAccountName   *string `gorm:"type:varchar(255);column:external_account_name" json:"external_account_name,omitempty"`
-
 	// Metadata
 	Notes *string `gorm:"type:text;column:notes" json:"notes,omitempty"`
 

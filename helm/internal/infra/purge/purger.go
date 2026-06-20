@@ -18,7 +18,7 @@ func New(db *gorm.DB) *HelmDataPurger {
 	return &HelmDataPurger{db: db}
 }
 
-// PurgeByHelm deletes rows from fills, trades, orders, equity_snapshots, and helm_events
+// PurgeByHelm deletes rows from fills, trades, orders, and helm_events
 // for the given helm and account IDs.
 func (p *HelmDataPurger) PurgeByHelm(helmID, accountID uuid.UUID) error {
 	hid := helmID.String()
@@ -33,7 +33,6 @@ func (p *HelmDataPurger) PurgeByHelm(helmID, accountID uuid.UUID) error {
 		{"fills", "helm_id = ?", []any{hid}},
 		{"trades", "helm_id = ?", []any{hid}},
 		{"orders", "helm_id = ?", []any{hid}},
-		{"equity_snapshots", "helm_id = ?", []any{hid}},
 		{"helm_events", "helm_id = ?", []any{hid}},
 	}
 	// fills also carries account_id — covered by helm_id above, but log it for clarity.

@@ -95,17 +95,6 @@ func NewJetStream(nc *nats.Conn) (nats.JetStreamContext, error) {
 			Storage:  nats.FileStorage,
 			MaxAge:   24 * time.Hour,
 		},
-		// HELM_EQUITY: periodic helm-level portfolio snapshots (cash, equity, positions).
-		// Written by SnapshotWorker after fill bursts (debounced 500ms) and on a 60s heartbeat.
-		// Drained into equity_snapshots (PostgreSQL) by EquityPersister.
-		// 90 days retention; duplicates window prevents double-insert on persister restart.
-		{
-			Name:       "HELM_EQUITY",
-			Subjects:   []string{"helm.equity.>"},
-			Storage:    nats.FileStorage,
-			MaxAge:     90 * 24 * time.Hour,
-			Duplicates: 5 * time.Minute,
-		},
 	}
 	for _, cfg := range streams {
 		if err := ensureStream(js, cfg); err != nil {

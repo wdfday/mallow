@@ -93,8 +93,6 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 		b.GET("/:id/equity", h.equity)
 		b.POST("/:id/start", h.start)
 		b.POST("/:id/stop", h.stop)
-		b.POST("/:id/pause", h.pause)
-		b.POST("/:id/resume", h.resume)
 		b.POST("/:id/kill", h.kill)
 		b.POST("/:id/release", h.release)
 		b.POST("/:id/allocate-capital", h.allocateCapital)
@@ -378,7 +376,8 @@ func (h *Handler) stop(c *gin.Context) {
 }
 
 // kill godoc
-// @Summary Kill hand — stop and flatten all positions
+// @Summary Kill hand (stop + flatten all positions at market)
+// @Description Emergency stop: deregisters the hand, cancels open orders, and places market close orders for all active positions. The hand becomes terminal (killed) and cannot be restarted.
 // @Tags hands
 // @Security BearerAuth
 // @Produce json
@@ -430,60 +429,6 @@ func (h *Handler) release(c *gin.Context) {
 		return
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Hand released successfully", dto.HandActionResp{Status: "released", ID: id.String()})
-}
-
-// pause godoc
-// @Summary Pause a hand
-// @Description Deregister from herald and persist paused status. Capital stays allocated. Use resume to restart.
-// @Tags hands
-// @Produce json
-// @Param id path string true "Hand ID"
-// @Success 200 {object} shared.SuccessResponse[dto.HandActionResp]
-// @Failure 400 {object} shared.ErrorResponse
-// @Failure 404 {object} shared.ErrorResponse
-// @Router /api/v1/hands/{id}/pause [post]
-func (h *Handler) pause(c *gin.Context) {
-	userID, ok := callerUserID(c)
-	if !ok {
-		return
-	}
-	id, _, err := h.checkHandOwner(c.Param("id"), userID)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "not found")
-		return
-	}
-	if err := h.handMgr.Pause(id); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
-		return
-	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Hand paused successfully", dto.HandActionResp{Status: "paused", ID: id.String()})
-}
-
-// resume godoc
-// @Summary Resume a paused hand
-// @Description Re-register with herald and resume signal processing. Only works when hand is paused.
-// @Tags hands
-// @Produce json
-// @Param id path string true "Hand ID"
-// @Success 200 {object} shared.SuccessResponse[dto.HandActionResp]
-// @Failure 400 {object} shared.ErrorResponse
-// @Failure 404 {object} shared.ErrorResponse
-// @Router /api/v1/hands/{id}/resume [post]
-func (h *Handler) resume(c *gin.Context) {
-	userID, ok := callerUserID(c)
-	if !ok {
-		return
-	}
-	id, _, err := h.checkHandOwner(c.Param("id"), userID)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "not found")
-		return
-	}
-	if err := h.handMgr.Resume(id); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
-		return
-	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Hand resumed successfully", dto.HandActionResp{Status: "running", ID: id.String()})
 }
 
 // Metrics writes Prometheus-style text metrics for all runtimes.
@@ -589,15 +534,14 @@ func (h *Handler) stats(c *gin.Context) {
 	shared.RespondWithSuccess(c, http.StatusOK, "Stats retrieved", helmDto.StatsToResp(result.Stats, result.Metadata))
 }
 
-// equity returns the forward-filled equity curve for a hand.
-// @Summary Per-hand equity curve
+// equity returns a running cumulative PnL curve for a hand derived from its trade history.
+// @Summary Per-hand PnL curve (projection from trades)
 // @Tags hands
 // @Security BearerAuth
 // @Produce json
 // @Param id path string true "Hand ID"
 // @Param period query string false "Preset: 24h|7d|30d|mtd|ytd|all"
-// @Param resolution query string false "Bucket size: 1m|5m|15m|1h|4h|1d (default 1m)"
-// @Success 200 {object} shared.SuccessResponse[helmDto.EquityPageResp]
+// @Success 200 {object} shared.SuccessResponse[[]HandEquityPoint]
 // @Router /api/v1/hands/{id}/equity [get]
 func (h *Handler) equity(c *gin.Context) {
 	userID, ok := callerUserID(c)
@@ -609,32 +553,30 @@ func (h *Handler) equity(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusNotFound, "not found")
 		return
 	}
-	res := domain.Resolution(c.DefaultQuery("resolution", string(domain.Res1m)))
-	result, err := h.analytics.EquityCurve(c.Request.Context(), analyticsservice.EquityCurveParams{
-		Scope:      domain.Scope{UserID: userID, HelmID: &helmID, HandID: &id},
-		Period:     parseHandPeriod(c),
-		Resolution: res,
+	result, err := h.analytics.ListTrades(c.Request.Context(), analyticsservice.ListTradesParams{
+		Scope:  domain.Scope{UserID: userID, HelmID: &helmID, HandID: &id},
+		Period: parseHandPeriod(c),
+		Limit:  5000,
 	})
 	if err != nil {
 		shared.RespondWithError(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	resp := helmDto.EquityPageResp{
-		Points:   make([]helmDto.EquityPointResp, 0, len(result.Points)),
-		Limit:    len(result.Points),
-		Metadata: helmDto.MetadataResp(result.Metadata),
+	type point struct {
+		TS        time.Time       `json:"ts"`
+		CumPnL    decimal.Decimal `json:"cum_pnl"`
+		CumNetPnL decimal.Decimal `json:"cum_net_pnl"`
 	}
-	for _, p := range result.Points {
-		resp.Points = append(resp.Points, helmDto.EquityPointResp{
-			HandID:        id.String(),
-			TS:            p.TS,
-			Equity:        p.Equity.InexactFloat64(),
-			Cash:          p.Cash.InexactFloat64(),
-			RealizedPnL:   p.RealizedPnL.InexactFloat64(),
-			UnrealizedPnL: p.UnrealizedPnL.InexactFloat64(),
-		})
+	points := make([]point, 0, len(result.Trades))
+	cumPnL := decimal.Zero
+	cumNet := decimal.Zero
+	for i := len(result.Trades) - 1; i >= 0; i-- {
+		t := result.Trades[i]
+		cumPnL = cumPnL.Add(t.PnL)
+		cumNet = cumNet.Add(t.NetPnL)
+		points = append(points, point{TS: t.ExitAt, CumPnL: cumPnL, CumNetPnL: cumNet})
 	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Equity retrieved", resp)
+	shared.RespondWithSuccess(c, http.StatusOK, "Equity retrieved", points)
 }
 
 // parseLimitQuery parses ?limit= with a default and a hard maximum.

@@ -66,12 +66,6 @@ func (r *HelmRuntime) Trades() []portfolio.Trade {
 	return r.Portfolio.Trades()
 }
 
-// EquityCurve returns the time-series equity log recorded since startup.
-// Each point is a (timestamp, equity) pair snapshot after every fill.
-func (r *HelmRuntime) EquityCurve() []portfolio.EquityPoint {
-	return r.Portfolio.EquityCurve()
-}
-
 // IsHalted reports whether the risk manager has tripped a circuit-breaker
 // (daily loss limit or max drawdown). While halted, new entries are rejected.
 func (r *HelmRuntime) IsHalted() bool {

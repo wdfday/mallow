@@ -93,16 +93,6 @@ func (p *Portfolio) Trades() []Trade {
 	return result
 }
 
-// EquityCurve returns a snapshot of the recorded equity curve.
-func (p *Portfolio) EquityCurve() []EquityPoint {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	result := make([]EquityPoint, len(p.equityCurve))
-	copy(result, p.equityCurve)
-	return result
-}
-
 // Summary returns a full portfolio snapshot for API responses.
 func (p *Portfolio) Summary() Summary {
 	p.mu.RLock()
@@ -156,7 +146,7 @@ func (p *Portfolio) Summary() Summary {
 		RealizedPnL:     realized,
 		TotalReturn:     totalReturn,
 		CurrentDD:       dd,
-		MaxDD:           p.maxDrawdownLocked() * 100,
+		MaxDD:           0, // equity history not tracked
 		WinRate:         p.winRateLocked() * 100,
 		TotalTrades:     len(p.trades),
 		OpenPositions:   len(positions),

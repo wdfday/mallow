@@ -237,16 +237,11 @@ func (t *Tactician) unitCapital() decimal.Decimal {
 }
 
 // limitPrice calculates a limit price slightly inside the current market price.
-// Aims for 30% of the bid-ask spread improvement, with a 0.1% minimum offset.
+// Uses a fixed 0.1% offset; wire bid-ask spread here when L2 data is available.
 // The result is rounded to the same number of decimal places as ctx.Price so it
 // satisfies the exchange PRICE_FILTER tick-size constraint (e.g. ETHUSDT tick=0.01).
 func (t *Tactician) limitPrice(side string, ctx MarketContext) decimal.Decimal {
-	spread := decimal.NewFromFloat(ctx.Spread)
-	offset := spread.Mul(decimal.NewFromFloat(0.3))
-	minOffset := ctx.Price.Mul(decimal.NewFromFloat(0.001))
-	if offset.LessThan(minOffset) {
-		offset = minOffset
-	}
+	offset := ctx.Price.Mul(decimal.NewFromFloat(0.001))
 	var price decimal.Decimal
 	if side == "buy" {
 		price = ctx.Price.Sub(offset)

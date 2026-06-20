@@ -15,7 +15,6 @@ type Portfolio struct {
 	initialCapital decimal.Decimal
 	cash           decimal.Decimal
 	positions      map[string]*Position
-	equityCurve    []EquityPoint
 	trades         []Trade
 	peakEquity     decimal.Decimal
 }
@@ -26,7 +25,6 @@ func New(initialCapital decimal.Decimal) *Portfolio {
 		initialCapital: initialCapital,
 		cash:           initialCapital,
 		positions:      make(map[string]*Position),
-		equityCurve:    make([]EquityPoint, 0, 1024),
 		trades:         make([]Trade, 0, 256),
 		peakEquity:     initialCapital,
 	}

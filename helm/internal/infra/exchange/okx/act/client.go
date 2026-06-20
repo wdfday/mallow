@@ -58,6 +58,12 @@ func (c *Client) Name() string { return "okx" }
 
 // doRequest performs a signed HTTP request to the OKX V5 API using the given credentials.
 func (c *Client) doRequest(ctx context.Context, creds exchange.Credentials, method, path string, body any, out any) error {
+	return c.doRequestAs(ctx, creds, c.paper, method, path, body, out)
+}
+
+// doRequestAs is the underlying signed HTTP request; paper overrides c.paper.
+// Used by broker methods to honour per-call IsPaper without reconstructing the client.
+func (c *Client) doRequestAs(ctx context.Context, creds exchange.Credentials, paper bool, method, path string, body any, out any) error {
 	var payload []byte
 	if body != nil {
 		var err error
@@ -92,7 +98,7 @@ func (c *Client) doRequest(ctx context.Context, creds exchange.Credentials, meth
 	req.Header.Set("OK-ACCESS-SIGN", signature)
 	req.Header.Set("OK-ACCESS-TIMESTAMP", timestamp)
 	req.Header.Set("OK-ACCESS-PASSPHRASE", creds.Passphrase)
-	if c.paper {
+	if paper {
 		req.Header.Set("x-simulated-trading", "1")
 	}
 

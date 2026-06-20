@@ -14,7 +14,6 @@ import (
 	"mallow/helm/internal/infra/poslog"
 	accountdto "mallow/helm/internal/module/account/dto"
 	accountservice "mallow/helm/internal/module/account/service"
-	analyticsdomain "mallow/helm/internal/module/analytics/domain"
 	helmdto "mallow/helm/internal/module/helm/dto"
 	"mallow/helm/internal/runtime"
 	"mallow/helm/internal/runtime/perf"
@@ -24,14 +23,13 @@ import (
 
 // Handler manages account endpoints.
 type Handler struct {
-	service        accountservice.Service
-	helmSvc        HelmLookup
-	handMgr        HandLister
-	reg            *runtime.Registry
-	fillLog        *perflog.FillLog
-	snapshotReader perflog.SnapshotReader
-	posLog         poslog.Log
-	logger         *slog.Logger
+	service accountservice.Service
+	helmSvc HelmLookup
+	handMgr HandLister
+	reg     *runtime.Registry
+	fillLog *perflog.FillLog
+	posLog  poslog.Log
+	logger  *slog.Logger
 }
 
 // NewHandler constructs an account handler.
@@ -41,19 +39,17 @@ func NewHandler(
 	handMgr HandLister,
 	reg *runtime.Registry,
 	fillLog *perflog.FillLog,
-	snapshotReader perflog.SnapshotReader,
 	posLog poslog.Log,
 	logger *slog.Logger,
 ) *Handler {
 	return &Handler{
-		service:        service,
-		helmSvc:        helmSvc,
-		handMgr:        handMgr,
-		reg:            reg,
-		fillLog:        fillLog,
-		snapshotReader: snapshotReader,
-		posLog:         posLog,
-		logger:         logger.With("component", "account.handler"),
+		service: service,
+		helmSvc: helmSvc,
+		handMgr: handMgr,
+		reg:     reg,
+		fillLog: fillLog,
+		posLog:  posLog,
+		logger:  logger.With("component", "account.handler"),
 	}
 }
 
@@ -68,8 +64,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		accounts.GET("/:id/positions", h.positions)
 		accounts.GET("/:id/trades", h.trades)
 		accounts.GET("/:id/fills", h.fills)
-		accounts.GET("/:id/snapshots", h.snapshots)
-		accounts.GET("/:id/equity", h.equity)
 		accounts.GET("/:id/exchange/account", h.exchangeAccount)
 	}
 }
@@ -343,124 +337,6 @@ func (h *Handler) fills(c *gin.Context) {
 		resp.Fills = append(resp.Fills, helmdto.FillToResp(f))
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Fills retrieved successfully", resp)
-}
-
-// snapshots godoc
-// @Summary List portfolio snapshots for an account
-// @Description Deprecated: use GET /api/v1/helms/:id/snapshots instead. Cursor-based pagination over equity_snapshots (PostgreSQL).
-// @Tags accounts
-// @Security BearerAuth
-// @Produce json
-// @Param id path string true "Account ID"
-// @Param before query string false "RFC3339 cursor (exclusive); omit for newest-first"
-// @Param limit query int false "Page size" default(100)
-// @Success 200 {object} shared.SuccessResponse[helmdto.SnapshotPageResp]
-// @Failure 400 {object} shared.ErrorResponse
-// @Failure 401 {object} shared.ErrorResponse
-// @Failure 404 {object} shared.ErrorResponse
-// @Failure 503 {object} shared.ErrorResponse
-// @Deprecated
-// @Router /api/v1/accounts/{id}/snapshots [get]
-func (h *Handler) snapshots(c *gin.Context) {
-	deprecated(c, "GET /api/v1/helms/:id/snapshots")
-	_, helmID, ok := h.resolveAccountHelm(c)
-	if !ok {
-		return
-	}
-	if h.snapshotReader == nil {
-		shared.RespondWithError(c, http.StatusServiceUnavailable, "portfolio log unavailable")
-		return
-	}
-	_, limit := parsePage(c)
-	var before time.Time
-	if beforeStr := c.Query("before"); beforeStr != "" {
-		if t, tErr := time.Parse(time.RFC3339, beforeStr); tErr == nil {
-			before = t
-		}
-	}
-	rows, err := h.snapshotReader.List(c.Request.Context(), helmID, nil, before, limit)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusInternalServerError, err.Error())
-		return
-	}
-	resp := helmdto.SnapshotPageResp{
-		Snapshots: make([]helmdto.SnapshotResp, 0, len(rows)),
-		HasMore:   len(rows) == limit,
-		Limit:     limit,
-	}
-	if resp.HasMore && len(rows) > 0 {
-		resp.Next = rows[len(rows)-1].TS.UTC().Format(time.RFC3339)
-	}
-	for _, r := range rows {
-		resp.Snapshots = append(resp.Snapshots, helmdto.SnapshotRowToResp(r))
-	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Snapshots retrieved successfully", resp)
-}
-
-// equity godoc
-// @Summary Equity curve for an account
-// @Description Deprecated: use GET /api/v1/helms/:id/equity instead. Forward-filled equity curve bucketed by resolution.
-// @Tags accounts
-// @Security BearerAuth
-// @Produce json
-// @Param id path string true "Account ID"
-// @Param after query string false "RFC3339 start (inclusive); default 30 days ago"
-// @Param before query string false "RFC3339 end (inclusive); default now"
-// @Param limit query int false "Page size" default(200)
-// @Success 200 {object} shared.SuccessResponse[helmdto.EquityPageResp]
-// @Failure 400 {object} shared.ErrorResponse
-// @Failure 401 {object} shared.ErrorResponse
-// @Failure 404 {object} shared.ErrorResponse
-// @Failure 503 {object} shared.ErrorResponse
-// @Deprecated
-// @Router /api/v1/accounts/{id}/equity [get]
-func (h *Handler) equity(c *gin.Context) {
-	deprecated(c, "GET /api/v1/helms/:id/equity")
-	_, helmID, ok := h.resolveAccountHelm(c)
-	if !ok {
-		return
-	}
-	if h.snapshotReader == nil {
-		shared.RespondWithError(c, http.StatusServiceUnavailable, "equity log unavailable")
-		return
-	}
-	_, limit := parsePage(c)
-	var after, before time.Time
-	if afterStr := c.Query("after"); afterStr != "" {
-		if t, tErr := time.Parse(time.RFC3339, afterStr); tErr == nil {
-			after = t
-		}
-	}
-	if beforeStr := c.Query("before"); beforeStr != "" {
-		if t, tErr := time.Parse(time.RFC3339, beforeStr); tErr == nil {
-			before = t
-		}
-	}
-	res := analyticsdomain.Resolution(c.DefaultQuery("resolution", string(analyticsdomain.Res1h)))
-	points, err := h.snapshotReader.EquityCurve(c.Request.Context(), helmID, nil, after, before, res)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusInternalServerError, err.Error())
-		return
-	}
-	hasMore := len(points) == limit
-	resp := helmdto.EquityPageResp{
-		Points:  make([]helmdto.EquityPointResp, 0, len(points)),
-		HasMore: hasMore,
-		Limit:   limit,
-	}
-	if hasMore && len(points) > 0 {
-		resp.Next = points[len(points)-1].TS.UTC().Format(time.RFC3339)
-	}
-	for _, p := range points {
-		resp.Points = append(resp.Points, helmdto.EquityPointResp{
-			TS:            p.TS,
-			Equity:        p.Equity.InexactFloat64(),
-			Cash:          p.Cash.InexactFloat64(),
-			RealizedPnL:   p.RealizedPnL.InexactFloat64(),
-			UnrealizedPnL: p.UnrealizedPnL.InexactFloat64(),
-		})
-	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Equity retrieved successfully", resp)
 }
 
 // exchangeAccount godoc

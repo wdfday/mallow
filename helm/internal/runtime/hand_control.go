@@ -115,8 +115,6 @@ func (h *Hand) Kill(ctx context.Context) {
 	h.flattenPositions(ctx)
 
 	h.Stop()
-	// Mark dirty so SnapshotWorker flushes the post-kill helm state promptly.
-	h.helmRuntime.MarkSnapshotDirty()
 	h.helmRuntime.RemoveHand(h.id.String())
 }
 
@@ -134,8 +132,6 @@ func (h *Hand) Release(ctx context.Context) {
 	h.releasePositions(ctx)
 
 	h.Stop()
-	// Mark dirty so SnapshotWorker flushes the post-release helm state promptly.
-	h.helmRuntime.MarkSnapshotDirty()
 	h.helmRuntime.RemoveHand(h.id.String())
 }
 
@@ -184,12 +180,6 @@ func (h *Hand) Health() HandHealth {
 // Position returns the current open position for this hand's symbol, or nil if flat.
 func (h *Hand) Position() *portfolio.Position {
 	return h.helmRuntime.Portfolio.GetPosition(h.Symbol)
-}
-
-// L2 returns the latest L2 order-book snapshot for this hand's symbol.
-// ok=false if no snapshot has been received yet (e.g. market streamer not connected).
-func (h *Hand) L2() (exchange.L2Snapshot, bool) {
-	return h.helmRuntime.LatestL2(h.Symbol)
 }
 
 // ---------------------------------------------------------------------------

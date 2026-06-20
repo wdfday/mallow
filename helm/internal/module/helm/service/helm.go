@@ -104,7 +104,7 @@ func (s *Service) DeleteForAccount(accountID uuid.UUID) error {
 				"helm_id", cfg.ID, "err", delErr)
 		}
 	}
-	// Purge PostgreSQL audit tables (fills, trades, orders, equity_snapshots, helm_events).
+	// Purge PostgreSQL audit tables (fills, trades, orders, helm_events).
 	if s.purger != nil {
 		if err := s.purger.PurgeByHelm(cfg.ID, cfg.AccountID); err != nil {
 			slog.Warn("helm: DeleteForAccount: PG audit purge failed (non-fatal)",

@@ -31,7 +31,7 @@ func CheckCapitalAllocation(
 	}
 	var used float64
 	for _, b := range existing {
-		if b.ID.String() == excludeHandID {
+		if b.ID.String() == excludeHandID || b.Status.IsTerminal() {
 			continue
 		}
 		if alloc := b.AllocatedCapital.InexactFloat64(); alloc > 0 {
@@ -89,7 +89,7 @@ func buildOverflow(
 	var suggestions []dto.CapitalSuggestion
 	remaining := shortage
 	for _, b := range existing {
-		if b.ID.String() == excludeHandID {
+		if b.ID.String() == excludeHandID || b.Status.IsTerminal() {
 			continue
 		}
 		alloc := b.AllocatedCapital

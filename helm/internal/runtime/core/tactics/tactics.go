@@ -24,10 +24,6 @@ import (
 type MarketContext struct {
 	Price decimal.Decimal `json:"price"` // current market price
 	ATR   decimal.Decimal `json:"atr"`   // average true range (from herald ledger)
-	// Spread is the bid-ask spread; always 0 — not yet wired to L2 data.
-	// limitPrice() safely falls back to a 0.1% minOffset when Spread=0.
-	// Wire exchangePublicData.latestL2() here when limit-order accuracy matters.
-	Spread float64 `json:"spread"`
 	// Volume is recent volume; always 0 — not yet wired to any data source.
 	// Reserved for future volume-weighted sizing or urgency heuristics.
 	Volume      float64         `json:"volume"`

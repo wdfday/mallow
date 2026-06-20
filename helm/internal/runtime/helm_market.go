@@ -30,13 +30,6 @@ func (r *HelmRuntime) lastKnownPrice(symbol string) decimal.Decimal {
 	return decimal.Zero
 }
 
-// LatestL2 returns the most recent L2 snapshot for a symbol.
-// Delegates to the registry-level broker cache injected at Spawn().
-// ok=false when no L2 streamer is connected or no snapshot has been received yet.
-func (r *HelmRuntime) LatestL2(symbol string) (exchange.L2Snapshot, bool) {
-	return r.marketData.latestL2(symbol)
-}
-
 // EnqueueLifecycleEvent appends a broker order lifecycle event to the unbounded
 // lifecycle queue and signals the drain goroutine. Never blocks the WS goroutine.
 func (r *HelmRuntime) EnqueueLifecycleEvent(ev exchange.OrderLifecycleEvent) {

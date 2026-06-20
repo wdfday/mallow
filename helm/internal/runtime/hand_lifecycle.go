@@ -164,7 +164,12 @@ func (h *Hand) restorePosition(hp *position.HandPositions, currentPrice decimal.
 	}
 
 	// Rebuild local exit-level guards.
+	// PlacedAt is set to now so fetchBracketStates applies the bracketPollGrace window
+	// after restart. Without this, restored brackets are polled immediately on the first
+	// tick — a transient "not_found" from the exchange triggers a false external-close
+	// and writes KindPositionOrphaned to the poslog before the position can be confirmed.
 	// Pyramid: SL/TP from pos (latest signal levels); non-pyramid: per-leg.
+	restoredAt := time.Now()
 	if h.cfg.pyramid {
 		if pos.StopLoss.IsPositive() || pos.TakeProfit.IsPositive() {
 			var bracketIDs []string
@@ -176,6 +181,7 @@ func (h *Hand) restorePosition(hp *position.HandPositions, currentPrice decimal.
 				StopLoss:         pos.StopLoss,
 				TakeProfit:       pos.TakeProfit,
 				ExchangeOrderIDs: bracketIDs,
+				PlacedAt:         restoredAt,
 			}
 		}
 	} else {
@@ -186,6 +192,7 @@ func (h *Hand) restorePosition(hp *position.HandPositions, currentPrice decimal.
 					StopLoss:         leg.StopLoss,
 					TakeProfit:       leg.TakeProfit,
 					ExchangeOrderIDs: leg.ExchangeOrderIDs,
+					PlacedAt:         restoredAt,
 				}
 			}
 		}

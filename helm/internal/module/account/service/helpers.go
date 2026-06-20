@@ -25,20 +25,6 @@ func parseAccountType(value string) (domain.AccountType, error) {
 	}
 }
 
-// parseSyncStatus validates and parses sync status string.
-func parseSyncStatus(value string) (domain.SyncStatus, error) {
-	switch strings.ToLower(value) {
-	case string(domain.SyncStatusActive):
-		return domain.SyncStatusActive, nil
-	case string(domain.SyncStatusError):
-		return domain.SyncStatusError, nil
-	case string(domain.SyncStatusDisconnected):
-		return domain.SyncStatusDisconnected, nil
-	default:
-		return "", shared.ErrBadRequest.WithDetails("field", "sync_status").WithDetails("reason", "invalid value")
-	}
-}
-
 func normalizeString(value string) *string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {

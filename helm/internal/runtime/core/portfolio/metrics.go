@@ -30,13 +30,6 @@ func (p *Portfolio) CurrentDrawdown() float64 {
 	return f
 }
 
-// MaxDrawdown computes the maximum drawdown over the full equity curve.
-func (p *Portfolio) MaxDrawdown() float64 {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.maxDrawdownLocked()
-}
-
 // WinRate returns the fraction of trades that closed with positive PnL.
 func (p *Portfolio) WinRate() float64 {
 	p.mu.RLock()
@@ -54,31 +47,6 @@ func (p *Portfolio) DailyPnL() decimal.Decimal {
 // ---------------------------------------------------------------------------
 // Locked helpers — caller must hold at least a read lock.
 // ---------------------------------------------------------------------------
-
-// maxDrawdownLocked scans the equity curve for the largest peak-to-trough decline.
-// Exported with capital L so helm_query.go can call it while already holding the lock.
-func (p *Portfolio) MaxDrawdownLocked() float64 { return p.maxDrawdownLocked() }
-
-func (p *Portfolio) maxDrawdownLocked() float64 {
-	if len(p.equityCurve) == 0 {
-		return 0
-	}
-	peak := p.equityCurve[0].Equity
-	maxDD := decimal.Zero
-	for _, pt := range p.equityCurve {
-		if pt.Equity.GreaterThan(peak) {
-			peak = pt.Equity
-		}
-		if peak.IsPositive() {
-			dd := peak.Sub(pt.Equity).Div(peak)
-			if dd.GreaterThan(maxDD) {
-				maxDD = dd
-			}
-		}
-	}
-	f, _ := maxDD.Float64()
-	return f
-}
 
 func (p *Portfolio) winRateLocked() float64 {
 	if len(p.trades) == 0 {

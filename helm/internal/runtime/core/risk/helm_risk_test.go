@@ -59,7 +59,6 @@ func applyRoundTrip(p *portfolio.Portfolio, sym string, qty int64, entryPrice, e
 		Qty:       decimal.NewFromInt(qty),
 		Price:     decimal.NewFromFloat(entryPrice),
 	})
-	p.RecordEquity(now)
 	p.ApplyFill(portfolio.Fill{
 		Timestamp: now.Add(time.Millisecond),
 		Symbol:    sym,
@@ -78,7 +77,6 @@ func openLong(p *portfolio.Portfolio, sym string, qty int64, price float64) {
 		Qty:       decimal.NewFromInt(qty),
 		Price:     decimal.NewFromFloat(price),
 	})
-	p.RecordEquity(time.Now())
 }
 
 // ── Gate 1b: MaxDrawdownPct ───────────────────────────────────────────────────

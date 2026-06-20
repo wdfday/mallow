@@ -248,7 +248,7 @@ func (r *HelmRuntime) runFillProcessor(ctx context.Context) {
 // Fulfills are routed to the owning hand (poslog + metrics + exit logic).
 // Partial fills are applied incrementally to the portfolio and tracked for REST dedup.
 func (r *HelmRuntime) applyWsFill(ev exchange.WsFillEvent) {
-	// Normalise commission to quote currency and adjust qty for buys where fee is paid in the base asset or standard non-quote assets like BNB.
+	// Normalize commission to quote currency and adjust qty for buys where fee is paid in the base asset or standard non-quote assets like BNB.
 	ev.FilledQty, ev.Commission = r.normalizeCommission(ev.Symbol, ev.Side, ev.FilledQty, ev.FilledAvg, ev.Commission, ev.CommissionAsset)
 
 	helmID := r.HelmID.String()

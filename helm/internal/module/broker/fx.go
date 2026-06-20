@@ -9,10 +9,10 @@ import (
 	"gorm.io/gorm"
 
 	"mallow/helm/internal/infra/exchange"
-	"mallow/helm/internal/infra/exchange/client/alpaca"
-	"mallow/helm/internal/infra/exchange/client/binance"
-	"mallow/helm/internal/infra/exchange/client/bybit"
-	"mallow/helm/internal/infra/exchange/client/okx"
+	alpacaact "mallow/helm/internal/infra/exchange/alpaca/act"
+	binanceact "mallow/helm/internal/infra/exchange/binance/act"
+	bybitact "mallow/helm/internal/infra/exchange/bybit/act"
+	okxact "mallow/helm/internal/infra/exchange/okx/act"
 	"mallow/helm/internal/infra/natsapi"
 	accountRepo "mallow/helm/internal/module/account/repository"
 	"mallow/helm/internal/module/broker/domain"
@@ -30,13 +30,7 @@ import (
 // Not yet wired into the router — call handler.RegisterRoutes when ready.
 var Module = fx.Module("broker",
 	fx.Provide(
-		// Broker clients
-		okx.NewOKXClient,
-		binance.NewClient,
-		alpaca.NewClient,
-		bybit.NewClient,
-
-		// Registry assembles all clients into a map
+		// Broker clients — wraps the shared act.Client singletons already provided by app/fx.go
 		provideBrokerRegistry,
 
 		// Repository
@@ -52,16 +46,16 @@ var Module = fx.Module("broker",
 )
 
 func provideBrokerRegistry(
-	okxClient *okx.OKXClient,
-	binanceClient *binance.Client,
-	alpacaClient *alpaca.Client,
-	bybitClient *bybit.Client,
+	okxClient *okxact.Client,
+	binanceClient *binanceact.Client,
+	alpacaClient *alpacaact.Client,
+	bybitClient *bybitact.Client,
 ) service2.BrokerRegistry {
 	return service2.BrokerRegistry{
-		domain.BrokerTypeOKX:     okxClient,
-		domain.BrokerTypeBinance: binanceClient,
-		domain.BrokerTypeAlpaca:  alpacaClient,
-		domain.BrokerTypeBybit:   bybitClient,
+		domain.BrokerTypeOKX:     okxact.NewBroker(okxClient),
+		domain.BrokerTypeBinance: binanceact.NewBroker(binanceClient),
+		domain.BrokerTypeAlpaca:  alpacaact.NewBroker(alpacaClient),
+		domain.BrokerTypeBybit:   bybitact.NewBroker(bybitClient),
 	}
 }
 

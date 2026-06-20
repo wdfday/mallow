@@ -41,7 +41,6 @@ func applyLoss(p *portfolio.Portfolio, sym string, qty int64, entryPrice, exitPr
 		Qty:       decimal.NewFromInt(qty),
 		Price:     decimal.NewFromFloat(entryPrice),
 	})
-	p.RecordEquity(now)
 	p.ApplyFill(portfolio.Fill{
 		Timestamp: now.Add(time.Minute),
 		Symbol:    sym,
@@ -61,7 +60,6 @@ func buyFill(p *portfolio.Portfolio, sym string, qty int64, price float64) {
 		Qty:       decimal.NewFromInt(qty),
 		Price:     decimal.NewFromFloat(price),
 	})
-	p.RecordEquity(now)
 }
 
 // ── Gross exposure ceiling ──────────────────────────────────────────────────────

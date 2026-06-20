@@ -11,15 +11,6 @@ const (
 	AccountTypeOptions      AccountType = "options"       // options-only account
 )
 
-// SyncStatus represents the sync status of a broker account.
-type SyncStatus string
-
-const (
-	SyncStatusActive       SyncStatus = "active"
-	SyncStatusError        SyncStatus = "error"
-	SyncStatusDisconnected SyncStatus = "disconnected"
-)
-
 type Currency string
 
 const (

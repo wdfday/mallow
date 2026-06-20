@@ -1,14 +1,14 @@
 // Package portfolio tracks the in-memory financial state of one broker account:
-// cash balance, open positions, completed round-trip trades, and an equity curve.
+// cash balance, open positions, completed round-trip trades, and peak equity.
 //
 // # Responsibilities
 //
 // Portfolio answers three categories of questions:
 //   - Balances:   Cash(), Equity() — what do I have right now?
 //   - Positions:  Positions(), GetPosition(symbol) — what am I holding?
-//   - History:    Trades(), EquityCurve() — what has happened?
+//   - History:    Trades() — what has happened?
 //
-// It also exposes derived analytics (TotalReturn, CurrentDrawdown, MaxDrawdown,
+// It also exposes derived analytics (TotalReturn, CurrentDrawdown,
 // WinRate, DailyPnL) and a one-call Summary snapshot for API responses.
 //
 // # What Portfolio Does NOT Do
@@ -26,12 +26,13 @@
 //  1. Event-driven (normal path): ApplyFill is called by hand_handling.go after
 //     every confirmed order fill. It updates cash, recalculates avg entry price,
 //     and records a completed Trade when a position is fully closed.
+//     peakEquity is advanced inside ApplyFill via a deferred update.
 //
 //  2. Authoritative sync (periodic path): ApplySync is called by the helm sync
 //     cycle (every SYNC_INTERVAL, default 5 min) with live data from the exchange
 //     REST API. It wholesale-replaces cash and positions with the ground truth,
 //     correcting any drift from missed fills or partial fills.
-//     ApplySync does NOT touch equityCurve or trades — those remain append-only.
+//     ApplySync does NOT touch trades — those remain append-only.
 //
 // On startup, RestorePosition re-injects positions from the poslog replay without
 // touching cash, allowing the reconciler to rebuild in-memory state from the
@@ -56,6 +57,5 @@
 // Equity = cash + Σ(position.Qty × position.CurrentPrice)
 //
 // CurrentPrice is updated in real-time by UpdatePrice (called on every price tick
-// delivered to HelmRuntime). The equity curve is only appended to explicitly
-// via RecordEquity — it is not auto-updated on every tick to avoid unbounded growth.
+// delivered to HelmRuntime).
 package portfolio

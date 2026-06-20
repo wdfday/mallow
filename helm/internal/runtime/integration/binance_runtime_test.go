@@ -488,3 +488,11 @@ func TestBinance_PyramidAndKill(t *testing.T) {
 		t.Errorf("expected hand health status to be HealthKilled, got %s", h.Status)
 	}
 }
+
+// mockFilterStore is a no-op SymbolFilterStore for tests that don't need precision rules.
+type mockFilterStore struct{}
+
+func (m *mockFilterStore) GetFilters(_ string) exchange.SymbolFilters {
+	return exchange.SymbolFilters{}
+}
+func (m *mockFilterStore) SetFilters(_ string, _ exchange.SymbolFilters) {}

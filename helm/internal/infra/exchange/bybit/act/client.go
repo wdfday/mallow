@@ -62,10 +62,16 @@ func (c *Client) Name() string { return "bybit" }
 
 // doSigned performs a signed HTTP request to Bybit V5 API using the given credentials.
 func (c *Client) doSigned(ctx context.Context, creds exchange.Credentials, method, path string, body any, out any) error {
+	return c.doSignedAt(ctx, creds, c.baseURL, method, path, body, out)
+}
+
+// doSignedAt is the underlying signed HTTP request; baseURL overrides c.baseURL.
+// Used by broker methods to honour per-call IsPaper without reconstructing the client.
+func (c *Client) doSignedAt(ctx context.Context, creds exchange.Credentials, baseURL string, method, path string, body any, out any) error {
 	timestamp := strconv.FormatInt(time.Now().UnixMilli(), 10)
 	recvWindow := "5000"
 
-	payload, reqURL := c.buildRequest(method, path, body)
+	payload, reqURL := buildRequestAt(baseURL, method, path, body)
 
 	preSign := timestamp + creds.APIKey + recvWindow + string(payload)
 	signature := sign(preSign, creds.APISecret)
@@ -102,6 +108,10 @@ func (c *Client) doSigned(ctx context.Context, creds exchange.Credentials, metho
 }
 
 func (c *Client) buildRequest(method, path string, body any) (payload []byte, reqURL string) {
+	return buildRequestAt(c.baseURL, method, path, body)
+}
+
+func buildRequestAt(baseURL, method, path string, body any) (payload []byte, reqURL string) {
 	if method == http.MethodGet {
 		if m, ok := body.(map[string]string); ok {
 			params := make([]string, 0, len(m))
@@ -109,12 +119,12 @@ func (c *Client) buildRequest(method, path string, body any) (payload []byte, re
 				params = append(params, k+"="+v)
 			}
 			qs := strings.Join(params, "&")
-			return []byte(qs), c.baseURL + path + "?" + qs
+			return []byte(qs), baseURL + path + "?" + qs
 		}
-		return nil, c.baseURL + path
+		return nil, baseURL + path
 	}
 	data, _ := json.Marshal(body)
-	return data, c.baseURL + path
+	return data, baseURL + path
 }
 
 func sign(payload, secret string) string {

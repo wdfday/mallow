@@ -18,9 +18,22 @@ func NewGormBrokerConnectionRepository(db *gorm.DB) BrokerConnectionRepository {
 	return &gormBrokerConnectionRepository{db: db}
 }
 
-// Migrate runs AutoMigrate for the broker_connections table.
+// Migrate runs AutoMigrate for the broker_connections table and applies schema cleanup.
 func Migrate(db *gorm.DB) error {
-	return db.AutoMigrate(&domain.BrokerConnection{})
+	if err := db.AutoMigrate(&domain.BrokerConnection{}); err != nil {
+		return err
+	}
+	stmts := []string{
+		`ALTER TABLE broker_connections DROP COLUMN IF EXISTS external_account_id`,
+		`ALTER TABLE broker_connections DROP COLUMN IF EXISTS external_account_number`,
+		`ALTER TABLE broker_connections DROP COLUMN IF EXISTS external_account_name`,
+	}
+	for _, stmt := range stmts {
+		if err := db.Exec(stmt).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *gormBrokerConnectionRepository) Create(ctx context.Context, connection *domain.BrokerConnection) error {

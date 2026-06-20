@@ -15,22 +15,15 @@ import (
 
 func (s *Service) Get(id uuid.UUID) (*runtime.HandRef, error) { return s.getOrLoad(id) }
 
-// GetSummary returns the HandSummary for any hand, including terminal ones.
+// GetSummary returns the HandSummary for any hand, including terminal ones (DB fallback).
 func (s *Service) GetSummary(id uuid.UUID) (*domain.HandSummary, error) {
 	s.mu.RLock()
 	bi, inLive := s.hands[id]
-	term, inTerm := s.terminated[id]
 	s.mu.RUnlock()
 	if inLive {
 		sum := bi.Summary()
 		return &sum, nil
 	}
-	if inTerm {
-		sum := term.SummaryFromDB()
-		return &sum, nil
-	}
-	// Fallback: hand not seen this session (e.g. created before this process started
-	// but not yet loaded). This path is rare after a full HydrateAll.
 	data, err := s.repo.Get(id)
 	if err != nil {
 		return nil, err
@@ -47,16 +40,17 @@ func (s *Service) GetHand(id uuid.UUID) *runtime.Hand {
 	return bi.Runner
 }
 
-// List returns all hands: live runtime hands + terminated (killed/released) from cache.
-// No DB call after startup — both maps are seeded in HydrateAll.
+// List returns all hands: live from memory + terminal from DB.
 func (s *Service) List() []domain.HandSummary {
+	all := s.repo.All()
 	s.mu.RLock()
-	out := make([]domain.HandSummary, 0, len(s.hands)+len(s.terminated))
-	for _, bi := range s.hands {
-		out = append(out, bi.Summary())
-	}
-	for _, data := range s.terminated {
-		out = append(out, data.SummaryFromDB())
+	out := make([]domain.HandSummary, 0, len(all))
+	for _, data := range all {
+		if bi, ok := s.hands[data.ID]; ok {
+			out = append(out, bi.Summary())
+		} else {
+			out = append(out, data.SummaryFromDB())
+		}
 	}
 	s.mu.RUnlock()
 	return out
@@ -76,15 +70,13 @@ func (s *Service) ListLive() []domain.HandSummary {
 }
 
 func (s *Service) ListByHelm(orchID uuid.UUID) []domain.HandSummary {
+	all := s.repo.AllByHelm(orchID)
 	s.mu.RLock()
-	var out []domain.HandSummary
-	for _, bi := range s.hands {
-		if bi.Data.HelmID == orchID {
+	out := make([]domain.HandSummary, 0, len(all))
+	for _, data := range all {
+		if bi, ok := s.hands[data.ID]; ok {
 			out = append(out, bi.Summary())
-		}
-	}
-	for _, data := range s.terminated {
-		if data.HelmID == orchID {
+		} else {
 			out = append(out, data.SummaryFromDB())
 		}
 	}

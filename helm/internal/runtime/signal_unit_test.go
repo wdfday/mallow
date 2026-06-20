@@ -656,9 +656,8 @@ func TestSignal_HaltedHelm_NotForwarded(t *testing.T) {
 		MaxDrawdownPct:    0.01,
 	})
 
-	// 2. Record initial equity and execute a loss
-	now := time.Now()
-	rt.Portfolio.RecordEquity(now.Add(-10 * time.Minute))
+	// 2. Ensure peak is seeded before executing a loss
+	rt.Portfolio.UpdatePeakEquity()
 	rt.ReportFill(helmdomain.FillReport{
 		Symbol: symbol,
 		Side:   "buy",

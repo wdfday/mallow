@@ -114,8 +114,6 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 		o.GET("/:id/positions", h.positions)
 		o.GET("/:id/trades", h.trades)
 		o.GET("/:id/fills", h.fills)
-		o.GET("/:id/snapshots", h.snapshots)
-		o.GET("/:id/equity", h.equity)
 		o.GET("/:id/stats", h.stats)
 		o.GET("/:id/orders", h.orders)
 		o.GET("/:id/orders/history", h.ordersHistory)
@@ -720,105 +718,6 @@ func (h *Handler) stats(c *gin.Context) {
 		return
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Stats retrieved successfully", dto.StatsToResp(result.Stats, result.Metadata))
-}
-
-// snapshots returns raw equity_snapshots rows for the helm (PG-backed, no bucketing).
-// FE that needs an evenly-spaced curve should call /equity instead.
-func (h *Handler) snapshots(c *gin.Context) {
-	userID, ok := callerUserID(c)
-	if !ok {
-		return
-	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, "invalid id")
-		return
-	}
-	if err := h.svc.CheckOwner(id, userID); err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "not found")
-		return
-	}
-	_, limit := parsePage(c)
-	params := analyticsservice.ListSnapshotsParams{
-		Scope: domain.Scope{UserID: userID, HelmID: &id},
-		Limit: limit,
-	}
-	if beforeStr := c.Query("before"); beforeStr != "" {
-		if t, perr := time.Parse(time.RFC3339, beforeStr); perr == nil {
-			params.Before = t
-		}
-	}
-	result, err := h.analytics.ListSnapshots(c.Request.Context(), params)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusInternalServerError, err.Error())
-		return
-	}
-	resp := dto.SnapshotPageResp{
-		Snapshots: make([]dto.SnapshotResp, 0, len(result.Snapshots)),
-		HasMore:   result.HasMore,
-		Next:      result.Next,
-		Limit:     limit,
-		Metadata:  dto.MetadataResp(result.Metadata),
-	}
-	for _, s := range result.Snapshots {
-		resp.Snapshots = append(resp.Snapshots, dto.SnapshotRowToResp(s))
-	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Snapshots retrieved successfully", resp)
-}
-
-// equity godoc
-// @Summary Equity curve for a helm (fan-out across all hands, from HELM_EQUITY stream)
-// @Tags helms
-// @Security BearerAuth
-// @Produce json
-// @Param id path string true "Helm ID"
-// @Param after query string false "RFC3339 cursor (exclusive); omit for all"
-// @Param limit query int false "Page size" default(200)
-// @Success 200 {object} shared.SuccessResponse[dto.EquityPageResp]
-// @Failure 404 {object} shared.ErrorResponse
-// @Router /api/v1/helms/{id}/equity [get]
-// equity returns a forward-filled equity curve for the helm. Backed by the
-// analytics service (PG `equity_snapshots`); resolution defaults to 1m.
-func (h *Handler) equity(c *gin.Context) {
-	userID, ok := callerUserID(c)
-	if !ok {
-		return
-	}
-	id, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, "invalid id")
-		return
-	}
-	if err := h.svc.CheckOwner(id, userID); err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "not found")
-		return
-	}
-	res := domain.Resolution(c.DefaultQuery("resolution", string(domain.Res1m)))
-	result, err := h.analytics.EquityCurve(c.Request.Context(), analyticsservice.EquityCurveParams{
-		Scope:      domain.Scope{UserID: userID, HelmID: &id},
-		Period:     parsePeriod(c),
-		Resolution: res,
-	})
-	if err != nil {
-		shared.RespondWithError(c, http.StatusInternalServerError, err.Error())
-		return
-	}
-	resp := dto.EquityPageResp{
-		Points:   make([]dto.EquityPointResp, 0, len(result.Points)),
-		HasMore:  false, // bucket grid is bounded by period
-		Limit:    len(result.Points),
-		Metadata: dto.MetadataResp(result.Metadata),
-	}
-	for _, p := range result.Points {
-		resp.Points = append(resp.Points, dto.EquityPointResp{
-			TS:            p.TS,
-			Equity:        p.Equity.InexactFloat64(),
-			Cash:          p.Cash.InexactFloat64(),
-			RealizedPnL:   p.RealizedPnL.InexactFloat64(),
-			UnrealizedPnL: p.UnrealizedPnL.InexactFloat64(),
-		})
-	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Equity retrieved successfully", resp)
 }
 
 // orders godoc

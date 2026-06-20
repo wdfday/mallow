@@ -14,7 +14,6 @@ import (
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
-	"mallow/helm/internal/infra/perflog"
 	"mallow/helm/internal/infra/poslog"
 	helmdomain "mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/runtime/perf"
@@ -111,33 +110,6 @@ func (r *Registry) SetCredentialErrorHook(fn func(accountID uuid.UUID, reason st
 	r.mu.Lock()
 	r.onCredentialError = fn
 	r.mu.Unlock()
-}
-
-// DirtyRuntimes returns runtimes that have been marked dirty since the last call.
-// Atomically claims (clears) the dirty flag, so each fill burst is flushed once.
-// Implements perflog.SnapshotSource.
-func (r *Registry) DirtyRuntimes() []perflog.SnapshotEmitter {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	var out []perflog.SnapshotEmitter
-	for _, rt := range r.helmRuntimes {
-		if rt.snapshotDirty.CompareAndSwap(1, 0) {
-			out = append(out, rt)
-		}
-	}
-	return out
-}
-
-// AllRuntimes returns all live runtimes for the unconditional heartbeat sweep.
-// Implements perflog.SnapshotSource.
-func (r *Registry) AllRuntimes() []perflog.SnapshotEmitter {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	out := make([]perflog.SnapshotEmitter, 0, len(r.helmRuntimes))
-	for _, rt := range r.helmRuntimes {
-		out = append(out, rt)
-	}
-	return out
 }
 
 // SetTradeLog injects the JetStream trade log. Propagated to all already-spawned runtimes.

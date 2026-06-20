@@ -33,8 +33,6 @@ func (h *NATSHandler) Subscribe(nc *nats.Conn) error {
 		natsapi.SubjHandUpdate: h.update,
 		natsapi.SubjHandStart:  h.start,
 		natsapi.SubjHandStop:   h.stop,
-		natsapi.SubjHandPause:  h.natsPause,
-		natsapi.SubjHandResume: h.natsResume,
 		natsapi.SubjHandKill:   h.kill,
 	}
 	for subj, fn := range routes {
@@ -273,42 +271,8 @@ func (h *NATSHandler) kill(msg *nats.Msg) {
 		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
 		return
 	}
-	slog.Warn("nats: hand killed", "id", id)
+	slog.Info("nats: hand killed", "id", id)
 	_ = msg.Respond(natsapi.ReplyOK(handDto.HandActionResp{Status: "killed", ID: id.String()}))
-}
-
-func (h *NATSHandler) natsPause(msg *nats.Msg) {
-	id, err := parseUUID(msg.Data)
-	if err != nil {
-		_ = msg.Respond(natsapi.ReplyErr("invalid json or id"))
-		return
-	}
-	if _, ok := h.enforceHandOwner(msg, id); !ok {
-		return
-	}
-	if err := h.handMgr.Pause(id); err != nil {
-		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
-		return
-	}
-	slog.Info("nats: hand paused", "id", id)
-	_ = msg.Respond(natsapi.ReplyOK(handDto.HandActionResp{Status: "paused", ID: id.String()}))
-}
-
-func (h *NATSHandler) natsResume(msg *nats.Msg) {
-	id, err := parseUUID(msg.Data)
-	if err != nil {
-		_ = msg.Respond(natsapi.ReplyErr("invalid json or id"))
-		return
-	}
-	if _, ok := h.enforceHandOwner(msg, id); !ok {
-		return
-	}
-	if err := h.handMgr.Resume(id); err != nil {
-		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
-		return
-	}
-	slog.Info("nats: hand resumed", "id", id)
-	_ = msg.Respond(natsapi.ReplyOK(handDto.HandActionResp{Status: "running", ID: id.String()}))
 }
 
 func parseUUID(data []byte) (uuid.UUID, error) {

@@ -249,9 +249,6 @@ func (s *brokerConnectionService) ensureLinkedAccount(ctx context.Context, conn 
 	}
 
 	accountName := fmt.Sprintf("%s %s", conn.BrokerName, string(accountType))
-	if conn.ExternalAccountNumber != nil {
-		accountName = fmt.Sprintf("%s %s - %s", conn.BrokerName, string(accountType), *conn.ExternalAccountNumber)
-	}
 
 	account := &accountDomain.Account{
 		ID:                 uuid.Must(uuid.NewV7()),
@@ -296,17 +293,12 @@ func (s *brokerConnectionService) GetCredentialsByAccountID(ctx context.Context,
 	if creds.Passphrase != nil {
 		passphrase = *creds.Passphrase
 	}
-	accountRef := ""
-	if conn.ExternalAccountID != nil {
-		accountRef = *conn.ExternalAccountID
-	}
 	return natsapi.CredentialsFetchResp{
 		APIKey:      creds.APIKey,
 		APISecret:   creds.APISecret,
 		Passphrase:  passphrase,
 		BrokerType:  string(conn.BrokerType),
 		AccountType: string(account.AccountType),
-		AccountRef:  accountRef,
 		Paper:       conn.IsPaper,
 	}, nil
 }

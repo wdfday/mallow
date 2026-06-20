@@ -53,13 +53,6 @@ type Trade struct {
 	PnLPct         decimal.Decimal `json:"pnl_pct"`
 }
 
-// EquityPoint is a snapshot of total equity at a point in time.
-type EquityPoint struct {
-	Timestamp time.Time       `json:"timestamp"`
-	Equity    decimal.Decimal `json:"equity"`
-	Cash      decimal.Decimal `json:"cash"`
-}
-
 // SyncedPosition is a position as received from an external sync source (exchange REST API).
 type SyncedPosition struct {
 	Symbol   string

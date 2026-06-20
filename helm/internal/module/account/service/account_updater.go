@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"strings"
-	"time"
 
 	"mallow/helm/internal/module/account/domain"
 	accountdto "mallow/helm/internal/module/account/dto"
@@ -43,20 +42,6 @@ func (s *accountService) UpdateAccount(ctx context.Context, id, userID string, r
 	}
 	if req.IncludeInNetWorth != nil {
 		updates["include_in_net_worth"] = *req.IncludeInNetWorth
-	}
-	if req.SyncStatus != nil {
-		status, err := parseSyncStatus(*req.SyncStatus)
-		if err != nil {
-			return nil, err
-		}
-		updates["sync_status"] = string(status)
-		if status == domain.SyncStatusActive {
-			now := time.Now().UTC()
-			updates["last_synced_at"] = &now
-		}
-	}
-	if req.SyncErrorMessage != nil {
-		updates["sync_error_message"] = normalizeNullableString(req.SyncErrorMessage)
 	}
 
 	if len(updates) == 0 {

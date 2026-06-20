@@ -1,7 +1,6 @@
 package dto
 
 import (
-	"encoding/json"
 	"strconv"
 	"time"
 
@@ -14,7 +13,6 @@ import (
 	"mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/readmodel"
 	"mallow/helm/internal/runtime/core/portfolio"
-	"mallow/helm/internal/runtime/perf"
 )
 
 // ── Config DTOs ────────────────────────────────────────────────────────────
@@ -337,83 +335,6 @@ func FillToResp(t natsapi.TransactionMsg) FillResp {
 }
 
 // ── Snapshots ──────────────────────────────────────────────────────────────
-
-type SnapshotPositionResp struct {
-	Symbol   string          `json:"symbol"`
-	Side     string          `json:"side"`
-	Qty      decimal.Decimal `json:"qty"`
-	AvgPrice decimal.Decimal `json:"avg_price"`
-}
-
-// SnapshotResp is one raw equity_snapshots row. Reflects the full PG schema
-// (event-driven, no bucketing) — for time-aligned chart points use EquityPointResp.
-type SnapshotResp struct {
-	HelmID        string                 `json:"helm_id"`
-	HandID        string                 `json:"hand_id,omitempty"`
-	TS            time.Time              `json:"ts"`
-	Cash          decimal.Decimal        `json:"cash,omitempty"`
-	Equity        decimal.Decimal        `json:"equity,omitempty"`
-	RealizedPnL   decimal.Decimal        `json:"realized_pnl,omitempty"`
-	UnrealizedPnL decimal.Decimal        `json:"unrealized_pnl,omitempty"`
-	Positions     []SnapshotPositionResp `json:"positions"`
-}
-
-type SnapshotPageResp struct {
-	Snapshots []SnapshotResp    `json:"snapshots"`
-	Next      string            `json:"next,omitempty"`
-	HasMore   bool              `json:"has_more"`
-	Limit     int               `json:"limit"`
-	Metadata  AnalyticsMetaResp `json:"metadata,omitempty"`
-}
-
-// SnapshotRowToResp converts a PG perflog.SnapshotRow into SnapshotResp.
-// Positions are decoded from JSONB; on decode failure the slice stays empty
-// (row is still returned so the audit view doesn't lose context).
-func SnapshotRowToResp(s readmodel.SnapshotRow) SnapshotResp {
-	r := SnapshotResp{
-		HelmID:        s.HelmID.String(),
-		TS:            s.TS,
-		Cash:          s.Cash,
-		Equity:        s.Equity,
-		RealizedPnL:   s.RealizedPnL,
-		UnrealizedPnL: s.UnrealizedPnL,
-	}
-	if s.HandID != nil {
-		r.HandID = s.HandID.String()
-	}
-	if len(s.PositionsJSON) > 0 {
-		var entries []perf.PositionEntry
-		if err := json.Unmarshal(s.PositionsJSON, &entries); err == nil {
-			r.Positions = make([]SnapshotPositionResp, len(entries))
-			for i, e := range entries {
-				r.Positions[i] = SnapshotPositionResp{Symbol: e.Symbol, Side: e.Side, Qty: e.Qty, AvgPrice: e.AvgPrice}
-			}
-		}
-	}
-	return r
-}
-
-// ── Equity ─────────────────────────────────────────────────────────────────
-
-// EquityPointResp is one bucket of the forward-filled equity curve.
-// `ts` is the bucket boundary (aligned to the requested resolution).
-// `realized_pnl` / `unrealized_pnl` are zero before the first snapshot in the period.
-type EquityPointResp struct {
-	HandID        string    `json:"hand_id,omitempty"`
-	TS            time.Time `json:"ts"`
-	Equity        float64   `json:"equity"`
-	Cash          float64   `json:"cash"`
-	RealizedPnL   float64   `json:"realized_pnl"`
-	UnrealizedPnL float64   `json:"unrealized_pnl"`
-}
-
-type EquityPageResp struct {
-	Points   []EquityPointResp `json:"points"`
-	Next     string            `json:"next,omitempty"`
-	HasMore  bool              `json:"has_more"`
-	Limit    int               `json:"limit"`
-	Metadata AnalyticsMetaResp `json:"metadata,omitempty"`
-}
 
 // ── Conversions ────────────────────────────────────────────────────────────
 

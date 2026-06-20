@@ -20,11 +20,6 @@ type Account struct {
 	IsActive          bool `gorm:"default:true;column:is_active" json:"is_active"`
 	IncludeInNetWorth bool `gorm:"default:true;column:include_in_net_worth" json:"include_in_net_worth"`
 
-	IsAutoSync       bool        `gorm:"default:false;column:is_auto_sync" json:"is_auto_sync"`
-	LastSyncedAt     *time.Time  `gorm:"column:last_synced_at" json:"last_synced_at,omitempty"`
-	SyncStatus       *SyncStatus `gorm:"type:varchar(20);column:sync_status" json:"sync_status,omitempty"`
-	SyncErrorMessage *string     `gorm:"type:text;column:sync_error_message" json:"sync_error_message,omitempty"`
-
 	// FK to broker_connections table (null for manually managed accounts)
 	BrokerConnectionID *uuid.UUID `gorm:"type:uuid;column:broker_connection_id;index" json:"broker_connection_id,omitempty"`
 

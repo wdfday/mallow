@@ -270,12 +270,6 @@ func runOrchestrator(
 			// Step 2.5: Start all hydrated hands now that position state is reconciled.
 			handSvc.StartAllHydrated()
 
-			// Step 2.6: Mark all runtimes dirty so SnapshotWorker emits a fresh
-			// equity snapshot shortly after startup (within its heartbeat window).
-			for _, rt := range reg.All() {
-				rt.MarkSnapshotDirty()
-			}
-
 			// Steps 3–6.
 			reg.ReconcileAllOrders(ctx)
 			reg.RecoverGapFills(ctx)
@@ -372,7 +366,6 @@ func heartbeat(ctx context.Context, reg *runtime.Registry, interval time.Duratio
 					"equity", pf.Equity(),
 					"total_return_pct", fmt.Sprintf("%.2f%%", pf.TotalReturn()*100),
 					"drawdown_pct", fmt.Sprintf("%.2f%%", pf.CurrentDrawdown()*100),
-					"max_drawdown_pct", fmt.Sprintf("%.2f%%", pf.MaxDrawdown()*100),
 					"daily_pnl", pf.DailyPnL(),
 					// hands
 					"hands", len(rt.HandIDs()),

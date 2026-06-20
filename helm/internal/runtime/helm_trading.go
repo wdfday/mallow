@@ -13,7 +13,6 @@ import (
 	"mallow/helm/internal/runtime/core/portfolio"
 	"mallow/helm/internal/runtime/core/strategy"
 	"mallow/helm/internal/runtime/core/tactics"
-	"mallow/helm/internal/runtime/perf"
 )
 
 // TradeProposal is a hand's request for account-level trade validation.
@@ -180,57 +179,7 @@ func (r *HelmRuntime) ReportFill(fill helmdomain.FillReport) {
 
 	r.tradeMu.Unlock()
 
-	// Fills do NOT touch the equity curve / drawdown peak — those are a sampled
-	// projection owned by the SnapshotWorker (after-order debounce + 60s heartbeat),
-	// not an event-sourced aggregate. Fills only emit timing hints:
-	//   MarkSnapshotDirty → worker samples equity (RecordEquity) + emits within 500ms.
-	//   MarkSyncDirty     → debounced REST sync (~3s) reconciles cash/positions to the
-	//                       exchange truth (settlement-safe; optimistic state covers the gap).
-	r.MarkSnapshotDirty()
 	r.MarkSyncDirty()
-}
-
-// helmSnapshot builds a helm-level Snapshot from current portfolio state.
-// Caller must hold tradeMu (or otherwise ensure portfolio is not being written concurrently).
-func (r *HelmRuntime) helmSnapshot(ts time.Time) *perf.Snapshot {
-	rawPos := r.Portfolio.Positions()
-	entries := make([]perf.PositionEntry, 0, len(rawPos))
-	for _, p := range rawPos {
-		side := "buy"
-		if p.Qty.IsNegative() {
-			side = "sell"
-		}
-		entries = append(entries, perf.PositionEntry{
-			Symbol:   p.Symbol,
-			Side:     side,
-			Qty:      p.Qty.Abs(),
-			AvgPrice: p.AvgPrice,
-		})
-	}
-	return &perf.Snapshot{
-		HelmID:        r.HelmID.String(),
-		TS:            ts,
-		Cash:          r.Portfolio.Cash(),
-		Equity:        r.Portfolio.Equity(),
-		RealizedPnL:   r.Portfolio.RealizedPnL(),
-		UnrealizedPnL: r.Portfolio.UnrealizedPnL(),
-		Positions:     entries,
-	}
-}
-
-// MarkSnapshotDirty hints to the SnapshotWorker that a fill just occurred.
-// The worker will flush a snapshot within snapshotDebounce (500ms).
-// This is a timing hint only — snapshot correctness does not depend on it.
-func (r *HelmRuntime) MarkSnapshotDirty() {
-	r.snapshotDirty.Store(1)
-}
-
-// RecordEquity samples the current equity into the equity curve and advances the
-// drawdown high-water mark. Called by the SnapshotWorker on its cadence (post-fill
-// debounce + 60s heartbeat) — NOT from the fill path — so the drawdown peak is a
-// time-sampled projection, not driven by any single fill's instantaneous mark-to-market.
-func (r *HelmRuntime) RecordEquity(ts time.Time) {
-	r.Portfolio.RecordEquity(ts)
 }
 
 // syncDebounce coalesces a burst of fills (e.g. pyramid stacking) into a single
@@ -260,22 +209,6 @@ func (r *HelmRuntime) MarkSyncDirty() {
 		}
 		r.persistSyncTime()
 	})
-}
-
-// BuildSnapshot returns the current helm-level portfolio snapshot.
-// Acquires tradeMu so cash+positions are consistent.
-// Called by SnapshotWorker; safe from any goroutine.
-func (r *HelmRuntime) BuildSnapshot(ts time.Time) *perf.Snapshot {
-	r.tradeMu.Lock()
-	snap := r.helmSnapshot(ts)
-	r.tradeMu.Unlock()
-	return snap
-}
-
-// HelmStringID returns the helm ID as a string for use in NATS subjects.
-// Implements perflog.SnapshotEmitter.
-func (r *HelmRuntime) HelmStringID() string {
-	return r.HelmID.String()
 }
 
 // RemovePosition removes an open position from the portfolio under tradeMu.

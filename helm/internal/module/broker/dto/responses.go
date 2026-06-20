@@ -16,11 +16,6 @@ type BrokerConnectionResponse struct {
 	Status     string    `json:"status"` // active, disconnected, error, pending
 	IsPaper    bool      `json:"is_paper"`
 
-	// External account info
-	ExternalAccountID     *string `json:"external_account_id,omitempty"`
-	ExternalAccountNumber *string `json:"external_account_number,omitempty"`
-	ExternalAccountName   *string `json:"external_account_name,omitempty"`
-
 	// Metadata
 	Notes     *string   `json:"notes,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
@@ -54,18 +49,15 @@ type ListBrokerProvidersResponse struct {
 // ToBrokerConnectionResponse converts domain model to API response.
 func ToBrokerConnectionResponse(conn *domain.BrokerConnection) *BrokerConnectionResponse {
 	return &BrokerConnectionResponse{
-		ID:                    conn.ID,
-		UserID:                conn.UserID,
-		BrokerType:            string(conn.BrokerType),
-		BrokerName:            conn.BrokerName,
-		Status:                string(conn.Status),
-		IsPaper:               conn.IsPaper,
-		ExternalAccountID:     conn.ExternalAccountID,
-		ExternalAccountNumber: conn.ExternalAccountNumber,
-		ExternalAccountName:   conn.ExternalAccountName,
-		Notes:                 conn.Notes,
-		CreatedAt:             conn.CreatedAt,
-		UpdatedAt:             conn.UpdatedAt,
+		ID:         conn.ID,
+		UserID:     conn.UserID,
+		BrokerType: string(conn.BrokerType),
+		BrokerName: conn.BrokerName,
+		Status:     string(conn.Status),
+		IsPaper:    conn.IsPaper,
+		Notes:      conn.Notes,
+		CreatedAt:  conn.CreatedAt,
+		UpdatedAt:  conn.UpdatedAt,
 	}
 }
 

@@ -12,14 +12,12 @@ import (
 
 // exchangePublicData holds all registry-owned public market data for one exchange.
 // "Public" means data fetched from the exchange's public API — no credentials needed:
-//   - filters:  LOT_SIZE, PRICE_FILTER, MIN_NOTIONAL (fetched once at prewarm)
-//   - prices:   last-trade price per symbol (updated on every tick)
-//   - l2Books:  best bid/ask snapshot per symbol (updated on every L2 event)
+//   - filters: LOT_SIZE, PRICE_FILTER, MIN_NOTIONAL (fetched once at prewarm)
+//   - prices:  last-trade price per symbol (updated on every tick)
 //
 // All fields are keyed by bare symbol (e.g. "ETHUSDT"), no exchange prefix.
 // One instance per exchange name (e.g. "binance", "okx") in exchangeMarketCache.
-// A single RWMutex guards all fields — contention is negligible since writes
-// (ticks, L2 events) are serialized per-symbol and reads are fast map lookups.
+// A single RWMutex guards all fields.
 type exchangePublicData struct {
 	mu sync.RWMutex
 
@@ -29,16 +27,12 @@ type exchangePublicData struct {
 
 	// symbol → last-trade price; updated on every market tick.
 	prices map[string]decimal.Decimal
-
-	// symbol → best bid/ask L2 snapshot; updated on every WebSocket L2 event.
-	l2Books map[string]exchange.L2Snapshot
 }
 
 func newExchangePublicData() *exchangePublicData {
 	return &exchangePublicData{
 		filters: make(map[string]exchange.SymbolFilters),
 		prices:  make(map[string]decimal.Decimal),
-		l2Books: make(map[string]exchange.L2Snapshot),
 	}
 }
 
@@ -82,42 +76,12 @@ func (d *exchangePublicData) setPrice(symbol string, price decimal.Decimal) {
 	d.mu.Unlock()
 }
 
-// getPrice returns the cached last-trade price, falling back to the L2 mid-price.
-// Returns zero when neither is available (caller falls back to Portfolio equity).
+// getPrice returns the cached last-trade price for symbol, or zero if not yet seen.
 func (d *exchangePublicData) getPrice(symbol string) decimal.Decimal {
 	d.mu.RLock()
 	p := d.prices[symbol]
-	snap := d.l2Books[symbol]
 	d.mu.RUnlock()
-	if p.IsPositive() {
-		return p
-	}
-	// L2 mid-price fallback.
-	if len(snap.Bids) > 0 && len(snap.Asks) > 0 {
-		bid := snap.Bids[0].Price
-		ask := snap.Asks[0].Price
-		if bid.IsPositive() && ask.IsPositive() {
-			return bid.Add(ask).Div(decimal.NewFromInt(2))
-		}
-	}
-	return decimal.Zero
-}
-
-// ── l2Books ───────────────────────────────────────────────────────────────────
-
-// setL2 updates the L2 snapshot for a symbol.
-func (d *exchangePublicData) setL2(symbol string, snap exchange.L2Snapshot) {
-	d.mu.Lock()
-	d.l2Books[symbol] = snap
-	d.mu.Unlock()
-}
-
-// latestL2 returns the most recent L2 snapshot for a symbol, if any.
-func (d *exchangePublicData) latestL2(symbol string) (exchange.L2Snapshot, bool) {
-	d.mu.RLock()
-	snap, ok := d.l2Books[symbol]
-	d.mu.RUnlock()
-	return snap, ok
+	return p
 }
 
 // ── exchangeMarketCache ───────────────────────────────────────────────────────
@@ -180,28 +144,4 @@ func (c *exchangeMarketCache) updatePrice(exchangeName, bareSym string, price de
 	if d != nil {
 		d.setPrice(bareSym, price)
 	}
-}
-
-// latestL2 returns the most recent L2 snapshot for a symbol from the given exchange.
-func (c *exchangeMarketCache) latestL2(exchangeName, symbol string) (exchange.L2Snapshot, bool) {
-	c.mu.RLock()
-	d := c.exchanges[exchangeName]
-	c.mu.RUnlock()
-	if d == nil {
-		return exchange.L2Snapshot{}, false
-	}
-	return d.latestL2(symbol)
-}
-
-// setL2 updates the L2 snapshot for a symbol on the given exchange.
-func (c *exchangeMarketCache) setL2(exchangeName, symbol string, snap exchange.L2Snapshot) {
-	c.forExchange(exchangeName).setL2(symbol, snap)
-}
-
-// ── Registry API ─────────────────────────────────────────────────────────────
-
-// LatestL2 returns the most recent L2 snapshot for a symbol from the given broker.
-// ok=false if no snapshot has been received yet.
-func (r *Registry) LatestL2(brokerType, symbol string) (exchange.L2Snapshot, bool) {
-	return r.market.latestL2(brokerType, symbol)
 }

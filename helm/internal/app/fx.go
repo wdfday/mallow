@@ -67,11 +67,6 @@ var Module = fx.Options(
 	// Orders persister — HELM_POSITIONS JetStream → orders table read model
 	fx.Provide(newOrdersPersister),
 
-	// Snapshot worker — debounced helm equity snapshots → HELM_EQUITY JetStream
-	fx.Provide(newSnapshotWorker),
-	// Equity persister — HELM_EQUITY JetStream → batch PG writer for equity_snapshots
-	fx.Provide(newEquityPersister),
-
 	// Trade persister — NATS HELM_TRADES → batch PG writer for trades
 	fx.Provide(newTradePersister),
 	// Fill persister — NATS TRADE_FILLS → batch PG writer for fills
@@ -80,8 +75,6 @@ var Module = fx.Options(
 	fx.Provide(newTradelogReader),
 	// orderlog.Log — read-only PG view of the orders table, consumed by handlers
 	fx.Provide(newOrderlogReader),
-	// Snapshot reader — PG-backed read for equity_snapshots (curve + lag)
-	fx.Provide(newSnapshotReader),
 	// Analytics service — read-only KPI / curve / trade list
 	fx.Provide(newStatsRunner),
 	fx.Provide(newAnalyticsService),
@@ -112,8 +105,6 @@ var Module = fx.Options(
 	fx.Invoke(runMigrations),
 	fx.Invoke(startEventLogPersister),
 	fx.Invoke(startOrdersPersister),
-	fx.Invoke(startSnapshotWorker),
-	fx.Invoke(startEquityPersister),
 	fx.Invoke(startTradePersister),
 	fx.Invoke(startFillPersister),
 	fx.Invoke(wireHandLifecycle),
@@ -161,7 +152,7 @@ func runMigrations(db *gorm.DB) error {
 	if err := orderlog.Migrate(db); err != nil {
 		return err
 	}
-	return perflog.MigrateSnapshots(db)
+	return nil
 }
 
 func newHelmRepo(db *gorm.DB) orchdomain.HelmRepo {
@@ -231,42 +222,6 @@ func startOrdersPersister(lc fx.Lifecycle, p *orderlog.Persister) {
 	})
 }
 
-func newSnapshotWorker(reg *runtime.Registry, js nats.JetStreamContext) *perflog.SnapshotWorker {
-	return perflog.NewSnapshotWorker(reg, js)
-}
-
-func startSnapshotWorker(lc fx.Lifecycle, w *perflog.SnapshotWorker) {
-	ctx, cancel := context.WithCancel(context.Background())
-	lc.Append(fx.Hook{
-		OnStart: func(_ context.Context) error {
-			go w.Run(ctx)
-			return nil
-		},
-		OnStop: func(_ context.Context) error {
-			cancel()
-			return nil
-		},
-	})
-}
-
-func newEquityPersister(js nats.JetStreamContext, db *sql.DB) *perflog.EquityPersister {
-	return perflog.NewEquityPersister(js, db)
-}
-
-func startEquityPersister(lc fx.Lifecycle, p *perflog.EquityPersister) {
-	ctx, cancel := context.WithCancel(context.Background())
-	lc.Append(fx.Hook{
-		OnStart: func(_ context.Context) error {
-			go p.Run(ctx)
-			return nil
-		},
-		OnStop: func(_ context.Context) error {
-			cancel()
-			return nil
-		},
-	})
-}
-
 func startEventLogPersister(lc fx.Lifecycle, p *eventlog.Persister) {
 	ctx, cancel := context.WithCancel(context.Background())
 	lc.Append(fx.Hook{
@@ -287,11 +242,10 @@ func newAccountHandler(
 	handMgr *service.Service,
 	reg *runtime.Registry,
 	fillLog *perflog.FillLog,
-	snapshotReader perflog.SnapshotReader,
 	posLog poslog.Log,
 	logger *slog.Logger,
 ) *accountHandler.Handler {
-	return accountHandler.NewHandler(svc, helmSvc, handMgr, reg, fillLog, snapshotReader, posLog, logger)
+	return accountHandler.NewHandler(svc, helmSvc, handMgr, reg, fillLog, posLog, logger)
 }
 
 func newServer(orchH *orchhandler.Handler, handH *handhandler.Handler, accountH *accountHandler.Handler, brokerH *brokerHandler.BrokerConnectionHandler) *gin.Engine {
@@ -341,20 +295,15 @@ func newTradePersister(js nats.JetStreamContext, db *sql.DB) *perflog.TradePersi
 	return perflog.NewTradePersister(js, db)
 }
 
-func newSnapshotReader(db *sql.DB) perflog.SnapshotReader {
-	return perflog.NewSnapshotReader(db)
-}
-
 func newStatsRunner(db *sql.DB) analyticsservice.StatsRunner {
 	return analyticsservice.NewPostgresStatsRunner(db)
 }
 
 func newAnalyticsService(
 	trades tradelog.Log,
-	snapshots perflog.SnapshotReader,
 	stats analyticsservice.StatsRunner,
 ) *analyticsservice.Service {
-	return analyticsservice.New(trades, snapshots, stats)
+	return analyticsservice.New(trades, stats)
 }
 
 func startTradePersister(lc fx.Lifecycle, p *perflog.TradePersister) {

@@ -30,6 +30,8 @@ func MigrateFills(db *gorm.DB) error {
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_fills_trade_id ON fills (trade_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_fills_account_filled ON fills (account_id, filled_at DESC)`,
 		`CREATE INDEX IF NOT EXISTS idx_fills_hand_filled ON fills (hand_id, filled_at DESC) WHERE hand_id IS NOT NULL`,
+		// Drop legacy equity_snapshots table (replaced by JetStream helm.equity.> stream).
+		`DROP TABLE IF EXISTS equity_snapshots`,
 	}
 	for _, s := range stmts {
 		if err := db.Exec(s).Error; err != nil {

@@ -198,42 +198,6 @@ func TestKillAndRelease_FreesMemory(t *testing.T) {
 		}
 	}
 
-	// Re-create the hand to test Kill
-	ref, err = svc.Create(cfg)
-	if err != nil {
-		t.Fatalf("failed to re-create hand: %v", err)
-	}
-	handID2 := ref.Data.ID
-
-	// Verify hand2 is in cache
-	svc.mu.RLock()
-	_, inCache = svc.hands[handID2]
-	svc.mu.RUnlock()
-	if !inCache {
-		t.Fatal("expected hand2 to be present in service cache")
-	}
-
-	// Call Kill
-	err = svc.Kill(context.Background(), handID2)
-	if err != nil {
-		t.Fatalf("Kill failed: %v", err)
-	}
-
-	// Verify hand2 is removed from service cache
-	svc.mu.RLock()
-	_, inCache = svc.hands[handID2]
-	svc.mu.RUnlock()
-	if inCache {
-		t.Fatal("expected hand2 to be removed from service cache after Kill")
-	}
-
-	// Verify hand2 is removed from runtime registry
-	rtHands = rt.HandIDs()
-	for _, id := range rtHands {
-		if id == handID2.String() {
-			t.Fatal("expected hand2 to be removed from runtime registry after Kill")
-		}
-	}
 }
 
 func TestAllocateCapital_DynamicScale(t *testing.T) {

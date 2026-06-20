@@ -19,9 +19,24 @@ func New(db *gorm.DB) Repository {
 	return &gormRepository{db: db}
 }
 
-// Migrate runs AutoMigrate for the accounts table.
+// Migrate runs AutoMigrate for the accounts table and applies schema cleanup.
 func Migrate(db *gorm.DB) error {
-	return db.AutoMigrate(&domain.Account{})
+	if err := db.AutoMigrate(&domain.Account{}); err != nil {
+		return err
+	}
+	// Drop deprecated sync-state columns — sync state lives at broker_connections level.
+	stmts := []string{
+		`ALTER TABLE accounts DROP COLUMN IF EXISTS is_auto_sync`,
+		`ALTER TABLE accounts DROP COLUMN IF EXISTS sync_status`,
+		`ALTER TABLE accounts DROP COLUMN IF EXISTS sync_error_message`,
+		`ALTER TABLE accounts DROP COLUMN IF EXISTS last_synced_at`,
+	}
+	for _, stmt := range stmts {
+		if err := db.Exec(stmt).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func base(db *gorm.DB) *gorm.DB {

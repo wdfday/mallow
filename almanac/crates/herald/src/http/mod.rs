@@ -68,7 +68,6 @@ use crate::ws_latency::WsLatencyTracker;
 pub mod admin;
 mod backtest;
 pub mod data;
-mod duckdb_helpers;
 mod openapi;
 mod script_validate;
 pub mod store;

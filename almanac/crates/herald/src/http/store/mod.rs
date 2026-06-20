@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 use crate::http::strategy::types::{Strategy, StrategySpec, UpdateStrategyReq};
 
+pub mod migrate;
 // ── In-memory strategy ───────────────────────────────────────────────────────────
 
 #[derive(Default)]
@@ -486,4 +487,3 @@ impl StoreBackend {
         }
     }
 }
-

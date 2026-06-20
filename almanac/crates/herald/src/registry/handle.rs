@@ -5,9 +5,20 @@ use anyhow::{anyhow, Result};
 use alm_core::{signal::Signal, strategy::Strategy, Bar, Timeframe};
 use alm_core::{MtfSnapshot, MtfStrategy, TfBarEvent, TfView};
 use alm_ledger::Ledger;
-use alm_data::aggregator::StandaloneAggregator;
 use alm_strategy::{probe_script_htfs, ScriptStrategy, MtfScriptStrategy};
 use tracing::{debug, info, trace};
+
+// ── alignment-point helper ────────────────────────────────────────────────────
+
+/// Returns true when the M1 bar at `m1_bar_ts` is the last bar of an HTF
+/// bucket, i.e. the HTF bar closes exactly when this M1 bar closes.
+///
+/// `close_ts = m1_bar_ts + base_tf.duration_ms()`
+/// alignment iff `close_ts % htf.duration_ms() == 0`
+pub fn is_htf_align_point(m1_bar_ts: i64, base_tf: Timeframe, htf: Timeframe) -> bool {
+    let close_ts = m1_bar_ts + base_tf.duration_ms();
+    close_ts % htf.duration_ms() == 0
+}
 
 // ── LiveStrategy ──────────────────────────────────────────────────────────────
 
@@ -19,9 +30,9 @@ enum LiveStrategy {
     V1 {
         strategy: Box<dyn Strategy>,
     },
-    /// v2: multi-TF strategy fed by confirmed HTF bars read directly from ledger.
-    /// `last_htf_ts` tracks the last HTF bar timestamp fed per TF so we only
-    /// push newly-confirmed bars into the strategy (no double-feed on warmup).
+    /// v2: multi-TF strategy. On every M1 base tick, checks alignment points
+    /// for each declared HTF. If aligned, reads the HTF bar from the ledger ring
+    /// and includes it as an HTF event in the MtfSnapshot.
     V2 {
         strategy: Box<dyn MtfStrategy>,
         declared_htfs: Vec<Timeframe>,
@@ -30,9 +41,6 @@ enum LiveStrategy {
         /// (always M1 in production), which is the registry's `base_tf` field.
         /// Named `eval_tf` here to prevent the two from being confused at call sites.
         eval_tf: Timeframe,
-        /// Last bar.timestamp fed into the strategy per HTF, used to detect
-        /// newly-confirmed bars on each M1 tick.
-        last_htf_ts: HashMap<Timeframe, i64>,
     },
 }
 
@@ -49,11 +57,6 @@ pub struct Handle {
     pub target_tf: Timeframe,
     live: LiveStrategy,
     ledger: Arc<Ledger>,
-    /// Resample subscriptions this hand acquired at register time. Released
-    /// when the hand is removed from the registry. Each tuple is
-    /// `(source_tf, target_tf)` matching what `Registry::register` called
-    /// `resample.ensure` with.
-    pub(super) resample_subs: Vec<(Timeframe, Timeframe)>,
 }
 
 impl Handle {
@@ -91,22 +94,12 @@ impl Handle {
             for &htf in &htfs {
                 ledger.ensure_symbol(&symbol, htf, None);
             }
-            let last_htf_ts = warmup_v2(probe.as_mut(), &symbol, target_tf, &htfs, ledger);
+            warmup_v2(probe.as_mut(), &symbol, target_tf, base_tf, &htfs, ledger);
             debug!(
                 %hand_id, %symbol,
                 base_tf = %base_tf, target_tf = %target_tf, htfs = ?htfs,
                 "v2 MTF strategy warmed from ledger"
             );
-            // V2 subscriptions: target_tf (if > base) + every declared HTF (if > base).
-            let mut resample_subs: Vec<(Timeframe, Timeframe)> = Vec::new();
-            if target_tf != base_tf {
-                resample_subs.push((base_tf, target_tf));
-            }
-            for htf in &htfs {
-                if *htf != base_tf {
-                    resample_subs.push((base_tf, *htf));
-                }
-            }
             return Ok(Self {
                 hand_id,
                 helm_id,
@@ -119,10 +112,8 @@ impl Handle {
                     strategy: probe,
                     declared_htfs: htfs,
                     eval_tf: target_tf,
-                    last_htf_ts,
                 },
                 ledger: Arc::clone(ledger),
-                resample_subs,
             });
         }
 
@@ -133,13 +124,10 @@ impl Handle {
         // Warm the strategy from ledger history at `target_tf`. Two cases:
         //
         // 1. `target_tf == base_tf` — feed the existing window directly.
-        // 2. `target_tf > base_tf` and the ledger already has HTF bars (e.g.
-        //    from a parallel V2 hand or an external HTF feed) — use them.
-        // 3. `target_tf > base_tf` and the HTF window is empty (most common
-        //    on first registration after restart) — aggregate the BASE-TF
-        //    history into one-shot HTF bars via `StandaloneAggregator` so
-        //    the strategy lands ready instead of waiting up to one full
-        //    bucket period before the first signal.
+        // 2. `target_tf > base_tf` — use alignment-point logic to reconstruct
+        //    which bars to feed: walk the base_tf window and pick only the bars
+        //    that sit at alignment points for target_tf. Read from ledger target_tf
+        //    ring if populated; otherwise derive from base_tf history via alignment.
         let warm_bars: Vec<Bar> = if target_tf == base_tf {
             ledger
                 .with_state(&symbol, target_tf, |s| s.bar_window.iter().cloned().collect())
@@ -151,20 +139,15 @@ impl Handle {
             if !htf_window.is_empty() {
                 htf_window
             } else {
-                // One-shot aggregate base history → HTF bars in memory. We
-                // don't push these into the ledger to avoid racing with the
-                // ResampleManager subscription that will be wired right after.
+                // Derive from base history: collect bars at alignment points.
+                // Each alignment point corresponds to the last M1 bar in an HTF bucket.
                 let base_window: Vec<Bar> = ledger
                     .with_state(&symbol, base_tf, |s| s.bar_window.iter().cloned().collect())
                     .unwrap_or_default();
-                let mut agg = StandaloneAggregator::new(target_tf);
-                let mut out = Vec::new();
-                for b in &base_window {
-                    if let Some(htf) = agg.update(b) {
-                        out.push(htf);
-                    }
-                }
-                out
+                base_window
+                    .into_iter()
+                    .filter(|b| is_htf_align_point(b.timestamp, base_tf, target_tf))
+                    .collect()
             }
         };
         for bar in &warm_bars {
@@ -178,13 +161,6 @@ impl Handle {
             "v1 strategy warmed up from ledger history"
         );
 
-        // V1 only needs a subscription if target_tf > base_tf (script-declared
-        // HTFs were rejected by V1 build, so no HTF leak here).
-        let resample_subs: Vec<(Timeframe, Timeframe)> = if target_tf != base_tf {
-            vec![(base_tf, target_tf)]
-        } else {
-            Vec::new()
-        };
         Ok(Self {
             hand_id,
             helm_id,
@@ -195,23 +171,35 @@ impl Handle {
             target_tf,
             live: LiveStrategy::V1 { strategy },
             ledger: Arc::clone(ledger),
-            resample_subs,
         })
     }
 
-    pub fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
+    /// Called from `SymbolGroup::evaluate_all` with the base-TF bar.
+    ///
+    /// For V1 with `target_tf == base_tf`: feed directly.
+    /// For V1 with `target_tf != base_tf`: fire only at alignment points,
+    ///   reading the bar from the ledger's target_tf ring.
+    /// For V2: always fires (alignment check done internally in `on_bar_v2`).
+    pub fn on_bar_base(&mut self, base_bar: &Bar, base_tf: Timeframe) -> Vec<Signal> {
         let sigs = match &mut self.live {
-            // V1: single-TF — bar arrives already at target_tf (either base TF
-            // or a resampled HTF bar from ResampleManager). Push straight through;
-            // no ledger look-up needed because the strategy maintains its own
-            // rolling indicator state internally.
-            LiveStrategy::V1 { strategy } => strategy.on_bar(bar),
-
-            // V2: multi-TF — before feeding the base-TF bar we check the ledger
-            // for any newly-confirmed HTF bars and deliver them first (largest TF
-            // first), then the base bar. See `on_bar_v2` for the full ordering.
-            LiveStrategy::V2 { strategy, declared_htfs, eval_tf, last_htf_ts } => {
-                on_bar_v2(strategy.as_mut(), bar, *eval_tf, declared_htfs, last_htf_ts, &self.symbol, &self.ledger)
+            LiveStrategy::V1 { strategy } => {
+                if self.target_tf == base_tf {
+                    strategy.on_bar(base_bar)
+                } else {
+                    // Only fire at alignment points for non-base TF hands.
+                    if !is_htf_align_point(base_bar.timestamp, base_tf, self.target_tf) {
+                        return Vec::new();
+                    }
+                    // Read the bar from the ledger ring at target_tf.
+                    let bar = match self.ledger.with_state(&self.symbol, self.target_tf, |s| s.bar_window.back().cloned()) {
+                        Some(Some(b)) => b,
+                        _ => return Vec::new(),
+                    };
+                    strategy.on_bar(&bar)
+                }
+            }
+            LiveStrategy::V2 { strategy, declared_htfs, eval_tf } => {
+                on_bar_v2(strategy.as_mut(), base_bar, base_tf, *eval_tf, declared_htfs, &self.symbol, &self.ledger)
             }
         };
         if !sigs.is_empty() {
@@ -229,25 +217,38 @@ impl Handle {
 
 fn on_bar_v2(
     strategy: &mut dyn MtfStrategy,
-    bar: &Bar,
+    base_bar: &Bar,
     base_tf: Timeframe,
+    eval_tf: Timeframe,
     declared_htfs: &[Timeframe],
-    last_htf_ts: &mut HashMap<Timeframe, i64>,
     symbol: &str,
     ledger: &Arc<Ledger>,
 ) -> Vec<Signal> {
-    // Collect HTF bars newly confirmed in ledger since last evaluation.
-    // "Query the H1 ring, fallback = implicit (binding keeps last confirmed)."
+    // For each declared HTF: if this base bar is at an alignment point,
+    // read the latest bar from the ledger ring and merge the base bar in
+    // to get a consistent close.  The forming H1 bar from the exchange may
+    // lag by a tick or two; by overriding close/high/low with the base bar
+    // we guarantee the H1 the strategy sees has the same close as the last
+    // base bar of that bucket — no stale-close artifacts in indicators.
     let mut htf_events: Vec<(Timeframe, Bar)> = Vec::new();
     for &htf in declared_htfs {
-        let latest = ledger
-            .with_state(symbol, htf, |s| s.bar_window.back().cloned())
-            .flatten();
-        if let Some(htf_bar) = latest {
-            let last = last_htf_ts.entry(htf).or_insert(-1);
-            if htf_bar.timestamp > *last {
-                *last = htf_bar.timestamp;
-                htf_events.push((htf, htf_bar));
+        if is_htf_align_point(base_bar.timestamp, base_tf, htf) {
+            let latest = ledger
+                .with_state(symbol, htf, |s| s.bar_window.back().cloned())
+                .flatten();
+            if let Some(htf_bar) = latest {
+                // Merge: keep H1 open/volume (accumulated by exchange), override
+                // close with base bar close (exact final), clamp high/low.
+                let merged = Bar::new(
+                    htf_bar.timestamp,
+                    &htf_bar.symbol,
+                    htf_bar.open,
+                    htf_bar.high.max(base_bar.high),
+                    htf_bar.low.min(base_bar.low),
+                    base_bar.close,
+                    htf_bar.volume,
+                );
+                htf_events.push((htf, merged));
             }
         }
     }
@@ -256,7 +257,7 @@ fn on_bar_v2(
 
     // Build owned event list: HTF events + base bar.
     let mut events_owned: Vec<(Timeframe, Bar)> = htf_events;
-    events_owned.push((base_tf, bar.clone()));
+    events_owned.push((eval_tf, base_bar.clone()));
 
     let tf_bar_events: Vec<TfBarEvent<'_>> = events_owned
         .iter()
@@ -268,8 +269,8 @@ fn on_bar_v2(
     let empty_views: HashMap<Timeframe, TfView<'_>> = HashMap::new();
 
     let snap = MtfSnapshot {
-        base_tf,
-        close_ts: bar.timestamp + base_tf.duration_ms(),
+        base_tf: eval_tf,
+        close_ts: base_bar.timestamp + base_tf.duration_ms(),
         events: &tf_bar_events,
         views: &empty_views,
     };
@@ -280,20 +281,17 @@ fn on_bar_v2(
 
 /// Replay ledger history into `strategy` to warm up indicator state.
 ///
-/// Merges base-TF and HTF bar windows chronologically: for each base bar,
-/// we first deliver any HTF bars that closed at or before it, then the base
-/// bar itself — matching the live ordering guarantee (HTFs advance before M1
-/// observer fires).
-///
-/// Returns `last_htf_ts` initialized to the last HTF bar timestamp fed, so
-/// the live `on_bar_v2` path doesn't re-feed them.
+/// Merges base-TF and HTF bar windows chronologically using alignment points:
+/// for each base bar, we first deliver any HTF bars that closed at or before it
+/// (using the ledger-resident HTF windows), then the base bar itself.
 fn warmup_v2(
     strategy: &mut dyn MtfStrategy,
     symbol: &str,
+    eval_tf: Timeframe,
     base_tf: Timeframe,
     declared_htfs: &[Timeframe],
     ledger: &Arc<Ledger>,
-) -> HashMap<Timeframe, i64> {
+) {
     let base_bars: Vec<Bar> = ledger
         .with_state(symbol, base_tf, |s| s.bar_window.iter().cloned().collect())
         .unwrap_or_default();
@@ -305,7 +303,7 @@ fn warmup_v2(
              indicators will not be warmed until the ledger window fills up. \
              Check that parquet bootstrap completed before the first hand was registered."
         );
-        return HashMap::new();
+        return;
     }
 
     // Load HTF windows from ledger into mutable queues for consumption.
@@ -320,13 +318,12 @@ fn warmup_v2(
         })
         .collect();
 
-    let mut last_htf_ts: HashMap<Timeframe, i64> = HashMap::new();
     let empty_views: HashMap<Timeframe, TfView<'_>> = HashMap::new();
 
     for base_bar in &base_bars {
         let m1_close = base_bar.timestamp + base_tf.duration_ms();
 
-        // Deliver HTF bars whose close is at or before this M1 close.
+        // Deliver HTF bars whose close is at or before this base close.
         let mut htf_events: Vec<(Timeframe, Bar)> = Vec::new();
         for (&htf, deq) in &mut htf_remaining {
             let htf_dur = htf.duration_ms();
@@ -334,7 +331,6 @@ fn warmup_v2(
                 let htf_close = front.timestamp + htf_dur;
                 if htf_close <= m1_close {
                     let htf_bar = deq.pop_front().unwrap();
-                    last_htf_ts.insert(htf, htf_bar.timestamp);
                     htf_events.push((htf, htf_bar));
                 } else {
                     break;
@@ -344,7 +340,7 @@ fn warmup_v2(
         htf_events.sort_by(|a, b| b.0.duration_ms().cmp(&a.0.duration_ms()));
 
         let mut events_owned: Vec<(Timeframe, Bar)> = htf_events;
-        events_owned.push((base_tf, base_bar.clone()));
+        events_owned.push((eval_tf, base_bar.clone()));
 
         let tf_bar_events: Vec<TfBarEvent<'_>> = events_owned
             .iter()
@@ -352,15 +348,13 @@ fn warmup_v2(
             .collect();
 
         let snap = MtfSnapshot {
-            base_tf,
+            base_tf: eval_tf,
             close_ts: m1_close,
             events: &tf_bar_events,
             views: &empty_views,
         };
         let _ = strategy.on_bars(snap);
     }
-
-    last_htf_ts
 }
 
 // ── SymbolGroup ───────────────────────────────────────────────────────────────
@@ -378,25 +372,14 @@ impl SymbolGroup {
         Self { symbol, hands: Vec::new() }
     }
 
-    /// Insert / replace a hand. Returns the resample subscriptions of any
-    /// previously-existing hand with the same id so the caller can release
-    /// them (re-register may have changed the subscription set).
-    pub fn add(&mut self, hand: Handle) -> Vec<(Timeframe, Timeframe)> {
-        let mut dropped = Vec::new();
-        self.hands.retain(|h| {
-            if h.hand_id == hand.hand_id {
-                dropped.extend(h.resample_subs.iter().copied());
-                false
-            } else { true }
-        });
+    /// Insert / replace a hand. Returns whether any hand was replaced.
+    pub fn add(&mut self, hand: Handle) {
+        self.hands.retain(|h| h.hand_id != hand.hand_id);
         self.hands.push(hand);
-        dropped
     }
 
-    /// Remove a hand and return its resample subscriptions so the caller can
-    /// release them.
-    pub fn remove(&mut self, hand_id: &str) -> Vec<(Timeframe, Timeframe)> {
-        let mut dropped = Vec::new();
+    /// Remove a hand by id.
+    pub fn remove(&mut self, hand_id: &str) {
         self.hands.retain(|h| {
             if h.hand_id == hand_id {
                 info!(
@@ -404,20 +387,14 @@ impl SymbolGroup {
                     symbol = %self.symbol, target_tf = %h.target_tf,
                     "hand deregistered"
                 );
-                dropped.extend(h.resample_subs.iter().copied());
                 false
             } else { true }
         });
-        dropped
     }
 
-    /// Drain every hand and return all their subscriptions for batch release.
-    pub fn drain_subs(&mut self) -> Vec<(Timeframe, Timeframe)> {
-        let mut subs = Vec::new();
-        for h in self.hands.drain(..) {
-            subs.extend(h.resample_subs);
-        }
-        subs
+    /// Drain every hand.
+    pub fn drain_all(&mut self) {
+        self.hands.clear();
     }
 
     pub fn is_empty(&self) -> bool {
@@ -428,17 +405,16 @@ impl SymbolGroup {
         self.hands.len()
     }
 
-    /// Count hands that evaluate at the given timeframe.
-    pub fn count_for_tf(&self, tf: Timeframe) -> usize {
-        self.hands.iter().filter(|h| h.target_tf == tf).count()
+    /// Count hands that have at least one hand registered (any TF).
+    pub fn count_all(&self) -> usize {
+        self.hands.len()
     }
 
-    /// Run every hand whose `target_tf` matches `tf`. Other hands are skipped
-    /// — they'll evaluate on their own TF's advance event. Returns one entry
-    /// per emitting hand.
-    pub fn evaluate_at(&mut self, tf: Timeframe, bar: &Bar) -> Vec<(String, String, Signal)> {
+    /// Run every hand, passing the base-TF bar. Alignment-point filtering is
+    /// done inside each handle's `on_bar_base`. Returns one entry per emitting hand.
+    pub fn evaluate_all(&mut self, base_bar: &Bar, base_tf: Timeframe) -> Vec<(String, String, Signal)> {
         let mut results = Vec::new();
-        for h in self.hands.iter_mut().filter(|h| h.target_tf == tf) {
+        for h in self.hands.iter_mut() {
             let strategy_type = match &h.live {
                 LiveStrategy::V1 { .. } => "v1",
                 LiveStrategy::V2 { .. } => "v2",
@@ -451,7 +427,7 @@ impl SymbolGroup {
             let _bot_enter = bot_span.enter();
 
             let bot_start = std::time::Instant::now();
-            let sigs = h.on_bar(bar);
+            let sigs = h.on_bar_base(base_bar, base_tf);
             let bot_us = bot_start.elapsed().as_micros();
 
             metrics::histogram!(
@@ -483,4 +459,3 @@ impl SymbolGroup {
         self.hands.iter()
     }
 }
-

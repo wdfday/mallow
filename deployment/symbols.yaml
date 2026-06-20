@@ -17,21 +17,21 @@ binance:
   - ETHUSDT
   - BNBUSDT
   - SOLUSDT
-  - XRPUSDT
-  - ADAUSDT
-  - AVAXUSDT
-  - DOTUSDT
-  - LINKUSDT
-  - POLUSDT
+#  - XRPUSDT
+#  - ADAUSDT
+#  - AVAXUSDT
+#  - DOTUSDT
+#  - LINKUSDT
+#  - POLUSDT
 
 okx:
   - BTC-USDT
   - ETH-USDT
   - BNB-USDT
   - SOL-USDT
-  - XRP-USDT
-  - ADA-USDT
-  - AVAX-USDT
-  - DOT-USDT
-  - LINK-USDT
-  - POL-USDT
+#  - XRP-USDT
+#  - ADA-USDT
+#  - AVAX-USDT
+#  - DOT-USDT
+#  - LINK-USDT
+#  - POL-USDT

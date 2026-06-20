@@ -13,7 +13,7 @@ use metrics::{counter, histogram};
 use alm_core::Bar;
 use alm_engine::data::find_parquet_files;
 
-use super::types::BarRecord;
+use super::super::types::BarRecord;
 
 // ── Input validation ─────────────────────────────────────────────────────────
 

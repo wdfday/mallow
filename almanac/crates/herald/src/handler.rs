@@ -86,6 +86,10 @@ const BAR_WATCHDOG_SECS: u64 = 180;
 /// Forming bars are high-frequency fire-and-forget — if NATS is slow we
 /// skip rather than cascading backpressure all the way back to the WS feed.
 const FORMING_BAR_PUBLISH_TIMEOUT: Duration = Duration::from_millis(200);
+/// Timeout for publishing a CLOSED bar to NATS `bars.{tf}.{symbol}`.
+/// Longer than forming-bar because closed bars feed downstream signals — we
+/// tolerate a 2s stall before giving up and releasing the handler loop.
+const CLOSED_BAR_PUBLISH_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Threshold for warning about slow closed-bar NATS publishes.
 const SLOW_PUBLISH_WARN_MS: u128 = 500;
@@ -432,21 +436,36 @@ impl Handler {
         let payload = bar_msg.encode_to_vec();
         let subject = format!("{}.{}.{}", SUBJ_BARS, tf, symbol);
         let publish_start = Instant::now();
-        if let Err(e) = self.client.publish(subject.clone(), payload.into()).await {
-            error!(%symbol, err = %e, "failed to publish bar to NATS");
-            counter!("herald_nats_publish_errors_total", "subject" => "bars").increment(1);
-            self.atomics.nats_bars_errors.fetch_add(1, Ordering::Relaxed);
-        } else {
-            let publish_ms = publish_start.elapsed().as_millis();
-            if publish_ms > SLOW_PUBLISH_WARN_MS {
-                warn!(
-                    %symbol, ?tf, publish_ms,
-                    "closed bar NATS publish took too long — NATS may be backing up"
-                );
+        match tokio::time::timeout(
+            CLOSED_BAR_PUBLISH_TIMEOUT,
+            self.client.publish(subject.clone(), payload.into()),
+        ).await {
+            Ok(Ok(())) => {
+                let publish_ms = publish_start.elapsed().as_millis();
+                if publish_ms > SLOW_PUBLISH_WARN_MS {
+                    warn!(
+                        %symbol, ?tf, publish_ms,
+                        "closed bar NATS publish took too long — NATS may be backing up"
+                    );
+                }
+                debug!(%symbol, nats_subject = %subject, "bar published to NATS");
+                counter!("herald_nats_bars_published_total", "symbol" => symbol.clone()).increment(1);
+                self.atomics.bars_published.fetch_add(1, Ordering::Relaxed);
             }
-            debug!(%symbol, nats_subject = %subject, "bar published to NATS");
-            counter!("herald_nats_bars_published_total", "symbol" => symbol.clone()).increment(1);
-            self.atomics.bars_published.fetch_add(1, Ordering::Relaxed);
+            Ok(Err(e)) => {
+                error!(%symbol, err = %e, "failed to publish bar to NATS");
+                counter!("herald_nats_publish_errors_total", "subject" => "bars").increment(1);
+                self.atomics.nats_bars_errors.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(_elapsed) => {
+                warn!(
+                    %symbol, ?tf,
+                    timeout_ms = CLOSED_BAR_PUBLISH_TIMEOUT.as_millis(),
+                    "closed bar NATS publish timed out — NATS stalled, releasing handler loop"
+                );
+                counter!("herald_nats_publish_errors_total", "subject" => "bars").increment(1);
+                self.atomics.nats_bars_errors.fetch_add(1, Ordering::Relaxed);
+            }
         }
     }
 

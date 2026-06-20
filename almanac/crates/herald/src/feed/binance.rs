@@ -38,11 +38,11 @@ const GAP_FILL_CONCURRENCY: usize = 4;
 ///
 /// Reconnects automatically on disconnect; runs a REST gap-fill before resuming the WS loop.
 /// Task exits when `tx` is dropped (receiver gone).
-pub fn spawn(symbol_tfs: Vec<(String, Vec<Timeframe>)>, tx: BarTx, ledger: Arc<Ledger>, tf: Timeframe) {
+pub fn spawn(symbol_tfs: Vec<(String, Vec<Timeframe>)>, tx: BarTx, ledger: Arc<Ledger>, tf: Timeframe) -> Option<tokio::task::JoinHandle<()>> {
     if symbol_tfs.is_empty() {
-        return;
+        return None;
     }
-    tokio::spawn(async move {
+    Some(tokio::spawn(async move {
         // Build combined-stream URL once — it never changes across reconnects.
         let streams: Vec<String> = symbol_tfs
             .iter()
@@ -101,7 +101,7 @@ pub fn spawn(symbol_tfs: Vec<(String, Vec<Timeframe>)>, tx: BarTx, ledger: Arc<L
                 }
             }
         }
-    });
+    }))
 }
 
 async fn run_once(url: &str, tx: &BarTx) -> anyhow::Result<()> {

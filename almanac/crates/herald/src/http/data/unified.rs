@@ -14,7 +14,7 @@ use axum::{
 };
 use tracing::warn;
 
-use super::super::duckdb_helpers as duck;
+use super::duckdb_helpers as duck;
 use super::super::types::{
     ok, CandlesResult, UnifiedDataRequest, UnifiedDataResponse,
 };

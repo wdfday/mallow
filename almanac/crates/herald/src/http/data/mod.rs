@@ -2,6 +2,7 @@
 
 pub mod shared;
 pub mod unified;
+mod duckdb_helpers;
 
 pub use unified::unified_data;
 

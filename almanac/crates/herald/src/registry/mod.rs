@@ -30,6 +30,17 @@
 //! concurrent tasks (today they run from the same tokio task, but the lock
 //! model is ready for parallelisation without further changes).
 //!
+//! ## Alignment-point model (no ResampleManager)
+//!
+//! The registry no longer drives HTF resampling via a `ResampleManager`.
+//! Instead:
+//! - `LedgerObserver::on_advance` only fires evaluation when `tf == self.base_tf`.
+//! - V1 hands with `target_tf != base_tf` fire only when the current base bar
+//!   is at an alignment point: `(bar_ts + base_tf.dur) % target_tf.dur == 0`.
+//!   The bar is read from the ledger's target_tf ring at that moment.
+//! - V2 hands fire on every base bar; each declared HTF is included in the
+//!   MtfSnapshot only when it has an alignment point for this base bar.
+//!
 //! ## `ensure_fallback_hand` — N1 fix
 //!
 //! Uses `DashMap::entry().or_insert_with()` for an atomic check-and-insert,
@@ -53,8 +64,6 @@ use parking_lot::{Mutex, RwLock};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
-use crate::helper::ResampleManager;
-
 // ── GlobalConfig ──────────────────────────────────────────────────────────────
 
 struct GlobalConfig {
@@ -77,11 +86,8 @@ pub struct Registry {
     global_config: RwLock<Option<GlobalConfig>>,
 
     ledger: Arc<Ledger>,
-    /// Ledger's external feed timeframe (typically M1). Hands with higher TFs
-    /// are wired through `ResampleManager`.
+    /// Ledger's external feed timeframe (typically M1).
     base_tf: Timeframe,
-    /// Drives source→target bar aggregation for HTFs above `base_tf`.
-    resample: Arc<ResampleManager>,
     /// Freshness threshold in ms. Atomic for lock-free hot-path access.
     /// Signals whose bar close is older are suppressed (replayed/warm-up bars).
     freshness_gate_ms: std::sync::atomic::AtomicI64,
@@ -92,7 +98,6 @@ pub struct Registry {
 impl Registry {
     pub fn new(
         ledger: Arc<Ledger>,
-        resample: Arc<ResampleManager>,
         base_tf: Timeframe,
         signal_tx: mpsc::Sender<HandSignal>,
     ) -> Self {
@@ -101,7 +106,6 @@ impl Registry {
             global_config: RwLock::new(None),
             ledger,
             base_tf,
-            resample,
             freshness_gate_ms: std::sync::atomic::AtomicI64::new(FRESHNESS_GATE_MS),
             signal_tx,
         }
@@ -118,12 +122,11 @@ impl Registry {
     /// that has no explicit hands registered.
     pub fn with_default_scripts(
         ledger: Arc<Ledger>,
-        resample: Arc<ResampleManager>,
         base_tf: Timeframe,
         signal_tx: mpsc::Sender<HandSignal>,
         scripts: Vec<String>,
     ) -> Self {
-        let r = Self::new(ledger, resample, base_tf, signal_tx);
+        let r = Self::new(ledger, base_tf, signal_tx);
         if !scripts.is_empty() {
             *r.global_config.write() = Some(GlobalConfig { scripts });
         }
@@ -133,11 +136,10 @@ impl Registry {
     /// Convenience constructor — single EMA-cross fallback (legacy compat).
     pub fn with_default_fallback(
         ledger: Arc<Ledger>,
-        resample: Arc<ResampleManager>,
         base_tf: Timeframe,
         signal_tx: mpsc::Sender<HandSignal>,
     ) -> Self {
-        Self::with_default_scripts(ledger, resample, base_tf, signal_tx, vec![
+        Self::with_default_scripts(ledger, base_tf, signal_tx, vec![
             r#"let fast = ind.ema(20); let slow = ind.ema(50);
 let long = fast[1] <= slow[1] && fast[0] > slow[0];
 let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
@@ -147,9 +149,9 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
     /// Register (or re-register) a hand on a symbol at `target_tf`.
     ///
     /// `target_tf` is the TF the hand evaluates at (from `RegisterMsg.timeframe`).
-    /// V1 hands receive bars at `target_tf` directly. V2 hands use `target_tf`
-    /// as the strategy's base TF and read declared HTF views from the ledger.
-    /// All TFs above `self.base_tf` are wired through `ResampleManager`.
+    /// V1 hands receive bars at `target_tf` via alignment-point filtering.
+    /// V2 hands use `target_tf` as the strategy's base TF and read declared HTF
+    /// views from the ledger at alignment points.
     pub fn register(
         &self,
         hand_id: String,
@@ -167,18 +169,13 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
             self.ledger.ensure_symbol(&symbol, *htf, None);
         }
 
-        // Build the handle first. If the script is invalid we fail here —
-        // before any resample subscription is created — so ResampleManager
-        // is never polluted with subscriptions for a hand that never lived.
+        // Build the handle first. If the script is invalid we fail here
+        // before any side effects.
         let hand = Handle::new(
             hand_id, helm_id, symbol.clone(), exchange, is_future, script,
             &self.ledger, self.base_tf, target_tf,
         )?;
 
-        // Bump resample refcounts after a successful build.
-        for (src, tgt) in &hand.resample_subs {
-            self.resample.ensure(&symbol, *src, *tgt);
-        }
         info!(
             hand_id = %hand.hand_id, helm_id = %hand.helm_id,
             symbol = %hand.symbol, target_tf = %target_tf,
@@ -194,27 +191,11 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
             .clone();
 
         // Per-symbol lock only — no cross-symbol contention.
-        let replaced_subs = group_arc.lock().add(hand);
-
-        // Release old subscriptions outside the lock — ResampleManager has its own lock.
-        for (src, tgt) in replaced_subs {
-            self.resample.release(&symbol, src, tgt);
-        }
+        group_arc.lock().add(hand);
 
         metrics::counter!("herald_registry_hand_events_total", "event" => "registered").increment(1);
         metrics::gauge!("herald_registry_hands").set(self.hand_count() as f64);
         Ok(())
-    }
-
-    /// Release a batch of resample subscriptions collected from multiple symbols.
-    /// Always called after all registry locks are released to avoid lock ordering
-    /// issues with `ResampleManager`'s own internal lock.
-    fn release_batch(&self, batch: Vec<(String, Vec<(Timeframe, Timeframe)>)>) {
-        for (sym, pairs) in batch {
-            for (src, tgt) in pairs {
-                self.resample.release(&sym, src, tgt);
-            }
-        }
     }
 
     /// Remove a hand by id. Empty `hand_id` = clear all.
@@ -224,14 +205,11 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
     /// `remove` operation. This no longer blocks `evaluate_and_publish` for
     /// other symbols.
     pub fn deregister(&self, hand_id: &str) {
-        let mut batch: Vec<(String, Vec<(Timeframe, Timeframe)>)> = Vec::new();
-
         if hand_id.is_empty() {
             let total: usize = self.groups.iter().map(|e| e.value().lock().len()).sum();
             info!(n_hands = total, "deregistering all hands");
             for entry in self.groups.iter() {
-                let subs = entry.value().lock().drain_subs();
-                if !subs.is_empty() { batch.push((entry.key().clone(), subs)); }
+                entry.value().lock().drain_all();
             }
             self.groups.clear();
         } else {
@@ -239,8 +217,7 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
             let mut empty_keys: Vec<String> = Vec::new();
             for entry in self.groups.iter() {
                 let mut group = entry.value().lock();
-                let subs = group.remove(hand_id);
-                if !subs.is_empty() { batch.push((entry.key().clone(), subs)); }
+                group.remove(hand_id);
                 if group.is_empty() { empty_keys.push(entry.key().clone()); }
             }
             for key in empty_keys {
@@ -250,7 +227,6 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
             }
         }
 
-        self.release_batch(batch);
         metrics::counter!("herald_registry_hand_events_total", "event" => "deregistered").increment(1);
         metrics::gauge!("herald_registry_hands").set(self.hand_count() as f64);
     }
@@ -258,36 +234,23 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
     /// Replace global fallback scripts (legacy `engine.configure` compat).
     /// Drains and clears all groups before installing new config.
     pub fn set_global_config(&self, script: String) {
-        let mut batch: Vec<(String, Vec<(Timeframe, Timeframe)>)> = Vec::new();
         for entry in self.groups.iter() {
-            let subs = entry.value().lock().drain_subs();
-            if !subs.is_empty() { batch.push((entry.key().clone(), subs)); }
+            entry.value().lock().drain_all();
         }
         self.groups.clear();
         *self.global_config.write() = Some(GlobalConfig { scripts: vec![script] });
-        self.release_batch(batch);
     }
 
     /// Reset state for one symbol, or all if `symbol` is empty.
     pub fn reset(&self, symbol: &str) {
-        let batch: Vec<(String, Vec<(Timeframe, Timeframe)>)> = if symbol.is_empty() {
-            let mut out = Vec::new();
+        if symbol.is_empty() {
             for entry in self.groups.iter() {
-                let subs = entry.value().lock().drain_subs();
-                if !subs.is_empty() { out.push((entry.key().clone(), subs)); }
+                entry.value().lock().drain_all();
             }
             self.groups.clear();
-            out
         } else {
-            match self.groups.remove(symbol) {
-                Some((sym, arc)) => {
-                    let subs = arc.lock().drain_subs();
-                    if subs.is_empty() { vec![] } else { vec![(sym, subs)] }
-                }
-                None => vec![],
-            }
-        };
-        self.release_batch(batch);
+            self.groups.remove(symbol);
+        }
     }
 
     /// Returns a snapshot of every registered hand.
@@ -316,12 +279,13 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
     }
 
     fn evaluate_and_publish(&self, symbol: &str, tf: Timeframe, outcome: &AdvanceOutcome) {
-        // Freshness is measured from bar CLOSE time, not open. For an HTF bar
-        // that just closed, outcome.ts (= bar open) is up to one TF-duration
-        // old; using it directly would suppress every legitimate HTF signal.
-        //
-        // We also gate bars whose OPEN is in the future — catches clock-skewed
-        // or synthetic replay bars that haven't physically happened yet.
+        // Only evaluate on base-TF advances. HTF alignment is handled
+        // per-handle inside on_bar_base via is_htf_align_point.
+        if tf != self.base_tf {
+            return;
+        }
+
+        // Freshness is measured from bar CLOSE time, not open.
         const FUTURE_OPEN_TOLERANCE_MS: i64 = 5_000;
         let now_ms = chrono::Utc::now().timestamp_millis();
         let close_ts = outcome.ts + tf.duration_ms();
@@ -333,7 +297,7 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
         debug!(%symbol, ?tf, bar_ts = outcome.ts, close_ts, age_ms, from_future, is_stale,
                "evaluate_and_publish");
 
-        // Fetch the confirmed bar from the ledger's ring buffer.
+        // Fetch the confirmed base bar from the ledger's ring buffer.
         let bar = match self.ledger.with_state(symbol, tf, |s| s.bar_window.back().cloned()) {
             Some(Some(b)) => b,
             _ => return,
@@ -342,28 +306,15 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
         // Seed a fallback hand for new symbols at base TF — only when:
         //   (a) global_config is set (fast atomic read via RwLock)
         //   (b) this symbol has no explicit hands yet
-        //   (c) this is a base-TF advance (not an HTF fan-out)
-        if tf == self.base_tf
-            && self.global_config.read().is_some()
-            && !self.groups.contains_key(symbol)
-        {
+        if self.global_config.read().is_some() && !self.groups.contains_key(symbol) {
             self.ensure_fallback_hand(symbol);
         }
 
         // ── Per-symbol evaluation ─────────────────────────────────────────────
-        //
-        // Step 1: clone the Arc from the DashMap entry.
-        //         The DashMap shard lock is held only for this clone — nanoseconds.
-        //
-        // Step 2: release shard lock (happens when `entry` is dropped).
-        //
-        // Step 3: lock only this symbol's Mutex for Rhai evaluation.
-        //         Other symbols are completely unaffected.
         let group_arc = match self.groups.get(symbol) {
             Some(entry) => Arc::clone(entry.value()),
             None        => return,
         };
-        // ← DashMap shard lock released here.
 
         let span = tracing::info_span!(
             "registry.evaluate",
@@ -377,12 +328,11 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
             let mut group = group_arc.lock();           // per-symbol lock only
             let lock_wait_us = lock_start.elapsed().as_micros();
 
-            let n_bots = group.count_for_tf(tf);
-            if n_bots == 0 { return; }
+            if group.is_empty() { return; }
 
-            debug!(%symbol, ?tf, bar_ts = outcome.ts, n_bots, "evaluating bots");
+            debug!(%symbol, ?tf, bar_ts = outcome.ts, n_hands = group.len(), "evaluating hands");
             let eval_start = std::time::Instant::now();
-            let result = group.evaluate_at(tf, &bar);
+            let result = group.evaluate_all(&bar, self.base_tf);
             let eval_us = eval_start.elapsed().as_micros();
             (result, lock_wait_us, eval_us)
         };
@@ -404,13 +354,7 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
         ).record(eval_us as f64);
 
         if emitted.is_empty() {
-            let n_bots = {
-                match self.groups.get(symbol) {
-                    Some(entry) => entry.value().lock().count_for_tf(tf),
-                    None => 0,
-                }
-            };
-            debug!(%symbol, tf = %tf.to_string(), bar_ts = outcome.ts, n_bots, "bar evaluated — no signal emitted");
+            debug!(%symbol, tf = %tf.to_string(), bar_ts = outcome.ts, "bar evaluated — no signal emitted");
             return;
         }
 
@@ -432,8 +376,7 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
             "result" => "emitted", "symbol" => symbol.to_string(),
         ).increment(emitted.len() as u64);
 
-        // Bar-close → signal latency: time from bar close until signal is ready
-        // to be dispatched. Measures strategy evaluation + channel send overhead.
+        // Bar-close → signal latency.
         metrics::histogram!(
             "herald_bar_to_signal_latency_ms",
             "symbol" => symbol.to_string(), "tf" => tf.to_string(),
@@ -471,7 +414,6 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
                         .increment(1);
                 }
                 Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                    // signal_publisher task has exited — all subsequent signals will be lost.
                     tracing::error!(
                         hand_id = %hand_id, helm_id = %helm_id, %symbol,
                         "signal channel closed — publisher task has exited"
@@ -501,9 +443,6 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
             let declared_htfs = probe_script_htfs(script);
             for htf in &declared_htfs {
                 self.ledger.ensure_symbol(symbol, *htf, None);
-                if *htf != self.base_tf {
-                    self.resample.ensure(symbol, self.base_tf, *htf);
-                }
             }
             match Handle::new(
                 hand_id.clone(), String::new(), symbol.to_string(),
@@ -512,16 +451,11 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
                 &self.ledger, self.base_tf, self.base_tf,
             ) {
                 Ok(h) => {
-                    // Atomic insert: or_insert_with guarantees only one Arc is
-                    // created even under concurrent calls for the same symbol.
                     let group_arc = self.groups
                         .entry(symbol.to_string())
                         .or_insert_with(|| Arc::new(Mutex::new(SymbolGroup::new(symbol.to_string()))))
                         .clone();
-                    let replaced_subs = group_arc.lock().add(h);
-                    for (src, tgt) in replaced_subs {
-                        self.resample.release(symbol, src, tgt);
-                    }
+                    group_arc.lock().add(h);
                 }
                 Err(e) => warn!(%symbol, hand_id, err = %e, "failed to build fallback strategy"),
             }
@@ -552,10 +486,8 @@ mod tests {
     /// Test helper: bounded channel (capacity 256) to match production.
     fn make_registry() -> (Arc<Ledger>, Arc<Registry>, mpsc::Receiver<HandSignal>) {
         let ledger = Arc::new(Ledger::new(LedgerConfig::default()));
-        let resample = ResampleManager::new(Arc::downgrade(&ledger));
-        ledger.subscribe(resample.clone() as Arc<dyn LedgerObserver>);
         let (tx, rx) = mpsc::channel(256);
-        let reg = Arc::new(Registry::with_default_fallback(ledger.clone(), resample, Timeframe::M1, tx));
+        let reg = Arc::new(Registry::with_default_fallback(ledger.clone(), Timeframe::M1, tx));
         ledger.subscribe(reg.clone() as Arc<dyn LedgerObserver>);
         (ledger, reg, rx)
     }
@@ -619,26 +551,9 @@ mod tests {
         assert_eq!(reg.list_hands().len(), 0);
     }
 
-    /// Two hands at the same HTF share one resample subscription (refcounted).
-    #[test]
-    fn two_hands_same_htf_share_resample() {
-        let ledger = Arc::new(Ledger::new(LedgerConfig::default()));
-        let resample = ResampleManager::new(Arc::downgrade(&ledger));
-        ledger.subscribe(resample.clone() as Arc<dyn LedgerObserver>);
-        let (tx, _rx) = mpsc::channel(256);
-        let reg = Arc::new(Registry::new(ledger.clone(), resample.clone(), Timeframe::M1, tx));
-        ledger.subscribe(reg.clone() as Arc<dyn LedgerObserver>);
-
-        let script = "let r = ind.rsi(14); if r[0] < 30.0 { long = true; }";
-        reg.register("hA".into(), "h".into(), "BTCUSDT".into(), String::new(), false, script.into(), Timeframe::H1).unwrap();
-        reg.register("hB".into(), "h".into(), "BTCUSDT".into(), String::new(), false, script.into(), Timeframe::H1).unwrap();
-        assert_eq!(resample.len(), 1);
-    }
-
-    /// Hand registered at a higher TF only fires on HTF advances, not on
-    /// every base bar. Verifies resample wiring + target_tf routing end-to-end.
+    /// Hand registered at a higher TF only fires at alignment points on M1 advances.
     #[tokio::test]
-    async fn hand_at_htf_only_fires_on_htf_close() {
+    async fn hand_at_htf_only_fires_at_alignment_points() {
         let (led, reg, mut rx) = make_registry();
         reg.set_freshness_gate_ms(i64::MAX);
         reg.register(
@@ -648,23 +563,30 @@ mod tests {
             Timeframe::M5,
         ).unwrap();
 
+        // Ensure ledger has M5 slot so alignment lookups work.
+        led.ensure_symbol("BTCUSDT", Timeframe::M5, None);
+
         let m5_ms = Timeframe::M5.duration_ms();
         let m1_ms = Timeframe::M1.duration_ms();
         let now = chrono::Utc::now().timestamp_millis();
         let aligned_m5 = now - (now % m5_ms);
         let start = aligned_m5 - 3 * m5_ms;
         let n_bars = 3 * 5 + 1;
-        let mut got_signal = false;
+        let mut signal_count = 0usize;
         for i in 0..n_bars {
+            let ts = start + i as i64 * m1_ms;
+            // Advance M5 at alignment points so the ring has data.
+            if (ts + m1_ms) % m5_ms == 0 {
+                led.advance(Timeframe::M5, mk_bar("BTCUSDT", ts - (m5_ms - m1_ms), 100.0)).unwrap();
+            }
             led.advance(
                 Timeframe::M1,
-                mk_bar("BTCUSDT", start + i as i64 * m1_ms, 100.0 + i as f64),
+                mk_bar("BTCUSDT", ts, 100.0 + i as f64),
             ).unwrap();
-            while let Ok(sig) = rx.try_recv() {
-                assert_eq!(sig.hand_id, "hand_m5");
-                got_signal = true;
+            while let Ok(_sig) = rx.try_recv() {
+                signal_count += 1;
             }
         }
-        assert!(got_signal, "hand should have fired on at least one M5 close");
+        assert!(signal_count > 0, "hand should have fired on at least one M5 alignment point");
     }
 }

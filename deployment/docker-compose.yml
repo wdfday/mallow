@@ -187,12 +187,12 @@ services:
       - ./symbols.yaml:/config/symbols.yaml:ro
     restart: unless-stopped
     healthcheck:
+      # /health = liveness (always 200 while process is alive — no 503 during gap-fill).
+      # /ready  = readiness (503 during warmup; use this for traffic gating, not Docker).
       test: ["CMD", "wget", "-qO-", "http://localhost:8090/health"]
       interval: 15s
-      timeout: 120s
-      retries: 10
-      # gap-fill: 20 symbols × 13 TF × ~1s/call ≈ 4-5 min; allow 8 min for slow networks.
-      start_period: 480s
+      timeout: 5s
+      retries: 3
 
   helm:
     build:

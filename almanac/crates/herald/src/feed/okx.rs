@@ -48,11 +48,11 @@ const RECONNECT_GAP_FILL_CONCURRENCY: usize = 3;
 ///
 /// Auto-reconnects on disconnect; runs a REST gap-fill before resuming the WS loop.
 /// Task exits when `tx` is dropped (receiver gone).
-pub fn spawn(symbol_tfs: Vec<(String, Vec<Timeframe>)>, tx: BarTx, ledger: Arc<Ledger>, tf: Timeframe) {
+pub fn spawn(symbol_tfs: Vec<(String, Vec<Timeframe>)>, tx: BarTx, ledger: Arc<Ledger>, tf: Timeframe) -> Option<tokio::task::JoinHandle<()>> {
     if symbol_tfs.is_empty() {
-        return;
+        return None;
     }
-    tokio::spawn(async move {
+    Some(tokio::spawn(async move {
         // Persisted across reconnects so auto-close state survives brief disconnects.
         // On a long outage the gap-fill REST fetch bridges the missing bars anyway.
         let mut last_forming: HashMap<String, (i64, alm_core::Bar)> = HashMap::new();
@@ -95,7 +95,7 @@ pub fn spawn(symbol_tfs: Vec<(String, Vec<Timeframe>)>, tx: BarTx, ledger: Arc<L
                 }
             }
         }
-    });
+    }))
 }
 
 async fn run_once(

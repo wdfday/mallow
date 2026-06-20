@@ -12,7 +12,6 @@
 //! ```
 
 pub mod handlers;
-pub mod migrate;
 pub mod types;
 
 pub use crate::http::store::StoreBackend;

@@ -11,6 +11,7 @@ use pyroscope_pprofrs::{pprof_backend, PprofConfig};
 use feed::rest::{gap_fill_symbol, Exchange};
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use alm_core::Timeframe;
@@ -151,32 +152,20 @@ async fn main() -> Result<()> {
         info!(symbols = startup_symbols.len(), elapsed_ms = t0.elapsed().as_millis(), "bootstrap from parquet complete");
     }
 
-    // ── Observer registration — ORDER IS CRITICAL ─────────────────────────────
+    // ── Observer registration ─────────────────────────────────────────────────
     //
-    // Observers are called synchronously in registration order on every closed bar.
-    //
-    // INVARIANT: ResampleManager MUST be subscribed BEFORE Registry.
-    //
-    // Reason: when a base-TF (M1) bar closes, ResampleManager calls
-    // ledger.advance(HTF, htf_bar) for any completed HTF bucket.  That inner
-    // advance fans out to the same observer list — so Registry.on_advance(HTF)
-    // fires **inside** the ResampleManager call, before Registry.on_advance(M1)
-    // runs.  V2 multi-TF strategies rely on this guarantee: HTF bars are already
-    // in the ledger window by the time the M1 evaluation begins.
-    //
-    // If the order were reversed, M1 evaluation would see the *previous* HTF bar
-    // (stale by one bucket), causing off-by-one errors in multi-TF signals.
-    let resample_mgr = alm_herald::helper::resample::ResampleManager::new(Arc::downgrade(&ledger));
-    ledger.subscribe(resample_mgr.clone() as Arc<dyn LedgerObserver>); // ← must be first
+    // Registry uses an alignment-point model — no ResampleManager needed.
+    // The registry gates on base-TF advances only; per-handle alignment checks
+    // determine when HTF hands fire.
 
     // Bounded signal channel — if the publisher falls behind (NATS slow),
     // the registry drops signals rather than growing memory without bound.
     let (sig_tx, sig_rx) = mpsc::channel(1024);
     let registry = Arc::new(Registry::with_default_scripts(
-        ledger.clone(), resample_mgr.clone(), tf, sig_tx,
+        ledger.clone(), tf, sig_tx,
         default_live_scripts(),
     ));
-    ledger.subscribe(registry.clone() as Arc<dyn LedgerObserver>); // ← must be second
+    ledger.subscribe(registry.clone() as Arc<dyn LedgerObserver>);
 
     info!("ledger + registry wired");
 
@@ -190,7 +179,7 @@ async fn main() -> Result<()> {
                 .max_connections(10)
                 .connect(&db_url)
                 .await?;
-            http::strategy::migrate::run(&pool).await?;
+            http::store::migrate::run(&pool).await?;
             http::StoreBackend::postgres(pool)
         }
         None => {
@@ -233,15 +222,20 @@ async fn main() -> Result<()> {
     // skips any duplicates that overlap with REST-fetched bars.
     let (bar_tx, bar_rx) = mpsc::channel(feed::BAR_CHANNEL_CAP);
 
+    let mut feed_tasks: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     let binance_stfs = sym_cfg.binance_symbol_tfs();
     if !binance_stfs.is_empty() {
         info!(symbols = binance_stfs.len(), "starting Binance WebSocket ingester");
-        feed::binance::spawn(binance_stfs, bar_tx.clone(), ledger.clone(), tf);
+        if let Some(h) = feed::binance::spawn(binance_stfs, bar_tx.clone(), ledger.clone(), tf) {
+            feed_tasks.push(h);
+        }
     }
     let okx_stfs = sym_cfg.okx_symbol_tfs();
     if !okx_stfs.is_empty() {
         info!(symbols = okx_stfs.len(), "starting OKX WebSocket ingester");
-        feed::okx::spawn(okx_stfs, bar_tx.clone(), ledger.clone(), tf);
+        if let Some(h) = feed::okx::spawn(okx_stfs, bar_tx.clone(), ledger.clone(), tf) {
+            feed_tasks.push(h);
+        }
     }
     if sym_cfg.binance.is_empty() && sym_cfg.okx.is_empty() {
         warn!("no symbols configured — herald will receive no live bars");
@@ -279,22 +273,47 @@ async fn main() -> Result<()> {
 
     // ── Main loop ─────────────────────────────────────────────────────────────
     let handler = Handler::new(client, ledger, registry, tf, bar_rx, sig_rx, ws_latency);
+    let mut handler_task = tokio::spawn(handler.run());
 
-    // Race the handler loop against OS shutdown signals.
-    // Without this select, SIGTERM kills the process before any Rust code runs.
+    // Race handler against OS shutdown signals.
+    // On SIGTERM/SIGINT: abort feed tasks so their bar_tx senders drop.
+    // The handler sees bar_rx closed, drains any buffered bars, then exits.
+    // We give it GRACEFUL_SHUTDOWN_TIMEOUT to finish; abort after.
+    const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+
     let shutdown_reason: &str;
     let result: anyhow::Result<()> = tokio::select! {
-        r = handler.run() => {
+        r = &mut handler_task => {
             shutdown_reason = "handler loop exited";
-            r
+            r.unwrap_or_else(|e| Err(anyhow::anyhow!("handler task panicked: {e}")))
         }
         _ = sigterm.recv() => {
             shutdown_reason = "SIGTERM";
-            Ok(())
+            eprintln!("[herald] pid={pid} SIGTERM received — initiating graceful shutdown");
+            for h in &feed_tasks { h.abort(); }
+            match tokio::time::timeout(GRACEFUL_SHUTDOWN_TIMEOUT, &mut handler_task).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => Err(anyhow::anyhow!("handler task panicked: {e}")),
+                Err(_) => {
+                    eprintln!("[herald] pid={pid} graceful shutdown timed out after {GRACEFUL_SHUTDOWN_TIMEOUT:?} — forcing exit");
+                    handler_task.abort();
+                    Ok(())
+                }
+            }
         }
         _ = sigint.recv() => {
             shutdown_reason = "SIGINT";
-            Ok(())
+            eprintln!("[herald] pid={pid} SIGINT received — initiating graceful shutdown");
+            for h in &feed_tasks { h.abort(); }
+            match tokio::time::timeout(GRACEFUL_SHUTDOWN_TIMEOUT, &mut handler_task).await {
+                Ok(Ok(r)) => r,
+                Ok(Err(e)) => Err(anyhow::anyhow!("handler task panicked: {e}")),
+                Err(_) => {
+                    eprintln!("[herald] pid={pid} graceful shutdown timed out after {GRACEFUL_SHUTDOWN_TIMEOUT:?} — forcing exit");
+                    handler_task.abort();
+                    Ok(())
+                }
+            }
         }
     };
     http_task.abort();
@@ -304,17 +323,27 @@ async fn main() -> Result<()> {
     //   Ok(())  → main() returns Ok, process exits 0 with no log.
     //   Err(e)  → result? propagates, anyhow prints to stderr only (not tracing),
     //             which log collectors may not capture.
+    // Write exit reason to BOTH tracing (Loki/Tempo pipeline) AND raw stderr.
+    // tracing's OTLP exporter is async — if the process exits before the export
+    // batch is sent, the span is silently lost. eprintln! goes to Docker's raw
+    // log capture synchronously and is always visible.
     match &result {
         Ok(()) if shutdown_reason == "handler loop exited" => {
-            tracing::error!(
-                pid, shutdown_reason,
-                "herald main loop exited cleanly — bar feed channel closed (all WS ingesters exited)"
+            let msg = format!(
+                "[herald] EXIT pid={pid} reason={shutdown_reason} \
+                 — bar feed channel closed (all WS ingesters exited)"
             );
+            eprintln!("{msg}");
+            tracing::error!(pid, shutdown_reason, "herald main loop exited cleanly — bar feed channel closed (all WS ingesters exited)");
         }
         Ok(()) => {
+            let msg = format!("[herald] EXIT pid={pid} reason={shutdown_reason}");
+            eprintln!("{msg}");
             tracing::error!(pid, shutdown_reason, "herald received shutdown signal — exiting");
         }
         Err(e) => {
+            let msg = format!("[herald] EXIT pid={pid} reason={shutdown_reason} error={e}");
+            eprintln!("{msg}");
             tracing::error!(pid, shutdown_reason, err = %e, err_debug = ?e,
                 "herald main loop exited with error");
         }
@@ -354,6 +383,10 @@ fn install_panic_logger() {
             .map(|l| format!("{}:{}", l.file(), l.line()))
             .unwrap_or_else(|| "<unknown>".into());
         let backtrace = std::backtrace::Backtrace::force_capture();
+        // eprintln! is synchronous — survives even if tracing's OTLP batch
+        // hasn't been exported yet when the process terminates.
+        eprintln!("[herald] PANIC message={msg} location={location} thread={:?}", std::thread::current().name());
+        eprintln!("{backtrace}");
         tracing::error!(
             panic.message = %msg,
             panic.location = %location,

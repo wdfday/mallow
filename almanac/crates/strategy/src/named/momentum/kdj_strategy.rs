@@ -27,6 +27,10 @@ impl KdjStrategy {
 }
 
 impl Strategy for KdjStrategy {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let Some(v) = self.kdj.update(bar.high, bar.low, bar.close) else {
             return vec![];
@@ -63,6 +67,25 @@ impl Strategy for KdjStrategy {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let kdj9 = ind.kdj(9);
+if state["in_position"] == () {
+    state["in_position"] = false;
+}
+let in_pos = state["in_position"];
+if !in_pos {
+    if kdj9[0].k < 20.0 && kdj9[0].d < 20.0 && gt(kdj9[0].k, kdj9[1].k) {
+        state["in_position"] = true;
+        entry = true;
+    }
+} else {
+    if kdj9[0].k > 80.0 || kdj9[0].j > 100.0 {
+        state["in_position"] = false;
+        exit = true;
+    }
+}
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,24 +110,7 @@ mod tests {
 
         let mut named = KdjStrategy::new(9, 3, 3, 20.0, 80.0);
         let named_sigs = run(&mut named, &bars);
-        let script = r#"
-let kdj9 = ind.kdj(9);
-if state["in_position"] == () {
-    state["in_position"] = false;
-}
-let in_pos = state["in_position"];
-if !in_pos {
-    if kdj9[0].k < 20.0 && kdj9[0].d < 20.0 && gt(kdj9[0].k, kdj9[1].k) {
-        state["in_position"] = true;
-        entry = true;
-    }
-} else {
-    if kdj9[0].k > 80.0 || kdj9[0].j > 100.0 {
-        state["in_position"] = false;
-        exit = true;
-    }
-}
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
 
         let script_sigs = run(script_strat.as_mut(), &bars);

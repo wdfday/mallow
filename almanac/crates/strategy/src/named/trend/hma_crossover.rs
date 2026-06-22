@@ -29,6 +29,10 @@ impl HmaCrossover {
 }
 
 impl Strategy for HmaCrossover {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let f = self.fast.update(bar.close);
         let s = self.slow.update(bar.close);
@@ -70,6 +74,13 @@ impl Strategy for HmaCrossover {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let hma16 = ind.hma(16);
+let hma49 = ind.hma(49);
+if cross_above(hma16, hma49) { entry = true; }
+if cross_below(hma16, hma49) { exit  = true; }
+"#;
 #[cfg(test)]
 mod tests {
     use crate::test_utils::*;
@@ -124,12 +135,7 @@ mod tests {
         let mut named = HmaCrossover::new(16, 49);
         let named_sigs = run(&mut named, &bars);
 
-        let script = r#"
-let hma16 = ind.hma(16);
-let hma49 = ind.hma(49);
-if cross_above(hma16, hma49) { entry = true; }
-if cross_below(hma16, hma49) { exit  = true; }
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs = run(script_strat.as_mut(), &bars);
 

@@ -28,6 +28,10 @@ impl ElderRayStrategy {
 }
 
 impl Strategy for ElderRayStrategy {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let Some(v) = self.er.update(bar.high, bar.low, bar.close) else {
             return vec![];
@@ -68,6 +72,13 @@ impl Strategy for ElderRayStrategy {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let er13 = ind.elder_ray(13);
+let ema_rising = er13[0].ema > er13[1].ema;
+if ema_rising && er13[0].bear_power < 0.0 && er13[0].bear_power > er13[1].bear_power { entry = true; }
+if er13[0].bull_power < 0.0 && er13[1].bull_power >= 0.0 { exit = true; }
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,12 +104,7 @@ mod tests {
         let mut named = ElderRayStrategy::new(13);
         let named_sigs = run(&mut named, &bars);
 
-        let script = r#"
-let er13 = ind.elder_ray(13);
-let ema_rising = er13[0].ema > er13[1].ema;
-if ema_rising && er13[0].bear_power < 0.0 && er13[0].bear_power > er13[1].bear_power { entry = true; }
-if er13[0].bull_power < 0.0 && er13[1].bull_power >= 0.0 { exit = true; }
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs = run(script_strat.as_mut(), &bars);
 

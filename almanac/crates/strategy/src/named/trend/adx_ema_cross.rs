@@ -39,6 +39,10 @@ impl AdxEmaCross {
 }
 
 impl Strategy for AdxEmaCross {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let fast = self.fast.update(bar.close);
         let slow = self.slow.update(bar.close);
@@ -81,6 +85,14 @@ impl Strategy for AdxEmaCross {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let e20 = ind.ema(20);
+let e50 = ind.ema(50);
+let adx14 = ind.adx(14, buf=1);
+if cross_above(e20, e50) && adx14[0] > 25.0 { entry = true; }
+if cross_below(e20, e50) { exit = true; }
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -99,13 +111,7 @@ mod tests {
             .map(|s| (s.timestamp, s.direction))
             .collect();
 
-        let script = r#"
-let e20 = ind.ema(20);
-let e50 = ind.ema(50);
-let adx14 = ind.adx(14, buf=1);
-if cross_above(e20, e50) && adx14[0] > 25.0 { entry = true; }
-if cross_below(e20, e50) { exit = true; }
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs: Vec<(i64, Direction)> = bars.iter()
             .flat_map(|b| script_strat.on_bar(b))

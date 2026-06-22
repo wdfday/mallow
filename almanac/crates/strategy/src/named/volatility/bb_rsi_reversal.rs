@@ -69,7 +69,7 @@ impl Strategy for BbRsiReversal {
     }
 
     fn script(&self) -> Option<&'static str> {
-        Some(RHAI)
+        Some(RHAI_SCRIPT)
     }
 
     fn reset(&mut self) {
@@ -78,6 +78,13 @@ impl Strategy for BbRsiReversal {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let bb20  = ind.bbands(20, buf=1);
+let rsi14 = ind.rsi(14, buf=1);
+if close[0] < bb20[0].lower && rsi14[0] < 35.0 { entry = true; }
+if close[0] > bb20[0].middle || rsi14[0] > 65.0 { exit  = true; }
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;

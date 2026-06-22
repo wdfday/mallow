@@ -28,6 +28,10 @@ impl DemaCrossover {
 }
 
 impl Strategy for DemaCrossover {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let f = self.fast.update(bar.close);
         let s = self.slow.update(bar.close);
@@ -64,6 +68,13 @@ impl Strategy for DemaCrossover {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let dema12 = ind.dema(12);
+let dema26 = ind.dema(26);
+if cross_above(dema12, dema26) { entry = true; }
+if cross_below(dema12, dema26) { exit  = true; }
+"#;
 #[cfg(test)]
 mod tests {
     use crate::test_utils::*;
@@ -117,12 +128,7 @@ mod tests {
         let mut named = DemaCrossover::new(12, 26);
         let named_sigs = run(&mut named, &bars);
 
-        let script = r#"
-let dema12 = ind.dema(12);
-let dema26 = ind.dema(26);
-if cross_above(dema12, dema26) { entry = true; }
-if cross_below(dema12, dema26) { exit  = true; }
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs = run(script_strat.as_mut(), &bars);
 

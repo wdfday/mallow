@@ -705,8 +705,7 @@ if ema9[0] > close[0] { entry = true; }
     #[test]
     fn end_to_end_base_tf_only_with_engine() {
         use alm_data::BarVecFeed;
-        use alm_engine::MtfEngine;
-        use crate::FixedFractional;
+        use alm_engine::{MtfEngine, FixedFractional};
 
         let script = r#"
 let ema9  = ind.ema(9);
@@ -723,14 +722,13 @@ if cross_below(ema9, ema21) { exit  = true; }
         );
         engine.add_feed(Timeframe::M1, BarVecFeed::new(bars, "TEST".into()));
         let _ = engine.run(0.0);
-        assert!(!engine.portfolio.equity_curve.is_empty(), "equity curve must have entries");
+        assert!(!engine.core.portfolio.equity_curve.is_empty(), "equity curve must have entries");
     }
 
     #[test]
     fn end_to_end_with_h1_filter_engine() {
         use alm_data::BarVecFeed;
-        use alm_engine::MtfEngine;
-        use crate::FixedFractional;
+        use alm_engine::{MtfEngine, FixedFractional};
 
         let script = r#"
 let h1_ema = ind.ema(20, "H1");
@@ -754,6 +752,6 @@ if falling(h1_ema) || rsi[0] > 70.0 { exit = true; }
         engine.add_feed(Timeframe::M1, BarVecFeed::new(m1_bars, "TEST".into()));
         engine.add_feed(Timeframe::H1, BarVecFeed::new(h1_bars, "TEST".into()));
         let _ = engine.run(0.0);
-        assert!(!engine.portfolio.equity_curve.is_empty());
+        assert!(!engine.core.portfolio.equity_curve.is_empty());
     }
 }

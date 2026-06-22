@@ -32,6 +32,10 @@ impl LsmaCross {
 }
 
 impl Strategy for LsmaCross {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let fast = self.fast.update(bar.close);
         let slow = self.slow.update(bar.close);
@@ -75,6 +79,13 @@ impl Strategy for LsmaCross {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let l20 = ind.lsma(20);
+let l50 = ind.lsma(50);
+if cross_above(l20, l50) { entry = true; }
+if cross_below(l20, l50) { exit = true; }
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,12 +104,7 @@ mod tests {
             .map(|s| (s.timestamp, s.direction))
             .collect();
 
-        let script = r#"
-let l20 = ind.lsma(20);
-let l50 = ind.lsma(50);
-if cross_above(l20, l50) { entry = true; }
-if cross_below(l20, l50) { exit = true; }
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs: Vec<(i64, Direction)> = bars.iter()
             .flat_map(|b| script_strat.on_bar(b))

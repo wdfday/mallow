@@ -2374,6 +2374,28 @@ class BtStrat(bt.Strategy):
 """,
     },
 
+    "donchian_breakout": {
+        "params": {"entry": 20, "exit": 10},
+        "description": "Close breaks above Donchian upper of entry period → long; below lower of exit period → exit.",
+        "pta_code": """\
+dc_entry = ta.donchian(high, low, lower_length={entry}, upper_length={entry})
+dc_exit = ta.donchian(high, low, lower_length={exit}, upper_length={exit})
+upper_entry = dc_entry['DCU_{entry}_{entry}']
+lower_exit = dc_exit['DCL_{exit}_{exit}']
+entries = close > upper_entry.shift(1)
+exits   = close < lower_exit.shift(1)
+""",
+        "bt_code": """\
+class BtStrat(bt.Strategy):
+    def __init__(self):
+        self.entry_high = bt.indicators.Highest(self.data.high, period={entry})
+        self.exit_low = bt.indicators.Lowest(self.data.low, period={exit})
+    def next(self):
+        if not self.position and self.data.close[0] > self.entry_high[-1]: self.buy()
+        elif self.position and self.data.close[0] < self.exit_low[-1]:     self.close()
+""",
+    },
+
     "keltner_breakout": {
         "params": {"period": 20, "atr_period": 10, "multiplier": 2.0},
         "description": "Close breaks above Keltner upper → long; below lower → exit.",

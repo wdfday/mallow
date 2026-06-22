@@ -27,6 +27,10 @@ impl TemaCrossover {
 }
 
 impl Strategy for TemaCrossover {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let fast = self.fast.update(bar.close);
         let slow = self.slow.update(bar.close);
@@ -63,6 +67,13 @@ impl Strategy for TemaCrossover {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let tf = ind.tema(8);
+let ts = ind.tema(21);
+if cross_above(tf, ts) { entry = true; }
+if tf[1] > ts[1] && tf[0] <= ts[0] { exit = true; }
+"#;
 #[cfg(test)]
 mod tests {
     use crate::test_utils::*;
@@ -119,12 +130,7 @@ mod tests {
 
         // Exit mirrors TemaCrossover: was_above (pf > ps) && !now_above (f <= s).
         // cross_below only fires when f < s, missing the f == s edge case.
-        let script = r#"
-let tf = ind.tema(8);
-let ts = ind.tema(21);
-if cross_above(tf, ts) { entry = true; }
-if tf[1] > ts[1] && tf[0] <= ts[0] { exit = true; }
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs = run(script_strat.as_mut(), &bars);
 

@@ -41,6 +41,10 @@ impl ChopFilterStrategy {
 }
 
 impl Strategy for ChopFilterStrategy {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let chop_val = self.chop.update(bar.high, bar.low, bar.close);
         let fast_val = self.fast_ema.update(bar.close);
@@ -93,6 +97,14 @@ impl Strategy for ChopFilterStrategy {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let ema8  = ind.ema(8);
+let ema21 = ind.ema(21);
+let chop14 = ind.chop(14, buf=1);
+if ema8[1] <= ema21[1] && ema8[0] > ema21[0] && chop14[0] < 61.8 { entry = true; }
+if ema8[1] >= ema21[1] && ema8[0] < ema21[0] { exit = true; }
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,13 +156,7 @@ mod tests {
         let mut named = ChopFilterStrategy::new(14, 8, 21, 61.8);
         let named_sigs = run(&mut named, &bars);
 
-        let script = r#"
-let ema8  = ind.ema(8);
-let ema21 = ind.ema(21);
-let chop14 = ind.chop(14, buf=1);
-if ema8[1] <= ema21[1] && ema8[0] > ema21[0] && chop14[0] < 61.8 { entry = true; }
-if ema8[1] >= ema21[1] && ema8[0] < ema21[0] { exit = true; }
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs = run(script_strat.as_mut(), &bars);
 

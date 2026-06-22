@@ -1,18 +1,11 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::{Ema, Roc};
 
-const RHAI_ROC: &str = r#"
+pub(crate) const RHAI_SCRIPT: &str = r#"
 let roc10 = ind.roc(10, buf=1);
 let ema50  = ind.ema(50, buf=1);
 if roc10[0] > 2.0 && close[0] > ema50[0] { entry = true; }
 if roc10[0] < 0.0 || close[0] < ema50[0] { exit  = true; }
-"#;
-
-const RHAI_DUAL: &str = r#"
-let roc10 = ind.roc(10, buf=1);
-let roc30 = ind.roc(30, buf=1);
-if roc10[0] > 0.0 && roc30[0] > 0.0 { entry = true; }
-if roc10[0] < 0.0 || roc30[0] < 0.0 { exit  = true; }
 "#;
 
 /// Momentum ROC — pure price momentum with trend filter.
@@ -74,67 +67,13 @@ impl Strategy for MomentumRoc {
         "Long when ROC > entry threshold and price is above EMA. Exit when momentum fades or price drops below EMA."
     }
 
-    fn script(&self) -> Option<&'static str> { Some(RHAI_ROC) }
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
 
     fn reset(&mut self) {
         self.roc = Roc::new(self.roc_p);
         self.ema = Ema::new(self.ema_p);
-    }
-}
-
-/// Dual Momentum — absolute + relative momentum filter.
-///
-/// Long  when ROC(fast) > 0 AND ROC(slow) > 0 (both timeframes agree).
-/// Close when either turns negative.
-pub struct DualMomentum {
-    fast: Roc,
-    slow: Roc,
-    fast_p: usize,
-    slow_p: usize,
-}
-
-impl DualMomentum {
-    pub fn new(fast_period: usize, slow_period: usize) -> Self {
-        Self {
-            fast: Roc::new(fast_period),
-            slow: Roc::new(slow_period),
-            fast_p: fast_period,
-            slow_p: slow_period,
-        }
-    }
-}
-
-impl Strategy for DualMomentum {
-    fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
-        let f = self.fast.update(bar.close);
-        let s = self.slow.update(bar.close);
-
-        let (Some(f), Some(s)) = (f, s) else {
-            return vec![];
-        };
-
-        if f > 0.0 && s > 0.0 {
-            return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
-        }
-        if f < 0.0 || s < 0.0 {
-            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
-        }
-        vec![]
-    }
-
-    fn name(&self) -> &str {
-        "dual_momentum"
-    }
-
-    fn description(&self) -> &'static str {
-        "Long when both fast and slow ROC are positive. Exit when either turns negative."
-    }
-
-    fn script(&self) -> Option<&'static str> { Some(RHAI_DUAL) }
-
-    fn reset(&mut self) {
-        self.fast = Roc::new(self.fast_p);
-        self.slow = Roc::new(self.slow_p);
     }
 }
 
@@ -152,7 +91,6 @@ mod tests {
 
     #[test]
     fn momentum_roc_script_parity() {
-        // Fires every bar where ROC > 2.0 AND close > EMA(50); exit when either fails.
         let Some(bars) = load_real_bars() else { return; };
 
         let mut named = MomentumRoc::new(10, 50, 2.0, 0.0);
@@ -163,22 +101,6 @@ mod tests {
         let script_sigs = run(script_strat.as_mut(), &bars);
 
         assert!(!named_sigs.is_empty(), "momentum_roc: must produce signals");
-        assert_eq!(named_sigs, script_sigs, "script parity failed");
-    }
-
-    #[test]
-    fn dual_momentum_script_parity() {
-        // Fires every bar when both ROC(10) > 0 AND ROC(30) > 0.
-        let Some(bars) = load_real_bars() else { return; };
-
-        let mut named = DualMomentum::new(10, 30);
-        let named_sigs = run(&mut named, &bars);
-
-        let script = DualMomentum::new(10, 30).script().unwrap();
-        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
-        let script_sigs = run(script_strat.as_mut(), &bars);
-
-        assert!(!named_sigs.is_empty(), "dual_momentum: must produce signals");
         assert_eq!(named_sigs, script_sigs, "script parity failed");
     }
 }

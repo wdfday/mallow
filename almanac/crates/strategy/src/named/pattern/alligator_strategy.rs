@@ -1,7 +1,7 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::Alligator;
 
-const RHAI: &str = r#"
+pub(crate) const RHAI: &str = r#"
 let al = ind.alligator(13);
 if al[1].bullish < 0.5 && al[0].bullish >= 0.5 { entry = true; }
 if al[1].bullish >= 0.5 && al[0].bullish < 0.5 { exit  = true; }

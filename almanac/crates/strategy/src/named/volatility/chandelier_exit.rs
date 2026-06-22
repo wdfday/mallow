@@ -34,6 +34,10 @@ impl ChandelierExit {
 }
 
 impl Strategy for ChandelierExit {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         self.highs.push_back(bar.high);
         if self.highs.len() > self.period { self.highs.pop_front(); }
@@ -79,21 +83,8 @@ impl Strategy for ChandelierExit {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_utils::*;
-    use crate::factory::build_strategy;
-    use serde_json::json;
 
-    #[test]
-    fn script_parity() {
-        let Some(bars) = load_real_bars() else { return; };
-
-        let mut named = ChandelierExit::new(22, 3.0);
-        let named_sigs = run(&mut named, &bars);
-
-        let script = r#"
+pub(crate) const RHAI_SCRIPT: &str = r#"
 let atr22 = ind.atr(22);
 let hh = highest(high, 22);
 let stop = hh - 3.0 * atr22[0].atr;
@@ -115,6 +106,21 @@ if was_bull != () {
     }
 }
 "#;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn script_parity() {
+        let Some(bars) = load_real_bars() else { return; };
+
+        let mut named = ChandelierExit::new(22, 3.0);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs = run(script_strat.as_mut(), &bars);
 

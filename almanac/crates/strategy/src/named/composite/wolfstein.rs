@@ -1,7 +1,7 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::Adx;
 
-const RHAI: &str = r#"
+pub(crate) const RHAI: &str = r#"
 let adx14 = ind.adx(14, buf=1);
 let dmi14 = ind.dmi(14, buf=1);
 if adx14[0] > 27.5 && dmi14[0].plus_di > dmi14[0].minus_di { entry = true; }
@@ -53,7 +53,9 @@ impl Strategy for Wolfstein {
         "Long when ADX > long_threshold and +DI > -DI (strong bullish trend). Exit when ADX falls below short_threshold."
     }
 
-    fn script(&self) -> Option<&'static str> { Some(RHAI) }
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI)
+    }
 
     fn reset(&mut self) {
         self.adx = Adx::new(self.period);

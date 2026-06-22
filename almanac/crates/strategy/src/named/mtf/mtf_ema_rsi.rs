@@ -83,7 +83,18 @@ impl MtfStrategy for MtfEmaRsiStrategy {
 
         vec![]
     }
+
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
 }
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let h1_ema = ind.ema(20, "H1");
+let rsi    = ind.rsi(14);
+if rising(h1_ema) && rsi[0] < 40.0 { entry = true; }
+if falling(h1_ema) || rsi[0] > 70.0 { exit  = true; }
+"#;
 
 #[cfg(test)]
 mod tests {

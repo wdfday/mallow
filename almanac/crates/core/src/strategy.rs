@@ -8,6 +8,17 @@ pub trait Strategy: Send {
     ///
     /// Called once per bar, before `on_window`. Use this for indicator-based
     /// signal generation (RSI, MACD, crossovers, etc.).
+    ///
+    /// # Design Note: `Vec<Signal>` vs `Option<Signal>`
+    /// Returning `Vec<Signal>` permits multi-leg entries/exits, pyramiding, scaling,
+    /// position flips (closing and reopening on the same bar), and portfolio/multi-symbol
+    /// capabilities.
+    ///
+    /// *Trade-off:* Returning a heap-allocated `Vec` (and cloning/allocating `Signal::symbol`
+    /// as a `String`) introduces minor allocation overhead compared to stack-allocated options.
+    /// In high-frequency backtests over millions of bars, this can become a bottleneck.
+    /// In the future, this can be optimized by passing a mutable reference to a reusable buffer
+    /// (e.g., `fn on_bar(&mut self, bar: &Bar, buf: &mut Vec<Signal>)`).
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal>;
 
     /// Window-based hook for geometric / multi-bar pattern detection.

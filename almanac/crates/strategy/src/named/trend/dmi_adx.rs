@@ -1,7 +1,7 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::Adx;
 
-const RHAI: &str = r#"
+pub(crate) const RHAI: &str = r#"
 let adx14 = ind.adx(14);
 let dmi14 = ind.dmi(14);
 if dmi14[1].plus_di <= dmi14[1].minus_di && dmi14[0].plus_di > dmi14[0].minus_di && adx14[0] > 25.0 { entry = true; }
@@ -67,7 +67,9 @@ impl Strategy for DmiAdx {
         "Long when ADX > threshold and +DI crosses above -DI. Exit when -DI crosses above +DI."
     }
 
-    fn script(&self) -> Option<&'static str> { Some(RHAI) }
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI)
+    }
 
     fn reset(&mut self) {
         self.adx = Adx::new(self.period);

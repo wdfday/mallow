@@ -22,6 +22,10 @@ impl RocCrossover {
 }
 
 impl Strategy for RocCrossover {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let Some(v) = self.roc.update(bar.close) else {
             return vec![];
@@ -51,6 +55,12 @@ impl Strategy for RocCrossover {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let roc10 = ind.roc(10);
+if roc10[1] <= 0.0 && roc10[0] > 0.0 { entry = true; }
+if roc10[1] >= 0.0 && roc10[0] < 0.0 { exit  = true; }
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,11 +79,7 @@ mod tests {
             .map(|s| (s.timestamp, s.direction))
             .collect();
 
-        let script = r#"
-let roc10 = ind.roc(10);
-if roc10[1] <= 0.0 && roc10[0] > 0.0 { entry = true; }
-if roc10[1] >= 0.0 && roc10[0] < 0.0 { exit  = true; }
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs: Vec<(i64, Direction)> = bars.iter()
             .flat_map(|b| script_strat.on_bar(b))

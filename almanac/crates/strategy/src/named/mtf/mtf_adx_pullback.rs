@@ -99,4 +99,17 @@ impl MtfStrategy for MtfAdxPullbackStrategy {
 
         vec![]
     }
+
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
 }
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let h1_adx   = ind.adx(14, "H1");
+let h1_trend = ind.ema(50, "H1");
+let rsi      = ind.rsi(14);
+if h1_adx[0] > 25.0 && close[0] > h1_trend[0] && rsi[0] < 40.0 { entry = true; }
+if h1_adx[0] < 20.0 || close[0] < h1_trend[0] || rsi[0] > 70.0 { exit  = true; }
+"#;
+

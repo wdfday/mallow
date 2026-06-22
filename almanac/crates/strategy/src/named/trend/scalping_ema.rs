@@ -38,6 +38,10 @@ impl ScalpingEma {
 }
 
 impl Strategy for ScalpingEma {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let fast = self.fast.update(bar.close);
         let slow = self.slow.update(bar.close);
@@ -88,6 +92,61 @@ impl Strategy for ScalpingEma {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let fast = ind.ema(8, buf=2);
+let slow = ind.ema(21, buf=2);
+let atr14 = ind.atr(14, buf=8);
+
+if state["atr_ema_count"] == () {
+    state["atr_ema_count"] = 0;
+    state["atr_ema_sum"] = 0.0;
+    state["atr_ema_val"] = ();
+    
+    let i = 7;
+    while i > 0 {
+        let val = atr14[i].atr;
+        state["atr_ema_count"] = state["atr_ema_count"] + 1;
+        state["atr_ema_sum"] = state["atr_ema_sum"] + val;
+        i = i - 1;
+    }
+}
+
+state["atr_ema_count"] = state["atr_ema_count"] + 1;
+let count = state["atr_ema_count"];
+let cur_atr = atr14[0].atr;
+let cur_atr_ema = ();
+
+if count < 20 {
+    state["atr_ema_sum"] = state["atr_ema_sum"] + cur_atr;
+} else if count == 20 {
+    state["atr_ema_sum"] = state["atr_ema_sum"] + cur_atr;
+    let val = state["atr_ema_sum"] / 20.0;
+    state["atr_ema_val"] = val;
+    cur_atr_ema = val;
+} else {
+    let prev = state["atr_ema_val"];
+    let k = 2.0 / 21.0;
+    let val = cur_atr * k + prev * (1.0 - k);
+    state["atr_ema_val"] = val;
+    cur_atr_ema = val;
+}
+
+if cur_atr_ema != () {
+    let cross_up = fast[1] <= slow[1] && fast[0] > slow[0];
+    let cross_down = fast[1] >= slow[1] && fast[0] < slow[0];
+    let atr_expanding = cur_atr > cur_atr_ema;
+    
+    if cross_up && atr_expanding {
+        let val = (fast[0] - slow[0]) / slow[0];
+        strength = val.clamp(0.0, 1.0);
+        entry = true;
+    }
+    if cross_down {
+        exit = true;
+    }
+}
+"#;
 #[cfg(test)]
 mod tests {
     use crate::test_utils::*;

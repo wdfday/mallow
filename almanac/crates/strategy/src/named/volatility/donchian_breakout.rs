@@ -30,6 +30,10 @@ impl DonchianBreakout {
 }
 
 impl Strategy for DonchianBreakout {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let en = self.entry.update(bar.high, bar.low);
         let ex = self.exit.update(bar.high, bar.low);
@@ -71,6 +75,13 @@ impl Strategy for DonchianBreakout {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let du20 = ind.donchian(20);
+let dl10 = ind.donchian(10);
+if close[0] > du20[1].upper { entry = true; }
+if close[0] < dl10[1].lower { exit  = true; }
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,12 +124,7 @@ mod tests {
             .map(|s| (s.timestamp, s.direction))
             .collect();
 
-        let script = r#"
-let du20 = ind.donchian(20);
-let dl10 = ind.donchian(10);
-if close[0] > du20[1].upper { entry = true; }
-if close[0] < dl10[1].lower { exit  = true; }
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs: Vec<(i64, Direction)> = bars.iter()
             .flat_map(|b| script_strat.on_bar(b))

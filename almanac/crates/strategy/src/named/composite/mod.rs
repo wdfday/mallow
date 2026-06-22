@@ -1,6 +1,5 @@
 pub mod chop_filter_strategy;
 pub mod equilibrium_explorer;
-pub mod kitchen_sink;
 pub mod mean_reversion;
 pub mod oscillator_overlord;
 pub mod pixel_3;
@@ -10,7 +9,6 @@ pub mod wolfstein;
 
 pub use chop_filter_strategy::ChopFilterStrategy;
 pub use equilibrium_explorer::EquilibriumExplorer;
-pub use kitchen_sink::KitchenSinkStrategy;
 pub use mean_reversion::MeanReversion;
 pub use oscillator_overlord::OscillatorOverlord;
 pub use pixel_3::Pixel3;

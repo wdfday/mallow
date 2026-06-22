@@ -37,6 +37,10 @@ impl OscillatorOverlord {
 }
 
 impl Strategy for OscillatorOverlord {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let rsi_val = self.rsi.update(bar.close);
         let stoch_val = self.stoch.update(bar.high, bar.low, bar.close);
@@ -78,31 +82,8 @@ impl Strategy for OscillatorOverlord {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_utils::*;
-    use crate::factory::build_strategy;
-    use serde_json::json;
 
-    #[test]
-    fn oscillator_overlord_parity() {
-        let Some(bars) = load_real_bars() else { return; };
-
-        let mut hc = OscillatorOverlord::new(14, 14, 3, 20);
-        let hc_sigs = run(&mut hc, &bars);
-
-        assert!(!hc_sigs.is_empty(), "oscillator_overlord: no signals");
-    }
-
-    #[test]
-    fn script_parity() {
-        let Some(bars) = load_real_bars() else { return; };
-
-        let mut named = OscillatorOverlord::new(14, 14, 3, 20);
-        let named_sigs = run(&mut named, &bars);
-
-        let script = r#"
+pub(crate) const RHAI_SCRIPT: &str = r#"
 let rsi14 = ind.rsi(14, buf=1);
 let st14 = ind.stochastic(14, buf=1);
 let cci20 = ind.cci(20, buf=1);
@@ -129,6 +110,31 @@ if !state["in_position"] {
     }
 }
 "#;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn oscillator_overlord_parity() {
+        let Some(bars) = load_real_bars() else { return; };
+
+        let mut hc = OscillatorOverlord::new(14, 14, 3, 20);
+        let hc_sigs = run(&mut hc, &bars);
+
+        assert!(!hc_sigs.is_empty(), "oscillator_overlord: no signals");
+    }
+
+    #[test]
+    fn script_parity() {
+        let Some(bars) = load_real_bars() else { return; };
+
+        let mut named = OscillatorOverlord::new(14, 14, 3, 20);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs = run(script_strat.as_mut(), &bars);
 

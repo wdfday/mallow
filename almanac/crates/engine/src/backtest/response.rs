@@ -6,7 +6,6 @@ use alm_core::{Bar, order::Side};
 use alm_report::{BuyHoldBenchmark, monte_carlo as mc_run, MonteCarloConfig as McConfig};
 use chrono::{DateTime, Utc};
 
-use crate::bus_sync::SyncBus;
 use crate::curve_compress::compress;
 use crate::types::{
     ActivityStats, BacktestRequest, BacktestResponse, BuyHoldBenchmarkResponse, CalendarStats,
@@ -18,11 +17,11 @@ use crate::types::{
 use alm_report::BacktestReport;
 
 use alm_core::strategy::Strategy;
-use alm_strategy::AnySizer;
+use crate::risk::AnySizer;
 use crate::Engine;
 
 pub fn build(
-    mut engine: Engine<Box<dyn Strategy>, AnySizer, SyncBus>,
+    mut engine: Engine<Box<dyn Strategy>, AnySizer>,
     report: BacktestReport,
     req: BacktestRequest,
     symbol: String,
@@ -59,7 +58,7 @@ pub fn build(
 
     // ── Trades ────────────────────────────────────────────────────────────────
     let trades: Vec<TradeResponse> = engine
-        .portfolio
+        .core.portfolio
         .trades
         .iter()
         .map(|t| TradeResponse {
@@ -89,7 +88,7 @@ pub fn build(
 
     // ── Fills (only when pyramiding is active — keeps normal responses lean) ───
     let fills: Vec<FillResponse> = if req.max_units.unwrap_or(1) > 1 {
-        engine.portfolio.fills.iter().map(|f| {
+        engine.core.portfolio.fills.iter().map(|f| {
             let leg = f.symbol.split('#').nth(1).and_then(|s| s.parse::<usize>().ok())
                 .map(|n| n.saturating_sub(1)).unwrap_or(0);
             FillResponse {
@@ -107,7 +106,7 @@ pub fn build(
 
     // ── Equity / drawdown curves ──────────────────────────────────────────────
     let equity_curve: Vec<CurvePoint> = engine
-        .portfolio
+        .core.portfolio
         .equity_curve
         .iter()
         .map(|p| CurvePoint { t: p.timestamp, v: p.equity })
@@ -116,7 +115,7 @@ pub fn build(
     let drawdown_curve: Vec<CurvePoint> = {
         let mut peak = capital;
         engine
-            .portfolio
+            .core.portfolio
             .equity_curve
             .iter()
             .map(|p| {
@@ -129,11 +128,11 @@ pub fn build(
 
     // ── Exposure ──────────────────────────────────────────────────────────────
     let exposure_pct = {
-        let total_ms = engine.portfolio.equity_curve
+        let total_ms = engine.core.portfolio.equity_curve
             .last()
-            .and_then(|last| engine.portfolio.equity_curve.first().map(|f| last.timestamp - f.timestamp))
+            .and_then(|last| engine.core.portfolio.equity_curve.first().map(|f| last.timestamp - f.timestamp))
             .unwrap_or(0);
-        let held_ms: i64 = engine.portfolio.trades.iter()
+        let held_ms: i64 = engine.core.portfolio.trades.iter()
             .map(|t| t.exit_timestamp - t.entry_timestamp)
             .sum();
         if total_ms > 0 { held_ms as f64 / total_ms as f64 * 100.0 } else { 0.0 }
@@ -153,10 +152,10 @@ pub fn build(
 
     // ── Monte Carlo (opt-in) ──────────────────────────────────────────────────
     let monte_carlo = req.monte_carlo.and_then(|mc_cfg| {
-        let pnl_pct: Vec<f64> = engine.portfolio.trades.iter().filter_map(|t| {
-            let idx = engine.portfolio.equity_curve
+        let pnl_pct: Vec<f64> = engine.core.portfolio.trades.iter().filter_map(|t| {
+            let idx = engine.core.portfolio.equity_curve
                 .partition_point(|p| p.timestamp <= t.entry_timestamp);
-            let eq = if idx > 0 { engine.portfolio.equity_curve[idx - 1].equity } else { return None };
+            let eq = if idx > 0 { engine.core.portfolio.equity_curve[idx - 1].equity } else { return None };
             if eq > f64::EPSILON { Some(t.pnl / eq) } else { None }
         }).collect();
         let cfg = McConfig {

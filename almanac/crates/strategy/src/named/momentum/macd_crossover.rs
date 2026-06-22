@@ -26,6 +26,10 @@ impl MacdCrossover {
 }
 
 impl Strategy for MacdCrossover {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let Some(v) = self.macd.update(bar.close) else {
             return vec![];
@@ -59,6 +63,12 @@ impl Strategy for MacdCrossover {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let mh = ind.macd(12);
+if mh[1].histogram <= 0.0 && mh[0].histogram > 0.0 { entry = true; }
+if mh[1].histogram >= 0.0 && mh[0].histogram < 0.0 { exit  = true; }
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,11 +88,7 @@ mod tests {
         let mut named = MacdCrossover::new(12, 26, 9);
         let named_sigs = run(&mut named, &bars);
 
-        let script = r#"
-let mh = ind.macd(12);
-if mh[1].histogram <= 0.0 && mh[0].histogram > 0.0 { entry = true; }
-if mh[1].histogram >= 0.0 && mh[0].histogram < 0.0 { exit  = true; }
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs = run(script_strat.as_mut(), &bars);
 

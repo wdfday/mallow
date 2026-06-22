@@ -1,7 +1,7 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::Ppo;
 
-const RHAI: &str = r#"
+pub(crate) const RHAI: &str = r#"
 let ppo12 = ind.ppo(12);
 if ppo12[1].histogram <= 0.0 && ppo12[0].histogram > 0.0 { entry = true; }
 if ppo12[1].histogram >= 0.0 && ppo12[0].histogram < 0.0 { exit  = true; }
@@ -65,7 +65,9 @@ impl Strategy for PpoHistogram {
         "Long when PPO histogram crosses above zero (momentum turning positive). Exit when it crosses below zero."
     }
 
-    fn script(&self) -> Option<&'static str> { Some(RHAI) }
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI)
+    }
 
     fn reset(&mut self) {
         self.ppo = Ppo::new(self.fast, self.slow, self.signal);

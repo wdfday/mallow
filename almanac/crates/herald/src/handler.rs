@@ -27,9 +27,7 @@ use std::time::{Duration, Instant};
 
 use metrics::{counter, gauge, histogram};
 
-// build_strategy / probe_script_htfs / MtfScriptStrategy aren't needed here:
-// `Registry::register` runs the real build internally and returns its error
-// directly, so we don't pre-validate in this handler anymore.
+use alm_strategy::{ScriptStrategy, MtfScriptStrategy, probe_script_htfs};
 use alm_core::msg::{
     BarMsg, HandInfo, HandListResponse, DeregisterMsg, HeartbeatRequest, HeartbeatResponse,
     PingResponse, ReadyEvent, RegisterMsg, ResetMsg, SignalMsg, SignalResponse,
@@ -51,6 +49,7 @@ use crate::registry::{HandSignal, Registry};
 
 pub const SUBJ_RESET: &str = "engine.reset";
 pub const SUBJ_REGISTER: &str = "engine.register";
+pub const SUBJ_VALIDATE: &str = "engine.validate";
 pub const SUBJ_DEREGISTER: &str = "engine.deregister";
 pub const SUBJ_LIST: &str = "engine.list";
 pub const SUBJ_PING: &str = "engine.ping";
@@ -150,6 +149,7 @@ impl Handler {
 
         let mut reset_sub      = self.client.subscribe(SUBJ_RESET).await?;
         let mut register_sub   = self.client.subscribe(SUBJ_REGISTER).await?;
+        let mut validate_sub   = self.client.subscribe(SUBJ_VALIDATE).await?;
         let mut deregister_sub = self.client.subscribe(SUBJ_DEREGISTER).await?;
         let mut list_sub       = self.client.subscribe(SUBJ_LIST).await?;
         let mut ping_sub       = self.client.subscribe(SUBJ_PING).await?;
@@ -209,6 +209,13 @@ impl Handler {
                     None => {
                         warn!(subject = SUBJ_REGISTER, "NATS subscription closed — resubscribing");
                         register_sub = self.client.subscribe(SUBJ_REGISTER).await?;
+                    }
+                },
+                msg = validate_sub.next() => match msg {
+                    Some(msg) => self.handle_validate(msg).await,
+                    None => {
+                        warn!(subject = SUBJ_VALIDATE, "NATS subscription closed — resubscribing");
+                        validate_sub = self.client.subscribe(SUBJ_VALIDATE).await?;
                     }
                 },
                 msg = deregister_sub.next() => match msg {
@@ -583,6 +590,76 @@ impl Handler {
                 }
                 Err(e) => {
                     warn!(hand_id = %req.hand_id, err = %e, "failed to register hand");
+                    serde_json::json!({"ok": false, "error": e.to_string()}).to_string()
+                }
+            };
+            let _ = self.client.publish(reply, ack.into_bytes().into()).await;
+        }
+    }
+
+    // ── engine.validate ──────────────────────────────────────────────────────
+    //
+    // Dry-run version of engine.register: validates timeframe + compiles the
+    // script without inserting anything into the registry. Used by helm at
+    // hand-create time so invalid strategies are rejected before hitting the DB.
+
+    async fn handle_validate(&self, msg: async_nats::Message) {
+        debug!(subject = SUBJ_VALIDATE, msg_bytes = msg.payload.len(), "handle_validate");
+        let req = match RegisterMsg::decode(msg.payload.as_ref()) {
+            Ok(r) => r,
+            Err(e) => { error!(err = %e, "failed to decode RegisterMsg for validate"); return; }
+        };
+
+        macro_rules! reject {
+            ($reply:expr, $err:expr) => {{
+                warn!(hand_id = %req.hand_id, "validate rejected: {}", $err);
+                if let Some(reply) = $reply {
+                    let ack = serde_json::json!({"ok": false, "error": $err}).to_string();
+                    let _ = self.client.publish(reply, ack.into_bytes().into()).await;
+                }
+                return;
+            }};
+        }
+
+        let target_tf = match req.timeframe.as_str() {
+            "" => reject!(msg.reply, "timeframe is required (e.g. \"M1\", \"M15\", \"H1\")"),
+            s => match parse_timeframe_str(s) {
+                Some(tf) => tf,
+                None => reject!(msg.reply, format!(
+                    "invalid timeframe `{s}` (supported: M1, M3, M5, M15, M30, H1, H2, H4, H6, H12, D1, W1, MN)"
+                )),
+            },
+        };
+
+        let compile_result: anyhow::Result<()> = {
+            let htfs = probe_script_htfs(&req.script);
+            if !htfs.is_empty() {
+                // V2 path — multi-TF script.
+                if let Some(bad) = htfs.iter().find(|h| h.duration_ms() <= target_tf.duration_ms()) {
+                    Err(anyhow::anyhow!(
+                        "script declares TF `{bad}` not larger than hand target TF `{target_tf}`"
+                    ))
+                } else {
+                    MtfScriptStrategy::from_script_live(&req.script, target_tf)
+                        .map(|_| ())
+                        .map_err(|e| anyhow::anyhow!("{e}"))
+                }
+            } else {
+                // V1 path — single-TF script.
+                ScriptStrategy::from_script_live(&req.script)
+                    .map(|_| ())
+                    .map_err(|e| anyhow::anyhow!("{e}"))
+            }
+        };
+
+        if let Some(reply) = msg.reply {
+            let ack = match compile_result {
+                Ok(()) => {
+                    info!(hand_id = %req.hand_id, timeframe = %req.timeframe, "validate ok");
+                    serde_json::json!({"ok": true}).to_string()
+                }
+                Err(e) => {
+                    warn!(hand_id = %req.hand_id, err = %e, "validate rejected");
                     serde_json::json!({"ok": false, "error": e.to_string()}).to_string()
                 }
             };

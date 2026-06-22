@@ -40,6 +40,10 @@ impl TrendFollower {
 }
 
 impl Strategy for TrendFollower {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let fast_val = self.fast_ma.update(bar.close);
         let slow_val = self.slow_ma.update(bar.close);
@@ -76,6 +80,15 @@ impl Strategy for TrendFollower {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let s50 = ind.sma(50, buf=1);
+let s200 = ind.sma(200, buf=1);
+let mh = ind.macd(12, buf=1);
+let in_pos = state["in_position"] == true;
+if !in_pos && s50[0] > s200[0] && mh[0].histogram > 0.0 { entry = true; state["in_position"] = true; }
+if in_pos && (s50[0] < s200[0] || mh[0].histogram < 0.0) { exit = true; state["in_position"] = false; }
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -95,20 +108,7 @@ mod tests {
         let mut named = TrendFollower::new(50, 200, 12, 26, 9);
         let named_sigs = run(&mut named, &bars);
 
-        let script = r#"
-let s50  = ind.sma(50, buf=1);
-let s200 = ind.sma(200, buf=1);
-let m    = ind.macd(12, buf=1);
-let in_pos = state["in_position"] == true;
-if !in_pos && s50[0] > s200[0] && m[0].histogram > 0.0 {
-    entry = true;
-    state["in_position"] = true;
-}
-if in_pos && (s50[0] < s200[0] || m[0].histogram < 0.0) {
-    exit = true;
-    state["in_position"] = false;
-}
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs = run(script_strat.as_mut(), &bars);
 

@@ -7,7 +7,7 @@ Each parametrized case feeds the **same 10k real BTCUSDT M1 bars** to both
   * each trade has the same entry timestamp and side
 
 The scripts mirror the translations in
-``crates/strategy/src/named_real_data_parity_tests.rs``.
+``crates/strategy/src/parity_tests``.
 
 Run:
     cd almanac/crates/alm-py
@@ -49,7 +49,7 @@ def assert_parity(named_result: dict, script_result: dict, label: str) -> None:
 
 # ── parametrized strategy → script pairs ────────────────────────────────────
 # Format: (strategy_name, params_dict, rhai_script)
-# Scripts mirror named_real_data_parity_tests.rs translation_rows().
+# Scripts mirror parity_tests translation_rows().
 
 TRANSLATION_ROWS: list[tuple[str, dict, str]] = [
 

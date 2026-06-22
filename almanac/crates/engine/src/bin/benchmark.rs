@@ -14,7 +14,8 @@
 use anyhow::Result;
 use alm_data::{BarFeed, ParquetFeed};
 use alm_engine::Engine;
-use alm_strategy::{FixedFractional, MaCrossover};
+use alm_engine::FixedFractional;
+use alm_strategy::MaCrossover;
 use std::path::Path;
 
 struct Args {
@@ -36,8 +37,7 @@ fn parse_args() -> Args {
             .unwrap_or_else(|| default.to_string())
     };
     Args {
-        data: get("--data",
-            "crates/data/testdata/BTCUSDT/M1/BTCUSDT_M1_2022-04-13_to_2026-04-12.parquet"),
+        data: get("--data", ""),
         symbol:     get("--symbol",     "BTCUSDT"),
         capital:    get("--capital",    "10000").parse().unwrap_or(10_000.0),
         fast:       get("--fast",       "20").parse().unwrap_or(20),
@@ -50,7 +50,34 @@ fn parse_args() -> Args {
 fn main() -> Result<()> {
     let args = parse_args();
 
-    let mut feed = ParquetFeed::load(Path::new(&args.data), &args.symbol)?;
+    let mut feed = if !args.data.is_empty() {
+        ParquetFeed::load(Path::new(&args.data), &args.symbol)?
+    } else {
+        // Try real data first: mallow/data/BinanceFlat/M1/BTCUSDT
+        let real_data_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../data/BinanceFlat/M1/BTCUSDT");
+
+        let mut files = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&real_data_dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.extension().map_or(false, |ext| ext == "parquet") {
+                    files.push(path);
+                }
+            }
+        }
+        files.sort();
+
+        if !files.is_empty() {
+            let refs: Vec<&Path> = files.iter().map(|p| p.as_path()).collect();
+            ParquetFeed::load_many(&refs, &args.symbol)?
+        } else {
+            // Fallback to testdata
+            let testdata_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../data/testdata/BTCUSDT/M1/BTCUSDT_M1_2026-01.parquet");
+            ParquetFeed::load(&testdata_path, &args.symbol)?
+        }
+    };
     let n_bars   = feed.len();
     let timeframe = feed.timeframe();
 

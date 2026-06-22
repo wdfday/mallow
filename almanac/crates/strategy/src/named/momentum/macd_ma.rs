@@ -30,6 +30,10 @@ impl MacdMa {
 }
 
 impl Strategy for MacdMa {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let macd_val = self.macd.update(bar.close);
         let ma_val = self.ma.update(bar.close);
@@ -60,6 +64,14 @@ impl Strategy for MacdMa {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let mh = ind.macd(12, buf=1);
+let sma50 = ind.sma(50, buf=1);
+let in_pos = state["in_position"] == true;
+if !in_pos && mh[0].histogram > 0.0 && close[0] > sma50[0] { entry = true; state["in_position"] = true; }
+if in_pos && mh[0].histogram < 0.0 { exit = true; state["in_position"] = false; }
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,19 +90,7 @@ mod tests {
             .map(|s| (s.timestamp, s.direction))
             .collect();
 
-        let script = r#"
-let mh = ind.macd(12, buf=1);
-let sma50 = ind.sma(50, buf=1);
-let in_pos = state["in_position"] == true;
-if !in_pos && mh[0].histogram > 0.0 && close[0] > sma50[0] {
-    entry = true;
-    state["in_position"] = true;
-}
-if in_pos && mh[0].histogram < 0.0 {
-    exit = true;
-    state["in_position"] = false;
-}
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs: Vec<(i64, Direction)> = bars.iter()
             .flat_map(|b| script_strat.on_bar(b))

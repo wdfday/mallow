@@ -91,4 +91,17 @@ impl MtfStrategy for MtfBbMacdStrategy {
 
         vec![]
     }
+
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
 }
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let h1_bb = ind.bbands(20, "H1");
+let macd  = ind.macd(12);
+let rsi   = ind.rsi(14);
+if close[0] > h1_bb[0].upper && macd[0].histogram > 0.0 && rsi[0] < 55.0 { entry = true; }
+if close[0] < h1_bb[0].middle || macd[0].histogram < 0.0 { exit = true; }
+"#;
+

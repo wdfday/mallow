@@ -1,7 +1,7 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::{Cmf, Ema};
 
-const RHAI: &str = r#"
+pub(crate) const RHAI: &str = r#"
 let cmf20 = ind.cmf(20, buf=1);
 let ema50  = ind.ema(50, buf=1);
 if cmf20[0] > 0.1 && close[0] > ema50[0] { entry = true; }
@@ -65,7 +65,9 @@ impl Strategy for CmfEmaTrend {
         "Long when CMF > threshold and close > EMA. Exit when CMF turns negative."
     }
 
-    fn script(&self) -> Option<&'static str> { Some(RHAI) }
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI)
+    }
 
     fn reset(&mut self) {
         self.cmf = Cmf::new(self.cmf_period);

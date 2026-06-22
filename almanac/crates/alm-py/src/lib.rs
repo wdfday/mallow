@@ -30,7 +30,8 @@ use alm_data::BarVecFeed;
 use alm_engine::Engine;
 use alm_indicator::{IndicatorBox, KalmanFilter};
 use alm_report::{BuyHoldBenchmark, monte_carlo as mc_run, portfolio_analyze, MonteCarloConfig};
-use alm_strategy::{build_strategy, catalog::STRATEGY_KEYS, AtrSizing, FixedFractional, FixedQuantity, KellySizing};
+use alm_strategy::{build_strategy, catalog::STRATEGY_KEYS};
+use alm_engine::{AtrSizing, FixedFractional, FixedQuantity, KellySizing};
 use serde_json::{json, Map, Value};
 
 pub mod indicators;
@@ -276,13 +277,13 @@ fn report_to_pydict<'py>(
 /// emitted by the strategy/script — the engine only reads the intra-bar fill mode.
 ///
 /// Supported keys:
-/// - `intra_bar_mode`: `"close_only"` (default) | `"pessimistic"` | `"ohlc_heuristic"`
+/// - `intra_bar_mode`: `"pessimistic"` (default) | `"ohlc_heuristic"`
 fn extract_intra_bar_mode(exit: Option<&Bound<PyDict>>) -> PyResult<IntraBarMode> {
     let Some(d) = exit else { return Ok(IntraBarMode::default()); };
     let mode = match d.get_item("intra_bar_mode")?.and_then(|v| v.extract::<String>().ok()).as_deref() {
         Some("pessimistic")    => IntraBarMode::Pessimistic,
         Some("ohlc_heuristic") => IntraBarMode::OhlcHeuristic,
-        _                      => IntraBarMode::CloseOnly,
+        _                      => IntraBarMode::Pessimistic,
     };
     Ok(mode)
 }
@@ -443,8 +444,8 @@ fn run_backtest<'py>(
             let report = engine.run(&mut feed, risk_free_annual);
 
             let ind_series  = engine.strategy.take_indicator_series();
-            let equity_curve = engine.portfolio.equity_curve.clone();
-            let trades       = engine.portfolio.trades.clone();
+            let equity_curve = engine.core.portfolio.equity_curve.clone();
+            let trades       = engine.core.portfolio.trades.clone();
             let exposure_pct = compute_exposure_pct(&equity_curve, &trades);
             let bh = if bh_closes.len() >= 2 {
                 Some(BuyHoldBenchmark::compute(&bh_closes, &bh_timestamps, risk_free_annual))
@@ -591,8 +592,8 @@ fn run_script_backtest<'py>(
             let report = engine.run(&mut feed, risk_free_annual);
 
             let ind_series   = engine.strategy.take_indicator_series();
-            let equity_curve = engine.portfolio.equity_curve.clone();
-            let trades       = engine.portfolio.trades.clone();
+            let equity_curve = engine.core.portfolio.equity_curve.clone();
+            let trades       = engine.core.portfolio.trades.clone();
             let exposure_pct = compute_exposure_pct(&equity_curve, &trades);
             let bh = if bh_closes.len() >= 2 {
                 Some(BuyHoldBenchmark::compute(&bh_closes, &bh_timestamps, risk_free_annual))
@@ -852,8 +853,8 @@ fn run_portfolio_backtest<'py>(
         let mut engine = Engine::sync(initial_capital, strat, risk, commission_pct, slippage_pct);
         let report = engine.run(&mut feed, risk_free_annual);
 
-        let equity_curve = engine.portfolio.equity_curve.clone();
-        let trades = engine.portfolio.trades.clone();
+        let equity_curve = engine.core.portfolio.equity_curve.clone();
+        let trades = engine.core.portfolio.trades.clone();
 
         let result_dict = report_to_pydict(py, &report, &equity_curve, &trades)?;
         results_dict.set_item(symbol, result_dict)?;

@@ -24,6 +24,10 @@ impl KamaStrategy {
 }
 
 impl Strategy for KamaStrategy {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let Some(kama_val) = self.kama.update(bar.close) else {
             return vec![];
@@ -61,6 +65,14 @@ impl Strategy for KamaStrategy {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let kama10 = ind.kama(10);
+let was_above = close[1] > kama10[1];
+let is_above  = close[0] > kama10[0];
+if !was_above && is_above  { entry = true; }
+if  was_above && !is_above { exit  = true; }
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -119,13 +131,7 @@ mod tests {
             .map(|s| (s.timestamp, s.direction))
             .collect();
 
-        let script = r#"
-let kama10 = ind.kama(10);
-let was_above = close[1] > kama10[1];
-let is_above  = close[0] > kama10[0];
-if !was_above && is_above  { entry = true; }
-if  was_above && !is_above { exit  = true; }
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs: Vec<(i64, Direction)> = bars.iter()
             .flat_map(|b| script_strat.on_bar(b))

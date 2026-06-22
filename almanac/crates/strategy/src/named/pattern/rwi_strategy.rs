@@ -1,7 +1,7 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::Rwi;
 
-const RHAI: &str = r#"
+pub(crate) const RHAI: &str = r#"
 let rwi14 = ind.rwi(14, buf=1);
 if rwi14[0].rwi_high > 1.0 { entry = true; }
 if rwi14[0].rwi_low  > 1.0 { exit  = true; }
@@ -50,7 +50,9 @@ impl Strategy for RwiStrategy {
         "Long when RWI High > threshold (non-random uptrend). Exit when RWI Low > threshold (non-random downtrend)."
     }
 
-    fn script(&self) -> Option<&'static str> { Some(RHAI) }
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI)
+    }
 
     fn reset(&mut self) {
         self.rwi = Rwi::new(self.period);

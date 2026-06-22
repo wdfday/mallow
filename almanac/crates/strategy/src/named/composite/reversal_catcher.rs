@@ -69,4 +69,16 @@ impl Strategy for ReversalCatcher {
         self.prev_k = None;
         self.prev_d = None;
     }
+
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
 }
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let st = ind.stochastic(14);
+let rsi14 = ind.rsi(14, buf=1);
+if st[1].k <= st[1].d && st[0].k > st[0].d && rsi14[0] < 50.0 { entry = true; }
+if (st[1].k >= st[1].d && st[0].k < st[0].d) || rsi14[0] > 70.0 { exit = true; }
+"#;
+

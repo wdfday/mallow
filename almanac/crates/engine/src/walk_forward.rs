@@ -1,8 +1,6 @@
-use crate::bus_sync::SyncBus;
 use crate::engine::Engine;
 use alm_core::{
     bar::Bar,
-    bus::EventBus,
     portfolio::EquityPoint,
     strategy::{RiskManager, Strategy},
 };
@@ -123,8 +121,8 @@ pub struct WalkForwardResult {
 /// When `min_oos_trades` is set and the base `oos_bars` window produces fewer
 /// trades, the OOS window is extended in `oos_bars` increments until the
 /// threshold is met or end-of-data is reached.
-pub fn walk_forward<S, R, B>(
-    engine: &mut Engine<S, R, B>,
+pub fn walk_forward<S, R>(
+    engine: &mut Engine<S, R>,
     bars: &[Bar],
     symbol: &str,
     cfg: WalkForwardConfig,
@@ -132,7 +130,6 @@ pub fn walk_forward<S, R, B>(
 where
     S: Strategy,
     R: RiskManager,
-    B: EventBus,
 {
     let n = bars.len();
     let mut windows = Vec::new();
@@ -183,7 +180,7 @@ where
             BarVecFeed::new(bars[embargo_end..oos_end].to_vec(), symbol.to_string());
         let oos_report = engine.run(&mut oos_feed, cfg.risk_free_annual);
 
-        let oos_equity_curve = engine.portfolio.equity_curve.clone();
+        let oos_equity_curve = engine.core.portfolio.equity_curve.clone();
         windows.push(WalkForwardWindow {
             window: window_idx,
             is_range: (is_start, is_end),
@@ -295,7 +292,7 @@ where
     S: Strategy,
     R: RiskManager,
 {
-    let mut engine = Engine::<S, R, SyncBus>::sync(
+    let mut engine = Engine::<S, R>::sync(
         initial_capital,
         strategy,
         risk,

@@ -855,7 +855,10 @@ fn aggregate_to_daily(portfolio: &Portfolio) -> (Vec<f64>, f64) {
         days.insert(day, p.equity);
     }
 
-    let daily_equity: Vec<f64> = days.values().copied().collect();
+    let mut daily_equity: Vec<f64> = days.values().copied().collect();
+    // Prepend initial capital to daily equity curve to capture the returns of the first trading day.
+    daily_equity.insert(0, portfolio.initial_capital);
+
     let n = daily_equity.len();
     if n < 2 {
         return (daily_equity, 252.0);
@@ -863,7 +866,8 @@ fn aggregate_to_daily(portfolio: &Portfolio) -> (Vec<f64>, f64) {
 
     let first_day = *days.keys().next().unwrap() as f64;
     let last_day  = *days.keys().last().unwrap() as f64;
-    let elapsed_years = (last_day - first_day) / 365.25;  // day index units
+    // We add 1.0 to elapsed days to account for the starting day prepended at the beginning.
+    let elapsed_years = (last_day - first_day + 1.0) / 365.25;  // day index units
     let days_per_year = if elapsed_years > 1e-6 {
         (n - 1) as f64 / elapsed_years
     } else {

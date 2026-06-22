@@ -26,6 +26,10 @@ impl TsiStrategy {
 }
 
 impl Strategy for TsiStrategy {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let Some(tsi_val) = self.tsi.update(bar.close) else {
             return vec![];
@@ -62,6 +66,12 @@ impl Strategy for TsiStrategy {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let tsi25 = ind.tsi(25);
+if tsi25[1] < -25.0 && tsi25[0] >= -25.0 { entry = true; }
+if tsi25[1] >= 25.0 && tsi25[0] < 25.0   { exit  = true; }
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -121,11 +131,7 @@ mod tests {
             .collect();
 
         // ind.tsi(25) uses defaults: first=25, second=13
-        let script = r#"
-let tsi25 = ind.tsi(25);
-if tsi25[1] < -25.0 && tsi25[0] >= -25.0 { entry = true; }
-if tsi25[1] >= 25.0 && tsi25[0] < 25.0   { exit  = true; }
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs: Vec<(i64, Direction)> = bars.iter()
             .flat_map(|b| script_strat.on_bar(b))

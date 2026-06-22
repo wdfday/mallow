@@ -40,6 +40,10 @@ impl WaddahAttar {
 }
 
 impl Strategy for WaddahAttar {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let macd_val = self.macd.update(bar.close);
         let bb_val = self.bb.update(bar.close);
@@ -79,6 +83,20 @@ impl Strategy for WaddahAttar {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let macd12 = ind.macd(12);
+let bb20 = ind.bbands(20, buf=1);
+let prev_macd = macd12[1].macd;
+let explosion = (macd12[0].macd - prev_macd) * 150.0;
+let dead_zone = bb20[0].upper - bb20[0].lower;
+if explosion > dead_zone && macd12[0].histogram > 0.0 {
+    entry = true;
+}
+if explosion < dead_zone || macd12[0].histogram < 0.0 {
+    exit = true;
+}
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,19 +111,7 @@ mod tests {
         let mut named = WaddahAttar::new(12, 26, 20, 2.0);
         let named_sigs = run(&mut named, &bars);
 
-        let script = r#"
-let macd12 = ind.macd(12);
-let bb20 = ind.bbands(20, buf=1);
-let prev_macd = macd12[1].macd;
-let explosion = (macd12[0].macd - prev_macd) * 150.0;
-let dead_zone = bb20[0].upper - bb20[0].lower;
-if explosion > dead_zone && macd12[0].histogram > 0.0 {
-    entry = true;
-}
-if explosion < dead_zone || macd12[0].histogram < 0.0 {
-    exit = true;
-}
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs = run(script_strat.as_mut(), &bars);
 

@@ -4,11 +4,11 @@ use alm_core::{
     exit::IntraBarMode,
     strategy::Strategy,
 };
-use alm_strategy::{build_strategy, AnySizer, AtrSizing, FixedFractional, FixedQuantity, FixedUsd, RiskFractional};
+use alm_strategy::build_strategy;
+use crate::risk::{AnySizer, AtrSizing, FixedFractional, FixedQuantity, FixedUsd, RiskFractional};
 use anyhow::Result;
 use serde_json::Value;
 
-use crate::bus_sync::SyncBus;
 use crate::types::BacktestRequest;
 use crate::Engine;
 
@@ -21,7 +21,7 @@ use super::{DEFAULT_COMMISSION, DEFAULT_CAPITAL, DEFAULT_POSITION_PCT, DEFAULT_S
 pub fn build(
     req: &BacktestRequest,
     params: &Value,
-) -> Result<Engine<Box<dyn Strategy>, AnySizer, SyncBus>> {
+) -> Result<Engine<Box<dyn Strategy>, AnySizer>> {
     let capital = req.initial_capital.unwrap_or(DEFAULT_CAPITAL);
     let commission = req.commission_pct.unwrap_or(DEFAULT_COMMISSION);
     let slippage = req.slippage_pct.unwrap_or(DEFAULT_SLIPPAGE);
@@ -55,7 +55,7 @@ pub fn build(
 pub fn build_with_strategy(
     req: &BacktestRequest,
     strategy: Box<dyn Strategy>,
-) -> Result<Engine<Box<dyn Strategy>, AnySizer, SyncBus>> {
+) -> Result<Engine<Box<dyn Strategy>, AnySizer>> {
     let capital = req.initial_capital.unwrap_or(DEFAULT_CAPITAL);
     let commission = req.commission_pct.unwrap_or(DEFAULT_COMMISSION);
     let slippage = req.slippage_pct.unwrap_or(DEFAULT_SLIPPAGE);
@@ -161,7 +161,7 @@ pub fn intra_bar_mode_from_str(s: Option<&str>) -> IntraBarMode {
     match s {
         Some("pessimistic") => IntraBarMode::Pessimistic,
         Some("ohlc_heuristic") => IntraBarMode::OhlcHeuristic,
-        _ => IntraBarMode::CloseOnly,
+        _ => IntraBarMode::Pessimistic,
     }
 }
 

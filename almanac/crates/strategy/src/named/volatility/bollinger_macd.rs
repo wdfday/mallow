@@ -62,7 +62,9 @@ impl Strategy for BollingerMacd {
         "Long when close breaks above upper Bollinger Band with positive MACD histogram. Exit when close drops below middle band or histogram turns negative."
     }
 
-    fn script(&self) -> Option<&'static str> { Some(RHAI) }
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
 
     fn reset(&mut self) {
         self.bb = BBands::new(self.bb_period, self.bb_std);
@@ -70,6 +72,13 @@ impl Strategy for BollingerMacd {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let bb20 = ind.bbands(20, buf=1);
+let mh = ind.macd(12, buf=1);
+if close[0] > bb20[0].upper && mh[0].histogram > 0.0 { entry = true; }
+if close[0] < bb20[0].middle || mh[0].histogram < 0.0 { exit = true; }
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;

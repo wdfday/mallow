@@ -1,7 +1,7 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::{Adx, Ema};
 
-const RHAI: &str = r#"
+pub(crate) const RHAI: &str = r#"
 let e50  = ind.ema(50);
 let e200 = ind.ema(200);
 let adx14 = ind.adx(14, buf=1);
@@ -80,7 +80,9 @@ impl Strategy for TrendTransition {
         "Long when fast EMA crosses above slow EMA with ADX confirming a strong trend. Exit on EMA cross-down."
     }
 
-    fn script(&self) -> Option<&'static str> { Some(RHAI) }
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI)
+    }
 
     fn reset(&mut self) {
         self.fast_ema = Ema::new(self.fast_period);

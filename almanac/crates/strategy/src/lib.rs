@@ -19,8 +19,7 @@ pub use script::{
     MtfScriptStrategy, probe_script_htfs,
 };
 
-// ── Bar resampler (MTF helper) ────────────────────────────────────────────────
-pub mod bar_resampler;
+
 
 // ── Strategy / indicator catalogue ────────────────────────────────────────────
 // Static metadata surfaced by HTTP (`GET /api/indicators`, `/api/strategies`)
@@ -29,8 +28,9 @@ pub mod bar_resampler;
 pub mod catalog;
 
 // ── Position sizing / risk managers ──────────────────────────────────────────
-pub mod risk;
-pub use risk::{AnySizer, AtrSizing, EqualWeight, FixedFractional, FixedQuantity, FixedUsd, KellySizing, RiskFractional};
+// Sizers have moved to `alm-engine::risk`. Import from there directly.
+// `alm_strategy::{FixedFractional, …}` paths remain available via `alm-engine`.
+// (kept as a doc note; the pub mod risk below was removed to break the engine ↔ strategy cycle)
 
 // ── Concrete named strategies (58) ───────────────────────────────────────────
 pub mod named;
@@ -46,4 +46,4 @@ mod mtf_parity_tests;
 #[cfg(test)]
 mod script_parity_tests;
 #[cfg(test)]
-mod named_real_data_parity_tests;
+mod parity_tests;

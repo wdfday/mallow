@@ -1,17 +1,10 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
-use alm_indicator::{Macd, SuperTrend};
+use alm_indicator::SuperTrend;
 
-const RHAI_ST: &str = r#"
+pub(crate) const RHAI_SCRIPT: &str = r#"
 let st = ind.supertrend(10);
 if st[1].bullish < 0.5 && st[0].bullish >= 0.5 { entry = true; }
 if st[1].bullish >= 0.5 && st[0].bullish < 0.5 { exit  = true; }
-"#;
-
-const RHAI_ST_MACD: &str = r#"
-let st10 = ind.supertrend(10, buf=1);
-let m    = ind.macd(12, buf=1);
-if st10[0].bullish >= 0.5 && m[0].histogram > 0.0 { entry = true; }
-if st10[0].bullish < 0.5  { exit  = true; }
 "#;
 
 /// Bot — SuperTrend Trend Follower.
@@ -44,7 +37,6 @@ impl Strategy for SupertrendStrategy {
 
         let prev = self.prev_bullish.replace(v.is_bullish);
 
-        // Need a previous value to detect flip
         let Some(was_bullish) = prev else {
             return vec![];
         };
@@ -66,79 +58,13 @@ impl Strategy for SupertrendStrategy {
         "Long when SuperTrend flips bullish (price above band). Exit when SuperTrend flips bearish."
     }
 
-    fn script(&self) -> Option<&'static str> { Some(RHAI_ST) }
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
 
     fn reset(&mut self) {
         self.st = SuperTrend::new(self.period, self.multiplier);
         self.prev_bullish = None;
-    }
-}
-
-/// Bot — SuperTrend + MACD confirmation.
-///
-/// Long when SuperTrend is bullish AND MACD histogram > 0.
-/// Close when SuperTrend flips bearish.
-pub struct SupertrendMacd {
-    st: SuperTrend,
-    macd: Macd,
-    st_period: usize,
-    multiplier: f64,
-    macd_fast: usize,
-    macd_slow: usize,
-    macd_signal: usize,
-}
-
-impl SupertrendMacd {
-    pub fn new(
-        st_period: usize,
-        multiplier: f64,
-        macd_fast: usize,
-        macd_slow: usize,
-        macd_signal: usize,
-    ) -> Self {
-        Self {
-            st: SuperTrend::new(st_period, multiplier),
-            macd: Macd::new(macd_fast, macd_slow, macd_signal),
-            st_period,
-            multiplier,
-            macd_fast,
-            macd_slow,
-            macd_signal,
-        }
-    }
-}
-
-impl Strategy for SupertrendMacd {
-    fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
-        let st = self.st.update(bar.high, bar.low, bar.close);
-        let mc = self.macd.update(bar.close);
-
-        let (Some(st), Some(mc)) = (st, mc) else {
-            return vec![];
-        };
-
-        if st.is_bullish && mc.histogram > 0.0 {
-            return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
-        }
-        if !st.is_bullish {
-            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
-        }
-        vec![]
-    }
-
-    fn name(&self) -> &str {
-        "supertrend_macd"
-    }
-
-    fn description(&self) -> &'static str {
-        "Long when SuperTrend is bullish and MACD histogram is positive. Exit when SuperTrend flips bearish."
-    }
-
-    fn script(&self) -> Option<&'static str> { Some(RHAI_ST_MACD) }
-
-    fn reset(&mut self) {
-        self.st = SuperTrend::new(self.st_period, self.multiplier);
-        self.macd = Macd::new(self.macd_fast, self.macd_slow, self.macd_signal);
     }
 }
 
@@ -161,29 +87,11 @@ mod tests {
         let mut named = SupertrendStrategy::new(10, 3.0);
         let named_sigs = run(&mut named, &bars);
 
-        // st_bull returns 1.0 when bullish, 0.0 when bearish
         let script = SupertrendStrategy::new(10, 3.0).script().unwrap();
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs = run(script_strat.as_mut(), &bars);
 
         assert!(!named_sigs.is_empty(), "supertrend: must produce signals");
-        assert_eq!(named_sigs, script_sigs, "script parity failed");
-    }
-
-    #[test]
-    fn supertrend_macd_script_parity() {
-        // SupertrendMacd fires every bar where ST bullish AND MACD hist > 0;
-        // exits every bar when ST bearish.
-        let Some(bars) = load_real_bars() else { return; };
-
-        let mut named = SupertrendMacd::new(10, 3.0, 12, 26, 9);
-        let named_sigs = run(&mut named, &bars);
-
-        let script = SupertrendMacd::new(10, 3.0, 12, 26, 9).script().unwrap();
-        let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
-        let script_sigs = run(script_strat.as_mut(), &bars);
-
-        assert!(!named_sigs.is_empty(), "supertrend_macd: must produce signals");
         assert_eq!(named_sigs, script_sigs, "script parity failed");
     }
 }

@@ -122,31 +122,84 @@ fn bench_multi_run(c: &mut Criterion) {
 //   hardcoded  — pure Rust struct, zero interpreter overhead
 //   script     — 100% faithful to the spec script, runs the full script engine
 
+use alm_core::{MtfSnapshot, MtfStrategy, TfBarEvent, TfView, Timeframe};
+use alm_strategy::script::v2::MtfScriptStrategy;
+use std::collections::{HashMap, VecDeque};
+
+fn run_all_mtf(s: &mut dyn MtfStrategy, bars: &[Bar]) -> usize {
+    let h1_duration = Timeframe::H1.duration_ms();
+    let mut h1_bars = Vec::new();
+    let mut current_h1: Option<Bar> = None;
+    for b in bars {
+        let h1_ts = (b.timestamp / h1_duration) * h1_duration;
+        if let Some(ref mut cur) = current_h1 {
+            if cur.timestamp == h1_ts {
+                cur.close = b.close;
+                cur.high = cur.high.max(b.high);
+                cur.low = cur.low.min(b.low);
+                cur.volume += b.volume;
+            } else {
+                h1_bars.push(cur.clone());
+                current_h1 = Some(Bar::new(h1_ts, &b.symbol, b.open, b.high, b.low, b.close, b.volume));
+            }
+        } else {
+            current_h1 = Some(Bar::new(h1_ts, &b.symbol, b.open, b.high, b.low, b.close, b.volume));
+        }
+    }
+    if let Some(cur) = current_h1 {
+        h1_bars.push(cur);
+    }
+
+    let mut by_ts: std::collections::BTreeMap<i64, Vec<(Timeframe, Bar)>> = std::collections::BTreeMap::new();
+    for b in bars {
+        by_ts.entry(b.timestamp + Timeframe::M1.duration_ms()).or_default().push((Timeframe::M1, b.clone()));
+    }
+    for b in &h1_bars {
+        by_ts.entry(b.timestamp + Timeframe::H1.duration_ms()).or_default().push((Timeframe::H1, b.clone()));
+    }
+
+    let mut confirmed: HashMap<Timeframe, VecDeque<Bar>> = HashMap::new();
+    let mut count = 0;
+
+    for (&close_ts, tick) in &by_ts {
+        for (tf, b) in tick {
+            confirmed.entry(*tf).or_default().push_back(b.clone());
+        }
+        let events: Vec<TfBarEvent<'_>> = tick.iter()
+            .map(|(tf, b)| TfBarEvent { tf: *tf, bar: b })
+            .collect();
+        let views: HashMap<Timeframe, TfView<'_>> = confirmed.iter()
+            .map(|(tf, w)| (*tf, TfView { tf: *tf, confirmed: w }))
+            .collect();
+        let snap = MtfSnapshot { base_tf: Timeframe::M1, close_ts, events: &events, views: &views };
+        count += s.on_bars(black_box(snap)).len();
+    }
+    count
+}
+
 fn bench_kitchen_sink_run(c: &mut Criterion) {
     let bars = make_bars(1_000);
     let mut group = c.benchmark_group("kitchen_sink_run/1000bars");
 
-    // Use the canonical RHAI_SCRIPT exposed by KitchenSinkStrategy so both
-    // implementations execute the exact same logic — otherwise this comparison
-    // measures different strategies instead of interpreter overhead.
-    let script = KitchenSinkStrategy::new()
+    let mut named = KitchenSinkStrategy::new("BTCUSDT");
+    let script = named
         .script()
         .expect("KitchenSinkStrategy::script() must return canonical RHAI_SCRIPT");
 
     group.bench_with_input(BenchmarkId::from_parameter("hardcoded"), &bars, |b, bars| {
-        let mut s = KitchenSinkStrategy::new();
-        b.iter(|| { s.reset(); run_all(&mut s, bars) })
+        let mut s = KitchenSinkStrategy::new("BTCUSDT");
+        b.iter(|| { s.reset(); run_all_mtf(&mut s, bars) })
     });
 
     group.bench_with_input(BenchmarkId::from_parameter("script_full"), &bars, |b, bars| {
-        let mut s = build_strategy("script", &json!({ "script": script })).unwrap();
-        b.iter(|| { s.reset(); run_all(s.as_mut(), bars) })
+        let mut s = MtfScriptStrategy::from_script(script, Timeframe::M1).unwrap();
+        b.iter(|| { s.reset(); run_all_mtf(&mut s, bars) })
     });
 
     group.finish();
 }
 
-// ── BTC M1 real data ────────────────────────────────���────────────────────────
+// ── BTC M1 real data ──────────────────────────────────────────────────────────
 //
 // Same kitchen-sink strategy on ~2M real BTC M1 bars (2022-04 → 2026-04).
 // Measures wall-clock throughput on realistic market data.
@@ -162,18 +215,19 @@ fn bench_btc_m1_real(c: &mut Criterion) {
     let mut group = c.benchmark_group("btc_m1_real");
     group.sample_size(10);
 
-    let script = KitchenSinkStrategy::new()
+    let mut named = KitchenSinkStrategy::new("BTCUSDT");
+    let script = named
         .script()
         .expect("KitchenSinkStrategy::script() must return canonical RHAI_SCRIPT");
 
     group.bench_with_input(BenchmarkId::from_parameter("hardcoded"), &bars, |b, bars| {
-        let mut s = KitchenSinkStrategy::new();
-        b.iter(|| { s.reset(); run_all(&mut s, bars) })
+        let mut s = KitchenSinkStrategy::new("BTCUSDT");
+        b.iter(|| { s.reset(); run_all_mtf(&mut s, bars) })
     });
 
     group.bench_with_input(BenchmarkId::from_parameter("script_full"), &bars, |b, bars| {
-        let mut s = build_strategy("script", &json!({ "script": script })).unwrap();
-        b.iter(|| { s.reset(); run_all(s.as_mut(), bars) })
+        let mut s = MtfScriptStrategy::from_script(script, Timeframe::M1).unwrap();
+        b.iter(|| { s.reset(); run_all_mtf(&mut s, bars) })
     });
 
     group.finish();

@@ -22,6 +22,10 @@ impl RsiMeanRev {
 }
 
 impl Strategy for RsiMeanRev {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let Some(rsi) = self.rsi.update(bar.close) else {
             return vec![];
@@ -52,6 +56,12 @@ impl Strategy for RsiMeanRev {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let rsi14 = ind.rsi(14, buf=1);
+if rsi14[0] < 30.0 { entry = true; }
+if rsi14[0] > 70.0 { exit  = true; }
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,11 +116,7 @@ mod tests {
         let mut named = RsiMeanRev::new(14, 30.0, 70.0);
         let named_sigs = run(&mut named, &bars);
 
-        let script = r#"
-let rsi14 = ind.rsi(14, buf=1);
-if rsi14[0] < 30.0 { entry = true; }
-if rsi14[0] > 70.0 { exit  = true; }
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs = run(script_strat.as_mut(), &bars);
 

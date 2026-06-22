@@ -21,9 +21,9 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Through
 
 use alm_core::Bar;
 use alm_data::{BarFeed, BarVecFeed, ParquetFeed, RowGroupFeed};
-use alm_engine::{run_batch, runner::BacktestJob, Engine};
+use alm_engine::{run_batch, runner::BacktestJob, Engine,risk::FixedFractional};
 use alm_strategy::{
-    factory::build_strategy, ConnorsRsiStrategy, FixedFractional, IchimokuCloud, MaCrossover,
+    factory::build_strategy, ConnorsRsiStrategy, IchimokuCloud, MaCrossover,
     MacdCrossover,
 };
 use serde_json::json;
@@ -56,7 +56,7 @@ fn collect_bars(path: &Path, symbol: &str) -> Vec<Bar> {
     std::iter::from_fn(|| f.next()).collect()
 }
 
-fn make_engine() -> Engine<MaCrossover, FixedFractional, alm_engine::SyncBus> {
+fn make_engine() -> Engine<MaCrossover, FixedFractional> {
     Engine::sync(
         CAPITAL,
         MaCrossover::new(20, 50),
@@ -68,7 +68,7 @@ fn make_engine() -> Engine<MaCrossover, FixedFractional, alm_engine::SyncBus> {
 
 // ── io_vs_compute ─────────────────────────────────────────────────────────────
 //
-// Answers: "how much time does I/O take vs strategy compute?"
+// Answers: "how much time do I/O take vs strategy compute?"
 //
 // full:         ParquetFeed::load (I/O) + engine.run (compute)  [total cost]
 // compute_only: BarVecFeed (RAM) + engine.run (compute)        [compute only]

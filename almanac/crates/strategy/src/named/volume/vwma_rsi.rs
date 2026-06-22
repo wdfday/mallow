@@ -30,6 +30,10 @@ impl VwmaRsi {
 }
 
 impl Strategy for VwmaRsi {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let vwma = self.vwma.update(bar.close, bar.volume);
         let rsi = self.rsi.update(bar.close);
@@ -57,6 +61,13 @@ impl Strategy for VwmaRsi {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let vwma20 = ind.vwma(20, buf=1);
+let rsi14 = ind.rsi(14, buf=1);
+if close[0] > vwma20[0] && rsi14[0] > 50.0 { entry = true; }
+if rsi14[0] < 45.0 { exit = true; }
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -75,12 +86,7 @@ mod tests {
             .map(|s| (s.timestamp, s.direction))
             .collect();
 
-        let script = r#"
-let vwma20 = ind.vwma(20, buf=1);
-let rsi14 = ind.rsi(14, buf=1);
-if close[0] > vwma20[0] && rsi14[0] > 50.0 { entry = true; }
-if rsi14[0] < 45.0 { exit = true; }
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs: Vec<(i64, Direction)> = bars.iter()
             .flat_map(|b| script_strat.on_bar(b))

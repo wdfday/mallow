@@ -27,6 +27,10 @@ impl VolatilitySqueezer {
 }
 
 impl Strategy for VolatilitySqueezer {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let atr_val = self.atr.update(bar.high, bar.low, bar.close);
         let ma_val = self.ma.update(bar.close);
@@ -63,6 +67,18 @@ impl Strategy for VolatilitySqueezer {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let atr14 = ind.atr(14);
+let sma50 = ind.sma(50);
+let atr_expanding = atr14[0].atr > atr14[1].atr;
+if atr_expanding && close[0] > sma50[0] {
+    entry = true;
+}
+if close[0] < sma50[0] {
+    exit = true;
+}
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -77,17 +93,7 @@ mod tests {
         let mut named = VolatilitySqueezer::new(14, 50);
         let named_sigs = run(&mut named, &bars);
 
-        let script = r#"
-let atr14 = ind.atr(14);
-let sma50 = ind.sma(50);
-let atr_expanding = atr14[0].atr > atr14[1].atr;
-if atr_expanding && close[0] > sma50[0] {
-    entry = true;
-}
-if close[0] < sma50[0] {
-    exit = true;
-}
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs = run(script_strat.as_mut(), &bars);
 

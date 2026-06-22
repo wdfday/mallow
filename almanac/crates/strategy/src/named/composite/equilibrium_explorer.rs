@@ -81,7 +81,19 @@ impl Strategy for EquilibriumExplorer {
         self.stoch = Stochastic::new(self.stoch_k, self.stoch_d);
         self.macd = Macd::new(self.macd_fast, self.macd_slow, self.macd_signal);
     }
+
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
 }
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let ema200 = ind.ema(200, buf=1);
+let st = ind.stochastic(14, buf=1);
+let mh = ind.macd(12, buf=1);
+if close[0] > ema200[0] && st[0].k < 20.0 && mh[0].histogram > 0.0 { entry = true; }
+if st[0].k > 80.0 || mh[0].histogram < 0.0 { exit = true; }
+"#;
 
 #[cfg(test)]
 mod tests {

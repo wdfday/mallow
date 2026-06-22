@@ -28,9 +28,11 @@
 //! All ratio metrics (Sharpe, Sortino, volatility) use **daily returns** as the
 //! base unit, regardless of the bar frequency of the backtest:
 //!
-//! - The equity curve is collapsed to one value per calendar day (last bar of each day).
+//! - The equity curve is collapsed to one value per calendar day (last bar of each day),
+//!   prepending the `initial_capital` as the Day 0 starting point to capture the first day's returns.
 //! - `days_per_year` is computed empirically from the equity-curve timestamps:
-//!   `(trading_days_observed) / (elapsed_calendar_years)`.
+//!   `(trading_days_observed) / (elapsed_calendar_years)`, with 1.0 day added to the elapsed
+//!   span to account for the prepended Day 0 starting point.
 //!   US stocks → ~252, crypto (24/7) → ~365 — no hardcoded constant.
 //! - This makes M1 and H1 backtests directly comparable and avoids variance
 //!   inflation from consecutive zero-return bars while no position is open.

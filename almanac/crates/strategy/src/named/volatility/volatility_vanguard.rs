@@ -29,6 +29,10 @@ impl VolatilityVanguard {
 }
 
 impl Strategy for VolatilityVanguard {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let bb_val = self.bb.update(bar.close);
         let atr_val = self.atr.update(bar.high, bar.low, bar.close);
@@ -65,6 +69,18 @@ impl Strategy for VolatilityVanguard {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let bb20 = ind.bbands(20);
+let atr14 = ind.atr(14);
+let atr_expanding = atr14[0].atr > atr14[1].atr;
+if close[0] > bb20[0].upper && atr_expanding {
+    entry = true;
+}
+if close[0] < bb20[0].middle {
+    exit = true;
+}
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,17 +95,7 @@ mod tests {
         let mut named = VolatilityVanguard::new(20, 2.0, 14);
         let named_sigs = run(&mut named, &bars);
 
-        let script = r#"
-let bb20 = ind.bbands(20);
-let atr14 = ind.atr(14);
-let atr_expanding = atr14[0].atr > atr14[1].atr;
-if close[0] > bb20[0].upper && atr_expanding {
-    entry = true;
-}
-if close[0] < bb20[0].middle {
-    exit = true;
-}
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs = run(script_strat.as_mut(), &bars);
 

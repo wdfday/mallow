@@ -482,27 +482,50 @@ fn parse_timeframe(s: &str) -> Result<Timeframe> {
 mod tests {
     use super::*;
     use alm_data::{BarFeed, BarVecFeed, ParquetFeed};
-    use alm_strategy::{build_strategy, FixedFractional};
+    use alm_strategy::build_strategy;
+    use crate::FixedFractional;
     use crate::types::TradeResponse;
     use alm_core::order::Side;
     use std::path::PathBuf;
 
-    fn btcusdt_m1_parquet() -> PathBuf {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .parent().unwrap()
-            .join("data/testdata/BTCUSDT/M1/BTCUSDT_M1_2022-04-13_to_2026-04-12.parquet")
+    fn load_btcusdt_m1_test_bars() -> Option<Vec<alm_core::Bar>> {
+        // 1. Try to load from real mallow/data/BinanceFlat/M1/BTCUSDT first
+        let real_data_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap().parent().unwrap() // mallow/almanac/crates -> mallow/almanac
+            .parent().unwrap() // mallow
+            .join("data/BinanceFlat/M1/BTCUSDT");
+
+        let mut files = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&real_data_dir) {
+            for entry in entries.filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.extension().map_or(false, |ext| ext == "parquet") {
+                    files.push(path);
+                }
+            }
+        }
+        files.sort();
+
+        let mut feed = if !files.is_empty() {
+            let refs: Vec<&std::path::Path> = files.iter().map(|p| p.as_path()).collect();
+            ParquetFeed::load_many(&refs, "BTCUSDT").ok()?
+        } else {
+            // Fallback to testdata
+            let testdata_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent().unwrap()
+                .join("data/testdata/BTCUSDT/M1/BTCUSDT_M1_2026-01.parquet");
+            ParquetFeed::load(&testdata_path, "BTCUSDT").ok()?
+        };
+
+        Some(std::iter::from_fn(|| feed.next()).collect())
     }
 
     #[test]
     fn btcusdt_m1_new_metrics() {
-        let path = btcusdt_m1_parquet();
-        if !path.exists() {
-            eprintln!("testdata not found, skipping: {}", path.display());
+        let Some(all_bars) = load_btcusdt_m1_test_bars() else {
+            eprintln!("testdata not found, skipping");
             return;
-        }
-
-        let mut feed = ParquetFeed::load(&path, "BTCUSDT").expect("load parquet");
-        let all_bars: Vec<alm_core::Bar> = std::iter::from_fn(|| feed.next()).collect();
+        };
         println!("loaded {} bars", all_bars.len());
 
         let inner = build_strategy("ma_crossover", &serde_json::Value::Object(Default::default()))
@@ -512,7 +535,7 @@ mod tests {
         let mut bar_feed = BarVecFeed::new(all_bars, "BTCUSDT".into());
         let report = engine.run(&mut bar_feed, 0.04);
 
-        let trades_resp: Vec<TradeResponse> = engine.portfolio.trades.iter().map(|t| TradeResponse {
+        let trades_resp: Vec<TradeResponse> = engine.core.portfolio.trades.iter().map(|t| TradeResponse {
             symbol: t.symbol.clone(),
             side: match t.side { Side::Buy => "long".into(), Side::Sell => "short".into() },
             qty: t.qty,

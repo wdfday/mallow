@@ -22,6 +22,10 @@ impl HighestBreakout {
 }
 
 impl Strategy for HighestBreakout {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         self.closes.push_back(bar.close);
         if self.closes.len() > self.period + 1 {
@@ -54,6 +58,20 @@ impl Strategy for HighestBreakout {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let dummy = highest(close, 21);
+let highest_val = close[1];
+let lowest_val = close[1];
+let i = 2;
+while i <= 20 {
+    if close[i] > highest_val { highest_val = close[i]; }
+    if close[i] < lowest_val { lowest_val = close[i]; }
+    i = i + 1;
+}
+if close[0] > highest_val { entry = true; }
+if close[0] < lowest_val { exit = true; }
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,19 +86,7 @@ mod tests {
         let mut named = HighestBreakout::new(20);
         let named_sigs = run(&mut named, &bars);
 
-        let script = r#"
-let dummy = highest(close, 21);
-let highest_val = close[1];
-let lowest_val = close[1];
-let i = 2;
-while i <= 20 {
-    if close[i] > highest_val { highest_val = close[i]; }
-    if close[i] < lowest_val { lowest_val = close[i]; }
-    i = i + 1;
-}
-if close[0] > highest_val { entry = true; }
-if close[0] < lowest_val { exit = true; }
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs = run(script_strat.as_mut(), &bars);
 

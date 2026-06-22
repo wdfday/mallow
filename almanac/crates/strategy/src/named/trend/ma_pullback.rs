@@ -30,6 +30,10 @@ impl MaPullback {
 }
 
 impl Strategy for MaPullback {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let Some(ma) = self.ma.update(bar.close) else {
             return vec![];
@@ -76,21 +80,8 @@ impl Strategy for MaPullback {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_utils::*;
-    use crate::factory::build_strategy;
-    use serde_json::json;
 
-    #[test]
-    fn script_parity() {
-        let Some(bars) = load_real_bars() else { return; };
-
-        let mut named = MaPullback::new(50);
-        let named_sigs = run(&mut named, &bars);
-
-        let script = r#"
+pub(crate) const RHAI_SCRIPT: &str = r#"
 let sma50 = ind.sma(50, buf=1);
 if state["in_position"] == () {
     state["in_position"] = false;
@@ -117,6 +108,21 @@ if state["in_position"] {
     }
 }
 "#;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn script_parity() {
+        let Some(bars) = load_real_bars() else { return; };
+
+        let mut named = MaPullback::new(50);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs = run(script_strat.as_mut(), &bars);
 

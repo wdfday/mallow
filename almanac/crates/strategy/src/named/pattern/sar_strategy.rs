@@ -24,6 +24,10 @@ impl SarStrategy {
 }
 
 impl Strategy for SarStrategy {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let Some(v) = self.sar.update(bar.high, bar.low, bar.close) else {
             return vec![];
@@ -53,6 +57,14 @@ impl Strategy for SarStrategy {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let ps = ind.parabolic_sar(0);
+let was_bull = ps[1].bullish >= 0.5;
+let now_bull = ps[0].bullish >= 0.5;
+if !was_bull && now_bull  { entry = true; }
+if  was_bull && !now_bull { exit  = true; }
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,13 +85,7 @@ mod tests {
         let named_sigs = run(&mut named, &bars);
 
         // Detect SAR flip via close crossing the SAR value (is_bullish = close > sar)
-        let script = r#"
-let ps = ind.parabolic_sar(0);
-let was_bull = ps[1].bullish >= 0.5;
-let now_bull = ps[0].bullish >= 0.5;
-if !was_bull && now_bull  { entry = true; }
-if  was_bull && !now_bull { exit  = true; }
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs = run(script_strat.as_mut(), &bars);
 

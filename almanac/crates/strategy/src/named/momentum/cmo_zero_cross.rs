@@ -26,6 +26,10 @@ impl CmoZeroCross {
 }
 
 impl Strategy for CmoZeroCross {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let cmo = self.cmo.update(bar.close);
         let ema = self.ema.update(bar.close);
@@ -57,6 +61,13 @@ impl Strategy for CmoZeroCross {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let cmo14 = ind.cmo(14, buf=2);
+let ema50 = ind.ema(50, buf=1);
+if cmo14[1] <= 0.0 && cmo14[0] > 0.0 && close[0] > ema50[0] { entry = true; }
+if (cmo14[1] >= 0.0 && cmo14[0] < 0.0) || close[0] < ema50[0] { exit = true; }
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -75,12 +86,7 @@ mod tests {
             .map(|s| (s.timestamp, s.direction))
             .collect();
 
-        let script = r#"
-let cmo14 = ind.cmo(14, buf=2);
-let ema50 = ind.ema(50, buf=1);
-if cmo14[1] <= 0.0 && cmo14[0] > 0.0 && close[0] > ema50[0] { entry = true; }
-if (cmo14[1] >= 0.0 && cmo14[0] < 0.0) || close[0] < ema50[0] { exit = true; }
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs: Vec<(i64, Direction)> = bars.iter()
             .flat_map(|b| script_strat.on_bar(b))

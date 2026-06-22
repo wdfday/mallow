@@ -8,7 +8,6 @@ edition = "2021"
 [dependencies]
 alm-core      = { workspace = true }
 alm-data      = { path = "../data" }
-alm-indicator = { path = "../indicator" }
 alm-strategy  = { path = "../strategy" }
 alm-report    = { path = "../report" }
 thiserror    = { workspace = true }

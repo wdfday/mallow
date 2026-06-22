@@ -32,6 +32,10 @@ impl TripleEma {
 }
 
 impl Strategy for TripleEma {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let e1 = self.ema1.update(bar.close);
         let e2 = self.ema2.update(bar.close);
@@ -69,6 +73,16 @@ impl Strategy for TripleEma {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let e10 = ind.ema(10);
+let e20 = ind.ema(20);
+let e50 = ind.ema(50);
+let bull_now  = e10[0] > e20[0] && e20[0] > e50[0];
+let bull_prev = e10[1] > e20[1] && e20[1] > e50[1];
+if !bull_prev && bull_now  { entry = true; }
+if bull_prev  && !bull_now { exit  = true; }
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -87,15 +101,7 @@ mod tests {
             .map(|s| (s.timestamp, s.direction))
             .collect();
 
-        let script = r#"
-let e10 = ind.ema(10);
-let e20 = ind.ema(20);
-let e50 = ind.ema(50);
-let bull_now  = e10[0] > e20[0] && e20[0] > e50[0];
-let bull_prev = e10[1] > e20[1] && e20[1] > e50[1];
-if !bull_prev && bull_now  { entry = true; }
-if bull_prev  && !bull_now { exit  = true; }
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs: Vec<(i64, Direction)> = bars.iter()
             .flat_map(|b| script_strat.on_bar(b))

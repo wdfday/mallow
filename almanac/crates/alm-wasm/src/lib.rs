@@ -176,8 +176,8 @@ pub fn list_indicators() -> JsValue {
 
 // ── Sizing helper (shared between single-TF and MTF engines) ─────────────────
 
-pub(crate) fn build_sizer(cfg: &BtConfig) -> alm_strategy::risk::AnySizer {
-    use alm_strategy::risk::{AnySizer, AtrSizing, FixedFractional, FixedQuantity, FixedUsd, RiskFractional};
+pub(crate) fn build_sizer(cfg: &BtConfig) -> alm_engine::risk::AnySizer {
+    use alm_engine::risk::{AnySizer, AtrSizing, FixedFractional, FixedQuantity, FixedUsd, RiskFractional};
     let max_slots = cfg.max_units.max(1);
     let pct = cfg.size_pct.clamp(0.01, 1.0);
     let risk = cfg.risk_per_trade.unwrap_or(0.01);
@@ -418,8 +418,8 @@ pub(crate) fn run_strategy(
     let mut feed = BarVecFeed::new(bars.to_vec(), symbol.to_string());
     let report = engine.run(&mut feed, 0.0);
 
-    let trades = collect_trades(&engine.portfolio);
-    let fills  = collect_fills(&engine.portfolio);
+    let trades = collect_trades(&engine.core.portfolio);
+    let fills  = collect_fills(&engine.core.portfolio);
 
     let mut ind_map = serde_json::Map::new();
     for (name, pts) in engine.strategy.take_indicator_series() {
@@ -429,7 +429,7 @@ pub(crate) fn run_strategy(
         }));
     }
 
-    assemble_nested_output(report, &engine.portfolio, trades, fills, ind_map)
+    assemble_nested_output(report, &engine.core.portfolio, trades, fills, ind_map)
 }
 
 // ── Config / strategy catalog ─────────────────────────────────────────────────

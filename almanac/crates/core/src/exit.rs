@@ -33,19 +33,16 @@ impl std::fmt::Display for ExitReason {
 /// How the engine uses OHLC data to check exit levels within a bar.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
 pub enum IntraBarMode {
-    /// Check only at bar.close (simplest, default).
-    /// Fill at close. May miss intra-bar stop touches.
-    #[default]
-    CloseOnly,
-    /// Check stop/SL against bar.low (long) or bar.high (short).
+    /// Check stop against bar.low (long) or bar.high (short).
     /// Check TP against bar.high (long) or bar.low (short).
-    /// Fill at the stop level, not at low/high. Always pessimistic —
-    /// if both SL and TP could fire, SL fires first.
+    /// Fill at the exact stop/target level. Always pessimistic —
+    /// if both SL and TP could fire in the same bar, SL fires first.
+    #[default]
     Pessimistic,
     /// Same intra-bar checks as `Pessimistic`, but uses bar direction
     /// (close vs open) to determine which extreme happened first.
-    /// Up-bar (close > open): low before high → SL checked first.
-    /// Down-bar (close < open): high before low → TP checked first.
+    /// Up-bar (close > open): low before high → SL checked first for long.
+    /// Down-bar (close < open): high before low → TP checked first for long.
     OhlcHeuristic,
 }
 
@@ -158,7 +155,6 @@ impl PositionTracker {
     /// exit rule fires, `None` otherwise.
     ///
     /// `fill_price` is the price at which the position should be closed:
-    /// - `CloseOnly`: always `close`.
     /// - `Pessimistic` / `OhlcHeuristic`: the exact stop/target level breached.
     ///
     /// Time-based exits always fill at `close` regardless of mode.
@@ -197,17 +193,10 @@ impl PositionTracker {
         // Determine which prices to use for stop and target checks.
         // For long: stop fires on low, target fires on high.
         // For short: stop fires on high, target fires on low.
-        let (stop_check, target_check) = match intra_bar_mode {
-            IntraBarMode::CloseOnly => (close, close),
-            IntraBarMode::Pessimistic => {
-                if self.is_long { (low, high) } else { (high, low) }
-            }
-            IntraBarMode::OhlcHeuristic => {
-                if self.is_long { (low, high) } else { (high, low) }
-                // OhlcHeuristic uses same prices as Pessimistic; the difference
-                // is in which fires first when both levels are breached in one bar.
-            }
-        };
+        // Both modes use the same intra-bar extremes; OhlcHeuristic only
+        // differs in which fires first when both levels are breached.
+        let (stop_check, target_check) =
+            if self.is_long { (low, high) } else { (high, low) };
 
         // Whether to check TP before stop this bar (OhlcHeuristic only).
         //
@@ -268,11 +257,7 @@ impl PositionTracker {
         };
 
         if let Some((level_price, reason)) = triggered {
-            let fill_price = match intra_bar_mode {
-                IntraBarMode::CloseOnly => close,
-                _ => level_price,
-            };
-            return Some((fill_price, reason));
+            return Some((level_price, reason));
         }
 
         // Time-based (always fills at close, no intra-bar check needed).
@@ -356,10 +341,11 @@ mod tests {
     #[test]
     fn max_bars_held_fires_at_close() {
         // LONG entry 100, exit after 2 bars regardless of price.
+        // Time exits always fill at close regardless of IntraBarMode.
         let mut tr = PositionTracker::with_levels(100.0, None, None, None, Some(2), true);
-        assert!(tr.update_and_check(100.0, 101.0, 99.0, 100.5, IntraBarMode::CloseOnly).is_none());
+        assert!(tr.update_and_check(100.0, 101.0, 99.0, 100.5, IntraBarMode::Pessimistic).is_none());
         let (price, reason) = tr
-            .update_and_check(100.5, 102.0, 100.0, 101.0, IntraBarMode::CloseOnly)
+            .update_and_check(100.5, 102.0, 100.0, 101.0, IntraBarMode::Pessimistic)
             .expect("time exit must fire");
         assert_eq!(reason, ExitReason::MaxBarsHeld);
         assert!((price - 101.0).abs() < 1e-9);

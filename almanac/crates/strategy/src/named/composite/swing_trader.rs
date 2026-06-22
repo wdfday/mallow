@@ -1,7 +1,7 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::{Adx, Cci};
 
-const RHAI: &str = r#"
+pub(crate) const RHAI: &str = r#"
 let cci20 = ind.cci(20);
 let adx14 = ind.adx(14, buf=1);
 if cci20[1] <= 100.0 && cci20[0] > 100.0 && adx14[0] > 25.0 { entry = true; }
@@ -71,7 +71,9 @@ impl Strategy for SwingTrader {
         "Long when CCI breaks above +100 with ADX confirming a trend. Exit when CCI drops below -100."
     }
 
-    fn script(&self) -> Option<&'static str> { Some(RHAI) }
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI)
+    }
 
     fn reset(&mut self) {
         self.cci = Cci::new(self.cci_period);

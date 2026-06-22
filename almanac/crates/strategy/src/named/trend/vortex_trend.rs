@@ -24,6 +24,10 @@ impl VortexTrend {
 }
 
 impl Strategy for VortexTrend {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let Some(vv) = self.vortex.update(bar.high, bar.low, bar.close) else {
             return vec![];
@@ -61,6 +65,12 @@ impl Strategy for VortexTrend {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let vx = ind.vortex(14);
+if vx[1].plus_vi <= vx[1].minus_vi && vx[0].plus_vi > vx[0].minus_vi { entry = true; }
+if vx[1].plus_vi >= vx[1].minus_vi && vx[0].plus_vi < vx[0].minus_vi { exit  = true; }
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,11 +89,7 @@ mod tests {
             .map(|s| (s.timestamp, s.direction))
             .collect();
 
-        let script = r#"
-let vx = ind.vortex(14);
-if vx[1].plus_vi <= vx[1].minus_vi && vx[0].plus_vi > vx[0].minus_vi { entry = true; }
-if vx[1].plus_vi >= vx[1].minus_vi && vx[0].plus_vi < vx[0].minus_vi { exit  = true; }
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs: Vec<(i64, Direction)> = bars.iter()
             .flat_map(|b| script_strat.on_bar(b))

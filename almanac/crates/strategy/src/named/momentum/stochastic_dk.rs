@@ -1,7 +1,7 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::Stochastic;
 
-const RHAI: &str = r#"
+pub(crate) const RHAI: &str = r#"
 let st = ind.stochastic(14);
 if st[1].k <= st[1].d && st[0].k > st[0].d { entry = true; }
 if st[1].k >= st[1].d && st[0].k < st[0].d { exit  = true; }
@@ -66,7 +66,9 @@ impl Strategy for StochasticDk {
         "Long when Stochastic %K crosses above %D. Exit when %K crosses back below %D."
     }
 
-    fn script(&self) -> Option<&'static str> { Some(RHAI) }
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI)
+    }
 
     fn reset(&mut self) {
         self.stoch = Stochastic::new(self.k_period, self.d_period);

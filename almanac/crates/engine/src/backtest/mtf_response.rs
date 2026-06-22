@@ -8,7 +8,7 @@ use std::collections::HashMap;
 
 use alm_core::{order::Side, Bar, MtfStrategy};
 use alm_report::{BuyHoldBenchmark, monte_carlo as mc_run, MonteCarloConfig as McConfig};
-use alm_strategy::AnySizer;
+use crate::risk::AnySizer;
 use chrono::{DateTime, Utc};
 
 use crate::backtest::response::downsample_f64;
@@ -54,7 +54,7 @@ pub fn build<S: MtfStrategy>(
 
     // ── Trades ────────────────────────────────────────────────────────────────
     let trades: Vec<TradeResponse> = engine
-        .portfolio
+        .core.portfolio
         .trades
         .iter()
         .map(|t| TradeResponse {
@@ -83,7 +83,7 @@ pub fn build<S: MtfStrategy>(
 
     // ── Equity / drawdown curves ──────────────────────────────────────────────
     let equity_curve: Vec<CurvePoint> = engine
-        .portfolio
+        .core.portfolio
         .equity_curve
         .iter()
         .map(|p| CurvePoint { t: p.timestamp, v: p.equity })
@@ -92,7 +92,7 @@ pub fn build<S: MtfStrategy>(
     let drawdown_curve: Vec<CurvePoint> = {
         let mut peak = capital;
         engine
-            .portfolio
+            .core.portfolio
             .equity_curve
             .iter()
             .map(|p| {
@@ -105,11 +105,11 @@ pub fn build<S: MtfStrategy>(
 
     // ── Exposure ──────────────────────────────────────────────────────────────
     let exposure_pct = {
-        let total_ms = engine.portfolio.equity_curve
+        let total_ms = engine.core.portfolio.equity_curve
             .last()
-            .and_then(|last| engine.portfolio.equity_curve.first().map(|f| last.timestamp - f.timestamp))
+            .and_then(|last| engine.core.portfolio.equity_curve.first().map(|f| last.timestamp - f.timestamp))
             .unwrap_or(0);
-        let held_ms: i64 = engine.portfolio.trades.iter()
+        let held_ms: i64 = engine.core.portfolio.trades.iter()
             .map(|t| t.exit_timestamp - t.entry_timestamp)
             .sum();
         if total_ms > 0 { held_ms as f64 / total_ms as f64 * 100.0 } else { 0.0 }
@@ -129,10 +129,10 @@ pub fn build<S: MtfStrategy>(
 
     // ── Monte Carlo (opt-in) ──────────────────────────────────────────────────
     let monte_carlo = monte_carlo_cfg.and_then(|mc_cfg| {
-        let pnl_pct: Vec<f64> = engine.portfolio.trades.iter().filter_map(|t| {
-            let idx = engine.portfolio.equity_curve
+        let pnl_pct: Vec<f64> = engine.core.portfolio.trades.iter().filter_map(|t| {
+            let idx = engine.core.portfolio.equity_curve
                 .partition_point(|p| p.timestamp <= t.entry_timestamp);
-            let eq = if idx > 0 { engine.portfolio.equity_curve[idx - 1].equity } else { return None };
+            let eq = if idx > 0 { engine.core.portfolio.equity_curve[idx - 1].equity } else { return None };
             if eq > f64::EPSILON { Some(t.pnl / eq) } else { None }
         }).collect();
         let cfg = McConfig {

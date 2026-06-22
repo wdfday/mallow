@@ -60,4 +60,20 @@ impl Strategy for GmmaCrossover {
         self.gmma = Gmma::default();
         self.prev_short_above = None;
     }
+
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
 }
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let gm = ind.gmma(0);
+// .spread = (mean(short) - mean(long)) / mean(long); spread > 0 is exactly
+// short_avg > long_avg (prices > 0), so this matches the named strategy's
+// group-mean crossover.
+let bull_now  = gm[0].spread > 0.0;
+let bull_prev = gm[1].spread > 0.0;
+if !bull_prev && bull_now  { entry = true; }
+if bull_prev  && !bull_now { exit  = true; }
+"#;
+

@@ -26,6 +26,10 @@ impl StochRsiStrategy {
 }
 
 impl Strategy for StochRsiStrategy {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let Some(v) = self.srsi.update(bar.close) else {
             return vec![];
@@ -61,6 +65,12 @@ impl Strategy for StochRsiStrategy {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let sk = ind.stoch_rsi(14);
+if sk[1].k >= 0.2 && sk[0].k < 0.2 { entry = true; }
+if sk[1].k <= 0.8 && sk[0].k > 0.8 { exit  = true; }
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -126,11 +136,7 @@ mod tests {
         let mut named = StochRsiStrategy::new(14, 3, 0.2, 0.8);
         let named_sigs = run(&mut named, &bars);
 
-        let script = r#"
-let sk = ind.stoch_rsi(14);
-if sk[1].k >= 0.2 && sk[0].k < 0.2 { entry = true; }
-if sk[1].k <= 0.8 && sk[0].k > 0.8 { exit  = true; }
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs = run(script_strat.as_mut(), &bars);
 

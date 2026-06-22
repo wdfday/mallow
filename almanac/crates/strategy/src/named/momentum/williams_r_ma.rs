@@ -1,7 +1,7 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::{Ema, WilliamsR};
 
-const RHAI: &str = r#"
+pub(crate) const RHAI: &str = r#"
 let wr14  = ind.williams_r(14);
 let ema50 = ind.ema(50, buf=1);
 if wr14[1] <= -80.0 && wr14[0] > -80.0 && close[0] > ema50[0] { entry = true; }
@@ -71,7 +71,9 @@ impl Strategy for WilliamsRMa {
         "Long when Williams %R exits oversold and close is above EMA. Exit when %R enters overbought."
     }
 
-    fn script(&self) -> Option<&'static str> { Some(RHAI) }
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI)
+    }
 
     fn reset(&mut self) {
         self.wr = WilliamsR::new(self.wr_period);

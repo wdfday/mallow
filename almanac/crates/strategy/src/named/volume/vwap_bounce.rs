@@ -1,13 +1,34 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::{Rsi, Vwap};
 
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let vw = ind.vwap(0, session_gap_mins=60, buf=2);
+let rsi14 = ind.rsi(14, buf=1);
+
+let above_vwap = close[0] > vw[0];
+
+if state["prev_above"] == () {
+    state["prev_above"] = above_vwap;
+} else {
+    let was_above = state["prev_above"];
+    state["prev_above"] = above_vwap;
+    
+    if !was_above && above_vwap && rsi14[0] < 50.0 {
+        entry = true;
+    }
+    if was_above && !above_vwap {
+        exit = true;
+    }
+    if rsi14[0] > 65.0 {
+        exit = true;
+    }
+}
+"#;
+
 /// VWAP Bounce — intraday mean-reversion using VWAP as fair-value anchor.
 ///
 /// Long  when close crosses above VWAP from below AND RSI oversold (dip into VWAP).
 /// Close when close crosses below VWAP from above OR RSI overbought.
-///
-/// Works best on trending days where price respects VWAP as S/R.
-/// Default: rsi=14, oversold=40, overbought=65, session_gap_mins=60
 pub struct VwapBounce {
     vwap: Vwap,
     rsi: Rsi,
@@ -33,6 +54,10 @@ impl VwapBounce {
 }
 
 impl Strategy for VwapBounce {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let vwap = self.vwap.update(bar.timestamp, bar.high, bar.low, bar.close, bar.volume);
         let Some(rsi) = self.rsi.update(bar.close) else {
@@ -46,17 +71,12 @@ impl Strategy for VwapBounce {
             return vec![];
         };
 
-        // Cross above VWAP + RSI was oversold → long
         if !was_above && above_vwap && rsi < self.oversold + 10.0 {
             return vec![Signal::long(bar.timestamp, &bar.symbol, 0.8)];
         }
-
-        // Cross below VWAP → close
         if was_above && !above_vwap {
             return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
-
-        // RSI overbought → close
         if rsi > self.overbought {
             return vec![Signal::exit(bar.timestamp, &bar.symbol)];
         }
@@ -75,69 +95,15 @@ impl Strategy for VwapBounce {
     }
 }
 
-/// VWAP Trend — momentum continuation: trade in direction of VWAP trend.
-///
-/// Long  when close > VWAP and VWAP is rising (VWAP > prev VWAP).
-/// Close when close drops below VWAP.
-pub struct VwapTrend {
-    vwap: Vwap,
-    session_gap_mins: u64,
-    prev_vwap: Option<f64>,
-    in_position: bool,
-}
-
-impl VwapTrend {
-    pub fn new(session_gap_mins: u64) -> Self {
-        Self {
-            vwap: Vwap::new(session_gap_mins),
-            session_gap_mins,
-            prev_vwap: None,
-            in_position: false,
-        }
-    }
-}
-
-impl Strategy for VwapTrend {
-    fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
-        let v = self.vwap.update(bar.timestamp, bar.high, bar.low, bar.close, bar.volume);
-        let prev = self.prev_vwap.replace(v);
-
-        let Some(pv) = prev else {
-            return vec![];
-        };
-
-        let vwap_rising = v > pv;
-        let above_vwap = bar.close > v;
-
-        if above_vwap && vwap_rising && !self.in_position {
-            self.in_position = true;
-            return vec![Signal::long(bar.timestamp, &bar.symbol, 1.0)];
-        }
-
-        if !above_vwap && self.in_position {
-            self.in_position = false;
-            return vec![Signal::exit(bar.timestamp, &bar.symbol)];
-        }
-
-        vec![]
-    }
-
-    fn name(&self) -> &str {
-        "vwap_trend"
-    }
-
-    fn reset(&mut self) {
-        self.vwap = Vwap::new(self.session_gap_mins);
-        self.prev_vwap = None;
-        self.in_position = false;
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use alm_core::bar::Bar;
     use crate::test_utils::*;
+
+    fn run(s: &mut dyn Strategy, bars: &[Bar]) -> Vec<Signal> {
+        bars.iter().flat_map(|b| s.on_bar(b)).collect()
+    }
 
     #[test]
     fn vwap_bounce_parity() {
@@ -147,15 +113,5 @@ mod tests {
         let hc_sigs = run(&mut hc, &bars);
 
         assert!(!hc_sigs.is_empty(), "vwap_bounce: no signals");
-    }
-
-    #[test]
-    fn vwap_trend_parity() {
-        let Some(bars) = load_real_bars() else { return; };
-
-        let mut hc = VwapTrend::new(60);
-        let hc_sigs = run(&mut hc, &bars);
-
-        assert!(!hc_sigs.is_empty(), "vwap_trend: no signals");
     }
 }

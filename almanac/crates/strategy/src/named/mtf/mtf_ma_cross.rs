@@ -106,4 +106,17 @@ impl MtfStrategy for MtfMaCrossStrategy {
 
         vec![]
     }
+
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
 }
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let h1_trend = ind.ema(50, "H1");
+let ema9     = ind.ema(9);
+let ema21    = ind.ema(21);
+if close[0] > h1_trend[0] && cross_above(ema9, ema21) { entry = true; }
+if close[0] < h1_trend[0] || cross_below(ema9, ema21) { exit  = true; }
+"#;
+

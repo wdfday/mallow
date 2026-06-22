@@ -1,7 +1,7 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::Smi;
 
-const RHAI: &str = r#"
+pub(crate) const RHAI: &str = r#"
 let sm = ind.smi(13);
 if sm[1].smi <= sm[1].signal && sm[0].smi > sm[0].signal && sm[1].smi < -40.0 { entry = true; }
 if sm[0].smi > 40.0 || (sm[1].smi >= sm[1].signal && sm[0].smi < sm[0].signal) { exit  = true; }
@@ -84,7 +84,9 @@ impl Strategy for SmiReversal {
         "Long when SMI crosses above its signal from oversold zone (< -40). Exit when overbought or SMI crosses back below signal."
     }
 
-    fn script(&self) -> Option<&'static str> { Some(RHAI) }
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI)
+    }
 
     fn reset(&mut self) {
         self.smi = Smi::new(self.period, self.smooth1, self.smooth2, self.signal_period);

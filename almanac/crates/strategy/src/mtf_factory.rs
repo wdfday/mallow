@@ -5,23 +5,31 @@ use anyhow::{bail, Result};
 use serde_json::Value;
 
 use crate::named::{
+    KitchenSinkStrategy,
     MtfAdxPullbackStrategy, MtfBbMacdStrategy, MtfEmaRsiStrategy, MtfMaCrossStrategy,
 };
 
 /// All registered MTF strategy keys. Returned by `GET /api/v1/strategies`.
 pub const MTF_STRATEGY_KEYS: &[&str] = &[
-    "mtf_ema_rsi",
-    "mtf_ma_cross",
+    "kitchen_sink",
     "mtf_adx_pullback",
     "mtf_bb_macd",
+    "mtf_ema_rsi",
+    "mtf_ma_cross",
 ];
 
 /// Build a boxed [`MtfStrategy`] from a strategy key and a flat JSON params object.
 ///
-/// Currently all MTF strategies use hardcoded defaults; `params` is accepted for
-/// future extensibility and is ignored for now.
-pub fn build_mtf_strategy(name: &str, _params: &Value) -> Result<Box<dyn MtfStrategy>> {
+/// Accepts an optional `"symbol"` field in `params` for strategies that need it
+/// (e.g. `kitchen_sink`). All other params are reserved for future use.
+pub fn build_mtf_strategy(name: &str, params: &Value) -> Result<Box<dyn MtfStrategy>> {
+    let symbol = params.get("symbol")
+        .and_then(|v| v.as_str())
+        .unwrap_or("UNKNOWN")
+        .to_owned();
+
     let s: Box<dyn MtfStrategy> = match name {
+        "kitchen_sink"     => Box::new(KitchenSinkStrategy::new(symbol)),
         "mtf_ema_rsi"      => Box::new(MtfEmaRsiStrategy::new()),
         "mtf_ma_cross"     => Box::new(MtfMaCrossStrategy::new()),
         "mtf_adx_pullback" => Box::new(MtfAdxPullbackStrategy::new()),

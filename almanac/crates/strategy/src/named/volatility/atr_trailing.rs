@@ -86,23 +86,14 @@ impl Strategy for AtrTrailingStop {
         self.trailing_stop = 0.0;
         self.highest_since_entry = 0.0;
     }
+
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_utils::*;
-    use crate::factory::build_strategy;
-    use serde_json::json;
 
-    #[test]
-    fn script_parity() {
-        let Some(bars) = load_real_bars() else { return; };
-
-        let mut named = AtrTrailingStop::new(20, 14, 2.0);
-        let named_sigs = run(&mut named, &bars);
-
-        let script = r#"
+pub(crate) const RHAI_SCRIPT: &str = r#"
 let ema20 = ind.ema(20, buf=1);
 let atr14 = ind.atr(14, buf=1);
 if state["in_position"] == () {
@@ -130,6 +121,21 @@ if state["in_position"] {
     }
 }
 "#;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn script_parity() {
+        let Some(bars) = load_real_bars() else { return; };
+
+        let mut named = AtrTrailingStop::new(20, 14, 2.0);
+        let named_sigs = run(&mut named, &bars);
+
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs = run(script_strat.as_mut(), &bars);
 

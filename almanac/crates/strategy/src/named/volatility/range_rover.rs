@@ -55,4 +55,16 @@ impl Strategy for RangeRover {
         self.stoch = Stochastic::new(self.k_period, self.d_period);
         self.ma = Sma::new(self.ma_period);
     }
+
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
 }
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let st = ind.stochastic(14, buf=1);
+let sma50 = ind.sma(50, buf=1);
+if st[0].k < 20.0 && close[0] > sma50[0] { entry = true; }
+if st[0].k > 80.0 { exit = true; }
+"#;
+

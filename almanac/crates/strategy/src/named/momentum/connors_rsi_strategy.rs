@@ -32,6 +32,10 @@ impl ConnorsRsiStrategy {
 }
 
 impl Strategy for ConnorsRsiStrategy {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         let Some(crsi_val) = self.crsi.update(bar.close) else {
             return vec![];
@@ -58,6 +62,12 @@ impl Strategy for ConnorsRsiStrategy {
     }
 }
 
+
+pub(crate) const RHAI_SCRIPT: &str = r#"
+let crsi = ind.connors_rsi(3, buf=1);
+if crsi[0] < 10.0 { entry = true; }
+if crsi[0] > 70.0 { exit  = true; }
+"#;
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,11 +132,7 @@ mod tests {
         let mut named = ConnorsRsiStrategy::new(3, 2, 100, 10.0, 70.0);
         let named_sigs = run(&mut named, &bars);
 
-        let script = r#"
-let crsi = ind.connors_rsi(3, buf=1);
-if crsi[0] < 10.0 { entry = true; }
-if crsi[0] > 70.0 { exit  = true; }
-"#;
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs = run(script_strat.as_mut(), &bars);
 

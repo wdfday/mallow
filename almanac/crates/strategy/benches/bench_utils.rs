@@ -15,16 +15,43 @@ pub fn make_bars(n: usize) -> Vec<Bar> {
         .collect()
 }
 
-/// Load real BTC M1 bars from the testdata parquet (2022-04 → 2026-04, ~2M bars).
-/// Returns empty vec if file not found (bench skips gracefully).
+/// Load real BTC M1 bars from the real mallow/data directory (~5.5M bars),
+/// or fall back to the testdata parquet if not found.
+/// Returns empty vec if no files are found.
 pub fn load_btc_m1_bars() -> Vec<Bar> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../crates/data/testdata/BTCUSDT/M1/BTCUSDT_M1_2022-04-13_to_2026-04-12.parquet");
-    let mut feed = match ParquetFeed::load(&path, "BTCUSDT") {
-        Ok(f)  => f,
-        Err(_) => return vec![],
+    let real_data_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../data/BinanceFlat/M1/BTCUSDT");
+
+    let mut files = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&real_data_dir) {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let path = entry.path();
+            if path.extension().map_or(false, |ext| ext == "parquet") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+
+    let mut feed = if !files.is_empty() {
+        let refs: Vec<&Path> = files.iter().map(|p| p.as_path()).collect();
+        match ParquetFeed::load_many(&refs, "BTCUSDT") {
+            Ok(f) => f,
+            Err(_) => return vec![],
+        }
+    } else {
+        // Fallback to testdata
+        let testdata_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../crates/data/testdata/BTCUSDT/M1/BTCUSDT_M1_2026-01.parquet");
+        match ParquetFeed::load(&testdata_path, "BTCUSDT") {
+            Ok(f) => f,
+            Err(_) => return vec![],
+        }
     };
+
     let mut bars = Vec::new();
-    while let Some(b) = feed.next() { bars.push(b); }
+    while let Some(b) = feed.next() {
+        bars.push(b);
+    }
     bars
 }

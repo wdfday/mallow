@@ -67,6 +67,10 @@ impl Pixel3 {
 }
 
 impl Strategy for Pixel3 {
+    fn script(&self) -> Option<&'static str> {
+        Some(RHAI_SCRIPT)
+    }
+
     fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
         // Lazily capture symbol from the first bar (supports factory construction with "").
         if self.symbol.is_empty() {
@@ -115,21 +119,8 @@ impl Strategy for Pixel3 {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::test_utils::*;
-    use crate::factory::build_strategy;
-    use serde_json::json;
 
-    #[test]
-    fn script_parity() {
-        let Some(bars) = load_real_bars() else { return; };
-
-        let mut named = Pixel3::new("BTCUSDT");
-        let named_sigs = run(&mut named, &bars);
-
-        let script = r#"
+pub(crate) const RHAI_SCRIPT: &str = r#"
 let hh5 = highest(high, 5);
 let ll5 = lowest(low, 5);
 let mid5 = (hh5 + ll5) / 2.0;
@@ -154,6 +145,21 @@ if green_count == 0 {
     exit = true;
 }
 "#;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_utils::*;
+    use crate::factory::build_strategy;
+    use serde_json::json;
+
+    #[test]
+    fn script_parity() {
+        let Some(bars) = load_real_bars() else { return; };
+
+        let mut named = Pixel3::new("BTCUSDT");
+        let named_sigs = run(&mut named, &bars);
+
+        let script = RHAI_SCRIPT;
         let mut script_strat = build_strategy("script", &json!({ "script": script })).unwrap();
         let script_sigs = run(script_strat.as_mut(), &bars);
 

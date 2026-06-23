@@ -13,6 +13,33 @@ import (
 	"mallow/helm/internal/runtime"
 )
 
+// heraldValidate calls engine.validate for all symbols in cfg before the hand
+// is persisted. Fails hard when herald is unavailable — a hand with an unvalidated
+// strategy must not be created.
+func (s *Service) heraldValidate(cfg domain.HandConfig, rt *runtime.HelmRuntime) error {
+	if s.herald == nil {
+		return fmt.Errorf("herald unavailable: cannot validate strategy before creating hand")
+	}
+	exchangeName := rt.Exchange.Name()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for _, sym := range cfg.Symbols {
+		req := &engine.RegisterMsg{
+			HandId:    "validate",
+			Symbol:    sym,
+			Exchange:  exchangeName,
+			IsFuture:  cfg.Market == domain.MarketTypeFutures,
+			Script:    cfg.Strategy.Script,
+			HelmId:    cfg.HelmID.String(),
+			Timeframe: cfg.Strategy.Timeframe,
+		}
+		if err := s.herald.Validate(ctx, req); err != nil {
+			return fmt.Errorf("strategy validation failed for symbol %q: %w", sym, err)
+		}
+	}
+	return nil
+}
+
 func (s *Service) heraldRegister(handID uuid.UUID, b *domain.Hand) error {
 	if s.herald == nil {
 		return nil

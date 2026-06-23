@@ -6,18 +6,16 @@ import (
 	"fmt"
 
 	"github.com/shopspring/decimal"
-
-	"mallow/helm/internal/readmodel"
 )
 
 // Log is the read-only view of the `orders` table for handlers / FE queries.
 // Record/filter shapes live in internal/readmodel; this package only does IO.
 // Writes go through the JetStream helm.pos.> path drained by the Persister.
 type Log interface {
-	Query(ctx context.Context, f readmodel.OrderFilter) ([]readmodel.OrderRecord, error)
+	Query(ctx context.Context, f OrderFilter) ([]OrderRecord, error)
 	// GetByClientOrderID returns a single order by its mallow clid, or nil if absent.
 	// Supports idempotency checks (does this clid already exist?).
-	GetByClientOrderID(ctx context.Context, clid string) (*readmodel.OrderRecord, error)
+	GetByClientOrderID(ctx context.Context, clid string) (*OrderRecord, error)
 }
 
 type postgresLog struct {
@@ -34,7 +32,7 @@ const orderCols = `exchange_order_id, client_order_id, helm_id, hand_id, positio
 	is_close, reason, placed_at, updated_at`
 
 // Query returns orders matching the filter, newest first (by placed_at).
-func (l *postgresLog) Query(ctx context.Context, f readmodel.OrderFilter) ([]readmodel.OrderRecord, error) {
+func (l *postgresLog) Query(ctx context.Context, f OrderFilter) ([]OrderRecord, error) {
 	limit := f.Limit
 	if limit <= 0 {
 		limit = 100
@@ -74,7 +72,7 @@ func (l *postgresLog) Query(ctx context.Context, f readmodel.OrderFilter) ([]rea
 	}
 	defer rows.Close()
 
-	var out []readmodel.OrderRecord
+	var out []OrderRecord
 	for rows.Next() {
 		rec, scanErr := scanOrder(rows)
 		if scanErr != nil {
@@ -86,7 +84,7 @@ func (l *postgresLog) Query(ctx context.Context, f readmodel.OrderFilter) ([]rea
 }
 
 // GetByClientOrderID returns the order with the given clid, or nil if not found.
-func (l *postgresLog) GetByClientOrderID(ctx context.Context, clid string) (*readmodel.OrderRecord, error) {
+func (l *postgresLog) GetByClientOrderID(ctx context.Context, clid string) (*OrderRecord, error) {
 	row := l.db.QueryRowContext(ctx,
 		`SELECT `+orderCols+` FROM orders WHERE client_order_id = $1`, clid)
 	rec, err := scanOrder(row)
@@ -104,9 +102,9 @@ type scanner interface {
 	Scan(dest ...any) error
 }
 
-func scanOrder(s scanner) (readmodel.OrderRecord, error) {
+func scanOrder(s scanner) (OrderRecord, error) {
 	var (
-		rec                                        readmodel.OrderRecord
+		rec                                        OrderRecord
 		clid, handID, posID, side, ordType, reason sql.NullString
 		qty, price, filledQty, filledPrice         sql.NullString
 		placedAt                                   sql.NullTime

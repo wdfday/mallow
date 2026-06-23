@@ -67,9 +67,8 @@ func (h *BrokerConnectionHandler) create(c *gin.Context, req *dto.CreateBrokerCo
 }
 
 func (h *BrokerConnectionHandler) CreateOKX(c *gin.Context) {
-	userID, err := getUserIDFromContext(c)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusUnauthorized, err.Error())
+	userID, ok := shared.CallerUserID(c)
+	if !ok {
 		return
 	}
 	var req dto.CreateOKXConnectionRequest
@@ -81,9 +80,8 @@ func (h *BrokerConnectionHandler) CreateOKX(c *gin.Context) {
 }
 
 func (h *BrokerConnectionHandler) CreateBinance(c *gin.Context) {
-	userID, err := getUserIDFromContext(c)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusUnauthorized, err.Error())
+	userID, ok := shared.CallerUserID(c)
+	if !ok {
 		return
 	}
 	var req dto.CreateBinanceConnectionRequest
@@ -95,9 +93,8 @@ func (h *BrokerConnectionHandler) CreateBinance(c *gin.Context) {
 }
 
 func (h *BrokerConnectionHandler) CreateAlpaca(c *gin.Context) {
-	userID, err := getUserIDFromContext(c)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusUnauthorized, err.Error())
+	userID, ok := shared.CallerUserID(c)
+	if !ok {
 		return
 	}
 	var req dto.CreateAlpacaConnectionRequest
@@ -109,9 +106,8 @@ func (h *BrokerConnectionHandler) CreateAlpaca(c *gin.Context) {
 }
 
 func (h *BrokerConnectionHandler) CreateBybit(c *gin.Context) {
-	userID, err := getUserIDFromContext(c)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusUnauthorized, err.Error())
+	userID, ok := shared.CallerUserID(c)
+	if !ok {
 		return
 	}
 	var req dto.CreateBybitConnectionRequest
@@ -123,9 +119,8 @@ func (h *BrokerConnectionHandler) CreateBybit(c *gin.Context) {
 }
 
 func (h *BrokerConnectionHandler) List(c *gin.Context) {
-	userID, err := getUserIDFromContext(c)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusUnauthorized, err.Error())
+	userID, ok := shared.CallerUserID(c)
+	if !ok {
 		return
 	}
 	var query dto.ListBrokerConnectionsQuery
@@ -153,9 +148,8 @@ func (h *BrokerConnectionHandler) List(c *gin.Context) {
 }
 
 func (h *BrokerConnectionHandler) GetByID(c *gin.Context) {
-	userID, err := getUserIDFromContext(c)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusUnauthorized, err.Error())
+	userID, ok := shared.CallerUserID(c)
+	if !ok {
 		return
 	}
 	id, err := uuid.Parse(c.Param("id"))
@@ -172,9 +166,8 @@ func (h *BrokerConnectionHandler) GetByID(c *gin.Context) {
 }
 
 func (h *BrokerConnectionHandler) Update(c *gin.Context) {
-	userID, err := getUserIDFromContext(c)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusUnauthorized, err.Error())
+	userID, ok := shared.CallerUserID(c)
+	if !ok {
 		return
 	}
 	id, err := uuid.Parse(c.Param("id"))
@@ -203,9 +196,8 @@ func (h *BrokerConnectionHandler) Update(c *gin.Context) {
 }
 
 func (h *BrokerConnectionHandler) Delete(c *gin.Context) {
-	userID, err := getUserIDFromContext(c)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusUnauthorized, err.Error())
+	userID, ok := shared.CallerUserID(c)
+	if !ok {
 		return
 	}
 	id, err := uuid.Parse(c.Param("id"))
@@ -229,9 +221,8 @@ func (h *BrokerConnectionHandler) Deactivate(c *gin.Context) {
 }
 
 func (h *BrokerConnectionHandler) simpleAction(c *gin.Context, fn func(ctx context.Context, id, userID uuid.UUID) error, msg string) {
-	userID, err := getUserIDFromContext(c)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusUnauthorized, err.Error())
+	userID, ok := shared.CallerUserID(c)
+	if !ok {
 		return
 	}
 	id, err := uuid.Parse(c.Param("id"))
@@ -247,9 +238,8 @@ func (h *BrokerConnectionHandler) simpleAction(c *gin.Context, fn func(ctx conte
 }
 
 func (h *BrokerConnectionHandler) TestConnection(c *gin.Context) {
-	userID, err := getUserIDFromContext(c)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusUnauthorized, err.Error())
+	userID, ok := shared.CallerUserID(c)
+	if !ok {
 		return
 	}
 	id, err := uuid.Parse(c.Param("id"))
@@ -265,9 +255,8 @@ func (h *BrokerConnectionHandler) TestConnection(c *gin.Context) {
 }
 
 func (h *BrokerConnectionHandler) RotateKey(c *gin.Context) {
-	userID, err := getUserIDFromContext(c)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusUnauthorized, err.Error())
+	userID, ok := shared.CallerUserID(c)
+	if !ok {
 		return
 	}
 	id, err := uuid.Parse(c.Param("id"))
@@ -291,16 +280,4 @@ func (h *BrokerConnectionHandler) RotateKey(c *gin.Context) {
 		return
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "API key rotated successfully", dto.ToBrokerConnectionResponse(conn))
-}
-
-func getUserIDFromContext(c *gin.Context) (uuid.UUID, error) {
-	s := pkgmw.UserID(c)
-	if s == "" {
-		return uuid.Nil, ErrUserIDNotFound
-	}
-	id, err := uuid.Parse(s)
-	if err != nil {
-		return uuid.Nil, ErrInvalidUserID
-	}
-	return id, nil
 }

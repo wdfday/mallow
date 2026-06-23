@@ -13,6 +13,7 @@ import (
 	helmdomain "mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/runtime/perf"
 	"mallow/helm/internal/runtime/position"
+	"mallow/helm/internal/safe"
 )
 
 // publishAndApply publishes a poslog event to JetStream and applies it to the in-memory
@@ -154,61 +155,27 @@ func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, legQ
 		return // order not tracked in poslog
 	}
 
-	if isBracketExit {
-		cp := poslog.PositionClosedPayload{
-			OrderID:      positionID,
-			ClosePrice:   price.String(),
-			RealizedPnL:  pnl.String(),
-			ExitReason:   closeSource,
-			EntryOrderID: positionID,
-			ExitOrderID:  orderID,
-			Commission:   decimalToString(commission),
-		}
-		if hasSnap {
-			cp.Symbol = snap.Symbol
-			cp.Side = snap.Side
-			cp.Qty = qty.String() // fill qty, not leg's accumulated qty
-			cp.EntryPrice = snap.EntryPrice.String()
-			cp.EntryAt = snap.OpenedAt
-			if snap.StopLoss.IsPositive() {
-				cp.StopLossPrice = snap.StopLoss.String()
-			}
-			if snap.TakeProfit.IsPositive() {
-				cp.TakeProfitPrice = snap.TakeProfit.String()
-			}
-			cp.NEntries = snap.NEntries
-			cp.DeployedCapital = decimalToString(snap.DeployedCapital)
-		}
-		closedPayload, _ := json.Marshal(cp)
+	// Bracket (OCO) exits skip KindOrderFilled — the bracket order is the terminal
+	// exit event; KindPositionClosed alone is sufficient for the poslog state machine.
+	// Signal/kill/poll exits emit KindOrderFilled first to track fill progression.
+	if !isBracketExit {
+		payload, _ := json.Marshal(poslog.OrderFilledPayload{
+			OrderID:         orderID,
+			FillPrice:       price.String(),
+			FillQty:         qty.String(),
+			Source:          source,
+			DeployedCapital: decimalToString(deployedCapital),
+		})
 		h.publishAndApply(ctx, poslog.Event{
-			ID:         positionID + "_closed_" + orderID,
+			ID:         orderID + "_filled",
 			HandID:     h.id.String(),
 			HelmID:     h.helmID.String(),
 			PositionID: positionID,
-			Kind:       poslog.KindPositionClosed,
-			Payload:    closedPayload,
+			Kind:       poslog.KindOrderFilled,
+			Payload:    payload,
 			At:         time.Now().UTC(),
 		})
-		h.appendTradeRecord(ctx, cp, commission, time.Now().UTC())
-		return
 	}
-
-	payload, _ := json.Marshal(poslog.OrderFilledPayload{
-		OrderID:         orderID,
-		FillPrice:       price.String(),
-		FillQty:         qty.String(),
-		Source:          source,
-		DeployedCapital: decimalToString(deployedCapital),
-	})
-	h.publishAndApply(ctx, poslog.Event{
-		ID:         orderID + "_filled",
-		HandID:     h.id.String(),
-		HelmID:     h.helmID.String(),
-		PositionID: positionID,
-		Kind:       poslog.KindOrderFilled,
-		Payload:    payload,
-		At:         time.Now().UTC(),
-	})
 
 	if isClosingFill {
 		now := time.Now().UTC()
@@ -224,12 +191,9 @@ func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, legQ
 		if hasSnap {
 			cp.Symbol = snap.Symbol
 			cp.Side = snap.Side
-			// Use the full position qty (legQty) so the trade record reflects the
-			// complete position size. The dust portion's PnL is already included
-			// in grossPnL via appendTradeRecord (legQty × exitPrice − legQty × entryPrice).
 			effQty := legQty
 			if effQty.IsZero() {
-				effQty = qty // fallback to fill qty when legQty not available
+				effQty = qty
 			}
 			cp.Qty = effQty.String()
 			cp.EntryPrice = snap.EntryPrice.String()
@@ -343,6 +307,37 @@ func (h *Hand) appendTradeRecord(ctx context.Context, cp poslog.PositionClosedPa
 	}
 	if err := tl.Append(ctx, rec); err != nil {
 		slog.Warn("trade_log: publish failed", "hand_id", h.id, "err", err)
+		return
+	}
+
+	// Poslog GC: trade record is now durable in JetStream — the poslog WAL for
+	// this hand is no longer needed for crash recovery. Purge it to keep the
+	// HELM_POSITIONS stream lean.
+	//
+	// GC runs AFTER trade publish (not in applyFill) to avoid a race where a new
+	// position opens in the same signal cycle: by the time appendTradeRecord is
+	// called, KindPositionClosed has already been applied to h.pos, so any new
+	// KindOrderPlaced that arrives concurrently will be published AFTER this point.
+	// We re-check IsFlat() inside the goroutine as a final guard; if a new leg
+	// opened in the narrow window between here and PurgeHand, we abort.
+	if pl := h.helmRuntime.PosLog; pl != nil {
+		helmID := h.helmID.String()
+		handID := h.id.String()
+		go func() {
+			defer safe.Recover()
+			h.mu.RLock()
+			stillFlat := h.pos.IsFlat()
+			h.mu.RUnlock()
+			if !stillFlat {
+				return
+			}
+			if err := pl.PurgeHand(context.Background(), helmID, handID); err != nil {
+				slog.Warn("poslog: purge after trade record failed (non-fatal)",
+					"hand_id", handID, "helm_id", helmID, "err", err)
+			} else {
+				slog.Info("poslog: purged after trade record published", "hand_id", handID)
+			}
+		}()
 	}
 }
 

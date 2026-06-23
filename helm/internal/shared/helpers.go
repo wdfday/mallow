@@ -1,9 +1,13 @@
 package shared
 
 import (
-	pkgshared "mallow/pkg/shared"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
+
+	pkgmw "mallow/pkg/middleware"
+	pkgshared "mallow/pkg/shared"
 )
 
 func RespondWithError(c *gin.Context, statusCode int, message string) {
@@ -32,4 +36,15 @@ func RespondWithNoContent(c *gin.Context) {
 
 func HandleError(c *gin.Context, err error) {
 	pkgshared.HandleError(c, err)
+}
+
+// CallerUserID extracts and parses the user ID injected by the gateway middleware.
+// Responds 401 and returns false when the header is absent or not a valid UUID.
+func CallerUserID(c *gin.Context) (uuid.UUID, bool) {
+	id, err := uuid.Parse(pkgmw.UserID(c))
+	if err != nil {
+		RespondWithError(c, http.StatusUnauthorized, "invalid user")
+		return uuid.Nil, false
+	}
+	return id, true
 }

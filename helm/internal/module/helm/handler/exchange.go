@@ -27,7 +27,7 @@ import (
 // @Failure 502 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/exchange/account [get]
 func (h *Handler) exchangeAccount(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -79,7 +79,7 @@ func (h *Handler) exchangeAccount(c *gin.Context) {
 // @Failure 502 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/exchange/price [get]
 func (h *Handler) exchangePrice(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -122,7 +122,7 @@ func (h *Handler) exchangePrice(c *gin.Context) {
 // @Failure 502 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/exchange/orders [post]
 func (h *Handler) exchangePlaceOrder(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -170,7 +170,7 @@ func (h *Handler) exchangePlaceOrder(c *gin.Context) {
 // @Failure 502 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/exchange/orders [get]
 func (h *Handler) exchangeGetOrder(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -204,7 +204,7 @@ func (h *Handler) exchangeGetOrder(c *gin.Context) {
 // @Failure 503 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/exchange/metrics [get]
 func (h *Handler) exchangeMetrics(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -233,7 +233,7 @@ func (h *Handler) exchangeMetrics(c *gin.Context) {
 // @Failure 503 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/exchange/ping [get]
 func (h *Handler) exchangePing(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -268,7 +268,7 @@ func (h *Handler) exchangePing(c *gin.Context) {
 // @Failure 502 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/exchange/orders [delete]
 func (h *Handler) exchangeCancelOrder(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}

@@ -147,7 +147,6 @@ func (r *Registry) PurgeHelmData(helmID, accountID uuid.UUID) {
 		{"HELM_POSITIONS", "helm.pos." + hid + ".>"},
 		{"HELM_TRADES", "helm.trades." + hid + ".>"},
 		{"HELM_EVENTS", "helm.events." + hid},
-		{"HELM_EQUITY", "helm.equity." + hid + ".>"},
 		{"TRADE_FILLS", "trade.filled." + aid},
 		{"PORTFOLIO_SYNC", "portfolio.synced." + aid},
 	}

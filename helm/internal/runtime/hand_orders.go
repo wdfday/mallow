@@ -102,15 +102,7 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 			// by the WS partial-fill path (registry → rt.ReportFill + MarkPartialApplied)
 			// so we only apply the remaining delta — no double-count.
 			h.mu.Lock()
-			state := h.partialApplied[result.ID]
-
-			cumQty, cumCommission := h.helmRuntime.normalizeCommission(result.Symbol, result.Side, result.FilledQty, result.FilledAvg, result.Commission, result.CommissionAsset)
-
-			netQty := cumQty.Sub(state.Qty)
-			netCommission := cumCommission.Sub(state.Commission)
-			if netCommission.IsNegative() {
-				netCommission = decimal.Zero
-			}
+			cumQty, cumCommission, netQty, netCommission := h.deductPartial(result.ID, result)
 			// Only consume pendingExits here for the netQty==0 path.
 			// When netQty > 0, applyFill reads and deletes pendingExits itself
 			// inside its own lock section — that is where scheduleBracketPlacement
@@ -189,25 +181,7 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 					}
 					h.mu.Lock()
 					if _, seen := h.seenFills[result.ID]; !seen {
-						// Same cumulative-deduct as the "filled" case: GetOrder returns
-						// total filled qty; subtract what the WS partial path already applied.
-						state := h.partialApplied[result.ID]
-
-						cumQty := result.FilledQty
-						cumCommission := result.Commission
-						if result.Side == exchange.Buy && result.Commission.IsPositive() && result.CommissionAsset != "" &&
-							strings.HasPrefix(result.Symbol, result.CommissionAsset) {
-							cumQty = cumQty.Sub(result.Commission)
-							if result.FilledAvg.IsPositive() {
-								cumCommission = result.Commission.Mul(result.FilledAvg)
-							}
-						}
-
-						netQty := cumQty.Sub(state.Qty)
-						netCommission := cumCommission.Sub(state.Commission)
-						if netCommission.IsNegative() {
-							netCommission = decimal.Zero
-						}
+						cumQty, cumCommission, netQty, netCommission := h.deductPartial(result.ID, result)
 						h.seenFills[result.ID] = time.Now()
 						// Consume pendingExits even when netQty==0: the WS partial path
 						// already applied all qty but never had pendingExits populated
@@ -227,7 +201,7 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 							if hasPendingExit {
 								// WS already applied all qty; schedule the missing bracket now.
 								h.completeWsFillFromREST(ctx, result.ID, result.Symbol, side,
-									result.FilledQty, result.FilledAvg, decimal.Zero, pendingExit, false)
+									cumQty, result.FilledAvg, cumCommission, pendingExit, false)
 								_ = posIDForBracket // captured above, used by completeWsFillFromREST internally
 							}
 						}
@@ -346,16 +320,8 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 		return
 	}
 
-	cumFilledQty := polled.FilledQty
-	cumCommission := polled.Commission
-	if polled.Side == exchange.Buy && polled.Commission.IsPositive() && polled.CommissionAsset != "" &&
-		strings.HasPrefix(polled.Symbol, polled.CommissionAsset) {
-		cumFilledQty = cumFilledQty.Sub(polled.Commission)
-		if polled.FilledAvg.IsPositive() {
-			cumCommission = polled.Commission.Mul(polled.FilledAvg)
-		}
-	}
-	if cumFilledQty.IsPositive() {
+	var alreadyFilledQty decimal.Decimal
+	if polled.FilledQty.IsPositive() {
 		// Apply the delta that hasn't been applied yet. polled.FilledQty is cumulative
 		// (from GetOrder REST); WS partials may have already applied some of it via
 		// registry → rt.ReportFill + MarkPartialApplied.
@@ -365,14 +331,10 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 		}
 		h.mu.Lock()
 		if _, seen := h.seenFills[o.ID]; !seen {
-			state := h.partialApplied[o.ID]
-			netQty := cumFilledQty.Sub(state.Qty)
-			netCommission := cumCommission.Sub(state.Commission)
-			if netCommission.IsNegative() {
-				netCommission = decimal.Zero
-			}
+			cumQty, _, netQty, netCommission := h.deductPartial(o.ID, polled)
 			h.seenFills[o.ID] = time.Now()
 			h.mu.Unlock()
+			alreadyFilledQty = cumQty
 			if netQty.IsPositive() {
 				h.applyFill(ctx, o.ID, polled.Symbol, side, netQty, polled.FilledAvg, netCommission, "limit_timeout_partial")
 			} else {
@@ -385,7 +347,6 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 		}
 	}
 	// alreadyFilledQty is used below to compute the remaining qty for the fallback order.
-	alreadyFilledQty := cumFilledQty
 
 	// Re-snapshot origPhase AFTER partial applyFill: if the partial fully closed the
 	// position (e.g. fill qty == leg qty), the leg is now PhaseIdle. Publishing
@@ -575,6 +536,26 @@ func isLotSizeError(err error) bool {
 		}
 	}
 	return false
+}
+
+// deductPartial computes fill quantities for a REST-polled order by normalising the
+// cumulative exchange response and subtracting what the WS partial-fill path already
+// applied (via MarkPartialApplied). Returns both the cumulative normalised values and
+// the net delta — callers need cumQty/cumCommission for the netQty==0 completion path.
+// Caller must hold h.mu.Lock().
+func (h *Hand) deductPartial(orderID string, result *exchange.OrderResult) (cumQty, cumCommission, netQty, netCommission decimal.Decimal) {
+	cumQty, cumCommission = h.helmRuntime.normalizeCommission(
+		result.Symbol, result.Side,
+		result.FilledQty, result.FilledAvg,
+		result.Commission, result.CommissionAsset,
+	)
+	state := h.partialApplied[orderID]
+	netQty = cumQty.Sub(state.Qty)
+	netCommission = cumCommission.Sub(state.Commission)
+	if netCommission.IsNegative() {
+		netCommission = decimal.Zero
+	}
+	return
 }
 
 // spotBaseAsset extracts the base asset from a spot symbol by stripping common

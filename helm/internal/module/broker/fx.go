@@ -8,19 +8,15 @@ import (
 	"go.uber.org/fx"
 	"gorm.io/gorm"
 
-	"mallow/helm/internal/infra/exchange"
 	alpacaact "mallow/helm/internal/infra/exchange/alpaca/act"
 	binanceact "mallow/helm/internal/infra/exchange/binance/act"
 	bybitact "mallow/helm/internal/infra/exchange/bybit/act"
 	okxact "mallow/helm/internal/infra/exchange/okx/act"
-	"mallow/helm/internal/infra/natsapi"
 	accountRepo "mallow/helm/internal/module/account/repository"
 	"mallow/helm/internal/module/broker/domain"
 	"mallow/helm/internal/module/broker/handler"
 	repository2 "mallow/helm/internal/module/broker/repository"
 	service2 "mallow/helm/internal/module/broker/service"
-	helmDomain "mallow/helm/internal/module/helm/domain"
-	helmDto "mallow/helm/internal/module/helm/dto"
 	helmService "mallow/helm/internal/module/helm/service"
 	"mallow/helm/internal/runtime"
 	internalService "mallow/helm/internal/service"
@@ -70,75 +66,7 @@ func provideBrokerConnectionService(
 	clients service2.BrokerRegistry,
 	helmSvc *helmService.Service,
 ) service2.BrokerConnectionService {
-	return service2.NewBrokerConnectionService(repo, accRepo, encryptionService, clients, &helmCreatorAdapter{svc: helmSvc})
-}
-
-// helmCreatorAdapter adapts *helmService.Service to service2.HelmCreator.
-type helmCreatorAdapter struct {
-	svc *helmService.Service
-}
-
-func (a *helmCreatorAdapter) AutoCreateForAccount(ctx context.Context, req service2.HelmAutoCreateReq) error {
-	_, err := a.svc.CreateForAccount(helmDto.CreateForAccountReq{
-		UserID:    req.UserID,
-		AccountID: req.AccountID,
-		Name:      req.AccountName,
-		Exchange: helmDomain.ExchangeConfig{
-			BrokerType:  req.BrokerType,
-			AccountType: helmDomain.AccountType(req.AccountType),
-			Paper:       req.Paper,
-		},
-		Creds: natsapi.CredentialsFetchResp{
-			APIKey:      req.APIKey,
-			APISecret:   req.APISecret,
-			Passphrase:  req.Passphrase,
-			BrokerType:  req.BrokerType,
-			AccountType: req.AccountType,
-			Paper:       req.Paper,
-		},
-	})
-	return err
-}
-
-func (a *helmCreatorAdapter) AutoDeleteForAccount(_ context.Context, accountID uuid.UUID) error {
-	return a.svc.DeleteForAccount(accountID)
-}
-
-func (a *helmCreatorAdapter) RotateCredsForAccount(_ context.Context, accountID uuid.UUID, req service2.HelmAutoCreateReq) error {
-	creds := exchange.Credentials{
-		APIKey:      req.APIKey,
-		APISecret:   req.APISecret,
-		Passphrase:  req.Passphrase,
-		AccountType: exchange.AccountType(req.AccountType),
-	}
-	return a.svc.RotateCredsForAccount(accountID, creds)
-}
-
-func (a *helmCreatorAdapter) PauseForAccount(_ context.Context, accountID uuid.UUID) error {
-	h, err := a.svc.GetByAccount(accountID)
-	if err != nil {
-		return err
-	}
-	return a.svc.Pause(h.ID)
-}
-
-func (a *helmCreatorAdapter) MarkErrorForAccount(_ context.Context, accountID uuid.UUID) error {
-	h, err := a.svc.GetByAccount(accountID)
-	if err != nil {
-		return err
-	}
-	return a.svc.MarkError(h.ID)
-}
-
-func (a *helmCreatorAdapter) ResumeErrorForAccount(_ context.Context, accountID uuid.UUID) error {
-	h, err := a.svc.GetByAccount(accountID)
-	if err != nil {
-		return err
-	}
-	if h.Status != helmDomain.HelmStatusError {
-		return nil // not in error state — don't touch user-initiated pauses
-	}
-	return a.svc.Resume(h.ID)
+	return service2.NewBrokerConnectionService(repo, accRepo, encryptionService, clients, &helmService.BrokerAdapter{Svc: helmSvc})
 }
 
 func provideBrokerConnectionHandler(

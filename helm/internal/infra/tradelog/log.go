@@ -7,8 +7,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-
-	"mallow/helm/internal/readmodel"
 )
 
 // Log is the read-only view of the trades table for handlers/FE queries.
@@ -18,7 +16,7 @@ import (
 // TradePersister → PostgreSQL `trades`. Direct PG inserts from this package
 // are deliberately removed so the durable buffer absorbs PG outages.
 type Log interface {
-	Query(ctx context.Context, f readmodel.TradeFilter) ([]readmodel.TradeRecord, error)
+	Query(ctx context.Context, f TradeFilter) ([]TradeRecord, error)
 	// SumHandPnL returns aggregate PnL metrics for one hand in a single query.
 	// Used by RestorePnL on startup instead of draining the full JetStream history.
 	SumHandPnL(ctx context.Context, handID uuid.UUID) (totalPnL, totalCommission decimal.Decimal, wins, losses int64, err error)
@@ -33,7 +31,7 @@ func New(db *sql.DB) Log {
 }
 
 // Query returns trades matching the filter, ordered by exit_at DESC.
-func (l *postgresLog) Query(ctx context.Context, f readmodel.TradeFilter) ([]readmodel.TradeRecord, error) {
+func (l *postgresLog) Query(ctx context.Context, f TradeFilter) ([]TradeRecord, error) {
 	limit := f.Limit
 	if limit <= 0 {
 		limit = 100
@@ -78,9 +76,9 @@ func (l *postgresLog) Query(ctx context.Context, f readmodel.TradeFilter) ([]rea
 	}
 	defer rows.Close()
 
-	var out []readmodel.TradeRecord
+	var out []TradeRecord
 	for rows.Next() {
-		var r readmodel.TradeRecord
+		var r TradeRecord
 		var (
 			timeframe                                sql.NullString
 			entryPrice, exitPrice, qty               sql.NullString

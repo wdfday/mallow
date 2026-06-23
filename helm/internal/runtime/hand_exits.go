@@ -433,7 +433,7 @@ func (h *Hand) releasePositions(ctx context.Context) {
 }
 
 // checkExits scans open positions against locally stored SL/TP levels.
-// Called on every pollTicker tick (every 5s) as a safety net in case
+// Called on every pollTicker tick (every 30s) as a safety net in case
 // exchange-side bracket orders fail to execute.
 //
 // IMPORTANT: exitLevels[sym] is deleted ONLY after the DirExit signal is
@@ -591,7 +591,7 @@ func (h *Hand) fetchBracketStates(ctx context.Context) []bracketState {
 }
 
 // pollExternalClose is called by applyBracketStates when the exchange confirms an order is
-// terminally gone (cancelled/not_found/filled-no-data) via explicit REST poll. Unlike the WS
+// terminally gone (canceled/not_found/filled-no-data) via explicit REST poll. Unlike the WS
 // path, the poller is authoritative — we remove the ID from pendingCancels first so that
 // HandleExitOrderCanceled always takes the external-close path, even if helm raced a cancel
 // attempt (cancel-before-replace) that added this ID to pendingCancels.

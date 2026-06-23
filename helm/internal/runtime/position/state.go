@@ -83,6 +83,12 @@ type LegState struct {
 // IsActive reports whether the leg has an open position or a pending order.
 func (l *LegState) IsActive() bool { return l.Phase != PhaseIdle }
 
+// HasExitManagement reports whether the leg has any exit tracking:
+// either absolute SL/TP prices or live exchange OCO order IDs.
+func (l *LegState) HasExitManagement() bool {
+	return l.StopLoss.IsPositive() || l.TakeProfit.IsPositive() || len(l.ExchangeOrderIDs) > 0
+}
+
 // HasPendingOrder reports whether the leg is waiting for an exchange fill.
 func (l *LegState) HasPendingOrder() bool {
 	return l.Phase == PhaseEntering || l.Phase == PhaseAdding || l.Phase == PhaseExiting

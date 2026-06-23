@@ -333,67 +333,14 @@ func (h *NATSHandler) trades(msg *nats.Msg) {
 	_ = msg.Respond(natsapi.ReplyOK(helmDto.TradesToResp(rt.Portfolio.Trades())))
 }
 
-// statsHandSummary is the per-hand slice of a stats response.
-type statsHandSummary struct {
-	HandID           string  `json:"hand_id"`
-	Symbol           string  `json:"symbol"`
-	Strategy         string  `json:"strategy"`
-	Status           string  `json:"status"`
-	SignalsReceived  int64   `json:"signals_received"`
-	SignalsFiltered  int64   `json:"signals_filtered"`
-	SignalsDropped   int64   `json:"signals_dropped"`
-	OrdersPlaced     int64   `json:"orders_placed"`
-	OrdersFilled     int64   `json:"orders_filled"`
-	OrdersFailed     int64   `json:"orders_failed"`
-	TotalPnL         float64 `json:"total_pnl"`
-	WinCount         int64   `json:"win_count"`
-	LossCount        int64   `json:"loss_count"`
-	SignalLagLastMs  int64   `json:"signal_lag_last_ms"`
-	SignalQueueDepth int     `json:"signal_queue_depth"`
-}
-
-// statsHelmSummary is the per-helm slice of a stats response.
-type statsHelmSummary struct {
-	HelmID       string             `json:"helm_id"`
-	AccountID    string             `json:"account_id"`
-	BrokerType   string             `json:"broker_type"`
-	Paused       bool               `json:"paused"`
-	Halted       bool               `json:"halted"`
-	Equity       float64            `json:"equity"`
-	Cash         float64            `json:"cash"`
-	DailyPnL     float64            `json:"daily_pnl"`
-	DrawdownPct  float64            `json:"drawdown_pct"`
-	RunningHands int                `json:"running_hands"`
-	LastSyncAt   *time.Time         `json:"last_sync_at,omitempty"`
-	Hands        []statsHandSummary `json:"hands"`
-}
-
-// statsGlobal is the global/aggregate portion of a stats response.
-type statsGlobal struct {
-	RunningHands     int   `json:"running_hands"`
-	ActiveRuntimes   int   `json:"active_runtimes"`
-	RouteNoHelm      int64 `json:"dispatch_route_no_helm"`
-	RouteNoHand      int64 `json:"dispatch_route_no_hand"`
-	NATSSignalsTotal int64 `json:"nats_signals_total"`
-	NATSDispatched   int64 `json:"nats_signals_dispatched"`
-	NATSMissingID    int64 `json:"nats_signals_missing_id"`
-	NATSNilPayload   int64 `json:"nats_signals_nil_payload"`
-}
-
-// statsResponse is the full response for SubjOrchStats.
-type statsResponse struct {
-	Helms  []statsHelmSummary `json:"helms"`
-	Global statsGlobal        `json:"global"`
-}
-
 // stats returns a live aggregate snapshot of all runtimes, hands, and global metrics.
 // No caller_user_id required — this is a service-to-service internal endpoint used by
 // the AI commander to reason about the current trading system state.
 func (h *NATSHandler) stats(msg *nats.Msg) {
 	rts := h.reg.All()
 
-	resp := statsResponse{
-		Helms: make([]statsHelmSummary, 0, len(rts)),
+	resp := helmDto.StatsResponse{
+		Helms: make([]helmDto.StatsHelmSummary, 0, len(rts)),
 	}
 
 	for _, rt := range rts {
@@ -402,7 +349,7 @@ func (h *NATSHandler) stats(msg *nats.Msg) {
 		if t := rt.LastSyncAt(); !t.IsZero() {
 			lastSyncAt = &t
 		}
-		helmStat := statsHelmSummary{
+		helmStat := helmDto.StatsHelmSummary{
 			HelmID:      rt.HelmID.String(),
 			AccountID:   rt.AccountID.String(),
 			BrokerType:  rt.BrokerType,
@@ -420,7 +367,7 @@ func (h *NATSHandler) stats(msg *nats.Msg) {
 			if hs.Status == "running" || hs.Status == "paused" {
 				helmStat.RunningHands++
 			}
-			helmStat.Hands = append(helmStat.Hands, statsHandSummary{
+			helmStat.Hands = append(helmStat.Hands, helmDto.StatsHandSummary{
 				HandID:           hs.ID,
 				Symbol:           hs.Symbol,
 				Strategy:         hs.StrategyName,
@@ -443,7 +390,7 @@ func (h *NATSHandler) stats(msg *nats.Msg) {
 
 	ds := h.reg.DispatchStats()
 	ns := h.reg.NATSStats()
-	resp.Global = statsGlobal{
+	resp.Global = helmDto.StatsGlobal{
 		RunningHands:     len(h.handMgr.RunningHands()),
 		ActiveRuntimes:   len(rts),
 		RouteNoHelm:      ds.RouteNoHelm,

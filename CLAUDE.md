@@ -147,7 +147,6 @@ Single source of truth: `proto/market.proto`. Generated Go code in `helm/interna
 | `engine.ready` | JetStream publish | Herald announces readiness on startup |
 | `helm.helms.*` | req/rep | Helm CRUD + control: `list` `get` `update` `enable` `disable` `pause` `resume` `kill` `halt.reset` `portfolio` `positions` `trades` `orders` |
 | `helm.hands.*` | req/rep | Hand CRUD + control: `list` `get` `create` `update` `start` `stop` `kill` (no `delete`/`pause`/`resume`/`restart` — hands are kept for review) |
-| `helm.accounts.linked` | publish | Broker account linked → helm auto-creates disabled Helm |
 | `helm.accounts.unlinked` | publish | Broker account unlinked → helm auto-deletes Helm |
 | `helm.events.{helm_id}` | publish | Helm lifecycle / runtime events (status transitions, errors) |
 | `helm.pos.>` | JetStream | Position event log (replayable on restart) |
@@ -368,7 +367,7 @@ helm/
 **Core concepts:**
 - **Broker Connection** (`module/broker`): user-scoped encrypted credentials for a single exchange account. Statuses: `pending` / `active` / `disconnected` / `error`. Paper-trading flag.
 - **Account** (`module/account`): aggregated view of a user's positions / cash / transactions per broker. Surfaces SSE `events` endpoint that streams `trade.filled.{account_id}` for the UI.
-- **Helm**: account-level execution container. One Helm per broker account. Owns capital budget, portfolio config, risk circuit-breakers. Auto-created when `helm.accounts.linked` fires.
+- **Helm**: account-level execution container. One Helm per broker account. Owns capital budget, portfolio config, risk circuit-breakers. Auto-created synchronously when a broker connection is activated (same request).
 - **Hand** (`runtime.Hand`): autonomous signal-following bot. Owns a script/named strategy, position sizing, exit rules, JetStream poslog. Multiple hands per helm.
 - **HelmRuntime**: in-memory execution context shared by all hands under one helm (exchange, portfolio, order book, poslog).
 - **poslog**: JetStream-backed write-ahead log of position events (`order_placed`, `order_filled`, `order_cancelled`, `position_orphaned`). Replayed on restart by the reconciler.
@@ -377,7 +376,7 @@ helm/
 
 **Hand lifecycle states:** `stopped → running → stopped` via start/stop. Plus: `kill` (stop + flatten this hand's positions at exchange) and `release` (stop + emit `position_orphaned` poslog events, leaving positions live at exchange). Hands are **never hard-deleted** — kept for review; there is no delete/pause/resume/restart for a hand (pausing is a helm-level cascade-stop).
 
-**Helm lifecycle states:** `active` / `paused` (cascade-stops all hands) / `halted` (after kill; reset with `POST /halt/reset`) / `disabled` (admin soft-lock).
+**Helm lifecycle states:** `active` / `paused` (user or broker-deactivation; cascade-stops all hands; resume via `POST /resume`) / `halted` (risk circuit-breaker or `/kill`; positions flattened; reset via `POST /halt/reset`) / `error` (exchange rejected credentials 3× consecutive; helm self-pauses; recover via `POST /broker-connections/:id/rotate-key` which auto-resumes) / `disabled` (user called `/disable`; positions flattened, runtime torn down; re-enable via `POST /enable`).
 
 **HTTP API** (Gin, port `API_ADDR` default `localhost:8084`; proxied at `/api/v1/...` by the gateway):
 - `GET|PUT /api/v1/helms/:id` · `GET /api/v1/helms`

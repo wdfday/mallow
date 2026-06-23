@@ -1,7 +1,11 @@
 package runtime
 
 import (
+	"context"
+	"log/slog"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/shopspring/decimal"
 
@@ -87,4 +91,71 @@ func (r *HelmRuntime) normalizeCommission(symbol string, side exchange.OrderSide
 	}
 
 	return qty, commission
+}
+
+// ── Symbol filter utilities ───────────────────────────────────────────────────
+
+// SymbolFilterStore is a small interface for looking up exchange precision rules.
+// The registry wires a per-exchange view into each HelmRuntime at spawn time so
+// callers only need the symbol, not the exchange name.
+type SymbolFilterStore interface {
+	GetFilters(symbol string) exchange.SymbolFilters
+	SetFilters(symbol string, f exchange.SymbolFilters)
+}
+
+// filtersFor looks up SymbolFilters via the injected per-exchange store.
+// On a cache miss (QtyStep == 0, symbol not prewarm-ed), it fetches from the
+// exchange on-demand with a short timeout and caches the result.
+func (r *HelmRuntime) filtersFor(ctx context.Context, symbol string) exchange.SymbolFilters {
+	if r.FilterStore == nil {
+		return exchange.SymbolFilters{}
+	}
+	f := r.FilterStore.GetFilters(symbol)
+	if f.QtyStep.IsPositive() {
+		return f
+	}
+	sip, ok := r.Exchange.(exchange.SymbolInfoProvider)
+	if !ok {
+		return f
+	}
+	fetchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	fetched, err := sip.GetSymbolFilters(fetchCtx, symbol)
+	if err != nil {
+		slog.Warn("filtersFor: on-demand filter fetch failed",
+			"symbol", symbol, "err", err)
+		return f
+	}
+	slog.Info("filtersFor: lazy-fetched symbol filters",
+		"symbol", symbol,
+		"qty_step", fetched.QtyStep, "price_tick", fetched.PriceTick)
+	r.FilterStore.SetFilters(symbol, fetched)
+	return fetched
+}
+
+// truncateQty rounds qty DOWN to the nearest valid LOT_SIZE multiple.
+func truncateQty(filters exchange.SymbolFilters, qty decimal.Decimal) decimal.Decimal {
+	if filters.QtyStep.IsPositive() {
+		return qty.Div(filters.QtyStep).Floor().Mul(filters.QtyStep)
+	}
+	return qty.Truncate(8)
+}
+
+// priceTick returns the number of meaningful decimal places for a step size.
+// Normalises via float64 → shortest string to strip trailing zeros before counting.
+func priceTick(step decimal.Decimal) int32 {
+	if !step.IsPositive() {
+		return 2
+	}
+	f, _ := step.Float64()
+	s := strconv.FormatFloat(f, 'f', -1, 64)
+	dot := strings.IndexByte(s, '.')
+	if dot < 0 {
+		return 0
+	}
+	prec := int32(len(s) - dot - 1)
+	if prec > 8 {
+		return 8
+	}
+	return prec
 }

@@ -19,6 +19,7 @@ const (
 	SubjSignals      = "signals" // all signals — orch_id and bot_id are in the payload
 	SubjEngReset     = "engine.reset"
 	SubjEngRegister  = "engine.register"
+	SubjEngValidate  = "engine.validate" // dry-run validate — no registry side effects
 	SubjEngDeregist  = "engine.deregister"
 	SubjEngList      = "engine.list"
 	SubjEngPing      = "engine.ping"      // health check + herald_id
@@ -147,6 +148,33 @@ func (c *SignalClient) Register(ctx context.Context, req *RegisterMsg) (string, 
 	}
 	slog.Info("engine.register ack", "hand_id", req.HandId)
 	return "ok", nil
+}
+
+// Validate performs a dry-run check against the signal engine: validates
+// timeframe, script syntax, and strategy compilation without registering the
+// hand. Returns an error if the strategy is invalid.
+func (c *SignalClient) Validate(ctx context.Context, req *RegisterMsg) error {
+	payload, err := proto.Marshal(req)
+	if err != nil {
+		return err
+	}
+	ctx2, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	reply, err := c.nc.RequestWithContext(ctx2, SubjEngValidate, payload)
+	if err != nil {
+		return fmt.Errorf("herald validate: %w", err)
+	}
+	var ack struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error,omitempty"`
+	}
+	if err := json.Unmarshal(reply.Data, &ack); err != nil {
+		return fmt.Errorf("parse validate ack: %w", err)
+	}
+	if !ack.OK {
+		return fmt.Errorf("invalid strategy: %s", ack.Error)
+	}
+	return nil
 }
 
 // Deregister removes a hand from the signal-engine registry.

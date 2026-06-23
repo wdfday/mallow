@@ -21,6 +21,7 @@ type helmRegistry interface {
 
 // heraldClient is the outbound port to the signal herald.
 type heraldClient interface {
+	Validate(ctx context.Context, req *engine.RegisterMsg) error
 	Register(ctx context.Context, req *engine.RegisterMsg) (string, error)
 	Deregister(ctx context.Context, botID string) error
 	ListHands(ctx context.Context) (*engine.HandListResponse, error)

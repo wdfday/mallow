@@ -8,10 +8,10 @@ import (
 
 	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/infra/poslog"
+	"mallow/helm/internal/infra/tradelog"
 	analyticsdomain "mallow/helm/internal/module/analytics/domain"
 	handdomain "mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/module/helm/domain"
-	"mallow/helm/internal/readmodel"
 	"mallow/helm/internal/runtime/core/portfolio"
 )
 
@@ -256,7 +256,7 @@ func PoslogPageToResp(p poslog.TradesPage, limit int) TradesPageResp {
 
 // TradelogToResp converts a PG-backed tradelog.TradeRecord to TradeResp,
 // including all analytical columns (commission, planned_risk, r_multiple, …).
-func TradelogToResp(t readmodel.TradeRecord) TradeResp {
+func TradelogToResp(t tradelog.TradeRecord) TradeResp {
 	var pnlPct decimal.Decimal
 	cost := t.EntryPrice.Mul(t.Qty)
 	net := t.PnL.Sub(t.Commission)

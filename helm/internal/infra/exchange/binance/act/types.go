@@ -63,6 +63,8 @@ func (c *Client) ClassifyError(err error) exchange.ErrClass {
 		return exchange.ErrClassOrderNotFound
 	case -1121: // invalid symbol
 		return exchange.ErrClassInvalidSymbol
+	case -1021: // timestamp outside recvWindow — local clock drift
+		return exchange.ErrClassClockSkew
 	case -1001, -1007: // internal error, timeout waiting for response
 		return exchange.ErrClassNetwork
 	case -1008: // server overloaded

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"log/slog"
-	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/nats-io/nats.go"
@@ -15,10 +14,13 @@ import (
 	"mallow/helm/internal/infra"
 	"mallow/helm/internal/infra/engine"
 	"mallow/helm/internal/infra/eventlog"
+	alpacaact "mallow/helm/internal/infra/exchange/alpaca/act"
+	binanceact "mallow/helm/internal/infra/exchange/binance/act"
+	bybitact "mallow/helm/internal/infra/exchange/bybit/act"
+	okxact "mallow/helm/internal/infra/exchange/okx/act"
 	"mallow/helm/internal/infra/orderlog"
 	"mallow/helm/internal/infra/perflog"
 	"mallow/helm/internal/infra/poslog"
-	"mallow/helm/internal/infra/purge"
 	"mallow/helm/internal/infra/tradelog"
 	accountmodule "mallow/helm/internal/module/account"
 	accountHandler "mallow/helm/internal/module/account/handler"
@@ -28,15 +30,12 @@ import (
 	brokermodule "mallow/helm/internal/module/broker"
 	brokerHandler "mallow/helm/internal/module/broker/handler"
 	brokerepo "mallow/helm/internal/module/broker/repository"
-	brokerservice "mallow/helm/internal/module/broker/service"
-	"mallow/helm/internal/module/hand/domain"
+	handmodule "mallow/helm/internal/module/hand"
 	handhandler "mallow/helm/internal/module/hand/handler"
 	handrepo "mallow/helm/internal/module/hand/repository"
-	"mallow/helm/internal/module/hand/service"
-	orchdomain "mallow/helm/internal/module/helm/domain"
+	helmmodule "mallow/helm/internal/module/helm"
 	orchhandler "mallow/helm/internal/module/helm/handler"
 	helmrepo "mallow/helm/internal/module/helm/repository"
-	orchservice "mallow/helm/internal/module/helm/service"
 	"mallow/helm/internal/runtime"
 	"mallow/helm/internal/runtime/perf"
 )
@@ -52,6 +51,13 @@ var Module = fx.Options(
 	fx.Provide(newExchangeFactory),
 	fx.Provide(asRuntimeFactory),
 
+	// Shared act.Client singletons for the broker module (credential validation / portfolio sync).
+	// Credentials are passed per-call; these clients hold only an HTTP connection pool.
+	fx.Provide(func() *okxact.Client { return okxact.New(okxact.Config{}) }),
+	fx.Provide(func() *binanceact.Client { return binanceact.New(false) }),
+	fx.Provide(func() *bybitact.Client { return bybitact.New(bybitact.Config{}) }),
+	fx.Provide(func() *alpacaact.Client { return alpacaact.New(alpacaact.Config{}) }),
+
 	// Signal engine client
 	fx.Provide(engine.NewSignalClient),
 
@@ -64,58 +70,38 @@ var Module = fx.Options(
 	// Event log — PostgreSQL-backed persistent activity store
 	fx.Provide(newEventLog),
 	fx.Provide(newEventLogPersister),
-	// Orders persister — HELM_POSITIONS JetStream → orders table read model
 	fx.Provide(newOrdersPersister),
-
-	// Trade persister — NATS HELM_TRADES → batch PG writer for trades
 	fx.Provide(newTradePersister),
-	// Fill persister — NATS TRADE_FILLS → batch PG writer for fills
 	fx.Provide(newFillPersister),
-	// tradelog.Log — read-only PG view of the trades table, consumed by handlers
 	fx.Provide(newTradelogReader),
-	// orderlog.Log — read-only PG view of the orders table, consumed by handlers
 	fx.Provide(newOrderlogReader),
-	// Analytics service — read-only KPI / curve / trade list
 	fx.Provide(newStatsRunner),
 	fx.Provide(newAnalyticsService),
-
-	// Repositories — Postgres required (POSTGRES_URL must be set)
-	fx.Provide(newHelmRepo),
-	fx.Provide(newBotRepo),
 
 	// Runtime registry
 	fx.Provide(runtime.NewRegistry),
 	fx.Provide(runtime.NewSignalDispatcher),
 
-	// Services
-	fx.Provide(newOrchService),
-	fx.Provide(newBotService),
-
-	// Handlers — Gin (HTTP)
-	fx.Provide(newOrchHandler),
-	fx.Provide(newHandHandler),
+	// HTTP server (receives handlers from helm/hand modules via FX)
 	fx.Provide(newAccountHandler),
 	fx.Provide(newServer),
 
-	// Handlers — NATS (request/reply)
-	fx.Provide(newOrchNATSHandler),
-	fx.Provide(newHandNATSHandler),
-
-	// Lifecycle hooks (order matters)
+	// Lifecycle hooks — persisters and registry chains before hydration
 	fx.Invoke(runMigrations),
 	fx.Invoke(startEventLogPersister),
 	fx.Invoke(startOrdersPersister),
 	fx.Invoke(startTradePersister),
 	fx.Invoke(startFillPersister),
-	fx.Invoke(wireHandLifecycle),
-	fx.Invoke(wireCredentialFetcher),
-	fx.Invoke(wireDataPurger),
-	fx.Invoke(wireSyncStore),
 	fx.Invoke(wirePosLog),
 	fx.Invoke(wireTradeLog),
 	fx.Invoke(wirePnLSummer),
-	fx.Invoke(hydrateRuntimes), // helm runtimes must be ready before hands are hydrated
-	fx.Invoke(hydrateHands),    // depends on hydrateRuntimes having run first
+
+	// Helm module: wires service deps + hydrates runtimes
+	helmmodule.Module,
+
+	// Hand module: hydrates hands (must be after helm runtimes are up)
+	handmodule.Module,
+
 	// fx.Invoke(syncBrokerAccounts), // one-shot migration: uncomment → restart → comment back
 	fx.Invoke(subscribeHeraldReady),
 	fx.Invoke(startHeartbeatLoop),
@@ -155,45 +141,12 @@ func runMigrations(db *gorm.DB) error {
 	return nil
 }
 
-func newHelmRepo(db *gorm.DB) orchdomain.HelmRepo {
-	return helmrepo.New(db)
-}
-
-func newBotRepo(db *gorm.DB) domain.HandRepo {
-	return handrepo.New(db)
-}
-
-func newOrchService(repo orchdomain.HelmRepo, reg *runtime.Registry) *orchservice.Service {
-	return orchservice.New(repo, reg)
-}
-
-func newBotService(r domain.HandRepo, reg *runtime.Registry, sc *engine.SignalClient) *service.Service {
-	return service.NewService(r, reg, sc)
-}
-
-func newOrchHandler(
-	svc *orchservice.Service,
-	handMgr *service.Service,
-	reg *runtime.Registry,
-	fillLog *perflog.FillLog,
-	posLog poslog.Log,
-	orderLog orderlog.Log,
-	analytics *analyticsservice.Service,
-	evLog eventlog.Log,
-) *orchhandler.Handler {
-	return orchhandler.New(svc, handMgr, reg, fillLog, posLog, orderLog, analytics, evLog)
-}
-
 func newOrderlogReader(db *sql.DB) orderlog.Log {
 	return orderlog.NewLog(db)
 }
 
 func newTradelogReader(db *sql.DB) tradelog.Log {
 	return tradelog.New(db)
-}
-
-func newHandHandler(handMgr *service.Service, helmSvc *orchservice.Service, reg *runtime.Registry, evLog eventlog.Log, analytics *analyticsservice.Service) *handhandler.Handler {
-	return handhandler.New(handMgr, helmSvc, reg, evLog, analytics)
 }
 
 func newEventLog(db *sql.DB) eventlog.Log {
@@ -236,28 +189,12 @@ func startEventLogPersister(lc fx.Lifecycle, p *eventlog.Persister) {
 	})
 }
 
-func newAccountHandler(
-	svc accountservice.Service,
-	helmSvc *orchservice.Service,
-	handMgr *service.Service,
-	reg *runtime.Registry,
-	fillLog *perflog.FillLog,
-	posLog poslog.Log,
-	logger *slog.Logger,
-) *accountHandler.Handler {
-	return accountHandler.NewHandler(svc, helmSvc, handMgr, reg, fillLog, posLog, logger)
+func newAccountHandler(svc accountservice.Service) *accountHandler.Handler {
+	return accountHandler.NewHandler(svc)
 }
 
 func newServer(orchH *orchhandler.Handler, handH *handhandler.Handler, accountH *accountHandler.Handler, brokerH *brokerHandler.BrokerConnectionHandler) *gin.Engine {
 	return NewServer(orchH, handH, accountH, brokerH)
-}
-
-func newOrchNATSHandler(svc *orchservice.Service, handMgr *service.Service, reg *runtime.Registry) *orchhandler.NATSHandler {
-	return orchhandler.NewNATSHandler(svc, handMgr, reg)
-}
-
-func newHandNATSHandler(handMgr *service.Service, helmSvc *orchservice.Service, reg *runtime.Registry) *handhandler.NATSHandler {
-	return handhandler.NewNATSHandler(handMgr, helmSvc, reg)
 }
 
 // newPosLog creates the JetStream-backed position event log.
@@ -318,94 +255,6 @@ func startTradePersister(lc fx.Lifecycle, p *perflog.TradePersister) {
 			return nil
 		},
 	})
-}
-
-// wireHandLifecycle injects the hand lifecycle port into orchservice.Service (breaks init cycle).
-func wireHandLifecycle(helmSvc *orchservice.Service, handMgr *service.Service) {
-	helmSvc.SetHandLifecycle(handMgr)
-}
-
-// wireCredentialFetcher injects a CredentialFetcher adapter so Enable can re-spawn
-// a runtime that was torn down by a previous Disable call.
-func wireCredentialFetcher(helmSvc *orchservice.Service, brokerSvc brokerservice.BrokerConnectionService) {
-	helmSvc.SetCredentialFetcher(orchservice.BrokerCredentialAdapter{BrokerSvc: brokerSvc})
-}
-
-// wireDataPurger injects the PostgreSQL audit-data purger used during helm hard-delete.
-func wireDataPurger(helmSvc *orchservice.Service, db *gorm.DB) {
-	helmSvc.SetDataPurger(purge.New(db))
-}
-
-// wireSyncStore injects the HelmRepo as the SyncStore for last-sync persistence.
-func wireSyncStore(repo orchdomain.HelmRepo, reg *runtime.Registry) {
-	reg.SetSyncStore(repo)
-}
-
-// hydrateRuntimes loads all active helm configs from DB and spawns their runtimes.
-// Exchange credentials and metadata are fetched directly from the broker service (DB), never via NATS.
-// Initial capital starts at zero and is updated on the first portfolio sync.
-func hydrateRuntimes(repo orchdomain.HelmRepo, reg *runtime.Registry, brokerSvc brokerservice.BrokerConnectionService) error {
-	cfgs, err := repo.All()
-	if err != nil {
-		return err
-	}
-	spawned := 0
-	for _, cfg := range cfgs {
-		// Spawn every helm except those explicitly disabled. Paused/halted helms
-		// are still spawned — Registry.Spawn restores their gated (paused) state so
-		// signal gating survives the restart without resuming trading.
-		if cfg.Status == orchdomain.HelmStatusDisabled {
-			continue
-		}
-		creds, err := brokerSvc.GetCredentialsByAccountID(context.Background(), cfg.AccountID.String())
-		if err != nil {
-			slog.Error("runtimes hydrate: fetch credentials failed", "helm_id", cfg.ID, "account_id", cfg.AccountID, "err", err)
-			continue
-		}
-		exchCfg := orchdomain.ExchangeConfig{
-			BrokerType:  cfg.BrokerType,
-			AccountType: orchdomain.AccountType(creds.AccountType),
-			AccountID:   creds.AccountRef,
-			BaseURL:     creds.BaseURL,
-			APIKey:      creds.APIKey,
-			APISecret:   creds.APISecret,
-			Passphrase:  creds.Passphrase,
-			Paper:       creds.Paper,
-		}
-		if err := reg.Spawn(cfg, exchCfg); err != nil {
-			slog.Error("runtime: spawn failed", "helm_id", cfg.ID, "err", err)
-			continue
-		}
-		if cfg.Status == orchdomain.HelmStatusPaused {
-			if rt, err := reg.Get(cfg.ID); err == nil {
-				rt.Pause()
-				slog.Info("runtime: spawned paused", "helm_id", cfg.ID)
-			}
-		}
-		spawned++
-	}
-	slog.Info("runtimes hydrated", "count", spawned, "total", len(cfgs))
-	return nil
-}
-
-// hydrateHands loads all persisted hands from DB and wires them into the hand service.
-// Must run AFTER hydrateRuntimes so that helm runtimes exist in the registry.
-// After hydration, prewarns the exchange symbol-filter cache for all active symbols
-// so the hot order-placement path never hits a cold fetch on first signal.
-func hydrateHands(svc *service.Service, reg *runtime.Registry) {
-	svc.HydrateAll()
-	symsByEx := svc.SymbolsByExchange()
-	total := 0
-	for _, ss := range symsByEx {
-		total += len(ss)
-	}
-	slog.Info("hands hydrated, prewarming symbol filters", "pairs", total)
-	if total > 0 {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		reg.PrewarmFilters(ctx, symsByEx)
-		slog.Info("symbol filters prewarm complete", "pairs", total)
-	}
 }
 
 func newFillPersister(js nats.JetStreamContext, db *sql.DB) *perflog.FillPersister {

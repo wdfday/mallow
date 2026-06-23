@@ -17,9 +17,7 @@ import (
 	dto "mallow/helm/internal/module/hand/dto"
 	handservice "mallow/helm/internal/module/hand/service"
 	helmDto "mallow/helm/internal/module/helm/dto"
-	"mallow/helm/internal/readmodel"
 	"mallow/helm/internal/shared"
-	pkgmw "mallow/pkg/middleware"
 )
 
 type Handler struct {
@@ -32,15 +30,6 @@ type Handler struct {
 
 func New(handMgr HandService, helmSvc HelmService, reg RuntimeRegistry, evLog eventlog.Log, analytics *analyticsservice.Service) *Handler {
 	return &Handler{handMgr: handMgr, helmSvc: helmSvc, reg: reg, eventLog: evLog, analytics: analytics}
-}
-
-func callerUserID(c *gin.Context) (uuid.UUID, bool) {
-	id, err := uuid.Parse(pkgmw.UserID(c))
-	if err != nil {
-		shared.RespondWithError(c, http.StatusUnauthorized, "invalid user")
-		return uuid.Nil, false
-	}
-	return id, true
 }
 
 func (h *Handler) resolveHelmID(userID uuid.UUID, accountID, helmID uuid.UUID) (uuid.UUID, error) {
@@ -114,7 +103,7 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/hands [post]
 func (h *Handler) create(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -179,7 +168,7 @@ func (h *Handler) create(c *gin.Context) {
 // @Failure 500 {object} shared.ErrorResponse
 // @Router /api/v1/hands [get]
 func (h *Handler) list(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -257,7 +246,7 @@ func (h *Handler) list(c *gin.Context) {
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/hands/{id} [get]
 func (h *Handler) get(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -292,7 +281,7 @@ func (h *Handler) get(c *gin.Context) {
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/hands/{id} [put]
 func (h *Handler) update(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -331,7 +320,7 @@ func (h *Handler) update(c *gin.Context) {
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/hands/{id}/start [post]
 func (h *Handler) start(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -359,7 +348,7 @@ func (h *Handler) start(c *gin.Context) {
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/hands/{id}/stop [post]
 func (h *Handler) stop(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -388,7 +377,7 @@ func (h *Handler) stop(c *gin.Context) {
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/hands/{id}/kill [post]
 func (h *Handler) kill(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -415,7 +404,7 @@ func (h *Handler) kill(c *gin.Context) {
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/hands/{id}/release [post]
 func (h *Handler) release(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -447,13 +436,13 @@ func (h *Handler) release(c *gin.Context) {
 // @Param id path string true "Hand ID"
 // @Param limit query int false "Max events to return" default(100)
 // @Param before query string false "Return events before this RFC3339 timestamp (pagination cursor)"
-// @Success 200 {object} shared.SuccessResponse[[]readmodel.EventRecord]
+// @Success 200 {object} shared.SuccessResponse[[]eventlog.EventRecord]
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 404 {object} shared.ErrorResponse
 // @Failure 503 {object} shared.ErrorResponse
 // @Router /api/v1/hands/{id}/activity [get]
 func (h *Handler) activity(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -468,7 +457,7 @@ func (h *Handler) activity(c *gin.Context) {
 	}
 
 	limit := parseLimitQuery(c, 100, 500)
-	f := readmodel.EventFilter{
+	f := eventlog.EventFilter{
 		HelmID: helmID,
 		HandID: &handID,
 		Limit:  limit,
@@ -485,7 +474,7 @@ func (h *Handler) activity(c *gin.Context) {
 		return
 	}
 	if events == nil {
-		events = []readmodel.EventRecord{}
+		events = []eventlog.EventRecord{}
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Activity retrieved", events)
 }
@@ -514,7 +503,7 @@ func (h *Handler) activity(c *gin.Context) {
 // @Success 200 {object} shared.SuccessResponse[helmDto.StatsResp]
 // @Router /api/v1/hands/{id}/stats [get]
 func (h *Handler) stats(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -544,7 +533,7 @@ func (h *Handler) stats(c *gin.Context) {
 // @Success 200 {object} shared.SuccessResponse[[]HandEquityPoint]
 // @Router /api/v1/hands/{id}/equity [get]
 func (h *Handler) equity(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -612,7 +601,7 @@ func parseHandPeriod(c *gin.Context) domain.Period {
 // trades returns closed round-trip trades for a hand. Delegates to the analytics
 // service (PostgreSQL-backed, full analytical fields). See docs/metrics-and-reports.md §4.
 func (h *Handler) trades(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -676,7 +665,7 @@ func (h *Handler) Metrics(c *gin.Context) {
 // @Failure 422 {object} dto.CapitalOverflow
 // @Router /api/v1/hands/{id}/allocate-capital [post]
 func (h *Handler) allocateCapital(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}

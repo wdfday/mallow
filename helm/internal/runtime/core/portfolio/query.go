@@ -146,7 +146,7 @@ func (p *Portfolio) Summary() Summary {
 		RealizedPnL:     realized,
 		TotalReturn:     totalReturn,
 		CurrentDD:       dd,
-		MaxDD:           0, // equity history not tracked
+		MaxDD:           0,
 		WinRate:         p.winRateLocked() * 100,
 		TotalTrades:     len(p.trades),
 		OpenPositions:   len(positions),

@@ -9,7 +9,6 @@ import (
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/natsapi"
-	"mallow/helm/internal/readmodel"
 	"mallow/helm/internal/safe"
 )
 
@@ -19,7 +18,7 @@ type Log interface {
 	// Append writes a single event. Non-blocking: errors are logged, not returned.
 	Append(ctx context.Context, helmID uuid.UUID, userID uuid.UUID, ev natsapi.HelmEvent)
 	// Query returns events matching the filter, newest first.
-	Query(ctx context.Context, f readmodel.EventFilter) ([]readmodel.EventRecord, error)
+	Query(ctx context.Context, f EventFilter) ([]EventRecord, error)
 }
 
 // postgresLog is the production implementation backed by PostgreSQL.
@@ -71,7 +70,7 @@ func (l *postgresLog) Append(ctx context.Context, helmID uuid.UUID, userID uuid.
 }
 
 // Query returns events matching the filter, ordered by at DESC.
-func (l *postgresLog) Query(ctx context.Context, f readmodel.EventFilter) ([]readmodel.EventRecord, error) {
+func (l *postgresLog) Query(ctx context.Context, f EventFilter) ([]EventRecord, error) {
 	limit := f.Limit
 	if limit <= 0 {
 		limit = 100
@@ -106,9 +105,9 @@ func (l *postgresLog) Query(ctx context.Context, f readmodel.EventFilter) ([]rea
 	}
 	defer rows.Close()
 
-	var out []readmodel.EventRecord
+	var out []EventRecord
 	for rows.Next() {
-		var e readmodel.EventRecord
+		var e EventRecord
 		var handID sql.NullString
 		var symbol, direction, side, orderID, reason, msg sql.NullString
 		var qty, price sql.NullString

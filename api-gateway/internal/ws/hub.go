@@ -60,7 +60,6 @@ var accountChannels = []accountChannel{
 	{ch: "trade", stream: "HELM_TRADES", subjPrefix: "helm.trades.", subjSuffix: ".>", keyedBy: keyedByHelm},
 	{ch: "fill", stream: "TRADE_FILLS", subjPrefix: "trade.filled.", keyedBy: keyedByAccount},
 	{ch: "portfolio", stream: "PORTFOLIO_SYNC", subjPrefix: "portfolio.synced.", keyedBy: keyedByAccount},
-	{ch: "equity", stream: "HELM_EQUITY", subjPrefix: "helm.equity.", keyedBy: keyedByHelm},
 	{ch: "position", stream: "HELM_POSITIONS", subjPrefix: "helm.pos.", subjSuffix: ".>", keyedBy: keyedByHelm},
 }
 

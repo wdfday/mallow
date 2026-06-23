@@ -165,3 +165,38 @@ func (s *Service) ResetHalt(id uuid.UUID) error {
 	slog.Info("helm halt reset", "id", id)
 	return nil
 }
+
+// HydrateAll loads all non-disabled helms from the DB and spawns their runtimes.
+// Paused helms are spawned then immediately gated so signal delivery is blocked
+// without tearing down the runtime. Called once at startup.
+func (s *Service) HydrateAll(ctx context.Context) error {
+	if s.creds == nil {
+		return fmt.Errorf("helm service: CredentialFetcher not wired before HydrateAll")
+	}
+	cfgs, err := s.repo.All()
+	if err != nil {
+		return err
+	}
+	spawned := 0
+	for _, cfg := range cfgs {
+		if cfg.Status == domain.HelmStatusDisabled {
+			continue
+		}
+		exchCfg, err := s.creds.GetCredentialsByAccountID(ctx, cfg.AccountID.String())
+		if err != nil {
+			slog.Error("helm hydrate: fetch credentials failed", "helm_id", cfg.ID, "account_id", cfg.AccountID, "err", err)
+			continue
+		}
+		if err := s.spawner.Spawn(cfg, exchCfg); err != nil {
+			slog.Error("helm hydrate: spawn failed", "helm_id", cfg.ID, "err", err)
+			continue
+		}
+		if cfg.Status == domain.HelmStatusPaused {
+			_ = s.Pause(cfg.ID)
+			slog.Info("helm hydrate: spawned paused", "helm_id", cfg.ID)
+		}
+		spawned++
+	}
+	slog.Info("helms hydrated", "count", spawned, "total", len(cfgs))
+	return nil
+}

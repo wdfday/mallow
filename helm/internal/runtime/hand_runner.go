@@ -531,6 +531,7 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		QuoteQty:      reply.QuoteQty,
 		Price:         limitPrice,
 		ReduceOnly:    isFutures && isExitOrder,
+		IsExit:        isExitOrder,
 		MarginMode:    marginMode,
 		ClientOrderID: clid,
 	}
@@ -740,6 +741,21 @@ func (h *Hand) runPlaceREST(ctx context.Context, pp *pendingPlace) {
 	}
 
 	result, err := h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, pp.orderReq)
+	// Clock skew on exit orders: resync and retry once before falling through to the
+	// ambiguous-failure recovery. Entry orders don't retry — wait for the next signal.
+	if err != nil && pp.isExitOrder {
+		classifier, hasClassifier := h.helmRuntime.Exchange.(exchange.ErrorClassifier)
+		if hasClassifier && classifier.ClassifyError(err) == exchange.ErrClassClockSkew {
+			slog.Warn("hand: clock skew on exit PlaceOrder — resyncing and retrying once",
+				"hand_id", h.id, "symbol", pp.sig.Symbol, "err", err)
+			if ts, ok := h.helmRuntime.Exchange.(exchange.TimeSyncer); ok {
+				if syncErr := ts.SyncTime(ctx); syncErr != nil {
+					slog.Warn("hand: SyncTime failed during clock-skew recovery", "err", syncErr)
+				}
+			}
+			result, err = h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, pp.orderReq)
+		}
+	}
 	// Ambiguous failure (timeout / network): the order may have landed. Ask the exchange
 	// by clid before giving up — if it exists, treat the placement as successful.
 	if err != nil {
@@ -825,7 +841,7 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 		h.helmRuntime.RemoveOrderTracking(clid)
 		h.metrics.ordersFailed.Add(1)
 		h.mu.Lock()
-		h.health.LastErrorAt = timePtr(time.Now().UTC())
+		h.health.LastErrorAt = new(time.Now().UTC())
 		h.health.LastError = err.Error()
 		h.health.Status = HealthError
 		h.mu.Unlock()

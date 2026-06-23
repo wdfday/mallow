@@ -24,9 +24,6 @@ CREATE TABLE IF NOT EXISTS broker_connections (
     api_secret              TEXT,                                        -- encrypted
     passphrase              TEXT,                                        -- OKX only; encrypted
     is_paper                BOOL         NOT NULL DEFAULT false,
-    external_account_id     VARCHAR(100),
-    external_account_number VARCHAR(100),
-    external_account_name   VARCHAR(255),
     notes                   TEXT,
     created_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     updated_at              TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
@@ -50,10 +47,6 @@ CREATE TABLE IF NOT EXISTS accounts (
     currency             VARCHAR(3)    NOT NULL DEFAULT 'USD',
     is_active            BOOL          NOT NULL DEFAULT true,
     include_in_net_worth BOOL          NOT NULL DEFAULT true,
-    is_auto_sync         BOOL          NOT NULL DEFAULT false,
-    last_synced_at       TIMESTAMPTZ,
-    sync_status          VARCHAR(20),
-    sync_error_message   TEXT,
     broker_connection_id UUID          REFERENCES broker_connections(id) ON DELETE SET NULL,
     created_at           TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
     updated_at           TIMESTAMPTZ   NOT NULL DEFAULT NOW(),

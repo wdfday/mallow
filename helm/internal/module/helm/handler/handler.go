@@ -16,11 +16,9 @@ import (
 	"mallow/helm/internal/module/analytics/domain"
 	analyticsservice "mallow/helm/internal/module/analytics/service"
 	dto "mallow/helm/internal/module/helm/dto"
-	"mallow/helm/internal/readmodel"
 	"mallow/helm/internal/runtime"
 	"mallow/helm/internal/runtime/perf"
 	"mallow/helm/internal/shared"
-	pkgmw "mallow/pkg/middleware"
 )
 
 // parsePeriod extracts an analytics Period from query params.
@@ -90,15 +88,6 @@ func parsePage(c *gin.Context) (page, limit int) {
 	return
 }
 
-func callerUserID(c *gin.Context) (uuid.UUID, bool) {
-	id, err := uuid.Parse(pkgmw.UserID(c))
-	if err != nil {
-		shared.RespondWithError(c, http.StatusUnauthorized, "invalid user")
-		return uuid.Nil, false
-	}
-	return id, true
-}
-
 func (h *Handler) Register(rg *gin.RouterGroup) {
 	o := rg.Group("/helms")
 	{
@@ -144,7 +133,7 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/enable [post]
 func (h *Handler) enable(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -176,7 +165,7 @@ func (h *Handler) enable(c *gin.Context) {
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/disable [post]
 func (h *Handler) disable(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -206,7 +195,7 @@ func (h *Handler) disable(c *gin.Context) {
 // @Failure 500 {object} shared.ErrorResponse
 // @Router /api/v1/helms [get]
 func (h *Handler) list(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -230,7 +219,7 @@ func (h *Handler) list(c *gin.Context) {
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id} [get]
 func (h *Handler) get(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -286,7 +275,7 @@ func (h *Handler) get(c *gin.Context) {
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id} [put]
 func (h *Handler) update(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -333,7 +322,7 @@ func (h *Handler) update(c *gin.Context) {
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/pause [post]
 func (h *Handler) pause(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -365,7 +354,7 @@ func (h *Handler) pause(c *gin.Context) {
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/resume [post]
 func (h *Handler) resume(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -397,7 +386,7 @@ func (h *Handler) resume(c *gin.Context) {
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/halt/reset [post]
 func (h *Handler) resetHalt(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -466,7 +455,7 @@ func (h *Handler) requireOwnedRuntime(c *gin.Context, userID uuid.UUID) *runtime
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/portfolio [get]
 func (h *Handler) portfolio(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -490,7 +479,7 @@ func (h *Handler) portfolio(c *gin.Context) {
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/positions [get]
 func (h *Handler) positions(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -514,7 +503,7 @@ func (h *Handler) positions(c *gin.Context) {
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/trades [get]
 func (h *Handler) trades(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -564,7 +553,7 @@ func (h *Handler) trades(c *gin.Context) {
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/events/history [get]
 func (h *Handler) eventsHistory(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -583,7 +572,7 @@ func (h *Handler) eventsHistory(c *gin.Context) {
 	}
 
 	_, limit := parsePage(c)
-	filter := readmodel.EventFilter{HelmID: id, Limit: limit}
+	filter := eventlog.EventFilter{HelmID: id, Limit: limit}
 	if hs := c.Query("hand_id"); hs != "" {
 		if hid, perr := uuid.Parse(hs); perr == nil {
 			filter.HandID = &hid
@@ -624,7 +613,7 @@ func (h *Handler) eventsHistory(c *gin.Context) {
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/fills [get]
 func (h *Handler) fills(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -696,7 +685,7 @@ func (h *Handler) fills(c *gin.Context) {
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/stats [get]
 func (h *Handler) stats(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -731,7 +720,7 @@ func (h *Handler) stats(c *gin.Context) {
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/orders [get]
 func (h *Handler) orders(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -752,26 +741,6 @@ func (h *Handler) orders(c *gin.Context) {
 	shared.RespondWithSuccess(c, http.StatusOK, "Orders retrieved successfully", allOrders)
 }
 
-// orderHistoryResp is the JSON shape for a persisted order lifecycle record.
-type orderHistoryResp struct {
-	ExchangeOrderID string `json:"exchange_order_id"`
-	ClientOrderID   string `json:"client_order_id,omitempty"`
-	HandID          string `json:"hand_id,omitempty"`
-	PositionID      string `json:"position_id,omitempty"`
-	Symbol          string `json:"symbol"`
-	Side            string `json:"side,omitempty"`
-	OrderType       string `json:"order_type,omitempty"`
-	Qty             string `json:"qty,omitempty"`
-	Price           string `json:"price,omitempty"`
-	Status          string `json:"status"`
-	FilledQty       string `json:"filled_qty,omitempty"`
-	FilledPrice     string `json:"filled_price,omitempty"`
-	IsClose         bool   `json:"is_close"`
-	Reason          string `json:"reason,omitempty"`
-	PlacedAt        string `json:"placed_at,omitempty"`
-	UpdatedAt       string `json:"updated_at"`
-}
-
 // ordersHistory returns the durable order lifecycle history from the orders table,
 // projected from the poslog by the orders persister. Distinct from /orders which
 // returns only the in-memory live order list.
@@ -783,11 +752,11 @@ type orderHistoryResp struct {
 // @Param hand_id query string false "filter by hand"
 // @Param status query string false "filter by status (placed|filled|cancelled)"
 // @Param limit query int false "max rows (default 100)"
-// @Success 200 {object} shared.SuccessResponse[[]orderHistoryResp]
+// @Success 200 {object} shared.SuccessResponse[[]dto.OrderHistoryResp]
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/orders/history [get]
 func (h *Handler) ordersHistory(c *gin.Context) {
-	userID, ok := callerUserID(c)
+	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
@@ -796,11 +765,11 @@ func (h *Handler) ordersHistory(c *gin.Context) {
 		return
 	}
 	if h.orderLog == nil {
-		shared.RespondWithSuccess(c, http.StatusOK, "Order history unavailable", []orderHistoryResp{})
+		shared.RespondWithSuccess(c, http.StatusOK, "Order history unavailable", []dto.OrderHistoryResp{})
 		return
 	}
 
-	f := readmodel.OrderFilter{
+	f := orderlog.OrderFilter{
 		HelmID: rt.HelmID,
 		HandID: c.Query("hand_id"),
 		Status: c.Query("status"),
@@ -818,37 +787,9 @@ func (h *Handler) ordersHistory(c *gin.Context) {
 		return
 	}
 
-	out := make([]orderHistoryResp, 0, len(records))
+	out := make([]dto.OrderHistoryResp, 0, len(records))
 	for _, r := range records {
-		resp := orderHistoryResp{
-			ExchangeOrderID: r.ExchangeOrderID,
-			ClientOrderID:   r.ClientOrderID,
-			HandID:          r.HandID,
-			PositionID:      r.PositionID,
-			Symbol:          r.Symbol,
-			Side:            r.Side,
-			OrderType:       r.OrderType,
-			Status:          r.Status,
-			IsClose:         r.IsClose,
-			Reason:          r.Reason,
-			UpdatedAt:       r.UpdatedAt.Format(time.RFC3339),
-		}
-		if r.Qty.IsPositive() {
-			resp.Qty = r.Qty.String()
-		}
-		if r.Price.IsPositive() {
-			resp.Price = r.Price.String()
-		}
-		if r.FilledQty.IsPositive() {
-			resp.FilledQty = r.FilledQty.String()
-		}
-		if r.FilledPrice.IsPositive() {
-			resp.FilledPrice = r.FilledPrice.String()
-		}
-		if !r.PlacedAt.IsZero() {
-			resp.PlacedAt = r.PlacedAt.Format(time.RFC3339)
-		}
-		out = append(out, resp)
+		out = append(out, dto.OrderRecordToHistoryResp(r))
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Order history retrieved successfully", out)
 }

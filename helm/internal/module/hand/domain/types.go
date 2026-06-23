@@ -55,7 +55,7 @@ type StrategySpec struct {
 	// Timeframe the script operates on (e.g. "M1", "M5", "H1", "D1") — REQUIRED.
 	// Strategies are calibrated to a specific TF, so we never silently default;
 	// missing TF is a validation error. herald rejects empty TF too.
-	Timeframe string `json:"timeframe" binding:"required,oneof=M1 M5 M15 M30 H1 H4 D1 W1"`
+	Timeframe string `json:"timeframe" binding:"required,oneof=M1 M3 M5 M15 M30 H1 H2 H4 H6 H12 D1 W1 MN"`
 
 	// Signal strength filter [0–1]
 	MinStrength float64 `json:"min_strength,omitempty" binding:"omitempty,gte=0,lte=1"`
@@ -63,8 +63,9 @@ type StrategySpec struct {
 
 // validTimeframes is the set of timeframe strings accepted by herald.
 var validTimeframes = map[string]bool{
-	"M1": true, "M5": true, "M15": true, "M30": true,
-	"H1": true, "H4": true, "D1": true, "W1": true,
+	"M1": true, "M3": true, "M5": true, "M15": true, "M30": true,
+	"H1": true, "H2": true, "H4": true, "H6": true, "H12": true,
+	"D1": true, "W1": true, "MN": true,
 }
 
 // Validate checks that Script is non-empty and optional fields are valid.
@@ -73,7 +74,7 @@ func (s StrategySpec) Validate() error {
 		return fmt.Errorf("strategy: script is required")
 	}
 	if s.Timeframe != "" && !validTimeframes[s.Timeframe] {
-		return fmt.Errorf("strategy: invalid timeframe %q (valid: M1 M5 M15 M30 H1 H4 D1 W1)", s.Timeframe)
+		return fmt.Errorf("strategy: invalid timeframe %q (valid: M1 M3 M5 M15 M30 H1 H2 H4 H6 H12 D1 W1 MN)", s.Timeframe)
 	}
 	return nil
 }

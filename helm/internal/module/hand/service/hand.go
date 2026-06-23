@@ -141,6 +141,9 @@ func (s *Service) Create(cfg domain.HandConfig) (*runtime.HandRef, error) {
 		}
 	}
 
+	if err := s.heraldValidate(cfg, rt); err != nil {
+		return nil, err
+	}
 	id := s.repo.GenerateID()
 	data := &domain.Hand{
 		ID:        id,

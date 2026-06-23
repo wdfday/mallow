@@ -23,14 +23,16 @@ const (
 	ErrClassOrderNotFound       ErrClass = 7
 	ErrClassNetwork             ErrClass = 8
 	ErrClassServerError         ErrClass = 9
+	ErrClassClockSkew           ErrClass = 10 // request timestamp outside exchange recvWindow
 
-	ErrClassCount = 10 // array bound; keep in sync with constants above
+	ErrClassCount = 11 // array bound; keep in sync with constants above
 )
 
 // ErrClassName maps each ErrClass to the label value used in Prometheus metrics.
 var ErrClassName = [ErrClassCount]string{
 	"unknown", "auth", "rate_limit", "insufficient_balance", "lot_size",
 	"price_filter", "invalid_symbol", "order_not_found", "network", "server_error",
+	"clock_skew",
 }
 
 // ErrorClassifier is an optional interface implemented by exchange adapters to provide

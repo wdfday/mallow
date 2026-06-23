@@ -77,6 +77,7 @@ type OrderRequest struct {
 	QuoteQty   decimal.Decimal // quote asset quantity (e.g. 1000 USDT); spot market buy only; mutually exclusive with Qty
 	Price      decimal.Decimal // only for limit orders
 	ReduceOnly bool            // futures only: close-only, never opens a position
+	IsExit     bool            // closing an existing position (spot or futures)
 	// MarginMode selects futures margin mode: "isolated" | "cross" | "" (exchange default).
 	// Spot orders ignore this field. OKX maps it to tdMode; Binance sets it via SetLeverage.
 	MarginMode string

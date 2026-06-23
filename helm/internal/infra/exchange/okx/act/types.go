@@ -73,6 +73,8 @@ func (c *Client) ClassifyError(err error) exchange.ErrClass {
 // Reference: https://www.okx.com/docs-v5/en/#error-code
 func classifyOKXSCode(sCode string) exchange.ErrClass {
 	switch sCode {
+	case "50112": // request timestamp expired — local clock outside OKX tolerance
+		return exchange.ErrClassClockSkew
 	case "50111", "50113", "50119": // invalid API key, invalid sign, invalid broker
 		return exchange.ErrClassAuth
 	case "50014", "50018": // rate limit exceeded, account suspended

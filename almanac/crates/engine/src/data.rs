@@ -38,7 +38,6 @@ use anyhow::{Context, Result};
 use chrono::{NaiveDate, TimeZone, Timelike};
 use chrono_tz::America::New_York;
 use chrono_tz::Asia::Ho_Chi_Minh;
-use walkdir::WalkDir;
 
 /// Derive the market-hours region from a data source name.
 ///
@@ -73,63 +72,98 @@ pub fn find_parquet_files(
     let timeframe_lower = timeframe.map(|t| t.to_lowercase());
     let data_source_lower = data_source.map(|s| s.to_lowercase());
 
-    let mut files: Vec<PathBuf> = WalkDir::new(data_dir)
-        .follow_links(false)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            if !e.file_type().is_file() {
-                return false;
-            }
-            let path = e.path();
-            if path.extension().and_then(|s| s.to_str()) != Some("parquet") {
-                return false;
-            }
-            // Skip EOD directories (e.g. crypto_eod, vn_eod).
-            let in_eod = path.components().any(|c| {
-                c.as_os_str()
-                    .to_str()
-                    .map(|s| s.ends_with("_eod"))
-                    .unwrap_or(false)
-            });
-            if in_eod {
-                return false;
-            }
-            let parent = path.parent();
-            let parent_matches = parent
-                .and_then(|p| p.file_name())
-                .and_then(|n| n.to_str())
-                .map(|n| n.to_lowercase() == symbol_lower)
-                .unwrap_or(false);
-            if !parent_matches {
-                return false;
-            }
-            if let Some(ref src) = data_source_lower {
-                let has_src = path.components().any(|c| {
-                    c.as_os_str()
-                        .to_str()
-                        .map(|s| s.to_lowercase() == *src)
-                        .unwrap_or(false)
-                });
-                if !has_src {
-                    return false;
+    let mut files = Vec::new();
+
+    // 1. Resolve source directories (e.g. data/{data_source}/)
+    let mut sources = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(data_dir) {
+        for entry in entries.flatten() {
+            if let Ok(file_type) = entry.file_type() {
+                if file_type.is_dir() {
+                    let name = entry.file_name();
+                    if let Some(name_str) = name.to_str() {
+                        let name_lower = name_str.to_lowercase();
+                        if let Some(ref src) = data_source_lower {
+                            if name_lower == *src {
+                                sources.push(entry.path());
+                            }
+                        } else {
+                            sources.push(entry.path());
+                        }
+                    }
                 }
             }
-            if let Some(ref tf) = timeframe_lower {
-                let grandparent_matches = parent
-                    .and_then(|p| p.parent())
-                    .and_then(|p| p.file_name())
-                    .and_then(|n| n.to_str())
-                    .map(|n| n.to_lowercase() == *tf)
-                    .unwrap_or(false);
-                if !grandparent_matches {
-                    return false;
+        }
+    }
+
+    // 2. Resolve timeframe directories (e.g. data/{data_source}/{timeframe}/)
+    let mut timeframes = Vec::new();
+    for src_dir in sources {
+        if let Ok(entries) = std::fs::read_dir(src_dir) {
+            for entry in entries.flatten() {
+                if let Ok(file_type) = entry.file_type() {
+                    if file_type.is_dir() {
+                        let name = entry.file_name();
+                        if let Some(name_str) = name.to_str() {
+                            let name_lower = name_str.to_lowercase();
+                            if let Some(ref tf) = timeframe_lower {
+                                if name_lower == *tf {
+                                    timeframes.push(entry.path());
+                                }
+                            } else {
+                                timeframes.push(entry.path());
+                            }
+                        }
+                    }
                 }
             }
-            true
-        })
-        .map(|e| e.into_path())
-        .collect();
+        }
+    }
+
+    // 3. Resolve symbol directories (e.g. data/{data_source}/{timeframe}/{symbol}/)
+    let mut symbol_dirs = Vec::new();
+    for tf_dir in timeframes {
+        if let Ok(entries) = std::fs::read_dir(tf_dir) {
+            for entry in entries.flatten() {
+                if let Ok(file_type) = entry.file_type() {
+                    if file_type.is_dir() {
+                        let name = entry.file_name();
+                        if let Some(name_str) = name.to_str() {
+                            let name_lower = name_str.to_lowercase();
+                            if name_lower == symbol_lower {
+                                symbol_dirs.push(entry.path());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Collect parquet files inside symbol directories
+    for sym_dir in symbol_dirs {
+        if let Ok(entries) = std::fs::read_dir(&sym_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Ok(file_type) = entry.file_type() {
+                    if file_type.is_file() {
+                        if path.extension().and_then(|s| s.to_str()) == Some("parquet") {
+                            // Skip EOD directories (e.g. crypto_eod, vn_eod).
+                            let in_eod = path.components().any(|c| {
+                                c.as_os_str()
+                                    .to_str()
+                                    .map(|s| s.ends_with("_eod"))
+                                    .unwrap_or(false)
+                            });
+                            if !in_eod {
+                                files.push(path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     files.sort_by_key(|p| {
         p.file_name()
@@ -218,6 +252,61 @@ pub fn parse_date_ms(date_str: &str) -> Option<i64> {
         .map(|dt| dt.and_utc().timestamp_millis())
 }
 
+fn get_file_date_range(filename: &str) -> Option<(i64, i64)> {
+    let stem = filename.strip_suffix(".parquet").unwrap_or(filename);
+    let parts: Vec<&str> = stem.split('_').collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    // Check if it is a range file: look for "_to_"
+    if stem.contains("_to_") {
+        if let Some(pos) = parts.iter().position(|&s| s == "to") {
+            if pos > 0 && pos + 1 < parts.len() {
+                let start_str = parts[pos - 1];
+                let end_str = parts[pos + 1];
+                if let (Some(start_ms), Some(end_ms)) = (parse_date_ms(start_str), parse_date_ms(end_str)) {
+                    return Some((start_ms, end_ms + 86_400_000));
+                }
+            }
+        }
+    }
+
+    let last = parts.last()?;
+
+    // 1. Daily file: YYYY-MM-DD (10 chars)
+    if last.len() == 10 {
+        if let Some(start_ms) = parse_date_ms(last) {
+            return Some((start_ms, start_ms + 86_400_000));
+        }
+    }
+
+    // 2. Monthly file: YYYY-MM (7 chars)
+    if last.len() == 7 {
+        let (y_str, m_str) = last.split_once('-')?;
+        let year: i32 = y_str.parse().ok()?;
+        let month: u32 = m_str.parse().ok()?;
+        if month >= 1 && month <= 12 {
+            let start = NaiveDate::from_ymd_opt(year, month, 1)?
+                .and_hms_opt(0, 0, 0)?
+                .and_utc()
+                .timestamp_millis();
+            let (next_y, next_m) = if month == 12 {
+                (year + 1, 1)
+            } else {
+                (year, month + 1)
+            };
+            let end = NaiveDate::from_ymd_opt(next_y, next_m, 1)?
+                .and_hms_opt(0, 0, 0)?
+                .and_utc()
+                .timestamp_millis();
+            return Some((start, end));
+        }
+    }
+
+    None
+}
+
 /// Load bars from the given Parquet files, optionally filtered to
 /// `[from_ms, to_ms]`. Returns an [`BarVecFeed`] ready for the engine.
 pub fn load_bars(
@@ -232,7 +321,34 @@ pub fn load_bars(
         anyhow::bail!("no parquet files found for symbol '{}'", symbol);
     }
 
-    let paths: Vec<&Path> = files.iter().map(PathBuf::as_path).collect();
+    // Filter/prune files that are outside the [from_ms, to_ms] range to avoid unnecessary I/O.
+    // We add 1 day of padding (86,400,000 ms) to avoid boundary issues (e.g. timezone shifts, adjacent file seam data).
+    let padded_from = from_ms.map(|from| from - 86_400_000);
+    let padded_to = to_ms.map(|to| to + 86_400_000);
+
+    let mut pruned_files = Vec::new();
+    for f in files {
+        let keep = if let Some(filename) = f.file_name().and_then(|n| n.to_str()) {
+            if let Some((start, end)) = get_file_date_range(filename) {
+                let too_early = padded_from.map_or(false, |from| end < from);
+                let too_late = padded_to.map_or(false, |to| start > to);
+                !too_early && !too_late
+            } else {
+                true // Keep if we can't parse the date format
+            }
+        } else {
+            true
+        };
+        if keep {
+            pruned_files.push(f.clone());
+        }
+    }
+
+    if pruned_files.is_empty() {
+        anyhow::bail!("all parquet files pruned out for symbol '{}' in requested range", symbol);
+    }
+
+    let paths: Vec<&Path> = pruned_files.iter().map(PathBuf::as_path).collect();
     // Push date range into Polars before materializing — enables row-group pruning.
     let feed = ParquetFeed::load_many_filtered(&paths, symbol, from_ms, to_ms)
         .with_context(|| format!("loading parquet data for '{}'", symbol))?;

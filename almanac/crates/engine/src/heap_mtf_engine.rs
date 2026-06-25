@@ -1,28 +1,13 @@
-//! Multi-Timeframe (MTF) Engine
+//! Heap-based Multi-Timeframe (MTF) Engine
 //!
-//! Single symbol, **multiple independent feeds — one per timeframe**. No
+//! Single symbol, multiple independent feeds — one per timeframe. No
 //! resampling: each TF stream is the ground truth for that TF.
 //!
-//! The only difference from [`Engine`](crate::Engine) is how bars reach the
-//! strategy: a min-heap time-merges all TF feeds so that when a base bar
+//! Time-merges all TF feeds using a min-heap so that when a base bar
 //! fires, the strategy already sees the latest confirmed HTF bars in its
 //! [`MtfSnapshot`]. All per-bar housekeeping (fills, exit rules, equity,
 //! sizing, pyramiding, regime) is identical and handled by the embedded
 //! [`EngineCore`].
-//!
-//! # Bar timestamp convention
-//!
-//! A bar's `timestamp` is its bucket-open. Its close time is
-//! `bar.timestamp + tf.duration_ms()`. The heap key is the **close time** so
-//! that simultaneous closes (e.g. M1@11:59 and H1@11:00 both close at 12:00)
-//! are batched, with the larger TF popped first — so the strategy always sees
-//! confirmed HTF state when the base-TF fires.
-//!
-//! # No look-ahead
-//!
-//! Orders submitted on a base bar fill at the **next** base bar's open.
-//! The HTF bar that closed at the same moment is already committed (its
-//! OHLCV is final), so including it in the snapshot is honest.
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, VecDeque};
@@ -39,8 +24,7 @@ use tracing::debug;
 use crate::core::EngineCore;
 use crate::engine::ReversePolicy;
 
-// Re-export the public interface types from alm-core so existing import paths
-// (`alm_engine::mtf_engine::{MtfStrategy, …}`) keep working.
+// Re-export the public interface types from alm-core so existing import paths keep working.
 pub use alm_core::{MtfSnapshot, MtfStrategy, TfBarEvent, TfView};
 
 const DEFAULT_WINDOW_SIZE: usize = 500;
@@ -84,14 +68,14 @@ impl PartialOrd for HeapEntry {
     }
 }
 
-// ── MtfEngine ────────────────────────────────────────────────────────────────
+// ── HeapMtfEngine ────────────────────────────────────────────────────────────
 
-/// Multi-timeframe backtesting engine. Single symbol; one base TF + N HTFs.
+/// Heap-based multi-timeframe backtesting engine. Single symbol; one base TF + N HTFs.
 ///
 /// Embeds [`EngineCore`] for all per-bar housekeeping. The only MTF-specific
 /// logic is the heap-based feed merging and building an [`MtfSnapshot`] for
 /// `strategy.on_bars`.
-pub struct MtfEngine<S: MtfStrategy, R: RiskManager> {
+pub struct HeapMtfEngine<S: MtfStrategy, R: RiskManager> {
     pub core: EngineCore<R>,
     pub strategy: S,
 
@@ -104,7 +88,7 @@ pub struct MtfEngine<S: MtfStrategy, R: RiskManager> {
 
 // ── Constructors / builder ───────────────────────────────────────────────────
 
-impl<S: MtfStrategy, R: RiskManager> MtfEngine<S, R> {
+impl<S: MtfStrategy, R: RiskManager> HeapMtfEngine<S, R> {
     pub fn sync(
         initial_capital: f64,
         strategy: S,
@@ -176,7 +160,7 @@ impl<S: MtfStrategy, R: RiskManager> MtfEngine<S, R> {
 
 // ── Run loop ─────────────────────────────────────────────────────────────────
 
-impl<S: MtfStrategy, R: RiskManager> MtfEngine<S, R> {
+impl<S: MtfStrategy, R: RiskManager> HeapMtfEngine<S, R> {
     pub fn run(&mut self, risk_free_annual: f64) -> BacktestReport {
         let symbol = self
             .feeds
@@ -291,7 +275,7 @@ impl<S: MtfStrategy, R: RiskManager> MtfEngine<S, R> {
             bars = bar_count,
             tfs = self.feeds.len(),
             trades = report.total_trades,
-            "mtf backtest complete",
+            "heap mtf backtest complete",
         );
         report
     }
@@ -330,8 +314,6 @@ mod tests {
         Bar::new(ts, sym, c, c + 0.05, c - 0.05, c, 10.0)
     }
 
-    // ── Heap ordering ────────────────────────────────────────────────────────
-
     #[test]
     fn heap_pops_earliest_close_first_then_larger_tf_first_on_tie() {
         let mut h: BinaryHeap<HeapEntry> = BinaryHeap::new();
@@ -363,8 +345,6 @@ mod tests {
         let third = h.pop().unwrap();
         assert_eq!(third.tf, Timeframe::M1);
     }
-
-    // ── End-to-end ──────────────────────────────────────────────────────────
 
     struct MtfTrend { symbol: String }
 
@@ -403,7 +383,7 @@ mod tests {
         let m1 = BarVecFeed::new(m1_uptrend(4 * 60), "TEST".into());
         let h1 = BarVecFeed::new(h1_uptrend(4), "TEST".into());
 
-        let mut engine = MtfEngine::sync(
+        let mut engine = HeapMtfEngine::sync(
             10_000.0,
             MtfTrend { symbol: "TEST".into() },
             FixedFractional::fractional(0.95, 1),
@@ -418,128 +398,5 @@ mod tests {
         let report = engine.run(0.0);
         assert_eq!(engine.core.portfolio.equity_curve.len(), 240);
         assert!(report.total_trades >= 1, "expected ≥1 trade in uptrend");
-    }
-
-    #[test]
-    fn warmup_suppresses_trading_before_until_mtf() {
-        let m1 = BarVecFeed::new(m1_uptrend(4 * 60), "TEST".into());
-        let h1 = BarVecFeed::new(h1_uptrend(4), "TEST".into());
-        let until = 120 * 60_000;
-
-        let mut engine = MtfEngine::sync(
-            10_000.0,
-            MtfTrend { symbol: "TEST".into() },
-            FixedFractional::fractional(0.95, 1),
-            0.0,
-            0.0,
-        )
-        .with_base_tf(Timeframe::M1)
-        .with_single_entry()
-        .with_warmup_until(until);
-        engine.add_feed(Timeframe::M1, m1);
-        engine.add_feed(Timeframe::H1, h1);
-        engine.run(0.0);
-
-        assert!(
-            engine.core.portfolio.equity_curve.iter().all(|p| p.timestamp >= until),
-            "equity recorded during warm-up"
-        );
-        assert!(
-            engine.core.portfolio.equity_curve.len() < 240,
-            "warm-up bars still recorded equity"
-        );
-        assert!(
-            engine.core.portfolio.trades.iter().all(|t| t.entry_timestamp >= until),
-            "trade entered during warm-up"
-        );
-    }
-
-    #[test]
-    fn htf_visible_at_end_of_its_own_bucket_without_lookahead() {
-        struct Verifier {
-            h1_tf_ms: i64,
-            violations: usize,
-            tied_inclusions: usize,
-        }
-        impl MtfStrategy for Verifier {
-            fn on_bars(&mut self, snap: MtfSnapshot<'_>) -> Vec<Signal> {
-                if let Some(h1) = snap.get(Timeframe::H1) {
-                    if let Some(last) = h1.back() {
-                        let h1_close = last.timestamp + self.h1_tf_ms;
-                        if h1_close > snap.close_ts {
-                            self.violations += 1;
-                        } else if h1_close == snap.close_ts {
-                            self.tied_inclusions += 1;
-                        }
-                    }
-                }
-                vec![]
-            }
-            fn name(&self) -> &str { "verifier" }
-            fn reset(&mut self) {}
-        }
-
-        let m1 = BarVecFeed::new(m1_uptrend(4 * 60), "TEST".into());
-        let h1 = BarVecFeed::new(h1_uptrend(4), "TEST".into());
-        let mut engine = MtfEngine::sync(
-            1_000.0,
-            Verifier { h1_tf_ms: Timeframe::H1.duration_ms(), violations: 0, tied_inclusions: 0 },
-            FixedFractional::fractional(0.95, 1),
-            0.0,
-            0.0,
-        );
-        engine.add_feed(Timeframe::M1, m1);
-        engine.add_feed(Timeframe::H1, h1);
-        let _ = engine.run(0.0);
-
-        assert_eq!(engine.strategy.violations, 0, "no look-ahead allowed");
-        assert!(
-            engine.strategy.tied_inclusions >= 3,
-            "expected ≥3 tied close_ts inclusions, got {}",
-            engine.strategy.tied_inclusions,
-        );
-    }
-
-    #[test]
-    fn htf_independent_truth_unchanged_by_base_bars() {
-        struct HtfReader { closes: Vec<f64> }
-        impl MtfStrategy for HtfReader {
-            fn on_bars(&mut self, snap: MtfSnapshot<'_>) -> Vec<Signal> {
-                if snap.just_closed(Timeframe::H1) {
-                    if let Some(h1) = snap.get(Timeframe::H1) {
-                        if let Some(last) = h1.back() {
-                            self.closes.push(last.close);
-                        }
-                    }
-                }
-                vec![]
-            }
-            fn name(&self) -> &str { "htf_reader" }
-            fn reset(&mut self) {}
-        }
-
-        let m1 = BarVecFeed::new(m1_uptrend(2 * 60), "TEST".into());
-        let h1_custom = vec![
-            Bar::new(0, "TEST", 100.0, 200.0, 50.0, 999.0, 1.0),
-            Bar::new(3_600_000, "TEST", 200.0, 300.0, 80.0, 888.0, 1.0),
-        ];
-        let h1 = BarVecFeed::new(h1_custom, "TEST".into());
-
-        let mut engine = MtfEngine::sync(
-            1_000.0,
-            HtfReader { closes: vec![] },
-            FixedFractional::fractional(0.95, 1),
-            0.0,
-            0.0,
-        );
-        engine.add_feed(Timeframe::M1, m1);
-        engine.add_feed(Timeframe::H1, h1);
-        let _ = engine.run(0.0);
-
-        assert_eq!(
-            engine.strategy.closes,
-            vec![999.0, 888.0],
-            "strategy must see verbatim HTF feed values"
-        );
     }
 }

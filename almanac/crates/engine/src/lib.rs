@@ -153,8 +153,9 @@ pub mod broker;
 pub mod bus_sync;
 pub mod core;
 pub mod engine;
-pub mod mtf_engine;
+pub mod heap_mtf_engine;
 pub mod multi_engine;
+pub mod pointer_sync_mtf_engine;
 pub mod risk;
 // Native-only: rayon threads / async. Excluded on wasm32 (in-browser backtest
 // uses the in-memory Engine directly — see alm-wasm).
@@ -175,8 +176,10 @@ pub mod types;
 pub use bus_sync::SyncBus;
 pub use core::EngineCore;
 pub use engine::{Engine, ReversePolicy};
-pub use mtf_engine::{MtfEngine, MtfSnapshot, MtfStrategy, TfBarEvent, TfView};
+pub use heap_mtf_engine::{HeapMtfEngine, MtfSnapshot, MtfStrategy, TfBarEvent, TfView};
 pub use multi_engine::{MultiEngine, MultiStrategy};
+pub use pointer_sync_mtf_engine::PointerSyncMtfEngine;
+pub type MtfEngine<S, R> = PointerSyncMtfEngine<S, R>;
 pub use risk::{AnySizer, AtrSizing, EqualWeight, FixedFractional, FixedQuantity, FixedUsd, KellySizing, RiskFractional};
 #[cfg(not(target_arch = "wasm32"))]
 pub use runner::{run_batch, run_portfolio, PortfolioReport, SymbolBars};

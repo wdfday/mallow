@@ -513,7 +513,11 @@ impl ChartState {
     /// Append a single bar. Feeds it through the candle transform (if any)
     /// incrementally, then through existing indicator instances. O(indicators).
     pub fn add_tail(&mut self, t: f64, o: f64, h: f64, l: f64, c: f64, v: f64) -> JsValue {
-        let timestamp = t as i64;
+        let timestamp = if t < 10_000_000_000.0 {
+            (t * 1000.0) as i64
+        } else {
+            t as i64
+        };
         let bar = Bar::new(timestamp, &self.symbol, o, h, l, c, v);
 
         // If the new bar has the same timestamp as the last bar, it represents an update
@@ -552,7 +556,12 @@ impl ChartState {
     /// Prepend a single bar (historical pagination). Resets and replays all
     /// indicator instances from scratch. O(n × indicators).
     pub fn add_head(&mut self, t: f64, o: f64, h: f64, l: f64, c: f64, v: f64) -> JsValue {
-        let bar = Bar::new(t as i64, &self.symbol, o, h, l, c, v);
+        let timestamp = if t < 10_000_000_000.0 {
+            (t * 1000.0) as i64
+        } else {
+            t as i64
+        };
+        let bar = Bar::new(timestamp, &self.symbol, o, h, l, c, v);
         self.bars.insert(0, bar);
         self.rebuild_transform();
         self.snapshot()
@@ -781,7 +790,7 @@ impl ChartState {
     fn build_snapshot(&self) -> ChartSnapshot<'_> {
         let display = self.effective_bars();
         let bars_out = BarsOut {
-            t: display.iter().map(|b| b.timestamp as f64).collect(),
+            t: display.iter().map(|b| (b.timestamp / 1000) as f64).collect(),
             o: display.iter().map(|b| &b.open).collect(),
             h: display.iter().map(|b| &b.high).collect(),
             l: display.iter().map(|b| &b.low).collect(),

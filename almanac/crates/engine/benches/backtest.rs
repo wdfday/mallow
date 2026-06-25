@@ -299,7 +299,183 @@ fn bench_batch(c: &mut Criterion) {
     group.finish();
 }
 
+// ── mtf_engines: heap-based vs pointer-sync ────────────────────────────────────
+
+fn load_m1_h1_data() -> (Vec<Bar>, Vec<Bar>) {
+    let path_m1 = btc_m1_path();
+    let m1 = collect_bars(&path_m1, SYMBOL);
+    
+    let dir_h1 = Path::new("../data/testdata/BTCUSDT/H1");
+    let mut paths_h1: Vec<PathBuf> = std::fs::read_dir(dir_h1)
+        .expect("H1 testdata not found")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map_or(false, |x| x == "parquet"))
+        .collect();
+    paths_h1.sort();
+    let path_h1 = paths_h1.into_iter().next().expect("no H1 parquet file");
+    let h1_all = collect_bars(&path_h1, SYMBOL);
+    
+    let t_start = m1.first().unwrap().timestamp;
+    let t_end = m1.last().unwrap().timestamp;
+    let h1: Vec<Bar> = h1_all
+        .into_iter()
+        .filter(|b| b.timestamp >= t_start && b.timestamp <= t_end)
+        .collect();
+    (m1, h1)
+}
+
+fn bench_mtf_engines(c: &mut Criterion) {
+    let (m1_bars, h1_bars) = load_m1_h1_data();
+    let n = m1_bars.len() as u64;
+
+    let mut group = c.benchmark_group("mtf_engines");
+    group.sample_size(10);
+    group.throughput(Throughput::Elements(n));
+
+    group.bench_function("heap_based", |b| {
+        b.iter(|| {
+            let m1_feed = BarVecFeed::new(m1_bars.clone(), SYMBOL.into());
+            let h1_feed = BarVecFeed::new(h1_bars.clone(), SYMBOL.into());
+            let mut eng = alm_engine::MtfEngine::sync(
+                CAPITAL,
+                alm_strategy::MtfEmaRsiStrategy::new(),
+                FixedFractional::fractional(0.95, 1),
+                COMMISSION,
+                SLIPPAGE,
+            )
+            .with_base_tf(alm_core::Timeframe::M1)
+            .with_single_entry();
+            eng.add_feed(alm_core::Timeframe::M1, m1_feed);
+            eng.add_feed(alm_core::Timeframe::H1, h1_feed);
+            black_box(eng.run(RISK_FREE))
+        });
+    });
+
+    group.bench_function("pointer_sync", |b| {
+        b.iter(|| {
+            let m1_feed = BarVecFeed::new(m1_bars.clone(), SYMBOL.into());
+            let h1_feed = BarVecFeed::new(h1_bars.clone(), SYMBOL.into());
+            let mut eng = alm_engine::DynamicMtfEngine::sync(
+                CAPITAL,
+                alm_strategy::MtfEmaRsiStrategy::new(),
+                FixedFractional::fractional(0.95, 1),
+                COMMISSION,
+                SLIPPAGE,
+            )
+            .with_base_tf(alm_core::Timeframe::M1)
+            .with_single_entry();
+            eng.add_feed(alm_core::Timeframe::M1, m1_feed);
+            eng.add_feed(alm_core::Timeframe::H1, h1_feed);
+            black_box(eng.run(RISK_FREE))
+        });
+    });
+
+    group.finish();
+}
+
+// ── mtf_engines_full: full dataset comparison ──────────────────────────────────
+
+fn binance_flat_dir(timeframe: &str) -> PathBuf {
+    let relative = Path::new("../../../data/BinanceFlat").join(timeframe).join(SYMBOL);
+    if relative.exists() {
+        relative
+    } else {
+        Path::new("/Users/Giap/RustroverProjects/mallow/data/BinanceFlat").join(timeframe).join(SYMBOL)
+    }
+}
+
+fn collect_all_bars(dir_path: &Path, symbol: &str) -> Vec<Bar> {
+    let mut paths: Vec<PathBuf> = std::fs::read_dir(dir_path)
+        .unwrap_or_else(|e| panic!("failed to read dir {}: {}", dir_path.display(), e))
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.extension().map_or(false, |x| x == "parquet"))
+        .collect();
+    paths.sort();
+    
+    let mut all_bars = Vec::new();
+    for path in paths {
+        if let Ok(mut feed) = ParquetFeed::load(&path, symbol) {
+            while let Some(bar) = feed.next() {
+                all_bars.push(bar);
+            }
+        }
+    }
+    all_bars
+}
+
+fn load_full_m1_h1_data() -> (Vec<Bar>, Vec<Bar>) {
+    let dir_m1 = binance_flat_dir("M1");
+    let m1 = collect_all_bars(&dir_m1, SYMBOL);
+    
+    let dir_h1 = binance_flat_dir("H1");
+    let h1_all = collect_all_bars(&dir_h1, SYMBOL);
+    
+    if m1.is_empty() || h1_all.is_empty() {
+        panic!("BinanceFlat data not found at {}", dir_m1.display());
+    }
+
+    let t_start = m1.first().unwrap().timestamp;
+    let t_end = m1.last().unwrap().timestamp;
+    let h1: Vec<Bar> = h1_all
+        .into_iter()
+        .filter(|b| b.timestamp >= t_start && b.timestamp <= t_end)
+        .collect();
+    (m1, h1)
+}
+
+fn bench_mtf_engines_full(c: &mut Criterion) {
+    let (m1_bars, h1_bars) = load_full_m1_h1_data();
+    let n = m1_bars.len() as u64;
+
+    let mut group = c.benchmark_group("mtf_engines_full");
+    group.sample_size(10);
+    group.warm_up_time(std::time::Duration::from_secs(2));
+    group.throughput(Throughput::Elements(n));
+
+    group.bench_function("heap_based", |b| {
+        b.iter(|| {
+            let m1_feed = BarVecFeed::new(m1_bars.clone(), SYMBOL.into());
+            let h1_feed = BarVecFeed::new(h1_bars.clone(), SYMBOL.into());
+            let mut eng = alm_engine::MtfEngine::sync(
+                CAPITAL,
+                alm_strategy::MtfEmaRsiStrategy::new(),
+                FixedFractional::fractional(0.95, 1),
+                COMMISSION,
+                SLIPPAGE,
+            )
+            .with_base_tf(alm_core::Timeframe::M1)
+            .with_single_entry();
+            eng.add_feed(alm_core::Timeframe::M1, m1_feed);
+            eng.add_feed(alm_core::Timeframe::H1, h1_feed);
+            black_box(eng.run(RISK_FREE))
+        });
+    });
+
+    group.bench_function("pointer_sync", |b| {
+        b.iter(|| {
+            let m1_feed = BarVecFeed::new(m1_bars.clone(), SYMBOL.into());
+            let h1_feed = BarVecFeed::new(h1_bars.clone(), SYMBOL.into());
+            let mut eng = alm_engine::DynamicMtfEngine::sync(
+                CAPITAL,
+                alm_strategy::MtfEmaRsiStrategy::new(),
+                FixedFractional::fractional(0.95, 1),
+                COMMISSION,
+                SLIPPAGE,
+            )
+            .with_base_tf(alm_core::Timeframe::M1)
+            .with_single_entry();
+            eng.add_feed(alm_core::Timeframe::M1, m1_feed);
+            eng.add_feed(alm_core::Timeframe::H1, h1_feed);
+            black_box(eng.run(RISK_FREE))
+        });
+    });
+
+    group.finish();
+}
+
 // ── entry point ───────────────────────────────────────────────────────────────
 
-criterion_group!(benches, bench_io_vs_compute, bench_strategy, bench_strategy_expr, bench_batch);
+criterion_group!(benches, bench_io_vs_compute, bench_strategy, bench_strategy_expr, bench_batch, bench_mtf_engines, bench_mtf_engines_full);
 criterion_main!(benches);

@@ -13,7 +13,7 @@ use chrono::{DateTime, Utc};
 
 use crate::backtest::response::downsample_f64;
 use crate::curve_compress::compress;
-use crate::mtf_engine::MtfEngine;
+use crate::pointer_sync_mtf_engine::PointerSyncMtfEngine;
 use crate::types::{
     ActivityStats, BacktestResponse, BuyHoldBenchmarkResponse, CalendarStats, CapitalStats,
     CurvePoint, CurveStats, DistributionStats, DrawdownStats, ExcursionStats,
@@ -24,7 +24,7 @@ use crate::types::{
 use alm_report::BacktestReport;
 
 pub fn build<S: MtfStrategy>(
-    engine: MtfEngine<S, AnySizer>,
+    engine: PointerSyncMtfEngine<S, AnySizer>,
     report: BacktestReport,
     strategy_name: String,
     symbol: String,

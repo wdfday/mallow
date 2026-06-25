@@ -19,7 +19,14 @@ pub fn init() {}
 
 pub(crate) fn build_bars(symbol: &str, t: &[f64], o: &[f64], h: &[f64], l: &[f64], c: &[f64], v: &[f64]) -> Vec<Bar> {
     let n = t.len().min(o.len()).min(h.len()).min(l.len()).min(c.len()).min(v.len());
-    (0..n).map(|i| Bar::new(t[i] as i64, symbol, o[i], h[i], l[i], c[i], v[i])).collect()
+    (0..n).map(|i| {
+        let ts = if t[i] < 10_000_000_000.0 {
+            (t[i] * 1000.0) as i64
+        } else {
+            t[i] as i64
+        };
+        Bar::new(ts, symbol, o[i], h[i], l[i], c[i], v[i])
+    }).collect()
 }
 
 pub(crate) fn to_js<T: serde::Serialize>(v: &T) -> JsValue {

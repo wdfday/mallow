@@ -23,11 +23,10 @@ use alm_strategy::{
 use anyhow::{bail, Result};
 use serde_json::Value;
 
-use crate::data::parse_date_ms;
-use crate::mtf_engine::MtfEngine;
+use crate::pointer_sync_mtf_engine::PointerSyncMtfEngine;
 use crate::types::{BacktestRequest, BacktestResponse, CurvePoint, MtfBacktestRequest};
 
-use crate::data::{find_parquet_files, load_bars, market_region_from_data_source};
+use crate::data::{find_parquet_files, load_bars, market_region_from_data_source, parse_date_ms};
 use crate::backtest::loader::load_bars_for_tf;
 
 pub(crate) const DEFAULT_RISK_FREE: f64 = 0.04;
@@ -266,7 +265,7 @@ pub fn run_mtf(req: MtfBacktestRequest, data_dir: &Path) -> Result<BacktestRespo
         "starting MTF backtest",
     );
 
-    let mut engine = MtfEngine::sync(capital, strategy, risk, commission, slippage)
+    let mut engine = PointerSyncMtfEngine::sync(capital, strategy, risk, commission, slippage)
         .with_base_tf(base_tf)
         .with_single_entry()
         .with_warmup_until(from_ms.unwrap_or(0));
@@ -401,7 +400,7 @@ fn run_mtf_script(
         "starting MTF script backtest (v2 auto-detected)",
     );
 
-    let mut engine = MtfEngine::sync(capital, strategy, risk, commission, slippage)
+    let mut engine = PointerSyncMtfEngine::sync(capital, strategy, risk, commission, slippage)
         .with_base_tf(base_tf)
         .with_single_entry()
         .with_warmup_until(from_ms.unwrap_or(0));

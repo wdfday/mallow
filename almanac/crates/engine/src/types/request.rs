@@ -109,8 +109,13 @@ pub struct BacktestRequest {
     pub walk_forward: Option<WalkForwardConfig>,
 
     /// Intra-bar stop detection mode.
-    /// `"close_only"` (default) | `"pessimistic"` | `"ohlc_heuristic"`.
+    /// `"pessimistic"` | `"ohlc_heuristic"`.
     pub intra_bar_mode: Option<String>,
+
+    pub reverse_policy: Option<String>,
+
+    #[serde(skip)]
+    pub history_overrides: Option<std::collections::HashMap<String, Vec<alm_core::Bar>>>,
 }
 
 // ── ScriptBacktestRequest ───────────────────────────────────────────────────────
@@ -159,6 +164,7 @@ pub struct ScriptBacktestRequest {
     pub slippage_pct: Option<f64>,
     pub risk_free_annual: Option<f64>,
     pub intra_bar_mode: Option<String>,
+    pub reverse_policy: Option<String>,
 
     // ── Data ─────────────────────────────────────────────────────────────────
     pub data_source: Option<String>,
@@ -199,6 +205,8 @@ impl From<ScriptBacktestRequest> for BacktestRequest {
             monte_carlo: req.monte_carlo,
             walk_forward: req.walk_forward,
             intra_bar_mode: req.intra_bar_mode,
+            reverse_policy: req.reverse_policy,
+            history_overrides: None,
         }
     }
 }
@@ -258,6 +266,12 @@ pub struct MtfBacktestRequest {
     pub asset_type: Option<String>,
 
     pub monte_carlo: Option<MonteCarloConfig>,
+
+    pub reverse_policy: Option<String>,
+    pub intra_bar_mode: Option<String>,
+
+    #[serde(skip)]
+    pub history_overrides: Option<std::collections::HashMap<String, Vec<alm_core::Bar>>>,
 }
 
 // ── Sub-configs ───────────────────────────────────────────────────────────────

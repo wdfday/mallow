@@ -520,6 +520,25 @@ mod tests {
         fn reset(&mut self) {}
     }
 
+    struct ReverseMockStrategy {
+        i: usize,
+        symbol: String,
+    }
+    impl Strategy for ReverseMockStrategy {
+        fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
+            self.i += 1;
+            if self.i == 10 {
+                vec![Signal::long(bar.timestamp, &self.symbol, 1.0)]
+            } else if self.i == 20 {
+                vec![Signal::short(bar.timestamp, &self.symbol, 1.0)]
+            } else {
+                vec![]
+            }
+        }
+        fn name(&self) -> &str { "reverse_mock" }
+        fn reset(&mut self) { self.i = 0; }
+    }
+
     struct FakeRegimeStrategy {
         i: usize,
         symbol: String,
@@ -666,5 +685,99 @@ mod tests {
         let (tp, sl) = resolve_offset_levels(100.0, Some(110.0), Some(95.0), false, true);
         assert_eq!(tp, Some(110.0));
         assert_eq!(sl, Some(95.0));
+    }
+
+    #[test]
+    fn test_reverse_policy_exit() {
+        let mut feed = btc_feed();
+        let mut engine = Engine::sync(
+            10_000.0,
+            ReverseMockStrategy { i: 0, symbol: SYM.into() },
+            FixedFractional::fractional(0.10, 1),
+            0.0, 0.0,
+        )
+        .with_reverse_policy(ReversePolicy::Exit);
+
+        engine.run(&mut feed, 0.0);
+
+        assert_eq!(engine.core.portfolio.trades.len(), 1);
+        let open_qty = engine.core.portfolio.positions.get(SYM).map(|p| p.qty).unwrap_or(0.0);
+        assert!(open_qty.abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_reverse_policy_exit_short_meets_long() {
+        struct ReverseShortFirstStrategy {
+            i: usize,
+            symbol: String,
+        }
+        impl Strategy for ReverseShortFirstStrategy {
+            fn on_bar(&mut self, bar: &Bar) -> Vec<Signal> {
+                self.i += 1;
+                if self.i == 10 {
+                    vec![Signal::short(bar.timestamp, &self.symbol, 1.0)]
+                } else if self.i == 20 {
+                    vec![Signal::long(bar.timestamp, &self.symbol, 1.0)]
+                } else {
+                    vec![]
+                }
+            }
+            fn name(&self) -> &str { "reverse_short_first" }
+            fn reset(&mut self) { self.i = 0; }
+        }
+
+        let mut feed = btc_feed();
+        let mut engine = Engine::sync(
+            10_000.0,
+            ReverseShortFirstStrategy { i: 0, symbol: SYM.into() },
+            FixedFractional::fractional(0.10, 1),
+            0.0, 0.0,
+        )
+        .with_reverse_policy(ReversePolicy::Exit);
+
+        engine.run(&mut feed, 0.0);
+
+        assert_eq!(engine.core.portfolio.trades.len(), 1);
+        let open_qty = engine.core.portfolio.positions.get(SYM).map(|p| p.qty).unwrap_or(0.0);
+        assert!(open_qty.abs() < 1e-5);
+    }
+
+    #[test]
+    fn test_reverse_policy_none() {
+        let mut feed = btc_feed();
+        let mut engine = Engine::sync(
+            10_000.0,
+            ReverseMockStrategy { i: 0, symbol: SYM.into() },
+            FixedFractional::fractional(0.10, 1),
+            0.0, 0.0,
+        );
+
+        engine.run(&mut feed, 0.0);
+
+        // When reverse_policy is None, the Short signal at bar 20 is rejected by the sizer
+        // because the Long position is still open and max_positions = 1.
+        // So the Long position is never closed. It remains open until force close at the end.
+        // Thus, completed trades count is 1 (the force closed Long position at the end).
+        // Wait, is force close at the end counted in completed trades? Yes, force close generates a fill
+        // which completes the trade.
+        assert_eq!(engine.core.portfolio.trades.len(), 1);
+        // And the trade exit reason should be EndOfData.
+        assert_eq!(engine.core.portfolio.trades[0].exit_reason, alm_core::exit::ExitReason::EndOfData);
+    }
+
+    #[test]
+    fn test_reverse_policy_flip() {
+        let mut feed = btc_feed();
+        let mut engine = Engine::sync(
+            10_000.0,
+            ReverseMockStrategy { i: 0, symbol: SYM.into() },
+            FixedFractional::fractional(0.10, 1),
+            0.0, 0.0,
+        )
+        .with_reverse_policy(ReversePolicy::Flip);
+
+        engine.run(&mut feed, 0.0);
+
+        assert_eq!(engine.core.portfolio.trades.len(), 2);
     }
 }

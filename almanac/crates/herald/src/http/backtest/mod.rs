@@ -134,6 +134,8 @@ pub async fn run_backtest(
         return too_many_requests();
     };
     info!(strategy = %req.strategy, symbol = %req.symbol, "HTTP backtest request");
+    let mut req = req;
+    inject_weekly_overrides(&state, &mut req);
     match run_blocking(Arc::clone(&state.data_dir), req).await {
         Ok(report) => ok(report),
         Err(r) => r,
@@ -163,7 +165,8 @@ pub async fn run_backtest_script(
     info!(symbol = %req.symbol, "Script backtest request");
 
     let started_at = std::time::Instant::now();
-    let base: BacktestRequest = req.into();
+    let mut base: BacktestRequest = req.into();
+    inject_weekly_overrides(&state, &mut base);
     let report = match run_blocking(Arc::clone(&state.data_dir), base).await {
         Ok(r)  => r,
         Err(r) => return r,
@@ -209,6 +212,8 @@ pub async fn run_backtest_mtf(
         htf      = ?req.htf_timeframes,
         "HTTP MTF backtest request",
     );
+    let mut req = req;
+    inject_mtf_weekly_overrides(&state, &mut req);
     const BACKTEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
     let data_dir = Arc::clone(&state.data_dir);
     let t0 = std::time::Instant::now();
@@ -296,7 +301,212 @@ fn too_many_requests() -> Response {
     )
 }
 
+fn get_weekly_bars_from_ledger(
+    state: &HttpState,
+    symbol: &str,
+    data_source: Option<&str>,
+) -> Option<Vec<alm_core::Bar>> {
+    let ledger_key = if symbol.contains(':') {
+        symbol.to_string()
+    } else {
+        let src = data_source
+            .map(|s| if s == "bnb" { "binance" } else { s })
+            .unwrap_or("binance");
+        format!("{}:{}", src, symbol)
+    };
+
+    state.ledger.with_state(&ledger_key, alm_core::Timeframe::W1, |s| {
+        s.bar_window.iter().cloned().collect::<Vec<_>>()
+    })
+}
+
+fn inject_weekly_overrides(
+    state: &HttpState,
+    req: &mut BacktestRequest,
+) {
+    let mut overrides_needed = Vec::new();
+    if req.timeframe.as_deref() == Some("W1") {
+        overrides_needed.push("W1".to_string());
+    }
+    if let Some(ref params) = req.params {
+        if let Some(script) = params.get("script").and_then(|v| v.as_str()) {
+            let htfs = alm_strategy::probe_script_htfs(script);
+            for htf in htfs {
+                if htf == alm_core::Timeframe::W1 {
+                    overrides_needed.push("W1".to_string());
+                }
+            }
+        }
+    }
+    if !overrides_needed.is_empty() {
+        if let Some(bars) = get_weekly_bars_from_ledger(state, &req.symbol, req.data_source.as_deref()) {
+            let mut map = req.history_overrides.take().unwrap_or_default();
+            for tf in overrides_needed {
+                map.insert(tf, bars.clone());
+            }
+            req.history_overrides = Some(map);
+        }
+    }
+}
+
+fn inject_mtf_weekly_overrides(
+    state: &HttpState,
+    req: &mut MtfBacktestRequest,
+) {
+    let mut overrides_needed = Vec::new();
+    if req.base_tf.as_deref() == Some("W1") {
+        overrides_needed.push("W1".to_string());
+    }
+    for htf in &req.htf_timeframes {
+        if htf == "W1" {
+            overrides_needed.push("W1".to_string());
+        }
+    }
+    if !overrides_needed.is_empty() {
+        if let Some(bars) = get_weekly_bars_from_ledger(state, &req.symbol, req.data_source.as_deref()) {
+            let mut map = req.history_overrides.take().unwrap_or_default();
+            for tf in overrides_needed {
+                map.insert(tf, bars.clone());
+            }
+            req.history_overrides = Some(map);
+        }
+    }
+}
+
 // Workaround: BacktestResponse is only referenced through `Json<>`. Silence
 // the dead-import warning in case rustc cannot see through the `Json` layer.
 #[allow(dead_code)]
 fn _enforce_response_import(_r: BacktestResponse) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alm_core::{Bar, Timeframe};
+    use alm_ledger::{Ledger, LedgerConfig};
+    use crate::http::StoreBackend;
+    use crate::ws_latency::WsLatencyTracker;
+    use std::path::PathBuf;
+
+    fn make_test_state() -> HttpState {
+        let ledger = Arc::new(Ledger::new(LedgerConfig::default()));
+        let data_dir = Arc::new(PathBuf::from("/nonexistent-test-dir"));
+        let ws_latency = Arc::new(WsLatencyTracker::new());
+        let prometheus = metrics_exporter_prometheus::PrometheusBuilder::new()
+            .build_recorder()
+            .handle();
+        let (state, ready) = HttpState::new(
+            ledger,
+            Timeframe::M1,
+            data_dir,
+            1,
+            StoreBackend::in_memory(),
+            ws_latency,
+            prometheus,
+        );
+        ready.store(true, std::sync::atomic::Ordering::Relaxed);
+        state
+    }
+
+    #[test]
+    fn test_inject_weekly_overrides_base_tf() {
+        let state = make_test_state();
+        // Advance W1 bar for BTCUSDT
+        state.ledger.advance(
+            Timeframe::W1,
+            Bar::new(1719273600000, "binance:BTCUSDT", 60000.0, 61000.0, 59000.0, 60500.0, 100.0)
+        ).unwrap();
+
+        let mut req = BacktestRequest {
+            strategy: "test".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            params: None,
+            from: None,
+            to: None,
+            initial_capital: None,
+            commission_pct: None,
+            slippage_pct: None,
+            risk_free_annual: None,
+            position_size_pct: None,
+            position_size_usd: None,
+            position_size_quantity: None,
+            max_positions: None,
+            strength_sizing: None,
+            size_mode: None,
+            risk_per_trade_pct: None,
+            atr_multiplier: None,
+            max_units: None,
+            max_position_pct: None,
+            pyramid: None,
+            data_source: Some("bnb".to_string()),
+            asset_type: None,
+            timeframe: Some("W1".to_string()),
+            monte_carlo: None,
+            walk_forward: None,
+            intra_bar_mode: None,
+            reverse_policy: None,
+            history_overrides: None,
+        };
+
+        inject_weekly_overrides(&state, &mut req);
+
+        let overrides = req.history_overrides.unwrap();
+        assert!(overrides.contains_key("W1"));
+        let bars = overrides.get("W1").unwrap();
+        assert_eq!(bars.len(), 1);
+        assert_eq!(bars[0].close, 60500.0);
+    }
+
+    #[test]
+    fn test_inject_weekly_overrides_script_mtf() {
+        let state = make_test_state();
+        // Advance W1 bar for BTCUSDT
+        state.ledger.advance(
+            Timeframe::W1,
+            Bar::new(1719273600000, "binance:BTCUSDT", 60000.0, 61000.0, 59000.0, 60500.0, 100.0)
+        ).unwrap();
+
+        let script = r#"
+            let w1_ema = ind.ema(20, "W1");
+            let m1_ema = ind.ema(10);
+        "#;
+
+        let mut req = BacktestRequest {
+            strategy: "script".to_string(),
+            symbol: "BTCUSDT".to_string(),
+            params: Some(serde_json::json!({ "script": script })),
+            from: None,
+            to: None,
+            initial_capital: None,
+            commission_pct: None,
+            slippage_pct: None,
+            risk_free_annual: None,
+            position_size_pct: None,
+            position_size_usd: None,
+            position_size_quantity: None,
+            max_positions: None,
+            strength_sizing: None,
+            size_mode: None,
+            risk_per_trade_pct: None,
+            atr_multiplier: None,
+            max_units: None,
+            max_position_pct: None,
+            pyramid: None,
+            data_source: Some("bnb".to_string()),
+            asset_type: None,
+            timeframe: Some("M1".to_string()),
+            monte_carlo: None,
+            walk_forward: None,
+            intra_bar_mode: None,
+            reverse_policy: None,
+            history_overrides: None,
+        };
+
+        inject_weekly_overrides(&state, &mut req);
+
+        let overrides = req.history_overrides.unwrap();
+        assert!(overrides.contains_key("W1"));
+        let bars = overrides.get("W1").unwrap();
+        assert_eq!(bars.len(), 1);
+        assert_eq!(bars[0].close, 60500.0);
+    }
+}

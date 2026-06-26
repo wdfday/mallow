@@ -25,6 +25,7 @@ use serde_json::Value;
 
 use crate::pointer_sync_mtf_engine::PointerSyncMtfEngine;
 use crate::types::{BacktestRequest, BacktestResponse, CurvePoint, MtfBacktestRequest};
+use crate::engine::ReversePolicy;
 
 use crate::data::{find_parquet_files, load_bars, market_region_from_data_source, parse_date_ms};
 use crate::backtest::loader::load_bars_for_tf;
@@ -229,6 +230,7 @@ pub fn run_mtf(req: MtfBacktestRequest, data_dir: &Path) -> Result<BacktestRespo
         warm_from(base_tf),
         to_ms,
         data_dir,
+        req.history_overrides.as_ref(),
     )?;
     if base_bars.is_empty() {
         bail!("no bars found for symbol '{}' at base timeframe '{}'", symbol, base_tf_str);
@@ -265,10 +267,21 @@ pub fn run_mtf(req: MtfBacktestRequest, data_dir: &Path) -> Result<BacktestRespo
         "starting MTF backtest",
     );
 
+    let intra_bar_mode = intra_bar_mode_from_str(req.intra_bar_mode.as_deref());
     let mut engine = PointerSyncMtfEngine::sync(capital, strategy, risk, commission, slippage)
         .with_base_tf(base_tf)
         .with_single_entry()
+        .with_intra_bar_mode(intra_bar_mode)
         .with_warmup_until(from_ms.unwrap_or(0));
+
+    let reverse_policy = match req.reverse_policy.as_deref() {
+        Some("exit") => Some(ReversePolicy::Exit),
+        Some("flip") => Some(ReversePolicy::Flip),
+        _ => None,
+    };
+    if let Some(policy) = reverse_policy {
+        engine = engine.with_reverse_policy(policy);
+    }
 
     engine.add_feed(base_tf, BarVecFeed::new(base_bars.clone(), symbol.clone()));
 
@@ -281,6 +294,7 @@ pub fn run_mtf(req: MtfBacktestRequest, data_dir: &Path) -> Result<BacktestRespo
             warm_from(htf),
             to_ms,
             data_dir,
+            req.history_overrides.as_ref(),
         )?;
         if htf_bars.is_empty() {
             bail!(
@@ -356,6 +370,7 @@ fn run_mtf_script(
         warm_from(base_tf),
         to_ms,
         data_dir,
+        req.history_overrides.as_ref(),
     )?;
     if base_bars.is_empty() {
         anyhow::bail!(
@@ -400,10 +415,21 @@ fn run_mtf_script(
         "starting MTF script backtest (v2 auto-detected)",
     );
 
+    let intra_bar_mode = intra_bar_mode_from_str(req.intra_bar_mode.as_deref());
     let mut engine = PointerSyncMtfEngine::sync(capital, strategy, risk, commission, slippage)
         .with_base_tf(base_tf)
         .with_single_entry()
+        .with_intra_bar_mode(intra_bar_mode)
         .with_warmup_until(from_ms.unwrap_or(0));
+
+    let reverse_policy = match req.reverse_policy.as_deref() {
+        Some("exit") => Some(ReversePolicy::Exit),
+        Some("flip") => Some(ReversePolicy::Flip),
+        _ => None,
+    };
+    if let Some(policy) = reverse_policy {
+        engine = engine.with_reverse_policy(policy);
+    }
 
     engine.add_feed(base_tf, BarVecFeed::new(base_bars.clone(), symbol.clone()));
 
@@ -416,6 +442,7 @@ fn run_mtf_script(
             warm_from(*htf),
             to_ms,
             data_dir,
+            req.history_overrides.as_ref(),
         )?;
         if htf_bars.is_empty() {
             anyhow::bail!(

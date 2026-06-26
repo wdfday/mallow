@@ -50,6 +50,8 @@ fn run(label: &str, script: &str, data_dir: &PathBuf) -> Result<()> {
         monte_carlo: None,
         walk_forward: None,
         intra_bar_mode: None,
+        reverse_policy: None,
+        history_overrides: None,
     };
 
     let t0 = std::time::Instant::now();

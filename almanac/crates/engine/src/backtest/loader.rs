@@ -35,7 +35,13 @@ pub fn load_bars_for_tf(
     from_ms: Option<i64>,
     to_ms: Option<i64>,
     data_dir: &std::path::Path,
+    history_overrides: Option<&std::collections::HashMap<String, Vec<alm_core::Bar>>>,
 ) -> anyhow::Result<Vec<alm_core::Bar>> {
+    if let (Some(tf_str), Some(overrides)) = (tf, history_overrides) {
+        if let Some(bars) = overrides.get(tf_str) {
+            return Ok(bars.clone());
+        }
+    }
     let market_region = data_source
         .map(market_region_from_data_source)
         .unwrap_or("");
@@ -54,6 +60,11 @@ pub fn load_bars_for_tf(
 
 /// Discover Parquet files, load bars, and drain the feed into a `Vec<Bar>`.
 pub fn load_bars_for_request(req: &BacktestRequest, data_dir: &Path) -> Result<Vec<Bar>> {
+    if let (Some(ref tf_str), Some(ref overrides)) = (&req.timeframe, &req.history_overrides) {
+        if let Some(bars) = overrides.get(tf_str) {
+            return Ok(bars.clone());
+        }
+    }
     let symbol = effective_symbol(&req.symbol);
     let from_ms = req.from.as_deref().and_then(parse_date_ms);
     let to_ms = req
@@ -206,6 +217,12 @@ pub fn load_bars_warmed(
     data_dir: &Path,
     warmup_bars: usize,
 ) -> Result<(Vec<Bar>, Option<i64>)> {
+    if let (Some(ref tf_str), Some(ref overrides)) = (&req.timeframe, &req.history_overrides) {
+        if let Some(bars) = overrides.get(tf_str) {
+            let trading_from_ms = req.from.as_deref().and_then(parse_date_ms);
+            return Ok((bars.clone(), trading_from_ms));
+        }
+    }
     let symbol = effective_symbol(&req.symbol);
     let trading_from_ms = req.from.as_deref().and_then(parse_date_ms);
     let to_ms = req.to.as_deref()

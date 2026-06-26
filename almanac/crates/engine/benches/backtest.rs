@@ -337,7 +337,7 @@ fn bench_mtf_engines(c: &mut Criterion) {
         b.iter(|| {
             let m1_feed = BarVecFeed::new(m1_bars.clone(), SYMBOL.into());
             let h1_feed = BarVecFeed::new(h1_bars.clone(), SYMBOL.into());
-            let mut eng = alm_engine::MtfEngine::sync(
+            let mut eng = alm_engine::HeapMtfEngine::sync(
                 CAPITAL,
                 alm_strategy::MtfEmaRsiStrategy::new(),
                 FixedFractional::fractional(0.95, 1),
@@ -356,7 +356,7 @@ fn bench_mtf_engines(c: &mut Criterion) {
         b.iter(|| {
             let m1_feed = BarVecFeed::new(m1_bars.clone(), SYMBOL.into());
             let h1_feed = BarVecFeed::new(h1_bars.clone(), SYMBOL.into());
-            let mut eng = alm_engine::DynamicMtfEngine::sync(
+            let mut eng = alm_engine::PointerSyncMtfEngine::sync(
                 CAPITAL,
                 alm_strategy::MtfEmaRsiStrategy::new(),
                 FixedFractional::fractional(0.95, 1),
@@ -438,7 +438,7 @@ fn bench_mtf_engines_full(c: &mut Criterion) {
         b.iter(|| {
             let m1_feed = BarVecFeed::new(m1_bars.clone(), SYMBOL.into());
             let h1_feed = BarVecFeed::new(h1_bars.clone(), SYMBOL.into());
-            let mut eng = alm_engine::MtfEngine::sync(
+            let mut eng = alm_engine::HeapMtfEngine::sync(
                 CAPITAL,
                 alm_strategy::MtfEmaRsiStrategy::new(),
                 FixedFractional::fractional(0.95, 1),
@@ -457,7 +457,7 @@ fn bench_mtf_engines_full(c: &mut Criterion) {
         b.iter(|| {
             let m1_feed = BarVecFeed::new(m1_bars.clone(), SYMBOL.into());
             let h1_feed = BarVecFeed::new(h1_bars.clone(), SYMBOL.into());
-            let mut eng = alm_engine::DynamicMtfEngine::sync(
+            let mut eng = alm_engine::PointerSyncMtfEngine::sync(
                 CAPITAL,
                 alm_strategy::MtfEmaRsiStrategy::new(),
                 FixedFractional::fractional(0.95, 1),

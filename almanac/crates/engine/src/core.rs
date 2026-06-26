@@ -435,6 +435,7 @@ impl<R: RiskManager> EngineCore<R> {
     /// pyramiding guards, and risk validation.
     fn open_position(&mut self, signal: &Signal, side: Side) {
         let base = signal.symbol.as_str();
+        let mut opp_legs_closed = false;
 
         // ── ReversePolicy guard ───────────────────────────────────────────────
         if let Some(policy) = self.reverse_policy {
@@ -457,16 +458,17 @@ impl<R: RiskManager> EngineCore<R> {
                 .map(|(k, p)| (k.clone(), p.qty.abs(), p.is_long()))
                 .collect();
             if !opp_legs.is_empty() {
-                for (key, qty, is_long) in opp_legs {
-                    let close_side = if is_long { Side::Sell } else { Side::Buy };
-                    let order = OrderRequest::market(signal.timestamp, &key, close_side, qty);
+                for (key, qty, is_long) in &opp_legs {
+                    let close_side = if *is_long { Side::Sell } else { Side::Buy };
+                    let order = OrderRequest::market(signal.timestamp, key, close_side, *qty);
                     metrics::counter!("alm_engine_orders_total",
                         "strategy" => self.metrics_strategy.clone(),
-                        "side"     => if is_long { "sell" } else { "buy" },
+                        "side"     => if *is_long { "sell" } else { "buy" },
                     ).increment(1);
                     self.bus.send(Event::Order(alm_core::event::OrderEvent { order }));
                     debug!(symbol = %key, qty, ?policy, "reverse signal → close opposite position");
                 }
+                opp_legs_closed = true;
                 match policy {
                     ReversePolicy::Exit => return,
                     ReversePolicy::Flip => {}
@@ -474,6 +476,46 @@ impl<R: RiskManager> EngineCore<R> {
             }
         }
         // ─────────────────────────────────────────────────────────────────────
+
+        let mut temp_portfolio;
+        let portfolio_ref = if opp_legs_closed {
+            temp_portfolio = Portfolio {
+                initial_capital: self.portfolio.initial_capital,
+                cash: self.portfolio.cash,
+                positions: self.portfolio.positions.clone(),
+                equity_curve: Vec::new(),
+                trades: Vec::new(),
+                fills: Vec::new(),
+            };
+            let opp_side = match side {
+                Side::Buy => Side::Sell,
+                Side::Sell => Side::Buy,
+            };
+            let keys_to_remove: Vec<String> = temp_portfolio
+                .positions
+                .iter()
+                .filter(|(k, p)| {
+                    base_symbol(k) == base
+                        && p.qty.abs() > f64::EPSILON
+                        && match opp_side {
+                            Side::Buy => p.is_long(),
+                            Side::Sell => p.is_short(),
+                        }
+                })
+                .map(|(k, _)| k.clone())
+                .collect();
+            for key in keys_to_remove {
+                if let Some(p) = temp_portfolio.positions.remove(&key) {
+                    let price = self.last_price;
+                    let qty_abs = p.qty.abs();
+                    let commission = qty_abs * price * self.broker.commission_pct;
+                    temp_portfolio.cash += p.qty * price - commission;
+                }
+            }
+            &temp_portfolio
+        } else {
+            &self.portfolio
+        };
 
         let legs = self.same_dir_legs(base, side);
         let in_pos_same = !legs.is_empty();
@@ -509,7 +551,7 @@ impl<R: RiskManager> EngineCore<R> {
                 }
                 if self.max_position_pct > 0.0 {
                     let prices = self.leg_price_map(base, self.last_price);
-                    let eq = self.portfolio.equity(&prices);
+                    let eq = portfolio_ref.equity(&prices);
                     let pos_val: f64 =
                         legs.iter().map(|l| l.2.abs() * self.last_price).sum();
                     if eq > 0.0 && pos_val >= self.max_position_pct * eq {
@@ -525,8 +567,8 @@ impl<R: RiskManager> EngineCore<R> {
             }
         }
 
-        if is_pyramid_add || self.risk.validate(signal, &self.portfolio) {
-            let qty = self.risk.size(signal, &self.portfolio, self.last_price);
+        if is_pyramid_add || self.risk.validate(signal, portfolio_ref) {
+            let qty = self.risk.size(signal, portfolio_ref, self.last_price);
             if qty > f64::EPSILON {
                 if signal.target_price.is_some()
                     || signal.stop_price.is_some()

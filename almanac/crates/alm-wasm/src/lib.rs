@@ -414,8 +414,33 @@ pub(crate) fn run_strategy(
     use alm_engine::Engine;
     use alm_data::BarVecFeed;
 
+    fn intra_bar_mode_from_str(s: Option<&str>) -> alm_core::exit::IntraBarMode {
+        match s {
+            Some("pessimistic") => alm_core::exit::IntraBarMode::Pessimistic,
+            Some("ohlc_heuristic") => alm_core::exit::IntraBarMode::OhlcHeuristic,
+            _ => alm_core::exit::IntraBarMode::Pessimistic,
+        }
+    }
+
     let sizer = build_sizer(cfg);
     let mut engine = Engine::sync(cfg.capital, strategy, sizer, cfg.commission, cfg.slippage);
+
+    // Apply intra_bar_mode
+    let intra_bar_mode = intra_bar_mode_from_str(cfg.intra_bar_mode.as_deref());
+    engine = engine.with_intra_bar_mode(intra_bar_mode);
+
+    // Apply reverse_policy
+    if let Some(ref policy_str) = cfg.reverse_policy {
+        let policy = match policy_str.as_str() {
+            "exit" => Some(alm_engine::ReversePolicy::Exit),
+            "flip" => Some(alm_engine::ReversePolicy::Flip),
+            _ => None,
+        };
+        if let Some(p) = policy {
+            engine = engine.with_reverse_policy(p);
+        }
+    }
+
     if cfg.max_units > 1 {
         engine = engine.with_pyramiding(cfg.max_units, cfg.max_position_pct);
         if !cfg.pyramid {
@@ -455,6 +480,8 @@ pub(crate) struct BtConfig {
     pub max_units: usize,
     pub max_position_pct: f64,
     pub pyramid: bool,
+    pub reverse_policy: Option<String>,
+    pub intra_bar_mode: Option<String>,
 }
 
 pub(crate) fn parse_config(config_json: &str) -> BtConfig {
@@ -475,6 +502,8 @@ pub(crate) fn parse_config(config_json: &str) -> BtConfig {
         max_units:  get("max_units", 1.0).max(1.0) as usize,
         max_position_pct: get("max_position_pct", 0.0),
         pyramid: v.get("pyramid").map(|x| x.as_bool().unwrap_or_else(|| x.as_f64().unwrap_or(1.0) != 0.0)).unwrap_or(true),
+        reverse_policy: v.get("reverse_policy").and_then(|x| x.as_str()).map(String::from),
+        intra_bar_mode: v.get("intra_bar_mode").and_then(|x| x.as_str()).map(String::from),
     }
 }
 

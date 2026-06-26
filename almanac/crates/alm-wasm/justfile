@@ -1,0 +1,20 @@
+default:
+    @just --list
+
+# Build alm-wasm (bundler target) and sync artifacts into mallow-client/vendor/alm-wasm
+build:
+    wasm-pack build --target bundler
+    rm -f pkg/.gitignore
+    cp -r pkg/. ../../../mallow-client/vendor/alm-wasm/
+
+# Build alm-wasm in dev mode (faster compilation, keeps debug symbols)
+build-dev:
+    wasm-pack build --dev --target bundler
+    rm -f pkg/.gitignore
+    cp -r pkg/. ../../../mallow-client/vendor/alm-wasm/
+
+# Sync already built pkg/ artifacts to mallow-client/vendor/alm-wasm
+sync:
+    @test -f pkg/alm_wasm_bg.wasm || (echo "pkg/ not found — run 'just build' first" && exit 1)
+    rm -f pkg/.gitignore
+    cp -r pkg/. ../../../mallow-client/vendor/alm-wasm/

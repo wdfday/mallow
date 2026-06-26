@@ -1,0 +1,22 @@
+default:
+    @just --list
+
+# Build and install alm-py in debug/develop mode into the local virtual environment
+build:
+    .venv/bin/maturin develop
+
+# Build and install alm-py in release/develop mode (faster execution)
+build-release:
+    .venv/bin/maturin develop --release
+
+# Run all python tests in alm-py
+test:
+    .venv/bin/pytest tests/
+
+# Run a specific python test file or case (e.g. `just test-file tests/test_backtest.py`)
+test-file file_path:
+    .venv/bin/pytest {{file_path}} -v
+
+# Run the end-to-end strategy comparison pipeline (automatically builds in release mode)
+compare: build-release
+    cd notebooks/comparison && ../../../.venv/bin/python run_pipeline.py

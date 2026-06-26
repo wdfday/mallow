@@ -563,6 +563,8 @@ impl ChartState {
         };
         let bar = Bar::new(timestamp, &self.symbol, o, h, l, c, v);
         self.bars.insert(0, bar);
+        self.bars.sort_by_key(|b| b.timestamp);
+        self.bars.dedup_by_key(|b| b.timestamp);
         self.rebuild_transform();
         self.snapshot()
     }
@@ -611,6 +613,8 @@ impl ChartState {
         let new_bars = build_bars(&self.symbol, t, o, h, l, c, v);
         let old = std::mem::replace(&mut self.bars, new_bars);
         self.bars.extend(old);
+        self.bars.sort_by_key(|b| b.timestamp);
+        self.bars.dedup_by_key(|b| b.timestamp);
         self.rebuild_transform();
         self.snapshot()
     }

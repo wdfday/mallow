@@ -132,3 +132,13 @@ sync-wasm:
 # Examples: just gen-specs   |   just gen-specs herald   |   just gen-specs identity helm
 gen-specs *services:
     @bash gen-specs.sh {{services}}
+
+# ── Thesis ────────────────────────────────────────────────────────────────────
+
+# Compile LaTeX thesis → Thesis/DoAn.pdf
+thesis:
+    @bash Thesis/compile.sh
+
+# Compile and open PDF
+thesis-open:
+    @bash Thesis/compile.sh --open

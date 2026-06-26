@@ -42,12 +42,12 @@ func TestLastToken(t *testing.T) {
 }
 
 func TestIsAccountCh(t *testing.T) {
-	for _, ch := range []string{"helm", "trade", "portfolio"} {
+	for _, ch := range []string{"event", "trade", "fill", "portfolio", "position"} {
 		if !isAccountCh(ch) {
 			t.Errorf("isAccountCh(%q) = false, want true", ch)
 		}
 	}
-	for _, ch := range []string{"bars", "signals", ""} {
+	for _, ch := range []string{"bars", "signals", "helm", ""} {
 		if isAccountCh(ch) {
 			t.Errorf("isAccountCh(%q) = true, want false", ch)
 		}

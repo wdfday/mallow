@@ -95,7 +95,6 @@ func buildRouter(cfg config.Config, h *handler.Handler, rdb *redis.Client, ident
 		api.GET("/symbols", heraldProxy)
 		api.GET("/indicators", heraldProxy)
 		api.POST("/data/:source/:symbol", heraldProxy)
-		api.POST("/data/duckdb", heraldProxy)
 
 		// Herald — backtest
 		api.GET("/strategies", heraldProxy)
@@ -104,15 +103,8 @@ func buildRouter(cfg config.Config, h *handler.Handler, rdb *redis.Client, ident
 		api.POST("/backtest/script", heraldProxy)
 		api.POST("/script/validate", heraldProxy)
 
-		// Herald — SSE streams
-		api.GET("/stream/signals", heraldProxy)
-		api.GET("/stream/:symbol", heraldProxy)
-		api.POST("/stream/:symbol", heraldProxy)
-
-		// Herald — strategy + watch
+		// Herald — strategy
 		api.Any("/strategy/*path", heraldProxy)
-		api.Any("/watch", heraldProxy)
-		api.Any("/watch/:id", heraldProxy)
 	}
 
 	// Identity catch-all: /api/v1/* not matched above — Gin cannot mix catch-all

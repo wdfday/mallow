@@ -1213,22 +1213,6 @@ paths:
       summary: List available strategies
       tags:
       - Herald
-  /api/v1/strategist/ui/:
-    get:
-      description: Serves the Google ADK development UI for the trading assistant
-        agent.
-      produces:
-      - text/html
-      responses:
-        "200":
-          description: OK
-          schema:
-            type: string
-      security:
-      - BearerAuth: []
-      summary: Strategist ADK Web UI
-      tags:
-      - Strategist
   /api/v1/stream/{symbol}:
     get:
       description: EventSource-compatible SSE stream of raw OHLCV bars for a symbol.

@@ -110,19 +110,6 @@ func (h *Handler) GetLatestBarAlias(c *gin.Context) {}
 // @Router       /api/v1/data/{symbol} [post]
 func (h *Handler) QueryBars(c *gin.Context) {}
 
-// QueryDuckDB godoc
-//
-// @Summary      DuckDB Parquet query
-// @Description  Run a raw Parquet query via DuckDB on historical data.
-// @Tags         Herald
-// @Security     BearerAuth
-// @Accept       json
-// @Produce      json
-// @Param        body  body      map[string]interface{}  true  "DuckDB query payload"
-// @Success      200   {object}  map[string]interface{}
-// @Router       /api/v1/data/duckdb [post]
-func (h *Handler) QueryDuckDB(c *gin.Context) {}
-
 // ── Herald — backtest ────────────────────────────────────────────────────────
 
 // GetStrategies godoc
@@ -327,93 +314,6 @@ func (h *Handler) GetStoreResult(c *gin.Context) {}
 // @Success      204
 // @Router       /api/v1/store/results/{id} [delete]
 func (h *Handler) DeleteStoreResult(c *gin.Context) {}
-
-// ── Herald — watch (warm-set admin) ──────────────────────────────────────────
-
-// ListWatches godoc
-//
-// @Summary      List watch configs
-// @Description  Returns admin warm-set configs (indicator bootstrapping on startup).
-// @Tags         Herald Admin
-// @Security     BearerAuth
-// @Produce      json
-// @Success      200  {array}   map[string]interface{}
-// @Router       /api/v1/watch [get]
-func (h *Handler) ListWatches(c *gin.Context) {}
-
-// CreateWatch godoc
-//
-// @Summary      Create a watch config
-// @Tags         Herald Admin
-// @Security     BearerAuth
-// @Accept       json
-// @Produce      json
-// @Param        body  body      map[string]interface{}  true  "Watch config"
-// @Success      201   {object}  map[string]interface{}
-// @Router       /api/v1/watch [post]
-func (h *Handler) CreateWatch(c *gin.Context) {}
-
-// GetWatch godoc
-//
-// @Summary      Get a watch config
-// @Tags         Herald Admin
-// @Security     BearerAuth
-// @Produce      json
-// @Param        id    path      string  true  "Watch ID"
-// @Success      200   {object}  map[string]interface{}
-// @Router       /api/v1/watch/{id} [get]
-func (h *Handler) GetWatch(c *gin.Context) {}
-
-// DeleteWatch godoc
-//
-// @Summary      Delete a watch config
-// @Tags         Herald Admin
-// @Security     BearerAuth
-// @Produce      json
-// @Param        id    path      string  true  "Watch ID"
-// @Success      204
-// @Router       /api/v1/watch/{id} [delete]
-func (h *Handler) DeleteWatch(c *gin.Context) {}
-
-// ── Herald — streams (SSE) ────────────────────────────────────────────────────
-
-// StreamSignals godoc
-//
-// @Summary      SSE signal stream
-// @Description  Server-Sent Events stream of live signal batches from all registered hands. Each event carries a `SignalResponse` protobuf payload encoded as JSON.
-// @Tags         Herald Stream
-// @Security     BearerAuth
-// @Produce      text/event-stream
-// @Success      200  {string}  string  "event: bar\ndata: {...}"
-// @Router       /api/v1/stream/signals [get]
-func (h *Handler) StreamSignals(c *gin.Context) {}
-
-// StreamBars godoc
-//
-// @Summary      SSE bar stream (GET — raw OHLCV)
-// @Description  EventSource-compatible SSE stream of raw OHLCV bars for a symbol. Emits a `status` event first, then `bar` events per incoming candle. Use `?tf=M1` to select timeframe.
-// @Tags         Herald Stream
-// @Security     BearerAuth
-// @Produce      text/event-stream
-// @Param        symbol  path      string  true  "Symbol, e.g. BTCUSDT"
-// @Param        tf      query     string  false "Timeframe (M1, M5, H1, …)"
-// @Success      200     {string}  string  "event: bar\ndata: {...}"
-// @Router       /api/v1/stream/{symbol} [get]
-func (h *Handler) StreamBars(c *gin.Context) {}
-
-// StreamBarsWithIndicators godoc
-//
-// @Summary      SSE bar stream (POST — with indicators / script)
-// @Description  SSE stream carrying bars enriched with indicator values or a script output. Requires a `fetch()` + `ReadableStream` client (not plain EventSource). Body specifies indicator configs or a script.
-// @Tags         Herald Stream
-// @Security     BearerAuth
-// @Accept       json
-// @Produce      text/event-stream
-// @Param        symbol  path      string         true  "Symbol"
-// @Param        body    body      StreamRequest  true  "Stream config"
-// @Success      200     {string}  string         "event: bar\ndata: {...}"
-// @Router       /api/v1/stream/{symbol} [post]
-func (h *Handler) StreamBarsWithIndicators(c *gin.Context) {}
 
 // ── Helm — helms ──────────────────────────────────────────────────────────────
 

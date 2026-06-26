@@ -143,18 +143,18 @@ func (h *Handler) SwaggerIndex(c *gin.Context) {
         <h2>Helms and hands APIs</h2>
         <p>Trade execution service. Helms at <code>/api/v1/helms</code>, autonomous bots (hands) at <code>/api/v1/hands</code>.</p>
         <div class="actions">
-          <a class="button" href="/swagger/orchestrator/index.html">Open Swagger UI</a>
-          <a class="link" href="/swagger/orchestrator/doc.json">Open spec JSON</a>
+          <a class="button" href="/swagger/helm/index.html">Open Swagger UI</a>
+          <a class="link" href="/swagger/helm/doc.json">Open spec JSON</a>
         </div>
       </article>
       <article class="card">
         <p class="eyebrow">Herald (Rust Signal Engine)</p>
         <h2>Backtesting, signals &amp; data</h2>
-        <p>80+ strategies, 66 indicators. <code>POST /api/backtest</code> — run backtest. <code>GET /api/symbols</code> — available data. <code>GET /api/data/{symbol}</code> — OHLCV bars. <code>GET /api/stream/{symbol}</code> — SSE bar stream.</p>
+        <p>80+ strategies, 66 indicators. <code>POST /api/v1/backtest</code> — run backtest. <code>GET /api/v1/symbols</code> — available data. <code>POST /api/v1/data/{source}/{symbol}</code> — OHLCV bars.</p>
         <div class="actions">
           <a class="button" href="/swagger/herald">Open Swagger UI</a>
-          <a class="link" href="/api/strategies">List strategies</a>
-          <a class="link" href="/api/symbols">List symbols</a>
+          <a class="link" href="/api/v1/strategies">List strategies</a>
+          <a class="link" href="/api/v1/symbols">List symbols</a>
         </div>
       </article>
       <article class="card">

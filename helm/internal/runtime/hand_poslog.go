@@ -314,6 +314,11 @@ func (h *Hand) appendTradeRecord(ctx context.Context, cp poslog.PositionClosedPa
 	// this hand is no longer needed for crash recovery. Purge it to keep the
 	// HELM_POSITIONS stream lean.
 	//
+	// Note: KindPositionOrphaned and KindOrderCancelled also land in the poslog
+	// but do not go through the fill path, so they are not purged here. They
+	// accumulate (2–3 events at most per cycle) and are cleaned up on the next
+	// normal trade close. This is intentional — correctness is not affected.
+	//
 	// GC runs AFTER trade publish (not in applyFill) to avoid a race where a new
 	// position opens in the same signal cycle: by the time appendTradeRecord is
 	// called, KindPositionClosed has already been applied to h.pos, so any new

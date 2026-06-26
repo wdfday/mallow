@@ -39,7 +39,7 @@ paths:
         required: true
       responses:
         '200':
-          description: Script backtest report with saved IDs
+          description: Script backtest report
         '400':
           description: Bad request
         '429':
@@ -70,7 +70,7 @@ paths:
         required: true
       responses:
         '200':
-          description: Unified OHLCV + indicator snapshot
+          description: OHLCV bars
           content:
             application/json:
               schema:
@@ -122,7 +122,7 @@ paths:
       operationId: list_my_strategies
       responses:
         '200':
-          description: Latest version of each strategy owned by the caller
+          description: All versions of each strategy owned by the caller, grouped by name (newest first per group)
         '401':
           description: Missing X-User-ID header
   /api/v1/strategy/strategies:
@@ -205,125 +205,14 @@ paths:
           description: Deleted
         '404':
           description: Not found
-  /api/v1/strategy/strategies/{id}/chain:
-    get:
-      tags:
-      - strategy
-      operationId: list_strategy_chain
-      parameters:
-      - name: id
-        in: path
-        description: Any version UUID in the lineage
-        required: true
-        schema:
-          type: string
-      responses:
-        '200':
-          description: All versions in the lineage owned by caller, version DESC
-        '401':
-          description: Missing X-User-ID header
-  /api/v1/stream/signals:
-    get:
-      tags:
-      - stream
-      operationId: stream_signals
-      responses:
-        '200':
-          description: 'SSE signal stream (text/event-stream, event: signal)'
-  /api/v1/stream/{symbol}:
-    post:
-      tags:
-      - stream
-      operationId: stream_bars
-      parameters:
-      - name: symbol
-        in: path
-        description: Symbol e.g. BTCUSDT
-        required: true
-        schema:
-          type: string
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/StreamRequest'
-        required: true
-      responses:
-        '200':
-          description: SSE bar+indicator stream (text/event-stream)
   /api/v1/symbols:
     get:
       tags:
       - live
       operationId: list_symbols
-      parameters:
-      - name: indicators
-        in: query
-        description: Include live indicator cells in the response
-        required: false
-        schema:
-          type: boolean
-          nullable: true
       responses:
         '200':
           description: List of tracked symbols grouped by exchange
-  /api/v1/watch:
-    get:
-      tags:
-      - watch
-      operationId: list_watches
-      responses:
-        '200':
-          description: List of watch entries
-    post:
-      tags:
-      - watch
-      operationId: create_watch
-      requestBody:
-        description: ''
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/CreateWatchReq'
-        required: true
-      responses:
-        '201':
-          description: Watch entry created
-        '400':
-          description: Validation error
-  /api/v1/watch/{id}:
-    get:
-      tags:
-      - watch
-      operationId: get_watch
-      parameters:
-      - name: id
-        in: path
-        description: Watch entry UUID
-        required: true
-        schema:
-          type: string
-      responses:
-        '200':
-          description: Watch entry
-        '404':
-          description: Not found
-    delete:
-      tags:
-      - watch
-      operationId: delete_watch
-      parameters:
-      - name: id
-        in: path
-        description: Watch entry UUID
-        required: true
-        schema:
-          type: string
-      responses:
-        '204':
-          description: Deleted
-        '404':
-          description: Not found
 components:
   schemas:
     BacktestRequest:
@@ -337,6 +226,13 @@ components:
           description: |-
             Asset class — controls lot sizing.
             `"crypto"` → fractional qty; `"stock"` → whole shares; `"vn_stock"` → lots of 100.
+          nullable: true
+        atr_multiplier:
+          type: number
+          format: double
+          description: |-
+            ATR stop-distance multiplier for volatility sizing (default: 2.0).
+            Only read when `risk_per_trade_pct` is set.
           nullable: true
         commission_pct:
           type: number
@@ -366,9 +262,24 @@ components:
             Intra-bar stop detection mode.
             `"close_only"` (default) | `"pessimistic"` | `"ohlc_heuristic"`.
           nullable: true
+        max_position_pct:
+          type: number
+          format: double
+          description: |-
+            Pyramiding: hard cap on total open exposure as a fraction of equity
+            (default: 0 = no cap). Mirrors helm `MaxPositionPct`.
+          nullable: true
         max_positions:
           type: integer
           description: 'Maximum simultaneous open positions (default: 1).'
+          nullable: true
+          minimum: 0
+        max_units:
+          type: integer
+          description: |-
+            Pyramiding: max accumulated entry legs per symbol (default: 1 = off).
+            When >1, a same-direction signal while in-position adds a leg if price
+            advanced past the last leg; TP/SL re-base to the new leg. Mirrors helm `MaxUnits`.
           nullable: true
           minimum: 0
         monte_carlo:
@@ -398,10 +309,35 @@ components:
           format: double
           description: Fixed dollar amount per trade. Overrides `position_size_pct`.
           nullable: true
+        pyramid:
+          type: boolean
+          description: |-
+            Pyramiding mode (only meaningful when `max_units > 1`). `true`/None (default)
+            = MERGE: legs collapse into one averaged position, TP/SL re-based to the last
+            leg. `false` = INDEPENDENT: each leg is its own position (`SYM#n`) with its own
+            entry / TP / SL / trade. Mirrors helm `Pyramid`.
+          nullable: true
         risk_free_annual:
           type: number
           format: double
           description: 'Risk-free annual rate used for Sharpe/Sortino (default: 0.04).'
+          nullable: true
+        risk_per_trade_pct:
+          type: number
+          format: double
+          description: |-
+            Volatility (ATR risk-parity) sizing — the backtest counterpart of helm's
+            `volatility` SizeMode. When set (and no fixed-qty / fixed-USD override is
+            present) the sizer becomes ATR-based: `qty = equity × risk_per_trade_pct /
+            (atr_multiplier × ATR)`. e.g. `0.01` = risk 1% of equity per trade.
+          nullable: true
+        size_mode:
+          type: string
+          description: |-
+            Explicit sizing mode, synced with helm `SizeMode` (canonical path; when unset,
+            the sizer is inferred from which `position_size_*` / `risk_per_trade_pct` field is set):
+            `fixed_fractional` (Ralph Vince — risk f% to the signal's stop) · `volatility` (risk f%
+            to an ATR stop) · `percent_equity` (% of equity) · `quote_qty` (USD) · `fixed_qty` (qty).
           nullable: true
         slippage_pct:
           type: number
@@ -411,6 +347,16 @@ components:
         strategy:
           type: string
           description: Strategy key, e.g. `"rsi_mean_rev"`. See `alm-strategy::catalog::STRATEGY_KEYS`.
+        strength_sizing:
+          type: boolean
+          description: |-
+            Whether `signal.strength` scales the position size (default: `true`).
+            Set `false` to compute strength in the script/strategy for display/logging
+            while every entry is sized at full allocation (strength treated as 1.0).
+            Only affects the `percent_equity` mode. Risk-based modes (`fixed_fractional`,
+            `volatility`) pin a fixed risk to the stop, so strength is ignored there to
+            preserve that invariant; fixed-USD / fixed-quantity are absolute.
+          nullable: true
         symbol:
           type: string
           description: Asset symbol, e.g. `"BTCUSDT"`.
@@ -464,47 +410,6 @@ components:
           type: number
           format: double
           nullable: true
-    BarStreamEvent:
-      type: object
-      description: |-
-        SSE bar event — OHLCV bar plus the current value of every requested indicator.
-
-        `indicators` is keyed by label (or canonical key). Each value is a flat map of
-        the indicator's output fields, e.g. `{"value": 94150.0}` for EMA or
-        `{"upper": 94800.0, "mid": 94200.0, "lower": 93600.0}` for Bollinger Bands.
-      required:
-      - t
-      - o
-      - h
-      - l
-      - c
-      - v
-      properties:
-        c:
-          type: number
-          format: double
-        h:
-          type: number
-          format: double
-        indicators:
-          type: object
-          additionalProperties:
-            type: object
-            additionalProperties:
-              type: number
-              format: double
-        l:
-          type: number
-          format: double
-        o:
-          type: number
-          format: double
-        t:
-          type: integer
-          format: int64
-        v:
-          type: number
-          format: double
     CandlesQuery:
       type: object
       description: Candle section controls of a unified request.
@@ -576,31 +481,6 @@ components:
           format: int32
           description: If omitted, auto-incremented from the highest existing version for `name`.
           nullable: true
-    CreateWatchReq:
-      type: object
-      required:
-      - symbols
-      - strategy_spec
-      properties:
-        nats_subject:
-          type: string
-          nullable: true
-        strategy_spec:
-          $ref: '#/components/schemas/StrategySpec'
-        symbols:
-          type: array
-          items:
-            type: string
-        timeframe:
-          type: string
-          nullable: true
-        user_id:
-          type: string
-          description: Override owner user ID. If absent, extracted from X-User-ID header.
-          nullable: true
-        webhook_url:
-          type: string
-          nullable: true
     DeclaredIndicator:
       type: object
       description: Per-line declared indicator summary returned in the lint scope.
@@ -641,59 +521,6 @@ components:
         status:
           type: integer
           format: int32
-          minimum: 0
-    IndicatorConfig:
-      allOf:
-      - type: object
-        description: Passed verbatim to `IndicatorBox::from_config`. `"type"` is required.
-      - type: object
-        properties:
-          label:
-            type: string
-            description: Override the key under which the series appears in the response.
-            nullable: true
-      description: |-
-        Single indicator spec in a unified request. Flat form — anything the
-        `alm_indicator::IndicatorBox::from_config` accepts, plus an optional
-        `label` to override the response key.
-
-        Example: `{"type":"ema","period":20}` or `{"type":"rsi","period":14,"label":"rsi14"}`.
-    IndicatorPoint:
-      allOf:
-      - type: object
-      - type: object
-        required:
-        - t
-        properties:
-          t:
-            type: integer
-            format: int64
-      description: |-
-        Individual indicator point in a series — `t` plus the indicator's fields.
-        Kept flat so clients can address `row.value` / `row.macd` etc.
-    IndicatorStatus:
-      type: object
-      description: Per-indicator warm-up status reported in the `status` SSE event.
-      required:
-      - ready
-      - warm_estimate
-      - bars_available
-      - bars_needed
-      properties:
-        bars_available:
-          type: integer
-          description: Bars currently available in the ledger window.
-          minimum: 0
-        bars_needed:
-          type: integer
-          description: How many more bars are needed. 0 when ready.
-          minimum: 0
-        ready:
-          type: boolean
-          description: True when `ready_since_t` is set AND `bars_available >= warm_estimate`.
-        warm_estimate:
-          type: integer
-          description: Estimated bars needed for stable convergence (EMA decay formula or exact period).
           minimum: 0
     LintDiagnostic:
       type: object
@@ -740,23 +567,23 @@ components:
     ScriptBacktestRequest:
       type: object
       description: |-
-        Dedicated request for script backtests.
-        Takes a `script` field containing the full strategy script.
+        Dedicated request for script backtests — pure engine run, no persistence.
 
         Any `plot("name", value)` calls inside the script populate
         `indicator_series` in the response.
 
-        Every request to this endpoint is persisted: strategy + case are created or
-        updated before the engine runs, and the result is saved on completion.
-        Use `case_id` to re-run an existing case (params may differ — the case row
-        is updated in place). Omit `case_id` to open a new case.
+        To save a strategy, use `POST /api/v1/strategy/strategies` separately.
       required:
       - symbol
       - script
-      - name
       properties:
         asset_type:
           type: string
+          nullable: true
+        atr_multiplier:
+          type: number
+          format: double
+          description: 'ATR stop-distance multiplier for volatility sizing (default: 2.0).'
           nullable: true
         commission_pct:
           type: number
@@ -775,24 +602,23 @@ components:
         intra_bar_mode:
           type: string
           nullable: true
-        label:
-          type: string
-          description: Human-readable case label. Defaults to `"{name} on {symbol}"` if omitted.
+        max_position_pct:
+          type: number
+          format: double
+          description: 'Pyramiding: exposure cap as fraction of equity (0 = none). Mirrors helm `MaxPositionPct`.'
           nullable: true
         max_positions:
           type: integer
           nullable: true
           minimum: 0
+        max_units:
+          type: integer
+          description: 'Pyramiding: max accumulated legs (default 1 = off). Mirrors helm `MaxUnits`.'
+          nullable: true
+          minimum: 0
         monte_carlo:
           allOf:
           - $ref: '#/components/schemas/MonteCarloConfig'
-          nullable: true
-        name:
-          type: string
-          description: Strategy name (slug). Used to group versions; required for server-side runs.
-        notes:
-          type: string
-          description: Optional change notes attached to the strategy version.
           nullable: true
         position_size_pct:
           type: number
@@ -806,16 +632,35 @@ components:
           type: number
           format: double
           nullable: true
+        pyramid:
+          type: boolean
+          description: 'Pyramiding mode: true/None = MERGE (averaged), false = INDEPENDENT legs. Mirrors helm `Pyramid`.'
+          nullable: true
         risk_free_annual:
           type: number
           format: double
           nullable: true
+        risk_per_trade_pct:
+          type: number
+          format: double
+          description: Volatility (ATR risk-parity) sizing. See [`BacktestRequest::risk_per_trade_pct`].
+          nullable: true
         script:
           type: string
           description: Full strategy script.
+        size_mode:
+          type: string
+          description: Explicit sizing mode synced with helm `SizeMode`. See [`BacktestRequest::size_mode`].
+          nullable: true
         slippage_pct:
           type: number
           format: double
+          nullable: true
+        strength_sizing:
+          type: boolean
+          description: |-
+            Whether `signal.strength` scales the position size (default: `true`).
+            See [`BacktestRequest::strength_sizing`].
           nullable: true
         symbol:
           type: string
@@ -938,64 +783,22 @@ components:
       properties:
         script:
           type: string
-    StreamRequest:
-      type: object
-      description: |-
-        Request body for `POST /api/stream/:symbol`.
-
-        Exactly one of `indicators` or `script` should be provided:
-        - `indicators`: structured list of indicator configs (no computation)
-        - `script`: Script using `ind.TYPE(period)` + `plot("name", value)`
-      properties:
-        indicators:
-          type: array
-          items:
-            $ref: '#/components/schemas/IndicatorConfig'
-          description: Structured indicator mode — returns raw cell values per bar.
-          nullable: true
-        script:
-          type: string
-          description: Script mode — script runs per bar, returns whatever was `plot()`-ed.
-          nullable: true
-        tf:
-          type: string
-          nullable: true
-    StreamStatus:
-      type: object
-      description: First SSE event sent on every new stream connection.
-      required:
-      - bars_available
-      - all_ready
-      - indicators
-      properties:
-        all_ready:
-          type: boolean
-          description: True when every requested indicator passes its warm_estimate check.
-        bars_available:
-          type: integer
-          minimum: 0
-        indicators:
-          type: object
-          description: Keyed by var_name (script mode) or label (structured mode).
-          additionalProperties:
-            $ref: '#/components/schemas/IndicatorStatus'
     UnifiedDataRequest:
       type: object
+      description: |-
+        Request body for `POST /api/v1/data/:source/:symbol`.
+        Indicator computation is handled client-side via WASM — only raw bars are returned.
       properties:
         candles:
           allOf:
           - $ref: '#/components/schemas/CandlesQuery'
-          nullable: true
-        indicators:
-          type: array
-          items:
-            $ref: '#/components/schemas/IndicatorConfig'
           nullable: true
         tf:
           type: string
           nullable: true
     UnifiedDataResponse:
       type: object
+      description: Response for `POST /api/v1/data/:source/:symbol` — raw OHLCV bars only.
       required:
       - source
       - symbol
@@ -1005,21 +808,6 @@ components:
           allOf:
           - $ref: '#/components/schemas/CandlesResult'
           nullable: true
-        indicators:
-          type: object
-          description: Keyed by `label` or the indicator's canonical key when `label` is omitted.
-          additionalProperties:
-            type: array
-            items:
-              $ref: '#/components/schemas/IndicatorPoint'
-          nullable: true
-        missing:
-          type: array
-          items:
-            type: string
-          description: |-
-            Specs that were requested but could not be satisfied — bad config,
-            missing `"type"`, exceeded `max_period`, etc. Empty on the happy path.
         source:
           type: string
         symbol:
@@ -1065,48 +853,6 @@ components:
           type: integer
           nullable: true
           minimum: 0
-    WatchEntry:
-      type: object
-      description: |-
-        A registered watch — runs a strategy on live bars and dispatches
-        signals to a webhook or NATS subject instead of executing trades.
-      required:
-      - id
-      - symbols
-      - strategy_spec
-      - pinned_indicators
-      - created_at
-      properties:
-        created_at:
-          type: integer
-          format: int64
-        id:
-          type: string
-        nats_subject:
-          type: string
-          description: NATS subject to publish SignalMsg to.
-          nullable: true
-        pinned_indicators:
-          type: integer
-          description: Number of indicator handles pinned in the ledger by this entry.
-          minimum: 0
-        strategy_spec:
-          $ref: '#/components/schemas/StrategySpec'
-        symbols:
-          type: array
-          items:
-            type: string
-        timeframe:
-          type: string
-          nullable: true
-        user_id:
-          type: string
-          description: Owner user ID (populated from X-User-ID header).
-          nullable: true
-        webhook_url:
-          type: string
-          description: HTTP endpoint to POST signal JSON to when strategy fires.
-          nullable: true
   securitySchemes:
     bearerAuth:
       type: http
@@ -1122,7 +868,3 @@ tags:
   description: Backtest execution
 - name: strategy
   description: Saved strategy versions
-- name: watch
-  description: Watchlist / warm-set management
-- name: stream
-  description: SSE real-time push

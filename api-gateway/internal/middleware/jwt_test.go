@@ -122,12 +122,12 @@ func TestIsBlacklisted(t *testing.T) {
 		assert.False(t, ok)
 	})
 
-	t.Run("jti key set → blacklisted", func(t *testing.T) {
+	t.Run("sid key set → blacklisted", func(t *testing.T) {
 		rdb := newRedis(t)
-		jti := "abc-jti-001"
-		require.NoError(t, rdb.Set(ctx, fmt.Sprintf("blacklist:jti:%s", jti), "logout", 0).Err())
+		sid := "abc-sid-001"
+		require.NoError(t, rdb.Set(ctx, fmt.Sprintf("blacklist:sid:%s", sid), "logout", 0).Err())
 
-		ok, err := isBlacklisted(ctx, rdb, jti, "")
+		ok, err := isBlacklisted(ctx, rdb, sid, "")
 		require.NoError(t, err)
 		assert.True(t, ok)
 	})
@@ -144,28 +144,28 @@ func TestIsBlacklisted(t *testing.T) {
 
 	t.Run("keys exist but different values → not blacklisted", func(t *testing.T) {
 		rdb := newRedis(t)
-		ok, err := isBlacklisted(ctx, rdb, "jti-unknown", "user-unknown")
+		ok, err := isBlacklisted(ctx, rdb, "sid-unknown", "user-unknown")
 		require.NoError(t, err)
 		assert.False(t, ok)
 	})
 
 	t.Run("both keys set → blacklisted", func(t *testing.T) {
 		rdb := newRedis(t)
-		jti, sub := "jti-both", "user-both"
-		require.NoError(t, rdb.Set(ctx, fmt.Sprintf("blacklist:jti:%s", jti), "logout", 0).Err())
+		sid, sub := "sid-both", "user-both"
+		require.NoError(t, rdb.Set(ctx, fmt.Sprintf("blacklist:sid:%s", sid), "logout", 0).Err())
 		require.NoError(t, rdb.Set(ctx, fmt.Sprintf("blacklist:user:%s", sub), "ban", 0).Err())
 
-		ok, err := isBlacklisted(ctx, rdb, jti, sub)
+		ok, err := isBlacklisted(ctx, rdb, sid, sub)
 		require.NoError(t, err)
 		assert.True(t, ok)
 	})
 
-	t.Run("only jti set, sub provided but not blacklisted → still blacklisted", func(t *testing.T) {
+	t.Run("only sid set, sub provided but not blacklisted → still blacklisted", func(t *testing.T) {
 		rdb := newRedis(t)
-		jti := "jti-set"
-		require.NoError(t, rdb.Set(ctx, fmt.Sprintf("blacklist:jti:%s", jti), "logout", 0).Err())
+		sid := "sid-set"
+		require.NoError(t, rdb.Set(ctx, fmt.Sprintf("blacklist:sid:%s", sid), "logout", 0).Err())
 
-		ok, err := isBlacklisted(ctx, rdb, jti, "user-not-banned")
+		ok, err := isBlacklisted(ctx, rdb, sid, "user-not-banned")
 		require.NoError(t, err)
 		assert.True(t, ok)
 	})
@@ -174,19 +174,8 @@ func TestIsBlacklisted(t *testing.T) {
 		rdb, mr := newRedisWithError(t)
 		mr.SetError("FAKE_ERROR")
 
-		_, err := isBlacklisted(ctx, rdb, "jti-1", "sub-1")
+		_, err := isBlacklisted(ctx, rdb, "sid-1", "sub-1")
 		assert.Error(t, err)
-	})
-
-	t.Run("sid key set → NOT checked (gateway only checks jti+user)", func(t *testing.T) {
-		rdb := newRedis(t)
-		sid := "revoked-session"
-		require.NoError(t, rdb.Set(ctx, fmt.Sprintf("blacklist:sid:%s", sid), "revoked", 0).Err())
-
-		// isBlacklisted only receives jti+sub, sid is irrelevant at this level
-		ok, err := isBlacklisted(ctx, rdb, "", "")
-		require.NoError(t, err)
-		assert.False(t, ok)
 	})
 }
 
@@ -287,9 +276,9 @@ func TestJWTAuth_UserBlacklisted(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "token revoked")
 }
 
-// Session revocation is enforced at the refresh boundary (identity service checks SID).
-// The gateway only checks jti+user — a revoked SID must NOT block existing access tokens.
-func TestJWTAuth_SIDBlacklisted_DoesNotBlockAccessToken(t *testing.T) {
+// Session revocation is enforced immediately at the gateway by checking the blacklisted SID.
+// A blacklisted SID must block existing access tokens.
+func TestJWTAuth_SIDBlacklisted_BlocksAccessToken(t *testing.T) {
 	ctx := context.Background()
 	rdb := newRedis(t)
 	sid := "revoked-session-sid"
@@ -297,7 +286,7 @@ func TestJWTAuth_SIDBlacklisted_DoesNotBlockAccessToken(t *testing.T) {
 
 	token := makeHMACToken(t, testSecret, validClaims("user-1", "jti-fresh", sid))
 	r := newRouter(JWTAuth(JWTAuthConfig{Secret: testSecret}, rdb, nil))
-	assert.Equal(t, http.StatusOK, get(r, bearer(token)).Code)
+	assert.Equal(t, http.StatusUnauthorized, get(r, bearer(token)).Code)
 }
 
 func TestJWTAuth_RedisDown_FailsOpen(t *testing.T) {

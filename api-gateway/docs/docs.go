@@ -1788,31 +1788,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/strategist/ui/": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Serves the Google ADK development UI for the trading assistant agent.",
-                "produces": [
-                    "text/html"
-                ],
-                "tags": [
-                    "Strategist"
-                ],
-                "summary": "Strategist ADK Web UI",
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                }
-            }
-        },
         "/api/v1/stream/signals": {
             "get": {
                 "security": [

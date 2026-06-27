@@ -280,6 +280,40 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # nats-exporter — converts NATS monitoring JSON (port 8222) → Prometheus /metrics
+  nats-exporter:
+    image: natsio/prometheus-nats-exporter:latest
+    container_name: nats-exporter
+    profiles: ["monitoring"]
+    command:
+      - "-varz"
+      - "-jsz=all"
+      - "-connz"
+      - "-subz"
+      - "http://nats:8222"
+    ports:
+      - "7777:7777"
+    depends_on:
+      nats:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # cAdvisor — container CPU / RAM / network / disk metrics
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    profiles: ["monitoring"]
+    privileged: true
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker:/var/lib/docker:ro
+      - /dev/disk:/dev/disk:ro
+    ports:
+      - "8180:8080"
+    restart: unless-stopped
+
   # Prometheus — metrics
   prometheus:
     image: prom/prometheus:latest
@@ -288,8 +322,9 @@ services:
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
-      - "--web.enable-remote-write-receiver"     # allow Tempo to write span metrics
-      - "--enable-feature=exemplar-storage"      # exemplars for trace→metrics linkage
+      - "--storage.tsdb.retention.time=7d"
+      - "--web.enable-remote-write-receiver"
+      - "--enable-feature=exemplar-storage"
     volumes:
       - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - prometheus-data:/prometheus
@@ -362,12 +397,12 @@ services:
     depends_on:
       - prometheus
       - loki
-      - tempo
+      # - tempo
     environment:
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-mallow}
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
-      GF_FEATURE_TOGGLES_ENABLE: traceqlEditor traceToMetrics
+      # GF_FEATURE_TOGGLES_ENABLE: traceqlEditor traceToMetrics
       # grafana-pyroscope-datasource is a core plugin in Grafana 10+ — no install needed
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
@@ -386,7 +421,7 @@ volumes:
   redis-data:
   prometheus-data:
   loki-data:
-  tempo-data:
+  # tempo-data:
   grafana-data:
   pyroscope-data:
 

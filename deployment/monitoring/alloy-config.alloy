@@ -112,7 +112,7 @@ prometheus.scrape "gateway" {
 }
 
 prometheus.scrape "nats" {
-  targets         = [{ __address__ = "nats:8222" }]
+  targets         = [{ __address__ = "nats-exporter:7777" }]
   metrics_path    = "/metrics"
   scrape_interval = "15s"
   forward_to      = [prometheus.remote_write.default.receiver]
@@ -127,6 +127,13 @@ prometheus.scrape "postgres" {
 
 prometheus.scrape "redis" {
   targets         = [{ __address__ = "redis-exporter:9121" }]
+  metrics_path    = "/metrics"
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.default.receiver]
+}
+
+prometheus.scrape "cadvisor" {
+  targets         = [{ __address__ = "cadvisor:8080" }]
   metrics_path    = "/metrics"
   scrape_interval = "15s"
   forward_to      = [prometheus.remote_write.default.receiver]

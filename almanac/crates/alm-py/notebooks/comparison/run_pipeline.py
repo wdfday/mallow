@@ -19,7 +19,7 @@ def main():
         subprocess.run([sys.executable, "_run_pool.py"], check=True)
     except subprocess.CalledProcessError as e:
         print(f"❌ Error running notebook pool: {e}")
-        cleanup()
+        # cleanup()
         sys.exit(1)
         
     print("\n=== Step 3: Extracting Results ===")
@@ -27,11 +27,11 @@ def main():
         subprocess.run([sys.executable, "_extract_results.py"], check=True)
     except subprocess.CalledProcessError as e:
         print(f"❌ Error extracting results: {e}")
-        cleanup()
+        # cleanup()
         sys.exit(1)
         
-    print("\n=== Step 4: Cleaning up Generated Notebooks ===")
-    cleanup()
+    print("\n=== Step 4: Skipping cleanup of Generated Notebooks ===")
+    # cleanup()
     
     duration = time.time() - start_time
     print(f"\n✅ Pipeline completed successfully in {duration/60:.2f} minutes!")

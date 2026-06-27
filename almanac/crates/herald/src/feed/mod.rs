@@ -37,7 +37,7 @@ pub struct BarEvent {
 /// Bounded bar channel capacity.
 /// Sized to absorb a brief burst (all symbols × a few ticks) while applying
 /// backpressure to the WS feed when the handler loop falls behind.
-pub const BAR_CHANNEL_CAP: usize = 512;
+pub const BAR_CHANNEL_CAP: usize = 1024;
 
 pub type BarTx = mpsc::Sender<BarEvent>;
 pub type BarRx = mpsc::Receiver<BarEvent>;

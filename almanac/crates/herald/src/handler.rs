@@ -4,7 +4,7 @@
 //!
 //! ```text
 //!   feed::binance  ─┐
-//!   feed::okx      ─┤  mpsc::UnboundedSender<BarEvent { tf, bar, closed }>
+//!   feed::okx      ─┤  mpsc::Sender<BarEvent { tf, bar, closed }>  (bounded, BAR_CHANNEL_CAP=512)
 //!                   ▼
 //!              Handler::run
 //!                   │
@@ -42,7 +42,7 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use alm_herald::WsLatencyTracker;
-use crate::feed::{BarEvent, BarRx};
+use crate::feed::{BarEvent, BarRx, BarTx};
 use crate::registry::{HandSignal, Registry};
 
 // ── NATS subjects ─────────────────────────────────────────────────────────────
@@ -81,13 +81,9 @@ pub struct HeraldAtomics {
 /// every minute, so 3 minutes means something is genuinely stuck.
 const BAR_WATCHDOG_SECS: u64 = 180;
 
-/// Max time to spend awaiting a forming-bar NATS publish.
-/// Forming bars are high-frequency fire-and-forget — if NATS is slow we
-/// skip rather than cascading backpressure all the way back to the WS feed.
-const FORMING_BAR_PUBLISH_TIMEOUT: Duration = Duration::from_millis(200);
 /// Timeout for publishing a CLOSED bar to NATS `bars.{tf}.{symbol}`.
-/// Longer than forming-bar because closed bars feed downstream signals — we
-/// tolerate a 2s stall before giving up and releasing the handler loop.
+/// Closed bars feed downstream signals — we tolerate a 2s stall before
+/// giving up and releasing the handler loop.
 const CLOSED_BAR_PUBLISH_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// Threshold for warning about slow closed-bar NATS publishes.
@@ -95,23 +91,28 @@ const SLOW_PUBLISH_WARN_MS: u128 = 500;
 
 // ── Handler ───────────────────────────────────────────────────────────────────
 
-pub struct Handler {
+/// State shared between the bar-processing loop and the NATS control-plane task.
+/// Both tasks hold an `Arc<HandlerCtx>` — no locking needed because fields are
+/// either `Arc<T>` themselves or cheaply cloneable.
+struct HandlerCtx {
     client: Client,
     ledger: Arc<Ledger>,
     registry: Arc<Registry>,
-    /// Base timeframe — only closed bars at this TF trigger NATS publish +
-    /// Registry observer fan-out.
     tf: Timeframe,
-    bar_rx: BarRx,
-    signal_rx: Option<mpsc::Receiver<HandSignal>>,
-    /// Stable per-instance identifier — changes on every restart so consumers
-    /// can detect herald restart and re-register their hands.
     herald_id: String,
     start_time: Instant,
-    /// WebSocket delivery latency tracker — shared with the HTTP admin endpoint.
     ws_latency: Arc<WsLatencyTracker>,
-    /// Shared counters for the herald.stats NATS endpoint.
     atomics: Arc<HeraldAtomics>,
+    /// Extra sender clone kept solely for `.capacity()` / `.max_capacity()` reads.
+    /// Never used to send — just a live handle so the channel's permit count reflects
+    /// actual backlog. WeakSender would work but doesn't expose capacity().
+    bar_tx_mon: BarTx,
+}
+
+pub struct Handler {
+    ctx: Arc<HandlerCtx>,
+    bar_rx: BarRx,
+    signal_rx: Option<mpsc::Receiver<HandSignal>>,
 }
 
 impl Handler {
@@ -121,48 +122,51 @@ impl Handler {
         registry: Arc<Registry>,
         tf: Timeframe,
         bar_rx: BarRx,
+        bar_tx_mon: BarTx,
         signal_rx: mpsc::Receiver<HandSignal>,
         ws_latency: Arc<WsLatencyTracker>,
     ) -> Self {
         Self {
-            client,
-            ledger,
-            registry,
-            tf,
+            ctx: Arc::new(HandlerCtx {
+                client,
+                ledger,
+                registry,
+                tf,
+                herald_id: Uuid::now_v7().to_string(),
+                start_time: Instant::now(),
+                ws_latency,
+                atomics: Arc::new(HeraldAtomics::default()),
+                bar_tx_mon,
+            }),
             bar_rx,
             signal_rx: Some(signal_rx),
-            herald_id: Uuid::now_v7().to_string(),
-            start_time: Instant::now(),
-            ws_latency,
-            atomics: Arc::new(HeraldAtomics::default()),
         }
     }
 
     pub async fn run(mut self) -> anyhow::Result<()> {
         let rx = self.signal_rx.take().expect("signal_rx present at run()");
         let publisher_task = tokio::spawn(signal_publisher(
-            self.client.clone(),
+            self.ctx.client.clone(),
             rx,
-            Arc::clone(&self.atomics),
+            Arc::clone(&self.ctx.atomics),
         ));
         tokio::pin!(publisher_task);
 
-        let mut reset_sub      = self.client.subscribe(SUBJ_RESET).await?;
-        let mut register_sub   = self.client.subscribe(SUBJ_REGISTER).await?;
-        let mut validate_sub   = self.client.subscribe(SUBJ_VALIDATE).await?;
-        let mut deregister_sub = self.client.subscribe(SUBJ_DEREGISTER).await?;
-        let mut list_sub       = self.client.subscribe(SUBJ_LIST).await?;
-        let mut ping_sub       = self.client.subscribe(SUBJ_PING).await?;
-        let mut heartbeat_sub  = self.client.subscribe(SUBJ_HEARTBEAT).await?;
-        let mut stats_sub      = self.client.subscribe(SUBJ_STATS).await?;
-
-        // Announce availability — consumers subscribe to engine.ready and re-register
-        // all running hands when they see a new herald_id (i.e. after a restart).
-        self.publish_ready().await;
+        // Spawn the NATS control plane in its own task so that high-frequency
+        // bar events cannot starve register/validate/heartbeat responses.
+        // (Previously all subscriptions shared the bar select! loop, causing
+        //  engine.validate to time out under live-trading load.)
+        //
+        // IMPORTANT: publish_ready() is called INSIDE control_plane_task, after
+        // all NATS subscriptions are established. This prevents a race where helm
+        // receives engine.ready and immediately sends engine.register before
+        // control_plane_task's register_sub is live.
+        let ctrl_task = tokio::spawn(control_plane_task(Arc::clone(&self.ctx)));
+        tokio::pin!(ctrl_task);
 
         info!(
-            herald_id = %self.herald_id,
-            tf = ?self.tf,
+            herald_id = %self.ctx.herald_id,
+            tf = ?self.ctx.tf,
             "herald ready (WebSocket ingestion mode)"
         );
 
@@ -179,90 +183,25 @@ impl Handler {
                 // feed tasks (binance + okx) have exited. At that point herald has no
                 // live data source and must restart to reconnect.
                 event = self.bar_rx.recv() => match event {
-                    Some(event) => self.handle_bar_event(event).await,
+                    Some(event) => self.ctx.handle_bar_event(event).await,
                     None => {
                         error!(
-                            herald_id = %self.herald_id,
+                            herald_id = %self.ctx.herald_id,
                             "bar feed channel closed — all WS ingesters exited; herald exiting"
                         );
                         break;
                     }
                 },
 
-                // NATS subscriptions return None when the server stalls or the
-                // connection is temporarily interrupted. Previously this would
-                // silently disable the arm; if all subs closed simultaneously the
-                // `else` arm fired and herald exited with Ok(()).
-                //
-                // Fix: resubscribe immediately on None. If NATS is genuinely gone
-                // the subscribe() call will return Err and propagate — giving a
-                // clear error rather than a silent exit.
-                msg = reset_sub.next() => match msg {
-                    Some(msg) => self.handle_reset(msg).await,
-                    None => {
-                        warn!(subject = SUBJ_RESET, "NATS subscription closed — resubscribing");
-                        reset_sub = self.client.subscribe(SUBJ_RESET).await?;
-                    }
-                },
-                msg = register_sub.next() => match msg {
-                    Some(msg) => self.handle_register(msg).await,
-                    None => {
-                        warn!(subject = SUBJ_REGISTER, "NATS subscription closed — resubscribing");
-                        register_sub = self.client.subscribe(SUBJ_REGISTER).await?;
-                    }
-                },
-                msg = validate_sub.next() => match msg {
-                    Some(msg) => self.handle_validate(msg).await,
-                    None => {
-                        warn!(subject = SUBJ_VALIDATE, "NATS subscription closed — resubscribing");
-                        validate_sub = self.client.subscribe(SUBJ_VALIDATE).await?;
-                    }
-                },
-                msg = deregister_sub.next() => match msg {
-                    Some(msg) => self.handle_deregister(msg).await,
-                    None => {
-                        warn!(subject = SUBJ_DEREGISTER, "NATS subscription closed — resubscribing");
-                        deregister_sub = self.client.subscribe(SUBJ_DEREGISTER).await?;
-                    }
-                },
-                msg = list_sub.next() => match msg {
-                    Some(msg) => self.handle_list(msg).await,
-                    None => {
-                        warn!(subject = SUBJ_LIST, "NATS subscription closed — resubscribing");
-                        list_sub = self.client.subscribe(SUBJ_LIST).await?;
-                    }
-                },
-                msg = ping_sub.next() => match msg {
-                    Some(msg) => self.handle_ping(msg).await,
-                    None => {
-                        warn!(subject = SUBJ_PING, "NATS subscription closed — resubscribing");
-                        ping_sub = self.client.subscribe(SUBJ_PING).await?;
-                    }
-                },
-                msg = heartbeat_sub.next() => match msg {
-                    Some(msg) => self.handle_heartbeat(msg).await,
-                    None => {
-                        warn!(subject = SUBJ_HEARTBEAT, "NATS subscription closed — resubscribing");
-                        heartbeat_sub = self.client.subscribe(SUBJ_HEARTBEAT).await?;
-                    }
-                },
-                msg = stats_sub.next() => match msg {
-                    Some(msg) => self.handle_stats(msg).await,
-                    None => {
-                        warn!(subject = SUBJ_STATS, "NATS subscription closed — resubscribing");
-                        stats_sub = self.client.subscribe(SUBJ_STATS).await?;
-                    }
-                },
-
                 _ = watchdog.tick() => {
-                    let last_ms = self.atomics.last_bar_at_ms.load(Ordering::Relaxed);
+                    let last_ms = self.ctx.atomics.last_bar_at_ms.load(Ordering::Relaxed);
                     let now_ms = chrono::Utc::now().timestamp_millis() as u64;
-                    let bars_published = self.atomics.bars_published.load(Ordering::Relaxed);
-                    let nats_errs = self.atomics.nats_bars_errors.load(Ordering::Relaxed);
+                    let bars_published = self.ctx.atomics.bars_published.load(Ordering::Relaxed);
+                    let nats_errs = self.ctx.atomics.nats_bars_errors.load(Ordering::Relaxed);
 
                     if last_ms == 0 {
                         warn!(
-                            herald_id = %self.herald_id,
+                            herald_id = %self.ctx.herald_id,
                             watchdog_secs = BAR_WATCHDOG_SECS,
                             "watchdog: no bars received yet since startup — WS feed may not be connected"
                         );
@@ -272,7 +211,7 @@ impl Handler {
                             watchdog_stall_count += 1;
                             if watchdog_stall_count >= 3 {
                                 error!(
-                                    herald_id = %self.herald_id,
+                                    herald_id = %self.ctx.herald_id,
                                     elapsed_secs,
                                     watchdog_secs = BAR_WATCHDOG_SECS,
                                     stall_ticks = watchdog_stall_count,
@@ -283,7 +222,7 @@ impl Handler {
                                 counter!("herald_feed_stalled_total").increment(1);
                             } else {
                                 warn!(
-                                    herald_id = %self.herald_id,
+                                    herald_id = %self.ctx.herald_id,
                                     elapsed_secs,
                                     watchdog_secs = BAR_WATCHDOG_SECS,
                                     bars_published_total = bars_published,
@@ -293,15 +232,15 @@ impl Handler {
                             }
                         } else {
                             watchdog_stall_count = 0;
-                            let hand_count = self.registry.hand_count();
-                            let unique_syms = self.ledger.keys()
+                            let hand_count = self.ctx.registry.hand_count();
+                            let unique_syms = self.ctx.ledger.keys()
                                 .into_iter()
                                 .map(|(s, _)| s)
                                 .collect::<std::collections::HashSet<_>>()
                                 .len();
                             gauge!("herald_ledger_symbols").set(unique_syms as f64);
                             info!(
-                                herald_id = %self.herald_id,
+                                herald_id = %self.ctx.herald_id,
                                 bars_published_total = bars_published,
                                 nats_bars_errors_total = nats_errs,
                                 secs_since_last_bar = elapsed_secs,
@@ -315,7 +254,7 @@ impl Handler {
                     // Warn when NATS error rate is elevated (closed bar publish failures).
                     if nats_errs > 0 {
                         warn!(
-                            herald_id = %self.herald_id,
+                            herald_id = %self.ctx.herald_id,
                             nats_bars_errors_total = nats_errs,
                             "watchdog: NATS publish errors detected — check NATS connectivity"
                         );
@@ -325,13 +264,33 @@ impl Handler {
                 result = &mut publisher_task => {
                     match result {
                         Ok(()) => error!(
-                            herald_id = %self.herald_id,
+                            herald_id = %self.ctx.herald_id,
                             "signal publisher task exited unexpectedly — all future signals will be dropped; herald shutting down"
                         ),
                         Err(e) => error!(
-                            herald_id = %self.herald_id,
+                            herald_id = %self.ctx.herald_id,
                             err = %e,
                             "signal publisher task panicked — herald shutting down"
+                        ),
+                    }
+                    break;
+                },
+
+                result = &mut ctrl_task => {
+                    match result {
+                        Ok(Ok(())) => error!(
+                            herald_id = %self.ctx.herald_id,
+                            "control plane task exited unexpectedly — NATS API unavailable; herald shutting down"
+                        ),
+                        Ok(Err(e)) => error!(
+                            herald_id = %self.ctx.herald_id,
+                            err = %e,
+                            "control plane task failed — herald shutting down"
+                        ),
+                        Err(e) => error!(
+                            herald_id = %self.ctx.herald_id,
+                            err = %e,
+                            "control plane task panicked — herald shutting down"
                         ),
                     }
                     break;
@@ -340,7 +299,11 @@ impl Handler {
         }
         Ok(())
     }
+}
 
+// ── HandlerCtx methods ────────────────────────────────────────────────────────
+
+impl HandlerCtx {
     async fn publish_ready(&self) {
         let mut symbols: Vec<String> = self.registry.list_hands()
             .into_iter()
@@ -369,6 +332,23 @@ impl Handler {
         let ts = bar.timestamp;
         self.atomics.last_bar_at_ms.store(received_at_ms as u64, Ordering::Relaxed);
 
+        // Counts every bar dequeued from the bar channel, regardless of TF or
+        // closed/forming state. Rate of this counter = handler processing throughput.
+        counter!(
+            "herald_bar_channel_dequeued_total",
+            "tf"     => tf.to_string(),
+            "closed" => if closed { "true" } else { "false" },
+        ).increment(1);
+
+        // Per-bar depth update — far higher resolution than the 180s watchdog.
+        // gauge write is an atomic store, negligible overhead at any realistic bar rate.
+        let bar_max  = self.bar_tx_mon.max_capacity() as f64;
+        let bar_used = bar_max - self.bar_tx_mon.capacity() as f64;
+        gauge!("herald_bar_channel_depth").set(bar_used);
+        if bar_max > 0.0 {
+            gauge!("herald_bar_channel_utilization").set(bar_used / bar_max);
+        }
+
         // Forming bar — update live_bar in ledger (no observer fan-out, so
         // strategies still evaluate only on closed bars). Publish per-TF to
         // bars.live.{tf}.{symbol} so the gateway/chart can tick the current candle
@@ -382,23 +362,10 @@ impl Handler {
         // Dropping a forming-bar publish under NATS pressure is acceptable — clients
         // will see slightly stale live candles until NATS recovers.
         if !closed {
+            let client  = self.client.clone();
             let payload = BarMsg::from(&bar).encode_to_vec();
             let subject = format!("{}.live.{}.{}", SUBJ_BARS, tf, symbol);
-            match tokio::time::timeout(
-                FORMING_BAR_PUBLISH_TIMEOUT,
-                self.client.publish(subject, payload.into()),
-            ).await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => debug!(%symbol, ?tf, err = %e, "forming bar publish failed"),
-                Err(_timeout) => {
-                    warn!(
-                        %symbol, ?tf,
-                        timeout_ms = FORMING_BAR_PUBLISH_TIMEOUT.as_millis(),
-                        "forming bar NATS publish timed out — NATS is slow, skipping to avoid cascade"
-                    );
-                    counter!("herald_nats_publish_errors_total", "subject" => "bars.live").increment(1);
-                }
-            }
+            tokio::spawn(async move { let _ = client.publish(subject, payload.into()).await; });
             self.ledger.advance_live(tf, bar);
             return;
         }
@@ -425,7 +392,7 @@ impl Handler {
                     "symbol" => symbol.clone(),
                     "tf"     => tf.to_string(),
                 ).increment(1);
-                info!(
+                debug!(
                     %symbol, tf = %tf.to_string(), bar_ts = ts,
                     close = bar.close, latency_ms,
                     advance_us,
@@ -454,6 +421,7 @@ impl Handler {
                         %symbol, ?tf, publish_ms,
                         "closed bar NATS publish took too long — NATS may be backing up"
                     );
+                    counter!("herald_nats_slow_closed_bar_publish_total").increment(1);
                 }
                 debug!(%symbol, nats_subject = %subject, "bar published to NATS");
                 counter!("herald_nats_bars_published_total", "symbol" => symbol.clone()).increment(1);
@@ -498,6 +466,10 @@ impl Handler {
         } else {
             Some(now_ms.saturating_sub(last_bar_at_ms) / 1000)
         };
+        let bar_max     = self.bar_tx_mon.max_capacity();
+        let bar_depth   = bar_max.saturating_sub(self.bar_tx_mon.capacity());
+        let (sig_depth, sig_cap) = self.registry.signal_channel_stats();
+
         let data = serde_json::json!({
             "herald_id":              self.herald_id,
             "uptime_ms":              self.start_time.elapsed().as_millis() as u64,
@@ -509,6 +481,10 @@ impl Handler {
             "nats_signals_errors_total": self.atomics.nats_signals_errors.load(Ordering::Relaxed),
             "last_bar_at_ms":         last_bar_at_ms,
             "secs_since_last_bar":    secs_since_last_bar,
+            "bar_channel_depth":      bar_depth,
+            "bar_channel_capacity":   bar_max,
+            "signal_channel_depth":   sig_depth,
+            "signal_channel_capacity":sig_cap,
         });
         let resp = serde_json::json!({"ok": true, "data": data}).to_string();
         let _ = self.client.publish(reply, resp.into_bytes().into()).await;
@@ -532,25 +508,26 @@ impl Handler {
     // ── engine.register ──────────────────────────────────────────────────────
 
     async fn handle_register(&self, msg: async_nats::Message) {
-        debug!(subject = SUBJ_REGISTER, msg_bytes = msg.payload.len(), "handle_register");
         let req = match RegisterMsg::decode(msg.payload.as_ref()) {
             Ok(r) => r,
-            Err(e) => { error!(err = %e, "failed to decode RegisterMsg"); return; }
+            Err(e) => { error!(err = %e, "register: failed to decode"); return; }
         };
-        // Build the ledger key: "{exchange}:{symbol}" when exchange is set,
-        // plain symbol otherwise (tests / backtest-only setups).
         let ledger_key = if req.exchange.is_empty() {
             req.symbol.clone()
         } else {
             format!("{}:{}", req.exchange, req.symbol)
         };
-        info!(hand_id = %req.hand_id, symbol = %ledger_key, "registering hand");
-        // Timeframe is required — strategies are TF-specific so silent fallback
-        // to herald's base TF would run a script designed for H1 on M1 bars.
+        let register_start = Instant::now();
+        info!(
+            hand_id = %req.hand_id, helm_id = %req.helm_id,
+            symbol = %ledger_key, timeframe = %req.timeframe,
+            is_future = req.is_future, script_len = req.script.len(),
+            "register request"
+        );
         let target_tf = match req.timeframe.as_str() {
             "" => {
                 let err = "timeframe is required (e.g. \"M1\", \"M15\", \"H1\")";
-                warn!(hand_id = %req.hand_id, "register rejected: {err}");
+                warn!(hand_id = %req.hand_id, elapsed_ms = register_start.elapsed().as_millis(), "register rejected: {err}");
                 if let Some(reply) = msg.reply {
                     let ack = serde_json::json!({"ok": false, "error": err}).to_string();
                     let _ = self.client.publish(reply, ack.into_bytes().into()).await;
@@ -563,7 +540,7 @@ impl Handler {
                     let err = format!(
                         "invalid timeframe `{s}` (supported: M1, M3, M5, M15, M30, H1, H2, H4, H6, H12, D1, W1, MN)"
                     );
-                    warn!(hand_id = %req.hand_id, "register rejected: {err}");
+                    warn!(hand_id = %req.hand_id, elapsed_ms = register_start.elapsed().as_millis(), "register rejected: {err}");
                     if let Some(reply) = msg.reply {
                         let ack = serde_json::json!({"ok": false, "error": err}).to_string();
                         let _ = self.client.publish(reply, ack.into_bytes().into()).await;
@@ -572,11 +549,6 @@ impl Handler {
                 }
             },
         };
-        // No separate validation pass: `Registry::register` builds the real
-        // strategy via `Handle::new`, which runs the same Rhai compile +
-        // indicator instantiation that any dry-run probe would do. Errors
-        // surface here as `Err(_)` and are returned in the ack. Avoids the
-        // double-compile we used to do (probe-then-discard + register build).
         let result = self.registry.register(
             req.hand_id.clone(), req.helm_id.clone(), ledger_key.clone(),
             req.exchange.clone(), req.is_future,
@@ -585,81 +557,120 @@ impl Handler {
         if let Some(reply) = msg.reply {
             let ack = match result {
                 Ok(()) => {
-                    info!(hand_id = %req.hand_id, symbol = %ledger_key, "hand registered");
+                    info!(
+                        hand_id = %req.hand_id, symbol = %ledger_key,
+                        elapsed_ms = register_start.elapsed().as_millis(),
+                        "register ok"
+                    );
                     serde_json::json!({"ok": true}).to_string()
                 }
                 Err(e) => {
-                    warn!(hand_id = %req.hand_id, err = %e, "failed to register hand");
+                    warn!(
+                        hand_id = %req.hand_id, symbol = %ledger_key,
+                        elapsed_ms = register_start.elapsed().as_millis(),
+                        err = %e, "register rejected"
+                    );
                     serde_json::json!({"ok": false, "error": e.to_string()}).to_string()
                 }
             };
             let _ = self.client.publish(reply, ack.into_bytes().into()).await;
+        } else {
+            // fire-and-forget register (no reply subject) — log outcome anyway
+            match result {
+                Ok(()) => info!(hand_id = %req.hand_id, symbol = %ledger_key, elapsed_ms = register_start.elapsed().as_millis(), "register ok (no-reply)"),
+                Err(e) => warn!(hand_id = %req.hand_id, symbol = %ledger_key, err = %e, "register rejected (no-reply)"),
+            }
         }
     }
 
     // ── engine.validate ──────────────────────────────────────────────────────
-    //
-    // Dry-run version of engine.register: validates timeframe + compiles the
-    // script without inserting anything into the registry. Used by helm at
-    // hand-create time so invalid strategies are rejected before hitting the DB.
 
     async fn handle_validate(&self, msg: async_nats::Message) {
-        debug!(subject = SUBJ_VALIDATE, msg_bytes = msg.payload.len(), "handle_validate");
         let req = match RegisterMsg::decode(msg.payload.as_ref()) {
             Ok(r) => r,
             Err(e) => { error!(err = %e, "failed to decode RegisterMsg for validate"); return; }
         };
 
+        let validate_start = Instant::now();
+        info!(symbol = %req.symbol, timeframe = %req.timeframe, "validate request");
+
         macro_rules! reject {
-            ($reply:expr, $err:expr) => {{
-                warn!(hand_id = %req.hand_id, "validate rejected: {}", $err);
-                if let Some(reply) = $reply {
-                    let ack = serde_json::json!({"ok": false, "error": $err}).to_string();
+            ($err:expr) => {{
+                let err: String = $err.into();
+                warn!(
+                    symbol = %req.symbol, timeframe = %req.timeframe,
+                    elapsed_ms = validate_start.elapsed().as_millis(),
+                    err = %err, "validate rejected"
+                );
+                if let Some(reply) = msg.reply {
+                    let ack = serde_json::json!({"ok": false, "error": err}).to_string();
                     let _ = self.client.publish(reply, ack.into_bytes().into()).await;
                 }
                 return;
             }};
         }
 
-        let target_tf = match req.timeframe.as_str() {
-            "" => reject!(msg.reply, "timeframe is required (e.g. \"M1\", \"M15\", \"H1\")"),
-            s => match parse_timeframe_str(s) {
-                Some(tf) => tf,
-                None => reject!(msg.reply, format!(
-                    "invalid timeframe `{s}` (supported: M1, M3, M5, M15, M30, H1, H2, H4, H6, H12, D1, W1, MN)"
-                )),
-            },
+        // 1. Symbol must be provided.
+        if req.symbol.is_empty() {
+            reject!("symbol is required");
+        }
+
+        // 2. Timeframe must be valid.
+        let target_tf = match parse_timeframe_str(&req.timeframe) {
+            Some(tf) => tf,
+            None => reject!(format!(
+                "invalid timeframe `{}` (supported: M1, M3, M5, M15, M30, H1, H2, H4, H6, H12, D1, W1, MN)",
+                req.timeframe
+            )),
         };
 
-        let compile_result: anyhow::Result<()> = {
-            let htfs = probe_script_htfs(&req.script);
-            if !htfs.is_empty() {
-                // V2 path — multi-TF script.
-                if let Some(bad) = htfs.iter().find(|h| h.duration_ms() <= target_tf.duration_ms()) {
-                    Err(anyhow::anyhow!(
-                        "script declares TF `{bad}` not larger than hand target TF `{target_tf}`"
-                    ))
-                } else {
-                    MtfScriptStrategy::from_script_live(&req.script, target_tf)
-                        .map(|_| ())
-                        .map_err(|e| anyhow::anyhow!("{e}"))
-                }
-            } else {
-                // V1 path — single-TF script.
-                ScriptStrategy::from_script_live(&req.script)
-                    .map(|_| ())
-                    .map_err(|e| anyhow::anyhow!("{e}"))
-            }
+        // 3. Symbol must be active in the ledger (herald is ingesting it).
+        let ledger_key = if req.exchange.is_empty() {
+            req.symbol.clone()
+        } else {
+            format!("{}:{}", req.exchange, req.symbol)
         };
+        let known = self.ledger.keys().into_iter().any(|(sym, _)| sym == ledger_key);
+        if !known {
+            reject!(format!("symbol `{ledger_key}` is not available (not currently ingested)"));
+        }
+
+        // 4. Script must compile (CPU-bound — run off the async executor).
+        let script = req.script.clone();
+        let compile_result: anyhow::Result<()> = tokio::task::spawn_blocking(move || {
+            let htfs = probe_script_htfs(&script);
+            if !htfs.is_empty() {
+                if let Some(bad) = htfs.iter().find(|h| h.duration_ms() <= target_tf.duration_ms()) {
+                    return Err(anyhow::anyhow!(
+                        "script declares TF `{bad}` which is not larger than hand timeframe `{target_tf}`"
+                    ));
+                }
+                MtfScriptStrategy::from_script_live(&script, target_tf)
+                    .map(|_| ()).map_err(|e| anyhow::anyhow!("{e}"))
+            } else {
+                ScriptStrategy::from_script_live(&script)
+                    .map(|_| ()).map_err(|e| anyhow::anyhow!("{e}"))
+            }
+        })
+        .await
+        .unwrap_or_else(|e| Err(anyhow::anyhow!("validate task panicked: {e}")));
 
         if let Some(reply) = msg.reply {
             let ack = match compile_result {
                 Ok(()) => {
-                    info!(hand_id = %req.hand_id, timeframe = %req.timeframe, "validate ok");
+                    info!(
+                        symbol = %req.symbol, timeframe = %req.timeframe,
+                        elapsed_ms = validate_start.elapsed().as_millis(),
+                        "validate ok"
+                    );
                     serde_json::json!({"ok": true}).to_string()
                 }
                 Err(e) => {
-                    warn!(hand_id = %req.hand_id, err = %e, "validate rejected");
+                    warn!(
+                        symbol = %req.symbol, timeframe = %req.timeframe,
+                        elapsed_ms = validate_start.elapsed().as_millis(),
+                        err = %e, "validate rejected"
+                    );
                     serde_json::json!({"ok": false, "error": e.to_string()}).to_string()
                 }
             };
@@ -776,6 +787,90 @@ impl Handler {
         let ok = missing.is_empty() && orphan.is_empty();
         let resp = HeartbeatResponse { ok, missing, registered, orphan };
         let _ = self.client.publish(reply, resp.encode_to_vec().into()).await;
+    }
+}
+
+// ── NATS control plane task ───────────────────────────────────────────────────
+//
+// Runs all NATS req/rep subjects in a dedicated task, isolated from the bar
+// ingestion loop. This prevents high-frequency bar events from starving
+// engine.validate / engine.register replies (which would time out at the
+// helm caller even though herald is healthy).
+
+async fn control_plane_task(ctx: Arc<HandlerCtx>) -> anyhow::Result<()> {
+    let mut reset_sub      = ctx.client.subscribe(SUBJ_RESET).await?;
+    let mut register_sub   = ctx.client.subscribe(SUBJ_REGISTER).await?;
+    let mut validate_sub   = ctx.client.subscribe(SUBJ_VALIDATE).await?;
+    let mut deregister_sub = ctx.client.subscribe(SUBJ_DEREGISTER).await?;
+    let mut list_sub       = ctx.client.subscribe(SUBJ_LIST).await?;
+    let mut ping_sub       = ctx.client.subscribe(SUBJ_PING).await?;
+    let mut heartbeat_sub  = ctx.client.subscribe(SUBJ_HEARTBEAT).await?;
+    let mut stats_sub      = ctx.client.subscribe(SUBJ_STATS).await?;
+
+    // All subscriptions are live — safe to announce readiness.
+    // Helm receives engine.ready and immediately sends engine.register;
+    // publishing here guarantees register_sub is already listening.
+    ctx.publish_ready().await;
+
+    loop {
+        tokio::select! {
+            msg = reset_sub.next() => match msg {
+                Some(msg) => ctx.handle_reset(msg).await,
+                None => {
+                    warn!(subject = SUBJ_RESET, "NATS subscription closed — resubscribing");
+                    reset_sub = ctx.client.subscribe(SUBJ_RESET).await?;
+                }
+            },
+            msg = register_sub.next() => match msg {
+                Some(msg) => ctx.handle_register(msg).await,
+                None => {
+                    warn!(subject = SUBJ_REGISTER, "NATS subscription closed — resubscribing");
+                    register_sub = ctx.client.subscribe(SUBJ_REGISTER).await?;
+                }
+            },
+            msg = validate_sub.next() => match msg {
+                Some(msg) => ctx.handle_validate(msg).await,
+                None => {
+                    warn!(subject = SUBJ_VALIDATE, "NATS subscription closed — resubscribing");
+                    validate_sub = ctx.client.subscribe(SUBJ_VALIDATE).await?;
+                }
+            },
+            msg = deregister_sub.next() => match msg {
+                Some(msg) => ctx.handle_deregister(msg).await,
+                None => {
+                    warn!(subject = SUBJ_DEREGISTER, "NATS subscription closed — resubscribing");
+                    deregister_sub = ctx.client.subscribe(SUBJ_DEREGISTER).await?;
+                }
+            },
+            msg = list_sub.next() => match msg {
+                Some(msg) => ctx.handle_list(msg).await,
+                None => {
+                    warn!(subject = SUBJ_LIST, "NATS subscription closed — resubscribing");
+                    list_sub = ctx.client.subscribe(SUBJ_LIST).await?;
+                }
+            },
+            msg = ping_sub.next() => match msg {
+                Some(msg) => ctx.handle_ping(msg).await,
+                None => {
+                    warn!(subject = SUBJ_PING, "NATS subscription closed — resubscribing");
+                    ping_sub = ctx.client.subscribe(SUBJ_PING).await?;
+                }
+            },
+            msg = heartbeat_sub.next() => match msg {
+                Some(msg) => ctx.handle_heartbeat(msg).await,
+                None => {
+                    warn!(subject = SUBJ_HEARTBEAT, "NATS subscription closed — resubscribing");
+                    heartbeat_sub = ctx.client.subscribe(SUBJ_HEARTBEAT).await?;
+                }
+            },
+            msg = stats_sub.next() => match msg {
+                Some(msg) => ctx.handle_stats(msg).await,
+                None => {
+                    warn!(subject = SUBJ_STATS, "NATS subscription closed — resubscribing");
+                    stats_sub = ctx.client.subscribe(SUBJ_STATS).await?;
+                }
+            },
+        }
     }
 }
 

@@ -12,6 +12,7 @@ use axum::{
     response::Response,
     Json,
 };
+use metrics::{counter, histogram};
 use tracing::warn;
 
 use super::duckdb_helpers as duck;
@@ -45,6 +46,7 @@ pub async fn unified_data(
     AxumPath((source, symbol)): AxumPath<(String, String)>,
     Json(req): Json<UnifiedDataRequest>,
 ) -> Response {
+    let t0 = std::time::Instant::now();
     let source = source.to_lowercase();
     if !VALID_SOURCES.contains(&source.as_str()) {
         return err(
@@ -128,10 +130,14 @@ pub async fn unified_data(
             let log_sym     = parquet_sym.clone();
             let log_tf      = tf_str.clone();
 
+            counter!("herald_data_duckdb_fallback_total", "source" => source.clone()).increment(1);
+            let duck_t0 = std::time::Instant::now();
             let duck_result = tokio::task::spawn_blocking(move || {
                 duck::query_bars_before(&data_dir, &parquet_sym, &tf_str, bms, climit)
             })
             .await;
+            histogram!("herald_data_duckdb_duration_ms", "source" => source.clone())
+                .record(duck_t0.elapsed().as_millis() as f64);
 
             match duck_result {
                 Ok(Ok(bars)) if !bars.is_empty() => {
@@ -161,8 +167,13 @@ pub async fn unified_data(
     }
 
     if !want_candles && !has_ledger_state {
+        counter!("herald_data_requests_total", "source" => source.clone(), "result" => "not_found").increment(1);
         return err(StatusCode::NOT_FOUND, format!("no ledger state for {ledger_key}"));
     }
+
+    counter!("herald_data_requests_total", "source" => source.clone(), "result" => "ok").increment(1);
+    histogram!("herald_data_request_duration_ms", "source" => source.clone())
+        .record(t0.elapsed().as_millis() as f64);
 
     ok(UnifiedDataResponse {
         source,

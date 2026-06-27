@@ -278,6 +278,14 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
         self.groups.iter().map(|e| e.value().lock().len()).sum()
     }
 
+    /// Returns `(depth, max_capacity)` of the signal channel.
+    /// `depth = max_capacity - available_permits`.
+    pub fn signal_channel_stats(&self) -> (usize, usize) {
+        let max_cap = self.signal_tx.max_capacity();
+        let avail   = self.signal_tx.capacity();
+        (max_cap.saturating_sub(avail), max_cap)
+    }
+
     fn evaluate_and_publish(&self, symbol: &str, tf: Timeframe, outcome: &AdvanceOutcome) {
         // Only evaluate on base-TF advances. HTF alignment is handled
         // per-handle inside on_bar_base via is_htf_align_point.
@@ -381,6 +389,14 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
             "herald_bar_to_signal_latency_ms",
             "symbol" => symbol.to_string(), "tf" => tf.to_string(),
         ).record(age_ms as f64);
+
+        // Per-bar signal channel depth — updated every base-TF advance that emits signals.
+        let sig_max  = self.signal_tx.max_capacity() as f64;
+        let sig_used = sig_max - self.signal_tx.capacity() as f64;
+        metrics::gauge!("herald_signal_channel_depth").set(sig_used);
+        if sig_max > 0.0 {
+            metrics::gauge!("herald_signal_channel_utilization").set(sig_used / sig_max);
+        }
 
         // Signal timestamp = bar close time, not open.
         for (hand_id, helm_id, mut signal) in emitted {

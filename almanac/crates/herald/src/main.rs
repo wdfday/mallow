@@ -240,6 +240,9 @@ async fn main() -> Result<()> {
     if sym_cfg.binance.is_empty() && sym_cfg.okx.is_empty() {
         warn!("no symbols configured — herald will receive no live bars");
     }
+    // Keep one clone alive for channel-depth metrics in the handler watchdog.
+    // This sender is never used to send bars; it exists only to read .capacity().
+    let bar_tx_mon = bar_tx.clone();
     drop(bar_tx);
 
     // ── REST gap-fill ─────────────────────────────────────────────────────────
@@ -272,7 +275,7 @@ async fn main() -> Result<()> {
     tracing::info!(pid, "herald main loop starting");
 
     // ── Main loop ─────────────────────────────────────────────────────────────
-    let handler = Handler::new(client, ledger, registry, tf, bar_rx, sig_rx, ws_latency);
+    let handler = Handler::new(client, ledger, registry, tf, bar_rx, bar_tx_mon, sig_rx, ws_latency);
     let mut handler_task = tokio::spawn(handler.run());
 
     // Race handler against OS shutdown signals.

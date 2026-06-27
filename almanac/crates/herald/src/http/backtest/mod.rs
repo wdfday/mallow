@@ -131,12 +131,13 @@ pub async fn run_backtest(
     Json(req): Json<BacktestRequest>,
 ) -> Response {
     let Some(_permit) = try_acquire(&state) else {
+        metrics::counter!("herald_backtest_requests_total", "type" => "named", "result" => "rejected").increment(1);
         return too_many_requests();
     };
     info!(strategy = %req.strategy, symbol = %req.symbol, "HTTP backtest request");
     let mut req = req;
     inject_weekly_overrides(&state, &mut req);
-    match run_blocking(Arc::clone(&state.data_dir), req).await {
+    match run_blocking(Arc::clone(&state.data_dir), req, "named").await {
         Ok(report) => ok(report),
         Err(r) => r,
     }
@@ -159,6 +160,7 @@ pub async fn run_backtest_script(
     Json(req): Json<ScriptBacktestRequest>,
 ) -> Response {
     let Some(_permit) = try_acquire(&state) else {
+        metrics::counter!("herald_backtest_requests_total", "type" => "script", "result" => "rejected").increment(1);
         return too_many_requests();
     };
 
@@ -167,7 +169,7 @@ pub async fn run_backtest_script(
     let started_at = std::time::Instant::now();
     let mut base: BacktestRequest = req.into();
     inject_weekly_overrides(&state, &mut base);
-    let report = match run_blocking(Arc::clone(&state.data_dir), base).await {
+    let report = match run_blocking(Arc::clone(&state.data_dir), base, "script").await {
         Ok(r)  => r,
         Err(r) => return r,
     };
@@ -203,6 +205,7 @@ pub async fn run_backtest_mtf(
     Json(req): Json<MtfBacktestRequest>,
 ) -> Response {
     let Some(_permit) = try_acquire(&state) else {
+        metrics::counter!("herald_backtest_requests_total", "type" => "mtf", "result" => "rejected").increment(1);
         return too_many_requests();
     };
     info!(
@@ -224,18 +227,22 @@ pub async fn run_backtest_mtf(
         Err(_elapsed) => {
             warn!(elapsed_ms, timeout_secs = 300u64, "MTF backtest timed out");
             metrics::counter!("herald_backtest_timeouts_total").increment(1);
+            metrics::counter!("herald_backtest_requests_total", "type" => "mtf", "result" => "timeout").increment(1);
             err(StatusCode::REQUEST_TIMEOUT, "backtest timed out — reduce date range or try again")
         }
         Ok(Ok(Ok(report))) => {
-            histogram!("herald_backtest_duration_ms").record(elapsed_ms);
+            histogram!("herald_backtest_duration_ms", "type" => "mtf").record(elapsed_ms);
+            metrics::counter!("herald_backtest_requests_total", "type" => "mtf", "result" => "ok").increment(1);
             ok(report)
         }
         Ok(Ok(Err(e))) => {
             warn!(error = %e, "MTF backtest failed");
+            metrics::counter!("herald_backtest_requests_total", "type" => "mtf", "result" => "error").increment(1);
             err(StatusCode::BAD_REQUEST, e.to_string())
         }
         Ok(Err(e)) => {
             error!(error = %e, "MTF backtest spawn_blocking panicked");
+            metrics::counter!("herald_backtest_requests_total", "type" => "mtf", "result" => "error").increment(1);
             err(StatusCode::INTERNAL_SERVER_ERROR, "internal engine error")
         }
     }
@@ -266,6 +273,7 @@ fn try_acquire(state: &HttpState) -> Option<BacktestPermit> {
 pub(super) async fn run_blocking(
     data_dir: Arc<std::path::PathBuf>,
     req: BacktestRequest,
+    kind: &'static str,
 ) -> Result<BacktestResponse, Response> {
     const BACKTEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
     let t0 = std::time::Instant::now();
@@ -276,18 +284,22 @@ pub(super) async fn run_blocking(
         Err(_elapsed) => {
             warn!(elapsed_ms, timeout_secs = 300u64, "backtest timed out");
             metrics::counter!("herald_backtest_timeouts_total").increment(1);
+            metrics::counter!("herald_backtest_requests_total", "type" => kind, "result" => "timeout").increment(1);
             Err(err(StatusCode::REQUEST_TIMEOUT, "backtest timed out — reduce date range or try again"))
         }
         Ok(Ok(Ok(resp))) => {
-            histogram!("herald_backtest_duration_ms").record(elapsed_ms);
+            histogram!("herald_backtest_duration_ms", "type" => kind).record(elapsed_ms);
+            metrics::counter!("herald_backtest_requests_total", "type" => kind, "result" => "ok").increment(1);
             Ok(resp)
         }
         Ok(Ok(Err(e))) => {
             warn!(error = %e, "backtest failed");
+            metrics::counter!("herald_backtest_requests_total", "type" => kind, "result" => "error").increment(1);
             Err(err(StatusCode::BAD_REQUEST, e.to_string()))
         }
         Ok(Err(e)) => {
             error!(error = %e, "backtest spawn_blocking panicked");
+            metrics::counter!("herald_backtest_requests_total", "type" => kind, "result" => "error").increment(1);
             Err(err(StatusCode::INTERNAL_SERVER_ERROR, "internal engine error"))
         }
     }

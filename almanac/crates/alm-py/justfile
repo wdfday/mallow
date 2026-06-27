@@ -9,6 +9,11 @@ build:
 build-release:
     .venv/bin/maturin develop --release
 
+# Install all required Python dependencies into the local virtual environment
+install-deps:
+    .venv/bin/pip install --upgrade pip
+    .venv/bin/pip install -e .[dev]
+
 # Run all python tests in alm-py
 test:
     .venv/bin/pytest tests/
@@ -19,4 +24,4 @@ test-file file_path:
 
 # Run the end-to-end strategy comparison pipeline (automatically builds in release mode)
 compare: build-release
-    cd notebooks/comparison && ../../../.venv/bin/python run_pipeline.py
+    cd notebooks/comparison && ../../.venv/bin/python run_pipeline.py

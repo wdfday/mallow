@@ -27,8 +27,10 @@ const OKX_MAX_RETRIES: u32 = 8;
 const BINANCE_PAGE: i64 = 1_000;
 /// Bars per OKX history-candles page (API hard cap 300).
 const OKX_PAGE: i64 = 300;
-/// Bars fetched per TF on startup (fills the default ledger window).
+/// Bars fetched per HTF on startup (fills the default ledger window).
 const WINDOW_BARS: i64 = 1_000;
+/// M1 bars fetched on cold start (no Parquet) — matches ledger ring capacity.
+const COLD_SEED_BARS: i64 = 2_000;
 /// Maximum time to wait for a single REST fetch during gap-fill.
 const GAP_FILL_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -269,7 +271,7 @@ pub async fn gap_fill_symbol(
         let to_ms = (now_ms / tf_ms) * tf_ms;
         let from_ms = match base_from_ms {
             Some(t) => t,
-            None => to_ms - WINDOW_BARS * tf_ms,
+            None => to_ms - COLD_SEED_BARS * tf_ms,
         };
         if from_ms < to_ms {
             let label = if base_from_ms.is_some() { "parquet gap" } else { "cold seed" };

@@ -33,12 +33,18 @@ export class ChartState {
      * Run a script backtest over the current bar series.
      *
      * `config_json`: `{"initial_capital":10000,"position_size_pct":1.0,...}`
+     *
+     * `from_ts` / `to_ts`: visible range bounds in Unix **seconds** (0 = no bound).
+     * Bars before `from_ts` are used as indicator warmup only (no trades generated).
+     * Bars after `to_ts` are excluded entirely.
      */
-    backtest(script: string, config_json: string): any;
+    backtest(script: string, config_json: string, from_ts: number, to_ts: number): any;
     /**
      * Run a named-strategy backtest over the current bar series.
+     *
+     * `from_ts` / `to_ts`: visible range bounds in Unix **seconds** (0 = no bound).
      */
-    backtest_named(strategy_name: string, params_json: string, config_json: string): any;
+    backtest_named(strategy_name: string, params_json: string, config_json: string, from_ts: number, to_ts: number): any;
     /**
      * Returns the number of displayable bars (post-transform).
      */
@@ -153,6 +159,12 @@ export function list_mtf_strategies(): any;
  * List all single-TF named strategy keys usable with `ChartState::backtest_named`.
  */
 export function list_strategies(): any;
+
+/**
+ * Metric catalog — mirrors `BacktestReport::catalog()`.
+ * Returns `[{ field, label, unit, description, thresholds, description_vi, thresholds_vi }, ...]`.
+ */
+export function metric_catalog(): any;
 
 /**
  * Compute indicators over a bar series.

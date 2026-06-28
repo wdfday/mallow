@@ -164,9 +164,8 @@ pub mod runner;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod walk_forward;
 
-// Historical bar loading + canonical backtest runner — filesystem/Parquet,
-// native-only. wasm feeds bars straight into `Engine` + `BarVecFeed`.
-#[cfg(not(target_arch = "wasm32"))]
+// `backtest::response` + `backtest::engine_builder` are pure computation — available on all
+// targets including wasm32. The rest of `backtest` (bar loading, disk I/O) is native-only.
 pub mod backtest;
 pub mod curve_compress;
 #[cfg(not(target_arch = "wasm32"))]

@@ -209,200 +209,6 @@ pub(crate) fn build_sizer(cfg: &BtConfig) -> alm_engine::risk::AnySizer {
     }
 }
 
-// ── Portfolio output helper ───────────────────────────────────────────────────
-
-fn collect_trades(portfolio: &alm_core::Portfolio) -> Vec<serde_json::Value> {
-    portfolio.trades.iter()
-        .map(|t| json!({
-            "entry_ts": t.entry_timestamp, "exit_ts": t.exit_timestamp,
-            "entry_price": t.entry_price,  "exit_price": t.exit_price,
-            "qty": t.qty, "pnl": t.pnl,
-            "pnl_pct": t.pnl_pct,  // fraction — FE ×100
-            "commission": t.commission,
-            "mae_pct": t.mae_pct, "mfe_pct": t.mfe_pct,
-            "bars_held": t.bars_held,
-            "exit_reason": t.exit_reason.to_string(),
-            "side": format!("{:?}", t.side).to_lowercase(),
-        }))
-        .collect()
-}
-
-fn collect_fills(portfolio: &alm_core::Portfolio) -> Vec<serde_json::Value> {
-    portfolio.fills.iter()
-        .map(|f| {
-            let leg = f.symbol.split('#').nth(1).and_then(|s| s.parse::<usize>().ok())
-                .map(|n| n.saturating_sub(1)).unwrap_or(0);
-            json!({
-                "t": f.timestamp, "price": f.price, "qty": f.qty,
-                "side": format!("{:?}", f.side).to_lowercase(),
-                "sym": f.symbol, "leg": leg,
-            })
-        })
-        .collect()
-}
-
-/// Build the full nested BacktestResponse JSON that the FE `BacktestReport` interface expects.
-///
-/// The flat `alm_report::BacktestReport` fields are mapped to the same nested sections
-/// produced by the server-side `engine/src/backtest/response.rs::build()`.
-/// Legacy flat aliases (`total_return_pct`, `sharpe_ratio`, `max_drawdown_pct`,
-/// `win_rate_pct`, `total_trades`) are kept at the top level for backward compat.
-fn assemble_nested_output(
-    report: alm_report::BacktestReport,
-    portfolio: &alm_core::Portfolio,
-    trades: Vec<serde_json::Value>,
-    fills: Vec<serde_json::Value>,
-    ind_map: serde_json::Map<String, serde_json::Value>,
-) -> serde_json::Value {
-    // curves.equity — {t, v} format matching CurvePoint interface
-    let equity_curve: Vec<serde_json::Value> = portfolio.equity_curve.iter()
-        .map(|p| json!({ "t": p.timestamp, "v": p.equity }))
-        .collect();
-
-    // curves.drawdown — peak-tracked drawdown as fraction at each bar
-    let mut peak = portfolio.initial_capital;
-    let drawdown_curve: Vec<serde_json::Value> = portfolio.equity_curve.iter()
-        .map(|p| {
-            if p.equity > peak { peak = p.equity; }
-            let dd = if peak > 0.0 { (p.equity - peak) / peak } else { 0.0 };
-            json!({ "t": p.timestamp, "v": dd })
-        })
-        .collect();
-
-    // exposure_pct: fraction of backtest duration spent in a position
-    let exposure_pct = {
-        let total_ms = portfolio.equity_curve
-            .last()
-            .and_then(|last| portfolio.equity_curve.first().map(|f| last.timestamp - f.timestamp))
-            .unwrap_or(0);
-        let held_ms: i64 = portfolio.trades.iter()
-            .map(|t| t.exit_timestamp - t.entry_timestamp)
-            .sum();
-        if total_ms > 0 { held_ms as f64 / total_ms as f64 * 100.0 } else { 0.0 }
-    };
-
-    // monthly_returns: (year, month, pct) → [year, month, pct]
-    let monthly: Vec<[f64; 3]> = report.monthly_returns.iter()
-        .map(|&(y, m, r)| [y as f64, m as f64, r])
-        .collect();
-    // yearly_returns: (year, pct) → [year, pct]
-    let yearly: Vec<[f64; 2]> = report.yearly_returns.iter()
-        .map(|&(y, r)| [y as f64, r])
-        .collect();
-
-    json!({
-        "strategy": report.strategy,
-        "symbol": report.symbol,
-        "timeframe": report.timeframe.to_string(),
-        "bar_count": portfolio.equity_curve.len(),
-
-        // Legacy flat aliases — kept so any FE path that reads these directly still works
-        "total_return_pct": report.total_return_pct,
-        "sharpe_ratio": report.sharpe_ratio,
-        "max_drawdown_pct": report.max_drawdown_pct,
-        "win_rate_pct": report.win_rate_pct,
-        "total_trades": report.total_trades,
-
-        // ── Nested sections matching BacktestResponse / FE BacktestReport interface ──
-
-        "capital": {
-            "initial": report.initial_capital,
-            "final_equity": report.final_equity,
-        },
-        "returns": {
-            "total_pct": report.total_return_pct,
-            "cagr_pct": report.cagr_pct,
-            "annualized_volatility_pct": report.annualized_volatility_pct,
-        },
-        "risk_adjusted": {
-            "sharpe":          report.sharpe_ratio,
-            "sortino":         report.sortino_ratio,
-            "calmar":          report.calmar_ratio,
-            "serenity":        report.serenity_ratio,
-            "omega":           report.omega_ratio,
-            "tail_ratio":      report.tail_ratio,
-            "recovery_factor": report.recovery_factor,
-            "var_95":          report.var_95,
-            "cvar_95":         report.cvar_95,
-        },
-        "drawdown": {
-            "max_pct":           report.max_drawdown_pct,
-            "max_duration_bars": report.max_dd_duration_bars,
-            "avg_pct":           report.avg_drawdown_pct,
-            "ulcer_index":       report.ulcer_index,
-        },
-        "trade_stats": {
-            "total":                   report.total_trades,
-            "win_rate_pct":            report.win_rate_pct,
-            "profit_factor":           report.profit_factor,
-            "payoff_ratio":            report.payoff_ratio,
-            "expectancy":              report.expectancy,
-            "breakeven_win_rate_pct":  report.breakeven_win_rate_pct,
-            "gross_profit_usd":        report.gross_profit_usd,
-            "gross_loss_usd":          report.gross_loss_usd,
-            "avg_win_pct":             report.avg_win_pct,
-            "avg_loss_pct":            report.avg_loss_pct,
-            "avg_duration_hours":      report.avg_trade_duration_hours,
-            "avg_bars_held_winners":   report.avg_bars_held_winners,
-            "avg_bars_held_losers":    report.avg_bars_held_losers,
-            "max_consecutive_wins":    report.max_consecutive_wins,
-            "max_consecutive_losses":  report.max_consecutive_losses,
-            "largest_win_pct":         report.largest_win_pct,
-            "largest_loss_pct":        report.largest_loss_pct,
-            "mfe_capture_ratio":       report.mfe_capture_ratio,
-            "exit_reasons": {
-                "signal":        report.exit_reasons.signal,
-                "stop_loss":     report.exit_reasons.stop_loss,
-                "take_profit":   report.exit_reasons.take_profit,
-                "trailing_stop": report.exit_reasons.trailing_stop,
-                "max_bars":      report.exit_reasons.max_bars,
-                "end_of_data":   report.exit_reasons.end_of_data,
-            },
-        },
-        "distribution": {
-            "skewness":        report.skewness,
-            "excess_kurtosis": report.excess_kurtosis,
-            "sqn":             report.sqn,
-            "psr":             report.psr,
-        },
-        "long_short": {
-            "long_trades":        report.long_stats.count,
-            "long_win_rate_pct":  report.long_stats.win_rate * 100.0,
-            "long_profit_factor": report.long_stats.profit_factor,
-            "short_trades":       report.short_stats.count,
-            "short_win_rate_pct": report.short_stats.win_rate * 100.0,
-            "short_profit_factor": report.short_stats.profit_factor,
-        },
-        "excursion": {
-            "avg_mae_pct":  report.avg_mae_pct,
-            "avg_mfe_pct":  report.avg_mfe_pct,
-            "mae_mfe_ratio": report.mae_mfe_ratio,
-        },
-        "activity": {
-            "trades_per_year":     report.trades_per_year,
-            "exposure_pct":        exposure_pct,
-            "total_commission_usd": report.total_commission_paid,
-            "kelly_pct":           report.kelly_pct,
-        },
-        "curves": {
-            "equity":            equity_curve,
-            "drawdown":          drawdown_curve,
-            "rolling_sharpe":    report.rolling_sharpe,
-            "rolling_sharpe_std": report.rolling_sharpe_std,
-            "rolling_drawdown":  report.rolling_drawdown,
-        },
-        "calendar": {
-            "monthly_returns": monthly,
-            "yearly_returns":  yearly,
-        },
-        "regime_summary": report.regime_summary,
-
-        "trades":           trades,
-        "fills":            fills,
-        "indicator_series": serde_json::Value::Object(ind_map),
-    })
-}
-
 // ── Single-TF backtest engine ─────────────────────────────────────────────────
 
 pub(crate) fn run_strategy(
@@ -410,36 +216,29 @@ pub(crate) fn run_strategy(
     bars: &[Bar],
     strategy: Box<dyn Strategy>,
     cfg: &BtConfig,
-) -> serde_json::Value {
-    use alm_engine::Engine;
+    warmup_until_ms: Option<i64>,
+    to_ts_ms: Option<i64>,
+) -> alm_engine::types::BacktestResponse {
+    use alm_engine::{Engine, backtest::response::build};
+    use alm_engine::types::BacktestRequest;
     use alm_data::BarVecFeed;
 
-    fn intra_bar_mode_from_str(s: Option<&str>) -> alm_core::exit::IntraBarMode {
-        match s {
-            Some("pessimistic") => alm_core::exit::IntraBarMode::Pessimistic,
-            Some("ohlc_heuristic") => alm_core::exit::IntraBarMode::OhlcHeuristic,
-            _ => alm_core::exit::IntraBarMode::Pessimistic,
-        }
-    }
+    let bars = if let Some(to) = to_ts_ms {
+        let idx = bars.partition_point(|b| b.timestamp <= to);
+        &bars[..idx]
+    } else {
+        bars
+    };
 
     let sizer = build_sizer(cfg);
     let mut engine = Engine::sync(cfg.capital, strategy, sizer, cfg.commission, cfg.slippage);
+    engine = engine.with_intra_bar_mode(alm_engine::backtest::engine_builder::intra_bar_mode_from_str(cfg.intra_bar_mode.as_deref()));
 
-    // Apply intra_bar_mode
-    let intra_bar_mode = intra_bar_mode_from_str(cfg.intra_bar_mode.as_deref());
-    engine = engine.with_intra_bar_mode(intra_bar_mode);
-
-    // Apply reverse_policy
-    if let Some(ref policy_str) = cfg.reverse_policy {
-        let policy = match policy_str.as_str() {
-            "exit" => Some(alm_engine::ReversePolicy::Exit),
-            "flip" => Some(alm_engine::ReversePolicy::Flip),
-            _ => None,
-        };
-        if let Some(p) = policy {
-            engine = engine.with_reverse_policy(p);
-        }
-    }
+    let rp = match cfg.reverse_policy.as_deref() {
+        Some("flip") => alm_engine::ReversePolicy::Flip,
+        _ => alm_engine::ReversePolicy::Exit,
+    };
+    engine = engine.with_reverse_policy(rp);
 
     if cfg.max_units > 1 {
         engine = engine.with_pyramiding(cfg.max_units, cfg.max_position_pct);
@@ -447,21 +246,46 @@ pub(crate) fn run_strategy(
             engine = engine.with_independent_legs();
         }
     }
+
+    if let Some(until) = warmup_until_ms {
+        engine = engine.with_warmup_until(until);
+    }
+
     let mut feed = BarVecFeed::new(bars.to_vec(), symbol.to_string());
     let report = engine.run(&mut feed, 0.0);
 
-    let trades = collect_trades(&engine.core.portfolio);
-    let fills  = collect_fills(&engine.core.portfolio);
+    let req = BacktestRequest {
+        strategy: String::new(),
+        symbol: symbol.to_string(),
+        params: None,
+        from: None, to: None,
+        initial_capital: Some(cfg.capital),
+        commission_pct: Some(cfg.commission),
+        slippage_pct: Some(cfg.slippage),
+        risk_free_annual: None,
+        position_size_pct: Some(cfg.size_pct),
+        position_size_usd: cfg.size_usd,
+        position_size_quantity: cfg.size_qty,
+        max_positions: None,
+        strength_sizing: Some(cfg.strength_sizing),
+        size_mode: cfg.size_mode.clone(),
+        risk_per_trade_pct: cfg.risk_per_trade,
+        atr_multiplier: Some(cfg.atr_mult),
+        max_units: Some(cfg.max_units),
+        max_position_pct: Some(cfg.max_position_pct),
+        pyramid: Some(cfg.pyramid),
+        data_source: None,
+        asset_type: None,
+        timeframe: None,
+        monte_carlo: None,
+        walk_forward: None,
+        intra_bar_mode: cfg.intra_bar_mode.clone(),
+        reverse_policy: cfg.reverse_policy.clone(),
+        history_overrides: None,
+    };
 
-    let mut ind_map = serde_json::Map::new();
-    for (name, pts) in engine.strategy.take_indicator_series() {
-        ind_map.insert(name, json!({
-            "t": pts.iter().map(|(t, _)| *t).collect::<Vec<_>>(),
-            "v": pts.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
-        }));
-    }
-
-    assemble_nested_output(report, &engine.core.portfolio, trades, fills, ind_map)
+    // usize::MAX = no curve downsampling (client-side, no server memory pressure)
+    build(engine, report, req, symbol.to_string(), bars.len(), bars, cfg.capital, 0.04, usize::MAX)
 }
 
 // ── Config / strategy catalog ─────────────────────────────────────────────────
@@ -526,6 +350,13 @@ pub fn list_mtf_strategies() -> JsValue {
 #[wasm_bindgen]
 pub fn indicator_catalog() -> JsValue {
     to_js(&alm_strategy::catalog::all())
+}
+
+/// Metric catalog — mirrors `BacktestReport::catalog()`.
+/// Returns `[{ field, label, unit, description, thresholds, description_vi, thresholds_vi }, ...]`.
+#[wasm_bindgen]
+pub fn metric_catalog() -> JsValue {
+    to_js(&alm_report::report::BacktestReport::catalog().to_vec())
 }
 
 /// Lint a strategy script client-side (no server round-trip).

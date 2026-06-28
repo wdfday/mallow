@@ -65,33 +65,43 @@ export class ChartState {
      * Run a script backtest over the current bar series.
      *
      * `config_json`: `{"initial_capital":10000,"position_size_pct":1.0,...}`
+     *
+     * `from_ts` / `to_ts`: visible range bounds in Unix **seconds** (0 = no bound).
+     * Bars before `from_ts` are used as indicator warmup only (no trades generated).
+     * Bars after `to_ts` are excluded entirely.
      * @param {string} script
      * @param {string} config_json
+     * @param {number} from_ts
+     * @param {number} to_ts
      * @returns {any}
      */
-    backtest(script, config_json) {
+    backtest(script, config_json, from_ts, to_ts) {
         const ptr0 = passStringToWasm0(script, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
-        const ret = wasm.chartstate_backtest(this.__wbg_ptr, ptr0, len0, ptr1, len1);
+        const ret = wasm.chartstate_backtest(this.__wbg_ptr, ptr0, len0, ptr1, len1, from_ts, to_ts);
         return ret;
     }
     /**
      * Run a named-strategy backtest over the current bar series.
+     *
+     * `from_ts` / `to_ts`: visible range bounds in Unix **seconds** (0 = no bound).
      * @param {string} strategy_name
      * @param {string} params_json
      * @param {string} config_json
+     * @param {number} from_ts
+     * @param {number} to_ts
      * @returns {any}
      */
-    backtest_named(strategy_name, params_json, config_json) {
+    backtest_named(strategy_name, params_json, config_json, from_ts, to_ts) {
         const ptr0 = passStringToWasm0(strategy_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(params_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len1 = WASM_VECTOR_LEN;
         const ptr2 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len2 = WASM_VECTOR_LEN;
-        const ret = wasm.chartstate_backtest_named(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2);
+        const ret = wasm.chartstate_backtest_named(this.__wbg_ptr, ptr0, len0, ptr1, len1, ptr2, len2, from_ts, to_ts);
         return ret;
     }
     /**
@@ -370,6 +380,16 @@ export function list_mtf_strategies() {
  */
 export function list_strategies() {
     const ret = wasm.list_strategies();
+    return ret;
+}
+
+/**
+ * Metric catalog — mirrors `BacktestReport::catalog()`.
+ * Returns `[{ field, label, unit, description, thresholds, description_vi, thresholds_vi }, ...]`.
+ * @returns {any}
+ */
+export function metric_catalog() {
+    const ret = wasm.metric_catalog();
     return ret;
 }
 

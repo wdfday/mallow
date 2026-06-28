@@ -5,29 +5,45 @@
 //! - [`engine_builder`] — `Engine` construction from a `BacktestRequest`
 //! - [`response`]       — assembles `BacktestResponse` from engine output
 
+// `response` and `engine_builder` are pure computation — no file I/O, available on all targets.
 pub mod engine_builder;
-pub mod loader;
 pub mod response;
-pub mod mtf_response;
 
 pub use engine_builder::{asset_lot_size, intra_bar_mode_from_str};
 
+// The rest (loader, disk-based runners) are native-only.
+#[cfg(not(target_arch = "wasm32"))]
+pub mod loader;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod mtf_response;
+
+#[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
 
+#[cfg(not(target_arch = "wasm32"))]
 use alm_core::{Bar, MtfStrategy, Timeframe};
+#[cfg(not(target_arch = "wasm32"))]
 use alm_data::{BarFeed, BarVecFeed};
+#[cfg(not(target_arch = "wasm32"))]
 use alm_strategy::{
     build_mtf_strategy, probe_script_htfs,
     MtfScriptStrategy, ScriptStrategy,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use anyhow::{bail, Result};
+#[cfg(not(target_arch = "wasm32"))]
 use serde_json::Value;
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::pointer_sync_mtf_engine::PointerSyncMtfEngine;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::types::{BacktestRequest, BacktestResponse, CurvePoint, MtfBacktestRequest};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::engine::ReversePolicy;
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::data::{find_parquet_files, load_bars, market_region_from_data_source, parse_date_ms};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::backtest::loader::load_bars_for_tf;
 
 pub(crate) const DEFAULT_RISK_FREE: f64 = 0.04;
@@ -57,10 +73,11 @@ pub(crate) fn estimate_curve_target(bar_count: usize) -> usize {
         .min(CURVE_TARGET_MAX)
 }
 
-// ── Public entry points ───────────────────────────────────────────────────────
+// ── Public entry points (native-only — require disk/Parquet) ─────────────────
 
 /// Estimate bar count for a backtest request without running the engine.
 /// Returns `(bar_count, estimated_seconds)`.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn estimate(req: &BacktestRequest, data_dir: &Path) -> Result<(usize, f64)> {
     let symbol = loader::effective_symbol(&req.symbol);
     let from_ms = req.from.as_deref().and_then(parse_date_ms);
@@ -90,6 +107,7 @@ pub fn estimate(req: &BacktestRequest, data_dir: &Path) -> Result<(usize, f64)> 
 /// (e.g. `ind.ema(20, "H1")`), the runner auto-detects this and routes to
 /// [`run_mtf_script`] — using `MtfScriptStrategy` + `MtfEngine` with real HTF
 /// parquet feeds instead of the v1 internal resampler.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run(req: BacktestRequest, data_dir: &Path) -> Result<BacktestResponse> {
     // ── Auto-detect MTF script ────────────────────────────────────────────────
     //
@@ -191,6 +209,7 @@ pub fn run(req: BacktestRequest, data_dir: &Path) -> Result<BacktestResponse> {
 /// Loads one independent bar feed per timeframe, builds a [`MtfEngine`] with
 /// the named [`MtfStrategy`], and returns the same [`BacktestResponse`] shape
 /// as the single-TF runner.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn run_mtf(req: MtfBacktestRequest, data_dir: &Path) -> Result<BacktestResponse> {
     if req.htf_timeframes.is_empty() {
         bail!("`htf_timeframes` must contain at least one entry");
@@ -274,12 +293,12 @@ pub fn run_mtf(req: MtfBacktestRequest, data_dir: &Path) -> Result<BacktestRespo
         .with_intra_bar_mode(intra_bar_mode)
         .with_warmup_until(from_ms.unwrap_or(0));
 
-    let reverse_policy = match req.reverse_policy.as_deref() {
-        Some("exit") => Some(ReversePolicy::Exit),
+    let rp = match req.reverse_policy.as_deref() {
         Some("flip") => Some(ReversePolicy::Flip),
-        _ => None,
+        Some("exit") => Some(ReversePolicy::Exit),
+        _ => Some(ReversePolicy::Exit),
     };
-    if let Some(policy) = reverse_policy {
+    if let Some(policy) = rp {
         engine = engine.with_reverse_policy(policy);
     }
 
@@ -332,6 +351,7 @@ pub fn run_mtf(req: MtfBacktestRequest, data_dir: &Path) -> Result<BacktestRespo
 ///
 /// Called automatically from [`run`] when the script declares HTF indicators.
 /// Feeds `MtfEngine` with real parquet files for each declared TF — no resampling.
+#[cfg(not(target_arch = "wasm32"))]
 fn run_mtf_script(
     req: BacktestRequest,
     strategy: MtfScriptStrategy,
@@ -422,12 +442,12 @@ fn run_mtf_script(
         .with_intra_bar_mode(intra_bar_mode)
         .with_warmup_until(from_ms.unwrap_or(0));
 
-    let reverse_policy = match req.reverse_policy.as_deref() {
-        Some("exit") => Some(ReversePolicy::Exit),
+    let rp = match req.reverse_policy.as_deref() {
         Some("flip") => Some(ReversePolicy::Flip),
-        _ => None,
+        Some("exit") => Some(ReversePolicy::Exit),
+        _ => Some(ReversePolicy::Exit),
     };
-    if let Some(policy) = reverse_policy {
+    if let Some(policy) = rp {
         engine = engine.with_reverse_policy(policy);
     }
 
@@ -483,6 +503,7 @@ fn run_mtf_script(
 }
 
 /// Parse a timeframe string to [`Timeframe`], case-insensitive.
+#[cfg(not(target_arch = "wasm32"))]
 fn parse_timeframe(s: &str) -> Result<Timeframe> {
     match s.to_uppercase().as_str() {
         "M1"  => Ok(Timeframe::M1),

@@ -41,15 +41,13 @@ pub fn build(
     // the same in backtest and live registry); named strategies operate on raw bars.
     let mut engine = Engine::sync(capital, strategy, risk, commission, slippage)
         .with_intra_bar_mode(intra_bar_mode);
-    if let Some(ref policy_str) = req.reverse_policy {
-        let policy = match policy_str.as_str() {
-            "exit" => Some(crate::engine::ReversePolicy::Exit),
-            "flip" => Some(crate::engine::ReversePolicy::Flip),
-            _ => None,
-        };
-        if let Some(p) = policy {
-            engine = engine.with_reverse_policy(p);
-        }
+    let rp = match req.reverse_policy.as_deref() {
+        Some("flip") => Some(crate::engine::ReversePolicy::Flip),
+        Some("exit") => Some(crate::engine::ReversePolicy::Exit),
+        _ => Some(crate::engine::ReversePolicy::Exit),
+    };
+    if let Some(p) = rp {
+        engine = engine.with_reverse_policy(p);
     }
     if max_units > 1 {
         engine = engine.with_pyramiding(max_units, req.max_position_pct.unwrap_or(0.0));
@@ -79,15 +77,13 @@ pub fn build_with_strategy(
 
     let mut engine = Engine::sync(capital, strategy, risk, commission, slippage)
         .with_intra_bar_mode(intra_bar_mode);
-    if let Some(ref policy_str) = req.reverse_policy {
-        let policy = match policy_str.as_str() {
-            "exit" => Some(crate::engine::ReversePolicy::Exit),
-            "flip" => Some(crate::engine::ReversePolicy::Flip),
-            _ => None,
-        };
-        if let Some(p) = policy {
-            engine = engine.with_reverse_policy(p);
-        }
+    let rp = match req.reverse_policy.as_deref() {
+        Some("flip") => Some(crate::engine::ReversePolicy::Flip),
+        Some("exit") => Some(crate::engine::ReversePolicy::Exit),
+        _ => Some(crate::engine::ReversePolicy::Exit),
+    };
+    if let Some(p) = rp {
+        engine = engine.with_reverse_policy(p);
     }
     if max_units > 1 {
         engine = engine.with_pyramiding(max_units, req.max_position_pct.unwrap_or(0.0));

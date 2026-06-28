@@ -675,7 +675,11 @@ impl ChartState {
     /// Run a script backtest over the current bar series.
     ///
     /// `config_json`: `{"initial_capital":10000,"position_size_pct":1.0,...}`
-    pub fn backtest(&self, script: &str, config_json: &str) -> JsValue {
+    ///
+    /// `from_ts` / `to_ts`: visible range bounds in Unix **seconds** (0 = no bound).
+    /// Bars before `from_ts` are used as indicator warmup only (no trades generated).
+    /// Bars after `to_ts` are excluded entirely.
+    pub fn backtest(&self, script: &str, config_json: &str, from_ts: f64, to_ts: f64) -> JsValue {
         if self.bars.is_empty() {
             return js_error("no bars loaded");
         }
@@ -692,18 +696,24 @@ impl ChartState {
             Err(e) => return js_error(&format!("script: {e}")),
         };
         let cfg = parse_config(config_json);
+        let warmup_until_ms = if from_ts > 0.0 { Some((from_ts * 1000.0) as i64) } else { None };
+        let to_ts_ms       = if to_ts   > 0.0 { Some((to_ts   * 1000.0) as i64) } else { None };
         // Backtest ALWAYS runs on RAW bars — the chart-level candle transform is
         // display-only and must not change the result. (Same data as deep backtest.)
-        let out = run_strategy(&self.symbol, &self.bars, Box::new(strategy), &cfg);
+        let out = run_strategy(&self.symbol, &self.bars, Box::new(strategy), &cfg, warmup_until_ms, to_ts_ms);
         crate::to_js(&out)
     }
 
     /// Run a named-strategy backtest over the current bar series.
+    ///
+    /// `from_ts` / `to_ts`: visible range bounds in Unix **seconds** (0 = no bound).
     pub fn backtest_named(
         &self,
         strategy_name: &str,
         params_json: &str,
         config_json: &str,
+        from_ts: f64,
+        to_ts: f64,
     ) -> JsValue {
         if self.bars.is_empty() {
             return js_error("no bars loaded");
@@ -717,8 +727,10 @@ impl ChartState {
             Err(e) => return js_error(&format!("strategy '{strategy_name}': {e}")),
         };
         let cfg = parse_config(config_json);
+        let warmup_until_ms = if from_ts > 0.0 { Some((from_ts * 1000.0) as i64) } else { None };
+        let to_ts_ms       = if to_ts   > 0.0 { Some((to_ts   * 1000.0) as i64) } else { None };
         // Backtest ALWAYS runs on RAW bars (see backtest()).
-        let out = run_strategy(&self.symbol, &self.bars, strategy, &cfg);
+        let out = run_strategy(&self.symbol, &self.bars, strategy, &cfg, warmup_until_ms, to_ts_ms);
         crate::to_js(&out)
     }
 }

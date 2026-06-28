@@ -8,8 +8,9 @@ import (
 	"go.uber.org/fx"
 
 	"mallow/helm/internal/config"
+	"mallow/helm/internal/infra/journal/filllog"
+	"mallow/helm/internal/infra/journal/tradelog"
 	infraNats "mallow/helm/internal/infra/nats"
-	"mallow/helm/internal/infra/perflog"
 	"mallow/helm/internal/infra/postgres"
 	"mallow/helm/internal/runtime/perf"
 	internalService "mallow/helm/internal/service"
@@ -36,7 +37,7 @@ func newEncryptionService(cfg *config.Config) (*internalService.EncryptionServic
 }
 
 func newTradeLog(js natsgo.JetStreamContext) perf.TradeLog {
-	l, err := perflog.NewTradeLog(js)
+	l, err := tradelog.NewTradeLog(js)
 	if err != nil {
 		slog.Warn("trade_log: JetStream init failed — trade records will not be persisted", "err", err)
 		return nil
@@ -44,6 +45,6 @@ func newTradeLog(js natsgo.JetStreamContext) perf.TradeLog {
 	return l
 }
 
-func newFillLog(db *sql.DB) *perflog.FillLog {
-	return perflog.NewFillLog(db)
+func newFillLog(db *sql.DB) *filllog.FillLog {
+	return filllog.NewFillLog(db)
 }

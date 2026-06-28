@@ -9,7 +9,6 @@ import (
 )
 
 // Log is the read-only view of the `orders` table for handlers / FE queries.
-// Record/filter shapes live in internal/readmodel; this package only does IO.
 // Writes go through the JetStream helm.pos.> path drained by the Persister.
 type Log interface {
 	Query(ctx context.Context, f OrderFilter) ([]OrderRecord, error)

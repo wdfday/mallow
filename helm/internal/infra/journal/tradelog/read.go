@@ -10,7 +10,6 @@ import (
 )
 
 // Log is the read-only view of the trades table for handlers/FE queries.
-// Record/filter shapes live in internal/readmodel; this package only does IO.
 //
 // Writes go through the JetStream HELM_TRADES path: hand → perf.TradeLog →
 // TradePersister → PostgreSQL `trades`. Direct PG inserts from this package

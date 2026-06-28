@@ -7,9 +7,13 @@ import (
 	"github.com/shopspring/decimal"
 )
 
-// TradeRecord is a completed round-trip trade (entry → exit).
-// Mirrors all analytical columns of the `trades` table, including the
-// PG GENERATED ones (net_pnl, holding_seconds, r_multiple).
+// TradeRecord is a completed round-trip trade (entry → exit) as read back from the
+// `trades` table — the post-persist shape, including the PG GENERATED columns
+// (net_pnl, holding_seconds, r_multiple).
+//
+// Distinct from runtime/perf.TradeRecord, which is the pre-persist write shape the
+// hand emits onto the HELM_TRADES journal (no id / generated columns yet). Same
+// table, two lifecycle stages.
 type TradeRecord struct {
 	ID         uuid.UUID
 	HandID     uuid.UUID

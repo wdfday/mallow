@@ -1,4 +1,4 @@
-package perflog
+package tradelog
 
 import (
 	"context"

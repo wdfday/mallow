@@ -6,10 +6,10 @@ import (
 	"go.uber.org/fx"
 	"gorm.io/gorm"
 
-	"mallow/helm/internal/infra/eventlog"
-	"mallow/helm/internal/infra/orderlog"
-	"mallow/helm/internal/infra/perflog"
-	"mallow/helm/internal/infra/poslog"
+	"mallow/helm/internal/infra/journal/eventlog"
+	"mallow/helm/internal/infra/journal/filllog"
+	"mallow/helm/internal/infra/journal/orderlog"
+	"mallow/helm/internal/infra/journal/poslog"
 	"mallow/helm/internal/infra/purge"
 	analyticsservice "mallow/helm/internal/module/analytics/service"
 	brokerservice "mallow/helm/internal/module/broker/service"
@@ -42,7 +42,7 @@ func provideHelmHandler(
 	svc *service.Service,
 	handMgr *handservice.Service,
 	reg *runtime.Registry,
-	fillLog *perflog.FillLog,
+	fillLog *filllog.FillLog,
 	posLog poslog.Log,
 	orderLog orderlog.Log,
 	analytics *analyticsservice.Service,

@@ -7,16 +7,11 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-
-	"mallow/helm/internal/infra/natsapi"
-	"mallow/helm/internal/safe"
 )
 
-// Log is the interface for persisting and querying helm/hand events.
-// Record/filter shapes live in internal/readmodel; this package only does IO.
+// Log is the read interface over the helm_events table. The sole writer is the
+// Persister (helm.events.> → postgres); this interface only queries.
 type Log interface {
-	// Append writes a single event. Non-blocking: errors are logged, not returned.
-	Append(ctx context.Context, helmID uuid.UUID, userID uuid.UUID, ev natsapi.HelmEvent)
 	// Query returns events matching the filter, newest first.
 	Query(ctx context.Context, f EventFilter) ([]EventRecord, error)
 	// CountHandEvents returns event counts grouped by code for a single hand.
@@ -32,44 +27,6 @@ type postgresLog struct {
 // New returns a Log backed by the given *sql.DB.
 func New(db *sql.DB) Log {
 	return &postgresLog{db: db}
-}
-
-// Append inserts a single event row. Runs in a goroutine; errors are swallowed.
-func (l *postgresLog) Append(ctx context.Context, helmID uuid.UUID, userID uuid.UUID, ev natsapi.HelmEvent) {
-	go func() {
-		defer safe.Recover()
-		var handID *uuid.UUID
-		if ev.HandID != "" {
-			if parsed, err := uuid.Parse(ev.HandID); err == nil {
-				handID = &parsed
-			}
-		}
-
-		_, err := l.db.ExecContext(ctx, `
-			INSERT INTO helm_events
-				(at, helm_id, hand_id, user_id, code, symbol, direction, side, qty, price, order_id, reason, msg)
-			VALUES
-				($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-			ev.At,
-			helmID,
-			handID,
-			userID,
-			ev.Code,
-			nullStr(ev.Symbol),
-			nullStr(ev.Direction),
-			nullStr(ev.Side),
-			nullDecimal(ev.Qty),
-			nullDecimal(ev.Price),
-			nullStr(ev.OrderID),
-			nullStr(ev.Reason),
-			nullStr(ev.Msg),
-		)
-		if err != nil {
-			// Fire-and-forget: don't crash the runtime on a transient DB write failure.
-			// The event is still published to JetStream and logged via slog.
-			_ = err
-		}
-	}()
 }
 
 // Query returns events matching the filter, ordered by at DESC.

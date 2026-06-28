@@ -24,18 +24,6 @@ const (
 	SubjEngReady     = "engine.ready"
 )
 
-// Type aliases — callers import only this package.
-type (
-	RegisterMsg       = market.RegisterMsg
-	DeregisterMsg     = market.DeregisterMsg
-	HandInfo          = market.HandInfo
-	HandListResponse  = market.HandListResponse
-	PingResponse      = market.PingResponse
-	HeartbeatRequest  = market.HeartbeatRequest
-	HeartbeatResponse = market.HeartbeatResponse
-	ReadyEvent        = market.ReadyEvent
-)
-
 // Client handles registry-level communication with the Rust signal-engine over NATS.
 // Serialization: protobuf for requests; JSON for acks.
 type Client struct {

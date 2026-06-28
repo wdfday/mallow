@@ -9,8 +9,8 @@ import (
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
+	"mallow/helm/internal/infra/journal/poslog"
 	"mallow/helm/internal/infra/natsapi"
-	"mallow/helm/internal/infra/poslog"
 	handdomain "mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/runtime/core/strategy"
 	"mallow/helm/internal/runtime/position"
@@ -383,6 +383,70 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 	delete(h.exitLevels, affectedSymbol)
 	h.mu.Unlock()
 
+}
+
+// rearmLocalExit hands a position's protection back to the in-process SL/TP monitor
+// after its exchange OCO was cancelled (signal-exit pre-flight) but the exit could not
+// be placed. checkExits skips the local trigger while ExchangeOrderIDs is non-empty —
+// but those IDs now point at cancelled orders that will never fire, so the position is
+// effectively naked. Clearing the IDs (keeping the SL/TP levels) lets checkExits resume
+// triggering on price crosses. The leg stays open; the strategy may still re-emit an exit.
+func (h *Hand) rearmLocalExit(symbol string) {
+	h.mu.Lock()
+	el, ok := h.exitLevels[symbol]
+	if !ok || (el.StopLoss.IsZero() && el.TakeProfit.IsZero()) {
+		h.mu.Unlock()
+		h.log.Error("hand: exit failed with no local SL/TP to fall back on — position UNPROTECTED",
+			"symbol", symbol)
+		return
+	}
+	el.ExchangeOrderIDs = nil // dead (cancelled) — stop checkExits from skipping
+	h.exitLevels[symbol] = el
+	h.mu.Unlock()
+	h.log.Warn("hand: exit failed — exchange OCO cancelled, local SL/TP monitor re-armed",
+		"symbol", symbol, "stop_loss", el.StopLoss, "take_profit", el.TakeProfit)
+	h.emitEvent(natsapi.HelmEvent{
+		Code:   CodeOrderExitFailed,
+		Symbol: symbol,
+		Reason: "exit order failed; exchange OCO cancelled — local SL/TP monitor re-armed",
+		Msg:    "hand: exit failed — local SL/TP now guarding the open position",
+	})
+}
+
+// orphanLegsForSymbol disowns every active leg of a symbol WITHOUT booking a trade:
+// it emits KindPositionOrphaned (durable; the reconciler never reclaims an orphaned
+// leg) and drops the leg from the shared portfolio — no ReportFill, no PnL, no
+// round-trip trade. Used when an exit cannot cleanly complete (e.g. the wallet's
+// free base balance is short of this hand's share), where a partial sell would
+// corrupt the trade log. Runs ON the actor loop (single-owner) — callers must not
+// hold tradeMu (RemovePosition acquires it).
+func (h *Hand) orphanLegsForSymbol(ctx context.Context, symbol, source string) {
+	for _, leg := range h.pos.ActiveLegs() {
+		if leg.Symbol != symbol {
+			continue
+		}
+		h.emitEvent(natsapi.HelmEvent{
+			Code:   CodePositionExtClosed,
+			Symbol: symbol,
+			Reason: "could not cleanly exit — leg orphaned (" + source + ")",
+			Msg:    "hand: position orphaned — no trade recorded",
+		})
+		payload, _ := json.Marshal(poslog.PositionOrphanedPayload{Symbol: symbol, Source: source})
+		h.publishAndApply(ctx, poslog.Event{
+			ID:         h.id.String() + "_orphan_" + source + "_" + leg.PositionID,
+			HandID:     h.id.String(),
+			HelmID:     h.helmID.String(),
+			PositionID: leg.PositionID,
+			Kind:       poslog.KindPositionOrphaned,
+			Payload:    payload,
+			At:         time.Now().UTC(),
+		})
+	}
+	h.helmRuntime.RemovePosition(symbol)
+
+	h.mu.Lock()
+	delete(h.exitLevels, symbol)
+	h.mu.Unlock()
 }
 
 // releasePositions performs a synthetic close (buyback) at market price for every open leg.

@@ -8,7 +8,7 @@ import (
 	"go.uber.org/fx"
 	"gorm.io/gorm"
 
-	"mallow/helm/internal/infra/eventlog"
+	"mallow/helm/internal/infra/journal/eventlog"
 	analyticsservice "mallow/helm/internal/module/analytics/service"
 	"mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/module/hand/handler"

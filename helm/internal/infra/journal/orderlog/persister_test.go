@@ -15,7 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 
-	"mallow/helm/internal/infra/poslog"
+	"mallow/helm/internal/infra/journal/poslog"
 )
 
 func eventMsg(t *testing.T, e poslog.Event) *nats.Msg {

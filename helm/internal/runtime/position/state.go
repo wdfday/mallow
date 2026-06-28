@@ -23,7 +23,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"mallow/helm/internal/infra/poslog"
+	"mallow/helm/internal/infra/journal/poslog"
 	"mallow/helm/internal/module/hand/domain"
 )
 

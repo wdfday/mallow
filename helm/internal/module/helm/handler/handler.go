@@ -9,10 +9,10 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
-	"mallow/helm/internal/infra/eventlog"
-	"mallow/helm/internal/infra/orderlog"
-	"mallow/helm/internal/infra/perflog"
-	"mallow/helm/internal/infra/poslog"
+	"mallow/helm/internal/infra/journal/eventlog"
+	"mallow/helm/internal/infra/journal/filllog"
+	"mallow/helm/internal/infra/journal/orderlog"
+	"mallow/helm/internal/infra/journal/poslog"
 	"mallow/helm/internal/module/analytics/domain"
 	analyticsservice "mallow/helm/internal/module/analytics/service"
 	dto "mallow/helm/internal/module/helm/dto"
@@ -47,7 +47,7 @@ type Handler struct {
 	svc       HelmService
 	handMgr   HandManager
 	reg       *runtime.Registry
-	fillLog   *perflog.FillLog
+	fillLog   *filllog.FillLog
 	posLog    poslog.Log
 	orderLog  orderlog.Log
 	analytics *analyticsservice.Service
@@ -58,7 +58,7 @@ func New(
 	svc HelmService,
 	handMgr HandManager,
 	reg *runtime.Registry,
-	fillLog *perflog.FillLog,
+	fillLog *filllog.FillLog,
 	posLog poslog.Log,
 	orderLog orderlog.Log,
 	analytics *analyticsservice.Service,

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"mallow/helm/internal/infra/journal/tradelog"
 	"net/http"
 	"time"
 
@@ -15,15 +16,13 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"mallow/helm/internal/config"
-	"mallow/helm/internal/infra/engine"
-	"mallow/helm/internal/infra/eventlog"
 	"mallow/helm/internal/infra/herald"
+	"mallow/helm/internal/infra/journal/eventlog"
+	"mallow/helm/internal/infra/journal/poslog"
 	"mallow/helm/internal/infra/marketdata"
 	mdbinance "mallow/helm/internal/infra/marketdata/binance"
 	mdbybit "mallow/helm/internal/infra/marketdata/bybit"
 	mdokx "mallow/helm/internal/infra/marketdata/okx"
-	"mallow/helm/internal/infra/poslog"
-	"mallow/helm/internal/infra/tradelog"
 	brokerservice "mallow/helm/internal/module/broker/service"
 	handdomain "mallow/helm/internal/module/hand/domain"
 	handhandler "mallow/helm/internal/module/hand/handler"
@@ -144,12 +143,12 @@ func startNATSAPI(
 
 // subscribeSignals wires NATS signal subscription → runtime SignalDispatcher
 // and registers the dispatcher with the Registry for metrics export.
-func subscribeSignals(lc fx.Lifecycle, sc *engine.SignalClient, dispatcher *runtime.SignalDispatcher, reg *runtime.Registry) {
+func subscribeSignals(lc fx.Lifecycle, sc *herald.SignalClient, dispatcher *runtime.SignalDispatcher, reg *runtime.Registry) {
 	reg.SetDispatcher(dispatcher)
 	var sub interface{ Drain() error }
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
-			s, err := sc.SubscribeSignals(func(resp *engine.SignalResponse, receivedAt time.Time) {
+			s, err := sc.SubscribeSignals(func(resp *herald.SignalResponse, receivedAt time.Time) {
 				dispatcher.Dispatch(resp, receivedAt)
 			})
 			if err != nil {
@@ -411,8 +410,8 @@ func runOrchestrator(
 			// when no dedicated market-data listener is configured.
 			// Each bar carries the close price of the just-confirmed candle;
 			// the symbol already has the exchange prefix (e.g. "binance:ETHUSDT").
-			if _, err := nc.Subscribe(engine.SubjBarsPrefix+"*", func(msg *nats.Msg) {
-				var bar engine.BarMsg
+			if _, err := nc.Subscribe(herald.SubjBarsPrefix+"*", func(msg *nats.Msg) {
+				var bar herald.BarMsg
 				if err := proto.Unmarshal(msg.Data, &bar); err != nil {
 					return
 				}
@@ -427,7 +426,7 @@ func runOrchestrator(
 			}); err != nil {
 				slog.Warn("bars price feed subscribe failed", "err", err)
 			} else {
-				slog.Info("bars price feed subscribed", "subject", engine.SubjBarsPrefix+"*")
+				slog.Info("bars price feed subscribed", "subject", herald.SubjBarsPrefix+"*")
 			}
 
 			if cfg.MarketData.Source != "none" && cfg.MarketData.Source != "" {

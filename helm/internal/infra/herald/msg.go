@@ -1,4 +1,4 @@
-package engine
+package herald
 
 // Re-export generated proto types for use within this package.
 // All signal-engine ↔ helm communication uses protobuf over NATS.

@@ -23,8 +23,25 @@ import (
 // tolerates transient 401s (exchange glitch, clock skew) while catching real revocations.
 const authErrThreshold = 3
 
+// exitMinFreeFraction is the share of a spot exit's intended qty that must be free
+// in the wallet for the exit to proceed. Below it the leg is orphaned, not partially
+// sold. 0.99 leaves headroom for the base-asset fee (~0.1%); a genuine shortfall
+// (locked co-hand coins, external partial close) is a whole-leg fraction far below
+// this, so the two never blur. See design note in runPlaceREST.
+var exitMinFreeFraction = decimal.NewFromFloat(0.99)
+
+// Immediate retry budget for a failed EXIT order. The strategy wants out now and the
+// exchange OCO has already been cancelled, so we cannot just wait for the next signal.
+// Entries never retry (wait for the next signal). Auth / lot-size failures are handled
+// separately and are not retried (they won't clear by retrying).
+const (
+	exitRetryAttempts = 2
+	exitRetryDelay    = 400 * time.Millisecond
+)
+
 func (h *Hand) run(ctx context.Context) {
-	defer safe.Recover()
+	// h.log is pre-tagged with hand_id + helm_id, so a panic identifies its hand.
+	defer safe.RecoverHand(h.log)
 	defer close(h.done)
 
 	// Tag this goroutine for Pyroscope continuous profiling.
@@ -579,6 +596,11 @@ type pendingPlace struct {
 	// applyPlaceResult closes the poslog leg via dust_exit as a safety net,
 	// in case the orders-algo WS fill event was slow or missed.
 	positionGoneAtExchange bool
+	// orphanInsufficientFree is set by runPlaceREST when the wallet's free base
+	// balance is meaningfully below this hand's share (co-hand coins locked, or an
+	// external partial close). REST is skipped; applyPlaceResult disowns the leg
+	// (KindPositionOrphaned, no trade record) rather than booking a partial sell.
+	orphanInsufficientFree bool
 	// ocoFillPrice / ocoFillQty / ocoFillSide carry the actual OCO execution
 	// details fetched from the exchange when positionGoneAtExchange=true.
 	// Used instead of lastKnownPrice so the trade record reflects the real
@@ -605,6 +627,9 @@ func (h *Hand) runPlaceREST(ctx context.Context, pp *pendingPlace) {
 	// Race: if the OCO triggers between our cancel and PlaceOrder, cancel returns
 	// "order not found" (idempotent error), and the subsequent PlaceOrder fails
 	// with insufficient balance — caught by the existing retry below.
+	// Futures: still cancel TP/SL brackets before placing the exit order.
+	// Unlike spot, futures brackets don't lock assets, so no free balance
+	// check or balance-unfreeze wait is required before PlaceOrder.
 	if pp.isExitOrder && !pp.isFutures && pp.reply.Side == "sell" {
 		h.mu.Lock()
 		lv, hasBracket := h.exitLevels[pp.sig.Symbol]
@@ -637,6 +662,10 @@ func (h *Hand) runPlaceREST(ctx context.Context, pp *pendingPlace) {
 			cancelFn()
 			h.log.Info("hand: pre-exit bracket cancelled",
 				"symbol", pp.sig.Symbol, "cancelled", bracketIDs)
+			// Record the cancellation so applyPlaceResult can re-arm the local SL/TP
+			// monitor if the exit then fails — the exchange OCO is gone, so leaving the
+			// position relying on it would be fatal.
+			pp.cancelledBracketIDs = bracketIDs
 		}
 
 		// Always check free balance before placing a spot sell exit, regardless of
@@ -647,29 +676,38 @@ func (h *Hand) runPlaceREST(ctx context.Context, pp *pendingPlace) {
 		//   (b) Don't sell more than pp.orderQty — that's this hand's share.
 		//       freeBalance includes other hands' capital on the same symbol.
 		//
-		// When brackets were cancelled: OKX cancel-algos is eventually consistent —
-		// retry up to 3×300ms to let the unfreeze propagate.
+		// When brackets were cancelled: OKX cancel-algos is eventually consistent and
+		// the unfreeze can lag (sometimes > 1s). Because the all-or-orphan decision
+		// below is IRREVERSIBLE (a wrong call disowns a live position), we must wait
+		// for the balance to actually reflect the full share before deciding — break
+		// only once free ≥ our share, and back off exponentially (300/600/1200/2400ms,
+		// up to 5 attempts ≈ 4.5s) to give a slow OKX time. A shortfall that survives
+		// that long is no longer "lag" — it's a genuine shortfall (co-hand coins / an
+		// external close), which is exactly what should orphan.
 		// When no brackets: one shot is sufficient (nothing to wait for).
 		if bf, ok := h.helmRuntime.Exchange.(exchange.SpotBalanceFetcher); ok {
 			baseAsset := spotBaseAsset(pp.sig.Symbol)
 			maxAttempts := 1
 			if len(bracketIDs) > 0 {
-				maxAttempts = 3
+				maxAttempts = 5
 			}
+			enough := pp.orderQty.Mul(exitMinFreeFraction)
+			delay := 300 * time.Millisecond
 			var freeQty decimal.Decimal
 			for attempt := 0; attempt < maxAttempts; attempt++ {
 				if attempt > 0 {
 					select {
 					case <-ctx.Done():
 						goto balanceDone
-					case <-time.After(300 * time.Millisecond):
+					case <-time.After(delay):
 					}
+					delay *= 2 // 300 → 600 → 1200 → 2400ms
 				}
 				balCtx, balFn := context.WithTimeout(ctx, 3*time.Second)
 				freeQty, _ = bf.GetFreeBalance(balCtx, h.helmRuntime.Creds, baseAsset)
 				balFn()
-				if freeQty.IsPositive() {
-					break
+				if freeQty.GreaterThanOrEqual(enough) {
+					break // unfrozen enough to cover our share — stop waiting
 				}
 			}
 		balanceDone:
@@ -724,9 +762,24 @@ func (h *Hand) runPlaceREST(ctx context.Context, pp *pendingPlace) {
 					return
 				}
 			}
+			// All-or-orphan. Only place the exit if the wallet holds (essentially)
+			// this hand's full share. The wallet is gross; the leg is gross too, so
+			// a small gap is just the base-asset fee (handled later by dust
+			// reconciliation). A *meaningful* shortfall means the share isn't really
+			// here — another hand's coins on the same symbol are locked, or an
+			// external partial close took a chunk. Selling that partial would book a
+			// corrupt round-trip trade (e.g. a 50% "loss" that never happened), so we
+			// orphan the leg instead: leave it at the exchange, record NO trade.
+			if freeQty.LessThan(pp.orderQty.Mul(exitMinFreeFraction)) {
+				h.log.Warn("hand: pre-exit free below hand's share — orphaning leg (no partial sell)",
+					"symbol", pp.sig.Symbol, "free", freeQty, "share", pp.orderQty)
+				pp.orphanInsufficientFree = true
+				pp.cancelledBracketIDs = bracketIDs
+				return
+			}
 			useQty := freeQty
-			if pp.orderQty.IsPositive() && pp.orderQty.LessThan(freeQty) {
-				useQty = pp.orderQty // cap at this hand's share
+			if pp.orderQty.LessThan(freeQty) {
+				useQty = pp.orderQty // wallet holds more (other hands) — cap at our share
 			}
 			useQty = truncateQty(h.helmRuntime.filtersFor(ctx, pp.sig.Symbol), useQty)
 			if useQty.IsPositive() {
@@ -761,6 +814,29 @@ func (h *Hand) runPlaceREST(ctx context.Context, pp *pendingPlace) {
 			result, err = recovered, nil
 		}
 	}
+	// Immediate bounded retry for a still-failing EXIT (transient network / 5xx).
+	// Skip auth (handled via streak) and lot-size (handled via dust exit) — retrying
+	// won't clear those. Each attempt re-checks the ambiguous path. On exhaustion the
+	// leg stays open and applyPlaceResult re-arms the local SL/TP monitor.
+	for attempt := 0; err != nil && pp.isExitOrder && attempt < exitRetryAttempts; attempt++ {
+		if exchange.ClassifyGeneric(err) == exchange.ErrClassAuth || isLotSizeError(err) {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			pp.result, pp.err = result, err
+			return
+		case <-time.After(exitRetryDelay):
+		}
+		h.log.Warn("hand: exit PlaceOrder failed — retrying",
+			"symbol", pp.sig.Symbol, "attempt", attempt+1, "of", exitRetryAttempts, "err", err)
+		result, err = h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, pp.orderReq)
+		if err != nil {
+			if recovered := h.recoverAmbiguousPlace(ctx, pp.sig.Symbol, pp.clid, err); recovered != nil {
+				result, err = recovered, nil
+			}
+		}
+	}
 	pp.result = result
 	pp.err = err
 }
@@ -782,6 +858,15 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 	signalAt := pp.signalAt
 	result := pp.result
 	err := pp.err
+
+	// orphanInsufficientFree: wallet's free base balance was meaningfully short of
+	// this hand's share (co-hand coins locked, or external partial close). REST was
+	// skipped — disown the leg (no trade record) rather than book a corrupt partial.
+	if pp.orphanInsufficientFree {
+		h.helmRuntime.RemoveOrderTracking(clid)
+		h.orphanLegsForSymbol(ctx, sig.Symbol, "insufficient_free")
+		return
+	}
 
 	// positionGoneAtExchange: balance check confirmed the base asset is fully gone
 	// (OCO triggered externally, manual sell, etc.). REST was skipped so result==nil
@@ -909,6 +994,16 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 			})
 			lastPrice := h.helmRuntime.lastKnownPrice(sig.Symbol)
 			h.closeLegAsDust(ctx, sig.Symbol, reply.Side, orderQty, lastPrice)
+			return
+		}
+
+		// Generic exit failure after retries: the leg is still open (publishOrderPlaced
+		// was never reached) but its exchange OCO was cancelled in pre-flight — leaving
+		// the position relying on a dead bracket would be fatal. Re-arm the IN-PROCESS
+		// SL/TP monitor by clearing the stale exchange order IDs so checkExits resumes
+		// triggering on price crosses (it skips while ExchangeOrderIDs is non-empty).
+		if isExitOrder && !isFutures && len(pp.cancelledBracketIDs) > 0 {
+			h.rearmLocalExit(sig.Symbol)
 		}
 		return
 	}

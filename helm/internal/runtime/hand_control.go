@@ -62,7 +62,7 @@ func (h *Hand) Start() {
 	// first signal) — safe because the run-loop holds no orders at this point.
 	if needsReconcile {
 		go func() {
-			defer safe.Recover()
+			defer safe.RecoverHand(h.log)
 			h.log.Info("hand: on-demand reconcile — restarted after gap",
 				"gap", now.Sub(h.stoppedAt).Truncate(time.Second))
 			h.helmRuntime.ReconcileHand(context.Background(), h)
@@ -114,7 +114,8 @@ func (h *Hand) Kill(ctx context.Context) {
 	h.flattenPositions(ctx)
 
 	h.Stop()
-	h.helmRuntime.RemoveHand(h.id.String())
+	// Membership (removal from the runtime's hand map) is the runtime's job —
+	// HelmRuntime.KillHand does it. A hand never removes itself from its parent.
 }
 
 // Release stops the hand without closing exchange-side positions.
@@ -131,7 +132,7 @@ func (h *Hand) Release(ctx context.Context) {
 	h.releasePositions(ctx)
 
 	h.Stop()
-	h.helmRuntime.RemoveHand(h.id.String())
+	// Membership removal is the runtime's job — HelmRuntime.ReleaseHand does it.
 }
 
 // SetAllocatedCapital updates the hand's allocated capital budget dynamically.

@@ -3,7 +3,7 @@ package dto
 import (
 	"time"
 
-	"mallow/helm/internal/infra/orderlog"
+	"mallow/helm/internal/infra/journal/orderlog"
 )
 
 // OrderHistoryResp is the JSON shape for a persisted order lifecycle record.

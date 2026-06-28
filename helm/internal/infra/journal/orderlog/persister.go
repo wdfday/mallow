@@ -9,7 +9,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
-	"mallow/helm/internal/infra/poslog"
+	"mallow/helm/internal/infra/journal/poslog"
 	"mallow/helm/internal/safe"
 )
 

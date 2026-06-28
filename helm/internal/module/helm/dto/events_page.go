@@ -1,6 +1,6 @@
 package dto
 
-import "mallow/helm/internal/infra/eventlog"
+import "mallow/helm/internal/infra/journal/eventlog"
 
 // EventsPageResp is a page of helm behavioral events, ordered newest-first.
 // Paging is a backward time cursor: pass Next back as ?before= to fetch older

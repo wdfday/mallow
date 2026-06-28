@@ -10,7 +10,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
-	"mallow/helm/internal/infra/eventlog"
+	"mallow/helm/internal/infra/journal/eventlog"
 	"mallow/helm/internal/module/analytics/domain"
 	analyticsservice "mallow/helm/internal/module/analytics/service"
 	handdomain "mallow/helm/internal/module/hand/domain"

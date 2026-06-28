@@ -1,4 +1,4 @@
-package perflog
+package filllog
 
 import (
 	"fmt"

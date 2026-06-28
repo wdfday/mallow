@@ -12,17 +12,16 @@ import (
 
 	"mallow/helm/internal/config"
 	"mallow/helm/internal/infra"
-	"mallow/helm/internal/infra/engine"
-	"mallow/helm/internal/infra/eventlog"
 	alpacaact "mallow/helm/internal/infra/exchange/alpaca/act"
 	binanceact "mallow/helm/internal/infra/exchange/binance/act"
 	bybitact "mallow/helm/internal/infra/exchange/bybit/act"
 	okxact "mallow/helm/internal/infra/exchange/okx/act"
 	"mallow/helm/internal/infra/herald"
-	"mallow/helm/internal/infra/orderlog"
-	"mallow/helm/internal/infra/perflog"
-	"mallow/helm/internal/infra/poslog"
-	"mallow/helm/internal/infra/tradelog"
+	"mallow/helm/internal/infra/journal/eventlog"
+	"mallow/helm/internal/infra/journal/filllog"
+	"mallow/helm/internal/infra/journal/orderlog"
+	"mallow/helm/internal/infra/journal/poslog"
+	"mallow/helm/internal/infra/journal/tradelog"
 	accountmodule "mallow/helm/internal/module/account"
 	accountHandler "mallow/helm/internal/module/account/handler"
 	accountrepo "mallow/helm/internal/module/account/repository"
@@ -60,7 +59,7 @@ var Module = fx.Options(
 	fx.Provide(func() *alpacaact.Client { return alpacaact.New(alpacaact.Config{}) }),
 
 	// Signal engine client (signal subscription + bar publishing)
-	fx.Provide(engine.NewSignalClient),
+	fx.Provide(herald.NewSignalClient),
 	// Herald registry client (register/deregister/validate/heartbeat)
 	fx.Provide(func(nc *nats.Conn) *herald.Client { return herald.New(nc) }),
 
@@ -134,13 +133,13 @@ func runMigrations(db *gorm.DB) error {
 	if err := eventlog.Migrate(db); err != nil {
 		return err
 	}
-	if err := tradelog.Migrate(db); err != nil {
-		return err
-	}
-	if err := perflog.MigrateFills(db); err != nil {
-		return err
-	}
 	if err := orderlog.Migrate(db); err != nil {
+		return err
+	}
+	if err := filllog.MigrateFills(db); err != nil {
+		return err
+	}
+	if err := tradelog.Migrate(db); err != nil {
 		return err
 	}
 	return nil
@@ -239,8 +238,8 @@ func wireEventCounter(reg *runtime.Registry, log eventlog.Log) {
 	reg.SetEventCounter(log)
 }
 
-func newTradePersister(js nats.JetStreamContext, db *sql.DB) *perflog.TradePersister {
-	return perflog.NewTradePersister(js, db)
+func newTradePersister(js nats.JetStreamContext, db *sql.DB) *tradelog.TradePersister {
+	return tradelog.NewTradePersister(js, db)
 }
 
 func newStatsRunner(db *sql.DB) analyticsservice.StatsRunner {
@@ -254,7 +253,7 @@ func newAnalyticsService(
 	return analyticsservice.New(trades, stats)
 }
 
-func startTradePersister(lc fx.Lifecycle, p *perflog.TradePersister) {
+func startTradePersister(lc fx.Lifecycle, p *tradelog.TradePersister) {
 	ctx, cancel := context.WithCancel(context.Background())
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {
@@ -268,11 +267,11 @@ func startTradePersister(lc fx.Lifecycle, p *perflog.TradePersister) {
 	})
 }
 
-func newFillPersister(js nats.JetStreamContext, db *sql.DB) *perflog.FillPersister {
-	return perflog.NewFillPersister(js, db)
+func newFillPersister(js nats.JetStreamContext, db *sql.DB) *filllog.FillPersister {
+	return filllog.NewFillPersister(js, db)
 }
 
-func startFillPersister(lc fx.Lifecycle, p *perflog.FillPersister) {
+func startFillPersister(lc fx.Lifecycle, p *filllog.FillPersister) {
 	ctx, cancel := context.WithCancel(context.Background())
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {

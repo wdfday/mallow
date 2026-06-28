@@ -2,13 +2,13 @@ package runtime
 
 import (
 	"log/slog"
+	"mallow/helm/internal/infra/herald"
 	"strings"
 	"sync/atomic"
 	"time"
 
 	"github.com/shopspring/decimal"
 
-	"mallow/helm/internal/infra/engine"
 	"mallow/helm/internal/runtime/core/strategy"
 )
 
@@ -40,7 +40,7 @@ func NewSignalDispatcher(sink SignalSink) *SignalDispatcher {
 // Dispatch routes the signal in the response to the target helm/hand.
 // receivedAt is the NATS server ingestion timestamp, used for TTL checks in each hand.
 // Called directly from the NATS subscription goroutine — must not block.
-func (d *SignalDispatcher) Dispatch(resp *engine.SignalResponse, receivedAt time.Time) {
+func (d *SignalDispatcher) Dispatch(resp *herald.SignalResponse, receivedAt time.Time) {
 	d.Metrics.SignalsTotal.Add(1)
 
 	helmID := resp.HelmId

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	authdomain "mallow/identity/internal/module/auth/domain"
@@ -294,7 +295,7 @@ func (s *Service) AuthenticateGoogle(ctx context.Context, req dto.GoogleAuthRequ
 
 	user, err := googleReader.GetByGoogleID(ctx, googleUser.ID)
 	if err != nil {
-		if err == shared.ErrUserNotFound {
+		if errors.Is(err, shared.ErrUserNotFound) {
 			user, err = s.findOrCreateGoogleUser(ctx, googleUser)
 			if err != nil {
 				return nil, err
@@ -387,7 +388,7 @@ func (s *Service) findOrCreateGoogleUser(ctx context.Context, googleUser *authdo
 		}
 		return user, nil
 	}
-	if err != shared.ErrUserNotFound {
+	if !errors.Is(err, shared.ErrUserNotFound) {
 		return nil, err
 	}
 

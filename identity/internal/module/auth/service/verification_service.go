@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -70,7 +71,7 @@ func (s *VerificationService) SendVerificationEmail(ctx context.Context, userID,
 func (s *VerificationService) VerifyEmail(ctx context.Context, tokenStr string) error {
 	token, err := s.tokenRepo.GetByToken(ctx, tokenStr)
 	if err != nil {
-		if err == shared.ErrTokenNotFound {
+		if errors.Is(err, shared.ErrTokenNotFound) {
 			return shared.ErrTokenNotFound.WithDetails("type", "email verification")
 		}
 		return shared.ErrInternal.WithError(err)

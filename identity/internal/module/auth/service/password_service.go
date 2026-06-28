@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"mallow/identity/internal/module/auth/domain"
@@ -140,7 +141,7 @@ func (s *PasswordService) ForgotPassword(ctx context.Context, email, ipAddress, 
 func (s *PasswordService) ResetPassword(ctx context.Context, tokenStr, newPassword string) error {
 	token, err := s.tokenRepo.GetByToken(ctx, tokenStr)
 	if err != nil {
-		if err == shared.ErrTokenNotFound {
+		if errors.Is(err, shared.ErrTokenNotFound) {
 			return shared.ErrTokenNotFound.WithDetails("type", "password reset")
 		}
 		return shared.ErrInternal.WithError(err)

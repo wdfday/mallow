@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -247,7 +248,7 @@ func (h *TelegramHandler) getUserByTelegram(c *gin.Context) {
 	telegramID := c.Param("telegram_id")
 	user, err := h.userService.GetByLinkedAccount(c.Request.Context(), "telegram", telegramID)
 	if err != nil {
-		if err == shared.ErrUserNotFound {
+		if errors.Is(err, shared.ErrUserNotFound) {
 			shared.RespondWithError(c, http.StatusNotFound, "user not found")
 			return
 		}

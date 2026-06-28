@@ -32,6 +32,7 @@ func TestSendVerificationEmail(t *testing.T) {
 		service := NewVerificationService(
 			mockTokenRepo,
 			mockUserService,
+			nil,
 			mockTokenService,
 			mockEmailService,
 			slog.Default(),
@@ -41,7 +42,6 @@ func TestSendVerificationEmail(t *testing.T) {
 		user := &userdomain.User{
 			ID:            userID,
 			Email:         "test@example.com",
-			FullName:      "Test User",
 			EmailVerified: false,
 		}
 
@@ -49,7 +49,7 @@ func TestSendVerificationEmail(t *testing.T) {
 		mockTokenRepo.On("DeleteByUserIDAndType", ctx, userID.String(), string(authdomain.TokenTypeEmailVerification)).Return(nil)
 		mockTokenService.On("GenerateTokenWithPrefix", "email_verify").Return("email_verify_token123", nil)
 		mockTokenRepo.On("Create", ctx, mock.AnythingOfType("*domain.VerificationToken")).Return(nil)
-		mockEmailService.On("SendVerificationEmail", user.Email, user.FullName, "email_verify_token123").Return(nil)
+		mockEmailService.On("SendVerificationEmail", user.Email, "", "email_verify_token123").Return(nil)
 
 		err := service.SendVerificationEmail(ctx, userID.String(), "192.168.1.1", "test-agent")
 
@@ -65,6 +65,7 @@ func TestSendVerificationEmail(t *testing.T) {
 		service := NewVerificationService(
 			nil,
 			mockUserService,
+			nil,
 			nil,
 			nil,
 			slog.Default(),
@@ -85,6 +86,7 @@ func TestSendVerificationEmail(t *testing.T) {
 		service := NewVerificationService(
 			nil,
 			mockUserService,
+			nil,
 			nil,
 			nil,
 			slog.Default(),
@@ -120,6 +122,7 @@ func TestVerifyEmail(t *testing.T) {
 			mockUserService,
 			nil,
 			nil,
+			nil,
 			slog.Default(),
 		)
 
@@ -152,6 +155,7 @@ func TestVerifyEmail(t *testing.T) {
 			nil,
 			nil,
 			nil,
+			nil,
 			slog.Default(),
 		)
 
@@ -169,6 +173,7 @@ func TestVerifyEmail(t *testing.T) {
 
 		service := NewVerificationService(
 			mockTokenRepo,
+			nil,
 			nil,
 			nil,
 			nil,
@@ -201,6 +206,7 @@ func TestVerifyEmail(t *testing.T) {
 
 		service := NewVerificationService(
 			mockTokenRepo,
+			nil,
 			nil,
 			nil,
 			nil,
@@ -239,6 +245,7 @@ func TestResendVerificationEmail(t *testing.T) {
 		service := NewVerificationService(
 			mockTokenRepo,
 			mockUserService,
+			nil,
 			mockTokenService,
 			mockEmailService,
 			slog.Default(),
@@ -249,7 +256,6 @@ func TestResendVerificationEmail(t *testing.T) {
 		user := &userdomain.User{
 			ID:            userID,
 			Email:         email,
-			FullName:      "Test User",
 			EmailVerified: false,
 		}
 
@@ -257,7 +263,7 @@ func TestResendVerificationEmail(t *testing.T) {
 		mockTokenRepo.On("DeleteByUserIDAndType", ctx, userID.String(), string(authdomain.TokenTypeEmailVerification)).Return(nil)
 		mockTokenService.On("GenerateTokenWithPrefix", "email_verify").Return("new_verify_token", nil)
 		mockTokenRepo.On("Create", ctx, mock.AnythingOfType("*domain.VerificationToken")).Return(nil)
-		mockEmailService.On("SendVerificationEmail", email, user.FullName, "new_verify_token").Return(nil)
+		mockEmailService.On("SendVerificationEmail", email, "", "new_verify_token").Return(nil)
 
 		err := service.ResendVerificationEmail(ctx, email, "192.168.1.1", "test-agent")
 
@@ -273,6 +279,7 @@ func TestResendVerificationEmail(t *testing.T) {
 		service := NewVerificationService(
 			nil,
 			mockUserService,
+			nil,
 			nil,
 			nil,
 			slog.Default(),
@@ -294,6 +301,7 @@ func TestResendVerificationEmail(t *testing.T) {
 		service := NewVerificationService(
 			nil,
 			mockUserService,
+			nil,
 			nil,
 			nil,
 			slog.Default(),
@@ -329,6 +337,7 @@ func TestCleanupExpiredTokens(t *testing.T) {
 			nil,
 			nil,
 			nil,
+			nil,
 			slog.Default(),
 		)
 
@@ -345,6 +354,7 @@ func TestCleanupExpiredTokens(t *testing.T) {
 
 		service := NewVerificationService(
 			mockTokenRepo,
+			nil,
 			nil,
 			nil,
 			nil,

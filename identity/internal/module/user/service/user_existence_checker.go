@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"mallow/identity/internal/shared"
 	"strings"
 	"time"
@@ -12,7 +13,7 @@ func (s *UserService) ExistsByEmail(ctx context.Context, email string) (bool, er
 	email = strings.ToLower(strings.TrimSpace(email))
 	_, err := s.repo.GetByEmail(ctx, email)
 	if err != nil {
-		if err == shared.ErrUserNotFound {
+		if errors.Is(err, shared.ErrUserNotFound) {
 			return false, nil
 		}
 		return false, err

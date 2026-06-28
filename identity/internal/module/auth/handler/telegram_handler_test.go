@@ -20,6 +20,7 @@ import (
 	"mallow/identity/internal/middleware"
 	authDomain "mallow/identity/internal/module/auth/domain"
 	profileDomain "mallow/identity/internal/module/profile/domain"
+	profileDto "mallow/identity/internal/module/profile/dto"
 	profileService "mallow/identity/internal/module/profile/service"
 	userDomain "mallow/identity/internal/module/user/domain"
 	userService "mallow/identity/internal/module/user/service"
@@ -98,6 +99,18 @@ func (m *telegramMockProfileService) GetProfile(ctx context.Context, userID stri
 		return nil, args.Error(1)
 	}
 	return args.Get(0).(*profileDomain.UserProfile), args.Error(1)
+}
+
+func (m *telegramMockProfileService) CreateProfile(_ context.Context, _ string, _ profileDto.CreateProfileRequest) (*profileDomain.UserProfile, error) {
+	return nil, nil
+}
+
+func (m *telegramMockProfileService) CreateDefaultProfile(_ context.Context, _ string) (*profileDomain.UserProfile, error) {
+	return nil, nil
+}
+
+func (m *telegramMockProfileService) UpdateProfile(_ context.Context, _ string, _ profileDto.UpdateProfileRequest) (*profileDomain.UserProfile, error) {
+	return nil, nil
 }
 
 var _ profileService.Service = (*telegramMockProfileService)(nil)

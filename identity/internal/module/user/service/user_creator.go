@@ -17,7 +17,7 @@ func (s *UserService) Create(ctx context.Context, user *domain.User) (*domain.Us
 	// Check if email already exists
 	if _, err := s.repo.GetByEmail(ctx, user.Email); err == nil {
 		return nil, shared.ErrConflict.WithDetails("field", "email")
-	} else if err != nil && !errors.Is(err, shared.ErrUserNotFound) {
+	} else if !errors.Is(err, shared.ErrUserNotFound) {
 		if shared.IsAppError(err) {
 			return nil, err
 		}

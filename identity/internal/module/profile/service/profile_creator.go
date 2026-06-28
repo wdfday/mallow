@@ -30,22 +30,22 @@ func (s *profileService) CreateProfile(ctx context.Context, userID string, req p
 	profile, err := profiledto.FromCreateProfileRequest(req, userUUID)
 	if err != nil {
 		// Map domain errors to shared errors
-		if err == domain.ErrInvalidRiskTolerance {
+		if errors.Is(err, domain.ErrInvalidRiskTolerance) {
 			return nil, shared.ErrBadRequest.WithDetails("field", "risk_tolerance").WithDetails("reason", "invalid value")
 		}
-		if err == domain.ErrInvalidInvestmentHorizon {
+		if errors.Is(err, domain.ErrInvalidInvestmentHorizon) {
 			return nil, shared.ErrBadRequest.WithDetails("field", "investment_horizon").WithDetails("reason", "invalid value")
 		}
-		if err == domain.ErrInvalidInvestmentExperience {
+		if errors.Is(err, domain.ErrInvalidInvestmentExperience) {
 			return nil, shared.ErrBadRequest.WithDetails("field", "investment_experience").WithDetails("reason", "invalid value")
 		}
-		if err == domain.ErrInvalidBudgetMethod {
+		if errors.Is(err, domain.ErrInvalidBudgetMethod) {
 			return nil, shared.ErrBadRequest.WithDetails("field", "budget_method").WithDetails("reason", "invalid value")
 		}
-		if err == domain.ErrInvalidNotificationChannel {
+		if errors.Is(err, domain.ErrInvalidNotificationChannel) {
 			return nil, shared.ErrBadRequest.WithDetails("field", "notification_channels").WithDetails("reason", "invalid value")
 		}
-		if err == domain.ErrInvalidReportFrequency {
+		if errors.Is(err, domain.ErrInvalidReportFrequency) {
 			return nil, shared.ErrBadRequest.WithDetails("field", "report_frequency").WithDetails("reason", "invalid value")
 		}
 		return nil, shared.ErrInternal.WithError(err)

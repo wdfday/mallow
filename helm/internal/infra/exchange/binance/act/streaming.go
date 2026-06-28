@@ -40,8 +40,9 @@ func (c *Client) StreamOrders(
 	onBalance func(exchange.BalanceEvent),
 	_ func(exchange.PositionEvent), // spot: no futures positions
 	_ func(exchange.RiskEvent), // spot: no margin calls
+	onCredentialError func(string),
 ) error {
-	go c.streamSpotOrders(ctx, creds, onLifecycle, onFill, onBalance)
+	go c.streamSpotOrders(ctx, creds, onLifecycle, onFill, onBalance, onCredentialError)
 	slog.Info("binance: spot order streaming started")
 	return nil
 }
@@ -54,6 +55,7 @@ func (c *Client) streamSpotOrders(
 	onLifecycle func(exchange.OrderLifecycleEvent),
 	onFill func(exchange.WsFillEvent),
 	onBalance func(exchange.BalanceEvent),
+	onCredentialError func(string),
 ) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -75,12 +77,16 @@ func (c *Client) streamSpotOrders(
 			attempt = 0
 		}
 		permanent := isPermanentStreamError(err)
-		wait := bo.Next(attempt)
 		if permanent {
-			wait = 5 * time.Minute
+			slog.Error("binance: permanent stream error — stopping reconnect loop", "err", err)
+			if onCredentialError != nil {
+				onCredentialError(fmt.Errorf("binance WS stream: %w", err).Error())
+			}
+			return
 		}
+		wait := bo.Next(attempt)
 		attempt++
-		slog.Warn("binance: spot order stream disconnected", "err", err, "retry_in", wait, "permanent", permanent)
+		slog.Warn("binance: spot order stream disconnected", "err", err, "retry_in", wait)
 		select {
 		case <-time.After(wait):
 		case <-ctx.Done():
@@ -98,12 +104,16 @@ func (c *Client) streamSpotOrdersOnce(
 	onFill func(exchange.WsFillEvent),
 	onBalance func(exchange.BalanceEvent),
 ) error {
+	var wsErr error
 	wsMu.Lock()
 	gobinance.UseDemo = c.paper
 	doneC, stopC, err := gobinance.WsUserDataServeSignature(
 		creds.APIKey, creds.APISecret, "HMAC", 0,
 		spotAccountHandler(onLifecycle, onFill, onBalance),
-		func(err error) { slog.Warn("binance: spot ws error", "err", err) },
+		func(e error) {
+			slog.Warn("binance: spot ws error", "err", e)
+			wsErr = e
+		},
 	)
 	gobinance.UseDemo = false
 	wsMu.Unlock()
@@ -115,6 +125,9 @@ func (c *Client) streamSpotOrdersOnce(
 		close(stopC)
 		return nil
 	case <-doneC:
+		if wsErr != nil {
+			return fmt.Errorf("spot user stream closed: %w", wsErr)
+		}
 		return fmt.Errorf("spot user stream closed")
 	}
 }

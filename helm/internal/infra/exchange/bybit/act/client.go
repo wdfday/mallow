@@ -83,7 +83,7 @@ func (c *Client) doSignedAt(ctx context.Context, creds exchange.Credentials, bas
 
 	req, err := http.NewRequestWithContext(ctx, method, reqURL, bodyReader)
 	if err != nil {
-		return err
+		return fmt.Errorf("bybit: build request %s %s: %w", method, path, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-BAPI-API-KEY", creds.APIKey)
@@ -93,13 +93,13 @@ func (c *Client) doSignedAt(ctx context.Context, creds exchange.Credentials, bas
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("bybit: http %s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return fmt.Errorf("bybit: read response body: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("status=%d body=%s", resp.StatusCode, string(respBody))

@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -23,12 +22,12 @@ import (
 func (h *Hand) publishAndApply(ctx context.Context, e poslog.Event) {
 	if h.helmRuntime.PosLog != nil {
 		if err := h.helmRuntime.PosLog.Publish(ctx, e); err != nil {
-			slog.Error("poslog publish failed", "hand_id", h.id, "event_id", e.ID, "kind", e.Kind, "err", err)
+			h.log.Error("poslog publish failed", "event_id", e.ID, "kind", e.Kind, "err", err)
 		}
 	}
 	h.mu.Lock()
 	if err := h.pos.Apply(e); err != nil {
-		slog.Warn("poslog in-memory apply failed", "hand_id", h.id, "event_id", e.ID, "err", err)
+		h.log.Warn("poslog in-memory apply failed", "event_id", e.ID, "err", err)
 	}
 	// Keep pendingOrderPos in sync with poslog events.
 	switch e.Kind {
@@ -306,7 +305,7 @@ func (h *Hand) appendTradeRecord(ctx context.Context, cp poslog.PositionClosedPa
 		Strategy:        h.StrategyName,
 	}
 	if err := tl.Append(ctx, rec); err != nil {
-		slog.Warn("trade_log: publish failed", "hand_id", h.id, "err", err)
+		h.log.Warn("trade_log: publish failed", "err", err)
 		return
 	}
 
@@ -337,10 +336,9 @@ func (h *Hand) appendTradeRecord(ctx context.Context, cp poslog.PositionClosedPa
 				return
 			}
 			if err := pl.PurgeHand(context.Background(), helmID, handID); err != nil {
-				slog.Warn("poslog: purge after trade record failed (non-fatal)",
-					"hand_id", handID, "helm_id", helmID, "err", err)
+				h.log.Warn("poslog: purge after trade record failed (non-fatal)", "err", err)
 			} else {
-				slog.Info("poslog: purged after trade record published", "hand_id", handID)
+				h.log.Info("poslog: purged after trade record published")
 			}
 		}()
 	}
@@ -387,7 +385,7 @@ func (h *Hand) publishBracketPlaced(ctx context.Context, positionID, symbol stri
 		OrderIDs: orderIDs,
 	})
 	if err != nil {
-		slog.Error("publishBracketPlaced: marshal failed", "hand_id", h.id, "err", err)
+		h.log.Error("publishBracketPlaced: marshal failed", "err", err)
 		return
 	}
 	h.publishAndApply(ctx, poslog.Event{

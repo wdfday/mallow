@@ -27,6 +27,8 @@ const (
 // Connects to Bybit private WebSocket, authenticates, subscribes to the "order"
 // and "position" topics, and calls handlers on each event. Reconnects automatically.
 // onBalance is ignored — Bybit wallet updates arrive on a separate topic not yet subscribed.
+// onCredentialError is currently unused — Bybit auth failures surface as "auth failed: ..."
+// errors that cause the reconnect loop to retry; detection can be wired in a follow-up.
 func (c *Client) StreamOrders(
 	ctx context.Context,
 	creds exchange.Credentials,
@@ -35,6 +37,7 @@ func (c *Client) StreamOrders(
 	_ func(exchange.BalanceEvent),
 	onPosition func(exchange.PositionEvent),
 	onRisk func(exchange.RiskEvent),
+	_ func(string), // onCredentialError — unused; see comment above
 ) error {
 	go func() {
 		defer func() {

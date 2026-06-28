@@ -49,6 +49,7 @@ func (r *Registry) Spawn(cfg *helmdomain.Helm, exchCfg helmdomain.ExchangeConfig
 		AccountID:  exchCfg.AccountID,
 	}
 	rt := NewHelmRuntime(cfg.ID, cfg.AccountID, cfg.UserID, brokerType, pf, riskMgr, ex, creds, cfg.LastSyncedAt, cfg.CreatedAt)
+	rt.Herald = r.herald
 	rt.FilterStore = r.market.filterViewFor(ex.Name())
 	// Restore pause state so signal gating survives a restart.
 	// HelmStatusError also starts paused — credentials must be rotated before resuming.
@@ -120,13 +121,15 @@ func (r *Registry) Teardown(id uuid.UUID) []string {
 	var handIDs []string
 	if ok {
 		handIDs = rt.HandIDs()
-		rt.Stop()
 		delete(r.helmRuntimes, id)
 	}
 	r.mu.Unlock()
 
 	if ok {
-		slog.Info("runtime: torn down", "helm_id", id, "hands_orphaned", len(handIDs))
+		// The runtime owns its hands — stop and deregister them before shutting down.
+		rt.StopAllHands(context.Background())
+		rt.Stop()
+		slog.Info("runtime: torn down", "helm_id", id, "hands_stopped", len(handIDs))
 	}
 	return handIDs
 }

@@ -42,8 +42,8 @@ func (r *HelmRuntime) Pause() []string {
 	defer r.mu.Unlock()
 	r.paused = true
 	var wasRunning []string
-	for id, hand := range r.hands {
-		if hand.IsRunning() {
+	for id, e := range r.hands {
+		if e.h.IsRunning() {
 			wasRunning = append(wasRunning, id)
 		}
 	}

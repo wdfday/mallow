@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -52,9 +51,9 @@ func (h *Hand) cancelExitOrders(_ context.Context, symbol string, skipOrderID st
 		defer cancel()
 		for _, id := range ids {
 			if err := h.helmRuntime.Exchange.CancelOrder(cancelCtx, h.helmRuntime.Creds, id); err != nil {
-				slog.Warn("hand: cancel exit order failed", "hand_id", h.id, "symbol", symbol, "order_id", id, "err", err)
+				h.log.Warn("hand: cancel exit order failed", "symbol", symbol, "order_id", id, "err", err)
 			} else {
-				slog.Info("hand: exit order cancelled", "hand_id", h.id, "symbol", symbol, "order_id", id)
+				h.log.Info("hand: exit order cancelled", "symbol", symbol, "order_id", id)
 			}
 		}
 	}()
@@ -65,9 +64,9 @@ func (h *Hand) cancelExitOrders(_ context.Context, symbol string, skipOrderID st
 func (h *Hand) flattenPositions(ctx context.Context) {
 	for _, leg := range h.pos.ActiveLegs() {
 		if leg.Phase == position.PhaseEntering {
-			slog.Info("hand: kill flattening pending entry order", "hand_id", h.id, "symbol", leg.Symbol, "order_id", leg.PendingOrderID)
+			h.log.Info("hand: kill flattening pending entry order", "symbol", leg.Symbol, "order_id", leg.PendingOrderID)
 			if err := h.helmRuntime.Exchange.CancelOrder(ctx, h.helmRuntime.Creds, leg.PendingOrderID); err != nil {
-				slog.Error("hand: kill cancel pending entry order failed", "hand_id", h.id, "symbol", leg.Symbol, "order_id", leg.PendingOrderID, "err", err)
+				h.log.Error("hand: kill cancel pending entry order failed", "symbol", leg.Symbol, "order_id", leg.PendingOrderID, "err", err)
 			}
 
 			payload, _ := json.Marshal(poslog.OrderCancelledPayload{
@@ -87,9 +86,9 @@ func (h *Hand) flattenPositions(ctx context.Context) {
 		}
 
 		if leg.Phase == position.PhaseAdding {
-			slog.Info("hand: kill flattening pending add order", "hand_id", h.id, "symbol", leg.Symbol, "order_id", leg.PendingOrderID)
+			h.log.Info("hand: kill flattening pending add order", "symbol", leg.Symbol, "order_id", leg.PendingOrderID)
 			if err := h.helmRuntime.Exchange.CancelOrder(ctx, h.helmRuntime.Creds, leg.PendingOrderID); err != nil {
-				slog.Error("hand: kill cancel pending add order failed", "hand_id", h.id, "symbol", leg.Symbol, "order_id", leg.PendingOrderID, "err", err)
+				h.log.Error("hand: kill cancel pending add order failed", "symbol", leg.Symbol, "order_id", leg.PendingOrderID, "err", err)
 			}
 
 			payload, _ := json.Marshal(poslog.OrderCancelledPayload{
@@ -123,8 +122,8 @@ func (h *Hand) flattenPositions(ctx context.Context) {
 			qty = truncateQty(h.helmRuntime.filtersFor(ctx, leg.Symbol), qty)
 		}
 		if qty.IsZero() {
-			slog.Info("hand: kill flatten qty rounds to zero — dust exit (no exchange order)",
-				"hand_id", h.id, "symbol", leg.Symbol, "original_qty", leg.Qty.Abs())
+			h.log.Info("hand: kill flatten qty rounds to zero — dust exit (no exchange order)",
+				"symbol", leg.Symbol, "original_qty", leg.Qty.Abs())
 			continue
 		}
 		result, err := h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, exchange.OrderRequest{
@@ -134,10 +133,10 @@ func (h *Hand) flattenPositions(ctx context.Context) {
 			Qty:    qty,
 		})
 		if err != nil {
-			slog.Error("hand: kill flatten failed", "hand_id", h.id, "symbol", leg.Symbol, "err", err)
+			h.log.Error("hand: kill flatten failed", "symbol", leg.Symbol, "err", err)
 			continue
 		}
-		slog.Info("hand: kill flatten order placed", "hand_id", h.id, "symbol", leg.Symbol,
+		h.log.Info("hand: kill flatten order placed", "symbol", leg.Symbol,
 			"side", closeSide, "qty", qty, "order_id", result.ID)
 		h.metrics.ordersPlaced.Add(1)
 
@@ -252,8 +251,8 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 	// Do NOT orphan here — the fill will close the leg. If the fill is genuinely missing
 	// (e.g. tryRecoverBracketFill missed it), the next portfolio sync detects the desync.
 	if affectedLeg != nil && (affectedLeg.Phase == position.PhaseExiting || affectedLeg.Phase == position.PhaseOpen) {
-		slog.Info("hand: bracket cancelled — OCO counterpart auto-cancel (partner triggered or fill in-flight)",
-			"hand_id", h.id, "symbol", affectedSymbol, "order_id", orderID, "phase", affectedLeg.Phase)
+		h.log.Info("hand: bracket cancelled — OCO counterpart auto-cancel (partner triggered or fill in-flight)",
+			"symbol", affectedSymbol, "order_id", orderID, "phase", affectedLeg.Phase)
 		h.mu.Lock()
 		if lv, ok := h.exitLevels[affectedSymbol]; ok {
 			filtered := lv.ExchangeOrderIDs[:0]
@@ -285,8 +284,8 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 			return
 		}
 
-		slog.Info("hand: entry/add order cancelled via WS",
-			"hand_id", h.id, "order_id", orderID, "phase", preCancelPhase)
+		h.log.Info("hand: entry/add order cancelled via WS",
+			"order_id", orderID, "phase", preCancelPhase)
 
 		payload, _ := json.Marshal(poslog.OrderCancelledPayload{
 			OrderID: orderID,
@@ -323,8 +322,7 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 		return
 	}
 
-	slog.Warn("hand: external position close detected via bracket order cancel",
-		"hand_id", h.id,
+	h.log.Warn("hand: external position close detected via bracket order cancel",
 		"symbol", affectedSymbol,
 		"order_id", orderID,
 		"position_id", affectedLeg.PositionID,
@@ -484,8 +482,8 @@ func (h *Hand) checkExits() {
 			h.mu.Lock()
 			delete(h.exitLevels, sym)
 			h.mu.Unlock()
-			slog.Warn("exit monitor: hand flat but exitLevels present — external close detected, stopping hand",
-				"hand_id", h.id, "symbol", sym)
+			h.log.Warn("exit monitor: hand flat but exitLevels present — external close detected, stopping hand",
+				"symbol", sym)
 			h.emitEvent(natsapi.HelmEvent{
 				Code:   CodeHandAutoStopped,
 				Symbol: sym,
@@ -500,12 +498,12 @@ func (h *Hand) checkExits() {
 		// Skip the local trigger to avoid double-closing (exchange SL fills first,
 		// then this fires and places a redundant sell against a flat position).
 		if len(el.ExchangeOrderIDs) > 0 {
-			slog.Debug("exit monitor: skipping local trigger — exchange-side orders active",
-				"hand_id", h.id, "symbol", sym, "exchange_orders", el.ExchangeOrderIDs)
+			h.log.Debug("exit monitor: skipping local trigger — exchange-side orders active",
+				"symbol", sym, "exchange_orders", el.ExchangeOrderIDs)
 			continue
 		}
 
-		slog.Info("exit monitor triggered", "hand_id", h.id, "symbol", sym,
+		h.log.Info("exit monitor triggered", "symbol", sym,
 			"reason", reason, "price", price,
 			"stop_loss", el.StopLoss, "take_profit", el.TakeProfit)
 
@@ -644,8 +642,8 @@ func (h *Hand) applyBracketStates(ctx context.Context, checks []bracketState) {
 
 	for _, c := range best {
 		if c.err != nil {
-			slog.Warn("checkBracketOrders: GetOrder failed (transient?)",
-				"hand_id", h.id, "symbol", c.symbol, "order_id", c.id, "err", c.err)
+			h.log.Warn("checkBracketOrders: GetOrder failed (transient?)",
+				"symbol", c.symbol, "order_id", c.id, "err", c.err)
 			continue
 		}
 		switch c.result.Status {
@@ -673,8 +671,8 @@ func (h *Hand) applyBracketStates(ctx context.Context, checks []bracketState) {
 				} else if c.result.Tag == "sl" {
 					legLabel = "SL"
 				}
-				slog.Info("checkBracketOrders: bracket filled (WS missed) — applying poll fill",
-					"hand_id", h.id, "symbol", c.symbol, "order_id", c.id,
+				h.log.Info("checkBracketOrders: bracket filled (WS missed) — applying poll fill",
+					"symbol", c.symbol, "order_id", c.id,
 					"leg", legLabel, "qty", c.result.FilledQty, "avg", c.result.FilledAvg)
 				h.applyFill(ctx, c.id, c.symbol, closeSide,
 					c.result.FilledQty, c.result.FilledAvg, decimal.Zero, "bracket_poll")
@@ -682,8 +680,8 @@ func (h *Hand) applyBracketStates(ctx context.Context, checks []bracketState) {
 				// OCO triggered but exchange returned no fill price/qty (e.g. OKX actualSz/actualPx
 				// empty). Poller confirmed order is terminal — bypass pendingCancels guard and treat
 				// as external close so the leg doesn't linger even if helm raced a cancel attempt.
-				slog.Warn("checkBracketOrders: bracket filled but no fill data — external close",
-					"hand_id", h.id, "symbol", c.symbol, "order_id", c.id)
+				h.log.Warn("checkBracketOrders: bracket filled but no fill data — external close",
+					"symbol", c.symbol, "order_id", c.id)
 				h.pollExternalClose(ctx, c.id)
 			}
 
@@ -691,15 +689,15 @@ func (h *Hand) applyBracketStates(ctx context.Context, checks []bracketState) {
 			// Poller confirmed the order is gone with no fill. Regardless of whether helm
 			// placed this ID in pendingCancels (cancel-before-replace race), the exchange is
 			// authoritative: the OCO was cancelled externally — position likely closed by user.
-			slog.Warn("checkBracketOrders: bracket order cancelled externally — position likely closed",
-				"hand_id", h.id, "symbol", c.symbol, "order_id", c.id, "status", c.result.Status)
+			h.log.Warn("checkBracketOrders: bracket order cancelled externally — position likely closed",
+				"symbol", c.symbol, "order_id", c.id, "status", c.result.Status)
 			h.pollExternalClose(ctx, c.id)
 
 		case "not_found":
 			// Algo order has vanished from both the active and history endpoints — triggered,
 			// expired, or purged without a WS delivery. Bypass pendingCancels — poller is authoritative.
-			slog.Warn("checkBracketOrders: bracket order not found at exchange — external close",
-				"hand_id", h.id, "symbol", c.symbol, "order_id", c.id)
+			h.log.Warn("checkBracketOrders: bracket order not found at exchange — external close",
+				"symbol", c.symbol, "order_id", c.id)
 			h.pollExternalClose(ctx, c.id)
 		}
 	}
@@ -709,8 +707,8 @@ func (h *Hand) applyBracketStates(ctx context.Context, checks []bracketState) {
 // Called by HelmRuntime during the sync desync check.
 func (h *Hand) handlePositionDesync(ctx context.Context, leg *position.LegState) {
 	legQty := leg.Qty.Abs()
-	slog.Warn("checkPositionDesync: portfolio qty < leg qty — external close suspected",
-		"hand_id", h.id, "symbol", leg.Symbol, "position_id", leg.PositionID,
+	h.log.Warn("checkPositionDesync: portfolio qty < leg qty — external close suspected",
+		"symbol", leg.Symbol, "position_id", leg.PositionID,
 		"leg_qty", legQty,
 	)
 	h.emitEvent(natsapi.HelmEvent{
@@ -757,8 +755,8 @@ func (h *Hand) handlePositionDesync(ctx context.Context, leg *position.LegState)
 	if closePrice.IsPositive() {
 		h.appendTradeRecord(ctx, cp, decimal.Zero, now)
 	} else {
-		slog.Warn("checkPositionDesync: skipping trade record — close price unknown",
-			"hand_id", h.id, "symbol", leg.Symbol, "position_id", leg.PositionID)
+		h.log.Warn("checkPositionDesync: skipping trade record — close price unknown",
+			"symbol", leg.Symbol, "position_id", leg.PositionID)
 	}
 
 	h.mu.Lock()

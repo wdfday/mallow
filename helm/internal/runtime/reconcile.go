@@ -79,8 +79,8 @@ func NewReconciler(log poslog.Log) *DefaultReconciler {
 func (r *DefaultReconciler) Reconcile(ctx context.Context, orch *HelmRuntime) []HandReconcileResult {
 	orch.mu.RLock()
 	hands := make([]*Hand, 0, len(orch.hands))
-	for _, h := range orch.hands {
-		hands = append(hands, h)
+	for _, e := range orch.hands {
+		hands = append(hands, e.h)
 	}
 	orch.mu.RUnlock()
 

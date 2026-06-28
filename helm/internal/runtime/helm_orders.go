@@ -3,7 +3,6 @@ package runtime
 import (
 	"encoding/json"
 	"sync"
-	"time"
 )
 
 // This file holds the small single-responsibility state owners that HelmRuntime composes.
@@ -115,8 +114,6 @@ func (f *fillDedup) markFillPublished(orderID string) {
 	f.fills[orderID] = struct{}{}
 	f.fillsMu.Unlock()
 }
-
-func timePtr(t time.Time) *time.Time { return &t }
 
 func unmarshalJSON(b []byte, v any) error {
 	return json.Unmarshal(b, v)

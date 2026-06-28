@@ -24,6 +24,9 @@ const (
 
 // StreamOrders implements exchange.AccountStreamer.
 // onBalance is ignored — OKX does not push balance updates on the orders channel.
+// onCredentialError is called if the WS auth step fails permanently; currently the OKX
+// loop terminates immediately on auth failure (streamOrdersOnce returns an "auth:" error),
+// so the caller's context cancel serves as the signal.
 func (c *Client) StreamOrders(
 	ctx context.Context,
 	creds exchange.Credentials,
@@ -32,6 +35,7 @@ func (c *Client) StreamOrders(
 	_ func(exchange.BalanceEvent),
 	onPosition func(exchange.PositionEvent),
 	onRisk func(exchange.RiskEvent),
+	onCredentialError func(string),
 ) error {
 	go func() {
 		defer func() {

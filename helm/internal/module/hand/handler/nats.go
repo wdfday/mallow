@@ -80,23 +80,32 @@ func (h *NATSHandler) enforceHelmOwner(msg *nats.Msg, helmID uuid.UUID) (uuid.UU
 	return userID, true
 }
 
-// enforceHandOwner resolves the hand's parent helm and verifies the caller owns it.
-// Used by update/delete/start/stop/kill where the hand already exists.
-func (h *NATSHandler) enforceHandOwner(msg *nats.Msg, handID uuid.UUID) (uuid.UUID, bool) {
-	userID, ok := h.requireCaller(msg)
-	if !ok {
-		return uuid.Nil, false
+// parseHandRef parses {id, helm_id} from the message, verifies the caller owns the
+// helm, and returns both IDs. Used by get/update/start/stop/kill — every hand
+// operation is addressed through its owning helm.
+func (h *NATSHandler) parseHandRef(msg *nats.Msg) (handID, helmID uuid.UUID, ok bool) {
+	var req struct {
+		ID     string `json:"id"`
+		HelmID string `json:"helm_id"`
 	}
-	summary, err := h.handMgr.GetSummary(handID)
+	if err := json.Unmarshal(msg.Data, &req); err != nil {
+		_ = msg.Respond(natsapi.ReplyErr("invalid json"))
+		return uuid.Nil, uuid.Nil, false
+	}
+	handID, err := uuid.Parse(req.ID)
 	if err != nil {
-		_ = msg.Respond(natsapi.ReplyErr("not found"))
-		return uuid.Nil, false
+		_ = msg.Respond(natsapi.ReplyErr("invalid id"))
+		return uuid.Nil, uuid.Nil, false
 	}
-	if err := h.helmSvc.CheckOwner(summary.HelmID, userID); err != nil {
-		_ = msg.Respond(natsapi.ReplyErr("not found"))
-		return uuid.Nil, false
+	helmID, err = uuid.Parse(req.HelmID)
+	if err != nil {
+		_ = msg.Respond(natsapi.ReplyErr("invalid helm_id"))
+		return uuid.Nil, uuid.Nil, false
 	}
-	return userID, true
+	if _, ok := h.enforceHelmOwner(msg, helmID); !ok {
+		return uuid.Nil, uuid.Nil, false
+	}
+	return handID, helmID, true
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -135,17 +144,16 @@ func (h *NATSHandler) list(msg *nats.Msg) {
 }
 
 func (h *NATSHandler) get(msg *nats.Msg) {
-	id, err := parseUUID(msg.Data)
-	if err != nil {
-		_ = msg.Respond(natsapi.ReplyErr("invalid json or id"))
+	id, helmID, ok := h.parseHandRef(msg)
+	if !ok {
 		return
 	}
-	bi, err := h.handMgr.Get(id)
-	if err != nil {
-		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
+	summary, err := h.handMgr.Get(id)
+	if err != nil || summary.HelmID != helmID {
+		_ = msg.Respond(natsapi.ReplyErr("not found"))
 		return
 	}
-	_ = msg.Respond(natsapi.ReplyOK(bi.Summary()))
+	_ = msg.Respond(natsapi.ReplyOK(summary))
 }
 
 func (h *NATSHandler) create(msg *nats.Msg) {
@@ -193,26 +201,27 @@ func (h *NATSHandler) create(msg *nats.Msg) {
 		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
 		return
 	}
-	slog.Info("nats: hand created", "id", instance.Data.ID, "caller_user_id", userID)
-	_ = msg.Respond(natsapi.ReplyOK(instance.Summary()))
+	slog.Info("nats: hand created", "id", instance.ID, "caller_user_id", userID)
+	_ = msg.Respond(natsapi.ReplyOK(instance))
 }
 
 func (h *NATSHandler) update(msg *nats.Msg) {
 	var raw struct {
-		ID string `json:"id"`
+		ID     string `json:"id"`
+		HelmID string `json:"helm_id"`
 		handDto.UpdateHandReq
 	}
 	if err := json.Unmarshal(msg.Data, &raw); err != nil {
 		_ = msg.Respond(natsapi.ReplyErr("invalid json: " + err.Error()))
 		return
 	}
-	id, err := uuid.Parse(raw.ID)
-	if err != nil {
-		_ = msg.Respond(natsapi.ReplyErr("invalid id"))
+	id, helmID, ok := h.parseHandRef(msg)
+	if !ok {
 		return
 	}
-	// Enforce ownership before reading or mutating.
-	if _, ok := h.enforceHandOwner(msg, id); !ok {
+	// Confirm the hand belongs to the helm in the request before mutating.
+	if cur, err := h.handMgr.Get(id); err != nil || cur.HelmID != helmID {
+		_ = msg.Respond(natsapi.ReplyErr("not found"))
 		return
 	}
 	patch := raw.UpdateHandReq.ToDomain()
@@ -220,20 +229,16 @@ func (h *NATSHandler) update(msg *nats.Msg) {
 		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
 		return
 	}
-	bi, _ := h.handMgr.Get(id)
-	_ = msg.Respond(natsapi.ReplyOK(bi.Summary()))
+	summary, _ := h.handMgr.Get(id)
+	_ = msg.Respond(natsapi.ReplyOK(summary))
 }
 
 func (h *NATSHandler) start(msg *nats.Msg) {
-	id, err := parseUUID(msg.Data)
-	if err != nil {
-		_ = msg.Respond(natsapi.ReplyErr("invalid json or id"))
+	id, helmID, ok := h.parseHandRef(msg)
+	if !ok {
 		return
 	}
-	if _, ok := h.enforceHandOwner(msg, id); !ok {
-		return
-	}
-	if err := h.handMgr.Start(id); err != nil {
+	if err := h.handMgr.Start(id, helmID); err != nil {
 		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
 		return
 	}
@@ -242,15 +247,11 @@ func (h *NATSHandler) start(msg *nats.Msg) {
 }
 
 func (h *NATSHandler) stop(msg *nats.Msg) {
-	id, err := parseUUID(msg.Data)
-	if err != nil {
-		_ = msg.Respond(natsapi.ReplyErr("invalid json or id"))
+	id, helmID, ok := h.parseHandRef(msg)
+	if !ok {
 		return
 	}
-	if _, ok := h.enforceHandOwner(msg, id); !ok {
-		return
-	}
-	if err := h.handMgr.Stop(id); err != nil {
+	if err := h.handMgr.Stop(id, helmID); err != nil {
 		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
 		return
 	}
@@ -259,28 +260,14 @@ func (h *NATSHandler) stop(msg *nats.Msg) {
 }
 
 func (h *NATSHandler) kill(msg *nats.Msg) {
-	id, err := parseUUID(msg.Data)
-	if err != nil {
-		_ = msg.Respond(natsapi.ReplyErr("invalid json or id"))
+	id, helmID, ok := h.parseHandRef(msg)
+	if !ok {
 		return
 	}
-	if _, ok := h.enforceHandOwner(msg, id); !ok {
-		return
-	}
-	if err := h.handMgr.Kill(context.Background(), id); err != nil {
+	if err := h.handMgr.Kill(context.Background(), id, helmID); err != nil {
 		_ = msg.Respond(natsapi.ReplyErr(err.Error()))
 		return
 	}
 	slog.Info("nats: hand killed", "id", id)
 	_ = msg.Respond(natsapi.ReplyOK(handDto.HandActionResp{Status: "killed", ID: id.String()}))
-}
-
-func parseUUID(data []byte) (uuid.UUID, error) {
-	var req struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(data, &req); err != nil {
-		return uuid.Nil, err
-	}
-	return uuid.Parse(req.ID)
 }

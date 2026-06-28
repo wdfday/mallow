@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
 
@@ -13,136 +14,136 @@ import (
 	"mallow/helm/internal/runtime"
 )
 
-func (s *Service) Get(id uuid.UUID) (*runtime.HandRef, error) { return s.getOrLoad(id) }
-
-// GetSummary returns the HandSummary for any hand, including terminal ones (DB fallback).
-func (s *Service) GetSummary(id uuid.UUID) (*domain.HandSummary, error) {
-	s.mu.RLock()
-	bi, inLive := s.hands[id]
-	s.mu.RUnlock()
-	if inLive {
-		sum := bi.Summary()
-		return &sum, nil
-	}
+// Get returns a HandSummary for any hand (live or terminal).
+// For live hands: includes runtime health and metrics.
+// For terminal hands: returns the persisted snapshot from DB.
+func (s *Service) Get(id uuid.UUID) (domain.HandSummary, error) {
 	data, err := s.repo.Get(id)
 	if err != nil {
-		return nil, err
+		return domain.HandSummary{}, err
 	}
-	sum := data.SummaryFromDB()
-	return &sum, nil
+	if rt, err := s.registry.Get(data.HelmID); err == nil {
+		if h, _, ok := rt.GetHandEntry(id.String()); ok {
+			return runtime.BuildHandSummary(h, data), nil
+		}
+	}
+	return data.SummaryFromDB(), nil
 }
 
+// GetHand returns the live Hand runner for the given ID, or nil if not in memory.
 func (s *Service) GetHand(id uuid.UUID) *runtime.Hand {
-	bi, err := s.getOrLoad(id)
+	data, err := s.repo.Get(id)
 	if err != nil {
 		return nil
 	}
-	return bi.Runner
+	rt, err := s.registry.Get(data.HelmID)
+	if err != nil {
+		return nil
+	}
+	h, _, ok := rt.GetHandEntry(id.String())
+	if !ok {
+		return nil
+	}
+	return h
 }
 
-// List returns all hands: live from memory + terminal from DB.
+// List returns all hands: live from registry + terminal from DB.
 func (s *Service) List() []domain.HandSummary {
 	all := s.repo.All()
-	s.mu.RLock()
 	out := make([]domain.HandSummary, 0, len(all))
 	for _, data := range all {
-		if bi, ok := s.hands[data.ID]; ok {
-			out = append(out, bi.Summary())
-		} else {
-			out = append(out, data.SummaryFromDB())
+		if rt, err := s.registry.Get(data.HelmID); err == nil {
+			if h, _, ok := rt.GetHandEntry(data.ID.String()); ok {
+				out = append(out, runtime.BuildHandSummary(h, data))
+				continue
+			}
 		}
+		out = append(out, data.SummaryFromDB())
 	}
-	s.mu.RUnlock()
 	return out
 }
 
-// ListLive returns only hands currently wired into a HelmRuntime.
-// Terminal (killed/released) and cascade-stopped hands are excluded.
-// Use this for periodic background refreshes where terminals are cached client-side.
+// ListLive returns only hands currently wired into any HelmRuntime.
 func (s *Service) ListLive() []domain.HandSummary {
-	s.mu.RLock()
-	out := make([]domain.HandSummary, 0, len(s.hands))
-	for _, bi := range s.hands {
-		out = append(out, bi.Summary())
+	var out []domain.HandSummary
+	for _, rt := range s.registry.All() {
+		out = append(out, rt.LiveHandSummaries()...)
 	}
-	s.mu.RUnlock()
 	return out
 }
 
+// ListByHelm returns all hands for a helm: live from registry, terminal from DB.
 func (s *Service) ListByHelm(orchID uuid.UUID) []domain.HandSummary {
 	all := s.repo.AllByHelm(orchID)
-	s.mu.RLock()
 	out := make([]domain.HandSummary, 0, len(all))
+	rt, _ := s.registry.Get(orchID)
 	for _, data := range all {
-		if bi, ok := s.hands[data.ID]; ok {
-			out = append(out, bi.Summary())
-		} else {
-			out = append(out, data.SummaryFromDB())
+		if rt != nil {
+			if h, _, ok := rt.GetHandEntry(data.ID.String()); ok {
+				out = append(out, runtime.BuildHandSummary(h, data))
+				continue
+			}
 		}
+		out = append(out, data.SummaryFromDB())
 	}
-	s.mu.RUnlock()
 	return out
 }
 
-// ListByHelmLive returns only live hands for a given helm.
+// ListByHelmLive returns only live (in-memory) hands for a given helm.
 func (s *Service) ListByHelmLive(orchID uuid.UUID) []domain.HandSummary {
-	s.mu.RLock()
-	var out []domain.HandSummary
-	for _, bi := range s.hands {
-		if bi.Data.HelmID == orchID {
-			out = append(out, bi.Summary())
-		}
+	rt, err := s.registry.Get(orchID)
+	if err != nil {
+		return nil
 	}
-	s.mu.RUnlock()
-	return out
+	return rt.LiveHandSummaries()
 }
 
-func (s *Service) Create(cfg domain.HandConfig) (*runtime.HandRef, error) {
+func (s *Service) Create(cfg domain.HandConfig) (domain.HandSummary, error) {
 	if cfg.Market == domain.MarketTypeFutures {
-		return nil, fmt.Errorf("futures trading is not yet supported")
+		return domain.HandSummary{}, fmt.Errorf("futures trading is not yet supported")
 	}
 	if cfg.Name == "" {
-		return nil, fmt.Errorf("hand name is required")
+		return domain.HandSummary{}, fmt.Errorf("hand name is required")
 	}
 	if cfg.HelmID == uuid.Nil {
-		return nil, fmt.Errorf("helm_id is required")
+		return domain.HandSummary{}, fmt.Errorf("helm_id is required")
 	}
 	if len(cfg.Symbols) == 0 {
-		return nil, fmt.Errorf("at least one symbol is required")
+		return domain.HandSummary{}, fmt.Errorf("at least one symbol is required")
 	}
 	for _, sym := range cfg.Symbols {
 		if sym == "" {
-			return nil, fmt.Errorf("symbols must not contain empty strings")
+			return domain.HandSummary{}, fmt.Errorf("symbols must not contain empty strings")
 		}
 	}
 	if !cfg.AllocatedCapital.IsPositive() {
-		return nil, fmt.Errorf("allocated capital must be greater than zero")
+		return domain.HandSummary{}, fmt.Errorf("allocated capital must be greater than zero")
 	}
 	if err := cfg.Strategy.Validate(); err != nil {
-		return nil, err
+		return domain.HandSummary{}, err
 	}
 	cfg.Defaults()
 	if err := validateSizingConfig(cfg.Position); err != nil {
-		return nil, err
+		return domain.HandSummary{}, err
 	}
 
 	rt, err := s.registry.Get(cfg.HelmID)
 	if err != nil {
-		return nil, fmt.Errorf("helm runtime not found: %w", err)
+		return domain.HandSummary{}, fmt.Errorf("helm runtime not found: %w", err)
 	}
 	if cfg.Market == domain.MarketTypeFutures {
 		if ft, ok := rt.Exchange.(interface{ SupportsFutures() bool }); !ok || !ft.SupportsFutures() {
-			return nil, fmt.Errorf("exchange %q does not support futures trading", rt.Exchange.Name())
+			return domain.HandSummary{}, fmt.Errorf("exchange %q does not support futures trading", rt.Exchange.Name())
 		}
 		if cfg.Futures != nil && cfg.Futures.MarginType == domain.MarginTypeIsolated {
 			if iso, ok := rt.Exchange.(exchange.IsolatedMarginTrader); !ok || !iso.SupportsIsolatedMargin() {
-				return nil, fmt.Errorf("exchange %q does not support isolated margin — use cross margin", rt.Exchange.Name())
+				return domain.HandSummary{}, fmt.Errorf("exchange %q does not support isolated margin — use cross margin", rt.Exchange.Name())
 			}
 		}
 	}
 
 	if err := s.heraldValidate(cfg, rt); err != nil {
-		return nil, err
+		return domain.HandSummary{}, err
 	}
 	id := s.repo.GenerateID()
 	data := &domain.Hand{
@@ -154,37 +155,34 @@ func (s *Service) Create(cfg domain.HandConfig) (*runtime.HandRef, error) {
 	data.ApplyConfig(cfg)
 
 	if err := s.repo.Save(data); err != nil {
-		return nil, fmt.Errorf("save hand: %w", err)
+		return domain.HandSummary{}, fmt.Errorf("save hand: %w", err)
 	}
 
 	strat, tact := runtime.BuildHandComponents(data)
 	hand := runtime.NewHand(id, cfg.HelmID, rt, strat, tact, data.Position.Pyramid, data.Position.MaxUnits, runtime.SignalTTLFor(data), data.Futures, data.OrderType, data.LimitTimeoutSec, data.LimitFallback, data.Guard, data.AllocatedCapital)
 	setMeta(hand, data)
-	rt.AddHand(hand)
-	bi := &runtime.HandRef{Data: data, Runner: hand, Exchange: rt.Exchange}
-	s.mu.Lock()
-	s.hands[id] = bi
-	s.mu.Unlock()
+	rt.AddHand(hand, data)
 
 	slog.Info("hand created", "id", id, "name", data.Name, "helm_id", data.HelmID)
-	return bi, nil
+	return runtime.BuildHandSummary(hand, data), nil
 }
 
 // Update patches mutable fields: Name, Position sizing, and Guard exit rules.
 // Symbols, Strategy, Type, and Market are immutable after creation.
 // The hand must be stopped before updating.
 func (s *Service) Update(id uuid.UUID, patch domain.HandConfig) error {
-	bi, err := s.getOrLoad(id)
+	data, err := s.repo.Get(id)
 	if err != nil {
 		return err
 	}
-	if bi.Runner.IsRunning() {
-		return fmt.Errorf("hand %q is running — stop it first", id)
+	helmID := data.HelmID
+
+	if rt, err := s.registry.Get(helmID); err == nil {
+		if h, _, ok := rt.GetHandEntry(id.String()); ok && h.IsRunning() {
+			return fmt.Errorf("hand %q is running — stop it first", id)
+		}
 	}
 
-	orchID := bi.Data.HelmID
-
-	// Phase 1: Persist to DB — pure domain mutation, no runtime side-effects.
 	if err := s.repo.Update(id, func(d *domain.Hand) error {
 		if patch.Name != "" {
 			d.Name = patch.Name
@@ -200,28 +198,51 @@ func (s *Service) Update(id uuid.UUID, patch domain.HandConfig) error {
 		return err
 	}
 
-	// Phase 2: Reload and rebuild in-memory hand with updated config.
 	updated, err := s.repo.Get(id)
 	if err != nil {
 		slog.Warn("hand updated in DB but reload failed — in-memory state stale", "id", id, "err", err)
 		return nil
 	}
-	bi.Data = updated
 
-	if rt, _ := s.registry.Get(orchID); rt != nil {
+	if rt, err := s.registry.Get(helmID); err == nil {
 		rt.RemoveHand(id.String())
 		strat, tact := runtime.BuildHandComponents(updated)
-		bi.Runner = runtime.NewHand(updated.ID, orchID, rt, strat, tact, updated.Position.Pyramid, updated.Position.MaxUnits, runtime.SignalTTLFor(updated), updated.Futures, updated.OrderType, updated.LimitTimeoutSec, updated.LimitFallback, updated.Guard, updated.AllocatedCapital)
-		setMeta(bi.Runner, updated)
-		rt.AddHand(bi.Runner)
+		hand := runtime.NewHand(updated.ID, helmID, rt, strat, tact, updated.Position.Pyramid, updated.Position.MaxUnits, runtime.SignalTTLFor(updated), updated.Futures, updated.OrderType, updated.LimitTimeoutSec, updated.LimitFallback, updated.Guard, updated.AllocatedCapital)
+		setMeta(hand, updated)
+		rt.AddHand(hand, updated)
 	}
 
 	slog.Info("hand updated", "id", id, "name", updated.Name)
 	return nil
 }
 
+// AllocateCapital adds delta to the hand's allocated capital and updates both DB and runtime.
+func (s *Service) AllocateCapital(id, helmID uuid.UUID, delta decimal.Decimal) (decimal.Decimal, error) {
+	data, err := s.repo.Get(id)
+	if err != nil {
+		return decimal.Zero, err
+	}
+
+	newCapital := data.AllocatedCapital.Add(delta)
+	if !newCapital.IsPositive() {
+		return decimal.Zero, fmt.Errorf("new allocated capital must be greater than zero")
+	}
+
+	if err := s.repo.Update(id, func(d *domain.Hand) error {
+		d.AllocatedCapital = newCapital
+		return nil
+	}); err != nil {
+		return decimal.Zero, err
+	}
+
+	if rt, err := s.registry.Get(helmID); err == nil {
+		rt.SetAllocatedCapitalOnHand(id.String(), newCapital)
+	}
+
+	return newCapital, nil
+}
+
 // validateSizingConfig enforces cross-field invariants for sizing modes.
-// Called after Defaults() so SizeMode is always non-empty.
 func validateSizingConfig(p domain.PositionConfig) error {
 	switch p.SizeMode {
 	case "fixed_qty":

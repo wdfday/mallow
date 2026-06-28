@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"log/slog"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -64,13 +63,13 @@ func (h *Hand) Start() {
 	if needsReconcile {
 		go func() {
 			defer safe.Recover()
-			slog.Info("hand: on-demand reconcile — restarted after gap",
-				"hand_id", h.id, "gap", now.Sub(h.stoppedAt).Truncate(time.Second))
+			h.log.Info("hand: on-demand reconcile — restarted after gap",
+				"gap", now.Sub(h.stoppedAt).Truncate(time.Second))
 			h.helmRuntime.ReconcileHand(context.Background(), h)
 		}()
 	}
 
-	slog.Info("hand started", "hand_id", h.id, "exchange", h.helmRuntime.Exchange.Name())
+	h.log.Info("hand started", "exchange", h.helmRuntime.Exchange.Name())
 	h.emitEvent(natsapi.HelmEvent{
 		Code:   CodeHandStarted,
 		Msg:    "hand: started",
@@ -100,14 +99,14 @@ func (h *Hand) Stop() {
 	if done != nil {
 		<-done
 	}
-	slog.Info("hand stopped", "hand_id", h.id)
+	h.log.Info("hand stopped")
 	h.emitEvent(natsapi.HelmEvent{Code: CodeHandStopped, Msg: "hand: stopped"})
 }
 
 // Kill stops the hand and immediately closes all open positions via market orders.
 // Use for emergency shutdown when you must exit the exchange immediately.
 func (h *Hand) Kill(ctx context.Context) {
-	slog.Warn("hand: kill initiated — flattening all positions", "hand_id", h.id)
+	h.log.Warn("hand: kill initiated — flattening all positions")
 	h.emitEvent(natsapi.HelmEvent{Code: CodeHandKilled, Reason: "flattening all positions", Msg: "hand: killed"})
 	h.mu.Lock()
 	h.health.Status = HealthKilled
@@ -124,7 +123,7 @@ func (h *Hand) Kill(ctx context.Context) {
 // on the exchange for the user to manage. Exchange-side SL/TP brackets are cancelled
 // as safety cleanup.
 func (h *Hand) Release(ctx context.Context) {
-	slog.Info("hand: release — performing synthetic close (buyback)", "hand_id", h.id)
+	h.log.Info("hand: release — performing synthetic close (buyback)")
 	h.emitEvent(natsapi.HelmEvent{Code: CodeHandReleased, Reason: "positions released (synthetic close)", Msg: "hand: released"})
 	h.mu.Lock()
 	h.health.Status = HealthReleased
@@ -197,8 +196,8 @@ func (h *Hand) DeliverSignal(sig Signal) {
 	case h.Signals <- sig:
 	default:
 		h.RecordDrop()
-		slog.Warn("hand signal channel full after drain, dropping",
-			"hand_id", h.id, "symbol", sig.Symbol)
+		h.log.Warn("hand signal channel full after drain, dropping",
+			"symbol", sig.Symbol)
 	}
 }
 

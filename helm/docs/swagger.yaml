@@ -1,38 +1,43 @@
 basePath: /
 definitions:
-  internal_module_helm_handler.orderHistoryResp:
+  internal_module_hand_handler.HandEquityPoint:
     properties:
-      client_order_id:
+      cum_net_pnl:
+        type: number
+      cum_pnl:
+        type: number
+      ts:
         type: string
-      exchange_order_id:
+    type: object
+  mallow_helm_internal_infra_eventlog.EventRecord:
+    properties:
+      at:
         type: string
-      filled_price:
-        type: string
-      filled_qty:
+      code:
+        type: integer
+      direction:
         type: string
       hand_id:
         type: string
-      is_close:
-        type: boolean
-      order_type:
+      helm_id:
         type: string
-      placed_at:
+      id:
+        type: integer
+      msg:
         type: string
-      position_id:
+      order_id:
         type: string
       price:
-        type: string
+        type: number
       qty:
-        type: string
+        type: number
       reason:
         type: string
       side:
         type: string
-      status:
-        type: string
       symbol:
         type: string
-      updated_at:
+      user_id:
         type: string
     type: object
   mallow_helm_internal_module_account_dto.AccountResponse:
@@ -55,14 +60,6 @@ definitions:
         type: string
       is_active:
         type: boolean
-      is_auto_sync:
-        type: boolean
-      last_synced_at:
-        type: string
-      sync_error_message:
-        type: string
-      sync_status:
-        type: string
       updated_at:
         type: string
       user_id:
@@ -169,8 +166,9 @@ definitions:
     - released
     type: string
     x-enum-comments:
-      HandStatusKilled: 'terminal: positions flattened, capital returned'
-      HandStatusReleased: 'terminal: positions orphaned, capital returned'
+      HandStatusKilled: 'legacy terminal: only exists in DB from before kill API was
+        removed'
+      HandStatusReleased: 'terminal: positions orphaned'
     x-enum-varnames:
     - HandStatusStopped
     - HandStatusRunning
@@ -336,6 +334,13 @@ definitions:
         allOf:
         - $ref: '#/definitions/mallow_helm_internal_module_hand_domain.SizeMode'
         description: SizeMode selects the sizing algorithm. Defaults to fixed_fractional.
+      strength_sizing:
+        description: |-
+          StrengthSizing: when true (default), notional modes (percent_equity, fixed_qty,
+          quote_qty) multiply size by signal strength [0–1]. Risk-based modes
+          (fixed_fractional, volatility) always ignore this flag.
+          nil → true (backward-compatible with rows written before this field existed).
+        type: boolean
       unit_pct:
         description: |-
           UnitPct: fraction of allocated equity deployed per entry unit.
@@ -379,13 +384,18 @@ definitions:
           missing TF is a validation error. herald rejects empty TF too.
         enum:
         - M1
+        - M3
         - M5
         - M15
         - M30
         - H1
+        - H2
         - H4
+        - H6
+        - H12
         - D1
         - W1
+        - MN
         type: string
     required:
     - script
@@ -483,8 +493,11 @@ definitions:
       strategy:
         $ref: '#/definitions/mallow_helm_internal_module_hand_dto.StrategyDTO'
       symbols:
+        description: Only symbols[0] is dispatched to herald — single-symbol per hand.
+          Multi-symbol deferred.
         items:
           type: string
+        maxItems: 1
         minItems: 1
         type: array
       type:
@@ -567,6 +580,11 @@ definitions:
         - quote_qty
         - percent_equity
         - volatility
+      strength_sizing:
+        description: |-
+          StrengthSizing scales notional modes (percent_equity, fixed_qty, quote_qty) by
+          signal strength. Omit or set true to keep the default (on). Risk-based modes ignore it.
+        type: boolean
       unit_pct:
         maximum: 1
         type: number
@@ -588,13 +606,18 @@ definitions:
           missing TF is a validation error. herald rejects empty TF too.
         enum:
         - M1
+        - M3
         - M5
         - M15
         - M30
         - H1
+        - H2
         - H4
+        - H6
+        - H12
         - D1
         - W1
+        - MN
         type: string
     required:
     - script
@@ -602,8 +625,6 @@ definitions:
     type: object
   mallow_helm_internal_module_hand_dto.UpdateHandReq:
     properties:
-      allocated_capital:
-        type: number
       name:
         maxLength: 128
         minLength: 1
@@ -612,10 +633,6 @@ definitions:
         $ref: '#/definitions/mallow_helm_internal_module_hand_dto.PositionDTO'
       risk:
         $ref: '#/definitions/mallow_helm_internal_module_hand_dto.HandGuardConfigDTO'
-      signal_ttl_sec:
-        maximum: 3600
-        minimum: -1
-        type: integer
     type: object
   mallow_helm_internal_module_helm_dto.ActionResp:
     properties:
@@ -640,41 +657,11 @@ definitions:
       free:
         type: number
     type: object
-  mallow_helm_internal_module_helm_dto.EquityPageResp:
-    properties:
-      has_more:
-        type: boolean
-      limit:
-        type: integer
-      metadata:
-        $ref: '#/definitions/mallow_helm_internal_module_helm_dto.AnalyticsMetaResp'
-      next:
-        type: string
-      points:
-        items:
-          $ref: '#/definitions/mallow_helm_internal_module_helm_dto.EquityPointResp'
-        type: array
-    type: object
-  mallow_helm_internal_module_helm_dto.EquityPointResp:
-    properties:
-      cash:
-        type: number
-      equity:
-        type: number
-      hand_id:
-        type: string
-      realized_pnl:
-        type: number
-      ts:
-        type: string
-      unrealized_pnl:
-        type: number
-    type: object
   mallow_helm_internal_module_helm_dto.EventsPageResp:
     properties:
       events:
         items:
-          $ref: '#/definitions/mallow_helm_internal_readmodel.EventRecord'
+          $ref: '#/definitions/mallow_helm_internal_infra_eventlog.EventRecord'
         type: array
       has_more:
         type: boolean
@@ -901,6 +888,41 @@ definitions:
       updated_at:
         type: string
     type: object
+  mallow_helm_internal_module_helm_dto.OrderHistoryResp:
+    properties:
+      client_order_id:
+        type: string
+      exchange_order_id:
+        type: string
+      filled_price:
+        type: string
+      filled_qty:
+        type: string
+      hand_id:
+        type: string
+      is_close:
+        type: boolean
+      order_type:
+        type: string
+      placed_at:
+        type: string
+      position_id:
+        type: string
+      price:
+        type: string
+      qty:
+        type: string
+      reason:
+        type: string
+      side:
+        type: string
+      status:
+        type: string
+      symbol:
+        type: string
+      updated_at:
+        type: string
+    type: object
   mallow_helm_internal_module_helm_dto.OrderResp:
     properties:
       filled_avg_price:
@@ -1029,53 +1051,6 @@ definitions:
       max_positions:
         minimum: 1
         type: integer
-    type: object
-  mallow_helm_internal_module_helm_dto.SnapshotPageResp:
-    properties:
-      has_more:
-        type: boolean
-      limit:
-        type: integer
-      metadata:
-        $ref: '#/definitions/mallow_helm_internal_module_helm_dto.AnalyticsMetaResp'
-      next:
-        type: string
-      snapshots:
-        items:
-          $ref: '#/definitions/mallow_helm_internal_module_helm_dto.SnapshotResp'
-        type: array
-    type: object
-  mallow_helm_internal_module_helm_dto.SnapshotPositionResp:
-    properties:
-      avg_price:
-        type: number
-      qty:
-        type: number
-      side:
-        type: string
-      symbol:
-        type: string
-    type: object
-  mallow_helm_internal_module_helm_dto.SnapshotResp:
-    properties:
-      cash:
-        type: number
-      equity:
-        type: number
-      hand_id:
-        type: string
-      helm_id:
-        type: string
-      positions:
-        items:
-          $ref: '#/definitions/mallow_helm_internal_module_helm_dto.SnapshotPositionResp'
-        type: array
-      realized_pnl:
-        type: number
-      ts:
-        type: string
-      unrealized_pnl:
-        type: number
     type: object
   mallow_helm_internal_module_helm_dto.StatsResp:
     properties:
@@ -1209,37 +1184,6 @@ definitions:
       risk:
         $ref: '#/definitions/mallow_helm_internal_module_helm_dto.RiskConfigDTO'
     type: object
-  mallow_helm_internal_readmodel.EventRecord:
-    properties:
-      at:
-        type: string
-      code:
-        type: integer
-      direction:
-        type: string
-      hand_id:
-        type: string
-      helm_id:
-        type: string
-      id:
-        type: integer
-      msg:
-        type: string
-      order_id:
-        type: string
-      price:
-        type: number
-      qty:
-        type: number
-      reason:
-        type: string
-      side:
-        type: string
-      symbol:
-        type: string
-      user_id:
-        type: string
-    type: object
   mallow_helm_internal_shared.ErrorResponse:
     properties:
       code:
@@ -1262,11 +1206,24 @@ definitions:
       status:
         type: integer
     type: object
-  mallow_helm_internal_shared.SuccessResponse-array_internal_module_helm_handler_orderHistoryResp:
+  mallow_helm_internal_shared.SuccessResponse-array_internal_module_hand_handler_HandEquityPoint:
     properties:
       data:
         items:
-          $ref: '#/definitions/internal_module_helm_handler.orderHistoryResp'
+          $ref: '#/definitions/internal_module_hand_handler.HandEquityPoint'
+        type: array
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
+  mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_infra_eventlog_EventRecord:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/mallow_helm_internal_infra_eventlog.EventRecord'
         type: array
       detail:
         type: string
@@ -1301,6 +1258,19 @@ definitions:
       status:
         type: integer
     type: object
+  mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_module_helm_dto_OrderHistoryResp:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/mallow_helm_internal_module_helm_dto.OrderHistoryResp'
+        type: array
+      detail:
+        type: string
+      message:
+        type: string
+      status:
+        type: integer
+    type: object
   mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_module_helm_dto_OrderResp:
     properties:
       data:
@@ -1319,19 +1289,6 @@ definitions:
       data:
         items:
           $ref: '#/definitions/mallow_helm_internal_module_helm_dto.PositionResp'
-        type: array
-      detail:
-        type: string
-      message:
-        type: string
-      status:
-        type: integer
-    type: object
-  mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_readmodel_EventRecord:
-    properties:
-      data:
-        items:
-          $ref: '#/definitions/mallow_helm_internal_readmodel.EventRecord'
         type: array
       detail:
         type: string
@@ -1388,17 +1345,6 @@ definitions:
     properties:
       data:
         $ref: '#/definitions/mallow_helm_internal_module_helm_dto.ActionResp'
-      detail:
-        type: string
-      message:
-        type: string
-      status:
-        type: integer
-    type: object
-  mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_EquityPageResp:
-    properties:
-      data:
-        $ref: '#/definitions/mallow_helm_internal_module_helm_dto.EquityPageResp'
       detail:
         type: string
       message:
@@ -1516,17 +1462,6 @@ definitions:
       status:
         type: integer
     type: object
-  mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_SnapshotPageResp:
-    properties:
-      data:
-        $ref: '#/definitions/mallow_helm_internal_module_helm_dto.SnapshotPageResp'
-      detail:
-        type: string
-      message:
-        type: string
-      status:
-        type: integer
-    type: object
   mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_StatsResp:
     properties:
       data:
@@ -1618,346 +1553,7 @@ paths:
       summary: Get account by ID
       tags:
       - accounts
-  /api/v1/accounts/{id}/equity:
-    get:
-      description: Forward-filled equity curve bucketed by resolution, from equity_snapshots
-        (PostgreSQL).
-      parameters:
-      - description: Account ID
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: RFC3339 start (inclusive); default 30 days ago
-        in: query
-        name: after
-        type: string
-      - description: RFC3339 end (inclusive); default now
-        in: query
-        name: before
-        type: string
-      - default: 200
-        description: Page size
-        in: query
-        name: limit
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_EquityPageResp'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "401":
-          description: Unauthorized
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "503":
-          description: Service Unavailable
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-      security:
-      - BearerAuth: []
-      summary: Equity curve for an account
-      tags:
-      - accounts
-  /api/v1/accounts/{id}/exchange/account:
-    get:
-      description: Calls the exchange REST API directly and returns cash, equity,
-        positions and per-asset balances.
-      parameters:
-      - description: Account ID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ExchangeAccountResp'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "401":
-          description: Unauthorized
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "502":
-          description: Bad Gateway
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "503":
-          description: Service Unavailable
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-      security:
-      - BearerAuth: []
-      summary: Get live exchange account snapshot for an account
-      tags:
-      - accounts
-  /api/v1/accounts/{id}/fills:
-    get:
-      description: Time-cursor pagination over TRADE_FILLS JetStream stream. Pass
-        `after` (RFC3339) from previous response to page forward.
-      parameters:
-      - description: Account ID
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: RFC3339 cursor (exclusive); omit for all
-        in: query
-        name: after
-        type: string
-      - default: 200
-        description: Page size
-        in: query
-        name: limit
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_FillPageResp'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "401":
-          description: Unauthorized
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "503":
-          description: Service Unavailable
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-      security:
-      - BearerAuth: []
-      summary: List order fills for an account
-      tags:
-      - accounts
-  /api/v1/accounts/{id}/portfolio:
-    get:
-      description: Returns real-time portfolio summary from the helm runtime (cash,
-        equity, positions, drawdown, win rate).
-      parameters:
-      - description: Account ID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_PortfolioResp'
-        "401":
-          description: Unauthorized
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "503":
-          description: Service Unavailable
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-      security:
-      - BearerAuth: []
-      summary: Get live portfolio for an account
-      tags:
-      - accounts
-  /api/v1/accounts/{id}/positions:
-    get:
-      description: Returns live open positions from the helm runtime.
-      parameters:
-      - description: Account ID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_module_helm_dto_PositionResp'
-        "401":
-          description: Unauthorized
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "503":
-          description: Service Unavailable
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-      security:
-      - BearerAuth: []
-      summary: List open positions for an account
-      tags:
-      - accounts
-  /api/v1/accounts/{id}/snapshots:
-    get:
-      description: Cursor-based pagination over equity_snapshots (PostgreSQL). Helm-level
-        snapshots only.
-      parameters:
-      - description: Account ID
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: RFC3339 cursor (exclusive); omit for newest-first
-        in: query
-        name: before
-        type: string
-      - default: 100
-        description: Page size
-        in: query
-        name: limit
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_SnapshotPageResp'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "401":
-          description: Unauthorized
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "503":
-          description: Service Unavailable
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-      security:
-      - BearerAuth: []
-      summary: List portfolio snapshots for an account
-      tags:
-      - accounts
-  /api/v1/accounts/{id}/trades:
-    get:
-      description: Cursor-based pagination over HELM_TRADES JetStream stream (fan-out
-        across all hands).
-      parameters:
-      - description: Account ID
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: JetStream sequence cursor (0 = from start)
-        in: query
-        name: cursor
-        type: integer
-      - default: 100
-        description: Page size
-        in: query
-        name: limit
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_TradesPageResp'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "401":
-          description: Unauthorized
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "503":
-          description: Service Unavailable
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-      security:
-      - BearerAuth: []
-      summary: List closed trades for an account
-      tags:
-      - accounts
   /api/v1/hands:
-    get:
-      parameters:
-      - description: Filter by helm ID
-        in: query
-        name: helm_id
-        type: string
-      - description: Filter by account ID
-        in: query
-        name: account_id
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_module_hand_domain_HandSummary'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "401":
-          description: Unauthorized
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "500":
-          description: Internal Server Error
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-      security:
-      - BearerAuth: []
-      summary: List hands
-      tags:
-      - hands
     post:
       consumes:
       - application/json
@@ -1996,9 +1592,53 @@ paths:
       summary: Create hand
       tags:
       - hands
-  /api/v1/hands/{id}:
+  /api/v1/hands/{helmId}:
     get:
       parameters:
+      - description: Filter by helm ID
+        in: query
+        name: helm_id
+        type: string
+      - description: Filter by account ID
+        in: query
+        name: account_id
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_module_hand_domain_HandSummary'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List hands
+      tags:
+      - hands
+  /api/v1/hands/{helmId}/{id}:
+    get:
+      parameters:
+      - description: Helm ID
+        in: path
+        name: helmId
+        required: true
+        type: string
       - description: Hand ID
         in: path
         name: id
@@ -2028,6 +1668,11 @@ paths:
       consumes:
       - application/json
       parameters:
+      - description: Helm ID
+        in: path
+        name: helmId
+        required: true
+        type: string
       - description: Hand ID
         in: path
         name: id
@@ -2063,11 +1708,16 @@ paths:
       summary: Update hand
       tags:
       - hands
-  /api/v1/hands/{id}/activity:
+  /api/v1/hands/{helmId}/{id}/activity:
     get:
       description: Persistent events for this hand from PostgreSQL, newest first.
         Supports ?limit= (default 100) and ?before= (RFC3339 cursor for pagination).
       parameters:
+      - description: Helm ID
+        in: path
+        name: helmId
+        required: true
+        type: string
       - description: Hand ID
         in: path
         name: id
@@ -2089,7 +1739,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_readmodel_EventRecord'
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_infra_eventlog_EventRecord'
         "401":
           description: Unauthorized
           schema:
@@ -2108,11 +1758,16 @@ paths:
       tags:
       - system
       - hands
-  /api/v1/hands/{id}/allocate-capital:
+  /api/v1/hands/{helmId}/{id}/allocate-capital:
     post:
       consumes:
       - application/json
       parameters:
+      - description: Helm ID
+        in: path
+        name: helmId
+        required: true
+        type: string
       - description: Hand ID
         in: path
         name: id
@@ -2148,9 +1803,14 @@ paths:
       summary: Allocate capital
       tags:
       - hands
-  /api/v1/hands/{id}/equity:
+  /api/v1/hands/{helmId}/{id}/equity:
     get:
       parameters:
+      - description: Helm ID
+        in: path
+        name: helmId
+        required: true
+        type: string
       - description: Hand ID
         in: path
         name: id
@@ -2160,25 +1820,29 @@ paths:
         in: query
         name: period
         type: string
-      - description: 'Bucket size: 1m|5m|15m|1h|4h|1d (default 1m)'
-        in: query
-        name: resolution
-        type: string
       produces:
       - application/json
       responses:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_EquityPageResp'
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-array_internal_module_hand_handler_HandEquityPoint'
       security:
       - BearerAuth: []
-      summary: Per-hand equity curve
+      summary: Per-hand PnL curve (projection from trades)
       tags:
       - hands
-  /api/v1/hands/{id}/kill:
+  /api/v1/hands/{helmId}/{id}/kill:
     post:
+      description: 'Emergency stop: deregisters the hand, cancels open orders, and
+        places market close orders for all active positions. The hand becomes terminal
+        (killed) and cannot be restarted.'
       parameters:
+      - description: Helm ID
+        in: path
+        name: helmId
+        required: true
+        type: string
       - description: Hand ID
         in: path
         name: id
@@ -2205,14 +1869,19 @@ paths:
             $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
       security:
       - BearerAuth: []
-      summary: Kill hand — stop and flatten all positions
+      summary: Kill hand (stop + flatten all positions at market)
       tags:
       - hands
-  /api/v1/hands/{id}/release:
+  /api/v1/hands/{helmId}/{id}/release:
     post:
       description: Stop the hand without closing positions. Open legs are marked orphaned
         in the poslog; the hand will not reclaim them on restart.
       parameters:
+      - description: Helm ID
+        in: path
+        name: helmId
+        required: true
+        type: string
       - description: Hand ID
         in: path
         name: id
@@ -2236,9 +1905,14 @@ paths:
       summary: Release a hand (orphan open positions)
       tags:
       - hands
-  /api/v1/hands/{id}/start:
+  /api/v1/hands/{helmId}/{id}/start:
     post:
       parameters:
+      - description: Helm ID
+        in: path
+        name: helmId
+        required: true
+        type: string
       - description: Hand ID
         in: path
         name: id
@@ -2268,9 +1942,14 @@ paths:
       summary: Start hand
       tags:
       - hands
-  /api/v1/hands/{id}/stats:
+  /api/v1/hands/{helmId}/{id}/stats:
     get:
       parameters:
+      - description: Helm ID
+        in: path
+        name: helmId
+        required: true
+        type: string
       - description: Hand ID
         in: path
         name: id
@@ -2286,6 +1965,11 @@ paths:
         in: query
         name: limit
         type: integer
+      - description: Helm ID
+        in: path
+        name: helmId
+        required: true
+        type: string
       - description: Hand ID
         in: path
         name: id
@@ -2326,9 +2010,14 @@ paths:
       tags:
       - hands
       - hands
-  /api/v1/hands/{id}/stop:
+  /api/v1/hands/{helmId}/{id}/stop:
     post:
       parameters:
+      - description: Helm ID
+        in: path
+        name: helmId
+        required: true
+        type: string
       - description: Hand ID
         in: path
         name: id
@@ -2358,9 +2047,14 @@ paths:
       summary: Stop hand
       tags:
       - hands
-  /api/v1/hands/{id}/trades:
+  /api/v1/hands/{helmId}/{id}/trades:
     get:
       parameters:
+      - description: Helm ID
+        in: path
+        name: helmId
+        required: true
+        type: string
       - description: Hand ID
         in: path
         name: id
@@ -2376,6 +2070,11 @@ paths:
         in: query
         name: limit
         type: integer
+      - description: Helm ID
+        in: path
+        name: helmId
+        required: true
+        type: string
       - description: Hand ID
         in: path
         name: id
@@ -2571,40 +2270,6 @@ paths:
       security:
       - BearerAuth: []
       summary: Enable helm
-      tags:
-      - helms
-  /api/v1/helms/{id}/equity:
-    get:
-      parameters:
-      - description: Helm ID
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: RFC3339 cursor (exclusive); omit for all
-        in: query
-        name: after
-        type: string
-      - default: 200
-        description: Page size
-        in: query
-        name: limit
-        type: integer
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_EquityPageResp'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-      security:
-      - BearerAuth: []
-      summary: Equity curve for a helm (fan-out across all hands, from HELM_EQUITY
-        stream)
       tags:
       - helms
   /api/v1/helms/{id}/events/history:
@@ -2952,38 +2617,6 @@ paths:
       summary: Reset orchestrator halt flag and restore to active
       tags:
       - helms
-  /api/v1/helms/{id}/kill:
-    post:
-      parameters:
-      - description: Orchestrator ID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ActionResp'
-        "400":
-          description: Bad Request
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "401":
-          description: Unauthorized
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-      security:
-      - BearerAuth: []
-      summary: Disable orchestrator — flatten all hand positions and disable
-      tags:
-      - helms
   /api/v1/helms/{id}/orders:
     get:
       parameters:
@@ -3038,7 +2671,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-array_internal_module_helm_handler_orderHistoryResp'
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_module_helm_dto_OrderHistoryResp'
         "404":
           description: Not Found
           schema:
@@ -3166,59 +2799,6 @@ paths:
       summary: Resume orchestrator
       tags:
       - helms
-  /api/v1/helms/{id}/snapshots:
-    get:
-      parameters:
-      - description: Helm ID
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: RFC3339 cursor (exclusive); omit for all
-        in: query
-        name: after
-        type: string
-      - default: 100
-        description: Page size
-        in: query
-        name: limit
-        type: integer
-      - description: Helm ID
-        in: path
-        name: id
-        required: true
-        type: string
-      - description: 'Preset: 24h|7d|30d|mtd|ytd|all'
-        in: query
-        name: period
-        type: string
-      - description: RFC3339 inclusive lower bound (overrides preset.after)
-        in: query
-        name: after
-        type: string
-      - description: RFC3339 exclusive upper bound (overrides preset.before)
-        in: query
-        name: before
-        type: string
-      produces:
-      - application/json
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_StatsResp'
-        "404":
-          description: Not Found
-          schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
-      security:
-      - BearerAuth: []
-      - BearerAuth: []
-      summary: Aggregated KPIs over closed trades for a helm
-      tags:
-      - helms
-      - helms
   /api/v1/helms/{id}/stats:
     get:
       parameters:
@@ -3227,20 +2807,6 @@ paths:
         name: id
         required: true
         type: string
-      - description: RFC3339 cursor (exclusive); omit for all
-        in: query
-        name: after
-        type: string
-      - default: 100
-        description: Page size
-        in: query
-        name: limit
-        type: integer
-      - description: Helm ID
-        in: path
-        name: id
-        required: true
-        type: string
       - description: 'Preset: 24h|7d|30d|mtd|ytd|all'
         in: query
         name: period
@@ -3255,7 +2821,6 @@ paths:
         type: string
       produces:
       - application/json
-      - application/json
       responses:
         "200":
           description: OK
@@ -3267,10 +2832,8 @@ paths:
             $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
       security:
       - BearerAuth: []
-      - BearerAuth: []
       summary: Aggregated KPIs over closed trades for a helm
       tags:
-      - helms
       - helms
   /api/v1/helms/{id}/trades:
     get:
@@ -3330,7 +2893,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_readmodel_EventRecord'
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_infra_eventlog_EventRecord'
         "401":
           description: Unauthorized
           schema:

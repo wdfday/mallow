@@ -47,6 +47,7 @@ func NewHand(
 	return &Hand{
 		id:          id,
 		helmID:      helmID,
+		log:         slog.With("hand_id", id.String(), "helm_id", helmID.String()),
 		helmRuntime: rt,
 		strategy:    strat,
 		tactician:   tact,
@@ -225,14 +226,13 @@ func (h *Hand) RestorePnL(ctx context.Context, events []poslog.Event) {
 			h.metrics.winCount = wins
 			h.metrics.lossCount = losses
 			h.metrics.mu.Unlock()
-			slog.Info("hand: PnL restored from postgres",
-				"hand_id", h.id,
+			h.log.Info("hand: PnL restored from postgres",
 				"total_pnl", totalPnL, "total_commission", totalCommission,
 				"wins", wins, "losses", losses,
 			)
 			return
 		}
-		slog.Warn("hand: PnL SQL query failed, falling back to JetStream drain", "hand_id", h.id, "err", err)
+		h.log.Warn("hand: PnL SQL query failed, falling back to JetStream drain", "err", err)
 	}
 
 	if tl := h.helmRuntime.TradeLog; tl != nil {
@@ -257,15 +257,15 @@ func (h *Hand) RestorePnL(ctx context.Context, events []poslog.Event) {
 			h.metrics.winCount = wins
 			h.metrics.lossCount = losses
 			h.metrics.mu.Unlock()
-			slog.Info("hand: PnL restored from JetStream trade log",
-				"hand_id", h.id, "trades", len(trades),
+			h.log.Info("hand: PnL restored from JetStream trade log",
+				"trades", len(trades),
 				"total_pnl", totalPnL, "total_commission", totalCommission,
 				"wins", wins, "losses", losses,
 			)
 			return
 		}
 		if err != nil {
-			slog.Warn("hand: JetStream trade log unavailable, falling back to poslog", "hand_id", h.id, "err", err)
+			h.log.Warn("hand: JetStream trade log unavailable, falling back to poslog", "err", err)
 		}
 	}
 
@@ -296,8 +296,7 @@ func (h *Hand) RestorePnL(ctx context.Context, events []poslog.Event) {
 	h.metrics.winCount = wins
 	h.metrics.lossCount = losses
 	h.metrics.mu.Unlock()
-	slog.Info("hand: PnL restored from poslog (fallback)",
-		"hand_id", h.id,
+	h.log.Info("hand: PnL restored from poslog (fallback)",
 		"total_pnl", totalPnL, "total_commission", totalCommission,
 		"wins", wins, "losses", losses,
 	)
@@ -318,10 +317,10 @@ func (h *Hand) applyFuturesLeverage(ctx context.Context, symbol string, futures 
 		marginType = "isolated"
 	}
 	if err := setter.SetLeverage(ctx, h.helmRuntime.Creds, symbol, futures.Leverage, marginType); err != nil {
-		slog.Warn("hand: set leverage failed (non-fatal)", "hand_id", h.id, "symbol", symbol,
+		h.log.Warn("hand: set leverage failed (non-fatal)", "symbol", symbol,
 			"leverage", futures.Leverage, "margin_type", marginType, "err", err)
 	} else {
-		slog.Info("hand: leverage set", "hand_id", h.id, "symbol", symbol,
+		h.log.Info("hand: leverage set", "symbol", symbol,
 			"leverage", futures.Leverage, "margin_type", marginType)
 		h.helmRuntime.EmitEvent(natsapi.HelmEvent{
 			HandID: h.id.String(),

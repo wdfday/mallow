@@ -14,12 +14,20 @@ import (
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/infra/poslog"
+	handdomain "mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/runtime/core/portfolio"
 	"mallow/helm/internal/runtime/core/risk"
 	"mallow/helm/internal/runtime/core/strategy"
 	"mallow/helm/internal/runtime/perf"
 	"mallow/helm/internal/safe"
 )
+
+// handEntry pairs the live Hand goroutine with its persisted domain data.
+// Owned exclusively by HelmRuntime; never shared across runtimes.
+type handEntry struct {
+	h    *Hand
+	data *handdomain.Hand
+}
 
 // HandPnLSummer queries aggregate PnL metrics for a hand from PostgreSQL in one query.
 // Implemented by tradelog.Log; injected into HelmRuntime to avoid draining JetStream
@@ -59,10 +67,11 @@ type HelmRuntime struct {
 	Exchange    exchange.Exchange
 	Creds       exchange.Credentials
 	FilterStore SymbolFilterStore // registry-owned symbol precision cache; nil = no prewarm
+	Herald      HeraldRegistrar   // nil when NATS/herald unavailable (dev/test)
 
 	// ── Hands ────────────────────────────────────────────────────────────────
 	mu          sync.RWMutex
-	hands       map[string]*Hand
+	hands       map[string]*handEntry
 	paused      bool
 	pausedHands []string // hand IDs that were running when helm was paused; restored on Resume
 
@@ -172,7 +181,7 @@ func NewHelmRuntime(
 		Creds:           creds,
 		lifecycleSignal: make(chan struct{}, 1),
 		wsFillSignal:    make(chan struct{}, 1),
-		hands:           make(map[string]*Hand),
+		hands:           make(map[string]*handEntry),
 		router:          newOrderRouter(),
 		marketData:      newExchangePublicData(), // default; overwritten by Registry.Spawn with shared bucket
 		dedup:           newFillDedup(),

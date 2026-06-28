@@ -117,6 +117,7 @@ func (s *simExchange) StreamOrders(
 	_ func(exchange.BalanceEvent),
 	_ func(exchange.PositionEvent),
 	_ func(exchange.RiskEvent),
+	_ func(string),
 ) error {
 	s.mu.Lock()
 	s.onFill = onFill
@@ -194,7 +195,7 @@ func addSimHand(rt *runtime.HelmRuntime, symbol string, qty float64, signalTTL t
 	h.Symbol = symbol
 	h.StrategyName = "signal_follower"
 	h.EnableEventSink()
-	rt.AddHand(h)
+	rt.AddHand(h, &domain.Hand{ID: h.ID(), HelmID: rt.HelmID, Symbols: domain.StringSlice{symbol}})
 	return h
 }
 
@@ -617,7 +618,7 @@ func TestSignal_InsufficientCapital_AutoStop(t *testing.T) {
 	h.Symbol = symbol
 	h.StrategyName = "signal_follower"
 	h.EnableEventSink()
-	rt.AddHand(h)
+	rt.AddHand(h, &domain.Hand{ID: h.ID(), HelmID: rt.HelmID, Symbols: domain.StringSlice{symbol}})
 
 	rt.UpdatePrice(symbol, decimal.NewFromFloat(50_000))
 	h.Start()

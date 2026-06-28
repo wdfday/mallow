@@ -123,7 +123,7 @@ func TestKillAndRelease_FreesMemory(t *testing.T) {
 	mockEx := &stubExchange{}
 	factory := &stubExchFactory{ex: mockEx}
 	reg := runtime.NewRegistry(factory)
-	svc := NewService(newStubRepo(), reg, nil)
+	svc := NewService(newStubRepo(), reg)
 
 	helmID := uuid.New()
 
@@ -149,55 +149,28 @@ func TestKillAndRelease_FreesMemory(t *testing.T) {
 	// Create a hand
 	cfg := validConfig(helmID)
 	cfg.Market = domain.MarketTypeSpot
-	ref, err := svc.Create(cfg)
+	summary, err := svc.Create(cfg)
 	if err != nil {
 		t.Fatalf("failed to create hand: %v", err)
 	}
 
-	handID := ref.Data.ID
+	handID := summary.ID
 
-	// Verify hand is in service cache and runtime hands list
-	svc.mu.RLock()
-	_, inCache := svc.hands[handID]
-	svc.mu.RUnlock()
-	if !inCache {
-		t.Fatal("expected hand to be present in service cache")
-	}
-
-	rtHands := rt.HandIDs()
-	found := false
-	for _, id := range rtHands {
-		if id == handID.String() {
-			found = true
-			break
-		}
-	}
-	if !found {
-		t.Fatal("expected hand to be present in runtime registry")
+	// Verify hand is present in the owning runtime.
+	if _, _, ok := rt.GetHandEntry(handID.String()); !ok {
+		t.Fatal("expected hand to be present in runtime")
 	}
 
 	// Call Release
-	err = svc.Release(context.Background(), handID)
+	err = svc.Release(context.Background(), handID, helmID)
 	if err != nil {
 		t.Fatalf("Release failed: %v", err)
 	}
 
-	// Verify hand is removed from service cache
-	svc.mu.RLock()
-	_, inCache = svc.hands[handID]
-	svc.mu.RUnlock()
-	if inCache {
-		t.Fatal("expected hand to be removed from service cache after Release")
+	// Verify hand is removed from the runtime.
+	if _, _, ok := rt.GetHandEntry(handID.String()); ok {
+		t.Fatal("expected hand to be removed from runtime after Release")
 	}
-
-	// Verify hand is removed from runtime registry
-	rtHands = rt.HandIDs()
-	for _, id := range rtHands {
-		if id == handID.String() {
-			t.Fatal("expected hand to be removed from runtime registry after Release")
-		}
-	}
-
 }
 
 func TestAllocateCapital_DynamicScale(t *testing.T) {
@@ -205,7 +178,7 @@ func TestAllocateCapital_DynamicScale(t *testing.T) {
 	factory := &stubExchFactory{ex: mockEx}
 	reg := runtime.NewRegistry(factory)
 	repo := newStubRepo()
-	svc := NewService(repo, reg, nil)
+	svc := NewService(repo, reg)
 
 	helmID := uuid.New()
 	hCfg := &helmdomain.Helm{
@@ -219,23 +192,33 @@ func TestAllocateCapital_DynamicScale(t *testing.T) {
 		t.Fatalf("failed to spawn: %v", err)
 	}
 
+	rt, err := reg.Get(helmID)
+	if err != nil {
+		t.Fatalf("failed to get runtime: %v", err)
+	}
+
 	cfg := validConfig(helmID)
 	cfg.Market = domain.MarketTypeSpot
 	cfg.AllocatedCapital = decimal.NewFromFloat(1000)
-	ref, err := svc.Create(cfg)
+	summary, err := svc.Create(cfg)
 	if err != nil {
 		t.Fatalf("failed to create hand: %v", err)
 	}
 
-	handID := ref.Data.ID
+	handID := summary.ID
 
 	// Verify initial capital
-	if !ref.Data.AllocatedCapital.Equal(decimal.NewFromFloat(1000)) {
-		t.Fatalf("expected initial capital 1000, got %v", ref.Data.AllocatedCapital)
+	if !summary.AllocatedCapital.Equal(decimal.NewFromFloat(1000)) {
+		t.Fatalf("expected initial capital 1000, got %v", summary.AllocatedCapital)
+	}
+
+	runner, _, ok := rt.GetHandEntry(handID.String())
+	if !ok {
+		t.Fatal("expected hand runner in runtime")
 	}
 
 	// 1. Add capital (positive delta)
-	newCap, err := svc.AllocateCapital(handID, decimal.NewFromFloat(500))
+	newCap, err := svc.AllocateCapital(handID, helmID, decimal.NewFromFloat(500))
 	if err != nil {
 		t.Fatalf("AllocateCapital failed: %v", err)
 	}
@@ -252,22 +235,14 @@ func TestAllocateCapital_DynamicScale(t *testing.T) {
 		t.Fatalf("expected DB capital 1500, got %v", dbHand.AllocatedCapital)
 	}
 
-	// Verify service cache has updated capital
-	svc.mu.RLock()
-	cacheHand := svc.hands[handID]
-	svc.mu.RUnlock()
-	if !cacheHand.Data.AllocatedCapital.Equal(decimal.NewFromFloat(1500)) {
-		t.Fatalf("expected service cache capital 1500, got %v", cacheHand.Data.AllocatedCapital)
-	}
-
 	// Verify runner is updated
-	runnerCap := cacheHand.Runner.AllocatedCapital()
+	runnerCap := runner.AllocatedCapital()
 	if !runnerCap.Equal(decimal.NewFromFloat(1500)) {
 		t.Fatalf("expected runner capital 1500, got %v", runnerCap)
 	}
 
 	// 2. Reduce capital (negative delta)
-	newCap, err = svc.AllocateCapital(handID, decimal.NewFromFloat(-700))
+	newCap, err = svc.AllocateCapital(handID, helmID, decimal.NewFromFloat(-700))
 	if err != nil {
 		t.Fatalf("AllocateCapital failed: %v", err)
 	}
@@ -275,19 +250,19 @@ func TestAllocateCapital_DynamicScale(t *testing.T) {
 		t.Fatalf("expected 800, got %v", newCap)
 	}
 
-	runnerCap = cacheHand.Runner.AllocatedCapital()
+	runnerCap = runner.AllocatedCapital()
 	if !runnerCap.Equal(decimal.NewFromFloat(800)) {
 		t.Fatalf("expected runner capital 800, got %v", runnerCap)
 	}
 
 	// 3. Error case: new capital <= 0
-	_, err = svc.AllocateCapital(handID, decimal.NewFromFloat(-800))
+	_, err = svc.AllocateCapital(handID, helmID, decimal.NewFromFloat(-800))
 	if err == nil {
 		t.Fatal("expected error when new capital is <= 0, got nil")
 	}
 
 	// Capital remains unchanged (800)
-	runnerCap = cacheHand.Runner.AllocatedCapital()
+	runnerCap = runner.AllocatedCapital()
 	if !runnerCap.Equal(decimal.NewFromFloat(800)) {
 		t.Fatalf("expected runner capital 800 after failed reduction, got %v", runnerCap)
 	}

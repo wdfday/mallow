@@ -16,6 +16,7 @@ import (
 
 	"mallow/helm/internal/config"
 	"mallow/helm/internal/infra/engine"
+	"mallow/helm/internal/infra/herald"
 	"mallow/helm/internal/infra/marketdata"
 	mdbinance "mallow/helm/internal/infra/marketdata/binance"
 	mdbybit "mallow/helm/internal/infra/marketdata/bybit"
@@ -96,16 +97,73 @@ func subscribeSignals(lc fx.Lifecycle, sc *engine.SignalClient, dispatcher *runt
 	})
 }
 
+// heraldReregisterAll re-registers every running hand with herald.
+// Called on herald restart detection.
+func heraldReregisterAll(reg *runtime.Registry) {
+	count := 0
+	for _, rt := range reg.All() {
+		for _, id := range rt.RunningHandIDs() {
+			if rt.ReregisterHand(context.Background(), id) {
+				count++
+			}
+		}
+	}
+	if count > 0 {
+		slog.Info("herald re-register: all running hands", "count", count)
+	}
+}
+
+// heraldReregisterByIDs re-registers specific hands by string IDs.
+func heraldReregisterByIDs(reg *runtime.Registry, handIDs []string) {
+	if len(handIDs) == 0 {
+		return
+	}
+	idSet := make(map[string]bool, len(handIDs))
+	for _, id := range handIDs {
+		idSet[id] = true
+	}
+	registered := 0
+	for _, rt := range reg.All() {
+		for _, id := range rt.RunningHandIDs() {
+			if !idSet[id] {
+				continue
+			}
+			if rt.ReregisterHand(context.Background(), id) {
+				registered++
+			}
+		}
+	}
+	if registered > 0 {
+		slog.Info("herald re-register: by IDs", "count", registered)
+	}
+}
+
+// heraldDeregisterByIDs deregisters orphan hands directly via the herald client.
+// Deregister does not need exchange info — no runtime lookup required.
+func heraldDeregisterByIDs(hc *herald.Client, handIDs []string) {
+	if len(handIDs) == 0 {
+		return
+	}
+	for _, raw := range handIDs {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		if err := hc.DeregisterHand(ctx, raw); err != nil {
+			slog.Warn("herald orphan deregister failed", "hand_id", raw, "err", err)
+		}
+		cancel()
+	}
+	slog.Info("herald deregister orphans: done", "count", len(handIDs))
+}
+
 // subscribeHeraldReady subscribes to engine.ready and triggers re-registration
 // of all running hands when herald restarts (detected by herald_id change).
-func subscribeHeraldReady(lc fx.Lifecycle, sc *engine.SignalClient, handMgr *handservice.Service) {
+func subscribeHeraldReady(lc fx.Lifecycle, hc *herald.Client, reg *runtime.Registry) {
 	var (
 		sub          interface{ Drain() error }
 		lastHeraldID string
 	)
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
-			s, err := sc.SubscribeReady(func(ev *engine.ReadyEvent) {
+			s, err := hc.SubscribeReady(func(ev *herald.ReadyEvent) {
 				if ev.HeraldId == lastHeraldID {
 					return
 				}
@@ -114,7 +172,7 @@ func subscribeHeraldReady(lc fx.Lifecycle, sc *engine.SignalClient, handMgr *han
 						"old_herald_id", lastHeraldID, "new_herald_id", ev.HeraldId)
 				}
 				lastHeraldID = ev.HeraldId
-				handMgr.ReregisterAll()
+				heraldReregisterAll(reg)
 			})
 			if err != nil {
 				// Non-fatal: herald may not be running yet; heartbeat loop is the safety net.
@@ -135,14 +193,14 @@ func subscribeHeraldReady(lc fx.Lifecycle, sc *engine.SignalClient, handMgr *han
 
 // startHeartbeatLoop periodically checks that all running hands are registered
 // in herald. Runs every 30s; re-registers any that herald reports as missing.
-func startHeartbeatLoop(lc fx.Lifecycle, sc *engine.SignalClient, reg *runtime.Registry, handMgr *handservice.Service) {
+func startHeartbeatLoop(lc fx.Lifecycle, hc *herald.Client, reg *runtime.Registry) {
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
 			runCtx, cancel := context.WithCancel(context.Background())
 			go func() {
 				defer safe.Recover()
 				defer cancel()
-				runHeraldHeartbeat(runCtx, sc, reg, handMgr, 30*time.Second)
+				runHeraldHeartbeat(runCtx, hc, reg, 30*time.Second)
 			}()
 			// Store cancel so OnStop can shut it down.
 			lc.Append(fx.Hook{OnStop: func(ctx context.Context) error { cancel(); return nil }})
@@ -151,21 +209,21 @@ func startHeartbeatLoop(lc fx.Lifecycle, sc *engine.SignalClient, reg *runtime.R
 	})
 }
 
-func runHeraldHeartbeat(ctx context.Context, sc *engine.SignalClient, reg *runtime.Registry, handMgr *handservice.Service, interval time.Duration) {
+func runHeraldHeartbeat(ctx context.Context, hc *herald.Client, reg *runtime.Registry, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			doHeraldHeartbeat(ctx, sc, reg, handMgr)
+			doHeraldHeartbeat(ctx, hc, reg)
 		case <-ctx.Done():
 			return
 		}
 	}
 }
 
-func doHeraldHeartbeat(ctx context.Context, sc *engine.SignalClient, reg *runtime.Registry, handMgr *handservice.Service) {
-	resp, err := sc.ListHands(ctx)
+func doHeraldHeartbeat(ctx context.Context, hc *herald.Client, reg *runtime.Registry) { //nolint:unparam
+	resp, err := hc.ListHands(ctx)
 	if err != nil {
 		slog.Warn("herald heartbeat: failed to list hands from herald", "err", err)
 		return
@@ -178,15 +236,14 @@ func doHeraldHeartbeat(ctx context.Context, sc *engine.SignalClient, reg *runtim
 		}
 	}
 
-	runningHands := handMgr.RunningHands()
-	expectedRunning := make(map[string]bool, len(runningHands))
-
+	expectedRunning := make(map[string]bool)
 	var missing []string
-	for _, hRef := range runningHands {
-		idStr := hRef.Data.ID.String()
-		expectedRunning[idStr] = true
-		if !heraldHands[idStr] {
-			missing = append(missing, idStr)
+	for _, rt := range reg.All() {
+		for _, idStr := range rt.RunningHandIDs() {
+			expectedRunning[idStr] = true
+			if !heraldHands[idStr] {
+				missing = append(missing, idStr)
+			}
 		}
 	}
 
@@ -202,15 +259,15 @@ func doHeraldHeartbeat(ctx context.Context, sc *engine.SignalClient, reg *runtim
 
 	if len(missing) > 0 {
 		slog.Warn("herald heartbeat: missing hands detected — re-registering", "missing", missing)
-		handMgr.ReregisterByIDs(missing)
+		heraldReregisterByIDs(reg, missing)
 	}
 	if len(orphans) > 0 {
 		slog.Warn("herald heartbeat: orphan hands detected — deregistering", "orphans", orphans)
-		handMgr.DeregisterByIDs(orphans)
+		heraldDeregisterByIDs(hc, orphans)
 	}
 
 	slog.Info("herald heartbeat: sync cycle completed",
-		"running_hands", len(runningHands),
+		"running_hands", len(expectedRunning),
 		"herald_hands", len(heraldHands),
 		"re_registered", len(missing),
 		"deregistered", len(orphans),
@@ -235,6 +292,7 @@ func runOrchestrator(
 	ginEngine *gin.Engine,
 	reg *runtime.Registry,
 	nc *nats.Conn,
+	hc *herald.Client,
 	posLog poslog.Log,
 	handSvc *handservice.Service,
 ) {
@@ -247,6 +305,7 @@ func runOrchestrator(
 			cancel = c
 
 			reg.SetRuntime(runCtx, nc)
+			reg.SetHerald(hc)
 
 			// Step 2: Reconcile hand positions from poslog WAL vs exchange.
 			// Runs synchronously so every hand is fully restored before signals arrive.

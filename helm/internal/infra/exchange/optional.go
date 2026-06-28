@@ -219,6 +219,9 @@ type ClientOrderQuerier interface {
 //     May be nil; spot-only exchanges never call it.
 //   - onRisk is called on margin-call or liquidation-warning events.
 //     May be nil; spot-only exchanges never call it.
+//   - onCredentialError is called (once, from a goroutine) when the stream encounters a
+//     permanent auth failure (401 / invalid key) that will never self-heal on retry.
+//     The adapter stops the reconnect loop after calling this. May be nil.
 type AccountStreamer interface {
 	StreamOrders(
 		ctx context.Context,
@@ -228,6 +231,7 @@ type AccountStreamer interface {
 		onBalance func(BalanceEvent),
 		onPosition func(PositionEvent), // futures position update; nil = ignore
 		onRisk func(RiskEvent), // margin-call / liquidation warning; nil = ignore
+		onCredentialError func(reason string), // permanent auth failure; nil = ignore
 	) error
 }
 

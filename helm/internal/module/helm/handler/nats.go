@@ -391,7 +391,7 @@ func (h *NATSHandler) stats(msg *nats.Msg) {
 	ds := h.reg.DispatchStats()
 	ns := h.reg.NATSStats()
 	resp.Global = helmDto.StatsGlobal{
-		RunningHands:     len(h.handMgr.RunningHands()),
+		RunningHands:     h.handMgr.RunningHandCount(),
 		ActiveRuntimes:   len(rts),
 		RouteNoHelm:      ds.RouteNoHelm,
 		RouteNoHand:      ds.RouteNoHand,
@@ -410,13 +410,8 @@ func (h *NATSHandler) orders(msg *nats.Msg) {
 		return
 	}
 	var allOrders []helmDto.OrderResp
-	for _, bs := range h.handMgr.ListByHelm(rt.HelmID) {
-		bi, getErr := h.handMgr.Get(bs.ID)
-		if getErr == nil {
-			for _, o := range bi.Runner.Orders() {
-				allOrders = append(allOrders, helmDto.OrderToResp(o))
-			}
-		}
+	for _, o := range rt.AllOrders() {
+		allOrders = append(allOrders, helmDto.OrderToResp(o))
 	}
 	_ = msg.Respond(natsapi.ReplyOK(allOrders))
 }

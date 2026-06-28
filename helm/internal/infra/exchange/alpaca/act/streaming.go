@@ -2,7 +2,9 @@ package act
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	alpacasdk "github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
@@ -22,10 +24,20 @@ func (c *Client) StreamOrders(
 	_ func(exchange.BalanceEvent),
 	_ func(exchange.PositionEvent), // spot-only: no futures positions
 	_ func(exchange.RiskEvent), // spot-only: no margin/liquidation
+	onCredentialError func(string),
 ) error {
 	slog.Info("alpaca: starting order stream")
-	go c.streamOrdersLoop(ctx, creds, onLifecycle, onFill)
+	go c.streamOrdersLoop(ctx, creds, onLifecycle, onFill, onCredentialError)
 	return nil
+}
+
+// isAlpacaAuthError detects permanent credential failures from the Alpaca WS stream.
+func isAlpacaAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "401") || strings.Contains(s, "unauthorized")
 }
 
 func (c *Client) streamOrdersLoop(
@@ -33,6 +45,7 @@ func (c *Client) streamOrdersLoop(
 	creds exchange.Credentials,
 	onLifecycle func(exchange.OrderLifecycleEvent),
 	onFill func(exchange.WsFillEvent),
+	onCredentialError func(string),
 ) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -56,6 +69,13 @@ func (c *Client) streamOrdersLoop(
 			handleTradeUpdate(tu, lastCumFilled, onLifecycle, onFill)
 		}, alpacasdk.StreamTradeUpdatesRequest{})
 		if ctx.Err() != nil {
+			return
+		}
+		if isAlpacaAuthError(err) {
+			slog.Error("alpaca: order stream auth failure — stopping reconnect loop", "err", err)
+			if onCredentialError != nil {
+				onCredentialError(fmt.Errorf("alpaca WS stream: %w", err).Error())
+			}
 			return
 		}
 		if time.Since(start) > 30*time.Second {

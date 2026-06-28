@@ -61,7 +61,7 @@ func (s *Service) Pause(id uuid.UUID) error {
 		return err
 	}
 	if s.hands != nil && len(wasRunning) > 0 {
-		s.hands.StopBots(wasRunning)
+		s.hands.StopBots(id, wasRunning)
 	}
 	if err := s.repo.Update(id, func(o *domain.Helm) error {
 		o.Status = domain.HelmStatusPaused
@@ -80,7 +80,7 @@ func (s *Service) Resume(id uuid.UUID) error {
 		return err
 	}
 	if s.hands != nil && len(toRestart) > 0 {
-		s.hands.StartBots(toRestart)
+		s.hands.StartBots(id, toRestart)
 	}
 	if err := s.repo.Update(id, func(o *domain.Helm) error {
 		o.Status = domain.HelmStatusActive
@@ -110,7 +110,7 @@ func (s *Service) Disable(id uuid.UUID) error {
 	// Step 2: flatten open positions — runtime remains in registry so WS fills
 	// from the close orders can still be routed and applied to poslog.
 	if s.hands != nil && len(runningHandIDs) > 0 {
-		s.hands.KillBots(runningHandIDs)
+		s.hands.KillBots(id, runningHandIDs)
 	}
 
 	// Step 3: persist immediately so restarts do not re-spawn this helm.
@@ -129,10 +129,7 @@ func (s *Service) Disable(id uuid.UUID) error {
 			}
 		}()
 		time.Sleep(5 * time.Second)
-		handIDs := s.spawner.Teardown(id)
-		if s.hands != nil && len(handIDs) > 0 {
-			s.hands.PurgeBots(handIDs)
-		}
+		s.spawner.Teardown(id)
 		slog.Info("helm disabled: runtime torn down", "id", id)
 	}()
 

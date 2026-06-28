@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"strings"
 
 	"mallow/helm/internal/module/account/domain"
@@ -13,7 +14,7 @@ import (
 func (s *accountService) UpdateAccount(ctx context.Context, id, userID string, req accountdto.UpdateAccountRequest) (*domain.Account, error) {
 	existing, err := s.repo.GetByIDAndUserID(ctx, id, userID)
 	if err != nil {
-		if err == shared.ErrNotFound {
+		if errors.Is(err, shared.ErrNotFound) {
 			return nil, err
 		}
 		return nil, shared.ErrInternal.WithError(err)
@@ -49,7 +50,7 @@ func (s *accountService) UpdateAccount(ctx context.Context, id, userID string, r
 	}
 
 	if err := s.repo.UpdateColumns(ctx, id, updates); err != nil {
-		if err == shared.ErrNotFound {
+		if errors.Is(err, shared.ErrNotFound) {
 			return nil, err
 		}
 		return nil, shared.ErrInternal.WithError(err)

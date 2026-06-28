@@ -69,7 +69,7 @@ func (c *Client) doRequestAs(ctx context.Context, creds exchange.Credentials, pa
 		var err error
 		payload, err = json.Marshal(body)
 		if err != nil {
-			return err
+			return fmt.Errorf("okx: marshal request body: %w", err)
 		}
 	}
 
@@ -81,7 +81,7 @@ func (c *Client) doRequestAs(ctx context.Context, creds exchange.Credentials, pa
 
 	req, err := http.NewRequestWithContext(ctx, method, url, bodyReader)
 	if err != nil {
-		return err
+		return fmt.Errorf("okx: build request %s %s: %w", method, path, err)
 	}
 
 	timestamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z")
@@ -104,13 +104,13 @@ func (c *Client) doRequestAs(ctx context.Context, creds exchange.Credentials, pa
 
 	resp, err := c.client.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("okx: http %s %s: %w", method, path, err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return fmt.Errorf("okx: read response body: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("status=%d body=%s", resp.StatusCode, string(respBody))

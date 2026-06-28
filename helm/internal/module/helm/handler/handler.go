@@ -661,17 +661,6 @@ func (h *Handler) fills(c *gin.Context) {
 	shared.RespondWithSuccess(c, http.StatusOK, "Fills retrieved successfully", resp)
 }
 
-// snapshots godoc
-// @Summary List portfolio snapshots for a helm (from PORTFOLIO_SNAPSHOTS stream)
-// @Tags helms
-// @Security BearerAuth
-// @Produce json
-// @Param id path string true "Helm ID"
-// @Param after query string false "RFC3339 cursor (exclusive); omit for all"
-// @Param limit query int false "Page size" default(100)
-// @Success 200 {object} shared.SuccessResponse[dto.SnapshotPageResp]
-// @Failure 404 {object} shared.ErrorResponse
-// @Router /api/v1/helms/{id}/snapshots [get]
 // stats godoc
 // @Summary Aggregated KPIs over closed trades for a helm
 // @Tags helms
@@ -728,15 +717,9 @@ func (h *Handler) orders(c *gin.Context) {
 	if rt == nil {
 		return
 	}
-	id := rt.HelmID
 	var allOrders []dto.OrderResp
-	for _, bs := range h.handMgr.ListByHelm(id) {
-		bi, getErr := h.handMgr.Get(bs.ID)
-		if getErr == nil {
-			for _, o := range bi.Runner.Orders() {
-				allOrders = append(allOrders, dto.OrderToResp(o))
-			}
-		}
+	for _, o := range rt.AllOrders() {
+		allOrders = append(allOrders, dto.OrderToResp(o))
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Orders retrieved successfully", allOrders)
 }

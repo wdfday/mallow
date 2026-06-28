@@ -117,6 +117,12 @@ build-wasm:
     rm -f almanac/crates/alm-wasm/pkg/.gitignore
     cp -r almanac/crates/alm-wasm/pkg/. mallow-client/vendor/alm-wasm/
 
+# Build alm-wasm in dev mode (faster compilation, keeps debug symbols)
+build-wasm-dev:
+    cd almanac/crates/alm-wasm && wasm-pack build --dev --target bundler
+    rm -f almanac/crates/alm-wasm/pkg/.gitignore
+    cp -r almanac/crates/alm-wasm/pkg/. mallow-client/vendor/alm-wasm/
+
 # Copy already-built pkg/ artifacts into mallow-client/vendor/alm-wasm (no recompile).
 # Use after build-wasm when you only changed non-Rust files and want a fast sync.
 sync-wasm:
@@ -125,6 +131,24 @@ sync-wasm:
     rm -f almanac/crates/alm-wasm/pkg/.gitignore
     cp -r almanac/crates/alm-wasm/pkg/. mallow-client/vendor/alm-wasm/
     @echo "synced pkg/ → mallow-client/vendor/alm-wasm/"
+
+# ── Python Bindings (alm-py) ──────────────────────────────────────────────────
+
+# Build and install alm-py in debug/develop mode into local virtual env
+build-py:
+    cd almanac/crates/alm-py && .venv/bin/maturin develop
+
+# Build and install alm-py in release/develop mode into local virtual env (faster runtime)
+build-py-release:
+    cd almanac/crates/alm-py && .venv/bin/maturin develop --release
+
+# Run all python tests in alm-py
+test-py:
+    cd almanac/crates/alm-py && .venv/bin/pytest tests/
+
+# Run a specific python test file or case (e.g. `just test-py-file tests/test_backtest.py`)
+test-py-file file_path:
+    cd almanac/crates/alm-py && .venv/bin/pytest {{file_path}} -v
 
 # ── Specs ─────────────────────────────────────────────────────────────────────
 
@@ -137,8 +161,8 @@ gen-specs *services:
 
 # Compile LaTeX thesis → Thesis/DoAn.pdf
 thesis:
-    @bash Thesis/compile.sh
+    @bash Thesis/tex/compile.sh
 
 # Compile and open PDF
 thesis-open:
-    @bash Thesis/compile.sh --open
+    @bash Thesis/tex/compile.sh --open

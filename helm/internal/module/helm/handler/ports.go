@@ -6,7 +6,6 @@ import (
 	handdomain "mallow/helm/internal/module/hand/domain"
 	helmdomain "mallow/helm/internal/module/helm/domain"
 	helmDto "mallow/helm/internal/module/helm/dto"
-	"mallow/helm/internal/runtime"
 )
 
 // HelmService is the full helm management interface used by this handler.
@@ -29,7 +28,6 @@ type HelmService interface {
 
 // HandManager is the subset of hand/service.Service used by the helm handler.
 type HandManager interface {
-	Get(id uuid.UUID) (*runtime.HandRef, error)
 	ListByHelm(helmID uuid.UUID) []handdomain.HandSummary
-	RunningHands() []*runtime.HandRef
+	RunningHandCount() int
 }

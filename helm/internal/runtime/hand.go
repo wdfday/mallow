@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -134,6 +135,7 @@ type Hand struct {
 	exitCancelCh chan string
 
 	// ── Observability ────────────────────────────────────────────────────────
+	log     *slog.Logger
 	health  HandHealth
 	metrics handMetrics
 }

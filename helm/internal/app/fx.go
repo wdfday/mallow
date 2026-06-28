@@ -18,6 +18,7 @@ import (
 	binanceact "mallow/helm/internal/infra/exchange/binance/act"
 	bybitact "mallow/helm/internal/infra/exchange/bybit/act"
 	okxact "mallow/helm/internal/infra/exchange/okx/act"
+	"mallow/helm/internal/infra/herald"
 	"mallow/helm/internal/infra/orderlog"
 	"mallow/helm/internal/infra/perflog"
 	"mallow/helm/internal/infra/poslog"
@@ -58,8 +59,10 @@ var Module = fx.Options(
 	fx.Provide(func() *bybitact.Client { return bybitact.New(bybitact.Config{}) }),
 	fx.Provide(func() *alpacaact.Client { return alpacaact.New(alpacaact.Config{}) }),
 
-	// Signal engine client
+	// Signal engine client (signal subscription + bar publishing)
 	fx.Provide(engine.NewSignalClient),
+	// Herald registry client (register/deregister/validate/heartbeat)
+	fx.Provide(func(nc *nats.Conn) *herald.Client { return herald.New(nc) }),
 
 	// Adapt *runtime.Registry → runtime.SignalSink for SignalDispatcher
 	fx.Provide(func(r *runtime.Registry) runtime.SignalSink { return r }),

@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 
 	"mallow/helm/internal/module/account/domain"
 	accountdto "mallow/helm/internal/module/account/dto"
@@ -12,7 +13,7 @@ import (
 func (s *accountService) GetByID(ctx context.Context, id, userID string) (*domain.Account, error) {
 	account, err := s.repo.GetByIDAndUserID(ctx, id, userID)
 	if err != nil {
-		if err == shared.ErrNotFound {
+		if errors.Is(err, shared.ErrNotFound) {
 			return nil, err
 		}
 		return nil, shared.ErrInternal.WithError(err)

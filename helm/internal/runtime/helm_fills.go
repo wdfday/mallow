@@ -95,6 +95,7 @@ func (r *HelmRuntime) connectStream(streamCtx context.Context) bool {
 		r.handleBalanceEvent,
 		r.handlePositionEvent,
 		r.handleRiskEvent,
+		r.TriggerAuthError,
 	); err != nil {
 		slog.Error("order stream start failed", "helm_id", r.HelmID, "err", err)
 		return false
@@ -118,7 +119,7 @@ func (r *HelmRuntime) handleBalanceEvent(ev exchange.BalanceEvent) {
 }
 
 // handlePositionEvent updates the helm's knowledge of its current futures position.
-// Currently logs the event; future: update a per-symbol position cache for risk checks.
+// Currently, logs the event; future: update a per-symbol position cache for risk checks.
 func (r *HelmRuntime) handlePositionEvent(ev exchange.PositionEvent) {
 	slog.Info("position update",
 		"helm_id", r.HelmID,
@@ -184,13 +185,13 @@ func (r *HelmRuntime) applyLifecycleEvent(ctx context.Context, ev exchange.Order
 		)
 		if handID != "" {
 			r.mu.RLock()
-			hand, ok := r.hands[handID]
+			entry, ok := r.hands[handID]
 			r.mu.RUnlock()
 			if ok {
 				// Route through the hand's actor loop with a 1s head-start
 				// for the paired OCO fill to arrive first.
 				//
-				// Binance OCO behaviour: when the SL leg fills, the exchange
+				// Binance OCO behavior: when the SL leg fills, the exchange
 				// auto-cancels the TP leg and sends both events on the same WS
 				// connection. In practice the cancel arrives ~2ms before the
 				// fill. Without the delay, HandleExitOrderCanceled would see the
@@ -214,7 +215,7 @@ func (r *HelmRuntime) applyLifecycleEvent(ctx context.Context, ev exchange.Order
 						return
 					}
 					select {
-					case hand.exitCancelCh <- orderID:
+					case entry.h.exitCancelCh <- orderID:
 					case <-handCtx.Done():
 					}
 				}(ev.OrderID)
@@ -313,14 +314,14 @@ func (r *HelmRuntime) applyWsFill(ev exchange.WsFillEvent) {
 
 		if botID != "" {
 			r.mu.RLock()
-			hand, ok := r.hands[botID]
+			entry, ok := r.hands[botID]
 			r.mu.RUnlock()
 			if ok {
 				// Route to hand: hand.applyFill owns exit-level management, poslog,
 				// and metrics; it calls rt.ReportFill itself. EnqueueFill never drops
 				// (unbounded mailbox), so the hand always processes its own fill.
 				// Publish trade.filled here (before the hand processes asynchronously).
-				hand.EnqueueFill(ev)
+				entry.h.EnqueueFill(ev)
 				if r.js != nil {
 					natsapi.PublishTradeFill(r.js, r.tradeFillMsg(botID, ev))
 				}
@@ -336,17 +337,17 @@ func (r *HelmRuntime) applyWsFill(ev exchange.WsFillEvent) {
 		// Record applied qty so REST poll path can subtract to avoid double-counting.
 		if botID != "" {
 			r.mu.RLock()
-			hand, ok := r.hands[botID]
+			entry, ok := r.hands[botID]
 			r.mu.RUnlock()
 			if ok {
-				hand.MarkPartialApplied(ev.OrderID, ev.FilledQty, ev.FilledAvg, ev.Commission)
+				entry.h.MarkPartialApplied(ev.OrderID, ev.FilledQty, ev.FilledAvg, ev.Commission)
 				// Pre-mark the sibling bracket order as a pending-cancel so
 				// HandleExitOrderCanceled treats the OCO auto-cancel as helm-initiated
 				// even if it arrives before the final partial fill is fully applied.
 				// Fixes the race: Binance fires SL-cancel ~1ms after TP partial fill;
 				// with only MarkPartialApplied run (no cancelExitOrders), pendingCancels
 				// is empty → cancel misidentified as external close → spurious EXT_CLOSE.
-				hand.NotifyBracketPartialFill(ev.OrderID)
+				entry.h.NotifyBracketPartialFill(ev.OrderID)
 			}
 		}
 		r.ReportFill(fillReport)

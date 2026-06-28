@@ -276,8 +276,8 @@ func (r *HelmRuntime) RecoverGapFills(ctx context.Context) {
 func (r *HelmRuntime) RecoverHandBrackets(ctx context.Context) {
 	r.mu.RLock()
 	hands := make([]*Hand, 0, len(r.hands))
-	for _, h := range r.hands {
-		hands = append(hands, h)
+	for _, e := range r.hands {
+		hands = append(hands, e.h)
 	}
 	r.mu.RUnlock()
 	for _, h := range hands {
@@ -296,8 +296,8 @@ func (r *HelmRuntime) RecoverHandBrackets(ctx context.Context) {
 func (r *HelmRuntime) checkPositionDesync(ctx context.Context) {
 	r.mu.RLock()
 	hands := make([]*Hand, 0, len(r.hands))
-	for _, h := range r.hands {
-		hands = append(hands, h)
+	for _, e := range r.hands {
+		hands = append(hands, e.h)
 	}
 	r.mu.RUnlock()
 

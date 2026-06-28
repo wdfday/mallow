@@ -116,525 +116,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/accounts/{id}/equity": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Forward-filled equity curve bucketed by resolution, from equity_snapshots (PostgreSQL).",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "accounts"
-                ],
-                "summary": "Equity curve for an account",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Account ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "RFC3339 start (inclusive); default 30 days ago",
-                        "name": "after",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "RFC3339 end (inclusive); default now",
-                        "name": "before",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "default": 200,
-                        "description": "Page size",
-                        "name": "limit",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_EquityPageResp"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "503": {
-                        "description": "Service Unavailable",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/api/v1/accounts/{id}/exchange/account": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Calls the exchange REST API directly and returns cash, equity, positions and per-asset balances.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "accounts"
-                ],
-                "summary": "Get live exchange account snapshot for an account",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Account ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ExchangeAccountResp"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "502": {
-                        "description": "Bad Gateway",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "503": {
-                        "description": "Service Unavailable",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/api/v1/accounts/{id}/fills": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Time-cursor pagination over TRADE_FILLS JetStream stream. Pass ` + "`" + `after` + "`" + ` (RFC3339) from previous response to page forward.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "accounts"
-                ],
-                "summary": "List order fills for an account",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Account ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "RFC3339 cursor (exclusive); omit for all",
-                        "name": "after",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "default": 200,
-                        "description": "Page size",
-                        "name": "limit",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_FillPageResp"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "503": {
-                        "description": "Service Unavailable",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/api/v1/accounts/{id}/portfolio": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Returns real-time portfolio summary from the helm runtime (cash, equity, positions, drawdown, win rate).",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "accounts"
-                ],
-                "summary": "Get live portfolio for an account",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Account ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_PortfolioResp"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "503": {
-                        "description": "Service Unavailable",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/api/v1/accounts/{id}/positions": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Returns live open positions from the helm runtime.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "accounts"
-                ],
-                "summary": "List open positions for an account",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Account ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_module_helm_dto_PositionResp"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "503": {
-                        "description": "Service Unavailable",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/api/v1/accounts/{id}/snapshots": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Cursor-based pagination over equity_snapshots (PostgreSQL). Helm-level snapshots only.",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "accounts"
-                ],
-                "summary": "List portfolio snapshots for an account",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Account ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "RFC3339 cursor (exclusive); omit for newest-first",
-                        "name": "before",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "default": 100,
-                        "description": "Page size",
-                        "name": "limit",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_SnapshotPageResp"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "503": {
-                        "description": "Service Unavailable",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/api/v1/accounts/{id}/trades": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "description": "Cursor-based pagination over HELM_TRADES JetStream stream (fan-out across all hands).",
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "accounts"
-                ],
-                "summary": "List closed trades for an account",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Account ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "integer",
-                        "description": "JetStream sequence cursor (0 = from start)",
-                        "name": "cursor",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "default": 100,
-                        "description": "Page size",
-                        "name": "limit",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_TradesPageResp"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "503": {
-                        "description": "Service Unavailable",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
         "/api/v1/hands": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "hands"
-                ],
-                "summary": "List hands",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Filter by helm ID",
-                        "name": "helm_id",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Filter by account ID",
-                        "name": "account_id",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_module_hand_domain_HandSummary"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "500": {
-                        "description": "Internal Server Error",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    }
-                }
-            },
             "post": {
                 "security": [
                     {
@@ -696,7 +178,69 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/hands/{id}": {
+        "/api/v1/hands/{helmId}": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "hands"
+                ],
+                "summary": "List hands",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Filter by helm ID",
+                        "name": "helm_id",
+                        "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Filter by account ID",
+                        "name": "account_id",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_module_hand_domain_HandSummary"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/v1/hands/{helmId}/{id}": {
             "get": {
                 "security": [
                     {
@@ -711,6 +255,13 @@ const docTemplate = `{
                 ],
                 "summary": "Get hand",
                 "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "helmId",
+                        "in": "path",
+                        "required": true
+                    },
                     {
                         "type": "string",
                         "description": "Hand ID",
@@ -759,6 +310,13 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
+                        "description": "Helm ID",
+                        "name": "helmId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
                         "description": "Hand ID",
                         "name": "id",
                         "in": "path",
@@ -802,7 +360,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/hands/{id}/activity": {
+        "/api/v1/hands/{helmId}/{id}/activity": {
             "get": {
                 "security": [
                     {
@@ -820,6 +378,13 @@ const docTemplate = `{
                 ],
                 "summary": "Get hand activity log",
                 "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "helmId",
+                        "in": "path",
+                        "required": true
+                    },
                     {
                         "type": "string",
                         "description": "Hand ID",
@@ -845,7 +410,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_readmodel_EventRecord"
+                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_infra_eventlog_EventRecord"
                         }
                     },
                     "401": {
@@ -869,7 +434,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/hands/{id}/allocate-capital": {
+        "/api/v1/hands/{helmId}/{id}/allocate-capital": {
             "post": {
                 "security": [
                     {
@@ -887,6 +452,13 @@ const docTemplate = `{
                 ],
                 "summary": "Allocate capital",
                 "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "helmId",
+                        "in": "path",
+                        "required": true
+                    },
                     {
                         "type": "string",
                         "description": "Hand ID",
@@ -932,7 +504,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/hands/{id}/equity": {
+        "/api/v1/hands/{helmId}/{id}/equity": {
             "get": {
                 "security": [
                     {
@@ -945,8 +517,15 @@ const docTemplate = `{
                 "tags": [
                     "hands"
                 ],
-                "summary": "Per-hand equity curve",
+                "summary": "Per-hand PnL curve (projection from trades)",
                 "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "helmId",
+                        "in": "path",
+                        "required": true
+                    },
                     {
                         "type": "string",
                         "description": "Hand ID",
@@ -959,39 +538,41 @@ const docTemplate = `{
                         "description": "Preset: 24h|7d|30d|mtd|ytd|all",
                         "name": "period",
                         "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Bucket size: 1m|5m|15m|1h|4h|1d (default 1m)",
-                        "name": "resolution",
-                        "in": "query"
                     }
                 ],
                 "responses": {
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_EquityPageResp"
+                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-array_internal_module_hand_handler_HandEquityPoint"
                         }
                     }
                 }
             }
         },
-        "/api/v1/hands/{id}/kill": {
+        "/api/v1/hands/{helmId}/{id}/kill": {
             "post": {
                 "security": [
                     {
                         "BearerAuth": []
                     }
                 ],
+                "description": "Emergency stop: deregisters the hand, cancels open orders, and places market close orders for all active positions. The hand becomes terminal (killed) and cannot be restarted.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "hands"
                 ],
-                "summary": "Kill hand — stop and flatten all positions",
+                "summary": "Kill hand (stop + flatten all positions at market)",
                 "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "helmId",
+                        "in": "path",
+                        "required": true
+                    },
                     {
                         "type": "string",
                         "description": "Hand ID",
@@ -1028,7 +609,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/hands/{id}/release": {
+        "/api/v1/hands/{helmId}/{id}/release": {
             "post": {
                 "description": "Stop the hand without closing positions. Open legs are marked orphaned in the poslog; the hand will not reclaim them on restart.",
                 "produces": [
@@ -1039,6 +620,13 @@ const docTemplate = `{
                 ],
                 "summary": "Release a hand (orphan open positions)",
                 "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "helmId",
+                        "in": "path",
+                        "required": true
+                    },
                     {
                         "type": "string",
                         "description": "Hand ID",
@@ -1069,7 +657,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/hands/{id}/start": {
+        "/api/v1/hands/{helmId}/{id}/start": {
             "post": {
                 "security": [
                     {
@@ -1086,6 +674,13 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
+                        "description": "Helm ID",
+                        "name": "helmId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
                         "description": "Hand ID",
                         "name": "id",
                         "in": "path",
@@ -1120,7 +715,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/hands/{id}/stats": {
+        "/api/v1/hands/{helmId}/{id}/stats": {
             "get": {
                 "security": [
                     {
@@ -1142,6 +737,13 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
+                        "description": "Helm ID",
+                        "name": "helmId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
                         "description": "Hand ID",
                         "name": "id",
                         "in": "path",
@@ -1160,6 +762,13 @@ const docTemplate = `{
                         "description": "Page size",
                         "name": "limit",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "helmId",
+                        "in": "path",
+                        "required": true
                     },
                     {
                         "type": "string",
@@ -1209,7 +818,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/hands/{id}/stop": {
+        "/api/v1/hands/{helmId}/{id}/stop": {
             "post": {
                 "security": [
                     {
@@ -1224,6 +833,13 @@ const docTemplate = `{
                 ],
                 "summary": "Stop hand",
                 "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "helmId",
+                        "in": "path",
+                        "required": true
+                    },
                     {
                         "type": "string",
                         "description": "Hand ID",
@@ -1260,7 +876,7 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/hands/{id}/trades": {
+        "/api/v1/hands/{helmId}/{id}/trades": {
             "get": {
                 "security": [
                     {
@@ -1282,6 +898,13 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
+                        "description": "Helm ID",
+                        "name": "helmId",
+                        "in": "path",
+                        "required": true
+                    },
+                    {
+                        "type": "string",
                         "description": "Hand ID",
                         "name": "id",
                         "in": "path",
@@ -1300,6 +923,13 @@ const docTemplate = `{
                         "description": "Page size",
                         "name": "limit",
                         "in": "query"
+                    },
+                    {
+                        "type": "string",
+                        "description": "Helm ID",
+                        "name": "helmId",
+                        "in": "path",
+                        "required": true
                     },
                     {
                         "type": "string",
@@ -1588,58 +1218,6 @@ const docTemplate = `{
                         "description": "Unauthorized",
                         "schema": {
                             "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
-        "/api/v1/helms/{id}/equity": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "helms"
-                ],
-                "summary": "Equity curve for a helm (fan-out across all hands, from HELM_EQUITY stream)",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Helm ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "RFC3339 cursor (exclusive); omit for all",
-                        "name": "after",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "default": 200,
-                        "description": "Page size",
-                        "name": "limit",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_EquityPageResp"
                         }
                     },
                     "404": {
@@ -2188,57 +1766,6 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/helms/{id}/kill": {
-            "post": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "helms"
-                ],
-                "summary": "Disable orchestrator — flatten all hand positions and disable",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Orchestrator ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_ActionResp"
-                        }
-                    },
-                    "400": {
-                        "description": "Bad Request",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "401": {
-                        "description": "Unauthorized",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
         "/api/v1/helms/{id}/orders": {
             "get": {
                 "security": [
@@ -2324,7 +1851,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-array_internal_module_helm_handler_orderHistoryResp"
+                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_module_helm_dto_OrderHistoryResp"
                         }
                     },
                     "404": {
@@ -2528,128 +2055,21 @@ const docTemplate = `{
                 }
             }
         },
-        "/api/v1/helms/{id}/snapshots": {
-            "get": {
-                "security": [
-                    {
-                        "BearerAuth": []
-                    },
-                    {
-                        "BearerAuth": []
-                    }
-                ],
-                "produces": [
-                    "application/json",
-                    "application/json"
-                ],
-                "tags": [
-                    "helms",
-                    "helms"
-                ],
-                "summary": "Aggregated KPIs over closed trades for a helm",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Helm ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "RFC3339 cursor (exclusive); omit for all",
-                        "name": "after",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "default": 100,
-                        "description": "Page size",
-                        "name": "limit",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Helm ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Preset: 24h|7d|30d|mtd|ytd|all",
-                        "name": "period",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "RFC3339 inclusive lower bound (overrides preset.after)",
-                        "name": "after",
-                        "in": "query"
-                    },
-                    {
-                        "type": "string",
-                        "description": "RFC3339 exclusive upper bound (overrides preset.before)",
-                        "name": "before",
-                        "in": "query"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_StatsResp"
-                        }
-                    },
-                    "404": {
-                        "description": "Not Found",
-                        "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
-                        }
-                    }
-                }
-            }
-        },
         "/api/v1/helms/{id}/stats": {
             "get": {
                 "security": [
                     {
                         "BearerAuth": []
-                    },
-                    {
-                        "BearerAuth": []
                     }
                 ],
                 "produces": [
-                    "application/json",
                     "application/json"
                 ],
                 "tags": [
-                    "helms",
                     "helms"
                 ],
                 "summary": "Aggregated KPIs over closed trades for a helm",
                 "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Helm ID",
-                        "name": "id",
-                        "in": "path",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "RFC3339 cursor (exclusive); omit for all",
-                        "name": "after",
-                        "in": "query"
-                    },
-                    {
-                        "type": "integer",
-                        "default": 100,
-                        "description": "Page size",
-                        "name": "limit",
-                        "in": "query"
-                    },
                     {
                         "type": "string",
                         "description": "Helm ID",
@@ -2786,7 +2206,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_readmodel_EventRecord"
+                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_infra_eventlog_EventRecord"
                         }
                     },
                     "401": {
@@ -2812,41 +2232,52 @@ const docTemplate = `{
         }
     },
     "definitions": {
-        "internal_module_helm_handler.orderHistoryResp": {
+        "internal_module_hand_handler.HandEquityPoint": {
             "type": "object",
             "properties": {
-                "client_order_id": {
+                "cum_net_pnl": {
+                    "type": "number"
+                },
+                "cum_pnl": {
+                    "type": "number"
+                },
+                "ts": {
+                    "type": "string"
+                }
+            }
+        },
+        "mallow_helm_internal_infra_eventlog.EventRecord": {
+            "type": "object",
+            "properties": {
+                "at": {
                     "type": "string"
                 },
-                "exchange_order_id": {
-                    "type": "string"
+                "code": {
+                    "type": "integer"
                 },
-                "filled_price": {
-                    "type": "string"
-                },
-                "filled_qty": {
+                "direction": {
                     "type": "string"
                 },
                 "hand_id": {
                     "type": "string"
                 },
-                "is_close": {
-                    "type": "boolean"
-                },
-                "order_type": {
+                "helm_id": {
                     "type": "string"
                 },
-                "placed_at": {
+                "id": {
+                    "type": "integer"
+                },
+                "msg": {
                     "type": "string"
                 },
-                "position_id": {
+                "order_id": {
                     "type": "string"
                 },
                 "price": {
-                    "type": "string"
+                    "type": "number"
                 },
                 "qty": {
-                    "type": "string"
+                    "type": "number"
                 },
                 "reason": {
                     "type": "string"
@@ -2854,13 +2285,10 @@ const docTemplate = `{
                 "side": {
                     "type": "string"
                 },
-                "status": {
-                    "type": "string"
-                },
                 "symbol": {
                     "type": "string"
                 },
-                "updated_at": {
+                "user_id": {
                     "type": "string"
                 }
             }
@@ -2894,18 +2322,6 @@ const docTemplate = `{
                 },
                 "is_active": {
                     "type": "boolean"
-                },
-                "is_auto_sync": {
-                    "type": "boolean"
-                },
-                "last_synced_at": {
-                    "type": "string"
-                },
-                "sync_error_message": {
-                    "type": "string"
-                },
-                "sync_status": {
-                    "type": "string"
                 },
                 "updated_at": {
                     "type": "string"
@@ -3050,8 +2466,8 @@ const docTemplate = `{
                 "released"
             ],
             "x-enum-comments": {
-                "HandStatusKilled": "terminal: positions flattened, capital returned",
-                "HandStatusReleased": "terminal: positions orphaned, capital returned"
+                "HandStatusKilled": "legacy terminal: only exists in DB from before kill API was removed",
+                "HandStatusReleased": "terminal: positions orphaned"
             },
             "x-enum-varnames": [
                 "HandStatusStopped",
@@ -3270,6 +2686,10 @@ const docTemplate = `{
                         }
                     ]
                 },
+                "strength_sizing": {
+                    "description": "StrengthSizing: when true (default), notional modes (percent_equity, fixed_qty,\nquote_qty) multiply size by signal strength [0–1]. Risk-based modes\n(fixed_fractional, volatility) always ignore this flag.\nnil → true (backward-compatible with rows written before this field existed).",
+                    "type": "boolean"
+                },
                 "unit_pct": {
                     "description": "UnitPct: fraction of allocated equity deployed per entry unit.\nUsed by: percent_equity.  e.g. 0.10 = 10% of allocated equity per unit.",
                     "type": "number"
@@ -3322,13 +2742,18 @@ const docTemplate = `{
                     "type": "string",
                     "enum": [
                         "M1",
+                        "M3",
                         "M5",
                         "M15",
                         "M30",
                         "H1",
+                        "H2",
                         "H4",
+                        "H6",
+                        "H12",
                         "D1",
-                        "W1"
+                        "W1",
+                        "MN"
                     ]
                 }
             }
@@ -3475,7 +2900,9 @@ const docTemplate = `{
                     "$ref": "#/definitions/mallow_helm_internal_module_hand_dto.StrategyDTO"
                 },
                 "symbols": {
+                    "description": "Only symbols[0] is dispatched to herald — single-symbol per hand. Multi-symbol deferred.",
                     "type": "array",
+                    "maxItems": 1,
                     "minItems": 1,
                     "items": {
                         "type": "string"
@@ -3591,6 +3018,10 @@ const docTemplate = `{
                         }
                     ]
                 },
+                "strength_sizing": {
+                    "description": "StrengthSizing scales notional modes (percent_equity, fixed_qty, quote_qty) by\nsignal strength. Omit or set true to keep the default (on). Risk-based modes ignore it.",
+                    "type": "boolean"
+                },
                 "unit_pct": {
                     "type": "number",
                     "maximum": 1
@@ -3619,13 +3050,18 @@ const docTemplate = `{
                     "type": "string",
                     "enum": [
                         "M1",
+                        "M3",
                         "M5",
                         "M15",
                         "M30",
                         "H1",
+                        "H2",
                         "H4",
+                        "H6",
+                        "H12",
                         "D1",
-                        "W1"
+                        "W1",
+                        "MN"
                     ]
                 }
             }
@@ -3633,9 +3069,6 @@ const docTemplate = `{
         "mallow_helm_internal_module_hand_dto.UpdateHandReq": {
             "type": "object",
             "properties": {
-                "allocated_capital": {
-                    "type": "number"
-                },
                 "name": {
                     "type": "string",
                     "maxLength": 128,
@@ -3646,11 +3079,6 @@ const docTemplate = `{
                 },
                 "risk": {
                     "$ref": "#/definitions/mallow_helm_internal_module_hand_dto.HandGuardConfigDTO"
-                },
-                "signal_ttl_sec": {
-                    "type": "integer",
-                    "maximum": 3600,
-                    "minimum": -1
                 }
             }
         },
@@ -3690,59 +3118,13 @@ const docTemplate = `{
                 }
             }
         },
-        "mallow_helm_internal_module_helm_dto.EquityPageResp": {
-            "type": "object",
-            "properties": {
-                "has_more": {
-                    "type": "boolean"
-                },
-                "limit": {
-                    "type": "integer"
-                },
-                "metadata": {
-                    "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.AnalyticsMetaResp"
-                },
-                "next": {
-                    "type": "string"
-                },
-                "points": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.EquityPointResp"
-                    }
-                }
-            }
-        },
-        "mallow_helm_internal_module_helm_dto.EquityPointResp": {
-            "type": "object",
-            "properties": {
-                "cash": {
-                    "type": "number"
-                },
-                "equity": {
-                    "type": "number"
-                },
-                "hand_id": {
-                    "type": "string"
-                },
-                "realized_pnl": {
-                    "type": "number"
-                },
-                "ts": {
-                    "type": "string"
-                },
-                "unrealized_pnl": {
-                    "type": "number"
-                }
-            }
-        },
         "mallow_helm_internal_module_helm_dto.EventsPageResp": {
             "type": "object",
             "properties": {
                 "events": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/mallow_helm_internal_readmodel.EventRecord"
+                        "$ref": "#/definitions/mallow_helm_internal_infra_eventlog.EventRecord"
                     }
                 },
                 "has_more": {
@@ -4082,6 +3464,59 @@ const docTemplate = `{
                 }
             }
         },
+        "mallow_helm_internal_module_helm_dto.OrderHistoryResp": {
+            "type": "object",
+            "properties": {
+                "client_order_id": {
+                    "type": "string"
+                },
+                "exchange_order_id": {
+                    "type": "string"
+                },
+                "filled_price": {
+                    "type": "string"
+                },
+                "filled_qty": {
+                    "type": "string"
+                },
+                "hand_id": {
+                    "type": "string"
+                },
+                "is_close": {
+                    "type": "boolean"
+                },
+                "order_type": {
+                    "type": "string"
+                },
+                "placed_at": {
+                    "type": "string"
+                },
+                "position_id": {
+                    "type": "string"
+                },
+                "price": {
+                    "type": "string"
+                },
+                "qty": {
+                    "type": "string"
+                },
+                "reason": {
+                    "type": "string"
+                },
+                "side": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "string"
+                },
+                "symbol": {
+                    "type": "string"
+                },
+                "updated_at": {
+                    "type": "string"
+                }
+            }
+        },
         "mallow_helm_internal_module_helm_dto.OrderResp": {
             "type": "object",
             "properties": {
@@ -4265,78 +3700,6 @@ const docTemplate = `{
                 "max_positions": {
                     "type": "integer",
                     "minimum": 1
-                }
-            }
-        },
-        "mallow_helm_internal_module_helm_dto.SnapshotPageResp": {
-            "type": "object",
-            "properties": {
-                "has_more": {
-                    "type": "boolean"
-                },
-                "limit": {
-                    "type": "integer"
-                },
-                "metadata": {
-                    "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.AnalyticsMetaResp"
-                },
-                "next": {
-                    "type": "string"
-                },
-                "snapshots": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.SnapshotResp"
-                    }
-                }
-            }
-        },
-        "mallow_helm_internal_module_helm_dto.SnapshotPositionResp": {
-            "type": "object",
-            "properties": {
-                "avg_price": {
-                    "type": "number"
-                },
-                "qty": {
-                    "type": "number"
-                },
-                "side": {
-                    "type": "string"
-                },
-                "symbol": {
-                    "type": "string"
-                }
-            }
-        },
-        "mallow_helm_internal_module_helm_dto.SnapshotResp": {
-            "type": "object",
-            "properties": {
-                "cash": {
-                    "type": "number"
-                },
-                "equity": {
-                    "type": "number"
-                },
-                "hand_id": {
-                    "type": "string"
-                },
-                "helm_id": {
-                    "type": "string"
-                },
-                "positions": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.SnapshotPositionResp"
-                    }
-                },
-                "realized_pnl": {
-                    "type": "number"
-                },
-                "ts": {
-                    "type": "string"
-                },
-                "unrealized_pnl": {
-                    "type": "number"
                 }
             }
         },
@@ -4533,53 +3896,6 @@ const docTemplate = `{
                 }
             }
         },
-        "mallow_helm_internal_readmodel.EventRecord": {
-            "type": "object",
-            "properties": {
-                "at": {
-                    "type": "string"
-                },
-                "code": {
-                    "type": "integer"
-                },
-                "direction": {
-                    "type": "string"
-                },
-                "hand_id": {
-                    "type": "string"
-                },
-                "helm_id": {
-                    "type": "string"
-                },
-                "id": {
-                    "type": "integer"
-                },
-                "msg": {
-                    "type": "string"
-                },
-                "order_id": {
-                    "type": "string"
-                },
-                "price": {
-                    "type": "number"
-                },
-                "qty": {
-                    "type": "number"
-                },
-                "reason": {
-                    "type": "string"
-                },
-                "side": {
-                    "type": "string"
-                },
-                "symbol": {
-                    "type": "string"
-                },
-                "user_id": {
-                    "type": "string"
-                }
-            }
-        },
         "mallow_helm_internal_shared.ErrorResponse": {
             "type": "object",
             "properties": {
@@ -4613,13 +3929,33 @@ const docTemplate = `{
                 }
             }
         },
-        "mallow_helm_internal_shared.SuccessResponse-array_internal_module_helm_handler_orderHistoryResp": {
+        "mallow_helm_internal_shared.SuccessResponse-array_internal_module_hand_handler_HandEquityPoint": {
             "type": "object",
             "properties": {
                 "data": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/internal_module_helm_handler.orderHistoryResp"
+                        "$ref": "#/definitions/internal_module_hand_handler.HandEquityPoint"
+                    }
+                },
+                "detail": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "integer"
+                }
+            }
+        },
+        "mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_infra_eventlog_EventRecord": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/mallow_helm_internal_infra_eventlog.EventRecord"
                     }
                 },
                 "detail": {
@@ -4673,6 +4009,26 @@ const docTemplate = `{
                 }
             }
         },
+        "mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_module_helm_dto_OrderHistoryResp": {
+            "type": "object",
+            "properties": {
+                "data": {
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.OrderHistoryResp"
+                    }
+                },
+                "detail": {
+                    "type": "string"
+                },
+                "message": {
+                    "type": "string"
+                },
+                "status": {
+                    "type": "integer"
+                }
+            }
+        },
         "mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_module_helm_dto_OrderResp": {
             "type": "object",
             "properties": {
@@ -4700,26 +4056,6 @@ const docTemplate = `{
                     "type": "array",
                     "items": {
                         "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.PositionResp"
-                    }
-                },
-                "detail": {
-                    "type": "string"
-                },
-                "message": {
-                    "type": "string"
-                },
-                "status": {
-                    "type": "integer"
-                }
-            }
-        },
-        "mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_readmodel_EventRecord": {
-            "type": "object",
-            "properties": {
-                "data": {
-                    "type": "array",
-                    "items": {
-                        "$ref": "#/definitions/mallow_helm_internal_readmodel.EventRecord"
                     }
                 },
                 "detail": {
@@ -4806,23 +4142,6 @@ const docTemplate = `{
             "properties": {
                 "data": {
                     "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.ActionResp"
-                },
-                "detail": {
-                    "type": "string"
-                },
-                "message": {
-                    "type": "string"
-                },
-                "status": {
-                    "type": "integer"
-                }
-            }
-        },
-        "mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_EquityPageResp": {
-            "type": "object",
-            "properties": {
-                "data": {
-                    "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.EquityPageResp"
                 },
                 "detail": {
                     "type": "string"
@@ -4993,23 +4312,6 @@ const docTemplate = `{
             "properties": {
                 "data": {
                     "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.PortfolioResp"
-                },
-                "detail": {
-                    "type": "string"
-                },
-                "message": {
-                    "type": "string"
-                },
-                "status": {
-                    "type": "integer"
-                }
-            }
-        },
-        "mallow_helm_internal_shared.SuccessResponse-mallow_helm_internal_module_helm_dto_SnapshotPageResp": {
-            "type": "object",
-            "properties": {
-                "data": {
-                    "$ref": "#/definitions/mallow_helm_internal_module_helm_dto.SnapshotPageResp"
                 },
                 "detail": {
                     "type": "string"

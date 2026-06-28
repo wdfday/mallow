@@ -93,12 +93,9 @@ func (s *Service) DeleteForAccount(accountID uuid.UUID) error {
 	if err != nil {
 		return err
 	}
-	botIDs := s.spawner.Teardown(cfg.ID)
+	// Teardown stops and deregisters every hand the runtime owns.
+	s.spawner.Teardown(cfg.ID)
 	if s.hands != nil {
-		if len(botIDs) > 0 {
-			s.hands.StopBots(botIDs)
-		}
-		s.hands.PurgeBots(botIDs)
 		if delErr := s.hands.DeleteBotsByHelm(cfg.ID); delErr != nil {
 			slog.Warn("helm: DeleteForAccount: failed to hard-delete hand rows (non-fatal)",
 				"helm_id", cfg.ID, "err", delErr)
@@ -138,13 +135,8 @@ func (s *Service) Update(id uuid.UUID, req helmDto.UpdateReq) (*domain.Helm, err
 }
 
 // Delete removes a helm config and tears down its runtime.
+// Teardown stops and deregisters every hand the runtime owns.
 func (s *Service) Delete(id uuid.UUID) error {
-	botIDs := s.spawner.Teardown(id)
-	if s.hands != nil {
-		if len(botIDs) > 0 {
-			s.hands.StopBots(botIDs)
-		}
-		s.hands.PurgeBots(botIDs)
-	}
+	s.spawner.Teardown(id)
 	return s.repo.Delete(id)
 }

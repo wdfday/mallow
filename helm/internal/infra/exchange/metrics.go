@@ -3,6 +3,7 @@ package exchange
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync/atomic"
 	"time"
 
@@ -159,11 +160,39 @@ func (m *MeteredExchange) recordErrClass(err error) {
 	m.Metrics.ErrorsByClass[m.classifyErr(err)].Add(1)
 }
 
+// logExchangeErr emits a structured log entry for a non-nil exchange error.
+// Level is error for severe classes (auth, server_error); warn for all recoverable ones.
+// Fields are chosen so Loki queries like `| json | err_class="order_not_found"` work out of the box.
+func (m *MeteredExchange) logExchangeErr(op, symbol, orderID string, err error) {
+	cls := m.classifyErr(err)
+	args := []any{
+		"exchange", m.Name(),
+		"op", op,
+		"err_class", ErrClassName[cls],
+		"err", err.Error(),
+	}
+	if symbol != "" {
+		args = append(args, "symbol", symbol)
+	}
+	if orderID != "" {
+		args = append(args, "order_id", orderID)
+	}
+	switch cls {
+	case ErrClassAuth, ErrClassServerError:
+		slog.Error("exchange error", args...)
+	default:
+		slog.Warn("exchange error", args...)
+	}
+}
+
 func (m *MeteredExchange) PlaceOrder(ctx context.Context, creds Credentials, req OrderRequest) (*OrderResult, error) {
 	start := time.Now()
 	res, err := m.inner.PlaceOrder(ctx, creds, req)
 	m.Metrics.PlaceOrder.record(time.Since(start), err)
 	m.recordErrClass(err)
+	if err != nil {
+		m.logExchangeErr("place_order", req.Symbol, req.ClientOrderID, err)
+	}
 	return res, err
 }
 
@@ -172,6 +201,9 @@ func (m *MeteredExchange) GetOrder(ctx context.Context, creds Credentials, order
 	res, err := m.inner.GetOrder(ctx, creds, orderID)
 	m.Metrics.GetOrder.record(time.Since(start), err)
 	m.recordErrClass(err)
+	if err != nil {
+		m.logExchangeErr("get_order", "", orderID, err)
+	}
 	return res, err
 }
 
@@ -180,6 +212,9 @@ func (m *MeteredExchange) CancelOrder(ctx context.Context, creds Credentials, or
 	err := m.inner.CancelOrder(ctx, creds, orderID)
 	m.Metrics.CancelOrder.record(time.Since(start), err)
 	m.recordErrClass(err)
+	if err != nil {
+		m.logExchangeErr("cancel_order", "", orderID, err)
+	}
 	return err
 }
 
@@ -323,6 +358,7 @@ func (m *MeteredExchange) StreamOrders(
 	onBalance func(BalanceEvent),
 	onPosition func(PositionEvent),
 	onRisk func(RiskEvent),
+	onCredentialError func(string),
 ) error {
 	s, ok := m.inner.(AccountStreamer)
 	if !ok {
@@ -355,7 +391,7 @@ func (m *MeteredExchange) StreamOrders(
 		}
 	}
 
-	err := s.StreamOrders(ctx, creds, wrappedLifecycle, wrappedFill, wrappedBalance, onPosition, onRisk)
+	err := s.StreamOrders(ctx, creds, wrappedLifecycle, wrappedFill, wrappedBalance, onPosition, onRisk, onCredentialError)
 	if err != nil {
 		m.Metrics.WS.StreamErrors.Add(1)
 	}

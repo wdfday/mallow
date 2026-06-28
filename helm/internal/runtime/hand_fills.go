@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -35,7 +34,7 @@ func (h *Hand) handleWsFill(ctx context.Context, ev exchange.WsFillEvent) {
 	h.applyFill(ctx, ev.OrderID, ev.Symbol, side, ev.FilledQty, ev.FilledAvg, ev.Commission, "ws")
 }
 
-// applyFill is the single authority for all fill side-effects:
+// applyFill is the single authority for all fill side effects:
 // portfolio update, exit-level management, metrics, and poslog publishing.
 // It is called from three paths:
 //   - WS (handleWsFill): fast-path, fill arrives via broker WebSocket
@@ -137,8 +136,8 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 			if mp := h.helmRuntime.lastKnownPrice(symbol); mp.IsPositive() {
 				dustPrice = mp
 			}
-			slog.Info("hand: dust reconciliation — sub-step residual returned to helm at market price",
-				"hand_id", h.id, "symbol", symbol,
+			h.log.Info("hand: dust reconciliation — sub-step residual returned to helm at market price",
+				"symbol", symbol,
 				"dust", dust, "price", dustPrice, "step", filters.QtyStep,
 			)
 			// Credit portfolio with the USDT value of the dust.
@@ -274,8 +273,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 	}
 	h.mu.RUnlock()
 	availCash := equity.Sub(deployed) // USDT liquid — not locked in open positions
-	slog.Info("order: filled",
-		"hand_id", h.id,
+	h.log.Info("order: filled",
 		"symbol", symbol,
 		"side", side,
 		"qty", qty,
@@ -505,16 +503,16 @@ func (h *Hand) applyExitFill(ctx context.Context, symbol, orderID, side, source,
 		}
 		switch closeSource {
 		case "tp":
-			slog.Info("hand: TP triggered — take-profit bracket filled",
-				"hand_id", h.id, "symbol", symbol, "order_id", orderID,
+			h.log.Info("hand: TP triggered — take-profit bracket filled",
+				"symbol", symbol, "order_id", orderID,
 				"fill_price", cumulativeAvgPrice, "tp_level", el.TakeProfit)
 		case "sl":
-			slog.Info("hand: SL triggered — stop-loss bracket filled",
-				"hand_id", h.id, "symbol", symbol, "order_id", orderID,
+			h.log.Info("hand: SL triggered — stop-loss bracket filled",
+				"symbol", symbol, "order_id", orderID,
 				"fill_price", cumulativeAvgPrice, "sl_level", el.StopLoss)
 		default:
-			slog.Info("hand: bracket exit filled (TP/SL level unknown)",
-				"hand_id", h.id, "symbol", symbol, "order_id", orderID,
+			h.log.Info("hand: bracket exit filled (TP/SL level unknown)",
+				"symbol", symbol, "order_id", orderID,
 				"fill_price", cumulativeAvgPrice,
 				"sl_level", el.StopLoss, "tp_level", el.TakeProfit)
 		}
@@ -637,8 +635,8 @@ func (h *Hand) checkEdgeRisk(pnl decimal.Decimal) {
 	}
 
 	// ── 6. Auto-stop ──────────────────────────────────────────────────────────
-	slog.Warn("hand: edge degradation detected — auto-stopping",
-		"hand_id", h.id, "reason", breachReason)
+	h.log.Warn("hand: edge degradation detected — auto-stopping",
+		"reason", breachReason)
 	h.emitEvent(natsapi.HelmEvent{
 		Code:   CodeHandAutoStopped,
 		Reason: "edge risk: " + breachReason,
@@ -702,7 +700,7 @@ func (h *Hand) scheduleBracketPlacement(lv exitLevel, symbol string, bracketQty 
 		for attempt := 1; attempt <= 5; attempt++ {
 			select {
 			case <-handCtx.Done():
-				slog.Info("hand: exit order goroutine cancelled (hand stopped)", "hand_id", h.id, "symbol", symbol)
+				h.log.Info("hand: exit order goroutine cancelled (hand stopped)", "symbol", symbol)
 				return
 			case <-time.After(time.Duration(attempt) * time.Second):
 			}
@@ -712,12 +710,12 @@ func (h *Hand) scheduleBracketPlacement(lv exitLevel, symbol string, bracketQty 
 			if err == nil {
 				break
 			}
-			slog.Warn("hand: place exit orders retry", "hand_id", h.id, "symbol", symbol,
+			h.log.Warn("hand: place exit orders retry", "symbol", symbol,
 				"attempt", attempt, "err", err)
 		}
 		if err != nil {
-			slog.Error("hand: place exit orders failed — position now relies on the local monitor only",
-				"hand_id", h.id, "symbol", symbol, "err", err)
+			h.log.Error("hand: place exit orders failed — position now relies on the local monitor only",
+				"symbol", symbol, "err", err)
 			h.helmRuntime.EmitEvent(natsapi.HelmEvent{
 				HandID: h.id.String(),
 				Code:   CodeOrderExitFailed,
@@ -727,7 +725,7 @@ func (h *Hand) scheduleBracketPlacement(lv exitLevel, symbol string, bracketQty 
 			})
 			return
 		}
-		slog.Info("hand: exit orders placed", "hand_id", h.id, "symbol", symbol, "order_ids", result.OrderIDs)
+		h.log.Info("hand: exit orders placed", "symbol", symbol, "order_ids", result.OrderIDs)
 		h.helmRuntime.EmitEvent(natsapi.HelmEvent{
 			HandID:  h.id.String(),
 			Code:    CodeOrderExitPlaced,
@@ -770,13 +768,13 @@ func (h *Hand) restoreExitLevelsFromPoslog() {
 	defer h.mu.Unlock()
 	for _, leg := range h.pos.ActiveLegs() {
 		if leg.Phase != position.PhaseOpen {
-			slog.Debug("startup: restoreExitLevels — leg not PhaseOpen, skip",
-				"hand_id", h.id, "symbol", leg.Symbol, "phase", leg.Phase)
+			h.log.Debug("startup: restoreExitLevels — leg not PhaseOpen, skip",
+				"symbol", leg.Symbol, "phase", leg.Phase)
 			continue
 		}
 		if !leg.HasExitManagement() {
-			slog.Info("startup: restoreExitLevels — leg has no exit management (no SL/TP, no OCO ids)",
-				"hand_id", h.id, "symbol", leg.Symbol,
+			h.log.Info("startup: restoreExitLevels — leg has no exit management (no SL/TP, no OCO ids)",
+				"symbol", leg.Symbol,
 				"qty", leg.Qty, "entry_price", leg.EntryPrice)
 			continue
 		}
@@ -787,8 +785,7 @@ func (h *Hand) restoreExitLevelsFromPoslog() {
 			ExchangeOrderIDs: append([]string(nil), leg.ExchangeOrderIDs...),
 		}
 		h.exitLevels[leg.Symbol] = lv
-		slog.Info("startup: restoreExitLevels — exit level restored from poslog",
-			"hand_id", h.id,
+		h.log.Info("startup: restoreExitLevels — exit level restored from poslog",
 			"symbol", leg.Symbol,
 			"qty", leg.Qty,
 			"sl", lv.StopLoss,
@@ -828,13 +825,13 @@ func (h *Hand) RecoverBrackets(ctx context.Context) {
 	var toPlace []toPlaceEntry
 	var toCheck []toCheckEntry
 
-	slog.Info("startup: RecoverBrackets — scanning exitLevels",
-		"hand_id", h.id, "exit_levels_count", len(h.exitLevels))
+	h.log.Info("startup: RecoverBrackets — scanning exitLevels",
+		"exit_levels_count", len(h.exitLevels))
 
 	for symbol, lv := range h.exitLevels {
 		if len(lv.ExchangeOrderIDs) > 0 {
-			slog.Info("startup: RecoverBrackets — checking known bracket IDs",
-				"hand_id", h.id, "symbol", symbol,
+			h.log.Info("startup: RecoverBrackets — checking known bracket IDs",
+				"symbol", symbol,
 				"sl", lv.StopLoss, "tp", lv.TakeProfit,
 				"order_ids", lv.ExchangeOrderIDs)
 			for _, id := range lv.ExchangeOrderIDs {
@@ -845,8 +842,8 @@ func (h *Hand) RecoverBrackets(ctx context.Context) {
 		if !lv.StopLoss.IsPositive() && !lv.TakeProfit.IsPositive() {
 			continue
 		}
-		slog.Info("startup: RecoverBrackets — no OCO ids, will re-place bracket",
-			"hand_id", h.id, "symbol", symbol,
+		h.log.Info("startup: RecoverBrackets — no OCO ids, will re-place bracket",
+			"symbol", symbol,
 			"sl", lv.StopLoss, "tp", lv.TakeProfit)
 		if pl := h.pos.PrimaryLeg(); pl != nil && pl.Symbol == symbol {
 			toPlace = append(toPlace, toPlaceEntry{
@@ -861,12 +858,12 @@ func (h *Hand) RecoverBrackets(ctx context.Context) {
 	for _, c := range toCheck {
 		result, err := h.helmRuntime.Exchange.GetOrder(ctx, h.helmRuntime.Creds, c.id)
 		if err != nil {
-			slog.Warn("startup: RecoverBrackets — GetOrder failed",
-				"hand_id", h.id, "symbol", c.symbol, "order_id", c.id, "err", err)
+			h.log.Warn("startup: RecoverBrackets — GetOrder failed",
+				"symbol", c.symbol, "order_id", c.id, "err", err)
 			continue
 		}
-		slog.Info("startup: RecoverBrackets — bracket status from exchange",
-			"hand_id", h.id, "symbol", c.symbol, "order_id", c.id,
+		h.log.Info("startup: RecoverBrackets — bracket status from exchange",
+			"symbol", c.symbol, "order_id", c.id,
 			"status", result.Status,
 			"filled_qty", result.FilledQty,
 			"filled_avg", result.FilledAvg,
@@ -889,8 +886,8 @@ func (h *Hand) RecoverBrackets(ctx context.Context) {
 			if closeSide == "" {
 				closeSide = "sell"
 			}
-			slog.Info("hand: bracket filled during downtime — enqueuing recovery fill",
-				"hand_id", h.id, "symbol", c.symbol, "order_id", c.id,
+			h.log.Info("hand: bracket filled during downtime — enqueuing recovery fill",
+				"symbol", c.symbol, "order_id", c.id,
 				"filled_qty", result.FilledQty, "filled_avg", result.FilledAvg)
 			if result.FilledQty.IsPositive() && result.FilledAvg.IsPositive() {
 				h.EnqueueFill(exchange.WsFillEvent{
@@ -905,14 +902,14 @@ func (h *Hand) RecoverBrackets(ctx context.Context) {
 
 		case "canceled", "cancelled", "expired", "rejected":
 			// Bracket was externally cancelled during downtime.
-			slog.Info("hand: bracket cancelled during downtime — handling external close",
-				"hand_id", h.id, "symbol", c.symbol, "order_id", c.id, "status", result.Status)
+			h.log.Info("hand: bracket cancelled during downtime — handling external close",
+				"symbol", c.symbol, "order_id", c.id, "status", result.Status)
 			h.HandleExitOrderCanceled(ctx, c.id)
 
 		default:
 			// "new" / "submitted" — bracket still live; no action needed.
-			slog.Debug("hand: bracket still live after restart",
-				"hand_id", h.id, "symbol", c.symbol, "order_id", c.id, "status", result.Status)
+			h.log.Debug("hand: bracket still live after restart",
+				"symbol", c.symbol, "order_id", c.id, "status", result.Status)
 		}
 	}
 
@@ -933,8 +930,8 @@ func (h *Hand) RecoverBrackets(ctx context.Context) {
 		if hasAlgoLister {
 			existing, err := algoLister.ListLiveAlgoOrders(ctx, h.helmRuntime.Creds, p.symbol)
 			if err != nil {
-				slog.Warn("hand: RecoverBrackets — ListLiveAlgoOrders failed (will re-place)",
-					"hand_id", h.id, "symbol", p.symbol, "err", err)
+				h.log.Warn("hand: RecoverBrackets — ListLiveAlgoOrders failed (will re-place)",
+					"symbol", p.symbol, "err", err)
 			} else {
 				var adopted string
 				for _, ao := range existing {
@@ -948,8 +945,8 @@ func (h *Hand) RecoverBrackets(ctx context.Context) {
 					}
 				}
 				if adopted != "" {
-					slog.Info("hand: found existing live algo — adopting IDs instead of re-placing",
-						"hand_id", h.id, "symbol", p.symbol, "algo_id", adopted)
+					h.log.Info("hand: found existing live algo — adopting IDs instead of re-placing",
+						"symbol", p.symbol, "algo_id", adopted)
 					h.trackOrder(adopted)
 					h.mu.Lock()
 					if lv, ok := h.exitLevels[p.symbol]; ok {
@@ -963,8 +960,8 @@ func (h *Hand) RecoverBrackets(ctx context.Context) {
 			}
 		}
 
-		slog.Info("hand: re-placing bracket after restart — KindBracketPlaced was not confirmed",
-			"hand_id", h.id, "symbol", p.symbol,
+		h.log.Info("hand: re-placing bracket after restart — KindBracketPlaced was not confirmed",
+			"symbol", p.symbol,
 			"stop_loss", p.lv.StopLoss, "take_profit", p.lv.TakeProfit, "qty", p.qty)
 		h.scheduleBracketPlacement(p.lv, p.symbol, p.qty, p.posID)
 	}
@@ -1053,8 +1050,8 @@ func (h *Hand) resolvePendingExit(
 				slTpOK = resolved.TakeProfit.LessThan(resolved.StopLoss)
 			}
 			if !slTpOK {
-				slog.Warn("fill: SL/TP relationship invalid after rounding — skipping OCO bracket",
-					"hand_id", h.id, "symbol", symbol, "side", resolved.Side,
+				h.log.Warn("fill: SL/TP relationship invalid after rounding — skipping OCO bracket",
+					"symbol", symbol, "side", resolved.Side,
 					"stop_loss", resolved.StopLoss, "take_profit", resolved.TakeProfit)
 			}
 		}
@@ -1093,8 +1090,8 @@ func (h *Hand) completeWsFillFromREST(
 	pending exitPending,
 	isExitOrder bool,
 ) {
-	slog.Info("hand: WS beat REST — completing poslog fill and bracket placement",
-		"hand_id", h.id, "order_id", orderID, "symbol", symbol,
+	h.log.Info("hand: WS beat REST — completing poslog fill and bracket placement",
+		"order_id", orderID, "symbol", symbol,
 		"qty", restQty, "price", fillAvg)
 
 	// Capture posID BEFORE publishOrderFilled deletes it from pendingOrderPos.

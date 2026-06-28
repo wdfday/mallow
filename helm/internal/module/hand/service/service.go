@@ -4,53 +4,39 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sync"
+	"time"
 
 	"github.com/google/uuid"
 
-	"mallow/helm/internal/infra/engine"
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/runtime"
 )
 
-// helmRegistry is the outbound port to the helm execution runtime.
-type helmRegistry interface {
+// registry is the outbound port to the helm execution runtime.
+type registry interface {
 	Get(helmID uuid.UUID) (*runtime.HelmRuntime, error)
-}
-
-// heraldClient is the outbound port to the signal herald.
-type heraldClient interface {
-	Validate(ctx context.Context, req *engine.RegisterMsg) error
-	Register(ctx context.Context, req *engine.RegisterMsg) (string, error)
-	Deregister(ctx context.Context, botID string) error
-	ListHands(ctx context.Context) (*engine.HandListResponse, error)
+	All() []*runtime.HelmRuntime
 }
 
 // Service is the CRUD + lifecycle layer for hands.
 // Business logic (signal handling, order placement, portfolio) lives in runtime.Hand.
+// Live hand state is owned by HelmRuntime.hands — Service delegates runtime ops via
+// registry.Get(helmID) → HelmRuntime methods.
 type Service struct {
 	repo     domain.HandRepo
-	registry helmRegistry
-	herald   heraldClient // nil when NATS unavailable (dev/test)
-
-	mu sync.RWMutex
-	// hands holds all currently active (non-terminal) hands wired into a HelmRuntime.
-	hands map[uuid.UUID]*runtime.HandRef
+	registry registry
 }
 
-func NewService(r domain.HandRepo, registry *runtime.Registry, herald heraldClient) *Service {
+func NewService(r domain.HandRepo, registry *runtime.Registry) *Service {
 	return &Service{
 		repo:     r,
 		registry: registry,
-		herald:   herald,
-		hands:    make(map[uuid.UUID]*runtime.HandRef),
 	}
 }
 
-// HydrateAll loads all persisted hands from the repo and wires them into the
-// in-memory cache. Must be called AFTER helm runtimes are registered (i.e.
-// after hydrateRuntimes in fx.go) so that registry.Get succeeds for each hand.
+// HydrateAll loads all persisted hands from the repo and wires them into the runtime.
+// Must be called AFTER helm runtimes are registered so that registry.Get succeeds.
 func (s *Service) HydrateAll() {
 	all := s.repo.All()
 	live, skipped := 0, 0
@@ -59,51 +45,47 @@ func (s *Service) HydrateAll() {
 			skipped++
 			continue
 		}
-		bi, err := s.hydrate(data)
-		if err != nil {
+		if err := s.hydrateOne(data); err != nil {
 			slog.Warn("hand hydrate skipped", "id", data.ID, "err", err)
 			continue
 		}
-		s.mu.Lock()
-		s.hands[data.ID] = bi
-		s.mu.Unlock()
 		live++
 	}
 	slog.Info("hands hydrated", "live", live, "terminal_in_db", skipped, "total", len(all))
 }
 
-func (s *Service) hydrate(data *domain.Hand) (*runtime.HandRef, error) {
+func (s *Service) hydrateOne(data *domain.Hand) error {
 	rt, err := s.registry.Get(data.HelmID)
 	if err != nil {
-		return nil, fmt.Errorf("no runtime for helm %q: %w", data.HelmID, err)
+		return fmt.Errorf("no runtime for helm %q: %w", data.HelmID, err)
 	}
 	strat, tact := runtime.BuildHandComponents(data)
 	hand := runtime.NewHand(data.ID, data.HelmID, rt, strat, tact, data.Position.Pyramid, data.Position.MaxUnits, runtime.SignalTTLFor(data), data.Futures, data.OrderType, data.LimitTimeoutSec, data.LimitFallback, data.Guard, data.AllocatedCapital)
 	setMeta(hand, data)
-	rt.AddHand(hand)
+	rt.AddHand(hand, data)
 	if data.Status == domain.HandStatusRunning {
-		s.heraldRegister(data.ID, data)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := rt.RegisterHandAll(ctx, data.ID.String(), data.HelmID.String(), data.Symbols, data.Strategy.Script, data.Strategy.Timeframe, data.Market == domain.MarketTypeFutures); err != nil {
+			slog.Warn("herald re-register on hydrate failed", "hand_id", data.ID, "err", err)
+		}
 	}
-	return &runtime.HandRef{Data: data, Runner: hand, Exchange: rt.Exchange}, nil
+	return nil
 }
 
-// SymbolsByExchange returns the deduplicated symbols for each exchange, keyed by
-// the exchange instance. Only (exchange, symbol) pairs that actually belong to a
-// hand on that exchange are returned — so OKX symbols (SOL-USDT) are never sent
-// to Binance and vice-versa.
+// SymbolsByExchange returns the deduplicated symbols per exchange across all live hands.
 func (s *Service) SymbolsByExchange() map[exchange.Exchange][]string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	seen := make(map[exchange.Exchange]map[string]struct{})
-	for _, bi := range s.hands {
-		ex := bi.Exchange
+	for _, rt := range s.registry.All() {
+		ex, syms := rt.SymbolsByExchange()
+		if len(syms) == 0 {
+			continue
+		}
 		if seen[ex] == nil {
 			seen[ex] = make(map[string]struct{})
 		}
-		for _, sym := range bi.Data.Symbols {
-			if sym != "" {
-				seen[ex][sym] = struct{}{}
-			}
+		for _, sym := range syms {
+			seen[ex][sym] = struct{}{}
 		}
 	}
 	out := make(map[exchange.Exchange][]string, len(seen))
@@ -117,40 +99,18 @@ func (s *Service) SymbolsByExchange() map[exchange.Exchange][]string {
 	return out
 }
 
-// StartAllHydrated starts the runners of all hydrated hands that have status HandStatusRunning.
-// This is called at startup after the orchestrator has reconciled position state.
+// StartAllHydrated starts runners of all hydrated hands with status HandStatusRunning.
 func (s *Service) StartAllHydrated() {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	for _, bi := range s.hands {
-		if bi.Data.Status == domain.HandStatusRunning {
-			bi.Runner.Start()
-		}
+	for _, rt := range s.registry.All() {
+		rt.StartRunning()
 	}
 }
 
-func (s *Service) getOrLoad(id uuid.UUID) (*runtime.HandRef, error) {
-	s.mu.RLock()
-	bi, ok := s.hands[id]
-	s.mu.RUnlock()
-	if ok {
-		return bi, nil
+// RunningHandCount returns the number of running hands across all runtimes.
+func (s *Service) RunningHandCount() int {
+	n := 0
+	for _, rt := range s.registry.All() {
+		n += len(rt.RunningHandIDs())
 	}
-	data, err := s.repo.Get(id)
-	if err != nil {
-		return nil, err
-	}
-	// Terminal hands (killed/released) are removed from memory after their lifecycle
-	// ends. Do not re-hydrate them — they must not re-enter the runtime.
-	if data.Status.IsTerminal() {
-		return nil, fmt.Errorf("hand %q is %s — terminal hands cannot be modified", id, data.Status)
-	}
-	bi, err = s.hydrate(data)
-	if err != nil {
-		return nil, err
-	}
-	s.mu.Lock()
-	s.hands[id] = bi
-	s.mu.Unlock()
-	return bi, nil
+	return n
 }

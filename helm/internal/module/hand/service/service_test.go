@@ -86,7 +86,7 @@ func (r *stubHandRepo) DeleteByHelm(helmID uuid.UUID) error {
 
 func newSvc() *service.Service {
 	reg := runtime.NewRegistry(nil)
-	return service.NewService(newStubRepo(), reg, nil)
+	return service.NewService(newStubRepo(), reg)
 }
 
 func validConfig(helmID uuid.UUID) domain.HandConfig {
@@ -255,67 +255,43 @@ func TestListByHelm_EmptyService_ReturnsNilOrEmpty(t *testing.T) {
 	}
 }
 
-// ── RunningHands — empty state ─────────────────────────────────────────────────
+// ── RunningHandCount — empty state ─────────────────────────────────────────────
 
-func TestRunningHands_EmptyService_ReturnsEmpty(t *testing.T) {
+func TestRunningHandCount_EmptyService_ReturnsZero(t *testing.T) {
 	svc := newSvc()
-	running := svc.RunningHands()
-	if len(running) != 0 {
-		t.Fatalf("expected 0 running hands, got %d", len(running))
+	if n := svc.RunningHandCount(); n != 0 {
+		t.Fatalf("expected 0 running hands, got %d", n)
 	}
 }
 
-// ── PurgeBots — no-op for unknown IDs ────────────────────────────────────────
+// ── StopBots / StartBots / KillBots — unknown helm no-ops ─────────────────────
 
-func TestPurgeBots_UnknownIDs_DoesNotPanic(t *testing.T) {
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("PurgeBots panicked: %v", r)
-		}
-	}()
-	svc := newSvc()
-	svc.PurgeBots([]string{"ghost-1", "ghost-2", "ghost-3"})
-}
-
-func TestPurgeBots_EmptyList_DoesNotPanic(t *testing.T) {
-	defer func() {
-		if r := recover(); r != nil {
-			t.Fatalf("PurgeBots panicked on empty list: %v", r)
-		}
-	}()
-	svc := newSvc()
-	svc.PurgeBots(nil)
-	svc.PurgeBots([]string{})
-}
-
-// ── StopBots / StartBots / KillBots — empty map no-ops ───────────────────────
-
-func TestStopBots_UnknownIDs_DoesNotPanic(t *testing.T) {
+func TestStopBots_UnknownHelm_DoesNotPanic(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
 			t.Fatalf("StopBots panicked: %v", r)
 		}
 	}()
 	svc := newSvc()
-	svc.StopBots([]string{"ghost-1", "ghost-2"})
+	svc.StopBots(uuid.New(), []string{"ghost-1", "ghost-2"})
 }
 
-func TestStartBots_UnknownIDs_DoesNotPanic(t *testing.T) {
+func TestStartBots_UnknownHelm_DoesNotPanic(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
 			t.Fatalf("StartBots panicked: %v", r)
 		}
 	}()
 	svc := newSvc()
-	svc.StartBots([]string{"ghost-1", "ghost-2"})
+	svc.StartBots(uuid.New(), []string{"ghost-1", "ghost-2"})
 }
 
-func TestKillBots_UnknownIDs_DoesNotPanic(t *testing.T) {
+func TestKillBots_UnknownHelm_DoesNotPanic(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
 			t.Fatalf("KillBots panicked: %v", r)
 		}
 	}()
 	svc := newSvc()
-	svc.KillBots([]string{"ghost-1", "ghost-2"})
+	svc.KillBots(uuid.New(), []string{"ghost-1", "ghost-2"})
 }

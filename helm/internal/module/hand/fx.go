@@ -8,7 +8,6 @@ import (
 	"go.uber.org/fx"
 	"gorm.io/gorm"
 
-	"mallow/helm/internal/infra/engine"
 	"mallow/helm/internal/infra/eventlog"
 	analyticsservice "mallow/helm/internal/module/analytics/service"
 	"mallow/helm/internal/module/hand/domain"
@@ -31,8 +30,8 @@ func provideHandRepo(db *gorm.DB) domain.HandRepo {
 	return repository.New(db)
 }
 
-func provideHandService(repo domain.HandRepo, reg *runtime.Registry, sc *engine.SignalClient) *service.Service {
-	return service.NewService(repo, reg, sc)
+func provideHandService(repo domain.HandRepo, reg *runtime.Registry) *service.Service {
+	return service.NewService(repo, reg)
 }
 
 func provideHandHandler(

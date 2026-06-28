@@ -12,13 +12,6 @@ import (
 	"mallow/helm/internal/runtime/core/strategy"
 )
 
-func msToTime(ms int64) time.Time {
-	if ms == 0 {
-		return time.Time{}
-	}
-	return time.UnixMilli(ms).UTC()
-}
-
 // DispatcherMetrics holds NATS-level counters for the signal dispatcher.
 // All fields use sync/atomic and are safe for concurrent access.
 type DispatcherMetrics struct {
@@ -106,4 +99,11 @@ func (d *SignalDispatcher) Dispatch(resp *engine.SignalResponse, receivedAt time
 	)
 	d.Metrics.SignalsDispatched.Add(1)
 	d.sink.RouteSignal(helmID, handID, s)
+}
+
+func msToTime(ms int64) time.Time {
+	if ms == 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(ms).UTC()
 }

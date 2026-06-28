@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"runtime/pprof"
 	"time"
 
@@ -188,8 +187,7 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 	if sig.Reason != "" {
 		receivedReason += " herald=" + sig.Reason
 	}
-	slog.Debug("signal: hand received",
-		"hand_id", h.id,
+	h.log.Debug("signal: hand received",
 		"symbol", sig.Symbol,
 		"direction", sig.Direction,
 		"strength", sig.Strength,
@@ -206,8 +204,7 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 
 	filtered := func(code int, reason string) {
 		h.metrics.signalsFiltered.Add(1)
-		slog.Debug("signal: filtered",
-			"hand_id", h.id,
+		h.log.Debug("signal: filtered",
 			"symbol", sig.Symbol,
 			"direction", sig.Direction,
 			"strength", sig.Strength,
@@ -250,8 +247,7 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		return
 	}
 
-	slog.Debug("signal: strategy evaluated",
-		"hand_id", h.id,
+	h.log.Debug("signal: strategy evaluated",
 		"symbol", sig.Symbol,
 		"direction", sig.Direction,
 		"action", intent.Action,
@@ -381,8 +377,7 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		PositionQty:     handPosQty,
 	}, h.tactician)
 
-	slog.Debug("signal: process trade result",
-		"hand_id", h.id,
+	h.log.Debug("signal: process trade result",
 		"symbol", sig.Symbol,
 		"approved", reply.Approved,
 		"side", reply.Side,
@@ -393,8 +388,7 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 	)
 
 	if !reply.Approved {
-		slog.Warn("signal: trade rejected",
-			"hand_id", h.id,
+		h.log.Warn("signal: trade rejected",
 			"symbol", sig.Symbol,
 			"action", intent.Action,
 			"reason", reply.Reason,
@@ -404,8 +398,7 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		activeCount := h.pos.ActiveCount()
 		h.mu.RUnlock()
 		if activeCount == 0 && reply.Reason == "tactics: zero quantity after sizing" {
-			slog.Warn("hand: no open positions and cannot size entry — auto-stopping",
-				"hand_id", h.id,
+			h.log.Warn("hand: no open positions and cannot size entry — auto-stopping",
 				"symbol", sig.Symbol,
 				"reason", reply.Reason,
 			)
@@ -428,8 +421,7 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		entryPrice := h.helmRuntime.lastKnownPrice(sig.Symbol)
 		if entryPrice.IsPositive() {
 			reply.StopLoss = computeDefaultSL(reply.Side, entryPrice, sig.ATR)
-			slog.Info("hand: default SL injected",
-				"hand_id", h.id,
+			h.log.Info("hand: default SL injected",
 				"symbol", sig.Symbol,
 				"side", reply.Side,
 				"sl", reply.StopLoss,
@@ -501,8 +493,8 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 	// Close the poslog leg without placing an exchange order — the tiny remainder
 	// stays in the helm-level portfolio (not the hand's concern).
 	if isExitOrder && !isFutures && orderQty.IsZero() {
-		slog.Info("order: exit qty rounded to zero — dust exit (no exchange order placed)",
-			"hand_id", h.id, "symbol", sig.Symbol, "original_qty", reply.Qty)
+		h.log.Info("order: exit qty rounded to zero — dust exit (no exchange order placed)",
+			"symbol", sig.Symbol, "original_qty", reply.Qty)
 		h.emitEvent(natsapi.HelmEvent{
 			Code:   CodeOrderDustExit,
 			Symbol: sig.Symbol,
@@ -632,13 +624,13 @@ func (h *Hand) runPlaceREST(ctx context.Context, pp *pendingPlace) {
 			cancelCtx, cancelFn := context.WithTimeout(ctx, 5*time.Second)
 			for _, id := range bracketIDs {
 				if err := h.helmRuntime.Exchange.CancelOrder(cancelCtx, h.helmRuntime.Creds, id); err != nil {
-					slog.Warn("hand: pre-exit bracket cancel",
-						"hand_id", h.id, "symbol", pp.sig.Symbol, "order_id", id, "err", err)
+					h.log.Warn("hand: pre-exit bracket cancel",
+						"symbol", pp.sig.Symbol, "order_id", id, "err", err)
 				}
 			}
 			cancelFn()
-			slog.Info("hand: pre-exit bracket cancelled",
-				"hand_id", h.id, "symbol", pp.sig.Symbol, "cancelled", bracketIDs)
+			h.log.Info("hand: pre-exit bracket cancelled",
+				"symbol", pp.sig.Symbol, "cancelled", bracketIDs)
 		}
 
 		// Always check free balance before placing a spot sell exit, regardless of
@@ -699,8 +691,8 @@ func (h *Hand) runPlaceREST(ctx context.Context, pp *pendingPlace) {
 						if pp.ocoFillSide == "" {
 							pp.ocoFillSide = "sell"
 						}
-						slog.Info("hand: OCO fill recovered from exchange (balance=0 after cancel)",
-							"hand_id", h.id, "symbol", pp.sig.Symbol,
+						h.log.Info("hand: OCO fill recovered from exchange (balance=0 after cancel)",
+							"symbol", pp.sig.Symbol,
 							"order_id", id, "price", r.FilledAvg, "qty", r.FilledQty)
 						break
 					}
@@ -709,8 +701,8 @@ func (h *Hand) runPlaceREST(ctx context.Context, pp *pendingPlace) {
 						// eventually consistent. Use poslog qty so PlaceOrder can
 						// proceed — OKX will have freed the balance by the time the
 						// REST call lands (~50-200ms network round-trip).
-						slog.Info("hand: OCO cancel confirmed — OKX balance lag; using poslog qty for exit",
-							"hand_id", h.id, "symbol", pp.sig.Symbol,
+						h.log.Info("hand: OCO cancel confirmed — OKX balance lag; using poslog qty for exit",
+							"symbol", pp.sig.Symbol,
 							"order_id", id, "poslog_qty", pp.orderQty)
 						freeQty = pp.orderQty
 						break
@@ -719,8 +711,8 @@ func (h *Hand) runPlaceREST(ctx context.Context, pp *pendingPlace) {
 				if freeQty.IsZero() {
 					// Balance still zero and no "cancelled" OCO found to explain it.
 					// Position is genuinely gone (external close, manual sell, etc.).
-					slog.Warn("hand: pre-exit balance check — base asset gone, skipping PlaceOrder",
-						"hand_id", h.id, "symbol", pp.sig.Symbol, "poslog_qty", pp.orderQty)
+					h.log.Warn("hand: pre-exit balance check — base asset gone, skipping PlaceOrder",
+						"symbol", pp.sig.Symbol, "poslog_qty", pp.orderQty)
 					pp.positionGoneAtExchange = true
 					pp.cancelledBracketIDs = bracketIDs
 					return
@@ -735,8 +727,8 @@ func (h *Hand) runPlaceREST(ctx context.Context, pp *pendingPlace) {
 				pp.orderReq.Qty = useQty
 				pp.orderQty = useQty
 			}
-			slog.Info("hand: pre-exit balance confirmed",
-				"hand_id", h.id, "symbol", pp.sig.Symbol, "exit_qty", pp.orderQty, "free_balance", freeQty)
+			h.log.Info("hand: pre-exit balance confirmed",
+				"symbol", pp.sig.Symbol, "exit_qty", pp.orderQty, "free_balance", freeQty)
 		}
 	}
 
@@ -746,11 +738,11 @@ func (h *Hand) runPlaceREST(ctx context.Context, pp *pendingPlace) {
 	if err != nil && pp.isExitOrder {
 		classifier, hasClassifier := h.helmRuntime.Exchange.(exchange.ErrorClassifier)
 		if hasClassifier && classifier.ClassifyError(err) == exchange.ErrClassClockSkew {
-			slog.Warn("hand: clock skew on exit PlaceOrder — resyncing and retrying once",
-				"hand_id", h.id, "symbol", pp.sig.Symbol, "err", err)
+			h.log.Warn("hand: clock skew on exit PlaceOrder — resyncing and retrying once",
+				"symbol", pp.sig.Symbol, "err", err)
 			if ts, ok := h.helmRuntime.Exchange.(exchange.TimeSyncer); ok {
 				if syncErr := ts.SyncTime(ctx); syncErr != nil {
-					slog.Warn("hand: SyncTime failed during clock-skew recovery", "err", syncErr)
+					h.log.Warn("hand: SyncTime failed during clock-skew recovery", "err", syncErr)
 				}
 			}
 			result, err = h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, pp.orderReq)
@@ -802,8 +794,8 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 				if len(pp.cancelledBracketIDs) > 0 {
 					bracketID = pp.cancelledBracketIDs[0]
 				}
-				slog.Info("order: OCO fill recovered — applying real fill",
-					"hand_id", h.id, "symbol", sig.Symbol,
+				h.log.Info("order: OCO fill recovered — applying real fill",
+					"symbol", sig.Symbol,
 					"order_id", bracketID, "price", pp.ocoFillPrice, "qty", pp.ocoFillQty)
 				// Guard seenFills so a late WS delivery of the same order ID doesn't double-apply.
 				if bracketID != "" {
@@ -819,8 +811,8 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 					pp.ocoFillQty, pp.ocoFillPrice, decimal.Zero, "bracket_recovered")
 			} else {
 				// Fill price not recoverable — fall back to dust exit at last known price.
-				slog.Warn("order: exit failed — base asset gone (OCO likely triggered) — dust exit",
-					"hand_id", h.id, "symbol", sig.Symbol, "qty", orderQty)
+				h.log.Warn("order: exit failed — base asset gone (OCO likely triggered) — dust exit",
+					"symbol", sig.Symbol, "qty", orderQty)
 				h.emitEvent(natsapi.HelmEvent{
 					Code:   CodeOrderDustExit,
 					Symbol: sig.Symbol,
@@ -845,8 +837,7 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 		h.health.LastError = err.Error()
 		h.health.Status = HealthError
 		h.mu.Unlock()
-		slog.Error("order: placement failed",
-			"hand_id", h.id,
+		h.log.Error("order: placement failed",
 			"symbol", sig.Symbol,
 			"side", reply.Side,
 			"qty", orderQty,
@@ -901,8 +892,8 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 		// infinite retry loop where checkExits keeps firing for a tiny position
 		// that can never be sold.
 		if isLotSizeError(err) && isExitOrder && !isFutures {
-			slog.Warn("order: exit qty below exchange minimum — dust exit (poslog closed without sell)",
-				"hand_id", h.id, "symbol", sig.Symbol, "qty", orderQty, "err", err)
+			h.log.Warn("order: exit qty below exchange minimum — dust exit (poslog closed without sell)",
+				"symbol", sig.Symbol, "qty", orderQty, "err", err)
 			h.emitEvent(natsapi.HelmEvent{
 				Code:   CodeOrderDustExit,
 				Symbol: sig.Symbol,
@@ -963,8 +954,7 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 
 	placedLatency := time.Since(signalAt).Truncate(time.Millisecond)
 	placedReason := fmt.Sprintf("status=%s type=%s latency=%s", result.Status, orderType, placedLatency)
-	slog.Info("order: placed",
-		"hand_id", h.id,
+	h.log.Info("order: placed",
 		"symbol", sig.Symbol,
 		"side", reply.Side,
 		"qty", orderedQty,

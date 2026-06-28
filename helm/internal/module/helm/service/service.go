@@ -39,15 +39,15 @@ type CredentialFetcher interface {
 }
 
 // HandLifecycle is the port for cascading start/stop/kill to hands.
-// Implemented by hand/service.Service.
+// Implemented by hand/service.Service. Every cascade op takes the helmID so the
+// hand service can resolve the owning HelmRuntime via the registry.
+//
+// Note: runtime teardown (RuntimeSpawner.Teardown) already stops and deregisters
+// every hand it owns, so there is no separate purge step here.
 type HandLifecycle interface {
-	StopBots(ids []string)
-	StartBots(ids []string)
-	KillBots(ids []string)
-	// ReleaseBots stops hands without flattening positions (positions become orphaned).
-	ReleaseBots(ids []string)
-	// PurgeBots removes hands from the in-memory map after their helm is deleted.
-	PurgeBots(ids []string)
+	StopBots(helmID uuid.UUID, ids []string)
+	StartBots(helmID uuid.UUID, ids []string)
+	KillBots(helmID uuid.UUID, ids []string)
 	// DeleteBotsByHelm hard-deletes all Hand rows for a helm from the DB.
 	// Called during helm teardown so broker connection delete is a clean sweep.
 	DeleteBotsByHelm(helmID uuid.UUID) error

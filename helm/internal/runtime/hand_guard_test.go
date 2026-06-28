@@ -51,7 +51,7 @@ func addGuardHand(
 	h.Symbol = symbol
 	h.StrategyName = "signal_follower"
 	h.EnableEventSink()
-	rt.AddHand(h)
+	rt.AddHand(h, &domain.Hand{ID: h.ID(), HelmID: rt.HelmID, Symbols: domain.StringSlice{h.Symbol}})
 	return h
 }
 

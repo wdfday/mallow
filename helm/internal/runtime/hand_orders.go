@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"strings"
 	"time"
 
@@ -65,7 +64,7 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 	for _, p := range polled {
 		o := p.order
 		if p.err != nil {
-			slog.Warn("hand: poll order failed", "order_id", o.ID, "err", p.err)
+			h.log.Warn("hand: poll order failed", "order_id", o.ID, "err", p.err)
 			continue
 		}
 		result := p.result
@@ -161,9 +160,9 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 				remaining := o.Qty.Sub(result.FilledQty)
 				if remaining.IsPositive() && remaining.Div(o.Qty).LessThan(decimal.NewFromFloat(0.02)) {
 					if err := h.helmRuntime.Exchange.CancelOrder(ctx, h.helmRuntime.Creds, o.ID); err != nil {
-						slog.Warn("hand: cancel partial remainder failed", "order_id", o.ID, "err", err)
+						h.log.Warn("hand: cancel partial remainder failed", "order_id", o.ID, "err", err)
 					} else {
-						slog.Info("hand: cancelled dust remainder on partial fill",
+						h.log.Info("hand: cancelled dust remainder on partial fill",
 							"order_id", o.ID, "filled", result.FilledQty, "original", o.Qty)
 						h.helmRuntime.EmitEvent(natsapi.HelmEvent{
 							HandID:  h.id.String(),
@@ -235,8 +234,7 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 			}
 			// Terminal: remove from routing map so cancelled orders don't accumulate.
 			h.helmRuntime.RemoveOrderTracking(o.ID)
-			slog.Info("order: "+result.Status,
-				"hand_id", h.id,
+			h.log.Info("order: "+result.Status,
 				"symbol", result.Symbol,
 				"order_id", o.ID,
 				"side", result.Side,
@@ -316,7 +314,7 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 	h.mu.RUnlock()
 
 	if cancelErr := h.helmRuntime.Exchange.CancelOrder(ctx, h.helmRuntime.Creds, o.ID); cancelErr != nil {
-		slog.Warn("hand: limit timeout cancel failed", "order_id", o.ID, "err", cancelErr)
+		h.log.Warn("hand: limit timeout cancel failed", "order_id", o.ID, "err", cancelErr)
 		return
 	}
 
@@ -355,7 +353,7 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 	origPhase := h.pos.LegPhase(origPosID)
 	h.mu.RUnlock()
 	if origPhase == position.PhaseIdle {
-		slog.Info("hand: limit timeout partial fill fully closed position — skipping cancel event and fallback",
+		h.log.Info("hand: limit timeout partial fill fully closed position — skipping cancel event and fallback",
 			"order_id", o.ID, "filled", alreadyFilledQty)
 		return
 	}
@@ -381,7 +379,7 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 	}
 
 	remainingQty := o.Qty.Sub(alreadyFilledQty)
-	slog.Info("hand: limit order timed out", "order_id", o.ID, "age", age,
+	h.log.Info("hand: limit order timed out", "order_id", o.ID, "age", age,
 		"filled", alreadyFilledQty, "remaining", remainingQty, "fallback", h.cfg.limitFallback)
 
 	h.helmRuntime.EmitEvent(natsapi.HelmEvent{
@@ -402,10 +400,10 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 			Qty:    remainingQty,
 		})
 		if err != nil {
-			slog.Error("hand: limit fallback market order failed", "order_id", o.ID, "err", err)
+			h.log.Error("hand: limit fallback market order failed", "order_id", o.ID, "err", err)
 			return
 		}
-		slog.Info("hand: limit fallback market placed", "new_order_id", result.ID, "qty", remainingQty)
+		h.log.Info("hand: limit fallback market placed", "new_order_id", result.ID, "qty", remainingQty)
 		h.helmRuntime.EmitEvent(natsapi.HelmEvent{
 			HandID:  h.id.String(),
 			Code:    CodeOrderLimitFallback,
@@ -508,8 +506,8 @@ func (h *Hand) recoverAmbiguousPlace(ctx context.Context, symbol, clid string, p
 		if err != nil || res == nil {
 			continue
 		}
-		slog.Warn("order: ambiguous placement recovered via clid — order exists on exchange",
-			"hand_id", h.id, "symbol", symbol, "client_order_id", clid,
+		h.log.Warn("order: ambiguous placement recovered via clid — order exists on exchange",
+			"symbol", symbol, "client_order_id", clid,
 			"order_id", res.ID, "status", res.Status, "attempt", attempt+1, "place_err", placeErr,
 		)
 		return res

@@ -1,7 +1,6 @@
 package handler
 
 import (
-	"fmt"
 	"net/http"
 	"strconv"
 	"time"
@@ -32,45 +31,42 @@ func New(handMgr HandService, helmSvc HelmService, reg RuntimeRegistry, evLog ev
 	return &Handler{handMgr: handMgr, helmSvc: helmSvc, reg: reg, eventLog: evLog, analytics: analytics}
 }
 
-func (h *Handler) resolveHelmID(userID uuid.UUID, accountID, helmID uuid.UUID) (uuid.UUID, error) {
-	if accountID != uuid.Nil {
-		helm, err := h.helmSvc.GetByAccount(accountID)
-		if err != nil {
-			return uuid.Nil, fmt.Errorf("helm not found")
-		}
-		if helm.UserID != userID {
-			return uuid.Nil, fmt.Errorf("helm not found")
-		}
-		return helm.ID, nil
-	}
-	if helmID == uuid.Nil {
-		return uuid.Nil, fmt.Errorf("account_id or helm_id is required")
+// ownedHelm parses :helmId from the path and verifies the caller owns it.
+// Used by collection routes (create, list).
+func (h *Handler) ownedHelm(c *gin.Context, userID uuid.UUID) (uuid.UUID, bool) {
+	helmID, err := uuid.Parse(c.Param("helmId"))
+	if err != nil {
+		shared.RespondWithError(c, http.StatusNotFound, "not found")
+		return uuid.Nil, false
 	}
 	if err := h.helmSvc.CheckOwner(helmID, userID); err != nil {
-		return uuid.Nil, fmt.Errorf("helm not found")
+		shared.RespondWithError(c, http.StatusNotFound, "not found")
+		return uuid.Nil, false
 	}
-	return helmID, nil
+	return helmID, true
 }
 
-// checkHandOwner verifies that the hand's helm belongs to userID.
-// Works for both active (in-memory) and terminal (DB-only) hands.
-func (h *Handler) checkHandOwner(handIDStr string, userID uuid.UUID) (uuid.UUID, uuid.UUID, error) {
-	handID, err := uuid.Parse(handIDStr)
+// ownedHand parses :helmId + :id from the path and verifies the caller owns the helm.
+// Ownership is established by the helm alone — the hand is operated on through the
+// helm's runtime, so a hand belonging to another helm simply won't be found there.
+func (h *Handler) ownedHand(c *gin.Context, userID uuid.UUID) (handID, helmID uuid.UUID, ok bool) {
+	helmID, ok = h.ownedHelm(c, userID)
+	if !ok {
+		return uuid.Nil, uuid.Nil, false
+	}
+	handID, err := uuid.Parse(c.Param("id"))
 	if err != nil {
-		return uuid.Nil, uuid.Nil, fmt.Errorf("invalid id")
+		shared.RespondWithError(c, http.StatusNotFound, "not found")
+		return uuid.Nil, uuid.Nil, false
 	}
-	summary, err := h.handMgr.GetSummary(handID)
-	if err != nil {
-		return uuid.Nil, uuid.Nil, err
-	}
-	if err := h.helmSvc.CheckOwner(summary.HelmID, userID); err != nil {
-		return uuid.Nil, uuid.Nil, fmt.Errorf("not found")
-	}
-	return handID, summary.HelmID, nil
+	return handID, helmID, true
 }
 
 func (h *Handler) Register(rg *gin.RouterGroup) {
-	b := rg.Group("/hands")
+	// Hands are always addressed through their owning helm: /hands/:helmId/...
+	// The client must supply both helmId and the hand id; ownership is checked on
+	// helmId and the hand is resolved via that helm's runtime.
+	b := rg.Group("/hands/:helmId")
 	{
 		b.POST("", h.create)
 		b.GET("", h.list)
@@ -86,7 +82,6 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 		b.POST("/:id/release", h.release)
 		b.POST("/:id/allocate-capital", h.allocateCapital)
 	}
-
 }
 
 // create godoc
@@ -116,22 +111,12 @@ func (h *Handler) create(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	helmID, err := h.resolveHelmID(userID, req.AccountID, req.HelmID)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
+	helmID, ok := h.ownedHelm(c, userID)
+	if !ok {
 		return
 	}
 	req.HelmID = helmID
 	cfg := req.ToDomain()
-	helm, err := h.helmSvc.Get(cfg.HelmID)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "helm not found")
-		return
-	}
-	if helm.UserID != userID {
-		shared.RespondWithError(c, http.StatusNotFound, "helm not found")
-		return
-	}
 	rt, err := h.reg.Get(helmID)
 	if err != nil {
 		shared.RespondWithError(c, http.StatusBadRequest, "helm runtime not available")
@@ -151,7 +136,7 @@ func (h *Handler) create(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	shared.RespondWithSuccess(c, http.StatusCreated, "Hand created successfully", instance.Summary())
+	shared.RespondWithSuccess(c, http.StatusCreated, "Hand created successfully", instance)
 }
 
 // list godoc
@@ -166,73 +151,28 @@ func (h *Handler) create(c *gin.Context) {
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 404 {object} shared.ErrorResponse
 // @Failure 500 {object} shared.ErrorResponse
-// @Router /api/v1/hands [get]
+// @Router /api/v1/hands/{helmId} [get]
 func (h *Handler) list(c *gin.Context) {
 	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
+	helmID, ok := h.ownedHelm(c, userID)
+	if !ok {
+		return
+	}
 	// ?live=true → only return hands currently wired into a HelmRuntime.
 	// Terminal (killed/released) hands are excluded; the client caches them locally.
-	liveOnly := c.Query("live") == "true"
-
-	if helmStr := c.Query("helm_id"); helmStr != "" {
-		helmID, err := uuid.Parse(helmStr)
-		if err != nil {
-			shared.RespondWithError(c, http.StatusBadRequest, "invalid helm_id")
-			return
-		}
-		if err := h.helmSvc.CheckOwner(helmID, userID); err != nil {
-			shared.RespondWithError(c, http.StatusNotFound, "helm not found")
-			return
-		}
-		var result []handdomain.HandSummary
-		if liveOnly {
-			result = h.handMgr.ListByHelmLive(helmID)
-		} else {
-			result = h.handMgr.ListByHelm(helmID)
-		}
-		shared.RespondWithSuccess(c, http.StatusOK, "Hands retrieved successfully", result)
-		return
+	var result []handdomain.HandSummary
+	if c.Query("live") == "true" {
+		result = h.handMgr.ListByHelmLive(helmID)
+	} else {
+		result = h.handMgr.ListByHelm(helmID)
 	}
-	if accountStr := c.Query("account_id"); accountStr != "" {
-		accountID, err := uuid.Parse(accountStr)
-		if err != nil {
-			shared.RespondWithError(c, http.StatusBadRequest, "invalid account_id")
-			return
-		}
-		helm, err := h.helmSvc.GetByAccount(accountID)
-		if err != nil || helm.UserID != userID {
-			shared.RespondWithError(c, http.StatusNotFound, "helm not found")
-			return
-		}
-		var result []handdomain.HandSummary
-		if liveOnly {
-			result = h.handMgr.ListByHelmLive(helm.ID)
-		} else {
-			result = h.handMgr.ListByHelm(helm.ID)
-		}
-		shared.RespondWithSuccess(c, http.StatusOK, "Hands retrieved successfully", result)
-		return
+	if result == nil {
+		result = []handdomain.HandSummary{}
 	}
-	// Without helm_id/account_id filter, list all hands the user can access.
-	helms, err := h.helmSvc.ListByUser(userID)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusInternalServerError, err.Error())
-		return
-	}
-	var hands []handdomain.HandSummary
-	for _, o := range helms {
-		if liveOnly {
-			hands = append(hands, h.handMgr.ListByHelmLive(o.ID)...)
-		} else {
-			hands = append(hands, h.handMgr.ListByHelm(o.ID)...)
-		}
-	}
-	if hands == nil {
-		hands = []handdomain.HandSummary{}
-	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Hands retrieved successfully", hands)
+	shared.RespondWithSuccess(c, http.StatusOK, "Hands retrieved successfully", result)
 }
 
 // get godoc
@@ -240,27 +180,23 @@ func (h *Handler) list(c *gin.Context) {
 // @Tags hands
 // @Security BearerAuth
 // @Produce json
+// @Param helmId path string true "Helm ID"
 // @Param id path string true "Hand ID"
 // @Success 200 {object} shared.SuccessResponse[handdomain.HandSummary]
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 404 {object} shared.ErrorResponse
-// @Router /api/v1/hands/{id} [get]
+// @Router /api/v1/hands/{helmId}/{id} [get]
 func (h *Handler) get(c *gin.Context) {
 	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
-	handID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "not found")
+	handID, helmID, ok := h.ownedHand(c, userID)
+	if !ok {
 		return
 	}
-	summary, err := h.handMgr.GetSummary(handID)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "not found")
-		return
-	}
-	if err := h.helmSvc.CheckOwner(summary.HelmID, userID); err != nil {
+	summary, err := h.handMgr.Get(handID)
+	if err != nil || summary.HelmID != helmID {
 		shared.RespondWithError(c, http.StatusNotFound, "not found")
 		return
 	}
@@ -273,21 +209,21 @@ func (h *Handler) get(c *gin.Context) {
 // @Security BearerAuth
 // @Accept json
 // @Produce json
+// @Param helmId path string true "Helm ID"
 // @Param id path string true "Hand ID"
 // @Param request body dto.UpdateHandReq true "Hand update request"
 // @Success 200 {object} shared.SuccessResponse[handdomain.HandSummary]
 // @Failure 400 {object} shared.ErrorResponse
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 404 {object} shared.ErrorResponse
-// @Router /api/v1/hands/{id} [put]
+// @Router /api/v1/hands/{helmId}/{id} [put]
 func (h *Handler) update(c *gin.Context) {
 	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
-	id, _, err := h.checkHandOwner(c.Param("id"), userID)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "not found")
+	id, helmID, ok := h.ownedHand(c, userID)
+	if !ok {
 		return
 	}
 
@@ -297,39 +233,44 @@ func (h *Handler) update(c *gin.Context) {
 		return
 	}
 
+	// Confirm the hand belongs to the helm in the path before mutating.
+	if cur, err := h.handMgr.Get(id); err != nil || cur.HelmID != helmID {
+		shared.RespondWithError(c, http.StatusNotFound, "not found")
+		return
+	}
+
 	patch := req.ToDomain()
 
 	if err := h.handMgr.Update(id, patch); err != nil {
 		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	bi, _ := h.handMgr.Get(id)
-	shared.RespondWithSuccess(c, http.StatusOK, "Hand updated successfully", bi.Summary())
+	summary, _ := h.handMgr.Get(id)
+	shared.RespondWithSuccess(c, http.StatusOK, "Hand updated successfully", summary)
 }
 
-// delete godoc
 // start godoc
 // @Summary Start hand
 // @Tags hands
 // @Security BearerAuth
 // @Produce json
+// @Param helmId path string true "Helm ID"
 // @Param id path string true "Hand ID"
 // @Success 200 {object} shared.SuccessResponse[dto.HandActionResp]
 // @Failure 400 {object} shared.ErrorResponse
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 404 {object} shared.ErrorResponse
-// @Router /api/v1/hands/{id}/start [post]
+// @Router /api/v1/hands/{helmId}/{id}/start [post]
 func (h *Handler) start(c *gin.Context) {
 	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
-	id, _, err := h.checkHandOwner(c.Param("id"), userID)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "not found")
+	id, helmID, ok := h.ownedHand(c, userID)
+	if !ok {
 		return
 	}
-	if err := h.handMgr.Start(id); err != nil {
+	if err := h.handMgr.Start(id, helmID); err != nil {
 		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -341,23 +282,23 @@ func (h *Handler) start(c *gin.Context) {
 // @Tags hands
 // @Security BearerAuth
 // @Produce json
+// @Param helmId path string true "Helm ID"
 // @Param id path string true "Hand ID"
 // @Success 200 {object} shared.SuccessResponse[dto.HandActionResp]
 // @Failure 400 {object} shared.ErrorResponse
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 404 {object} shared.ErrorResponse
-// @Router /api/v1/hands/{id}/stop [post]
+// @Router /api/v1/hands/{helmId}/{id}/stop [post]
 func (h *Handler) stop(c *gin.Context) {
 	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
-	id, _, err := h.checkHandOwner(c.Param("id"), userID)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "not found")
+	id, helmID, ok := h.ownedHand(c, userID)
+	if !ok {
 		return
 	}
-	if err := h.handMgr.Stop(id); err != nil {
+	if err := h.handMgr.Stop(id, helmID); err != nil {
 		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -370,23 +311,23 @@ func (h *Handler) stop(c *gin.Context) {
 // @Tags hands
 // @Security BearerAuth
 // @Produce json
+// @Param helmId path string true "Helm ID"
 // @Param id path string true "Hand ID"
 // @Success 200 {object} shared.SuccessResponse[dto.HandActionResp]
 // @Failure 400 {object} shared.ErrorResponse
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 404 {object} shared.ErrorResponse
-// @Router /api/v1/hands/{id}/kill [post]
+// @Router /api/v1/hands/{helmId}/{id}/kill [post]
 func (h *Handler) kill(c *gin.Context) {
 	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
-	id, _, err := h.checkHandOwner(c.Param("id"), userID)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "not found")
+	id, helmID, ok := h.ownedHand(c, userID)
+	if !ok {
 		return
 	}
-	if err := h.handMgr.Kill(c.Request.Context(), id); err != nil {
+	if err := h.handMgr.Kill(c.Request.Context(), id, helmID); err != nil {
 		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -398,22 +339,22 @@ func (h *Handler) kill(c *gin.Context) {
 // @Description Stop the hand without closing positions. Open legs are marked orphaned in the poslog; the hand will not reclaim them on restart.
 // @Tags hands
 // @Produce json
+// @Param helmId path string true "Helm ID"
 // @Param id path string true "Hand ID"
 // @Success 200 {object} shared.SuccessResponse[dto.HandActionResp]
 // @Failure 400 {object} shared.ErrorResponse
 // @Failure 404 {object} shared.ErrorResponse
-// @Router /api/v1/hands/{id}/release [post]
+// @Router /api/v1/hands/{helmId}/{id}/release [post]
 func (h *Handler) release(c *gin.Context) {
 	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
-	id, _, err := h.checkHandOwner(c.Param("id"), userID)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "not found")
+	id, helmID, ok := h.ownedHand(c, userID)
+	if !ok {
 		return
 	}
-	if err := h.handMgr.Release(c.Request.Context(), id); err != nil {
+	if err := h.handMgr.Release(c.Request.Context(), id, helmID); err != nil {
 		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -433,6 +374,7 @@ func (h *Handler) release(c *gin.Context) {
 // @Tags hands
 // @Security BearerAuth
 // @Produce json
+// @Param helmId path string true "Helm ID"
 // @Param id path string true "Hand ID"
 // @Param limit query int false "Max events to return" default(100)
 // @Param before query string false "Return events before this RFC3339 timestamp (pagination cursor)"
@@ -440,15 +382,14 @@ func (h *Handler) release(c *gin.Context) {
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 404 {object} shared.ErrorResponse
 // @Failure 503 {object} shared.ErrorResponse
-// @Router /api/v1/hands/{id}/activity [get]
+// @Router /api/v1/hands/{helmId}/{id}/activity [get]
 func (h *Handler) activity(c *gin.Context) {
 	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
-	handID, helmID, err := h.checkHandOwner(c.Param("id"), userID)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "not found")
+	handID, helmID, ok := h.ownedHand(c, userID)
+	if !ok {
 		return
 	}
 	if h.eventLog == nil {
@@ -484,32 +425,33 @@ func (h *Handler) activity(c *gin.Context) {
 // @Tags hands
 // @Security BearerAuth
 // @Produce json
+// @Param helmId path string true "Helm ID"
 // @Param id path string true "Hand ID"
 // @Param cursor query int false "Cursor from previous page (0 = start)" default(0)
 // @Param limit query int false "Page size" default(100)
 // @Success 200 {object} shared.SuccessResponse[helmDto.TradesPageResp]
 // @Failure 400 {object} shared.ErrorResponse
 // @Failure 404 {object} shared.ErrorResponse
-// @Router /api/v1/hands/{id}/trades [get]
+// @Router /api/v1/hands/{helmId}/{id}/trades [get]
 // stats returns aggregated KPIs over closed trades for a hand.
 // @Summary Per-hand KPIs
 // @Tags hands
 // @Security BearerAuth
 // @Produce json
+// @Param helmId path string true "Helm ID"
 // @Param id path string true "Hand ID"
 // @Param period query string false "Preset: 24h|7d|30d|mtd|ytd|all"
 // @Param after  query string false "RFC3339 inclusive lower bound"
 // @Param before query string false "RFC3339 exclusive upper bound"
 // @Success 200 {object} shared.SuccessResponse[helmDto.StatsResp]
-// @Router /api/v1/hands/{id}/stats [get]
+// @Router /api/v1/hands/{helmId}/{id}/stats [get]
 func (h *Handler) stats(c *gin.Context) {
 	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
-	id, _, err := h.checkHandOwner(c.Param("id"), userID)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "not found")
+	id, _, ok := h.ownedHand(c, userID)
+	if !ok {
 		return
 	}
 	result, err := h.analytics.ComputeStats(c.Request.Context(), analyticsservice.StatsParams{
@@ -523,23 +465,31 @@ func (h *Handler) stats(c *gin.Context) {
 	shared.RespondWithSuccess(c, http.StatusOK, "Stats retrieved", helmDto.StatsToResp(result.Stats, result.Metadata))
 }
 
+// HandEquityPoint is one sample on a hand's cumulative PnL curve, projected from
+// its closed-trade history (newest trade last).
+type HandEquityPoint struct {
+	TS        time.Time       `json:"ts"`
+	CumPnL    decimal.Decimal `json:"cum_pnl"`
+	CumNetPnL decimal.Decimal `json:"cum_net_pnl"`
+}
+
 // equity returns a running cumulative PnL curve for a hand derived from its trade history.
 // @Summary Per-hand PnL curve (projection from trades)
 // @Tags hands
 // @Security BearerAuth
 // @Produce json
+// @Param helmId path string true "Helm ID"
 // @Param id path string true "Hand ID"
 // @Param period query string false "Preset: 24h|7d|30d|mtd|ytd|all"
 // @Success 200 {object} shared.SuccessResponse[[]HandEquityPoint]
-// @Router /api/v1/hands/{id}/equity [get]
+// @Router /api/v1/hands/{helmId}/{id}/equity [get]
 func (h *Handler) equity(c *gin.Context) {
 	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
-	id, helmID, err := h.checkHandOwner(c.Param("id"), userID)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "not found")
+	id, helmID, ok := h.ownedHand(c, userID)
+	if !ok {
 		return
 	}
 	result, err := h.analytics.ListTrades(c.Request.Context(), analyticsservice.ListTradesParams{
@@ -551,19 +501,14 @@ func (h *Handler) equity(c *gin.Context) {
 		shared.RespondWithError(c, http.StatusInternalServerError, err.Error())
 		return
 	}
-	type point struct {
-		TS        time.Time       `json:"ts"`
-		CumPnL    decimal.Decimal `json:"cum_pnl"`
-		CumNetPnL decimal.Decimal `json:"cum_net_pnl"`
-	}
-	points := make([]point, 0, len(result.Trades))
+	points := make([]HandEquityPoint, 0, len(result.Trades))
 	cumPnL := decimal.Zero
 	cumNet := decimal.Zero
 	for i := len(result.Trades) - 1; i >= 0; i-- {
 		t := result.Trades[i]
 		cumPnL = cumPnL.Add(t.PnL)
 		cumNet = cumNet.Add(t.NetPnL)
-		points = append(points, point{TS: t.ExitAt, CumPnL: cumPnL, CumNetPnL: cumNet})
+		points = append(points, HandEquityPoint{TS: t.ExitAt, CumPnL: cumPnL, CumNetPnL: cumNet})
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Equity retrieved", points)
 }
@@ -605,9 +550,8 @@ func (h *Handler) trades(c *gin.Context) {
 	if !ok {
 		return
 	}
-	id, _, err := h.checkHandOwner(c.Param("id"), userID)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "not found")
+	id, _, ok := h.ownedHand(c, userID)
+	if !ok {
 		return
 	}
 	limit := parseLimitQuery(c, 100, 500)
@@ -648,7 +592,7 @@ func (h *Handler) trades(c *gin.Context) {
 // renderPrometheus (metrics_render.go); this handler is just the HTTP adapter.
 func (h *Handler) Metrics(c *gin.Context) {
 	c.Header("Content-Type", "text/plain; version=0.0.4")
-	c.String(http.StatusOK, renderPrometheus(h.reg, len(h.handMgr.RunningHands())))
+	c.String(http.StatusOK, renderPrometheus(h.reg, h.handMgr.RunningHandCount()))
 }
 
 // allocateCapital godoc
@@ -657,21 +601,21 @@ func (h *Handler) Metrics(c *gin.Context) {
 // @Security BearerAuth
 // @Accept json
 // @Produce json
+// @Param helmId path string true "Helm ID"
 // @Param id path string true "Hand ID"
 // @Param request body dto.AllocateCapitalReq true "Capital allocation request"
 // @Success 200 {object} shared.SuccessResponse[handdomain.HandSummary]
 // @Failure 400 {object} shared.ErrorResponse
 // @Failure 401 {object} shared.ErrorResponse
 // @Failure 422 {object} dto.CapitalOverflow
-// @Router /api/v1/hands/{id}/allocate-capital [post]
+// @Router /api/v1/hands/{helmId}/{id}/allocate-capital [post]
 func (h *Handler) allocateCapital(c *gin.Context) {
 	userID, ok := shared.CallerUserID(c)
 	if !ok {
 		return
 	}
-	id, helmID, err := h.checkHandOwner(c.Param("id"), userID)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, "not found")
+	id, helmID, ok := h.ownedHand(c, userID)
+	if !ok {
 		return
 	}
 
@@ -681,14 +625,14 @@ func (h *Handler) allocateCapital(c *gin.Context) {
 		return
 	}
 
-	bi, err := h.handMgr.Get(id)
-	if err != nil {
-		shared.RespondWithError(c, http.StatusNotFound, err.Error())
+	summary, err := h.handMgr.Get(id)
+	if err != nil || summary.HelmID != helmID {
+		shared.RespondWithError(c, http.StatusNotFound, "not found")
 		return
 	}
 
 	delta := decimal.NewFromFloat(req.Amount)
-	newCapital := bi.Data.AllocatedCapital.Add(delta)
+	newCapital := summary.AllocatedCapital.Add(delta)
 
 	if !newCapital.IsPositive() {
 		shared.RespondWithError(c, http.StatusBadRequest, "new allocated capital must be greater than zero")
@@ -707,13 +651,12 @@ func (h *Handler) allocateCapital(c *gin.Context) {
 		return
 	}
 
-	_, err = h.handMgr.AllocateCapital(id, delta)
-	if err != nil {
+	if _, err = h.handMgr.AllocateCapital(id, helmID, delta); err != nil {
 		shared.RespondWithError(c, http.StatusBadRequest, err.Error())
 		return
 	}
 
 	// Fetch updated details
-	bi, _ = h.handMgr.Get(id)
-	shared.RespondWithSuccess(c, http.StatusOK, "Capital allocated successfully", bi.Summary())
+	summary, _ = h.handMgr.Get(id)
+	shared.RespondWithSuccess(c, http.StatusOK, "Capital allocated successfully", summary)
 }

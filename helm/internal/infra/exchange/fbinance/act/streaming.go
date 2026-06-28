@@ -36,11 +36,12 @@ func (c *Client) StreamOrders(
 	creds exchange.Credentials,
 	onLifecycle func(exchange.OrderLifecycleEvent),
 	onFill func(exchange.WsFillEvent),
-	_ func(exchange.BalanceEvent), // spot-only; not pushed on futures ORDER_TRADE_UPDATE
+	_ func(exchange.BalanceEvent), // not pushed on futures ORDER_TRADE_UPDATE
 	onPosition func(exchange.PositionEvent),
 	onRisk func(exchange.RiskEvent),
+	onCredentialError func(string),
 ) error {
-	go c.streamFuturesOrders(ctx, c.newFut(creds), onLifecycle, onFill, onPosition, onRisk)
+	go c.streamFuturesOrders(ctx, c.newFut(creds), onLifecycle, onFill, onPosition, onRisk, onCredentialError)
 	slog.Info("fbinance: futures order streaming started")
 	return nil
 }
@@ -52,6 +53,7 @@ func (c *Client) streamFuturesOrders(
 	onFill func(exchange.WsFillEvent),
 	onPosition func(exchange.PositionEvent),
 	onRisk func(exchange.RiskEvent),
+	onCredentialError func(string),
 ) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -71,6 +73,13 @@ func (c *Client) streamFuturesOrders(
 		}
 		if time.Since(start) > 30*time.Second {
 			attempt = 0
+		}
+		if isPermanentStreamError(err) {
+			slog.Error("fbinance: permanent stream error — stopping reconnect loop", "err", err)
+			if onCredentialError != nil {
+				onCredentialError(fmt.Errorf("fbinance WS stream: %w", err).Error())
+			}
+			return
 		}
 		wait := bo.Next(attempt)
 		attempt++
@@ -96,6 +105,7 @@ func (c *Client) streamFuturesOrdersOnce(
 		return fmt.Errorf("start futures user stream: %w", err)
 	}
 
+	var wsErr error
 	wsMu.Lock()
 	futures.UseDemo = c.paper
 	doneC, stopC, err := futures.WsUserDataServe(listenKey, func(event *futures.WsUserDataEvent) {
@@ -209,6 +219,7 @@ func (c *Client) streamFuturesOrdersOnce(
 		}
 	}, func(err error) {
 		slog.Warn("fbinance: futures ws error", "err", err)
+		wsErr = err
 	})
 	futures.UseDemo = false
 	wsMu.Unlock()
@@ -229,6 +240,9 @@ func (c *Client) streamFuturesOrdersOnce(
 				slog.Warn("fbinance: futures listen key keep-alive failed", "err", err)
 			}
 		case <-doneC:
+			if wsErr != nil {
+				return fmt.Errorf("futures user stream closed: %w", wsErr)
+			}
 			return fmt.Errorf("futures user stream closed")
 		}
 	}

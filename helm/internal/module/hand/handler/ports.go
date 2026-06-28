@@ -20,21 +20,22 @@ type HelmService interface {
 }
 
 // HandService is the full hand management interface used by this handler.
+// Every lifecycle operation takes both handID and helmID so the service can
+// look up the owning HelmRuntime via the registry — the runtime owns hand state.
 type HandService interface {
-	Get(id uuid.UUID) (*runtime.HandRef, error)
-	GetSummary(id uuid.UUID) (*domain.HandSummary, error)
+	Get(id uuid.UUID) (domain.HandSummary, error)
 	List() []domain.HandSummary
 	ListLive() []domain.HandSummary
 	ListByHelm(helmID uuid.UUID) []domain.HandSummary
 	ListByHelmLive(helmID uuid.UUID) []domain.HandSummary
-	Create(cfg domain.HandConfig) (*runtime.HandRef, error)
+	Create(cfg domain.HandConfig) (domain.HandSummary, error)
 	Update(id uuid.UUID, patch domain.HandConfig) error
-	Start(id uuid.UUID) error
-	Stop(id uuid.UUID) error
-	Kill(ctx context.Context, id uuid.UUID) error
-	Release(ctx context.Context, id uuid.UUID) error
-	RunningHands() []*runtime.HandRef
-	AllocateCapital(id uuid.UUID, delta decimal.Decimal) (decimal.Decimal, error)
+	Start(handID, helmID uuid.UUID) error
+	Stop(handID, helmID uuid.UUID) error
+	Kill(ctx context.Context, handID, helmID uuid.UUID) error
+	Release(ctx context.Context, handID, helmID uuid.UUID) error
+	RunningHandCount() int
+	AllocateCapital(handID, helmID uuid.UUID, delta decimal.Decimal) (decimal.Decimal, error)
 }
 
 // RuntimeRegistry is the subset of runtime.Registry used by hand handlers.

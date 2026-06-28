@@ -4,20 +4,17 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/google/uuid"
-	"github.com/nats-io/nats.go"
-	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/poslog"
 	helmdomain "mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/runtime/perf"
-	"mallow/helm/internal/safe"
+
+	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
 )
 
 // ExchangeFactory creates per-account exchange adapters from an ExchangeConfig.
@@ -71,6 +68,9 @@ type Registry struct {
 	dispatcher *SignalDispatcher // wired via SetDispatcher after startup; nil before
 	metrics    registryMetrics   // routing miss counters, exported via DispatchStats
 
+	// herald is shared across all HelmRuntimes for hand register/deregister.
+	herald HeraldRegistrar
+
 	// onCredentialError is set once at startup via SetCredentialErrorHook.
 	// Propagated to each runtime at Spawn; nil = no-op.
 	onCredentialError func(accountID uuid.UUID, reason string)
@@ -83,6 +83,18 @@ func NewRegistry(factory ExchangeFactory) *Registry {
 		market:       newExchangeMarketCache(),
 		exchFactory:  factory,
 	}
+}
+
+// SetHerald injects the herald registrar (infra/herald.Client).
+// Propagated to all already-spawned runtimes so helms hydrated before
+// NATS connects (the normal startup order) still get the client.
+func (r *Registry) SetHerald(h HeraldRegistrar) {
+	r.mu.Lock()
+	r.herald = h
+	for _, rt := range r.helmRuntimes {
+		rt.Herald = h
+	}
+	r.mu.Unlock()
 }
 
 // SetSyncStore injects the persistence port for last-sync timestamps (breaks init cycle).
@@ -177,72 +189,6 @@ func (r *Registry) All() []*HelmRuntime {
 		out = append(out, rt)
 	}
 	return out
-}
-
-// UpdatePrice is the registry-level price handler registered with each market streamer.
-// herald attaches an "exchange:" prefix to symbol names (e.g. "binance:ETHUSDT").
-// UpdatePrice splits on ":" to obtain the exchange name and bare symbol, then writes
-// into the correct per-exchange price map. All HelmRuntimes wired to that exchange
-// share the same map and therefore see the update immediately.
-func (r *Registry) UpdatePrice(heraldSym string, price decimal.Decimal) {
-	if !price.IsPositive() {
-		return
-	}
-	exchangeName, bareSym, ok := strings.Cut(heraldSym, ":")
-	if !ok {
-		// No prefix — treat the whole string as a bare symbol on an unnamed exchange.
-		bareSym = heraldSym
-		exchangeName = ""
-	}
-	r.market.updatePrice(exchangeName, bareSym, price)
-}
-
-// PrewarmFilters fetches symbol filters for (exchange, symbol) pairs owned by
-// active hands. symbolsByExchange must be obtained from the hand service so that
-// only pairs that actually belong to each exchange are fetched — OKX symbols
-// (SOL-USDT) are never sent to Binance and vice-versa.
-//
-// As a side-effect it also syncs each exchange's server time (for exchanges that
-// implement TimeSyncer) so subsequent signed REST requests carry the correct
-// timestamp and avoid -1021 recvWindow errors from server clock drift.
-func (r *Registry) PrewarmFilters(ctx context.Context, symbolsByExchange map[exchange.Exchange][]string) {
-	// ── 1. Sync server time (sequential — one call per exchange) ──────────────
-	for ex := range symbolsByExchange {
-		if ts, ok := ex.(exchange.TimeSyncer); ok {
-			if err := ts.SyncTime(ctx); err != nil {
-				slog.Warn("prewarm: server time sync failed", "exchange", ex.Name(), "err", err)
-			}
-		}
-	}
-
-	// ── 2. Fetch symbol filters concurrently ──────────────────────────────────
-	var wg sync.WaitGroup
-	for ex, symbols := range symbolsByExchange {
-		sip, ok := ex.(exchange.SymbolInfoProvider)
-		if !ok {
-			continue
-		}
-		r.market.filterViewFor(ex.Name())
-		for _, sym := range symbols {
-			wg.Add(1)
-			go func(p exchange.SymbolInfoProvider, exName, s string) {
-				defer safe.Recover()
-				defer wg.Done()
-				f, err := p.GetSymbolFilters(ctx, s)
-				if err != nil {
-					slog.Warn("prewarm: symbol filters fetch failed",
-						"exchange", exName, "symbol", s, "err", err)
-					return
-				}
-				r.market.setFilter(exName, s, f)
-				slog.Info("prewarm: symbol filters ready",
-					"exchange", exName, "symbol", s,
-					"qty_step", f.QtyStep, "price_tick", f.PriceTick,
-					"min_qty", f.MinQty, "min_notional", f.MinNotional)
-			}(sip, ex.Name(), sym)
-		}
-	}
-	wg.Wait()
 }
 
 // ── registryMetrics ───────────────────────────────────────────────────────────

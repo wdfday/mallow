@@ -92,6 +92,7 @@ func (s *raceExchange) StreamOrders(
 	_ func(exchange.BalanceEvent),
 	_ func(exchange.PositionEvent),
 	_ func(exchange.RiskEvent),
+	_ func(string),
 ) error {
 	s.mu.Lock()
 	s.onFill = onFill

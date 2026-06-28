@@ -46,7 +46,7 @@ const (
 // LegState is the state machine for a single position leg (one PositionID).
 //
 // Pyramid mode: one LegState per hand; Qty/EntryPrice accumulate on each add.
-// Non-pyramid:  one LegState per signal; each has its own SL/TP.
+// Non-pyramid:  one LegState per entry; each has its own SL/TP.
 type LegState struct {
 	Phase      Phase
 	PositionID string // = opening order_id; stable across pyramid adds

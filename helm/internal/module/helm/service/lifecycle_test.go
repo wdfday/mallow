@@ -155,18 +155,16 @@ func (m *mockSpawner) RotateCreds(_ uuid.UUID, _ exchange.Credentials) {}
 func (m *mockSpawner) PurgeHelmData(_, _ uuid.UUID)                    {}
 
 type mockBotLifecycle struct {
-	stopped  []string
-	started  []string
-	killed   []string
-	released []string
-	purged   []string
+	stopped []string
+	started []string
+	killed  []string
 }
 
-func (m *mockBotLifecycle) StopBots(ids []string)              { m.stopped = append(m.stopped, ids...) }
-func (m *mockBotLifecycle) StartBots(ids []string)             { m.started = append(m.started, ids...) }
-func (m *mockBotLifecycle) KillBots(ids []string)              { m.killed = append(m.killed, ids...) }
-func (m *mockBotLifecycle) ReleaseBots(ids []string)           { m.released = append(m.released, ids...) }
-func (m *mockBotLifecycle) PurgeBots(ids []string)             { m.purged = append(m.purged, ids...) }
+func (m *mockBotLifecycle) StopBots(_ uuid.UUID, ids []string) { m.stopped = append(m.stopped, ids...) }
+func (m *mockBotLifecycle) StartBots(_ uuid.UUID, ids []string) {
+	m.started = append(m.started, ids...)
+}
+func (m *mockBotLifecycle) KillBots(_ uuid.UUID, ids []string) { m.killed = append(m.killed, ids...) }
 func (m *mockBotLifecycle) DeleteBotsByHelm(_ uuid.UUID) error { return nil }
 
 // ── test helpers ─────────────────────────────────────────────────────────────
@@ -230,12 +228,9 @@ func TestDisable_PersistsDisabledAndKillsBots(t *testing.T) {
 	if got.Status != domain.HelmStatusDisabled {
 		t.Fatalf("expected status 'disabled', got %q", got.Status)
 	}
-	// KillBots (flatten) must be called, not ReleaseBots (orphan).
+	// KillBots (flatten) must be called before Teardown.
 	if len(bots.killed) != 2 {
 		t.Fatalf("expected 2 hands killed, got %d: KillBots must run before Teardown", len(bots.killed))
-	}
-	if len(bots.released) != 0 {
-		t.Fatalf("expected 0 hands released, got %d: Disable should flatten, not orphan", len(bots.released))
 	}
 }
 

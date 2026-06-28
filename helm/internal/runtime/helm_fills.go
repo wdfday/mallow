@@ -17,11 +17,11 @@ import (
 	"mallow/helm/internal/safe"
 )
 
-// StartFillStreaming opens the WS order stream and starts the fill and lifecycle
+// StartStreaming opens the WS order stream and starts the fill and lifecycle
 // drain goroutines. No-op if the exchange does not implement AccountStreamer.
 // appCtx governs drain goroutine lifetime; a separate per-stream context controls
-// the WS connection so it can be replaced on RotateFillStream without stopping drains.
-func (r *HelmRuntime) StartFillStreaming(appCtx context.Context) {
+// the WS connection so it can be replaced on RotateStream without stopping drains.
+func (r *HelmRuntime) StartStreaming(appCtx context.Context) {
 	drainCtx, drainCancel := context.WithCancel(appCtx)
 
 	streamCtx, streamCancel := context.WithCancel(drainCtx)
@@ -43,10 +43,10 @@ func (r *HelmRuntime) StartFillStreaming(appCtx context.Context) {
 	go r.runFillProcessor(drainCtx)
 }
 
-// RotateFillStream replaces credentials and reconnects the WS stream.
+// RotateStream replaces credentials and reconnects the WS stream.
 // Drain goroutines (runLifecycleProcessor, runFillProcessor) keep running on appCtx —
 // only the WS connection itself is torn down and re-opened.
-func (r *HelmRuntime) RotateFillStream(appCtx context.Context, newCreds exchange.Credentials) {
+func (r *HelmRuntime) RotateStream(appCtx context.Context, newCreds exchange.Credentials) {
 	// Cancel current WS stream context.
 	r.fillStreamMu.Lock()
 	if r.fillStreamCancel != nil {
@@ -77,7 +77,7 @@ func (r *HelmRuntime) RotateFillStream(appCtx context.Context, newCreds exchange
 
 // connectStream opens the WS order stream for this runtime's current credentials.
 // Returns false if the exchange does not support streaming or if the call fails.
-// Does NOT start drain goroutines — that is StartFillStreaming's job.
+// Does NOT start drain goroutines — that is StartStreaming's job.
 func (r *HelmRuntime) connectStream(streamCtx context.Context) bool {
 	streamer, ok := r.Exchange.(exchange.AccountStreamer)
 	if !ok {
@@ -306,7 +306,7 @@ func (r *HelmRuntime) applyWsFill(ev exchange.WsFillEvent) {
 	}
 
 	if !ev.Partial {
-		// Full fill is terminal — remove routing info before dispatching.
+		// Fulfill is terminal — remove routing info before dispatching.
 		r.RemoveOrderTracking(routeKey)
 		if routeKey != ev.OrderID {
 			r.RemoveOrderTracking(ev.OrderID) // drop the exchange-id alias too

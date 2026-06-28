@@ -247,7 +247,7 @@ type AccountStreamer interface {
 type FillStreamer interface {
 	// SubscribeFills opens a WebSocket subscription to fill events for the account.
 	// The returned channel is closed when ctx is cancelled.
-	// Callers should NOT call both SubscribeFills and StartFillStreaming on the same
+	// Callers should NOT call both SubscribeFills and StartStreaming on the same
 	// account — that opens two parallel WS connections and produces duplicate events.
 	SubscribeFills(ctx context.Context, creds Credentials) (<-chan FillEvent, error)
 }

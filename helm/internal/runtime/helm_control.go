@@ -10,7 +10,7 @@ import (
 // ---------------------------------------------------------------------------
 
 // Stop cleans up the circuit-breaker ticker and terminates the reset goroutine.
-// Also cancels the fill-drain goroutines started by StartFillStreaming (if any).
+// Also cancels the fill-drain goroutines started by StartStreaming (if any).
 func (r *HelmRuntime) Stop() {
 	if r.resetTicker != nil {
 		r.resetTicker.Stop()

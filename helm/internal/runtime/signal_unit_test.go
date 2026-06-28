@@ -52,7 +52,7 @@ type simExchange struct {
 	placed    []exchange.OrderRequest
 	fillPrice decimal.Decimal            // price returned on every fill; defaults to 50_000
 	placeErr  error                      // if non-nil, PlaceOrder returns this error
-	onFill    func(exchange.WsFillEvent) // registered by StreamOrders; nil until StartFillStreaming is called
+	onFill    func(exchange.WsFillEvent) // registered by StreamOrders; nil until StartStreaming is called
 }
 
 func newSim(fillPrice float64) *simExchange {
@@ -107,7 +107,7 @@ func (s *simExchange) PlaceOrder(_ context.Context, _ exchange.Credentials, req 
 	return result, nil
 }
 
-// StreamOrders implements exchange.AccountStreamer so StartFillStreaming can start
+// StreamOrders implements exchange.AccountStreamer so StartStreaming can start
 // the fill-drain goroutines for this sim runtime.
 func (s *simExchange) StreamOrders(
 	_ context.Context,
@@ -159,7 +159,7 @@ func (s *simExchange) ListPositions(_ context.Context, _ exchange.Credentials) (
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 // buildSimRuntime wires a HelmRuntime backed by simExchange.
-// StartFillStreaming is called so the WS fill-drain goroutines are running —
+// StartStreaming is called so the WS fill-drain goroutines are running —
 // fills are now authoritative via the WS path only (REST ACK refactor).
 func buildSimRuntime(ex exchange.Exchange, capital float64, maxPositions int) *runtime.HelmRuntime {
 	pf := portfolio.New(decimal.NewFromFloat(capital))
@@ -174,7 +174,7 @@ func buildSimRuntime(ex exchange.Exchange, capital float64, maxPositions int) *r
 		"sim", pf, rm, ex, exchange.Credentials{}, nil, time.Now(),
 	)
 	rm.SetUnitCounter(rt.OpenUnitCount)
-	rt.StartFillStreaming(context.Background())
+	rt.StartStreaming(context.Background())
 	return rt
 }
 

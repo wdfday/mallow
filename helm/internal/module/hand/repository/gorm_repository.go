@@ -42,6 +42,20 @@ func (r *GORMHandRepo) AllByHelm(helmID uuid.UUID) []*domain.Hand {
 	return sliceToDomain(models)
 }
 
+// AllByHelms fetches hands for several helms in one query (WHERE helm_id IN).
+func (r *GORMHandRepo) AllByHelms(helmIDs []uuid.UUID) []*domain.Hand {
+	if len(helmIDs) == 0 {
+		return nil
+	}
+	ids := make([]string, len(helmIDs))
+	for i, id := range helmIDs {
+		ids[i] = id.String()
+	}
+	var models []handModel
+	r.db.Order("created_at").Where("helm_id IN ?", ids).Find(&models)
+	return sliceToDomain(models)
+}
+
 func (r *GORMHandRepo) DeleteByHelm(helmID uuid.UUID) error {
 	return r.db.Delete(&handModel{}, "helm_id = ?", helmID.String()).Error
 }

@@ -281,7 +281,7 @@ func doHeraldHeartbeat(ctx context.Context, hc *herald.Client, reg *runtime.Regi
 //  2. ReconcileAll                 — restore hand positions from poslog WAL vs exchange
 //  3. ReconcileAllOrders           — re-track open orders in orderHandMap
 //  4. RecoverGapFills              — apply fills missed in [lastSyncAt/createdAt, now)
-//  5. StartFillStreaming           — start WS fill listener (hands now ready)
+//  5. StartStreaming           — start WS fill listener (hands now ready)
 //  6. StartPollingSync             — periodic REST sync fallback
 //
 // subscribeSignals (step 7) is registered AFTER runOrchestrator in fx.go so NATS
@@ -333,7 +333,7 @@ func runOrchestrator(
 			reg.ReconcileAllOrders(ctx)
 			reg.RecoverGapFills(ctx)
 			reg.RecoverAllBrackets(ctx) // re-place brackets lost in crash window between KindSLUpdated and KindBracketPlaced
-			reg.StartFillStreaming(runCtx)
+			reg.StartStreaming(runCtx)
 			reg.StartPollingSync(runCtx, cfg.Runtime.SyncInterval)
 
 			// Subscribe to herald bar closes (bars.* NATS subject) to keep

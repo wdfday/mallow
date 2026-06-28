@@ -131,7 +131,7 @@ type HelmRuntime struct {
 	// fillStreamCancel cancels the per-runtime WS stream context so RotateCreds
 	// can disconnect and reconnect with new credentials without touching hands.
 	// fillDrainCancel cancels the appCtx used by runFillProcessor / runLifecycleProcessor
-	// (set only when StartFillStreaming starts the drain goroutines).
+	// (set only when StartStreaming starts the drain goroutines).
 	fillStreamMu     sync.Mutex
 	fillStreamCancel context.CancelFunc
 	fillDrainCancel  context.CancelFunc

@@ -92,7 +92,7 @@ func (r *Registry) Spawn(cfg *helmdomain.Helm, exchCfg helmdomain.ExchangeConfig
 	// If the app is already running (SetRuntime was called), start fill streaming immediately
 	// so hot-plugged helms (from accountLinked events) get WS fills right away.
 	if ctx != nil {
-		rt.StartFillStreaming(ctx)
+		rt.StartStreaming(ctx)
 	}
 	return nil
 }
@@ -110,7 +110,7 @@ func (r *Registry) RotateCreds(id uuid.UUID, newCreds exchange.Credentials) {
 		slog.Warn("rotate creds: runtime not found", "helm_id", id)
 		return
 	}
-	rt.RotateFillStream(appCtx, newCreds)
+	rt.RotateStream(appCtx, newCreds)
 }
 
 // Teardown stops and removes the HelmRuntime for the given helm.
@@ -162,10 +162,10 @@ func (r *Registry) PurgeHelmData(helmID, accountID uuid.UUID) {
 	slog.Info("registry: helm JetStream data purged", "helm_id", hid, "account_id", aid)
 }
 
-// StartFillStreaming starts account fill listeners for all runtimes whose exchange
+// StartStreaming starts account fill listeners for all runtimes whose exchange
 // implements AccountStreamer. Called once from the app lifecycle after SetRuntime.
 // Each HelmRuntime owns its own fill streaming goroutines — see helm_fills.go.
-func (r *Registry) StartFillStreaming(ctx context.Context) {
+func (r *Registry) StartStreaming(ctx context.Context) {
 	r.mu.RLock()
 	rts := make([]*HelmRuntime, 0, len(r.helmRuntimes))
 	for _, rt := range r.helmRuntimes {
@@ -174,6 +174,6 @@ func (r *Registry) StartFillStreaming(ctx context.Context) {
 	r.mu.RUnlock()
 
 	for _, rt := range rts {
-		rt.StartFillStreaming(ctx)
+		rt.StartStreaming(ctx)
 	}
 }

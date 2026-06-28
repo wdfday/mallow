@@ -129,7 +129,7 @@ func TestClidRouting_WsFillBeforeRestResponse(t *testing.T) {
 	// Start the WS fill processor + register the onFill callback with the exchange.
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	rt.StartFillStreaming(ctx)
+	rt.StartStreaming(ctx)
 
 	h := addSimHand(rt, symbol, 0.001, 0, 0.3, 1)
 	rt.UpdatePrice(symbol, decimal.NewFromFloat(50_000))

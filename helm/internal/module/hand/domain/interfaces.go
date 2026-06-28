@@ -10,6 +10,8 @@ type HandRepo interface {
 	Get(id uuid.UUID) (*Hand, error)
 	All() []*Hand
 	AllByHelm(helmID uuid.UUID) []*Hand
+	// AllByHelms returns hands across several helms in a single query (WHERE helm_id IN).
+	AllByHelms(helmIDs []uuid.UUID) []*Hand
 	DeleteByHelm(helmID uuid.UUID) error
 	Update(id uuid.UUID, fn func(*Hand) error) error
 }

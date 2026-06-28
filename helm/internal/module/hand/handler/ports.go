@@ -28,6 +28,7 @@ type HandService interface {
 	ListLive() []domain.HandSummary
 	ListByHelm(helmID uuid.UUID) []domain.HandSummary
 	ListByHelmLive(helmID uuid.UUID) []domain.HandSummary
+	ListByHelms(helmIDs []uuid.UUID, live bool) []domain.HandSummary
 	Create(cfg domain.HandConfig) (domain.HandSummary, error)
 	Update(id uuid.UUID, patch domain.HandConfig) error
 	Start(handID, helmID uuid.UUID) error

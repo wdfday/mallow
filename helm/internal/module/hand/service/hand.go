@@ -98,6 +98,46 @@ func (s *Service) ListByHelmLive(orchID uuid.UUID) []domain.HandSummary {
 	return rt.LiveHandSummaries()
 }
 
+// ListByHelms returns hands across several helms in one shot.
+//   - live=false: one DB query (WHERE helm_id IN) + per-hand runtime enrich.
+//   - live=true:  only hands wired into each helm's runtime (in-memory, no DB).
+//
+// Caller is responsible for ownership checks per helm before calling.
+func (s *Service) ListByHelms(helmIDs []uuid.UUID, live bool) []domain.HandSummary {
+	if len(helmIDs) == 0 {
+		return []domain.HandSummary{}
+	}
+	if live {
+		out := make([]domain.HandSummary, 0)
+		for _, id := range helmIDs {
+			if rt, err := s.registry.Get(id); err == nil {
+				out = append(out, rt.LiveHandSummaries()...)
+			}
+		}
+		return out
+	}
+
+	// Full: single batched DB read, then enrich live ones from their runtime.
+	all := s.repo.AllByHelms(helmIDs)
+	out := make([]domain.HandSummary, 0, len(all))
+	rtCache := make(map[uuid.UUID]*runtime.HelmRuntime, len(helmIDs))
+	for _, data := range all {
+		rt, ok := rtCache[data.HelmID]
+		if !ok {
+			rt, _ = s.registry.Get(data.HelmID)
+			rtCache[data.HelmID] = rt
+		}
+		if rt != nil {
+			if h, _, found := rt.GetHandEntry(data.ID.String()); found {
+				out = append(out, runtime.BuildHandSummary(h, data))
+				continue
+			}
+		}
+		out = append(out, data.SummaryFromDB())
+	}
+	return out
+}
+
 func (s *Service) Create(cfg domain.HandConfig) (domain.HandSummary, error) {
 	if cfg.Market == domain.MarketTypeFutures {
 		return domain.HandSummary{}, fmt.Errorf("futures trading is not yet supported")

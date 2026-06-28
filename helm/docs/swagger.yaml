@@ -1554,6 +1554,41 @@ paths:
       tags:
       - accounts
   /api/v1/hands:
+    get:
+      description: |-
+        Returns hands for every helm id in ?helm_ids (CSV) the caller owns,
+        merged into one list. Pass ?live=true for runtime-only hands.
+        Unowned/invalid helm ids are skipped. Avoids client-side N+1.
+      parameters:
+      - description: Comma-separated helm IDs
+        in: query
+        name: helm_ids
+        required: true
+        type: string
+      - description: Only hands live in the runtime (excludes terminal)
+        in: query
+        name: live
+        type: boolean
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_module_hand_domain_HandSummary'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+        "401":
+          description: Unauthorized
+          schema:
+            $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
+      security:
+      - BearerAuth: []
+      summary: List hands across several helms in one request
+      tags:
+      - hands
     post:
       consumes:
       - application/json
@@ -1594,15 +1629,20 @@ paths:
       - hands
   /api/v1/hands/{helmId}:
     get:
+      description: |-
+        Returns every hand of the helm, including terminal (killed/released)
+        hands restored from the DB. Pass ?live=true to return only hands
+        currently wired into the runtime (terminal hands excluded).
       parameters:
-      - description: Filter by helm ID
-        in: query
-        name: helm_id
+      - description: Helm ID
+        in: path
+        name: helmId
+        required: true
         type: string
-      - description: Filter by account ID
+      - description: Only return hands live in the runtime (excludes terminal)
         in: query
-        name: account_id
-        type: string
+        name: live
+        type: boolean
       produces:
       - application/json
       responses:
@@ -1628,7 +1668,7 @@ paths:
             $ref: '#/definitions/mallow_helm_internal_shared.ErrorResponse'
       security:
       - BearerAuth: []
-      summary: List hands
+      summary: List hands for a helm
       tags:
       - hands
   /api/v1/hands/{helmId}/{id}:

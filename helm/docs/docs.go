@@ -117,6 +117,56 @@ const docTemplate = `{
             }
         },
         "/api/v1/hands": {
+            "get": {
+                "security": [
+                    {
+                        "BearerAuth": []
+                    }
+                ],
+                "description": "Returns hands for every helm id in ?helm_ids (CSV) the caller owns,\nmerged into one list. Pass ?live=true for runtime-only hands.\nUnowned/invalid helm ids are skipped. Avoids client-side N+1.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "hands"
+                ],
+                "summary": "List hands across several helms in one request",
+                "parameters": [
+                    {
+                        "type": "string",
+                        "description": "Comma-separated helm IDs",
+                        "name": "helm_ids",
+                        "in": "query",
+                        "required": true
+                    },
+                    {
+                        "type": "boolean",
+                        "description": "Only hands live in the runtime (excludes terminal)",
+                        "name": "live",
+                        "in": "query"
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_module_hand_domain_HandSummary"
+                        }
+                    },
+                    "400": {
+                        "description": "Bad Request",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    },
+                    "401": {
+                        "description": "Unauthorized",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_helm_internal_shared.ErrorResponse"
+                        }
+                    }
+                }
+            },
             "post": {
                 "security": [
                     {
@@ -185,24 +235,26 @@ const docTemplate = `{
                         "BearerAuth": []
                     }
                 ],
+                "description": "Returns every hand of the helm, including terminal (killed/released)\nhands restored from the DB. Pass ?live=true to return only hands\ncurrently wired into the runtime (terminal hands excluded).",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "hands"
                 ],
-                "summary": "List hands",
+                "summary": "List hands for a helm",
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Filter by helm ID",
-                        "name": "helm_id",
-                        "in": "query"
+                        "description": "Helm ID",
+                        "name": "helmId",
+                        "in": "path",
+                        "required": true
                     },
                     {
-                        "type": "string",
-                        "description": "Filter by account ID",
-                        "name": "account_id",
+                        "type": "boolean",
+                        "description": "Only return hands live in the runtime (excludes terminal)",
+                        "name": "live",
                         "in": "query"
                     }
                 ],

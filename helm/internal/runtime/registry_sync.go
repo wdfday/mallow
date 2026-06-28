@@ -51,7 +51,7 @@ func (r *Registry) StartPollingSync(ctx context.Context, interval time.Duration)
 }
 
 // ReconcileAllOrders re-tracks open orders for all runtimes after restart.
-// Call after SpawnAll + StartFillStreaming so the fill processor is ready.
+// Call after SpawnAll + StartStreaming so the fill processor is ready.
 func (r *Registry) ReconcileAllOrders(ctx context.Context) {
 	r.mu.RLock()
 	rts := make([]*HelmRuntime, 0, len(r.helmRuntimes))
@@ -66,7 +66,7 @@ func (r *Registry) ReconcileAllOrders(ctx context.Context) {
 }
 
 // RecoverGapFills applies fills missed during downtime for all runtimes.
-// Call after ReconcileAllOrders but before StartFillStreaming.
+// Call after ReconcileAllOrders but before StartStreaming.
 func (r *Registry) RecoverGapFills(ctx context.Context) {
 	r.mu.RLock()
 	rts := make([]*HelmRuntime, 0, len(r.helmRuntimes))

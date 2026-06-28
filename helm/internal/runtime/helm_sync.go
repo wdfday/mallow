@@ -168,7 +168,7 @@ func (r *HelmRuntime) Sync(ctx context.Context) error {
 
 // ReconcileOrders fetches open orders from the exchange and re-tracks any that are
 // missing from the in-memory orderbook (lost across restarts).
-// Call after SpawnAll + StartFillStreaming so the fill processor is ready.
+// Call after SpawnAll + StartStreaming so the fill processor is ready.
 func (r *HelmRuntime) ReconcileOrders(ctx context.Context) {
 	reconciler, ok := r.Exchange.(exchange.OrderReconciler)
 	if !ok {
@@ -205,7 +205,7 @@ func (r *HelmRuntime) ReconcileOrders(ctx context.Context) {
 // RecoverGapFills fetches filled order history from the exchange covering the window
 // [since, now), where since = LastSyncAt (crash recovery) or CreatedAt (first boot).
 // Applies fills missed during downtime so portfolio state is correct on restart.
-// Call after ReconcileOrders but before StartFillStreaming.
+// Call after ReconcileOrders but before StartStreaming.
 func (r *HelmRuntime) RecoverGapFills(ctx context.Context) {
 	historian, ok := r.Exchange.(exchange.HistoryFetcher)
 	if !ok {

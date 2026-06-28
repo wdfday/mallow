@@ -62,6 +62,22 @@ func (r *stubHandRepo) AllByHelm(helmID uuid.UUID) []*domain.Hand {
 	}
 	return out
 }
+func (r *stubHandRepo) AllByHelms(helmIDs []uuid.UUID) []*domain.Hand {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	want := make(map[uuid.UUID]struct{}, len(helmIDs))
+	for _, id := range helmIDs {
+		want[id] = struct{}{}
+	}
+	var out []*domain.Hand
+	for _, v := range r.rows {
+		if _, ok := want[v.HelmID]; ok {
+			cp := *v
+			out = append(out, &cp)
+		}
+	}
+	return out
+}
 func (r *stubHandRepo) Update(id uuid.UUID, fn func(*domain.Hand) error) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

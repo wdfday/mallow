@@ -19,6 +19,9 @@ type Log interface {
 	Append(ctx context.Context, helmID uuid.UUID, userID uuid.UUID, ev natsapi.HelmEvent)
 	// Query returns events matching the filter, newest first.
 	Query(ctx context.Context, f EventFilter) ([]EventRecord, error)
+	// CountHandEvents returns event counts grouped by code for a single hand.
+	// Used to rebuild a hand's activity counters on restart.
+	CountHandEvents(ctx context.Context, handID uuid.UUID) (map[int]int64, error)
 }
 
 // postgresLog is the production implementation backed by PostgreSQL.
@@ -138,6 +141,29 @@ func (l *postgresLog) Query(ctx context.Context, f EventFilter) ([]EventRecord, 
 			e.Price, _ = decimal.NewFromString(price.String)
 		}
 		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
+// CountHandEvents returns event counts grouped by code for one hand, in a single
+// aggregate query (SELECT code, COUNT(*) ... GROUP BY code).
+func (l *postgresLog) CountHandEvents(ctx context.Context, handID uuid.UUID) (map[int]int64, error) {
+	rows, err := l.db.QueryContext(ctx,
+		"SELECT code, COUNT(*) FROM helm_events WHERE hand_id = $1 GROUP BY code",
+		handID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[int]int64)
+	for rows.Next() {
+		var code int
+		var n int64
+		if err := rows.Scan(&code, &n); err != nil {
+			return nil, err
+		}
+		out[code] = n
 	}
 	return out, rows.Err()
 }

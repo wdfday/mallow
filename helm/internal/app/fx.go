@@ -98,6 +98,7 @@ var Module = fx.Options(
 	fx.Invoke(wirePosLog),
 	fx.Invoke(wireTradeLog),
 	fx.Invoke(wirePnLSummer),
+	fx.Invoke(wireEventCounter),
 
 	// Helm module: wires service deps + hydrates runtimes
 	helmmodule.Module,
@@ -106,6 +107,7 @@ var Module = fx.Options(
 	handmodule.Module,
 
 	// fx.Invoke(syncBrokerAccounts), // one-shot migration: uncomment → restart → comment back
+	// fx.Invoke(backfillTerminalMetrics), // one-shot: recompute FinalMetrics for killed/released hands → run once → comment back
 	fx.Invoke(subscribeHeraldReady),
 	fx.Invoke(startHeartbeatLoop),
 	fx.Invoke(startNATSAPI),
@@ -229,6 +231,12 @@ func wireTradeLog(reg *runtime.Registry, log perf.TradeLog) {
 // RestorePnL uses a single SQL aggregate query instead of draining JetStream.
 func wirePnLSummer(reg *runtime.Registry, log tradelog.Log) {
 	reg.SetPnLSummer(log)
+}
+
+// wireEventCounter injects the postgres event log as the EventCounter so
+// RestoreCounters rebuilds activity counters from helm_events on startup.
+func wireEventCounter(reg *runtime.Registry, log eventlog.Log) {
+	reg.SetEventCounter(log)
 }
 
 func newTradePersister(js nats.JetStreamContext, db *sql.DB) *perflog.TradePersister {

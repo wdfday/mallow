@@ -56,13 +56,14 @@ type Registry struct {
 	exchFactory ExchangeFactory
 
 	// ── Runtime wiring (set via SetRuntime / Set* after startup) ──────────
-	nc        *nats.Conn
-	js        nats.JetStreamContext
-	runCtx    context.Context
-	syncStore SyncStore
-	posLog    poslog.Log    // nil when NATS unavailable
-	tradeLog  perf.TradeLog // JetStream HELM_TRADES — drained into PG by TradePersister
-	pnlSummer HandPnLSummer // postgres aggregate querier for RestorePnL
+	nc           *nats.Conn
+	js           nats.JetStreamContext
+	runCtx       context.Context
+	syncStore    SyncStore
+	posLog       poslog.Log       // nil when NATS unavailable
+	tradeLog     perf.TradeLog    // JetStream HELM_TRADES — drained into PG by TradePersister
+	pnlSummer    HandPnLSummer    // postgres aggregate querier for RestorePnL
+	eventCounter HandEventCounter // postgres event-count aggregate for RestoreCounters
 
 	// ── Signal routing ────────────────────────────────────────────────────
 	dispatcher *SignalDispatcher // wired via SetDispatcher after startup; nil before
@@ -142,6 +143,17 @@ func (r *Registry) SetPnLSummer(ps HandPnLSummer) {
 	r.pnlSummer = ps
 	for _, rt := range r.helmRuntimes {
 		rt.PnLSummer = ps
+	}
+	r.mu.Unlock()
+}
+
+// SetEventCounter injects the postgres event-count aggregate querier. Propagated to
+// all runtimes so RestoreCounters can rebuild activity counters on startup.
+func (r *Registry) SetEventCounter(ec HandEventCounter) {
+	r.mu.Lock()
+	r.eventCounter = ec
+	for _, rt := range r.helmRuntimes {
+		rt.EventCounter = ec
 	}
 	r.mu.Unlock()
 }

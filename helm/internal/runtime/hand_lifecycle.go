@@ -302,6 +302,47 @@ func (h *Hand) RestorePnL(ctx context.Context, events []poslog.Event) {
 	)
 }
 
+// RestoreCounters rebuilds the activity counters (signals/orders) from the persisted
+// event log on startup, in one aggregate query. PnL/win/loss come from RestorePnL.
+//
+// Every counter is event-backed 1:1 with a code; latestSignalLagMs is a live gauge
+// (lag of the most recent signal) and is intentionally left at 0 — restoring a stale
+// point-in-time lag is meaningless.
+func (h *Hand) RestoreCounters(ctx context.Context) {
+	ec := h.helmRuntime.EventCounter
+	if ec == nil {
+		return
+	}
+	counts, err := ec.CountHandEvents(ctx, h.id)
+	if err != nil {
+		h.log.Warn("hand: counter restore failed", "err", err)
+		return
+	}
+	if len(counts) == 0 {
+		return
+	}
+	var filtered int64
+	for _, c := range []int{
+		CodeSignalStale, CodeSignalHelmPaused, CodeSignalRateLimited,
+		CodeSignalDoNothing, CodeSignalMaxUnits, CodeSignalRejected, CodeSignalNoPosition,
+	} {
+		filtered += counts[c]
+	}
+	h.metrics.signalsReceived.Store(counts[CodeSignalReceived])
+	h.metrics.signalsFiltered.Store(filtered)
+	h.metrics.signalsDropped.Store(counts[CodeSignalDropped])
+	h.metrics.tradesApproved.Store(counts[CodeTradeApproved])
+	h.metrics.ordersPlaced.Store(counts[CodeOrderPlaced])
+	h.metrics.ordersFilled.Store(counts[CodeOrderFilled])
+	h.metrics.ordersFailed.Store(counts[CodeOrderFailed])
+	h.log.Info("hand: counters restored from event log",
+		"signals", counts[CodeSignalReceived], "filtered", filtered,
+		"approved", counts[CodeTradeApproved], "placed", counts[CodeOrderPlaced],
+		"filled", counts[CodeOrderFilled], "failed", counts[CodeOrderFailed],
+		"dropped", counts[CodeSignalDropped],
+	)
+}
+
 // applyFuturesLeverage calls SetLeverage on the exchange if the hand is configured
 // for futures and the exchange supports it. Non-blocking on failure (just logs).
 func (h *Hand) applyFuturesLeverage(ctx context.Context, symbol string, futures *domain.FuturesConfig) {

@@ -413,6 +413,12 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		return
 	}
 	h.metrics.tradesApproved.Add(1)
+	h.emitEvent(natsapi.HelmEvent{
+		Code:      CodeTradeApproved,
+		Symbol:    sig.Symbol,
+		Direction: string(sig.Direction),
+		Msg:       "hand: trade approved",
+	})
 
 	// Inject a default SL for entry orders that have no explicit stop loss.
 	// Prevents naked entries while still letting the user omit sl in their script.

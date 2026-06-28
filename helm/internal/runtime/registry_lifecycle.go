@@ -78,6 +78,7 @@ func (r *Registry) Spawn(cfg *helmdomain.Helm, exchCfg helmdomain.ExchangeConfig
 	rt.PosLog = r.posLog
 	rt.TradeLog = r.tradeLog
 	rt.PnLSummer = r.pnlSummer
+	rt.EventCounter = r.eventCounter
 	rt.syncStore = r.syncStore
 	rt.SetEventConn(r.nc, r.js)
 	r.mu.RUnlock()

@@ -67,7 +67,7 @@ func roundTrip(t *testing.T, sim *simExchange, rt *runtime.HelmRuntime, h *runti
 	sim.setFillPrice(entryPrice)
 	rt.UpdatePrice(symbol, decimal.NewFromFloat(entryPrice))
 
-	entryCh := h.Subscribe(64)
+	entryCh := h.Subscribe(256)
 	h.DeliverSignal(longSignalFor(symbol))
 	mustWaitCodeCh(t, entryCh, runtime.CodeOrderFilled, simWait)
 
@@ -75,7 +75,7 @@ func roundTrip(t *testing.T, sim *simExchange, rt *runtime.HelmRuntime, h *runti
 	sim.setFillPrice(exitPrice)
 	rt.UpdatePrice(symbol, decimal.NewFromFloat(exitPrice))
 
-	exitCh := h.Subscribe(64)
+	exitCh := h.Subscribe(256)
 	h.DeliverSignal(exitSignalFor(symbol))
 	mustWaitCodeCh(t, exitCh, runtime.CodeOrderFilled, simWait)
 }
@@ -111,7 +111,7 @@ func TestGuard_MaxTotalLoss_StopsHand(t *testing.T) {
 	h.Start()
 	defer h.Stop()
 
-	stoppedCh := h.Subscribe(64)
+	stoppedCh := h.Subscribe(256)
 
 	// Trade 1: -200 USDT
 	roundTrip(t, sim, rt, h, symbol, 10_000, 9_800)
@@ -148,7 +148,7 @@ func TestGuard_MaxAvgLoss_StopsHand(t *testing.T) {
 	h.Start()
 	defer h.Stop()
 
-	stoppedCh := h.Subscribe(64)
+	stoppedCh := h.Subscribe(256)
 
 	// Trade 1: -200 USDT (2% of alloc; below avg threshold of 2.5%)
 	roundTrip(t, sim, rt, h, symbol, 10_000, 9_800)
@@ -182,7 +182,7 @@ func TestGuard_MaxSingleLoss_StopsHand(t *testing.T) {
 	h.Start()
 	defer h.Stop()
 
-	stoppedCh := h.Subscribe(64)
+	stoppedCh := h.Subscribe(256)
 
 	// Single trade with a 15% loss → exceeds 10% single-loss limit.
 	roundTrip(t, sim, rt, h, symbol, 1_000, 850)
@@ -209,7 +209,7 @@ func TestGuard_MaxConsecLoss_StopsHand(t *testing.T) {
 	h.Start()
 	defer h.Stop()
 
-	stoppedCh := h.Subscribe(64)
+	stoppedCh := h.Subscribe(256)
 
 	// Loss 1, Loss 2 — streak not yet at limit (MaxConsecLoss=3).
 	roundTrip(t, sim, rt, h, symbol, 300, 280) // -20 USDT
@@ -239,7 +239,7 @@ func TestGuard_MaxConsecLoss_WinResetsStreak(t *testing.T) {
 	h.Start()
 	defer h.Stop()
 
-	stoppedCh := h.Subscribe(64)
+	stoppedCh := h.Subscribe(256)
 
 	// Loss 1, Loss 2 — streak=2.
 	roundTrip(t, sim, rt, h, symbol, 300, 280)
@@ -313,7 +313,7 @@ func TestGuard_WindowWarmup_NoStopBeforeFull(t *testing.T) {
 	// Here we verify the per-trade minPnL window behavior: with MaxSingleLossPct the guard
 	// fires on the FIRST loss (regardless of window) because minPnL is evaluated each call.
 	// Trade 1 fires here; not a warmup for single-loss.
-	stoppedCh := h.Subscribe(64)
+	stoppedCh := h.Subscribe(256)
 	roundTrip(t, sim, rt, h, symbol, 100, 50) // -50 >> -10 threshold
 	mustWaitCodeCh(t, stoppedCh, runtime.CodeHandAutoStopped, simWait)
 }
@@ -372,7 +372,7 @@ func TestGuard_AllocatedCap_UsedAsReference(t *testing.T) {
 	noCode(t, h, runtime.CodeHandAutoStopped, simWait*2)
 
 	// Loss = 500−360 = 140 USDT; 140/10_000 = 1.4% > 1% → guard fires.
-	stoppedCh := h.Subscribe(64)
+	stoppedCh := h.Subscribe(256)
 	roundTrip(t, sim, rt, h, symbol, 500, 360)
 	mustWaitCodeCh(t, stoppedCh, runtime.CodeHandAutoStopped, simWait)
 }
@@ -440,7 +440,7 @@ func TestGuard_RingWrap_TwoLossesFireWhenFull(t *testing.T) {
 	h.Start()
 	defer h.Stop()
 
-	stoppedCh := h.Subscribe(64)
+	stoppedCh := h.Subscribe(256)
 	roundTrip(t, sim, rt, h, symbol, 100, 10) // -90 USDT; window count=1, sum=-90 < -100 → OK
 	noCode(t, h, runtime.CodeHandAutoStopped, simWait)
 	roundTrip(t, sim, rt, h, symbol, 100, 10) // -90 USDT; window full, sum=-180 < -100 → FIRE

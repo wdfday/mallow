@@ -139,6 +139,14 @@ func (h *Hand) flattenPositions(ctx context.Context) {
 		h.log.Info("hand: kill flatten order placed", "symbol", leg.Symbol,
 			"side", closeSide, "qty", qty, "order_id", result.ID)
 		h.metrics.ordersPlaced.Add(1)
+		h.emitEvent(natsapi.HelmEvent{
+			Code:    CodeOrderPlaced,
+			Symbol:  leg.Symbol,
+			Side:    string(closeSide),
+			Qty:     qty,
+			OrderID: result.ID,
+			Msg:     "hand: kill flatten order placed",
+		})
 
 		// Register in poslog: publish KindOrderPlaced(isClose=true) so the leg
 		// transitions Open → Exiting and pendingOrderPos is populated.

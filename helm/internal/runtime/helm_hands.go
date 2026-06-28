@@ -195,6 +195,11 @@ func (r *HelmRuntime) StartHand(ctx context.Context, id string) error {
 		return fmt.Errorf("hand start: %w", err)
 	}
 	e.h.Start()
+	// Keep the in-memory persisted status in sync so live summaries
+	// (ListByHelmLive → BuildHandSummary) don't report a stale "stopped".
+	r.mu.Lock()
+	e.data.Status = handdomain.HandStatusRunning
+	r.mu.Unlock()
 	return nil
 }
 
@@ -230,6 +235,10 @@ func (r *HelmRuntime) StopHand(ctx context.Context, id string) {
 	r.DeregisterHand(dctx, id)
 	cancel()
 	e.h.Stop()
+	// Keep the in-memory persisted status in sync (see StartHand).
+	r.mu.Lock()
+	e.data.Status = handdomain.HandStatusStopped
+	r.mu.Unlock()
 }
 
 // KillHand deregisters, removes, and kills the hand (flatten positions).

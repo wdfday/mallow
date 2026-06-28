@@ -196,6 +196,12 @@ func (h *Hand) DeliverSignal(sig Signal) {
 	case h.Signals <- sig:
 	default:
 		h.RecordDrop()
+		h.emitEvent(natsapi.HelmEvent{
+			Code:      CodeSignalDropped,
+			Symbol:    sig.Symbol,
+			Direction: string(sig.Direction),
+			Msg:       "hand: signal dropped — channel full",
+		})
 		h.log.Warn("hand signal channel full after drain, dropping",
 			"symbol", sig.Symbol)
 	}

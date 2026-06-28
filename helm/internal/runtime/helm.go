@@ -36,6 +36,13 @@ type HandPnLSummer interface {
 	SumHandPnL(ctx context.Context, handID uuid.UUID) (totalPnL, totalCommission decimal.Decimal, wins, losses int64, err error)
 }
 
+// HandEventCounter returns a hand's activity-event counts grouped by code, in one
+// query. Implemented by eventlog.Log; used to rebuild signal/order counters on
+// restart (PnL/win/loss come from HandPnLSummer).
+type HandEventCounter interface {
+	CountHandEvents(ctx context.Context, handID uuid.UUID) (map[int]int64, error)
+}
+
 // RiskManager is the interface for account-level risk controls.
 type RiskManager interface {
 	Validate(intent strategy.Intent, handID string) (bool, string)
@@ -120,12 +127,13 @@ type HelmRuntime struct {
 
 	// ── Durability ───────────────────────────────────────────────────────────
 	// nil fields degrade gracefully: poslog events are lost, events go to slog only.
-	PosLog    poslog.Log            // JetStream WAL for position events
-	TradeLog  perf.TradeLog         // JetStream HELM_TRADES — closed round-trip trades; TradePersister drains into PG
-	PnLSummer HandPnLSummer         // postgres aggregate query for RestorePnL; nil = fallback to JetStream drain
-	syncStore SyncStore             // persists last_synced_at after each successful portfolio sync
-	nc        *nats.Conn            // NATS connection; used for portfolio.synced.* (nc.Publish path)
-	js        nats.JetStreamContext // JetStream context; publishes helm.events.* (durable, 7d)
+	PosLog       poslog.Log            // JetStream WAL for position events
+	TradeLog     perf.TradeLog         // JetStream HELM_TRADES — closed round-trip trades; TradePersister drains into PG
+	PnLSummer    HandPnLSummer         // postgres aggregate query for RestorePnL; nil = fallback to JetStream drain
+	EventCounter HandEventCounter      // postgres event-count aggregate for RestoreCounters; nil = counters start at 0
+	syncStore    SyncStore             // persists last_synced_at after each successful portfolio sync
+	nc           *nats.Conn            // NATS connection; used for portfolio.synced.* (nc.Publish path)
+	js           nats.JetStreamContext // JetStream context; publishes helm.events.* (durable, 7d)
 
 	// ── WS fill stream lifecycle ─────────────────────────────────────────────
 	// fillStreamCancel cancels the per-runtime WS stream context so RotateCreds

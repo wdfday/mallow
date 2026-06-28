@@ -250,6 +250,7 @@ func (r *DefaultReconciler) reconcileHand(
 	if hp.IsFlat() {
 		// No open position, but still restore historical PnL so realizedEquity() is correct.
 		hand.RestorePnL(ctx, events)
+		hand.RestoreCounters(ctx)
 		result.Phase = position.PhaseIdle
 		result.Action = ReconcileSkipped
 		return result
@@ -290,6 +291,7 @@ func (r *DefaultReconciler) reconcileHand(
 	// Restore PnL counters from poslog history so realizedEquity() reflects all
 	// completed trades, not just the current open position.
 	hand.RestorePnL(ctx, events2)
+	hand.RestoreCounters(ctx)
 
 	return result
 }

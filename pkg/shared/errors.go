@@ -44,6 +44,17 @@ func (e *AppError) Error() string {
 
 func (e *AppError) Unwrap() error { return e.Err }
 
+// Is reports whether e matches target by Code. This lets errors.Is work correctly
+// when WithDetails clones a sentinel AppError (the clone has the same Code but a
+// different pointer, so bare == would fail).
+func (e *AppError) Is(target error) bool {
+	t, ok := target.(*AppError)
+	if !ok {
+		return false
+	}
+	return e.Code == t.Code
+}
+
 func NewAppError(code, message string, statusCode int) *AppError {
 	return &AppError{Code: code, Message: message, StatusCode: statusCode, Details: make(map[string]any)}
 }

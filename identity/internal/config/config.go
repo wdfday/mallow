@@ -254,23 +254,27 @@ func splitComma(s string) []string {
 	return out
 }
 
-// findDotEnv locates the .env file by first finding the module root (directory
-// containing go.mod), then returning the .env file in that same directory.
-// This works correctly in go.work workspaces where tests run from a deep package
-// subdirectory that is far from identity/.env.
+// findDotEnv locates the service env file.
+//
+// Search order (stops at first match):
+//  1. deployment/environments/identity.env relative to the repo root (.git dir)
+//  2. identity/.env relative to the repo root (legacy fallback)
 func findDotEnv() string {
 	dir, err := os.Getwd()
 	if err != nil {
 		return ""
 	}
 	for {
-		// Module root found — use its .env.
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			candidate := filepath.Join(dir, ".env")
-			if _, err := os.Stat(candidate); err == nil {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			// Found repo root — check new canonical location first.
+			if candidate := filepath.Join(dir, "deployment", "environments", "identity.env"); fileExists(candidate) {
 				return candidate
 			}
-			return "" // module root exists but no .env — stop searching
+			// Legacy fallback: identity/.env at repo root.
+			if candidate := filepath.Join(dir, "identity", ".env"); fileExists(candidate) {
+				return candidate
+			}
+			return ""
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -278,4 +282,9 @@ func findDotEnv() string {
 		}
 		dir = parent
 	}
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

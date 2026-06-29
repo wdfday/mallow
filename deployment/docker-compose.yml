@@ -166,7 +166,7 @@ services:
         condition: service_healthy
     environment:
       NATS_URL: nats://signal_engine:${NATS_PASS_SIGNAL_ENGINE:-signal-engine-dev}@nats:4222
-      HERALD_DATABASE_URL: "postgres://mallow:mallow-dev@postgres:5432/herald?sslmode=disable"
+      HERALD_DATABASE_URL: "postgres://mallow:${POSTGRES_PASSWORD:-mallow-dev}@postgres:5432/herald?sslmode=disable"
       HERALD_HTTP_ADDR: "0.0.0.0:8090"
       HERALD_DATA_DIR: /data
       HERALD_MAX_BACKTESTS: ${HERALD_MAX_BACKTESTS:-4}

@@ -1,4 +1,5 @@
-dc := "docker compose -f deployment/docker-compose.yml"
+env_dir := justfile_directory() + "/deployment/environments"
+dc := "docker compose --env-file " + env_dir + "/shared.env -f deployment/docker-compose.yml"
 
 # List all recipes
 default:
@@ -86,26 +87,24 @@ sh service:
 
 # ── Herald dev (local, hot-fix) ───────────────────────────────────────────────
 
+# Run herald locally — loads env from deployment/environments/herald.env
 herald-dev:
+    #!/usr/bin/env bash
+    set -a && source {{env_dir}}/herald.env && set +a
     cd almanac && \
-      NATS_URL="nats://signal_engine:signal-engine-dev@localhost:4222" \
       HERALD_DATA_DIR="{{justfile_directory()}}/data" \
-      HERALD_HTTP_ADDR="0.0.0.0:8090" \
-      HERALD_WARM_BARS=500 \
       HERALD_SYMBOLS_FILE="{{justfile_directory()}}/deployment/symbols.yaml" \
-      HERALD_DATABASE_URL="postgres://mallow:mallow-dev@localhost:5432/herald?sslmode=disable" \
-      RUST_LOG="herald=info,alm_engine=info,alm_strategy=info,tower_http=warn" \
+      RUST_LOG="alm_herald=info,alm_engine=info,alm_strategy=info,tower_http=warn" \
       cargo run --bin alm-herald
 
+# Run herald locally in debug mode
 herald-debug:
+    #!/usr/bin/env bash
+    set -a && source {{env_dir}}/herald.env && set +a
     cd almanac && \
-      NATS_URL="nats://signal_engine:signal-engine-dev@localhost:4222" \
       HERALD_DATA_DIR="{{justfile_directory()}}/data" \
-      HERALD_HTTP_ADDR="0.0.0.0:8090" \
-      HERALD_WARM_BARS=500 \
       HERALD_SYMBOLS_FILE="{{justfile_directory()}}/deployment/symbols.yaml" \
-      HERALD_DATABASE_URL="postgres://mallow:mallow-dev@localhost:5432/herald?sslmode=disable" \
-      RUST_LOG="herald=debug,alm_engine=debug,alm_strategy=debug,alm_ledger=debug,tower_http=debug" \
+      RUST_LOG="alm_herald=debug,alm_engine=debug,alm_strategy=debug,alm_ledger=debug,tower_http=debug" \
       cargo run --bin alm-herald
 
 # ── WASM ──────────────────────────────────────────────────────────────────────

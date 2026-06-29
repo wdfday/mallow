@@ -1,8 +1,10 @@
-# ── Secrets ───────────────────────────────────────────────────────────────────
+# ── Secrets ───────────────────────────────────────────────────────────────────────────────
+# Tất cả env file thật — chỉ commit *.env.example
 .env
 .env.local
 .env.*.local
-deployment/.env
+deployment/environments/*.env
+!deployment/environments/*.env.example
 **/creds_test.go
 
 # ── Go ────────────────────────────────────────────────────────────────────────

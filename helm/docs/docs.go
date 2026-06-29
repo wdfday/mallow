@@ -462,7 +462,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_infra_eventlog_EventRecord"
+                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_infra_journal_eventlog_EventRecord"
                         }
                     },
                     "401": {
@@ -2258,7 +2258,7 @@ const docTemplate = `{
                     "200": {
                         "description": "OK",
                         "schema": {
-                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_infra_eventlog_EventRecord"
+                            "$ref": "#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_infra_journal_eventlog_EventRecord"
                         }
                     },
                     "401": {
@@ -2298,7 +2298,7 @@ const docTemplate = `{
                 }
             }
         },
-        "mallow_helm_internal_infra_eventlog.EventRecord": {
+        "mallow_helm_internal_infra_journal_eventlog.EventRecord": {
             "type": "object",
             "properties": {
                 "at": {
@@ -3176,7 +3176,7 @@ const docTemplate = `{
                 "events": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/mallow_helm_internal_infra_eventlog.EventRecord"
+                        "$ref": "#/definitions/mallow_helm_internal_infra_journal_eventlog.EventRecord"
                     }
                 },
                 "has_more": {
@@ -4001,13 +4001,13 @@ const docTemplate = `{
                 }
             }
         },
-        "mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_infra_eventlog_EventRecord": {
+        "mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_infra_journal_eventlog_EventRecord": {
             "type": "object",
             "properties": {
                 "data": {
                     "type": "array",
                     "items": {
-                        "$ref": "#/definitions/mallow_helm_internal_infra_eventlog.EventRecord"
+                        "$ref": "#/definitions/mallow_helm_internal_infra_journal_eventlog.EventRecord"
                     }
                 },
                 "detail": {

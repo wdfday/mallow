@@ -128,16 +128,24 @@ func getStringSlice(value string) []string {
 	return result
 }
 
-// findDotEnv locates the .env file by walking up to the module root (go.mod).
+// findDotEnv locates the service env file.
+//
+// Search order (stops at first match):
+//  1. deployment/environments/helm.env relative to the repo root (.git dir)
+//  2. helm/.env relative to the repo root (legacy fallback)
 func findDotEnv() string {
 	dir, err := os.Getwd()
 	if err != nil {
 		return ""
 	}
 	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			candidate := filepath.Join(dir, ".env")
-			if _, err := os.Stat(candidate); err == nil {
+		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
+			// Found repo root — check new canonical location first.
+			if candidate := filepath.Join(dir, "deployment", "environments", "helm.env"); fileExists(candidate) {
+				return candidate
+			}
+			// Legacy fallback: helm/.env at repo root.
+			if candidate := filepath.Join(dir, "helm", ".env"); fileExists(candidate) {
 				return candidate
 			}
 			return ""
@@ -148,4 +156,9 @@ func findDotEnv() string {
 		}
 		dir = parent
 	}
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }

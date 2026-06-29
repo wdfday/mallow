@@ -336,8 +336,31 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 ) (ReconcileAction, error) {
 	orderID := leg.PendingOrderID
 
-	// Fast path: order still open at exchange — nothing missed.
-	if exOrder, stillOpen := openOrders[orderID]; stillOpen {
+	// Look up by ClientOrderID if orderID is our clid.
+	var exOrder exchange.OrderResult
+	var stillOpen bool
+	if clid.IsOurClid(orderID) {
+		for _, o := range openOrders {
+			if o.ClientOrderID == orderID {
+				exOrder = o
+				stillOpen = true
+				break
+			}
+		}
+	} else {
+		exOrder, stillOpen = openOrders[orderID]
+	}
+
+	if stillOpen {
+		// If we only had KindOrderPlace (so PendingOrderID was the ClientOrderID),
+		// we must now emit KindOrderPlaced with the actual exchange OrderID.
+		if clid.IsOurClid(orderID) {
+			if err := r.emitOrderPlaced(ctx, hand, leg.PositionID, &exOrder, leg); err != nil {
+				return ReconcileFailed, fmt.Errorf("emitOrderPlaced: %w", err)
+			}
+			orderID = exOrder.ID
+		}
+
 		// Restore order tracking map so that future WS fill events can be routed to this hand.
 		orch.TrackOrder(orderID, hand.id.String())
 		// If the exchange echoes our clid, restore clid routing too — WS fills carry the
@@ -384,36 +407,76 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 	}
 
 	// Order gone from open list — get terminal status.
-	exOrder, err := orch.Exchange.GetOrder(ctx, orch.Creds, orderID)
-	if err != nil {
-		return ReconcileFailed, fmt.Errorf("GetOrder %s: %w", orderID, err)
+	var termOrder *exchange.OrderResult
+	var err error
+	if clid.IsOurClid(orderID) {
+		if cq, ok := orch.Exchange.(exchange.ClientOrderQuerier); ok {
+			marketKind := exchange.MarketSpot
+			if hand.cfg.futuresConfig != nil {
+				marketKind = exchange.MarketFutures
+			}
+			termOrder, err = cq.GetOrderByClientOrderID(ctx, orch.Creds, leg.Symbol, marketKind, orderID)
+			if err != nil {
+				return ReconcileFailed, fmt.Errorf("GetOrderByClientOrderID %s: %w", orderID, err)
+			}
+			if termOrder == nil {
+				// Order never reached the exchange. Emit cancelled event.
+				if err := r.emitOrderCancelled(ctx, hand, leg.PositionID, orderID, "not_found_at_exchange"); err != nil {
+					return ReconcileFailed, err
+				}
+				hand.emitEvent(natsapi.HelmEvent{
+					Code:    CodeReconcileCancelled,
+					Symbol:  leg.Symbol,
+					OrderID: orderID,
+					Reason:  "pre-flight order never reached the exchange",
+					Msg:     "reconcile: pre-flight order cancelled",
+				})
+				return ReconcileCancelled, nil
+			}
+		} else {
+			return ReconcileFailed, fmt.Errorf("reconcile: exchange %s does not support ClientOrderQuerier to lookup clid %s", orch.Exchange.Name(), orderID)
+		}
+	} else {
+		termOrder, err = orch.Exchange.GetOrder(ctx, orch.Creds, orderID)
+		if err != nil {
+			return ReconcileFailed, fmt.Errorf("GetOrder %s: %w", orderID, err)
+		}
 	}
 
-	switch exOrder.Status {
+	// If we only had KindOrderPlace (so PendingOrderID was the ClientOrderID),
+	// we must now emit KindOrderPlaced with the actual exchange OrderID before terminal event.
+	if clid.IsOurClid(orderID) {
+		if err := r.emitOrderPlaced(ctx, hand, leg.PositionID, termOrder, leg); err != nil {
+			return ReconcileFailed, fmt.Errorf("emitOrderPlaced: %w", err)
+		}
+		orderID = termOrder.ID
+	}
+
+	switch termOrder.Status {
 	case "filled":
-		if err := r.emitOrderFilled(ctx, hand, leg.PositionID, exOrder, "reconcile"); err != nil {
+		if err := r.emitOrderFilled(ctx, hand, leg.PositionID, termOrder, "reconcile"); err != nil {
 			return ReconcileFailed, err
 		}
 		hand.emitEvent(natsapi.HelmEvent{
 			Code:    CodeReconcileFillApplied,
 			Symbol:  leg.Symbol,
 			OrderID: orderID,
-			Qty:     exOrder.FilledQty,
-			Price:   exOrder.FilledAvg,
+			Qty:     termOrder.FilledQty,
+			Price:   termOrder.FilledAvg,
 			Reason:  "fill missed during downtime — applied retroactively",
 			Msg:     "reconcile: fill applied",
 		})
 		return ReconcileFillApplied, nil
 
 	case "cancelled", "rejected", "expired":
-		if err := r.emitOrderCancelled(ctx, hand, leg.PositionID, orderID, exOrder.Status); err != nil {
+		if err := r.emitOrderCancelled(ctx, hand, leg.PositionID, orderID, termOrder.Status); err != nil {
 			return ReconcileFailed, err
 		}
 		hand.emitEvent(natsapi.HelmEvent{
 			Code:    CodeReconcileCancelled,
 			Symbol:  leg.Symbol,
 			OrderID: orderID,
-			Reason:  exOrder.Status + " during downtime",
+			Reason:  termOrder.Status + " during downtime",
 			Msg:     "reconcile: order cancelled",
 		})
 		return ReconcileCancelled, nil
@@ -422,8 +485,8 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 		// Order still open (possibly missed by the open-orders batch fetch due to a
 		// brief exchange inconsistency). Restore tracking so pollOrders keeps watching it.
 		orch.TrackOrder(orderID, hand.id.String())
-		if clid.IsOurClid(exOrder.ClientOrderID) {
-			orch.TrackOrder(exOrder.ClientOrderID, hand.id.String())
+		if clid.IsOurClid(termOrder.ClientOrderID) {
+			orch.TrackOrder(termOrder.ClientOrderID, hand.id.String())
 		}
 		hand.mu.Lock()
 		alreadyTracked := false
@@ -434,7 +497,7 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 			}
 		}
 		if !alreadyTracked {
-			remainingQty := leg.Qty.Sub(exOrder.FilledQty)
+			remainingQty := leg.Qty.Sub(termOrder.FilledQty)
 			if !remainingQty.IsPositive() {
 				remainingQty = leg.Qty // defensive: treat as fully open if data is inconsistent
 			}
@@ -443,27 +506,27 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 				Symbol:     leg.Symbol,
 				Side:       leg.Side,
 				Qty:        remainingQty,
-				Status:     exOrder.Status,
-				FilledQty:  exOrder.FilledQty,
-				FilledAvg:  exOrder.FilledAvg,
+				Status:     termOrder.Status,
+				FilledQty:  termOrder.FilledQty,
+				FilledAvg:  termOrder.FilledAvg,
 				SubmitTime: leg.OpenedAt,
 			})
 		}
 		hand.mu.Unlock()
 		slog.Info("reconcile: restored partially-open order for polling",
-			"hand_id", hand.id, "order_id", orderID, "status", exOrder.Status,
-			"filled_qty", exOrder.FilledQty, "original_qty", leg.Qty)
+			"hand_id", hand.id, "order_id", orderID, "status", termOrder.Status,
+			"filled_qty", termOrder.FilledQty, "original_qty", leg.Qty)
 		hand.emitEvent(natsapi.HelmEvent{
 			Code:    CodeReconcileRestored,
 			Symbol:  leg.Symbol,
 			OrderID: orderID,
-			Reason:  exOrder.Status + " — restored for polling",
+			Reason:  termOrder.Status + " — restored for polling",
 			Msg:     "reconcile: order restored",
 		})
 		return ReconcileRestored, nil
 
 	default:
-		return ReconcileFailed, fmt.Errorf("unexpected order status %q for order %s", exOrder.Status, orderID)
+		return ReconcileFailed, fmt.Errorf("unexpected order status %q for order %s", termOrder.Status, orderID)
 	}
 }
 
@@ -667,6 +730,47 @@ func (r *DefaultReconciler) emitBracketFill(
 }
 
 // ── poslog emit helpers ───────────────────────────────────────────────────────
+
+func (r *DefaultReconciler) emitOrderPlaced(
+	ctx context.Context,
+	hand *Hand,
+	positionID string,
+	exOrder *exchange.OrderResult,
+	leg *position.LegState,
+) error {
+	isClose := leg.Phase == position.PhaseExiting
+	isPyramidAdd := leg.Phase == position.PhaseAdding
+	priceStr := leg.Price
+	if priceStr == "" {
+		priceStr = "0"
+	}
+	orderTypeStr := leg.OrderType
+	if orderTypeStr == "" {
+		orderTypeStr = "market"
+	}
+	payload, _ := json.Marshal(poslog.OrderPlacedPayload{
+		OrderID:       exOrder.ID,
+		ClientOrderID: exOrder.ClientOrderID,
+		Symbol:        exOrder.Symbol,
+		Side:          string(exOrder.Side),
+		Qty:           exOrder.Qty.String(),
+		Price:         priceStr,
+		OrderType:     orderTypeStr,
+		StopLoss:      leg.StopLoss.String(),
+		TakeProfit:    leg.TakeProfit.String(),
+		IsPyramidAdd:  isPyramidAdd,
+		IsClose:       isClose,
+	})
+	return r.log.Publish(ctx, poslog.Event{
+		ID:         exOrder.ID,
+		HandID:     hand.id.String(),
+		HelmID:     hand.helmID.String(),
+		PositionID: positionID,
+		Kind:       poslog.KindOrderPlaced,
+		Payload:    payload,
+		At:         time.Now().UTC(),
+	})
+}
 
 func (r *DefaultReconciler) emitOrderFilled(
 	ctx context.Context,

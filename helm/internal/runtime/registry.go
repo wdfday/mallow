@@ -113,6 +113,9 @@ func (r *Registry) SetSyncStore(store SyncStore) {
 func (r *Registry) SetPosLog(log poslog.Log) {
 	r.mu.Lock()
 	r.posLog = log
+	for _, rt := range r.helmRuntimes {
+		rt.PosLog = log
+	}
 	r.mu.Unlock()
 }
 

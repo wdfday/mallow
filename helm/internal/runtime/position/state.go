@@ -62,6 +62,9 @@ type LegState struct {
 	StopLoss        decimal.Decimal // zero = not set
 	TakeProfit      decimal.Decimal // zero = not set
 
+	Price     string
+	OrderType string
+
 	OpenedAt time.Time
 
 	// entryCount is the number of fills that have opened or added to this leg.
@@ -83,6 +86,11 @@ type LegState struct {
 // IsActive reports whether the leg has an open position or a pending order.
 func (l *LegState) IsActive() bool { return l.Phase != PhaseIdle }
 
+// EntryCount returns the number of entry fills that have contributed to this leg
+// (1 for a plain entry, 1+N for pyramid adds). Exposed for audit callers outside
+// the position package (e.g. appendOrphanTradeRecord).
+func (l *LegState) EntryCount() int { return l.entryCount }
+
 // HasExitManagement reports whether the leg has any exit tracking:
 // either absolute SL/TP prices or live exchange OCO order IDs.
 func (l *LegState) HasExitManagement() bool {
@@ -98,6 +106,8 @@ func (l *LegState) HasPendingOrder() bool {
 // Returns an error if the transition is invalid for the current phase.
 func (l *LegState) Apply(e poslog.Event) error {
 	switch e.Kind {
+	case poslog.KindOrderPlace:
+		return l.applyOrderPlace(e)
 	case poslog.KindOrderPlaced:
 		return l.applyOrderPlaced(e)
 	case poslog.KindOrderFilled:
@@ -111,27 +121,30 @@ func (l *LegState) Apply(e poslog.Event) error {
 	}
 }
 
-func (l *LegState) applyOrderPlaced(e poslog.Event) error {
-	var p poslog.OrderPlacedPayload
+func (l *LegState) applyOrderPlace(e poslog.Event) error {
+	var p poslog.OrderPlacePayload
 	if err := json.Unmarshal(e.Payload, &p); err != nil {
 		return err
 	}
 	sl, _ := decimal.NewFromString(p.StopLoss)
 	tp, _ := decimal.NewFromString(p.TakeProfit)
 
+	l.Price = p.Price
+	l.OrderType = p.OrderType
+
 	switch {
 	case p.IsClose:
 		if l.Phase != PhaseOpen {
-			return fmt.Errorf("order_placed(close) invalid in phase %q", l.Phase)
+			return fmt.Errorf("order_place(close) invalid in phase %q", l.Phase)
 		}
-		l.PendingOrderID = p.OrderID
+		l.PendingOrderID = p.ClientOrderID
 		l.Phase = PhaseExiting
 
 	case p.IsPyramidAdd:
 		if l.Phase != PhaseOpen {
-			return fmt.Errorf("order_placed(pyramid_add) invalid in phase %q", l.Phase)
+			return fmt.Errorf("order_place(pyramid_add) invalid in phase %q", l.Phase)
 		}
-		l.PendingOrderID = p.OrderID
+		l.PendingOrderID = p.ClientOrderID
 		l.pendingAddSL = sl
 		l.pendingAddTP = tp
 		l.Phase = PhaseAdding
@@ -139,15 +152,59 @@ func (l *LegState) applyOrderPlaced(e poslog.Event) error {
 	default:
 		// Opening entry.
 		if l.Phase != PhaseIdle {
-			return fmt.Errorf("order_placed(open) invalid in phase %q", l.Phase)
+			return fmt.Errorf("order_place(open) invalid in phase %q", l.Phase)
 		}
-		l.PendingOrderID = p.OrderID
+		l.PendingOrderID = p.ClientOrderID
 		l.Symbol = p.Symbol
 		l.Side = p.Side
 		l.StopLoss = sl
 		l.TakeProfit = tp
 		l.Phase = PhaseEntering
 	}
+	return nil
+}
+
+func (l *LegState) applyOrderPlaced(e poslog.Event) error {
+	var p poslog.OrderPlacedPayload
+	if err := json.Unmarshal(e.Payload, &p); err != nil {
+		return err
+	}
+
+	l.Price = p.Price
+	l.OrderType = p.OrderType
+
+	// Backward-compatibility: if order_place was skipped (e.g. legacy events),
+	// we still support transitioning from Idle / Open.
+	if l.Phase == PhaseIdle || l.Phase == PhaseOpen {
+		sl, _ := decimal.NewFromString(p.StopLoss)
+		tp, _ := decimal.NewFromString(p.TakeProfit)
+		switch {
+		case p.IsClose:
+			l.PendingOrderID = p.OrderID
+			l.Phase = PhaseExiting
+		case p.IsPyramidAdd:
+			l.PendingOrderID = p.OrderID
+			l.pendingAddSL = sl
+			l.pendingAddTP = tp
+			l.Phase = PhaseAdding
+		default:
+			l.PendingOrderID = p.OrderID
+			l.Symbol = p.Symbol
+			l.Side = p.Side
+			l.StopLoss = sl
+			l.TakeProfit = tp
+			l.Phase = PhaseEntering
+		}
+		return nil
+	}
+
+	// Normal path: we were already in Entering / Adding / Exiting from order_place.
+	// Verify client_order_id matches our temporary l.PendingOrderID.
+	if p.ClientOrderID != l.PendingOrderID {
+		return fmt.Errorf("order_placed client_order_id mismatch: got %q want %q", p.ClientOrderID, l.PendingOrderID)
+	}
+	// Update PendingOrderID to the actual exchange order ID.
+	l.PendingOrderID = p.OrderID
 	return nil
 }
 
@@ -437,15 +494,27 @@ func (h *HandPositions) Apply(e poslog.Event) error {
 
 	leg, exists := h.legs[e.PositionID]
 	if !exists {
-		// Only a new entry order_placed creates a new leg.
-		if e.Kind != poslog.KindOrderPlaced {
+		// Leg can be created by a new entry order_place (new path) or order_placed (legacy path).
+		if e.Kind != poslog.KindOrderPlace && e.Kind != poslog.KindOrderPlaced {
 			return fmt.Errorf("no leg for position_id %q (event: %s)", e.PositionID, e.Kind)
 		}
-		var p poslog.OrderPlacedPayload
-		if err := json.Unmarshal(e.Payload, &p); err != nil {
-			return err
+		var pIsPyramidAdd, pIsClose bool
+		if e.Kind == poslog.KindOrderPlace {
+			var p poslog.OrderPlacePayload
+			if err := json.Unmarshal(e.Payload, &p); err != nil {
+				return err
+			}
+			pIsPyramidAdd = p.IsPyramidAdd
+			pIsClose = p.IsClose
+		} else {
+			var p poslog.OrderPlacedPayload
+			if err := json.Unmarshal(e.Payload, &p); err != nil {
+				return err
+			}
+			pIsPyramidAdd = p.IsPyramidAdd
+			pIsClose = p.IsClose
 		}
-		if p.IsPyramidAdd || p.IsClose {
+		if pIsPyramidAdd || pIsClose {
 			return fmt.Errorf("no active leg for position_id %q but got %s with pyramid_add/close", e.PositionID, e.Kind)
 		}
 		leg = &LegState{PositionID: e.PositionID, Phase: PhaseIdle}

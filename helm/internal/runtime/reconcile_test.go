@@ -84,9 +84,10 @@ func (f *fakePosLog) publishedIDs() []string {
 
 // fakeExchange implements exchange.Exchange in-memory.
 type fakeExchange struct {
-	openOrders map[string]exchange.OrderResult // orderID → result (in "open" state)
-	positions  map[string]exchange.PositionResult
-	orderByID  map[string]exchange.OrderResult // all terminal orders (filled/cancelled)
+	openOrders           map[string]exchange.OrderResult // orderID → result (in "open" state)
+	positions            map[string]exchange.PositionResult
+	orderByID            map[string]exchange.OrderResult // all terminal orders (filled/cancelled)
+	orderByClientOrderID map[string]exchange.OrderResult
 }
 
 func (f *fakeExchange) Name() string { return "fake" }
@@ -100,6 +101,13 @@ func (f *fakeExchange) GetOrder(_ context.Context, _ exchange.Credentials, order
 		return &r, nil
 	}
 	return &exchange.OrderResult{ID: orderID, Status: "cancelled"}, nil
+}
+
+func (f *fakeExchange) GetOrderByClientOrderID(_ context.Context, _ exchange.Credentials, _ string, _ exchange.MarketKind, clientOrderID string) (*exchange.OrderResult, error) {
+	if r, ok := f.orderByClientOrderID[clientOrderID]; ok {
+		return &r, nil
+	}
+	return nil, nil
 }
 
 func (f *fakeExchange) CancelOrder(_ context.Context, _ exchange.Credentials, _ string) error {
@@ -146,10 +154,19 @@ func addHand(rt *runtime.HelmRuntime, pyramid bool, maxUnits int) *runtime.Hand 
 
 // poslog event helpers (mirror state_test.go helpers, duplicated here to keep tests self-contained)
 
+func recPlace(clientOrderID, positionID, symbol, side string, isClose bool) poslog.Event {
+	p := poslog.OrderPlacePayload{
+		ClientOrderID: clientOrderID, Symbol: symbol, Side: side, IsClose: isClose,
+		Qty: "0.1", StopLoss: "29000", Price: "30000", OrderType: "limit",
+	}
+	b, _ := json.Marshal(p)
+	return poslog.Event{ID: clientOrderID, PositionID: positionID, Kind: poslog.KindOrderPlace, Payload: b, At: time.Now()}
+}
+
 func recPlaced(orderID, positionID, symbol, side string, isClose bool) poslog.Event {
 	p := poslog.OrderPlacedPayload{
 		OrderID: orderID, Symbol: symbol, Side: side, IsClose: isClose,
-		Qty: "0.1", StopLoss: "29000",
+		Qty: "0.1", StopLoss: "29000", Price: "30000", OrderType: "limit",
 	}
 	b, _ := json.Marshal(p)
 	return poslog.Event{ID: orderID, PositionID: positionID, Kind: poslog.KindOrderPlaced, Payload: b, At: time.Now()}
@@ -460,5 +477,195 @@ func TestReconcile_ExitingPhase_CloseFilled(t *testing.T) {
 	ids := log.publishedIDs()
 	if len(ids) != 1 || ids[0] != "ord2_filled" {
 		t.Fatalf("published: want [ord2_filled], got %v", ids)
+	}
+}
+
+// Scenario 10: Crash after KindOrderPlace, order is still open at exchange.
+// Reconciler queries clid, finds it open, and emits KindOrderPlaced to bind it.
+func TestReconcile_WAL_PreFlight_Open(t *testing.T) {
+	log := &fakePosLog{
+		events: []poslog.Event{
+			recPlace("mlwclid1", "mlwclid1", "BTCUSDT", "buy", false),
+		},
+	}
+	ex := &fakeExchange{
+		openOrders: map[string]exchange.OrderResult{
+			"ord1": {ID: "ord1", ClientOrderID: "mlwclid1", Status: "new", Symbol: "BTCUSDT", Qty: decimal.NewFromFloat(0.1)},
+		},
+		positions: map[string]exchange.PositionResult{},
+	}
+	rt := buildRuntime(ex, log)
+	addHand(rt, false, 1)
+
+	results := runtime.NewReconciler(log).Reconcile(context.Background(), rt)
+
+	if results[0].Action != runtime.ReconcileRestored {
+		t.Fatalf("want ReconcileRestored, got %s", results[0].Action)
+	}
+	ids := log.publishedIDs()
+	// Should have published KindOrderPlaced to bind client_order_id to exchange order_id
+	if len(ids) != 1 || ids[0] != "ord1" {
+		t.Fatalf("published: want [ord1], got %v", ids)
+	}
+}
+
+// Scenario 11: Crash after KindOrderPlace, order was filled while app was down.
+// Reconciler queries clid, finds it filled, emits both KindOrderPlaced and KindOrderFilled.
+func TestReconcile_WAL_PreFlight_Filled(t *testing.T) {
+	log := &fakePosLog{
+		events: []poslog.Event{
+			recPlace("mlwclid1", "mlwclid1", "BTCUSDT", "buy", false),
+		},
+	}
+	ex := &fakeExchange{
+		openOrders: map[string]exchange.OrderResult{}, // terminal state: not in openOrders
+		positions:  map[string]exchange.PositionResult{},
+		orderByClientOrderID: map[string]exchange.OrderResult{
+			"mlwclid1": {ID: "ord1", ClientOrderID: "mlwclid1", Status: "filled", Symbol: "BTCUSDT", Qty: decimal.NewFromFloat(0.1), FilledQty: decimal.NewFromFloat(0.1), FilledAvg: decimal.NewFromInt(30000)},
+		},
+	}
+	rt := buildRuntime(ex, log)
+	addHand(rt, false, 1)
+
+	results := runtime.NewReconciler(log).Reconcile(context.Background(), rt)
+
+	if results[0].Action != runtime.ReconcileFillApplied {
+		t.Fatalf("want ReconcileFillApplied, got %s", results[0].Action)
+	}
+	ids := log.publishedIDs()
+	// Should have published both KindOrderPlaced and KindOrderFilled (ord1_filled)
+	if len(ids) != 2 || ids[0] != "ord1" || ids[1] != "ord1_filled" {
+		t.Fatalf("published: want [ord1, ord1_filled], got %v", ids)
+	}
+}
+
+// Scenario 12: Crash after KindOrderPlace, order never reached the exchange.
+// Reconciler queries clid, finds nothing, and emits KindOrderCancelled to revert to Idle.
+func TestReconcile_WAL_PreFlight_NotFound(t *testing.T) {
+	log := &fakePosLog{
+		events: []poslog.Event{
+			recPlace("mlwclid1", "mlwclid1", "BTCUSDT", "buy", false),
+		},
+	}
+	ex := &fakeExchange{
+		openOrders:           map[string]exchange.OrderResult{},
+		positions:            map[string]exchange.PositionResult{},
+		orderByClientOrderID: map[string]exchange.OrderResult{}, // empty (not found)
+	}
+	rt := buildRuntime(ex, log)
+	addHand(rt, false, 1)
+
+	results := runtime.NewReconciler(log).Reconcile(context.Background(), rt)
+
+	if results[0].Action != runtime.ReconcileCancelled {
+		t.Fatalf("want ReconcileCancelled, got %s", results[0].Action)
+	}
+	ids := log.publishedIDs()
+	// Should have published KindOrderCancelled (mlwclid1_cancelled)
+	if len(ids) != 1 || ids[0] != "mlwclid1_cancelled" {
+		t.Fatalf("published: want [mlwclid1_cancelled], got %v", ids)
+	}
+}
+
+func recPlaceAdd(clientOrderID, positionID, symbol, side string) poslog.Event {
+	p := poslog.OrderPlacePayload{
+		ClientOrderID: clientOrderID, Symbol: symbol, Side: side,
+		Qty: "0.1", StopLoss: "29000", Price: "30000", OrderType: "limit",
+		IsPyramidAdd: true,
+	}
+	b, _ := json.Marshal(p)
+	return poslog.Event{ID: clientOrderID, PositionID: positionID, Kind: poslog.KindOrderPlace, Payload: b, At: time.Now()}
+}
+
+// Scenario 13: Crash after KindOrderPlace of a pyramid add. Order still open at exchange.
+func TestReconcile_WAL_PreFlight_PyramidAdd_Open(t *testing.T) {
+	log := &fakePosLog{
+		events: []poslog.Event{
+			recPlaced("ord1", "ord1", "BTCUSDT", "buy", false),
+			recFilled("ord1", "ord1", "30000"),
+			recPlaceAdd("mlwclid2", "ord1", "BTCUSDT", "buy"),
+		},
+	}
+	ex := &fakeExchange{
+		openOrders: map[string]exchange.OrderResult{
+			"ord2": {ID: "ord2", ClientOrderID: "mlwclid2", Status: "new", Symbol: "BTCUSDT", Qty: decimal.NewFromFloat(0.1)},
+		},
+		positions: map[string]exchange.PositionResult{
+			"BTCUSDT": {Symbol: "BTCUSDT", AvgPrice: decimal.NewFromInt(30000)},
+		},
+	}
+	rt := buildRuntime(ex, log)
+	addHand(rt, true, 2) // pyramid = true, maxUnits = 2
+
+	results := runtime.NewReconciler(log).Reconcile(context.Background(), rt)
+
+	if results[0].Action != runtime.ReconcileRestored {
+		t.Fatalf("want ReconcileRestored, got %s", results[0].Action)
+	}
+	ids := log.publishedIDs()
+	if len(ids) != 1 || ids[0] != "ord2" {
+		t.Fatalf("published: want [ord2], got %v", ids)
+	}
+}
+
+// Scenario 14: Crash after KindOrderPlace of a pyramid add. Order filled while down.
+func TestReconcile_WAL_PreFlight_PyramidAdd_Filled(t *testing.T) {
+	log := &fakePosLog{
+		events: []poslog.Event{
+			recPlaced("ord1", "ord1", "BTCUSDT", "buy", false),
+			recFilled("ord1", "ord1", "30000"),
+			recPlaceAdd("mlwclid2", "ord1", "BTCUSDT", "buy"),
+		},
+	}
+	ex := &fakeExchange{
+		openOrders: map[string]exchange.OrderResult{},
+		positions: map[string]exchange.PositionResult{
+			"BTCUSDT": {Symbol: "BTCUSDT", AvgPrice: decimal.NewFromInt(30000)},
+		},
+		orderByClientOrderID: map[string]exchange.OrderResult{
+			"mlwclid2": {ID: "ord2", ClientOrderID: "mlwclid2", Status: "filled", Symbol: "BTCUSDT", Qty: decimal.NewFromFloat(0.1), FilledQty: decimal.NewFromFloat(0.1), FilledAvg: decimal.NewFromInt(30500)},
+		},
+	}
+	rt := buildRuntime(ex, log)
+	addHand(rt, true, 2)
+
+	results := runtime.NewReconciler(log).Reconcile(context.Background(), rt)
+
+	if results[0].Action != runtime.ReconcileFillApplied {
+		t.Fatalf("want ReconcileFillApplied, got %s", results[0].Action)
+	}
+	ids := log.publishedIDs()
+	if len(ids) != 2 || ids[0] != "ord2" || ids[1] != "ord2_filled" {
+		t.Fatalf("published: want [ord2, ord2_filled], got %v", ids)
+	}
+}
+
+// Scenario 15: Crash after KindOrderPlace of a pyramid add. Order never reached the exchange.
+func TestReconcile_WAL_PreFlight_PyramidAdd_Cancelled(t *testing.T) {
+	log := &fakePosLog{
+		events: []poslog.Event{
+			recPlaced("ord1", "ord1", "BTCUSDT", "buy", false),
+			recFilled("ord1", "ord1", "30000"),
+			recPlaceAdd("mlwclid2", "ord1", "BTCUSDT", "buy"),
+		},
+	}
+	ex := &fakeExchange{
+		openOrders: map[string]exchange.OrderResult{},
+		positions: map[string]exchange.PositionResult{
+			"BTCUSDT": {Symbol: "BTCUSDT", AvgPrice: decimal.NewFromInt(30000)},
+		},
+		orderByClientOrderID: map[string]exchange.OrderResult{},
+	}
+	rt := buildRuntime(ex, log)
+	addHand(rt, true, 2)
+
+	results := runtime.NewReconciler(log).Reconcile(context.Background(), rt)
+
+	if results[0].Action != runtime.ReconcileCancelled {
+		t.Fatalf("want ReconcileCancelled, got %s", results[0].Action)
+	}
+	ids := log.publishedIDs()
+	if len(ids) != 1 || ids[0] != "mlwclid2_cancelled" {
+		t.Fatalf("published: want [mlwclid2_cancelled], got %v", ids)
 	}
 }

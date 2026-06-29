@@ -31,23 +31,134 @@ func (h *Hand) publishAndApply(ctx context.Context, e poslog.Event) {
 	}
 	// Keep pendingOrderPos in sync with poslog events.
 	switch e.Kind {
+	case poslog.KindOrderPlace:
+		var p poslog.OrderPlacePayload
+		if jsonErr := unmarshalJSON(e.Payload, &p); jsonErr == nil {
+			h.pendingOrderPos[p.ClientOrderID] = e.PositionID
+		}
 	case poslog.KindOrderPlaced:
 		var p poslog.OrderPlacedPayload
 		if jsonErr := unmarshalJSON(e.Payload, &p); jsonErr == nil {
 			h.pendingOrderPos[p.OrderID] = e.PositionID
+			if p.ClientOrderID != "" {
+				h.pendingOrderPos[p.ClientOrderID] = e.PositionID
+			}
 		}
 	case poslog.KindOrderFilled:
 		var p poslog.OrderFilledPayload
 		if jsonErr := unmarshalJSON(e.Payload, &p); jsonErr == nil {
-			delete(h.pendingOrderPos, p.OrderID)
+			posID := h.pendingOrderPos[p.OrderID]
+			if posID != "" {
+				for k, v := range h.pendingOrderPos {
+					if v == posID {
+						delete(h.pendingOrderPos, k)
+					}
+				}
+			} else {
+				delete(h.pendingOrderPos, p.OrderID)
+			}
 		}
 	case poslog.KindOrderCancelled:
 		var p poslog.OrderCancelledPayload
 		if jsonErr := unmarshalJSON(e.Payload, &p); jsonErr == nil {
-			delete(h.pendingOrderPos, p.OrderID)
+			posID := h.pendingOrderPos[p.OrderID]
+			if posID != "" {
+				for k, v := range h.pendingOrderPos {
+					if v == posID {
+						delete(h.pendingOrderPos, k)
+					}
+				}
+			} else {
+				delete(h.pendingOrderPos, p.OrderID)
+			}
 		}
 	}
 	h.mu.Unlock()
+}
+
+// publishOrderPlace emits KindOrderPlace (pre-flight intent) to the durable poslog.
+func (h *Hand) publishOrderPlace(
+	ctx context.Context,
+	clientOrderID, symbol string,
+	reply helmdomain.TradeReply,
+	limitPrice decimal.Decimal,
+	orderType exchange.OrderType,
+	isExitIntent bool,
+) {
+	// Determine pyramid add vs new leg vs close.
+	h.mu.RLock()
+	isFlat := h.pos.IsFlat()
+	primaryPosID := ""
+	if leg := h.pos.PrimaryLeg(); leg != nil {
+		primaryPosID = leg.PositionID
+	}
+	h.mu.RUnlock()
+
+	isClose := isExitIntent
+	isPyramidAdd := !isClose && h.cfg.pyramid && !isFlat
+
+	var positionID string
+	switch {
+	case isClose || isPyramidAdd:
+		positionID = primaryPosID
+	default:
+		positionID = clientOrderID // new leg: PositionID = opening client_order_id
+	}
+	if positionID == "" {
+		return // no active leg context — skip
+	}
+
+	priceStr := "0"
+	if limitPrice.IsPositive() {
+		priceStr = limitPrice.String()
+	}
+	orderTypeStr := "market"
+	if orderType == exchange.Limit {
+		orderTypeStr = "limit"
+	}
+
+	payload, _ := json.Marshal(poslog.OrderPlacePayload{
+		ClientOrderID: clientOrderID,
+		Symbol:        symbol,
+		Side:          reply.Side,
+		Qty:           reply.Qty.String(),
+		Price:         priceStr,
+		OrderType:     orderTypeStr,
+		StopLoss:      reply.StopLoss.String(),
+		TakeProfit:    reply.TakeProfit.String(),
+		IsPyramidAdd:  isPyramidAdd,
+		IsClose:       isClose,
+	})
+	h.publishAndApply(ctx, poslog.Event{
+		ID:         clientOrderID,
+		HandID:     h.id.String(),
+		HelmID:     h.helmID.String(),
+		PositionID: positionID,
+		Kind:       poslog.KindOrderPlace,
+		Payload:    payload,
+		At:         time.Now().UTC(),
+	})
+}
+
+// publishOrderCancelled emits KindOrderCancelled to the durable poslog.
+func (h *Hand) publishOrderCancelled(
+	ctx context.Context,
+	orderID, positionID, reason string,
+) error {
+	payload, _ := json.Marshal(poslog.OrderCancelledPayload{
+		OrderID: orderID,
+		Reason:  reason,
+	})
+	h.publishAndApply(ctx, poslog.Event{
+		ID:         orderID + "_cancelled",
+		HandID:     h.id.String(),
+		HelmID:     h.helmID.String(),
+		PositionID: positionID,
+		Kind:       poslog.KindOrderCancelled,
+		Payload:    payload,
+		At:         time.Now().UTC(),
+	})
+	return nil
 }
 
 // publishOrderPlaced emits KindOrderPlaced to the durable poslog.
@@ -77,10 +188,14 @@ func (h *Hand) publishOrderPlaced(
 	case isClose || isPyramidAdd:
 		positionID = primaryPosID
 	default:
-		positionID = orderID // new leg: PositionID = opening order_id
+		if clientOrderID != "" {
+			positionID = clientOrderID
+		} else {
+			positionID = orderID
+		}
 	}
 	if positionID == "" {
-		return // no active leg context — skip (e.g., close with no open position)
+		return // no active leg context — skip
 	}
 
 	priceStr := "0"
@@ -341,6 +456,44 @@ func (h *Hand) appendTradeRecord(ctx context.Context, cp poslog.PositionClosedPa
 				h.log.Info("poslog: purged after trade record published")
 			}
 		}()
+	}
+}
+
+// appendOrphanTradeRecord writes an audit trade record for a position that has been
+// disowned (orphaned) by the hand — i.e. the user cancelled the bracket OCO or the
+// hand could not cleanly exit. The record has exit_price = "" and gross_pnl = "0"
+// so downstream KPI aggregates (win rate, Sharpe) can skip it by filtering on
+// exit_reason = "orphaned", while the audit trail (helm_id, hand_id, symbol, entry)
+// remains visible in the trade history.
+func (h *Hand) appendOrphanTradeRecord(ctx context.Context, leg *position.LegState, source string) {
+	tl := h.helmRuntime.TradeLog
+	if tl == nil {
+		return
+	}
+	now := time.Now().UTC()
+	rec := perf.TradeRecord{
+		HelmID:     h.helmID.String(),
+		HandID:     h.id.String(),
+		UserID:     h.helmRuntime.UserID.String(),
+		Symbol:     leg.Symbol,
+		Side:       leg.Side,
+		Qty:        leg.Qty.String(),
+		Timeframe:  h.Timeframe,
+		EntryPrice: leg.EntryPrice.String(),
+		EntryAt:    leg.OpenedAt,
+		ExitAt:     now,
+		// exit_price omitted (unknown — position left at exchange).
+		// gross_pnl = "0": neutral sentinel; downstream filters on exit_reason = "orphaned".
+		GrossPnL:        "0",
+		StopLossPrice:   decimalToString(leg.StopLoss),
+		TakeProfitPrice: decimalToString(leg.TakeProfit),
+		PlannedRisk:     plannedRisk(leg.Qty.String(), leg.EntryPrice.String(), leg.StopLoss.String()),
+		NEntries:        leg.EntryCount(),
+		ExitReason:      "orphaned",
+		Strategy:        h.StrategyName,
+	}
+	if err := tl.Append(ctx, rec); err != nil {
+		h.log.Warn("trade_log: orphan record publish failed", "symbol", leg.Symbol, "source", source, "err", err)
 	}
 }
 

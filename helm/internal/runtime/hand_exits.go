@@ -242,6 +242,21 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 			}
 		}
 	}
+
+	remainingCount := 0
+	if affectedSymbol != "" {
+		if lv, ok := h.exitLevels[affectedSymbol]; ok {
+			filtered := lv.ExchangeOrderIDs[:0]
+			for _, id := range lv.ExchangeOrderIDs {
+				if id != orderID {
+					filtered = append(filtered, id)
+				}
+			}
+			lv.ExchangeOrderIDs = filtered
+			h.exitLevels[affectedSymbol] = lv
+			remainingCount = len(filtered)
+		}
+	}
 	h.mu.Unlock()
 
 	// Case 3: OCO counterpart auto-cancel — drop the cancelled ID and let the
@@ -256,23 +271,13 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 	//      In both sub-cases the fill is still in-flight via WS, or will be caught by
 	//      the bracket poller's next GetOrder on the remaining IDs.
 	//
-	// Do NOT orphan here — the fill will close the leg. If the fill is genuinely missing
-	// (e.g. tryRecoverBracketFill missed it), the next portfolio sync detects the desync.
-	if affectedLeg != nil && (affectedLeg.Phase == position.PhaseExiting || affectedLeg.Phase == position.PhaseOpen) {
-		h.log.Info("hand: bracket cancelled — OCO counterpart auto-cancel (partner triggered or fill in-flight)",
-			"symbol", affectedSymbol, "order_id", orderID, "phase", affectedLeg.Phase)
-		h.mu.Lock()
-		if lv, ok := h.exitLevels[affectedSymbol]; ok {
-			filtered := lv.ExchangeOrderIDs[:0]
-			for _, id := range lv.ExchangeOrderIDs {
-				if id != orderID {
-					filtered = append(filtered, id)
-				}
-			}
-			lv.ExchangeOrderIDs = filtered
-			h.exitLevels[affectedSymbol] = lv
-		}
-		h.mu.Unlock()
+	// We only return early here if we are currently exiting (PhaseExiting) or if the leg
+	// is PhaseOpen but there is still at least one active order remaining in the bracket.
+	// If remainingCount == 0 for a PhaseOpen leg, it means BOTH bracket orders have been
+	// cancelled externally without any fill, so we must proceed to disown/orphan.
+	if affectedLeg != nil && (affectedLeg.Phase == position.PhaseExiting || (affectedLeg.Phase == position.PhaseOpen && remainingCount > 0)) {
+		h.log.Info("hand: OCO partner cancelled — counterpart auto-cancel (partner triggered or fill in-flight)",
+			"symbol", affectedSymbol, "order_id", orderID, "phase", affectedLeg.Phase, "remaining", remainingCount)
 		return
 	}
 
@@ -346,8 +351,9 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 	// Cancelling the bracket revokes the hand's mandate over this leg's capital — by
 	// contract the hand DISOWNS the leg rather than claiming a close. The position is
 	// left at the exchange (now the user's), so we emit KindPositionOrphaned, NOT
-	// KindPositionClosed: no realized PnL is booked and no round-trip trade is recorded
-	// (the outcome belongs to the user and is unknown). See ACTOR_MODEL.md / hand_exits.md.
+	// KindPositionClosed: no realized PnL is booked. An audit trade record with
+	// gross_pnl=0 and exit_reason="orphaned" is written so the event is visible in
+	// trade history but excluded from KPI aggregates (win rate, Sharpe).
 	//
 	// SCOPE: this disown contract carries SPOT semantics. On spot, a resting OCO sell locks
 	// the base balance, so cancelling it is a strong "user is taking over" signal. Futures
@@ -369,11 +375,10 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 		Payload:    payload,
 		At:         now,
 	})
+	// Write audit trade record: exit_price="", gross_pnl="0", exit_reason="orphaned".
+	h.appendOrphanTradeRecord(ctx, affectedLeg, "manual")
 
-	// Drop the leg from the hand's view of the shared portfolio. We do NOT call ReportFill
-	// (no exit price / no PnL) and do NOT append a trade record — this is a disown, not a
-	// trade. If the position is still live at the exchange, the next Sync() re-surfaces it
-	// as an unattributed helm-level position.
+	// Drop the leg from the hand's view of the shared portfolio.
 	// RemovePosition acquires tradeMu internally — Hand must never lock tradeMu directly to
 	// avoid a mutex-ordering violation (tradeMu is owned by HelmRuntime, not Hand).
 	h.helmRuntime.RemovePosition(affectedSymbol)
@@ -429,7 +434,7 @@ func (h *Hand) orphanLegsForSymbol(ctx context.Context, symbol, source string) {
 			Code:   CodePositionExtClosed,
 			Symbol: symbol,
 			Reason: "could not cleanly exit — leg orphaned (" + source + ")",
-			Msg:    "hand: position orphaned — no trade recorded",
+			Msg:    "hand: position orphaned — audit trade record written (pnl=0)",
 		})
 		payload, _ := json.Marshal(poslog.PositionOrphanedPayload{Symbol: symbol, Source: source})
 		h.publishAndApply(ctx, poslog.Event{
@@ -441,6 +446,8 @@ func (h *Hand) orphanLegsForSymbol(ctx context.Context, symbol, source string) {
 			Payload:    payload,
 			At:         time.Now().UTC(),
 		})
+		// Write audit trade record: exit_price="", gross_pnl="0", exit_reason="orphaned".
+		h.appendOrphanTradeRecord(ctx, leg, source)
 	}
 	h.helmRuntime.RemovePosition(symbol)
 

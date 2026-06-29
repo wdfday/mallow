@@ -23,6 +23,10 @@ import (
 type Kind string
 
 const (
+	// KindOrderPlace is written before submitting the order to the exchange (pre-flight).
+	// Represents intent to trade with client_order_id.
+	KindOrderPlace Kind = "order_place"
+
 	// KindOrderPlaced is written immediately after the exchange returns an order_id.
 	// IsPyramidAdd=false → opening a new leg.
 	// IsPyramidAdd=true  → adding to an existing pyramid position.
@@ -56,6 +60,20 @@ const (
 	// can cancel the sibling after a restart.
 	KindBracketPlaced Kind = "bracket_placed"
 )
+
+// OrderPlacePayload carries the pre-flight order intent.
+type OrderPlacePayload struct {
+	ClientOrderID string `json:"client_order_id"`
+	Symbol        string `json:"symbol"`
+	Side          string `json:"side"`       // "buy" | "sell"
+	Qty           string `json:"qty"`        // decimal string
+	Price         string `json:"price"`      // "0" for market orders
+	OrderType     string `json:"order_type"` // "market" | "limit"
+	StopLoss      string `json:"stop_loss,omitempty"`
+	TakeProfit    string `json:"take_profit,omitempty"`
+	IsPyramidAdd  bool   `json:"is_pyramid_add,omitempty"` // true → adding to existing leg
+	IsClose       bool   `json:"is_close,omitempty"`       // true → closing the leg
+}
 
 // OrderPlacedPayload carries order intent. SL/TP here are the signal's values —
 // for pyramid adds they will replace the existing leg's levels on fill.

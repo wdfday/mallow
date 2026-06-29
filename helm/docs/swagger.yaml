@@ -9,7 +9,7 @@ definitions:
       ts:
         type: string
     type: object
-  mallow_helm_internal_infra_eventlog.EventRecord:
+  mallow_helm_internal_infra_journal_eventlog.EventRecord:
     properties:
       at:
         type: string
@@ -661,7 +661,7 @@ definitions:
     properties:
       events:
         items:
-          $ref: '#/definitions/mallow_helm_internal_infra_eventlog.EventRecord'
+          $ref: '#/definitions/mallow_helm_internal_infra_journal_eventlog.EventRecord'
         type: array
       has_more:
         type: boolean
@@ -1219,11 +1219,11 @@ definitions:
       status:
         type: integer
     type: object
-  mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_infra_eventlog_EventRecord:
+  mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_infra_journal_eventlog_EventRecord:
     properties:
       data:
         items:
-          $ref: '#/definitions/mallow_helm_internal_infra_eventlog.EventRecord'
+          $ref: '#/definitions/mallow_helm_internal_infra_journal_eventlog.EventRecord'
         type: array
       detail:
         type: string
@@ -1779,7 +1779,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_infra_eventlog_EventRecord'
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_infra_journal_eventlog_EventRecord'
         "401":
           description: Unauthorized
           schema:
@@ -2933,7 +2933,7 @@ paths:
         "200":
           description: OK
           schema:
-            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_infra_eventlog_EventRecord'
+            $ref: '#/definitions/mallow_helm_internal_shared.SuccessResponse-array_mallow_helm_internal_infra_journal_eventlog_EventRecord'
         "401":
           description: Unauthorized
           schema:

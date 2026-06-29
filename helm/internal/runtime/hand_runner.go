@@ -790,6 +790,8 @@ func (h *Hand) runPlaceREST(ctx context.Context, pp *pendingPlace) {
 				"symbol", pp.sig.Symbol, "exit_qty", pp.orderQty, "free_balance", freeQty)
 		}
 	}
+	// Publish KindOrderPlace to poslog as WAL before we make the exchange REST calls.
+	h.publishOrderPlace(ctx, pp.clid, pp.sig.Symbol, pp.reply, pp.limitPrice, pp.orderType, pp.isExitOrder)
 
 	result, err := h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, pp.orderReq)
 	// Clock skew on exit orders: resync and retry once before falling through to the
@@ -944,6 +946,17 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 			Reason:    err.Error(),
 			Msg:       "order: placement failed",
 		})
+
+		// Revert the in-memory pending state machine transition by publishing order_cancelled
+		positionID := clid // opening entry fallback
+		h.mu.RLock()
+		if leg := h.pos.PrimaryLeg(); leg != nil {
+			positionID = leg.PositionID
+		}
+		h.mu.RUnlock()
+		if publishErr := h.publishOrderCancelled(ctx, clid, positionID, err.Error()); publishErr != nil {
+			h.log.Error("hand: failed to publish order_cancelled after placement failure", "err", publishErr)
+		}
 		// Auth error mid-run: credentials were revoked or expired at the exchange.
 		// Use a streak counter so a single transient 401 (clock skew, exchange glitch) does
 		// not trigger a full pause. Only after authErrThreshold consecutive auth failures do

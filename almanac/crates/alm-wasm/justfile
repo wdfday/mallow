@@ -18,3 +18,9 @@ sync:
     @test -f pkg/alm_wasm_bg.wasm || (echo "pkg/ not found — run 'just build' first" && exit 1)
     rm -f pkg/.gitignore
     cp -r pkg/. ../../../mallow-client/vendor/alm-wasm/
+
+# Compile alm-wasm for Node.js and run performance benchmarks
+bench:
+    wasm-pack build --target nodejs --out-dir pkg-node
+    node bench_node/bench.js
+

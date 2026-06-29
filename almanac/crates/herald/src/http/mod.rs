@@ -32,7 +32,6 @@
 //! | `GET  /api/store/strategies/:id`       | Get one by id                                   |
 //! | `PUT  /api/store/strategies/:id`       | Update label / notes                            |
 //! | `DELETE /api/store/strategies/:id`     | Delete                                          |
-//! | `GET  /api/store/strategies/:name/versions` | All versions for a name                   |
 //!
 //! # Cursor pagination (`POST /api/data/:symbol`)
 //!

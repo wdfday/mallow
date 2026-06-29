@@ -174,32 +174,15 @@ impl Handle {
         })
     }
 
-    /// Called from `SymbolGroup::evaluate_all` with the base-TF bar.
-    ///
-    /// For V1 with `target_tf == base_tf`: feed directly.
-    /// For V1 with `target_tf != base_tf`: fire only at alignment points,
-    ///   reading the bar from the ledger's target_tf ring.
-    /// For V2: always fires (alignment check done internally in `on_bar_v2`).
-    pub fn on_bar_base(&mut self, base_bar: &Bar, base_tf: Timeframe) -> Vec<Signal> {
+    /// Called from `SymbolGroup::evaluate_all` when a bar for this handle's
+    /// `target_tf` has just closed.  The caller guarantees `bar.timeframe ==
+    /// self.target_tf` via the TF filter in `evaluate_all`, so no alignment
+    /// check is needed here.
+    pub fn on_bar_base(&mut self, bar: &Bar) -> Vec<Signal> {
         let sigs = match &mut self.live {
-            LiveStrategy::V1 { strategy } => {
-                if self.target_tf == base_tf {
-                    strategy.on_bar(base_bar)
-                } else {
-                    // Only fire at alignment points for non-base TF hands.
-                    if !is_htf_align_point(base_bar.timestamp, base_tf, self.target_tf) {
-                        return Vec::new();
-                    }
-                    // Read the bar from the ledger ring at target_tf.
-                    let bar = match self.ledger.with_state(&self.symbol, self.target_tf, |s| s.bar_window.back().cloned()) {
-                        Some(Some(b)) => b,
-                        _ => return Vec::new(),
-                    };
-                    strategy.on_bar(&bar)
-                }
-            }
+            LiveStrategy::V1 { strategy } => strategy.on_bar(bar),
             LiveStrategy::V2 { strategy, declared_htfs, eval_tf } => {
-                on_bar_v2(strategy.as_mut(), base_bar, base_tf, *eval_tf, declared_htfs, &self.symbol, &self.ledger)
+                on_bar_v2(strategy.as_mut(), bar, *eval_tf, declared_htfs, &self.symbol, &self.ledger)
             }
         };
         if !sigs.is_empty() {
@@ -215,37 +198,36 @@ impl Handle {
 
 // ── v2 live evaluation ────────────────────────────────────────────────────────
 
+/// V2 live evaluation.
+///
+/// `tf` is the strategy's base TF (= handle's `target_tf`).  Called once per
+/// `tf`-bar close.  For each declared HTF, checks whether this bar sits at an
+/// alignment boundary and, if so, merges the latest HTF bar from the ledger.
 fn on_bar_v2(
     strategy: &mut dyn MtfStrategy,
-    base_bar: &Bar,
-    base_tf: Timeframe,
-    eval_tf: Timeframe,
+    bar: &Bar,
+    tf: Timeframe,
     declared_htfs: &[Timeframe],
     symbol: &str,
     ledger: &Arc<Ledger>,
 ) -> Vec<Signal> {
-    // For each declared HTF: if this base bar is at an alignment point,
-    // read the latest bar from the ledger ring and merge the base bar in
-    // to get a consistent close.  The forming H1 bar from the exchange may
-    // lag by a tick or two; by overriding close/high/low with the base bar
-    // we guarantee the H1 the strategy sees has the same close as the last
-    // base bar of that bucket — no stale-close artifacts in indicators.
     let mut htf_events: Vec<(Timeframe, Bar)> = Vec::new();
     for &htf in declared_htfs {
-        if is_htf_align_point(base_bar.timestamp, base_tf, htf) {
+        if is_htf_align_point(bar.timestamp, tf, htf) {
             let latest = ledger
                 .with_state(symbol, htf, |s| s.bar_window.back().cloned())
                 .flatten();
             if let Some(htf_bar) = latest {
-                // Merge: keep H1 open/volume (accumulated by exchange), override
-                // close with base bar close (exact final), clamp high/low.
+                // Override close/high/low with the base bar so the HTF the
+                // strategy sees matches the exact final tick — no stale-close
+                // artifacts when the HTF feed lags slightly.
                 let merged = Bar::new(
                     htf_bar.timestamp,
                     &htf_bar.symbol,
                     htf_bar.open,
-                    htf_bar.high.max(base_bar.high),
-                    htf_bar.low.min(base_bar.low),
-                    base_bar.close,
+                    htf_bar.high.max(bar.high),
+                    htf_bar.low.min(bar.low),
+                    bar.close,
                     htf_bar.volume,
                 );
                 htf_events.push((htf, merged));
@@ -255,22 +237,19 @@ fn on_bar_v2(
     // Largest TF first — matches MtfEngine heap tie-breaker order.
     htf_events.sort_by(|a, b| b.0.duration_ms().cmp(&a.0.duration_ms()));
 
-    // Build owned event list: HTF events + base bar.
     let mut events_owned: Vec<(Timeframe, Bar)> = htf_events;
-    events_owned.push((eval_tf, base_bar.clone()));
+    events_owned.push((tf, bar.clone()));
 
     let tf_bar_events: Vec<TfBarEvent<'_>> = events_owned
         .iter()
-        .map(|(tf, b)| TfBarEvent { tf: *tf, bar: b })
+        .map(|(t, b)| TfBarEvent { tf: *t, bar: b })
         .collect();
 
-    // MtfScriptStrategy does not use views (it maintains its own binding state).
-    // Pass empty map — consistent with backtest path where views are ledger-owned.
     let empty_views: HashMap<Timeframe, TfView<'_>> = HashMap::new();
 
     let snap = MtfSnapshot {
-        base_tf: eval_tf,
-        close_ts: base_bar.timestamp + base_tf.duration_ms(),
+        base_tf: tf,
+        close_ts: bar.timestamp + tf.duration_ms(),
         events: &tf_bar_events,
         views: &empty_views,
     };
@@ -410,11 +389,14 @@ impl SymbolGroup {
         self.hands.len()
     }
 
-    /// Run every hand, passing the base-TF bar. Alignment-point filtering is
-    /// done inside each handle's `on_bar_base`. Returns one entry per emitting hand.
-    pub fn evaluate_all(&mut self, base_bar: &Bar, base_tf: Timeframe) -> Vec<(String, String, Signal)> {
+    /// Run every hand whose `target_tf` matches `tf`, passing the just-closed
+    /// bar.  Returns one entry per emitting hand.
+    pub fn evaluate_all(&mut self, bar: &Bar, tf: Timeframe) -> Vec<(String, String, Signal)> {
         let mut results = Vec::new();
         for h in self.hands.iter_mut() {
+            if h.target_tf != tf {
+                continue;
+            }
             let strategy_type = match &h.live {
                 LiveStrategy::V1 { .. } => "v1",
                 LiveStrategy::V2 { .. } => "v2",
@@ -427,7 +409,7 @@ impl SymbolGroup {
             let _bot_enter = bot_span.enter();
 
             let bot_start = std::time::Instant::now();
-            let sigs = h.on_bar_base(base_bar, base_tf);
+            let sigs = h.on_bar_base(bar);
             let bot_us = bot_start.elapsed().as_micros();
 
             metrics::histogram!(

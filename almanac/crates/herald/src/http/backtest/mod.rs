@@ -27,7 +27,7 @@ use axum::{
 use axum::routing::{get, post};
 use alm_engine::{
     backtest,
-    types::{BacktestRequest, BacktestResponse, MtfBacktestRequest, ScriptBacktestRequest},
+    types::{BacktestRequest, BacktestResponse, ScriptBacktestRequest},
 };
 use metrics::{gauge, histogram};
 use super::types::{ok, err, err_code};
@@ -44,7 +44,6 @@ pub fn routes() -> Router<HttpState> {
         .route("/api/v1/backtest", post(run_backtest))
         .route("/api/v1/backtest/estimate", post(estimate_backtest))
         .route("/api/v1/backtest/script", post(run_backtest_script))
-        .route("/api/v1/backtest/mtf", post(run_backtest_mtf))
 }
 
 // ── Estimate response ─────────────────────────────────────────────────────────
@@ -188,66 +187,6 @@ pub async fn run_backtest_script(
     ok(body)
 }
 
-// ── POST /api/backtest/mtf ───────────────────────────────────────────────────
-
-#[utoipa::path(
-    post,
-    path = "/api/v1/backtest/mtf",
-    responses(
-        (status = 200, description = "MTF backtest report"),
-        (status = 400, description = "Bad request"),
-        (status = 429, description = "Too many concurrent backtests")
-    ),
-    tag = "backtest"
-)]
-pub async fn run_backtest_mtf(
-    State(state): State<HttpState>,
-    Json(req): Json<MtfBacktestRequest>,
-) -> Response {
-    let Some(_permit) = try_acquire(&state) else {
-        metrics::counter!("herald_backtest_requests_total", "type" => "mtf", "result" => "rejected").increment(1);
-        return too_many_requests();
-    };
-    info!(
-        strategy = %req.strategy,
-        symbol   = %req.symbol,
-        base_tf  = req.base_tf.as_deref().unwrap_or("M1"),
-        htf      = ?req.htf_timeframes,
-        "HTTP MTF backtest request",
-    );
-    let mut req = req;
-    inject_mtf_weekly_overrides(&state, &mut req);
-    const BACKTEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
-    let data_dir = Arc::clone(&state.data_dir);
-    let t0 = std::time::Instant::now();
-    let task = tokio::task::spawn_blocking(move || backtest::run_mtf(req, &data_dir));
-    let result = tokio::time::timeout(BACKTEST_TIMEOUT, task).await;
-    let elapsed_ms = t0.elapsed().as_millis() as f64;
-    match result {
-        Err(_elapsed) => {
-            warn!(elapsed_ms, timeout_secs = 300u64, "MTF backtest timed out");
-            metrics::counter!("herald_backtest_timeouts_total").increment(1);
-            metrics::counter!("herald_backtest_requests_total", "type" => "mtf", "result" => "timeout").increment(1);
-            err(StatusCode::REQUEST_TIMEOUT, "backtest timed out — reduce date range or try again")
-        }
-        Ok(Ok(Ok(report))) => {
-            histogram!("herald_backtest_duration_ms", "type" => "mtf").record(elapsed_ms);
-            metrics::counter!("herald_backtest_requests_total", "type" => "mtf", "result" => "ok").increment(1);
-            ok(report)
-        }
-        Ok(Ok(Err(e))) => {
-            warn!(error = %e, "MTF backtest failed");
-            metrics::counter!("herald_backtest_requests_total", "type" => "mtf", "result" => "error").increment(1);
-            err(StatusCode::BAD_REQUEST, e.to_string())
-        }
-        Ok(Err(e)) => {
-            error!(error = %e, "MTF backtest spawn_blocking panicked");
-            metrics::counter!("herald_backtest_requests_total", "type" => "mtf", "result" => "error").increment(1);
-            err(StatusCode::INTERNAL_SERVER_ERROR, "internal engine error")
-        }
-    }
-}
-
 // ── Core helpers ─────────────────────────────────────────────────────────────
 
 struct BacktestPermit(#[allow(dead_code)] tokio::sync::OwnedSemaphorePermit);
@@ -361,29 +300,6 @@ fn inject_weekly_overrides(
     }
 }
 
-fn inject_mtf_weekly_overrides(
-    state: &HttpState,
-    req: &mut MtfBacktestRequest,
-) {
-    let mut overrides_needed = Vec::new();
-    if req.base_tf.as_deref() == Some("W1") {
-        overrides_needed.push("W1".to_string());
-    }
-    for htf in &req.htf_timeframes {
-        if htf == "W1" {
-            overrides_needed.push("W1".to_string());
-        }
-    }
-    if !overrides_needed.is_empty() {
-        if let Some(bars) = get_weekly_bars_from_ledger(state, &req.symbol, req.data_source.as_deref()) {
-            let mut map = req.history_overrides.take().unwrap_or_default();
-            for tf in overrides_needed {
-                map.insert(tf, bars.clone());
-            }
-            req.history_overrides = Some(map);
-        }
-    }
-}
 
 // Workaround: BacktestResponse is only referenced through `Json<>`. Silence
 // the dead-import warning in case rustc cannot see through the `Json` layer.

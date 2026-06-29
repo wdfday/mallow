@@ -93,22 +93,6 @@ pub async fn get_strategy(State(state): State<HttpState>, Path(id): Path<String>
     }
 }
 
-#[utoipa::path(
-    get,
-    path = "/api/v1/strategy/strategies/{name}/versions",
-    params(("name" = String, Path, description = "Strategy name")),
-    responses((status = 200, description = "All versions for the named strategy")),
-    tag = "strategy"
-)]
-pub async fn list_strategy_versions(
-    State(state): State<HttpState>,
-    Path(name): Path<String>,
-) -> Response {
-    match state.store.list_strategy_versions(&name).await {
-        Ok(items) => ok(items),
-        Err(e)    => server_err(e),
-    }
-}
 
 #[utoipa::path(
     put,

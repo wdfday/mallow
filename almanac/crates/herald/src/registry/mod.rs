@@ -287,12 +287,6 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
     }
 
     fn evaluate_and_publish(&self, symbol: &str, tf: Timeframe, outcome: &AdvanceOutcome) {
-        // Only evaluate on base-TF advances. HTF alignment is handled
-        // per-handle inside on_bar_base via is_htf_align_point.
-        if tf != self.base_tf {
-            return;
-        }
-
         // Freshness is measured from bar CLOSE time, not open.
         const FUTURE_OPEN_TOLERANCE_MS: i64 = 5_000;
         let now_ms = chrono::Utc::now().timestamp_millis();
@@ -305,16 +299,18 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
         debug!(%symbol, ?tf, bar_ts = outcome.ts, close_ts, age_ms, from_future, is_stale,
                "evaluate_and_publish");
 
-        // Fetch the confirmed base bar from the ledger's ring buffer.
+        // Fetch the confirmed bar for this TF from the ledger's ring buffer.
         let bar = match self.ledger.with_state(symbol, tf, |s| s.bar_window.back().cloned()) {
             Some(Some(b)) => b,
             _ => return,
         };
 
-        // Seed a fallback hand for new symbols at base TF — only when:
-        //   (a) global_config is set (fast atomic read via RwLock)
-        //   (b) this symbol has no explicit hands yet
-        if self.global_config.read().is_some() && !self.groups.contains_key(symbol) {
+        // Seed a fallback hand for new symbols — only on base-TF advances so we
+        // don't race against the first HTF bar arriving before any M1 bar has.
+        if tf == self.base_tf
+            && self.global_config.read().is_some()
+            && !self.groups.contains_key(symbol)
+        {
             self.ensure_fallback_hand(symbol);
         }
 
@@ -340,7 +336,8 @@ let exit = fast[1] >= slow[1] && fast[0] < slow[0];"#.into(),
 
             debug!(%symbol, ?tf, bar_ts = outcome.ts, n_hands = group.len(), "evaluating hands");
             let eval_start = std::time::Instant::now();
-            let result = group.evaluate_all(&bar, self.base_tf);
+            // Pass `tf` so evaluate_all only runs handles whose target_tf matches.
+            let result = group.evaluate_all(&bar, tf);
             let eval_us = eval_start.elapsed().as_micros();
             (result, lock_wait_us, eval_us)
         };
@@ -567,9 +564,9 @@ mod tests {
         assert_eq!(reg.list_hands().len(), 0);
     }
 
-    /// Hand registered at a higher TF only fires at alignment points on M1 advances.
+    /// Hand registered at M5 fires on every M5 bar advance (not via M1 alignment points).
     #[tokio::test]
-    async fn hand_at_htf_only_fires_at_alignment_points() {
+    async fn hand_at_htf_fires_on_htf_advance() {
         let (led, reg, mut rx) = make_registry();
         reg.set_freshness_gate_ms(i64::MAX);
         reg.register(
@@ -579,30 +576,28 @@ mod tests {
             Timeframe::M5,
         ).unwrap();
 
-        // Ensure ledger has M5 slot so alignment lookups work.
-        led.ensure_symbol("BTCUSDT", Timeframe::M5, None);
-
         let m5_ms = Timeframe::M5.duration_ms();
-        let m1_ms = Timeframe::M1.duration_ms();
         let now = chrono::Utc::now().timestamp_millis();
         let aligned_m5 = now - (now % m5_ms);
-        let start = aligned_m5 - 3 * m5_ms;
-        let n_bars = 3 * 5 + 1;
-        let mut signal_count = 0usize;
-        for i in 0..n_bars {
-            let ts = start + i as i64 * m1_ms;
-            // Advance M5 at alignment points so the ring has data.
-            if (ts + m1_ms) % m5_ms == 0 {
-                led.advance(Timeframe::M5, mk_bar("BTCUSDT", ts - (m5_ms - m1_ms), 100.0)).unwrap();
-            }
-            led.advance(
-                Timeframe::M1,
-                mk_bar("BTCUSDT", ts, 100.0 + i as f64),
-            ).unwrap();
-            while let Ok(_sig) = rx.try_recv() {
-                signal_count += 1;
+
+        // Advance 3 M5 bars — expect at least one signal (strategy may suppress
+        // repeated LONG if already long, but the first bar must fire).
+        let mut m5_signals = 0usize;
+        for i in 0..3usize {
+            let ts = aligned_m5 - (3 - i) as i64 * m5_ms;
+            led.advance(Timeframe::M5, mk_bar("BTCUSDT", ts, 100.0 + i as f64)).unwrap();
+            while rx.try_recv().is_ok() {
+                m5_signals += 1;
             }
         }
-        assert!(signal_count > 0, "hand should have fired on at least one M5 alignment point");
+        assert!(m5_signals > 0, "M5 hand should fire on M5 advances");
+
+        // M1 advances must NOT trigger M5 hand.
+        let m1_ms = Timeframe::M1.duration_ms();
+        for i in 0..5usize {
+            let ts = aligned_m5 + i as i64 * m1_ms;
+            led.advance(Timeframe::M1, mk_bar("BTCUSDT", ts, 200.0 + i as f64)).unwrap();
+        }
+        assert!(rx.try_recv().is_err(), "M1 advances must not trigger M5 hand");
     }
 }

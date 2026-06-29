@@ -260,7 +260,7 @@ components:
           type: string
           description: |-
             Intra-bar stop detection mode.
-            `"close_only"` (default) | `"pessimistic"` | `"ohlc_heuristic"`.
+            `"pessimistic"` | `"ohlc_heuristic"`.
           nullable: true
         max_position_pct:
           type: number
@@ -316,6 +316,9 @@ components:
             = MERGE: legs collapse into one averaged position, TP/SL re-based to the last
             leg. `false` = INDEPENDENT: each leg is its own position (`SYM#n`) with its own
             entry / TP / SL / trade. Mirrors helm `Pyramid`.
+          nullable: true
+        reverse_policy:
+          type: string
           nullable: true
         risk_free_annual:
           type: number
@@ -635,6 +638,9 @@ components:
         pyramid:
           type: boolean
           description: 'Pyramiding mode: true/None = MERGE (averaged), false = INDEPENDENT legs. Mirrors helm `Pyramid`.'
+          nullable: true
+        reverse_policy:
+          type: string
           nullable: true
         risk_free_annual:
           type: number

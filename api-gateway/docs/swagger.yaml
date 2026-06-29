@@ -71,19 +71,6 @@ definitions:
         example: "2024-12-31T23:59:59Z"
         type: string
     type: object
-  handler.StreamRequest:
-    properties:
-      indicators:
-        items:
-          additionalProperties: true
-          type: object
-        type: array
-      script:
-        type: string
-      timeframe:
-        example: M1
-        type: string
-    type: object
 info:
   contact: {}
   description: |-
@@ -323,32 +310,6 @@ paths:
       security:
       - BearerAuth: []
       summary: Latest OHLCV bar (alias)
-      tags:
-      - Herald
-  /api/v1/data/duckdb:
-    post:
-      consumes:
-      - application/json
-      description: Run a raw Parquet query via DuckDB on historical data.
-      parameters:
-      - description: DuckDB query payload
-        in: body
-        name: body
-        required: true
-        schema:
-          additionalProperties: true
-          type: object
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties: true
-            type: object
-      security:
-      - BearerAuth: []
-      summary: DuckDB Parquet query
       tags:
       - Herald
   /api/v1/hands:
@@ -1213,79 +1174,6 @@ paths:
       summary: List available strategies
       tags:
       - Herald
-  /api/v1/stream/{symbol}:
-    get:
-      description: EventSource-compatible SSE stream of raw OHLCV bars for a symbol.
-        Emits a `status` event first, then `bar` events per incoming candle. Use `?tf=M1`
-        to select timeframe.
-      parameters:
-      - description: Symbol, e.g. BTCUSDT
-        in: path
-        name: symbol
-        required: true
-        type: string
-      - description: Timeframe (M1, M5, H1, …)
-        in: query
-        name: tf
-        type: string
-      produces:
-      - text/event-stream
-      responses:
-        "200":
-          description: 'event: bar\ndata: {...}'
-          schema:
-            type: string
-      security:
-      - BearerAuth: []
-      summary: SSE bar stream (GET — raw OHLCV)
-      tags:
-      - Herald Stream
-    post:
-      consumes:
-      - application/json
-      description: SSE stream carrying bars enriched with indicator values or a script
-        output. Requires a `fetch()` + `ReadableStream` client (not plain EventSource).
-        Body specifies indicator configs or a script.
-      parameters:
-      - description: Symbol
-        in: path
-        name: symbol
-        required: true
-        type: string
-      - description: Stream config
-        in: body
-        name: body
-        required: true
-        schema:
-          $ref: '#/definitions/handler.StreamRequest'
-      produces:
-      - text/event-stream
-      responses:
-        "200":
-          description: 'event: bar\ndata: {...}'
-          schema:
-            type: string
-      security:
-      - BearerAuth: []
-      summary: SSE bar stream (POST — with indicators / script)
-      tags:
-      - Herald Stream
-  /api/v1/stream/signals:
-    get:
-      description: Server-Sent Events stream of live signal batches from all registered
-        hands. Each event carries a `SignalResponse` protobuf payload encoded as JSON.
-      produces:
-      - text/event-stream
-      responses:
-        "200":
-          description: 'event: bar\ndata: {...}'
-          schema:
-            type: string
-      security:
-      - BearerAuth: []
-      summary: SSE signal stream
-      tags:
-      - Herald Stream
   /api/v1/symbols:
     get:
       description: Returns all symbols currently ingested by herald.
@@ -1303,86 +1191,6 @@ paths:
       summary: List live symbols
       tags:
       - Herald
-  /api/v1/watch:
-    get:
-      description: Returns admin warm-set configs (indicator bootstrapping on startup).
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            items:
-              additionalProperties: true
-              type: object
-            type: array
-      security:
-      - BearerAuth: []
-      summary: List watch configs
-      tags:
-      - Herald Admin
-    post:
-      consumes:
-      - application/json
-      parameters:
-      - description: Watch config
-        in: body
-        name: body
-        required: true
-        schema:
-          additionalProperties: true
-          type: object
-      produces:
-      - application/json
-      responses:
-        "201":
-          description: Created
-          schema:
-            additionalProperties: true
-            type: object
-      security:
-      - BearerAuth: []
-      summary: Create a watch config
-      tags:
-      - Herald Admin
-  /api/v1/watch/{id}:
-    delete:
-      parameters:
-      - description: Watch ID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "204":
-          description: No Content
-      security:
-      - BearerAuth: []
-      summary: Delete a watch config
-      tags:
-      - Herald Admin
-    get:
-      parameters:
-      - description: Watch ID
-        in: path
-        name: id
-        required: true
-        type: string
-      produces:
-      - application/json
-      responses:
-        "200":
-          description: OK
-          schema:
-            additionalProperties: true
-            type: object
-      security:
-      - BearerAuth: []
-      summary: Get a watch config
-      tags:
-      - Herald Admin
   /health:
     get:
       description: Returns gateway status and NATS connectivity.

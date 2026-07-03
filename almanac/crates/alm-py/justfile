@@ -1,6 +1,19 @@
 default:
     @just --list
 
+# Initialize virtual environment using python3 (prefers python3.13 or 3.12)
+init:
+    @if command -v python3.13 >/dev/null 2>&1; then \
+        python3.13 -m venv .venv; \
+        echo "Created virtual environment using Python 3.13"; \
+    elif command -v python3.12 >/dev/null 2>&1; then \
+        python3.12 -m venv .venv; \
+        echo "Created virtual environment using Python 3.12"; \
+    else \
+        python3 -m venv .venv; \
+        echo "Created virtual environment using default python3"; \
+    fi
+
 # Build and install alm-py in debug/develop mode into the local virtual environment
 build:
     .venv/bin/maturin develop
@@ -12,6 +25,7 @@ build-release:
 # Install all required Python dependencies into the local virtual environment
 install-deps:
     .venv/bin/pip install --upgrade pip
+    .venv/bin/pip install maturin
     .venv/bin/pip install -e .[dev]
 
 # Run all python tests in alm-py
@@ -25,3 +39,10 @@ test-file file_path:
 # Run the end-to-end strategy comparison pipeline (automatically builds in release mode)
 compare: build-release
     cd notebooks/comparison && ../../.venv/bin/python run_pipeline.py
+
+# Clear generated comparison notebooks and python caches
+clear:
+    rm -f notebooks/comparison/cmp_*.ipynb
+    rm -rf .pytest_cache
+    find . -type d -name "__pycache__" -exec rm -rf {} +
+    @echo "Cleared generated comparison notebooks and python caches."

@@ -271,9 +271,11 @@ def bt_run(
     neg_day  = day_rets[day_rets < 0]
     pos_day  = day_rets[day_rets > 0]
 
-    sortino  = (float(day_rets.mean() / neg_day.std() * np.sqrt(252))
-                if len(neg_day) > 0 else float("nan"))
-    ann_vol  = float(day_rets.std() * np.sqrt(252) * 100) if len(day_rets) > 1 else float("nan")
+    downside_sq = np.sum(np.minimum(day_rets, 0) ** 2)
+    downside_dev = np.sqrt(downside_sq / len(day_rets)) if len(day_rets) else 0.0
+    sortino  = (float(day_rets.mean() / downside_dev * np.sqrt(365.25))
+                if downside_dev > 0 else float("nan"))
+    ann_vol  = float(day_rets.std() * np.sqrt(365.25) * 100) if len(day_rets) > 1 else float("nan")
     skewness = float(_skew(day_rets))         if len(day_rets) > 3 else float("nan")
     ex_kurt  = float(_kurtosis(day_rets) - 3) if len(day_rets) > 3 else float("nan")
     omega    = (float(pos_day.sum() / abs(neg_day.sum()))
@@ -285,7 +287,7 @@ def bt_run(
     cvar_95  = float(day_rets[day_rets <= p05].mean()) if len(day_rets[day_rets <= p05]) else float("nan")
 
     # ── CAGR ─────────────────────────────────────────────────────────────────
-    years = (df.index[-1] - df.index[0]).days / 365.25
+    years = (df.index[-1] - df.index[0]).total_seconds() / (365.25 * 24 * 3600)
     cagr  = ((final / capital) ** (1.0 / years) - 1.0) * 100.0 if years > 0 else float("nan")
 
     # ── Recovery factor ───────────────────────────────────────────────────────

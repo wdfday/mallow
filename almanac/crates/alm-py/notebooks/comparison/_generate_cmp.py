@@ -958,7 +958,7 @@ class SuperTrendInd(bt.Indicator):
     lines = ('direction',)
     params = (('period', {period}), ('multiplier', {multiplier}),)
     def __init__(self):
-        self.atr = bt.indicators.ATR(self.data, period=self.p.period)
+        self.atr = bt.indicators.ATR(self.data, period=self.p.period, movav=bt.indicators.SmoothedMovingAverage)
         self._up  = [None]
         self._dn  = [None]
         self._dir = [1]
@@ -983,7 +983,11 @@ class SuperTrendInd(bt.Indicator):
 class BtStrat(bt.Strategy):
     def __init__(self):
         self.st = SuperTrendInd(self.data, period={period}, multiplier={multiplier})
+        self.count = 0
     def next(self):
+        self.count += 1
+        if self.count < 2:
+            return
         bullish_now  = self.st.lines.direction[0]  == 1
         bullish_prev = self.st.lines.direction[-1] == 1
         if not self.position and not bullish_prev and bullish_now: self.buy()
@@ -1359,10 +1363,15 @@ class BtStrat(bt.Strategy):
         "params": {"session_gap_mins": 60},
         "description": "Price above VWAP → stay long; price crosses below → exit.",
         "pta_code": """\
-vwap_val = ta.vwap(high, low, close, vol)
-above    = close > vwap_val
-entries  = above & ~above.shift(1).fillna(True)
-exits    = ~above & above.shift(1).fillna(False)
+tp = (high + low + close) / 3.0
+tpv = tp * vol
+tpv_sum = tpv.cumsum()
+v_sum = vol.cumsum()
+vwap_val = tpv_sum / v_sum
+vwap_rising = vwap_val > vwap_val.shift(1)
+above = close > vwap_val
+entries = above & vwap_rising
+exits = ~above
 """,
         "bt_code": """\
 class BtStrat(bt.Strategy):
@@ -1370,9 +1379,9 @@ class BtStrat(bt.Strategy):
         self.vwap = ResetVWAP(self.data, session_gap_mins={session_gap_mins})
     def next(self):
         above_now  = self.data.close[0]  > self.vwap.lines.vwap[0]
-        above_prev = self.data.close[-1] > self.vwap.lines.vwap[-1]
-        if not self.position and not above_prev and above_now: self.buy()
-        elif self.position and above_prev and not above_now:   self.close()
+        vwap_rising = self.vwap.lines.vwap[0] > self.vwap.lines.vwap[-1]
+        if not self.position and above_now and vwap_rising: self.buy()
+        elif self.position and not above_now:   self.close()
 """,
     },
 
@@ -2853,11 +2862,13 @@ class CustomAroon(bt.Indicator):
         for idx, val in enumerate(highs):
             if abs(val - max_val) < 1e-9:
                 hhidx = idx
+                break
                 
         llidx = 0
         for idx, val in enumerate(lows):
             if abs(val - min_val) < 1e-9:
                 llidx = idx
+                break
                 
         self.lines.aroonup[0] = 100.0 * (self.p.period - hhidx) / self.p.period
         self.lines.aroondown[0] = 100.0 * (self.p.period - llidx) / self.p.period

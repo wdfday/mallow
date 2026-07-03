@@ -1,6 +1,6 @@
 use rhai::{Array, Dynamic, Engine, EvalAltResult};
 
-use super::binding::MEntry;
+use crate::script::v1::MEntry;
 
 // ── Shared types / constants ──────────────────────────────────────────────────
 
@@ -887,7 +887,7 @@ mod tests {
     /// operators work with integer literals on both sides.
     #[test]
     fn mentry_integer_operators() {
-        use super::MEntry;
+        use crate::script::v1::MEntry;
         use std::collections::HashMap;
 
         let engine = build_engine();

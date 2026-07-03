@@ -22,6 +22,11 @@ pub mod v2;
 
 mod lint;
 mod probe;
+pub(crate) mod utils;
+pub(crate) mod engine;
+
+#[cfg(test)]
+pub(crate) mod poc_stateful;
 
 pub use probe::probe_script_htfs;
 
@@ -35,11 +40,9 @@ pub use lint::{
 // Back-compat: keep `script::strategy::*` and `script::stream::*` paths alive
 // so factory.rs and other callers compile unchanged.
 pub use v1::strategy;
-pub use v1::stream;
 
 pub use v1::{
     ScriptStrategy, script_indicator_deps,
-    ScriptStreamEval, StreamDecl, IndicatorSnapshot, PlotResult,
 };
 
 // ── v2 surface ────────────────────────────────────────────────────────────────

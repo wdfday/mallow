@@ -10,18 +10,15 @@
 
 mod binding;
 mod parse;
-mod engine;
+
 
 pub mod strategy;
 pub use strategy::{ScriptStrategy, script_indicator_deps};
 
-pub mod stream;
-pub use stream::{ScriptStreamEval, StreamDecl, IndicatorSnapshot, PlotResult};
-
 // ── Shared internals — accessible to v2 and script::lint ─────────────────────
 pub(crate) use binding::MEntry;
-pub(crate) use strategy::{scalar_out, bool_out};
-pub(crate) use engine::{
+pub(crate) use crate::script::utils::{scalar_out, bool_out};
+pub(crate) use crate::script::engine::{
     build_engine, extract_max_lookback, BAR_FIELDS, DEFAULT_BUF_DEPTH,
     eval_const_int_expr, second_arg_is_static_literal,
 };

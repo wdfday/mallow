@@ -2,6 +2,7 @@ use alm_core::bar::Bar;
 
 /// Accumulates M1 bars into HTF bars. Emits a completed bar whenever the bucket
 /// boundary changes (i.e. when the next M1 bar belongs to a new TF bucket).
+#[deprecated(since = "0.0.1", note = "HtfAggregator is unused and planned for removal")]
 pub(super) struct HtfAggregator {
     tf_ms:       i64,
     bucket:      Option<i64>, // floor timestamp of current open bucket
@@ -10,6 +11,8 @@ pub(super) struct HtfAggregator {
     o: f64, h: f64, l: f64, c: f64, v: f64,
 }
 
+
+#[deprecated(since = "0.0.1", note = "HtfAggregator is unused and planned for removal")]
 impl HtfAggregator {
     pub(super) fn new(tf_ms: i64) -> Self {
         Self {

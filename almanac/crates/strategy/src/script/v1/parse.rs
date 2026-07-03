@@ -4,7 +4,7 @@ use alm_indicator::IndicatorBox;
 use serde_json::json;
 use std::collections::HashMap;
 
-use super::engine::DEFAULT_BUF_DEPTH;
+use crate::script::engine::DEFAULT_BUF_DEPTH;
 
 // ── IndicatorKind ─────────────────────────────────────────────────────────────
 
@@ -32,26 +32,7 @@ pub(crate) struct IndicatorDecl {
     pub(crate) live:         bool,
 }
 
-// ── Timeframe parser ──────────────────────────────────────────────────────────
 
-fn parse_timeframe(s: &str) -> Option<Timeframe> {
-    match s.to_uppercase().as_str() {
-        "M1"  => Some(Timeframe::M1),
-        "M3"  => Some(Timeframe::M3),
-        "M5"  => Some(Timeframe::M5),
-        "M10" => Some(Timeframe::M10),
-        "M15" => Some(Timeframe::M15),
-        "M30" => Some(Timeframe::M30),
-        "H1"  => Some(Timeframe::H1),
-        "H2"  => Some(Timeframe::H2),
-        "H4"  => Some(Timeframe::H4),
-        "H6"  => Some(Timeframe::H6),
-        "H12" => Some(Timeframe::H12),
-        "D1"  => Some(Timeframe::D1),
-        "W1"  => Some(Timeframe::W1),
-        _     => None,
-    }
-}
 
 // ── Regime block extractor ────────────────────────────────────────────────────
 
@@ -376,7 +357,7 @@ pub(crate) fn try_parse_indicator_line(line: &str) -> Option<IndicatorDecl> {
                     .map(|r| (r, true))
                     .unwrap_or((s, false));
                 live      = is_live;
-                timeframe = parse_timeframe(tf_str);
+                timeframe = crate::script::utils::parse_timeframe(tf_str);
             }
         }
     }
@@ -692,31 +673,10 @@ pub(crate) fn indicator_json_config(
 ///
 /// Shared by `make_indicator_box` (runtime validation), `lint.rs` (linter), and
 /// `v2/parse.rs` (v2 runtime validation) — single source of truth.
-pub(crate) const PERIOD_EXEMPT: &[&str] = &[
-    // period arg maps to other parameters or is ignored entirely:
-    "kalman", "gmma", "ao", "coppock", "bop", "obv", "vwap", "fractal",
-    // handle period=0 with built-in defaults (documented in indicator_json_config):
-    "pmo", "smi", "kst", "parabolic_sar", "uo",
-];
+pub(crate) use crate::script::utils::PERIOD_EXEMPT;
 
 pub(super) fn make_indicator_box(decl: &IndicatorDecl) -> Result<IndicatorBox> {
-    if decl.period == 0 && !PERIOD_EXEMPT.contains(&decl.ind_type.as_str()) {
-        anyhow::bail!(
-            "indicator '{}' (type '{}'): period must be ≥ 1, got 0",
-            decl.var_name, decl.ind_type
-        );
-    }
-    // Validate extra params: negative values would silently truncate to 0 via
-    // `f64 as u64` and produce wrong indicator config without a clear error.
-    for (key, &val) in &decl.extra_params {
-        if val < 0.0 {
-            anyhow::bail!(
-                "indicator '{}': parameter '{}' must be ≥ 0, got {}",
-                decl.var_name, key, val
-            );
-        }
-    }
-    IndicatorBox::from_config(&indicator_json_config(&decl.ind_type, decl.period, &decl.extra_params))
+    crate::script::utils::build_indicator_box(&decl.var_name, &decl.ind_type, decl.period, &decl.extra_params)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

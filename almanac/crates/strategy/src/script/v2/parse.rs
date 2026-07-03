@@ -49,26 +49,7 @@ pub(super) struct IndicatorDecl {
     pub(super) live:         bool,
 }
 
-// ── Timeframe parser ──────────────────────────────────────────────────────────
 
-pub(super) fn parse_timeframe_str(s: &str) -> Option<Timeframe> {
-    match s.to_uppercase().as_str() {
-        "M1"  => Some(Timeframe::M1),
-        "M3"  => Some(Timeframe::M3),
-        "M5"  => Some(Timeframe::M5),
-        "M10" => Some(Timeframe::M10),
-        "M15" => Some(Timeframe::M15),
-        "M30" => Some(Timeframe::M30),
-        "H1"  => Some(Timeframe::H1),
-        "H2"  => Some(Timeframe::H2),
-        "H4"  => Some(Timeframe::H4),
-        "H6"  => Some(Timeframe::H6),
-        "H12" => Some(Timeframe::H12),
-        "D1"  => Some(Timeframe::D1),
-        "W1"  => Some(Timeframe::W1),
-        _     => None,
-    }
-}
 
 // ── Declaration parser ────────────────────────────────────────────────────────
 
@@ -126,7 +107,7 @@ pub(super) fn try_parse_indicator_line(line: &str) -> Option<IndicatorDecl> {
                     .map(|r| (r, true))
                     .unwrap_or((s, false));
                 live      = is_live;
-                timeframe = parse_timeframe_str(tf_str);
+                timeframe = crate::script::utils::parse_timeframe(tf_str);
             }
         }
     }
@@ -152,22 +133,7 @@ fn map_indicator_type(type_str: &str) -> (String, FieldExtract) {
 // ── JSON config / factory ─────────────────────────────────────────────────────
 
 pub(super) fn make_indicator_box(decl: &IndicatorDecl) -> Result<IndicatorBox> {
-    // Mirror v1's validation — same rules apply regardless of which engine parses the script.
-    if decl.period == 0 && !PERIOD_EXEMPT.contains(&decl.ind_type.as_str()) {
-        anyhow::bail!(
-            "indicator '{}' (type '{}'): period must be ≥ 1, got 0",
-            decl.var_name, decl.ind_type
-        );
-    }
-    for (key, &val) in &decl.extra_params {
-        if val < 0.0 {
-            anyhow::bail!(
-                "indicator '{}': parameter '{}' must be ≥ 0, got {}",
-                decl.var_name, key, val
-            );
-        }
-    }
-    IndicatorBox::from_config(&indicator_json_config(&decl.ind_type, decl.period, &decl.extra_params))
+    crate::script::utils::build_indicator_box(&decl.var_name, &decl.ind_type, decl.period, &decl.extra_params)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

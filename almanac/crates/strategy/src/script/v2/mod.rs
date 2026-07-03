@@ -19,7 +19,6 @@
 pub(in crate::script) mod live_agg;
 pub(in crate::script) mod feed_binding;
 pub(in crate::script) mod parse;
-pub(in crate::script) mod engine;
 pub mod strategy;
 
 pub use strategy::MtfScriptStrategy;

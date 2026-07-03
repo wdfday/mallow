@@ -32,10 +32,11 @@ use crate::candle_type::{CandleType, CandleTransform};
 use super::feed_binding::FeedVarBinding;
 use super::parse::{
     extract_candle_directives, extract_max_lookback, extract_regime_block,
-    make_indicator_box, parse_timeframe_str,
+    make_indicator_box,
     try_parse_indicator_line, CandleDirective, DEFAULT_BUF_DEPTH,
 };
-use super::engine::{build_engine, BAR_FIELDS};
+use crate::script::utils::parse_timeframe;
+use crate::script::engine::{build_engine, BAR_FIELDS};
 use crate::script::v1::{MEntry, scalar_out, bool_out};
 
 // ── MtfScriptStrategy ─────────────────────────────────────────────────────────
@@ -55,15 +56,7 @@ pub struct MtfScriptStrategy {
     persistent_state: rhai::Map,
 }
 
-fn validate_candle_kind(kind: &str) -> Result<()> {
-    match kind {
-        "raw" | "heiken_ashi" | "ha" | "smooth_ha" | "smooth_heiken_ashi" => Ok(()),
-        other => Err(anyhow::anyhow!(
-            "unknown candle kind `{other}`; supported: \
-             \"raw\", \"heiken_ashi\" (alias \"ha\"), \"smooth_ha\""
-        )),
-    }
-}
+
 
 impl MtfScriptStrategy {
     /// Backtest mode — collects plot series.
@@ -83,7 +76,7 @@ impl MtfScriptStrategy {
         let live = p.get("_live").and_then(|v| v.as_bool()).unwrap_or(false);
         let base_tf = p.get("base_tf")
             .and_then(|v| v.as_str())
-            .and_then(parse_timeframe_str)
+            .and_then(parse_timeframe)
             .unwrap_or(Timeframe::M1);
         Self::build(script, !live, base_tf)
     }
@@ -101,7 +94,7 @@ impl MtfScriptStrategy {
             let (kind, smooth) = match d {
                 CandleDirective::Transform { kind, smooth } => (kind.as_str(), *smooth),
             };
-            validate_candle_kind(kind)?;
+            crate::script::utils::validate_candle_kind(kind)?;
             Some((kind.to_string(), smooth))
         } else {
             None
@@ -438,7 +431,7 @@ impl MtfStrategy for MtfScriptStrategy {
                     if let Some(fields) = binding.current_fields() {
                         if binding.is_multi() {
                             for (field, val) in &fields {
-                                if alm_indicator::field_kind(field) == alm_indicator::FieldKind::Bool {
+                                if crate::script::utils::is_boolean_flag_field(field) {
                                     continue;
                                 }
                                 series.entry(format!("{name}.{field}"))

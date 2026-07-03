@@ -20,6 +20,7 @@ use super::parse::{indicator_json_config, try_parse_indicator_line, IndicatorKin
 ///
 /// Herald uses `spec_config` + `source_tf` to build an `IndicatorSpec` and
 /// call `ledger.acquire_indicator`.
+#[deprecated(since = "0.0.1", note = "StreamDecl is unused and planned for removal")]
 pub struct StreamDecl {
     /// Variable name in the script, e.g. `"ema20"` from `let ema20 = ind.ema(20)`.
     pub var_name:    String,
@@ -43,6 +44,7 @@ pub struct StreamDecl {
 /// Per-variable indicator data supplied to [`ScriptStreamEval::run`].
 ///
 /// Herald reads values from the ledger cell and packages them here.
+#[deprecated(since = "0.0.1", note = "IndicatorSnapshot is unused and planned for removal")]
 pub enum IndicatorSnapshot {
     /// Single field — newest value at index 0.
     Single(Vec<f64>),
@@ -53,6 +55,7 @@ pub enum IndicatorSnapshot {
 /// Per-bar indicator snapshot returned by [`ScriptStreamEval::run`].
 /// Single-field indicators → `var_name → value`.
 /// Multi-field indicators → `var_name.field → value` (e.g. `macd14.histogram`).
+#[deprecated(since = "0.0.1", note = "PlotResult is unused and planned for removal")]
 pub type PlotResult = HashMap<String, f64>;
 
 // ── ScriptStreamEval ────────────────────────────────────────────────────────────
@@ -62,6 +65,7 @@ pub type PlotResult = HashMap<String, f64>;
 /// Call [`ScriptStreamEval::run`] once per bar; it runs the script (for signal
 /// side-effects) and returns the current indicator values auto-extracted from
 /// the supplied `indicators` map.
+#[deprecated(since = "0.0.1", note = "StreamDecl is unused and planned for removal")]
 pub struct ScriptStreamEval {
     engine:        Engine,
     ast:           AST,

@@ -79,7 +79,8 @@ use super::parse::{
     extract_candle_directives, extract_regime_block, indicator_json_config,
     make_indicator_box, try_parse_indicator_line, CandleDirective, IndicatorDecl,
 };
-use super::engine::{build_engine, extract_max_lookback, BAR_FIELDS, DEFAULT_BUF_DEPTH};
+use crate::script::engine::{build_engine, extract_max_lookback, BAR_FIELDS, DEFAULT_BUF_DEPTH};
+use crate::script::utils::{scalar_out, bool_out};
 
 // ── ScriptStrategy ───────────────────────────────────────────────────────────
 
@@ -108,17 +109,7 @@ pub struct ScriptStrategy {
     persistent_state: rhai::Map,
 }
 
-/// Whitelist of accepted `candle.transform()` kinds. Mirrors `CandleType::from_str`
-/// but fails loudly on typos instead of silently falling back to Raw.
-fn validate_candle_kind(kind: &str) -> Result<()> {
-    match kind {
-        "raw" | "heiken_ashi" | "ha" | "smooth_ha" | "smooth_heiken_ashi" => Ok(()),
-        other => Err(anyhow::anyhow!(
-            "unknown candle kind `{other}`; supported: \
-             \"raw\", \"heiken_ashi\" (alias \"ha\"), \"smooth_ha\" (alias \"smooth_heiken_ashi\")"
-        )),
-    }
-}
+
 
 impl ScriptStrategy {
     /// Backtest / stream mode: indicator series auto-collected into `take_indicator_series()`.
@@ -142,7 +133,7 @@ impl ScriptStrategy {
             let (kind, smooth) = match d {
                 CandleDirective::Transform { kind, smooth } => (kind.as_str(), *smooth),
             };
-            validate_candle_kind(kind)?;
+            crate::script::utils::validate_candle_kind(kind)?;
             Some((kind.to_string(), smooth))
         } else {
             None
@@ -297,38 +288,7 @@ impl ScriptStrategy {
 /// Returns `true` for indicator output fields that carry boolean semantics
 /// (stored as 0.0/1.0). These must not be plotted on the main price chart
 /// because their 0–1 range collapses the y-axis when the price is e.g. 60 000.
-#[inline]
-/// Fields whose indicator value is a `bool` flattened to `0.0`/`1.0` in
-/// `IndicatorBox::update`. Plotting them as a continuous series is meaningless,
-/// so they are excluded from the plot-series collection. Delegates to the
-/// single source of truth in `alm_indicator` so the list cannot drift.
-fn is_boolean_flag_field(field: &str) -> bool {
-    alm_indicator::field_kind(field) == alm_indicator::FieldKind::Bool
-}
 
-/// Read a numeric output var as `f64`, tolerating an `i64` value.
-///
-/// Rhai distinguishes integer and float literals strictly: `tp = 100` stores an
-/// `i64`, and a plain `get_value::<f64>` would return `None` — silently dropping
-/// the value. Scalar output vars (`tp`, `sl`, `strength`, `trail`, `atr`) accept
-/// either, so an integer literal works as a user naturally expects.
-pub(crate) fn scalar_out(scope: &Scope, name: &str) -> Option<f64> {
-    scope
-        .get_value::<f64>(name)
-        .or_else(|| scope.get_value::<i64>(name).map(|v| v as f64))
-}
-
-/// Read a boolean output var, tolerating `i64` (`1`/`0`) and `f64` (`1.0`/`0.0`).
-///
-/// Signal vars (`long`, `short`, `exit`, `entry`) are initially pushed as `bool`,
-/// but a user writing `long = 1` reassigns them to `i64`. `get_value::<bool>`
-/// then returns `None` (type mismatch) → signal silently dropped. This helper
-/// accepts any truthy representation: `true`, `1`, `1.0` all fire the signal.
-pub(crate) fn bool_out(scope: &Scope, name: &str) -> bool {
-    scope.get_value::<bool>(name).unwrap_or(false)
-        || scope.get_value::<i64>(name).map(|v| v != 0).unwrap_or(false)
-        || scope.get_value::<f64>(name).map(|v| v > 0.5).unwrap_or(false)
-}
 
 // ── Strategy impl ─────────────────────────────────────────────────────────────
 
@@ -362,7 +322,7 @@ impl Strategy for ScriptStrategy {
                     if let Some(fields) = binding.current_fields() {
                         if binding.is_multi() {
                             for (field, val) in &fields {
-                                if is_boolean_flag_field(field) { continue; }
+                                if crate::script::utils::is_boolean_flag_field(field) { continue; }
                                 series.entry(format!("{name}.{field}"))
                                     .or_default()
                                     .push((bar.timestamp, *val));

@@ -14,7 +14,6 @@ pub use candle_type::{CandleTransform, CandleType};
 pub mod script;
 pub use script::{
     ScriptStrategy, script_indicator_deps,
-    ScriptStreamEval, StreamDecl, IndicatorSnapshot, PlotResult,
     script_lint, LintDiagnostic, ScriptLintScope, DeclaredIndicator, KNOWN_INDICATOR_TYPES,
     MtfScriptStrategy, probe_script_htfs,
 };

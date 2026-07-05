@@ -27,7 +27,7 @@ use alm_report::BacktestReport;
 use tracing::debug;
 
 use crate::broker::SimBroker;
-use crate::bus_sync::SyncBus;
+use crate::bus::SyncBus;
 use crate::engine::{base_symbol, resolve_offset_levels, ReversePolicy};
 
 // ── Core struct ───────────────────────────────────────────────────────────────

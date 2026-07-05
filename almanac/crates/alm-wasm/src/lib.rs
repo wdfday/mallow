@@ -184,7 +184,7 @@ pub fn list_indicators() -> JsValue {
 // ── Sizing helper (shared between single-TF and MTF engines) ─────────────────
 
 pub(crate) fn build_sizer(cfg: &BtConfig) -> alm_engine::risk::AnySizer {
-    use alm_engine::risk::{AnySizer, AtrSizing, FixedFractional, FixedQuantity, FixedUsd, RiskFractional};
+    use alm_engine::risk::{AnySizer, AtrSizing, FixedFractional, FixedQuantity, FixedUsd, PercentEquity};
     let max_slots = cfg.max_units.max(1);
     let pct = cfg.size_pct.clamp(0.01, 1.0);
     let risk = cfg.risk_per_trade.unwrap_or(0.01);
@@ -193,8 +193,8 @@ pub(crate) fn build_sizer(cfg: &BtConfig) -> alm_engine::risk::AnySizer {
         Some("fixed_qty")        => AnySizer::FixedQuantity(FixedQuantity::new(cfg.size_qty.unwrap_or(1.0), max_slots)),
         Some("quote_qty")        => AnySizer::FixedUsd(FixedUsd::new(cfg.size_usd.unwrap_or(0.0), max_slots)),
         Some("volatility")       => AnySizer::Atr(AtrSizing::new(risk, cfg.atr_mult, max_slots).with_strength_sizing(false)),
-        Some("fixed_fractional") => AnySizer::RiskFractional(RiskFractional::new(risk, max_slots).with_strength_sizing(false)),
-        Some("percent_equity")   => AnySizer::FixedFractional(FixedFractional::fractional(pct, max_slots).with_strength_sizing(str_)),
+        Some("fixed_fractional") => AnySizer::FixedFractional(FixedFractional::new(risk, max_slots).with_strength_sizing(false)),
+        Some("percent_equity")   => AnySizer::PercentEquity(PercentEquity::fractional(pct, max_slots).with_strength_sizing(str_)),
         _ => {
             if let Some(qty) = cfg.size_qty {
                 AnySizer::FixedQuantity(FixedQuantity::new(qty, max_slots))
@@ -203,7 +203,7 @@ pub(crate) fn build_sizer(cfg: &BtConfig) -> alm_engine::risk::AnySizer {
             } else if let Some(r) = cfg.risk_per_trade {
                 AnySizer::Atr(AtrSizing::new(r, cfg.atr_mult, max_slots).with_strength_sizing(false))
             } else {
-                AnySizer::FixedFractional(FixedFractional::fractional(pct, max_slots).with_strength_sizing(str_))
+                AnySizer::PercentEquity(PercentEquity::fractional(pct, max_slots).with_strength_sizing(str_))
             }
         }
     }

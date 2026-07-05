@@ -14,7 +14,7 @@
 use anyhow::Result;
 use alm_data::{BarFeed, ParquetFeed};
 use alm_engine::Engine;
-use alm_engine::FixedFractional;
+use alm_engine::PercentEquity;
 use alm_strategy::MaCrossover;
 use std::path::Path;
 
@@ -82,7 +82,7 @@ fn main() -> Result<()> {
     let timeframe = feed.timeframe();
 
     let strategy = MaCrossover::new(args.fast, args.slow);
-    let risk = FixedFractional::fractional(0.95, 1).with_lot_size(args.lot);
+    let risk = PercentEquity::fractional(0.95, 1).with_lot_size(args.lot);
 
     let mut engine = Engine::sync(
         args.capital,

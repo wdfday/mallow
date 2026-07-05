@@ -4,7 +4,7 @@ use alm_core::{Bar, Timeframe};
 use alm_data::{BarFeed, ParquetFeed, BarVecFeed};
 use alm_engine::{HeapMtfEngine, PointerSyncMtfEngine};
 use alm_strategy::{MtfEmaRsiStrategy, MtfMaCrossStrategy};
-use alm_engine::risk::FixedFractional;
+use alm_engine::risk::PercentEquity;
 
 fn load_real_bars() -> Option<Vec<Bar>> {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -55,7 +55,7 @@ fn test_real_data_ema_rsi_parity() {
     let mut engine_heap = HeapMtfEngine::sync(
         10_000.0,
         MtfEmaRsiStrategy::new(),
-        FixedFractional::fractional(0.95, 1),
+        PercentEquity::fractional(0.95, 1),
         0.0,
         0.0,
     )
@@ -72,7 +72,7 @@ fn test_real_data_ema_rsi_parity() {
     let mut engine_dyn = PointerSyncMtfEngine::sync(
         10_000.0,
         MtfEmaRsiStrategy::new(),
-        FixedFractional::fractional(0.95, 1),
+        PercentEquity::fractional(0.95, 1),
         0.0,
         0.0,
     )
@@ -121,7 +121,7 @@ fn test_real_data_ma_cross_parity() {
     let mut engine_heap = HeapMtfEngine::sync(
         10_000.0,
         MtfMaCrossStrategy::new(),
-        FixedFractional::fractional(0.95, 1),
+        PercentEquity::fractional(0.95, 1),
         0.0,
         0.0,
     )
@@ -138,7 +138,7 @@ fn test_real_data_ma_cross_parity() {
     let mut engine_dyn = PointerSyncMtfEngine::sync(
         10_000.0,
         MtfMaCrossStrategy::new(),
-        FixedFractional::fractional(0.95, 1),
+        PercentEquity::fractional(0.95, 1),
         0.0,
         0.0,
     )

@@ -150,12 +150,13 @@
 //! | reports | 1 | 1 per symbol |
 
 pub mod broker;
-pub mod bus_sync;
+pub mod bus;
 pub mod core;
 pub mod engine;
 pub mod heap_mtf_engine;
 pub mod multi_engine;
 pub mod pointer_sync_mtf_engine;
+pub mod reverse_policy;
 pub mod risk;
 // Native-only: rayon threads / async. Excluded on wasm32 (in-browser backtest
 // uses the in-memory Engine directly — see alm-wasm).
@@ -167,19 +168,20 @@ pub mod walk_forward;
 // `backtest::response` + `backtest::engine_builder` are pure computation — available on all
 // targets including wasm32. The rest of `backtest` (bar loading, disk I/O) is native-only.
 pub mod backtest;
-pub mod curve_compress;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod data;
 pub mod types;
+pub mod helper;
+pub use helper::curve_compress;
 
-pub use bus_sync::SyncBus;
+pub use bus::SyncBus;
 pub use core::EngineCore;
 pub use engine::{Engine, ReversePolicy};
 pub use heap_mtf_engine::{HeapMtfEngine, MtfSnapshot, MtfStrategy, TfBarEvent, TfView};
 pub use multi_engine::{MultiEngine, MultiStrategy};
 pub use pointer_sync_mtf_engine::PointerSyncMtfEngine;
 pub type MtfEngine<S, R> = PointerSyncMtfEngine<S, R>;
-pub use risk::{AnySizer, AtrSizing, EqualWeight, FixedFractional, FixedQuantity, FixedUsd, KellySizing, RiskFractional};
+pub use risk::{AnySizer, AtrSizing, EqualWeight, FixedFractional, FixedQuantity, FixedUsd, KellySizing, PercentEquity};
 #[cfg(not(target_arch = "wasm32"))]
 pub use runner::{run_batch, run_portfolio, PortfolioReport, SymbolBars};
 #[cfg(not(target_arch = "wasm32"))]

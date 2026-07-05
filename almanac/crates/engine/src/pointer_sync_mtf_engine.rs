@@ -240,7 +240,7 @@ fn push_bounded<T>(buf: &mut VecDeque<T>, v: T, cap: usize) {
 mod tests {
     use super::*;
     use alm_data::BarVecFeed;
-    use crate::risk::FixedFractional;
+    use crate::risk::PercentEquity;
     use crate::heap_mtf_engine::HeapMtfEngine;
     use alm_core::signal::Signal;
 
@@ -303,7 +303,7 @@ mod tests {
         let mut engine_heap = HeapMtfEngine::sync(
             10_000.0,
             MtfTrend { symbol: "TEST".into() },
-            FixedFractional::fractional(0.95, 1),
+            PercentEquity::fractional(0.95, 1),
             0.0,
             0.0,
         )
@@ -320,7 +320,7 @@ mod tests {
         let mut engine_dyn = PointerSyncMtfEngine::sync(
             10_000.0,
             MtfTrend { symbol: "TEST".into() },
-            FixedFractional::fractional(0.95, 1),
+            PercentEquity::fractional(0.95, 1),
             0.0,
             0.0,
         )

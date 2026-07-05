@@ -1,31 +1,29 @@
 use alm_core::{portfolio::Portfolio, signal::{Direction, Signal}, strategy::RiskManager};
 
-/// Classic Ralph Vince fixed-fractional: risk `risk_per_trade` of equity to the
-/// signal's own stop distance.
+/// Allocate a fixed fraction of **cash** per trade.
 ///
-/// `qty = equity × risk_per_trade × strength / |entry − stop|`
-///
-/// Returns `0.0` when `signal.stop_price` is absent — cannot size without a stop.
-pub struct RiskFractional {
-    pub risk_per_trade: f64,
+/// `qty = cash × pct × strength / price`
+pub struct PercentEquity {
+    pub pct: f64,
     pub max_positions: usize,
+    /// `0.0` → fractional. `1.0` → whole shares. `100.0` → HOSE lots.
     pub lot_size: f64,
     pub strength_sizing: bool,
 }
 
-impl RiskFractional {
-    pub fn new(risk_per_trade: f64, max_positions: usize) -> Self {
-        Self { risk_per_trade, max_positions, lot_size: 0.0, strength_sizing: true }
+impl PercentEquity {
+    pub fn new(pct: f64, max_positions: usize) -> Self {
+        Self { pct, max_positions, lot_size: 1.0, strength_sizing: true }
+    }
+    /// Fractional variant (no lot rounding — crypto / forex).
+    pub fn fractional(pct: f64, max_positions: usize) -> Self {
+        Self { pct, max_positions, lot_size: 0.0, strength_sizing: true }
     }
     pub fn with_lot_size(mut self, lot_size: f64) -> Self { self.lot_size = lot_size; self }
     pub fn with_strength_sizing(mut self, v: bool) -> Self { self.strength_sizing = v; self }
-
-    fn equity(portfolio: &Portfolio) -> f64 {
-        portfolio.equity_curve.last().map(|p| p.equity).unwrap_or(portfolio.initial_capital)
-    }
 }
 
-impl RiskManager for RiskFractional {
+impl RiskManager for PercentEquity {
     fn validate(&self, signal: &Signal, portfolio: &Portfolio) -> bool {
         if signal.direction == Direction::Exit { return true; }
         if let Some(pos) = portfolio.positions.get(&signal.symbol) {
@@ -40,14 +38,8 @@ impl RiskManager for RiskFractional {
 
     fn size(&self, signal: &Signal, portfolio: &Portfolio, price: f64) -> f64 {
         if price <= f64::EPSILON { return 0.0; }
-        let dist = match signal.stop_price {
-            Some(sl) if signal.is_offset => sl.abs(),
-            Some(sl) => (price - sl).abs(),
-            None => return 0.0,
-        };
-        if dist <= f64::EPSILON { return 0.0; }
         let s = if self.strength_sizing { signal.strength } else { 1.0 };
-        let raw = Self::equity(portfolio) * self.risk_per_trade * s / dist;
+        let raw = portfolio.cash * self.pct * s / price;
         if self.lot_size > f64::EPSILON { (raw / self.lot_size).floor() * self.lot_size } else { raw }
     }
 }

@@ -31,7 +31,7 @@ use alm_engine::Engine;
 use alm_indicator::{IndicatorBox, KalmanFilter};
 use alm_report::{BuyHoldBenchmark, monte_carlo as mc_run, portfolio_analyze, MonteCarloConfig};
 use alm_strategy::{build_strategy, catalog::STRATEGY_KEYS};
-use alm_engine::{AtrSizing, FixedFractional, FixedQuantity, KellySizing};
+use alm_engine::{AtrSizing, PercentEquity, FixedQuantity, KellySizing};
 use serde_json::{json, Map, Value};
 
 pub mod indicators;
@@ -483,7 +483,7 @@ fn run_backtest<'py>(
         }
         _ => {
             // "fixed" (default)
-            let risk = FixedFractional::new(0.95, 1)
+            let risk = PercentEquity::new(0.95, 1)
                 .with_lot_size(resolved_lot)
                 .with_strength_sizing(strength_sizing);
             run_engine!(risk)
@@ -622,7 +622,7 @@ fn run_script_backtest<'py>(
             get_f("qty", 1.0),
             get_u("max_positions", 1),
         )),
-        _ => run_engine!(FixedFractional::new(0.95, 1)
+        _ => run_engine!(PercentEquity::new(0.95, 1)
             .with_lot_size(resolved_lot)
             .with_strength_sizing(strength_sizing)),
     }
@@ -845,7 +845,7 @@ fn run_portfolio_backtest<'py>(
             .map_err(|e| PyRuntimeError::new_err(format!("strategy build error: {e}")))?;
 
         let resolved_lot = if is_crypto(symbol) { 0.0 } else { 1.0 };
-        let risk = FixedFractional::new(0.95, 1)
+        let risk = PercentEquity::new(0.95, 1)
             .with_lot_size(resolved_lot)
             .with_strength_sizing(strength_sizing);
 
@@ -1020,7 +1020,7 @@ fn run_walk_forward<'py>(
         .map_err(|e| PyRuntimeError::new_err(format!("strategy build error: {e}")))?;
 
     let resolved_lot = if is_crypto(symbol) { 0.0 } else { 1.0 };
-    let risk = FixedFractional::new(0.95, 1).with_lot_size(resolved_lot);
+    let risk = PercentEquity::new(0.95, 1).with_lot_size(resolved_lot);
 
     let step = if step_bars == 0 { oos_bars } else { step_bars };
     let mut cfg = WalkForwardConfig::new(is_bars, oos_bars, initial_capital);

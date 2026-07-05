@@ -253,7 +253,7 @@ impl BacktestReport {
         let sharpe  = if no_trades { 0.0 } else { sharpe_raw };
         let sortino = if no_trades { 0.0 } else { sortino_raw };
 
-        let (win_rate, pf, expectancy, avg_win, avg_loss) = metrics::trade_stats(trades);
+        let (win_rate, pf, _expectancy, avg_win, avg_loss) = metrics::trade_stats(trades, initial);
         let avg_duration = if total_trades > 0 {
             trades.iter().map(|t| t.duration_hours()).sum::<f64>() / total_trades as f64
         } else {
@@ -265,9 +265,9 @@ impl BacktestReport {
 
         let max_consec_losses = metrics::max_consecutive_losses(trades);
         let max_consec_wins   = metrics::max_consecutive_wins(trades);
-        let (largest_win, largest_loss) = metrics::largest_win_loss(trades);
-        let sqn = metrics::sqn(trades);
-        let (long_stats, short_stats) = metrics::direction_stats(trades);
+        let (largest_win, largest_loss) = metrics::largest_win_loss(trades, initial);
+        let sqn = metrics::sqn(trades, initial);
+        let (long_stats, short_stats) = metrics::direction_stats(trades, initial);
         let monthly_returns = metrics::monthly_returns(
             &portfolio.equity_curve.iter().map(|p| (p.timestamp, p.equity)).collect::<Vec<_>>(),
         );
@@ -336,7 +336,7 @@ impl BacktestReport {
             profit_factor: pf,
             // pnl_pct is now a fraction → scale to percentage points like the
             // sibling aggregate fields (avg_win_pct, etc.).
-            expectancy: expectancy * 100.0,
+            expectancy: if total_trades > 0 { (final_eq - initial) / total_trades as f64 } else { 0.0 },
             avg_win_pct: avg_win * 100.0,
             avg_loss_pct: avg_loss * 100.0,
             avg_trade_duration_hours: avg_duration,

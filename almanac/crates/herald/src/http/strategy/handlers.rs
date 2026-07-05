@@ -59,10 +59,16 @@ pub async fn create_strategy(
     headers: HeaderMap,
     Json(req): Json<CreateStrategyReq>,
 ) -> Response {
+    // Validate the script before saving.
+    let (errors, _) = alm_strategy::script_lint(&req.spec.script, None);
+    if !errors.is_empty() {
+        return bad_req(&format!("Script error at line {}: {}", errors[0].line, errors[0].message));
+    }
+
     let user_id = req.user_id.or_else(|| {
         headers.get("x-user-id").and_then(|v| v.to_str().ok()).map(|s| s.to_owned())
     });
-    match state.store.create_strategy(req.name, req.version, req.previous_id, req.label, req.spec, req.notes, user_id).await {
+    match state.store.create_strategy(req.name.clone(), req.version, req.previous_id, req.label, req.spec, req.notes, user_id).await {
         Ok(s)  => {
             tracing::info!(id = %s.id, name = %s.name, version = s.version, "strategy saved");
             created(s)

@@ -39,6 +39,31 @@ pub fn std_dev(v: &[f64]) -> f64 {
     var.sqrt()
 }
 
+/// Population standard deviation (ddof=0).
+///
+/// Formula: `sqrt(sum((x - mean)^2) / n)`.
+/// Used for skewness and excess kurtosis to match NumPy/Python.
+pub fn std_dev_pop(v: &[f64]) -> f64 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    let m = mean(v);
+    let var = v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / v.len() as f64;
+    var.sqrt()
+}
+
+/// Linear interpolated percentile (matches NumPy percentile linear method).
+pub fn percentile_interpolated(sorted: &[f64], p: f64) -> f64 {
+    let n = sorted.len();
+    if n == 0 { return 0.0; }
+    if n == 1 { return sorted[0]; }
+    let idx = p * (n - 1) as f64;
+    let low = idx.floor() as usize;
+    let high = idx.ceil() as usize;
+    let fract = idx - low as f64;
+    sorted[low] + fract * (sorted[high] - sorted[low])
+}
+
 /// Sharpe ratio.
 ///
 /// `ann_factor` = bars_per_year (e.g. 525_960 for M1 crypto, 252 for daily stocks).
@@ -144,14 +169,18 @@ pub fn drawdown_stats(equity: &[f64]) -> (f64, usize, f64) {
     let mut dd_count = 0usize;
 
     for (i, &eq) in equity.iter().enumerate() {
-        if eq > peak {
+        if eq >= peak {
             peak = eq;
             dd_start = i;
+        } else {
+            let duration = i - dd_start;
+            if duration > max_dd_bars {
+                max_dd_bars = duration;
+            }
         }
         let dd = (peak - eq) / peak;
         if dd > max_dd {
             max_dd = dd;
-            max_dd_bars = i - dd_start;
         }
         if dd > 0.0 {
             dd_sum += dd;
@@ -176,8 +205,8 @@ pub fn drawdown_stats(equity: &[f64]) -> (f64, usize, f64) {
 /// - `avg_win_pct` / `avg_loss_pct` — mean `pnl_pct` of winners / losers (loss returned as positive)
 ///
 /// Edge cases: empty slice → `(0.0, 0.0, 0.0, 0.0, 0.0)`. All wins → `profit_factor = INFINITY`.
-pub fn trade_stats(trades: &[Trade]) -> (f64, f64, f64, f64, f64) {
-    if trades.is_empty() {
+pub fn trade_stats(trades: &[Trade], initial_capital: f64) -> (f64, f64, f64, f64, f64) {
+    if trades.is_empty() || initial_capital.abs() < f64::EPSILON {
         return (0.0, 0.0, 0.0, 0.0, 0.0);
     }
 
@@ -199,12 +228,12 @@ pub fn trade_stats(trades: &[Trade]) -> (f64, f64, f64, f64, f64) {
     let avg_win = if wins.is_empty() {
         0.0
     } else {
-        wins.iter().map(|t| t.pnl_pct).sum::<f64>() / wins.len() as f64
+        wins.iter().map(|t| t.pnl / initial_capital).sum::<f64>() / wins.len() as f64
     };
     let avg_loss = if losses.is_empty() {
         0.0
     } else {
-        losses.iter().map(|t| t.pnl_pct.abs()).sum::<f64>() / losses.len() as f64
+        losses.iter().map(|t| t.pnl.abs() / initial_capital).sum::<f64>() / losses.len() as f64
     };
 
     let loss_rate = 1.0 - win_rate;
@@ -250,12 +279,15 @@ pub fn max_consecutive_wins(trades: &[Trade]) -> usize {
 }
 
 /// Largest single win and largest single loss (both as pnl_pct, loss returned as positive).
-pub fn largest_win_loss(trades: &[Trade]) -> (f64, f64) {
+pub fn largest_win_loss(trades: &[Trade], initial_capital: f64) -> (f64, f64) {
+    if initial_capital.abs() < f64::EPSILON {
+        return (0.0, 0.0);
+    }
     let largest_win = trades.iter().filter(|t| t.is_winner())
-        .map(|t| t.pnl_pct)
+        .map(|t| t.pnl / initial_capital)
         .fold(0.0_f64, f64::max);
     let largest_loss = trades.iter().filter(|t| !t.is_winner())
-        .map(|t| t.pnl_pct.abs())
+        .map(|t| t.pnl.abs() / initial_capital)
         .fold(0.0_f64, f64::max);
     (largest_win, largest_loss)
 }
@@ -283,14 +315,14 @@ pub struct DirectionStats {
 }
 
 /// Split trade stats by side (long = Buy, short = Sell).
-pub fn direction_stats(trades: &[Trade]) -> (DirectionStats, DirectionStats) {
+pub fn direction_stats(trades: &[Trade], initial_capital: f64) -> (DirectionStats, DirectionStats) {
     let longs:  Vec<&Trade> = trades.iter().filter(|t| t.side == Side::Buy).collect();
     let shorts: Vec<&Trade> = trades.iter().filter(|t| t.side == Side::Sell).collect();
-    (side_stats(&longs), side_stats(&shorts))
+    (side_stats(&longs, initial_capital), side_stats(&shorts, initial_capital))
 }
 
-fn side_stats(trades: &[&Trade]) -> DirectionStats {
-    if trades.is_empty() {
+fn side_stats(trades: &[&Trade], initial_capital: f64) -> DirectionStats {
+    if trades.is_empty() || initial_capital.abs() < f64::EPSILON {
         return DirectionStats::default();
     }
     let wins:   Vec<&&Trade> = trades.iter().filter(|t| t.is_winner()).collect();
@@ -308,10 +340,10 @@ fn side_stats(trades: &[&Trade]) -> DirectionStats {
     };
 
     let avg_win = if wins.is_empty() { 0.0 } else {
-        wins.iter().map(|t| t.pnl_pct).sum::<f64>() / wins.len() as f64
+        wins.iter().map(|t| t.pnl / initial_capital).sum::<f64>() / wins.len() as f64
     };
     let avg_loss = if losses.is_empty() { 0.0 } else {
-        losses.iter().map(|t| t.pnl_pct.abs()).sum::<f64>() / losses.len() as f64
+        losses.iter().map(|t| t.pnl.abs() / initial_capital).sum::<f64>() / losses.len() as f64
     };
     let expectancy = win_rate * avg_win - (1.0 - win_rate) * avg_loss;
 
@@ -335,17 +367,17 @@ fn side_stats(trades: &[&Trade]) -> DirectionStats {
 ///
 /// n is capped at 100 per Van Tharp's original definition to avoid SQN
 /// inflating arbitrarily with more trades.
-pub fn sqn(trades: &[Trade]) -> f64 {
-    if trades.len() < 2 {
+pub fn sqn(trades: &[Trade], initial_capital: f64) -> f64 {
+    if trades.len() < 2 || initial_capital.abs() < f64::EPSILON {
         return 0.0;
     }
-    let r: Vec<f64> = trades.iter().map(|t| t.pnl_pct).collect();
+    let r: Vec<f64> = trades.iter().map(|t| t.pnl / initial_capital).collect();
     let m = mean(&r);
     let s = std_dev(&r);
     if s < f64::EPSILON {
         return 0.0;
     }
-    let n = (trades.len() as f64).min(100.0);
+    let n = trades.len() as f64;
     n.sqrt() * m / s
 }
 
@@ -410,7 +442,7 @@ fn ts_to_year_month(ts_ms: i64) -> (i32, u32) {
 pub fn skewness(v: &[f64]) -> f64 {
     if v.len() < 3 { return 0.0; }
     let m = mean(v);
-    let s = std_dev(v);
+    let s = std_dev_pop(v);
     if s < f64::EPSILON { return 0.0; }
     let n = v.len() as f64;
     v.iter().map(|x| ((x - m) / s).powi(3)).sum::<f64>() / n
@@ -424,7 +456,7 @@ pub fn skewness(v: &[f64]) -> f64 {
 pub fn excess_kurtosis(v: &[f64]) -> f64 {
     if v.len() < 4 { return 0.0; }
     let m = mean(v);
-    let s = std_dev(v);
+    let s = std_dev_pop(v);
     if s < f64::EPSILON { return 0.0; }
     let n = v.len() as f64;
     v.iter().map(|x| ((x - m) / s).powi(4)).sum::<f64>() / n - 3.0
@@ -588,27 +620,26 @@ pub fn rolling_drawdown(equity: &[f64]) -> Vec<f64> {
 /// Returns `(var_95, cvar_95)` as positive fractions (e.g. `0.03` = 3% loss).
 /// Both values are clamped to `>= 0`; returns `(0.0, 0.0)` for an empty input.
 pub fn var_cvar_95(daily_returns: &[f64]) -> (f64, f64) {
-    if daily_returns.is_empty() {
+    let n = daily_returns.len();
+    if n < 2 {
         return (0.0, 0.0);
     }
+
     let mut sorted = daily_returns.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let n = sorted.len();
-    // VaR 95%: the 5th percentile (worst 5%)
-    let var_idx = ((n as f64) * 0.05).ceil() as usize;
-    let var_idx = var_idx.min(n).saturating_sub(1);
-    let var_95 = -sorted[var_idx]; // report as positive loss
 
-    // CVaR 95%: mean of the worst 5%
-    let tail_end = var_idx + 1; // inclusive end for tail slice
-    let tail = &sorted[..tail_end];
+    // VaR 95% = 5th percentile of daily returns (negative profit = loss)
+    let var_95 = percentile_interpolated(&sorted, 0.05);
+
+    // CVaR 95% = mean of returns below or equal to VaR 95%
+    let tail: Vec<f64> = sorted.iter().copied().filter(|&x| x <= var_95).collect();
     let cvar_95 = if tail.is_empty() {
         var_95
     } else {
-        -mean(tail) // mean of negative returns → positive
+        mean(&tail)
     };
 
-    (var_95.max(0.0), cvar_95.max(0.0))
+    (var_95, cvar_95)
 }
 
 /// Omega ratio: probability-weighted gains divided by probability-weighted losses relative to `threshold`.
@@ -635,17 +666,14 @@ pub fn omega_ratio(daily_returns: &[f64], threshold: f64) -> f64 {
 /// Values above `1.0` mean the best days are larger than the worst days.
 /// Requires at least 20 data points; returns `0.0` otherwise or when `p5 ≈ 0`.
 pub fn tail_ratio(daily_returns: &[f64]) -> f64 {
-    if daily_returns.len() < 20 {
+    if daily_returns.len() < 2 {
         return 0.0;
     }
     let mut sorted = daily_returns.to_vec();
     sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-    let n = sorted.len();
-    let p95_idx = ((n as f64) * 0.95) as usize;
-    let p5_idx = ((n as f64) * 0.05) as usize;
-    let p95 = sorted[p95_idx.min(n - 1)].abs();
-    let p5 = sorted[p5_idx].abs();
-    if p5 < f64::EPSILON { 0.0 } else { p95 / p5 }
+    let p95 = percentile_interpolated(&sorted, 0.95);
+    let p05 = percentile_interpolated(&sorted, 0.05);
+    if p05.abs() < f64::EPSILON { 0.0 } else { p95.abs() / p05.abs() }
 }
 
 /// Recovery factor: total return earned per unit of maximum drawdown risk taken.
@@ -940,14 +968,14 @@ mod tests {
 
     #[test]
     fn trade_stats_empty() {
-        let (wr, pf, exp, aw, al) = trade_stats(&[]);
+        let (wr, pf, exp, aw, al) = trade_stats(&[], 100.0);
         assert_eq!((wr, pf, exp, aw, al), (0.0, 0.0, 0.0, 0.0, 0.0));
     }
 
     #[test]
     fn trade_stats_all_wins() {
         let trades = vec![make_trade(10.0, 0.10), make_trade(5.0, 0.05)];
-        let (wr, pf, _, _, al) = trade_stats(&trades);
+        let (wr, pf, _, _, al) = trade_stats(&trades, 100.0);
         assert_eq!(wr, 1.0);
         assert_eq!(pf, f64::INFINITY);
         assert_eq!(al, 0.0);
@@ -961,7 +989,7 @@ mod tests {
             make_trade(10.0, 0.10),
             make_trade(-5.0, -0.05),
         ];
-        let (wr, pf, exp, avg_win, avg_loss) = trade_stats(&trades);
+        let (wr, pf, exp, avg_win, avg_loss) = trade_stats(&trades, 100.0);
         assert!((wr - 2.0 / 3.0).abs() < 1e-10);
         assert!((pf - 20.0 / 5.0).abs() < 1e-10);   // gross_profit/gross_loss = 20/5 = 4
         assert!((avg_win - 0.10).abs() < 1e-10);
@@ -974,7 +1002,7 @@ mod tests {
     #[test]
     fn trade_stats_all_losses() {
         let trades = vec![make_trade(-10.0, -0.10), make_trade(-5.0, -0.05)];
-        let (wr, pf, _, _, _) = trade_stats(&trades);
+        let (wr, pf, _, _, _) = trade_stats(&trades, 100.0);
         assert_eq!(wr, 0.0);
         assert_eq!(pf, 0.0);
     }
@@ -1036,7 +1064,7 @@ mod tests {
             make_trade(-7.0, -0.07),
             make_trade(-2.0, -0.02),
         ];
-        let (w, l) = largest_win_loss(&trades);
+        let (w, l) = largest_win_loss(&trades, 100.0);
         assert!((w - 0.10).abs() < 1e-10);
         assert!((l - 0.07).abs() < 1e-10);
     }
@@ -1044,7 +1072,7 @@ mod tests {
     #[test]
     fn largest_win_loss_all_wins() {
         let trades = vec![make_trade(5.0, 0.05), make_trade(10.0, 0.10)];
-        let (_, l) = largest_win_loss(&trades);
+        let (_, l) = largest_win_loss(&trades, 100.0);
         assert_eq!(l, 0.0);
     }
 
@@ -1059,7 +1087,7 @@ mod tests {
             make_trade_side(8.0,   0.08, Side::Sell),
             make_trade_side(-3.0, -0.03, Side::Sell),
         ];
-        let (l, s) = direction_stats(&trades);
+        let (l, s) = direction_stats(&trades, 100.0);
         assert_eq!(l.count, 3);
         assert_eq!(s.count, 2);
         assert!((l.win_rate - 2.0 / 3.0).abs() < 1e-10);
@@ -1069,7 +1097,7 @@ mod tests {
     #[test]
     fn direction_stats_empty_short() {
         let trades = vec![make_trade_side(5.0, 0.05, Side::Buy)];
-        let (l, s) = direction_stats(&trades);
+        let (l, s) = direction_stats(&trades, 100.0);
         assert_eq!(l.count, 1);
         assert_eq!(s.count, 0);
         assert_eq!(s.win_rate, 0.0);
@@ -1079,7 +1107,7 @@ mod tests {
 
     #[test]
     fn sqn_empty() {
-        assert_eq!(sqn(&[]), 0.0);
+        assert_eq!(sqn(&[], 100.0), 0.0);
     }
 
     #[test]
@@ -1088,7 +1116,7 @@ mod tests {
         let trades: Vec<Trade> = (0..50)
             .map(|i| if i < 40 { make_trade(5.0, 0.05) } else { make_trade(-2.0, -0.02) })
             .collect();
-        assert!(sqn(&trades) > 0.0);
+        assert!(sqn(&trades, 100.0) > 0.0);
     }
 
     #[test]
@@ -1096,7 +1124,7 @@ mod tests {
         let trades: Vec<Trade> = (0..20)
             .map(|i| if i < 5 { make_trade(1.0, 0.01) } else { make_trade(-5.0, -0.05) })
             .collect();
-        assert!(sqn(&trades) < 0.0);
+        assert!(sqn(&trades, 100.0) < 0.0);
     }
 
     // ── monthly_returns ────────────────────────────────────────────────────────

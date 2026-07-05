@@ -25,16 +25,7 @@ use tracing::{debug, info};
 /// is preserved: the directional order is sent as-is and the portfolio nets
 /// the quantities, which may leave a residual or an unintended exposure when
 /// the two legs are sized differently.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReversePolicy {
-    /// Treat the reverse signal as a plain Exit: close the existing opposite
-    /// position and do not open a new one in the signalled direction.
-    Exit,
-    /// Close the existing opposite position, then open a new position in the
-    /// signalled direction sized by `risk.size()` (applied after the close
-    /// order is emitted, on the current portfolio state).
-    Flip,
-}
+pub use crate::reverse_policy::ReversePolicy;
 
 /// Strip the synthetic pyramiding leg suffix (`SYM#3` → `SYM`).
 pub(crate) fn base_symbol(key: &str) -> &str {
@@ -487,7 +478,7 @@ mod tests {
     use super::*;
     use alm_core::regime::{RegimeDimension, RegimeState};
     use alm_data::ParquetFeed;
-    use crate::risk::FixedFractional;
+    use crate::risk::PercentEquity;
     use std::path::Path;
 
     const M1: &str = concat!(
@@ -585,7 +576,7 @@ mod tests {
         let mut engine = Engine::sync(
             10_000.0,
             AlwaysLong { symbol: SYM.into() },
-            FixedFractional::fractional(0.10, 10),
+            PercentEquity::fractional(0.10, 10),
             0.0, 0.0,
         )
         .with_pyramiding(max_units, 0.0);
@@ -605,7 +596,7 @@ mod tests {
         let mut engine = Engine::sync(
             10_000.0,
             AlwaysLong { symbol: SYM.into() },
-            FixedFractional::fractional(0.95, 1),
+            PercentEquity::fractional(0.95, 1),
             0.001, 0.0005,
         )
         .with_single_entry();
@@ -634,14 +625,14 @@ mod tests {
         let mut e = Engine::sync(
             10_000.0,
             AlwaysShort { symbol: SYM.into() },
-            FixedFractional::fractional(0.10, 10),
+            PercentEquity::fractional(0.10, 10),
             0.0, 0.0,
         )
         .with_pyramiding(4, 0.0);
         let mut e_single = Engine::sync(
             10_000.0,
             AlwaysShort { symbol: SYM.into() },
-            FixedFractional::fractional(0.10, 10),
+            PercentEquity::fractional(0.10, 10),
             0.0, 0.0,
         );
 
@@ -662,7 +653,7 @@ mod tests {
         let mut engine = Engine::sync(
             10_000.0,
             FakeRegimeStrategy::new(SYM),
-            FixedFractional::fractional(0.10, 1),
+            PercentEquity::fractional(0.10, 1),
             0.0, 0.0,
         );
         let report = engine.run(&mut feed, 0.0);
@@ -693,7 +684,7 @@ mod tests {
         let mut engine = Engine::sync(
             10_000.0,
             ReverseMockStrategy { i: 0, symbol: SYM.into() },
-            FixedFractional::fractional(0.10, 1),
+            PercentEquity::fractional(0.10, 1),
             0.0, 0.0,
         )
         .with_reverse_policy(ReversePolicy::Exit);
@@ -730,7 +721,7 @@ mod tests {
         let mut engine = Engine::sync(
             10_000.0,
             ReverseShortFirstStrategy { i: 0, symbol: SYM.into() },
-            FixedFractional::fractional(0.10, 1),
+            PercentEquity::fractional(0.10, 1),
             0.0, 0.0,
         )
         .with_reverse_policy(ReversePolicy::Exit);
@@ -748,7 +739,7 @@ mod tests {
         let mut engine = Engine::sync(
             10_000.0,
             ReverseMockStrategy { i: 0, symbol: SYM.into() },
-            FixedFractional::fractional(0.10, 1),
+            PercentEquity::fractional(0.10, 1),
             0.0, 0.0,
         );
 
@@ -771,7 +762,7 @@ mod tests {
         let mut engine = Engine::sync(
             10_000.0,
             ReverseMockStrategy { i: 0, symbol: SYM.into() },
-            FixedFractional::fractional(0.10, 1),
+            PercentEquity::fractional(0.10, 1),
             0.0, 0.0,
         )
         .with_reverse_policy(ReversePolicy::Flip);

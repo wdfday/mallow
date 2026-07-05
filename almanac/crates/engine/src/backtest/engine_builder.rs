@@ -5,7 +5,7 @@ use alm_core::{
     strategy::Strategy,
 };
 use alm_strategy::build_strategy;
-use crate::risk::{AnySizer, AtrSizing, FixedFractional, FixedQuantity, FixedUsd, RiskFractional};
+use crate::risk::{AnySizer, AtrSizing, FixedFractional, FixedQuantity, FixedUsd, PercentEquity};
 use anyhow::Result;
 use serde_json::Value;
 
@@ -101,9 +101,9 @@ pub fn build_with_strategy(
 /// explicitly (the canonical path); otherwise it falls back to legacy field
 /// inference. `strength_sizing` is an ORTHOGONAL tag (scale by `signal.strength`),
 /// not a mode. Mode → sizer:
-///   * `fixed_fractional` → `RiskFractional` — Ralph Vince: risk f% to the signal's stop
+///   * `fixed_fractional` → `FixedFractional` — Ralph Vince: risk f% to the signal's stop
 ///   * `volatility`       → `AtrSizing`       — risk f% to an ATR stop
-///   * `percent_equity`   → `FixedFractional` — % of equity allocation
+///   * `percent_equity`   → `PercentEquity`   — % of equity allocation
 ///   * `quote_qty`        → `FixedUsd`
 ///   * `fixed_qty`        → `FixedQuantity`
 fn select_sizer(req: &BacktestRequest, max_positions: usize, lot_size: f64) -> AnySizer {
@@ -151,9 +151,9 @@ pub(crate) fn build_sizer(
         Some("volatility") =>
             return AnySizer::Atr(AtrSizing::new(risk, atr_mult, max_positions).with_strength_sizing(false)),
         Some("fixed_fractional") =>
-            return AnySizer::RiskFractional(RiskFractional::new(risk, max_positions).with_lot_size(lot_size).with_strength_sizing(false)),
+            return AnySizer::FixedFractional(FixedFractional::new(risk, max_positions).with_lot_size(lot_size).with_strength_sizing(false)),
         Some("percent_equity") =>
-            return AnySizer::FixedFractional(FixedFractional::new(pct, max_positions).with_lot_size(lot_size).with_strength_sizing(strength)),
+            return AnySizer::PercentEquity(PercentEquity::new(pct, max_positions).with_lot_size(lot_size).with_strength_sizing(strength)),
         _ => {} // fall through to legacy field inference
     }
 
@@ -165,8 +165,8 @@ pub(crate) fn build_sizer(
     } else if risk_per_trade_pct.is_some() {
         AnySizer::Atr(AtrSizing::new(risk, atr_mult, max_positions).with_strength_sizing(false))
     } else {
-        AnySizer::FixedFractional(
-            FixedFractional::new(pct, max_positions).with_lot_size(lot_size).with_strength_sizing(strength),
+        AnySizer::PercentEquity(
+            PercentEquity::new(pct, max_positions).with_lot_size(lot_size).with_strength_sizing(strength),
         )
     }
 }
@@ -216,24 +216,24 @@ mod sizer_tests {
         // percent_equity (pct) fallback
         assert!(matches!(
             build_sizer(None, None, None, None, None, Some(0.5), None, 1, 0.0),
-            AnySizer::FixedFractional(_)
+            AnySizer::PercentEquity(_)
         ));
-        // default (no field set) → FixedFractional
+        // default (no field set) → PercentEquity
         assert!(matches!(
             build_sizer(None, None, None, None, None, None, None, 1, 0.0),
-            AnySizer::FixedFractional(_)
+            AnySizer::PercentEquity(_)
         ));
     }
 
     /// Explicit size_mode (synced with helm SizeMode) dispatches to the right sizer.
-    /// Crucially `fixed_fractional` = Ralph Vince risk-based (`RiskFractional`), distinct
+    /// Crucially `fixed_fractional` = Ralph Vince risk-based (`FixedFractional`), distinct
     /// from `volatility` (ATR) even though both read risk_per_trade_pct.
     #[test]
     fn build_sizer_explicit_mode() {
         let m = |mode| build_sizer(Some(mode), Some(1.0), Some(500.0), Some(0.01), Some(2.0), Some(0.5), None, 1, 0.0);
-        assert!(matches!(m("fixed_fractional"), AnySizer::RiskFractional(_)));
+        assert!(matches!(m("fixed_fractional"), AnySizer::FixedFractional(_)));
         assert!(matches!(m("volatility"),       AnySizer::Atr(_)));
-        assert!(matches!(m("percent_equity"),   AnySizer::FixedFractional(_)));
+        assert!(matches!(m("percent_equity"),   AnySizer::PercentEquity(_)));
         assert!(matches!(m("quote_qty"),        AnySizer::FixedUsd(_)));
         assert!(matches!(m("fixed_qty"),        AnySizer::FixedQuantity(_)));
     }

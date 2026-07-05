@@ -698,7 +698,7 @@ if ema9[0] > close[0] { entry = true; }
     #[test]
     fn end_to_end_base_tf_only_with_engine() {
         use alm_data::BarVecFeed;
-        use alm_engine::{MtfEngine, FixedFractional};
+        use alm_engine::{MtfEngine, PercentEquity};
 
         let script = r#"
 let ema9  = ind.ema(9);
@@ -711,7 +711,7 @@ if cross_below(ema9, ema21) { exit  = true; }
             .collect();
         let strategy = MtfScriptStrategy::from_script(script, Timeframe::M1).unwrap();
         let mut engine = MtfEngine::sync(
-            10_000.0, strategy, FixedFractional::fractional(0.95, 1), 0.0, 0.0,
+            10_000.0, strategy, PercentEquity::fractional(0.95, 1), 0.0, 0.0,
         );
         engine.add_feed(Timeframe::M1, BarVecFeed::new(bars, "TEST".into()));
         let _ = engine.run(0.0);
@@ -721,7 +721,7 @@ if cross_below(ema9, ema21) { exit  = true; }
     #[test]
     fn end_to_end_with_h1_filter_engine() {
         use alm_data::BarVecFeed;
-        use alm_engine::{MtfEngine, FixedFractional};
+        use alm_engine::{MtfEngine, PercentEquity};
 
         let script = r#"
 let h1_ema = ind.ema(20, "H1");
@@ -740,7 +740,7 @@ if falling(h1_ema) || rsi[0] > 70.0 { exit = true; }
         assert!(strategy.declared_htfs().contains(&Timeframe::H1));
 
         let mut engine = MtfEngine::sync(
-            10_000.0, strategy, FixedFractional::fractional(0.95, 1), 0.0, 0.0,
+            10_000.0, strategy, PercentEquity::fractional(0.95, 1), 0.0, 0.0,
         ).with_base_tf(Timeframe::M1);
         engine.add_feed(Timeframe::M1, BarVecFeed::new(m1_bars, "TEST".into()));
         engine.add_feed(Timeframe::H1, BarVecFeed::new(h1_bars, "TEST".into()));

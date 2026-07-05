@@ -530,7 +530,7 @@ mod tests {
     use super::*;
     use alm_data::{BarFeed, BarVecFeed, ParquetFeed};
     use alm_strategy::build_strategy;
-    use crate::FixedFractional;
+    use crate::PercentEquity;
     use crate::types::TradeResponse;
     use alm_core::order::Side;
     use std::path::PathBuf;
@@ -577,7 +577,7 @@ mod tests {
 
         let inner = build_strategy("ma_crossover", &serde_json::Value::Object(Default::default()))
             .expect("build strategy");
-        let risk = FixedFractional::fractional(0.95, 1);
+        let risk = PercentEquity::fractional(0.95, 1);
         let mut engine = crate::Engine::sync(10_000.0, inner, risk, 0.001, 0.0005);
         let mut bar_feed = BarVecFeed::new(all_bars, "BTCUSDT".into());
         let report = engine.run(&mut bar_feed, 0.04);

@@ -35,6 +35,9 @@ use crate::feed::BarFeed;
 ///     // process completed H4 bar
 /// }
 /// ```
+#[deprecated(
+    note = "The MTF engine now supports multiple feeds directly."
+)]
 pub struct StandaloneAggregator {
     target_tf: Timeframe,
     pending:   Option<PartialBar>,
@@ -77,6 +80,9 @@ impl StandaloneAggregator {
 /// Wraps a `BarFeed` and transparently resamples it to `target_tf`.
 ///
 /// The `len()` reported is the *base* feed's length (approximate bars remaining).
+#[deprecated(
+    note = "The MTF engine now supports multiple feeds directly."
+)]
 pub struct BarAggregator<F: BarFeed> {
     inner:     F,
     target_tf: Timeframe,

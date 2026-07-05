@@ -37,7 +37,7 @@ use alm_data::BarFeed;
 use alm_report::BacktestReport;
 
 use alm_core::portfolio::PortfolioSnapshot;
-use crate::{broker::SimBroker, bus_sync::SyncBus};
+use crate::{broker::SimBroker, bus::SyncBus};
 
 /// Strategy interface for multi-symbol engines.
 ///

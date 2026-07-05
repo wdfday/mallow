@@ -4,9 +4,9 @@
 //!
 //! | Type | Description |
 //! |------|-------------|
-//! | [`FixedFractional`] | % of cash per trade |
-//! | [`RiskFractional`]  | % of equity risked to signal's stop |
-//! | [`AtrSizing`]       | risk-parity via `signal.atr` |
+//! | [`FixedFractional`] | Ralph Vince: risk f% of equity to the signal's own stop |
+//! | [`PercentEquity`]   | % of cash per trade (notional allocation, no risk/stop concept) |
+//! | [`AtrSizing`]       | risk-parity via `signal.atr` (fixed_fractional with stop forced to ATR) |
 //! | [`EqualWeight`]     | equal equity slot per position |
 //! | [`FixedUsd`]        | fixed notional per trade |
 //! | [`FixedQuantity`]   | fixed unit count |
@@ -19,7 +19,7 @@ pub mod fixed_fractional;
 pub mod fixed_qty;
 pub mod fixed_usd;
 pub mod kelly;
-pub mod risk_fractional;
+pub mod percent_equity;
 
 pub use atr::AtrSizing;
 pub use equal_weight::EqualWeight;
@@ -27,7 +27,7 @@ pub use fixed_fractional::FixedFractional;
 pub use fixed_qty::FixedQuantity;
 pub use fixed_usd::FixedUsd;
 pub use kelly::KellySizing;
-pub use risk_fractional::RiskFractional;
+pub use percent_equity::PercentEquity;
 
 // ── AnySizer ──────────────────────────────────────────────────────────────────
 
@@ -39,7 +39,7 @@ use alm_core::{bar::Bar, portfolio::Portfolio, signal::Signal, strategy::RiskMan
 /// boxing or trait objects.
 pub enum AnySizer {
     FixedFractional(FixedFractional),
-    RiskFractional(RiskFractional),
+    PercentEquity(PercentEquity),
     FixedUsd(FixedUsd),
     FixedQuantity(FixedQuantity),
     EqualWeight(EqualWeight),
@@ -51,7 +51,7 @@ impl RiskManager for AnySizer {
     fn validate(&self, signal: &Signal, portfolio: &Portfolio) -> bool {
         match self {
             Self::FixedFractional(s) => s.validate(signal, portfolio),
-            Self::RiskFractional(s)  => s.validate(signal, portfolio),
+            Self::PercentEquity(s)   => s.validate(signal, portfolio),
             Self::FixedUsd(s)        => s.validate(signal, portfolio),
             Self::FixedQuantity(s)   => s.validate(signal, portfolio),
             Self::EqualWeight(s)     => s.validate(signal, portfolio),
@@ -63,7 +63,7 @@ impl RiskManager for AnySizer {
     fn size(&self, signal: &Signal, portfolio: &Portfolio, price: f64) -> f64 {
         match self {
             Self::FixedFractional(s) => s.size(signal, portfolio, price),
-            Self::RiskFractional(s)  => s.size(signal, portfolio, price),
+            Self::PercentEquity(s)   => s.size(signal, portfolio, price),
             Self::FixedUsd(s)        => s.size(signal, portfolio, price),
             Self::FixedQuantity(s)   => s.size(signal, portfolio, price),
             Self::EqualWeight(s)     => s.size(signal, portfolio, price),

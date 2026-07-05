@@ -1,13 +1,6 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::{BBands, Macd};
 
-const RHAI: &str = r#"
-let bb20 = ind.bbands(20, buf=1);
-let m    = ind.macd(12, buf=1);
-if close[0] > bb20[0].upper && m[0].histogram > 0.0 { entry = true; }
-if close[0] < bb20[0].middle || m[0].histogram < 0.0 { exit  = true; }
-"#;
-
 /// Bot #12 — Bollinger Breakthrough + MACD histogram.
 ///
 /// Long when price breaks above upper Bollinger Band AND MACD histogram > 0.

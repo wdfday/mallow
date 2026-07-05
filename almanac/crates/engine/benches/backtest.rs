@@ -21,7 +21,7 @@ use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Through
 
 use alm_core::Bar;
 use alm_data::{BarFeed, BarVecFeed, ParquetFeed, RowGroupFeed};
-use alm_engine::{run_batch, runner::BacktestJob, Engine,risk::FixedFractional};
+use alm_engine::{run_batch, runner::BacktestJob, Engine,risk::PercentEquity};
 use alm_strategy::{
     factory::build_strategy, ConnorsRsiStrategy, IchimokuCloud, MaCrossover,
     MacdCrossover,
@@ -56,11 +56,11 @@ fn collect_bars(path: &Path, symbol: &str) -> Vec<Bar> {
     std::iter::from_fn(|| f.next()).collect()
 }
 
-fn make_engine() -> Engine<MaCrossover, FixedFractional> {
+fn make_engine() -> Engine<MaCrossover, PercentEquity> {
     Engine::sync(
         CAPITAL,
         MaCrossover::new(20, 50),
-        FixedFractional::fractional(0.95, 1),
+        PercentEquity::fractional(0.95, 1),
         COMMISSION,
         SLIPPAGE,
     )
@@ -138,7 +138,7 @@ fn bench_strategy(c: &mut Criterion) {
         b.iter(|| {
             let mut f = BarVecFeed::new(bars.clone(), sym.into());
             let mut eng = Engine::sync(CAPITAL, MaCrossover::new(20, 50),
-                FixedFractional::fractional(0.95, 1), COMMISSION, SLIPPAGE);
+                PercentEquity::fractional(0.95, 1), COMMISSION, SLIPPAGE);
             black_box(eng.run(&mut f, RISK_FREE))
         });
     });
@@ -147,7 +147,7 @@ fn bench_strategy(c: &mut Criterion) {
         b.iter(|| {
             let mut f = BarVecFeed::new(bars.clone(), sym.into());
             let mut eng = Engine::sync(CAPITAL, MacdCrossover::new(12, 26, 9),
-                FixedFractional::fractional(0.95, 1), COMMISSION, SLIPPAGE);
+                PercentEquity::fractional(0.95, 1), COMMISSION, SLIPPAGE);
             black_box(eng.run(&mut f, RISK_FREE))
         });
     });
@@ -156,7 +156,7 @@ fn bench_strategy(c: &mut Criterion) {
         b.iter(|| {
             let mut f = BarVecFeed::new(bars.clone(), sym.into());
             let mut eng = Engine::sync(CAPITAL, IchimokuCloud::new(9, 26, 52),
-                FixedFractional::fractional(0.95, 1), COMMISSION, SLIPPAGE);
+                PercentEquity::fractional(0.95, 1), COMMISSION, SLIPPAGE);
             black_box(eng.run(&mut f, RISK_FREE))
         });
     });
@@ -165,7 +165,7 @@ fn bench_strategy(c: &mut Criterion) {
         b.iter(|| {
             let mut f = BarVecFeed::new(bars.clone(), sym.into());
             let mut eng = Engine::sync(CAPITAL, ConnorsRsiStrategy::new(3, 2, 100, 20.0, 80.0),
-                FixedFractional::fractional(0.95, 1), COMMISSION, SLIPPAGE);
+                PercentEquity::fractional(0.95, 1), COMMISSION, SLIPPAGE);
             black_box(eng.run(&mut f, RISK_FREE))
         });
     });
@@ -197,7 +197,7 @@ fn bench_strategy_expr(c: &mut Criterion) {
             let mut eng = Engine::sync(
                 CAPITAL,
                 MaCrossover::new(20, 50),
-                FixedFractional::fractional(0.95, 1),
+                PercentEquity::fractional(0.95, 1),
                 COMMISSION,
                 SLIPPAGE,
             );
@@ -224,7 +224,7 @@ fn bench_strategy_expr(c: &mut Criterion) {
             let mut eng = Engine::sync(
                 CAPITAL,
                 strategy,
-                FixedFractional::fractional(0.95, 1),
+                PercentEquity::fractional(0.95, 1),
                 COMMISSION,
                 SLIPPAGE,
             );
@@ -253,7 +253,7 @@ fn bench_strategy_expr(c: &mut Criterion) {
             let mut eng = Engine::sync(
                 CAPITAL,
                 strategy,
-                FixedFractional::fractional(0.95, 1),
+                PercentEquity::fractional(0.95, 1),
                 COMMISSION,
                 SLIPPAGE,
             );
@@ -284,7 +284,7 @@ fn bench_batch(c: &mut Criterion) {
                         .map(|i| BacktestJob {
                             id: format!("job_{i}"),
                             strategy: MaCrossover::new(10 + i % 20, 30 + i % 30),
-                            risk: FixedFractional::fractional(0.95, 1),
+                            risk: PercentEquity::fractional(0.95, 1),
                             initial_capital: CAPITAL,
                             commission_pct: COMMISSION,
                             slippage_pct: SLIPPAGE,
@@ -340,7 +340,7 @@ fn bench_mtf_engines(c: &mut Criterion) {
             let mut eng = alm_engine::HeapMtfEngine::sync(
                 CAPITAL,
                 alm_strategy::MtfEmaRsiStrategy::new(),
-                FixedFractional::fractional(0.95, 1),
+                PercentEquity::fractional(0.95, 1),
                 COMMISSION,
                 SLIPPAGE,
             )
@@ -359,7 +359,7 @@ fn bench_mtf_engines(c: &mut Criterion) {
             let mut eng = alm_engine::PointerSyncMtfEngine::sync(
                 CAPITAL,
                 alm_strategy::MtfEmaRsiStrategy::new(),
-                FixedFractional::fractional(0.95, 1),
+                PercentEquity::fractional(0.95, 1),
                 COMMISSION,
                 SLIPPAGE,
             )
@@ -441,7 +441,7 @@ fn bench_mtf_engines_full(c: &mut Criterion) {
             let mut eng = alm_engine::HeapMtfEngine::sync(
                 CAPITAL,
                 alm_strategy::MtfEmaRsiStrategy::new(),
-                FixedFractional::fractional(0.95, 1),
+                PercentEquity::fractional(0.95, 1),
                 COMMISSION,
                 SLIPPAGE,
             )
@@ -460,7 +460,7 @@ fn bench_mtf_engines_full(c: &mut Criterion) {
             let mut eng = alm_engine::PointerSyncMtfEngine::sync(
                 CAPITAL,
                 alm_strategy::MtfEmaRsiStrategy::new(),
-                FixedFractional::fractional(0.95, 1),
+                PercentEquity::fractional(0.95, 1),
                 COMMISSION,
                 SLIPPAGE,
             )

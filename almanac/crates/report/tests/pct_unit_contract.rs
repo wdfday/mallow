@@ -19,10 +19,10 @@ fn trade_pct_is_fraction_aggregate_is_percent() {
     let t = &p.trades[0];
     assert!((t.pnl_pct - 0.10).abs() < 1e-9, "trade.pnl_pct should be fraction 0.10, got {}", t.pnl_pct);
 
-    // Aggregate: PERCENTAGE POINTS (10.0 for +10%).
+    // Aggregate: PERCENTAGE POINTS (0.2 for +0.2% of account).
     let r = BacktestReport::generate("audit", "X", &p, 0.0);
-    assert!((r.avg_win_pct      - 10.0).abs() < 1e-6, "avg_win_pct={}", r.avg_win_pct);
-    assert!((r.largest_win_pct  - 10.0).abs() < 1e-6, "largest_win_pct={}", r.largest_win_pct);
-    assert!((r.expectancy       - 10.0).abs() < 1e-6, "expectancy={}", r.expectancy);
+    assert!((r.avg_win_pct      - 0.2).abs() < 1e-6, "avg_win_pct={}", r.avg_win_pct);
+    assert!((r.largest_win_pct  - 0.2).abs() < 1e-6, "largest_win_pct={}", r.largest_win_pct);
+    assert!((r.expectancy       - 20.0).abs() < 1e-6, "expectancy={}", r.expectancy);
     assert!((r.win_rate_pct     - 100.0).abs() < 1e-6, "win_rate_pct={}", r.win_rate_pct);
 }

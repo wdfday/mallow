@@ -10,7 +10,6 @@ alm-core      = { workspace = true }
 alm-data      = { path = "../data" }
 alm-strategy  = { path = "../strategy" }
 alm-report    = { path = "../report" }
-thiserror    = { workspace = true }
 anyhow       = { workspace = true }
 serde        = { workspace = true }
 serde_json   = { workspace = true }

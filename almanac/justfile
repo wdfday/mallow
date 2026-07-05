@@ -128,3 +128,10 @@ deps:
 # Check for outdated dependencies
 outdated:
     cargo outdated
+
+# Clear generated notebooks and python caches in alm-py
+clear:
+    rm -f crates/alm-py/notebooks/comparison/cmp_*.ipynb
+    rm -rf crates/alm-py/.pytest_cache
+    find . -type d -name "__pycache__" -exec rm -rf {} +
+    @echo "Cleared generated comparison notebooks and python caches."

@@ -1,13 +1,6 @@
 use alm_core::{bar::Bar, signal::Signal, strategy::Strategy};
 use alm_indicator::{BBands, Rsi};
 
-const RHAI: &str = r#"
-let bb20  = ind.bbands(20, buf=1);
-let rsi14 = ind.rsi(14, buf=1);
-if close[0] < bb20[0].lower && rsi14[0] < 35.0 { entry = true; }
-if close[0] > bb20[0].middle || rsi14[0] > 65.0 { exit  = true; }
-"#;
-
 /// Bollinger Band lower-touch + RSI oversold double confirmation.
 ///
 /// Long when price closes below the lower band AND RSI < oversold threshold.

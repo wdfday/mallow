@@ -485,8 +485,7 @@ func (h *Hand) recoverAmbiguousPlace(ctx context.Context, symbol, clid string, p
 		return nil
 	}
 	market := exchange.MarketSpot
-	if h.helmRuntime.Creds.AccountType == exchange.AccountFuturesUSDM ||
-		h.helmRuntime.Creds.AccountType == exchange.AccountFuturesCOINM {
+	if h.cfg.isFutures {
 		market = exchange.MarketFutures
 	}
 

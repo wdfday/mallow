@@ -2,13 +2,20 @@
 //
 // Phase transitions per leg:
 //
-//	Idle ──order_placed──▶ Entering ──order_filled──▶ Open ──order_placed(close)──▶ Exiting ──order_filled──▶ Idle
-//	                            │                       │                                │
-//	                      order_cancelled           order_placed(add)            order_canceled
-//	                            │                   (pyramid only)                       │
-//	                           Idle                    ▼                                Open
-//	                                                Adding ──order_filled──▶ Open
-//	                                                        ──order_canceled──▶ Open
+//	Idle ──order_place──▶ Entering ──order_filled──▶ Open ──order_place(close)──▶ Exiting ──order_filled──▶ Idle
+//	                           │                       │                              │
+//	                     order_cancelled          order_place(add)            order_canceled
+//	                           │                   (pyramid only)                     │
+//	                          Idle                    ▼                              Open
+//	                                               Adding ──order_filled──▶ Open
+//	                                                       ──order_canceled──▶ Open
+//
+// All three "order_place" transitions above are the SAME poslog event kind (KindOrderPlace,
+// "order_place" — written pre-flight, before the exchange REST call), differentiated only by
+// the IsClose/IsPyramidAdd payload flags (see LegState.applyOrderPlace). KindOrderPlaced
+// ("order_placed", past tense) is a separate, later event — it echoes the real exchange
+// order_id once the REST call confirms, and does NOT drive these transitions in the normal
+// flow (only as a backward-compat fallback when order_place was skipped — legacy events).
 //
 // Non-pyramid: each signal opens an independent leg (bounded by MaxUnits).
 // Pyramid:     all adds merge into Legs[0]; avg_entry recalculated; SL/TP from latest signal.

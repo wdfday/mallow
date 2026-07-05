@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -22,11 +23,24 @@ const (
 	okxPingInterval     = 25 * time.Second
 )
 
+// isPermanentOKXError returns true for login errors that won't self-heal on retry —
+// bad key, bad sign, bad timestamp, revoked key. These stop the reconnect loop instead
+// of retrying forever. Codes come from wsLogin's "login failed: code=%s msg=%s" wrap.
+func isPermanentOKXError(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := err.Error()
+	return strings.Contains(s, "code=50111") || // Invalid API Key
+		strings.Contains(s, "code=50113") || // Invalid sign
+		strings.Contains(s, "code=50114") || // Invalid timestamp
+		strings.Contains(s, "code=50119") // API key doesn't exist
+}
+
 // StreamOrders implements exchange.AccountStreamer.
 // onBalance is ignored — OKX does not push balance updates on the orders channel.
-// onCredentialError is called if the WS auth step fails permanently; currently the OKX
-// loop terminates immediately on auth failure (streamOrdersOnce returns an "auth:" error),
-// so the caller's context cancel serves as the signal.
+// onCredentialError is called (once) when isPermanentOKXError classifies the login
+// failure as unrecoverable; the reconnect loop stops afterward (see AccountStreamer doc).
 func (c *Client) StreamOrders(
 	ctx context.Context,
 	creds exchange.Credentials,
@@ -56,6 +70,13 @@ func (c *Client) StreamOrders(
 			}
 			if time.Since(start) > 30*time.Second {
 				attempt = 0
+			}
+			if isPermanentOKXError(err) {
+				slog.Error("okx: permanent stream error — stopping reconnect loop", "err", err)
+				if onCredentialError != nil {
+					onCredentialError(fmt.Errorf("okx WS stream: %w", err).Error())
+				}
+				return
 			}
 			sleepDur := bo.Next(attempt)
 			attempt++

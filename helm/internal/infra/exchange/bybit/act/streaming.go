@@ -23,12 +23,23 @@ const (
 	bybitWsPingInterval    = 20 * time.Second
 )
 
+// isPermanentBybitError returns true when the exchange explicitly rejected the login
+// (wsAuth's authResp.Success == false — the literal "auth failed: %s" wrap below), as
+// opposed to a network-level failure while completing the auth handshake (dial/write/
+// read/parse error), which should still retry normally. Bybit's WS auth response
+// carries no numeric error code — bad key and bad signature both surface as the same
+// generic rejection — so unlike OKX/Binance this can't match a specific code, only the
+// fact that the exchange responded and rejected it.
+func isPermanentBybitError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "auth failed:")
+}
+
 // StreamOrders implements exchange.AccountStreamer.
 // Connects to Bybit private WebSocket, authenticates, subscribes to the "order"
 // and "position" topics, and calls handlers on each event. Reconnects automatically.
 // onBalance is ignored — Bybit wallet updates arrive on a separate topic not yet subscribed.
-// onCredentialError is currently unused — Bybit auth failures surface as "auth failed: ..."
-// errors that cause the reconnect loop to retry; detection can be wired in a follow-up.
+// onCredentialError is called (once) when isPermanentBybitError classifies the auth
+// failure as an exchange-side rejection; the reconnect loop stops afterward.
 func (c *Client) StreamOrders(
 	ctx context.Context,
 	creds exchange.Credentials,
@@ -37,7 +48,7 @@ func (c *Client) StreamOrders(
 	_ func(exchange.BalanceEvent),
 	onPosition func(exchange.PositionEvent),
 	onRisk func(exchange.RiskEvent),
-	_ func(string), // onCredentialError — unused; see comment above
+	onCredentialError func(string),
 ) error {
 	go func() {
 		defer func() {
@@ -58,6 +69,13 @@ func (c *Client) StreamOrders(
 			}
 			if time.Since(start) > 30*time.Second {
 				attempt = 0
+			}
+			if isPermanentBybitError(err) {
+				slog.Error("bybit: permanent stream error — stopping reconnect loop", "err", err)
+				if onCredentialError != nil {
+					onCredentialError(fmt.Errorf("bybit WS stream: %w", err).Error())
+				}
+				return
 			}
 			sleepDur := bo.Next(attempt)
 			attempt++

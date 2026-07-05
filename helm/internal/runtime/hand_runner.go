@@ -490,8 +490,7 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		}
 	}
 
-	isFutures := h.helmRuntime.Creds.AccountType == exchange.AccountFuturesUSDM ||
-		h.helmRuntime.Creds.AccountType == exchange.AccountFuturesCOINM
+	isFutures := h.cfg.isFutures
 	isExitOrder := intent.Action == strategy.ActionExitLong || intent.Action == strategy.ActionExitShort
 
 	// Apply leverage/margin type on first entry per symbol for futures hands.

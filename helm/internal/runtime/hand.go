@@ -49,7 +49,13 @@ type Hand struct {
 	leverageApplied   map[string]bool // symbols where SetLeverage has been called
 
 	// ── Inbound channels ─────────────────────────────────────────────────────
-	Signals chan Signal // buf=1, drain-replace; always latest non-urgent signal
+	// signalsMu serialises DeliverSignal callers (NATS dispatch + the hand's own
+	// local exit monitor) so the drain-replace on Signals is atomic. Without it, two
+	// concurrent callers can each observe an empty channel, then both attempt to send —
+	// one send silently loses the race (default branch), and if that caller was the
+	// local exit monitor, the SL/TP trigger it was carrying is lost with no drop event.
+	signalsMu sync.Mutex
+	Signals   chan Signal // buf=1, drain-replace; always latest non-urgent signal
 	// UrgentSignals is a priority injection channel for agent-driven signals.
 	// Intent: a NATS consumer (agentic layer) publishes directly here to intervene
 	// in a running hand — e.g. force-exit, redirect, or override strategy — without
@@ -226,6 +232,10 @@ type handConfig struct {
 	limitTimeoutSec int                   // 0 = no timeout
 	limitFallback   domain.LimitFallback  //
 	futuresConfig   *domain.FuturesConfig // nil for spot
+	// isFutures is derived once here from futuresConfig != nil — the domain-level signal
+	// set at hand creation (domain.Hand.Futures) — instead of every call site separately
+	// re-deriving it from h.helmRuntime.Creds.AccountType via an == comparison chain.
+	isFutures bool
 }
 
 // ── handEdgeGuard ─────────────────────────────────────────────────────────────

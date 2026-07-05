@@ -106,6 +106,26 @@ func (h *Hand) flattenPositions(ctx context.Context) {
 			})
 		}
 
+		// Cancel exchange-side bracket orders (OCO) for this symbol synchronously before placing the market close order.
+		h.mu.Lock()
+		lv, ok := h.exitLevels[leg.Symbol]
+		var exitOrderIDs []string
+		if ok && len(lv.ExchangeOrderIDs) > 0 {
+			exitOrderIDs = make([]string, len(lv.ExchangeOrderIDs))
+			copy(exitOrderIDs, lv.ExchangeOrderIDs)
+			for _, id := range exitOrderIDs {
+				h.pendingCancels[id] = struct{}{}
+			}
+		}
+		h.mu.Unlock()
+
+		for _, id := range exitOrderIDs {
+			h.log.Info("hand: kill flattening cancelling exit order", "symbol", leg.Symbol, "order_id", id)
+			if err := h.helmRuntime.Exchange.CancelOrder(ctx, h.helmRuntime.Creds, id); err != nil {
+				h.log.Error("hand: kill cancel exit order failed", "symbol", leg.Symbol, "order_id", id, "err", err)
+			}
+		}
+
 		closeSide := exchange.Sell
 		closeSideStr := "sell"
 		if leg.Side == "sell" { // short position → buy to close
@@ -116,9 +136,7 @@ func (h *Hand) flattenPositions(ctx context.Context) {
 		// Spot exchanges enforce LOT_SIZE step (typically 0.0001 for most pairs).
 		// Truncate to 4 decimal places to avoid filter rejection on kill flatten.
 		// Futures use ReduceOnly and manage precision differently — skip truncation.
-		isFutures := h.helmRuntime.Creds.AccountType == exchange.AccountFuturesUSDM ||
-			h.helmRuntime.Creds.AccountType == exchange.AccountFuturesCOINM
-		if !isFutures {
+		if !h.cfg.isFutures {
 			qty = truncateQty(h.helmRuntime.filtersFor(ctx, leg.Symbol), qty)
 		}
 		if qty.IsZero() {
@@ -199,6 +217,10 @@ func (h *Hand) flattenPositions(ctx context.Context) {
 			h.applyFill(ctx, result.ID, leg.Symbol, closeSideStr, result.FilledQty, result.FilledAvg, decimal.Zero, "kill")
 		}
 	}
+
+	h.mu.Lock()
+	h.exitLevels = make(map[string]exitLevel)
+	h.mu.Unlock()
 }
 
 // HandleExitOrderCanceled is called when the exchange fires OrderEventCanceled for
@@ -513,10 +535,15 @@ func (h *Hand) releasePositions(ctx context.Context) {
 // Called on every pollTicker tick (every 30s) as a safety net in case
 // exchange-side bracket orders fail to execute.
 //
-// IMPORTANT: exitLevels[sym] is deleted ONLY after the DirExit signal is
-// successfully enqueued into UrgentSignals. If the channel is full the level
-// is preserved so the next tick can retry — prevents the safety net from
-// being silently lost when the urgent buffer is momentarily saturated.
+// exitLevels[sym] is deleted unconditionally right after DeliverSignal, without checking
+// whether the send succeeded or was dropped — DeliverSignal returns void, so there is
+// nothing to check. This is safe ONLY because DeliverSignal is now the sole writer to
+// h.Signals and serialises all callers under signalsMu (2026-07-06): drain-then-send
+// under that lock is guaranteed to succeed (the only other party touching the channel is
+// the single consumer in runLoop, which just makes room, never adds a competing value) —
+// so the drop branch inside DeliverSignal is effectively unreachable from this call site.
+// If a second writer to h.Signals is ever added outside DeliverSignal, this guarantee
+// breaks and the delete here would need to become conditional on delivery succeeding.
 func (h *Hand) checkExits() {
 	h.mu.RLock()
 	exits := make(map[string]exitLevel, len(h.exitLevels))
@@ -595,15 +622,10 @@ func (h *Hand) checkExits() {
 			Msg:       "order: local exit trigger activated",
 		})
 
-		// Drain-replace into Signals so the exit is processed on the next run-loop tick.
-		select {
-		case <-h.Signals:
-		default:
-		}
-		select {
-		case h.Signals <- Signal{Symbol: sym, Direction: strategy.DirExit, Strength: 1.0, ReceivedAt: time.Now()}:
-		default:
-		}
+		// Deliver into Signals so the exit is processed on the next run-loop tick.
+		// Goes through DeliverSignal (not a duplicated drain-replace) so this shares the
+		// same lock + drop-tracking as NATS-delivered signals — see DeliverSignal doc.
+		h.DeliverSignal(Signal{Symbol: sym, Direction: strategy.DirExit, Strength: 1.0, ReceivedAt: time.Now()})
 		h.mu.Lock()
 		delete(h.exitLevels, sym)
 		h.mu.Unlock()

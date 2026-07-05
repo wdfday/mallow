@@ -188,7 +188,25 @@ func (h *Hand) Position() *portfolio.Position {
 
 // DeliverSignal enqueues a signal onto the hand's signal channel (drain-replace).
 // All signals including urgent exit signals go through the same channel for now.
+// The only entry point for producers — the local exit monitor (checkExits) calls this
+// too, instead of duplicating the drain-replace, so every caller shares one lock and
+// one drop-tracking path.
+//
+// signalsMu makes the two-case swap atomic across concurrent callers (NATS dispatch vs.
+// the hand's own run loop calling from checkExits): case 1, channel empty → send directly;
+// case 2, channel full → drain the stale signal out, then send. Without the lock, two
+// callers could each see "empty" and both attempt to send — one loses the race silently.
 func (h *Hand) DeliverSignal(sig Signal) {
+	h.signalsMu.Lock()
+	defer h.signalsMu.Unlock()
+
+	select {
+	case h.Signals <- sig:
+		return // case 1: channel was empty — sent directly
+	default:
+	}
+
+	// case 2: channel full — drain the stale signal out, then send the new one.
 	select {
 	case <-h.Signals:
 	default:

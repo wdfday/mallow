@@ -60,6 +60,7 @@ func NewHand(
 			limitTimeoutSec: limitTimeoutSec,
 			limitFallback:   limitFallback,
 			futuresConfig:   futuresConfig,
+			isFutures:       futuresConfig != nil,
 		},
 		guard: handEdgeGuard{
 			cfg:  edgeRisk,

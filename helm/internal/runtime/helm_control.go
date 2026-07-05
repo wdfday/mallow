@@ -64,10 +64,6 @@ func (r *HelmRuntime) Resume() []string {
 	return toRestart
 }
 
-// ---------------------------------------------------------------------------
-// Risk config
-// ---------------------------------------------------------------------------
-
 // TriggerAuthError is called when an exchange auth error (ErrClassAuth) is detected
 // mid-run. It self-pauses the helm, emits a credential-error event, and notifies the
 // broker service via the onCredentialError callback (set at spawn time) so the broker
@@ -80,6 +76,10 @@ func (r *HelmRuntime) TriggerAuthError(reason string) {
 		go r.onCredentialError(r.AccountID, reason)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Risk config
+// ---------------------------------------------------------------------------
 
 // ResetHalt clears the risk-manager halt flag on this runtime.
 func (r *HelmRuntime) ResetHalt() {

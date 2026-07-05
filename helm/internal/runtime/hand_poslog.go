@@ -495,6 +495,27 @@ func (h *Hand) appendOrphanTradeRecord(ctx context.Context, leg *position.LegSta
 	if err := tl.Append(ctx, rec); err != nil {
 		h.log.Warn("trade_log: orphan record publish failed", "symbol", leg.Symbol, "source", source, "err", err)
 	}
+
+	// Poslog GC: just like normal trades, once the orphan trade record is durable,
+	// we purge the poslog if the hand is flat.
+	if pl := h.helmRuntime.PosLog; pl != nil {
+		helmID := h.helmID.String()
+		handID := h.id.String()
+		go func() {
+			defer safe.Recover()
+			h.mu.RLock()
+			stillFlat := h.pos.IsFlat()
+			h.mu.RUnlock()
+			if !stillFlat {
+				return
+			}
+			if err := pl.PurgeHand(context.Background(), helmID, handID); err != nil {
+				h.log.Warn("poslog: purge after orphan trade record failed (non-fatal)", "err", err)
+			} else {
+				h.log.Info("poslog: purged after orphan trade record published")
+			}
+		}()
+	}
 }
 
 // decimalToString returns "" for the zero value so the JSON wire format omits

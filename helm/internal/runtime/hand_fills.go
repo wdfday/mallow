@@ -125,10 +125,8 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 	//
 	// MUST run BEFORE publishOrderFilled: the leg still exists in h.pos here.
 	// After publishOrderFilled emits KindPositionClosed, the leg is gone.
-	isFutures := h.helmRuntime.Creds.AccountType == exchange.AccountFuturesUSDM ||
-		h.helmRuntime.Creds.AccountType == exchange.AccountFuturesCOINM
 	var dustPnL decimal.Decimal
-	if isClosingFill && !isFutures && legQty.IsPositive() {
+	if isClosingFill && !h.cfg.isFutures && legQty.IsPositive() {
 		dust := legQty.Sub(cumulativeQty)
 		filters := h.helmRuntime.filtersFor(ctx, symbol)
 		if filters.QtyStep.IsPositive() && dust.IsPositive() && dust.LessThan(filters.QtyStep) {
@@ -659,8 +657,7 @@ func (h *Hand) scheduleBracketPlacement(lv exitLevel, symbol string, bracketQty 
 		exitSide = exchange.Buy
 	}
 	market := exchange.MarketSpot
-	if h.helmRuntime.Creds.AccountType == exchange.AccountFuturesUSDM ||
-		h.helmRuntime.Creds.AccountType == exchange.AccountFuturesCOINM {
+	if h.cfg.isFutures {
 		market = exchange.MarketFutures
 	}
 	h.mu.RLock()

@@ -23,8 +23,8 @@ import (
 // the WS connection so it can be replaced on RotateStream without stopping drains.
 func (r *HelmRuntime) StartStreaming(appCtx context.Context) {
 	drainCtx, drainCancel := context.WithCancel(appCtx)
-
 	streamCtx, streamCancel := context.WithCancel(drainCtx)
+
 	r.fillStreamMu.Lock()
 	r.fillStreamCancel = streamCancel
 	r.fillDrainCancel = drainCancel

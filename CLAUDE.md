@@ -349,8 +349,8 @@ helm/
 │   ├── config/       # Viper config (API_ADDR, POSTGRES_URL, NATS_URL, SYNC_INTERVAL, market-data, …)
 │   ├── infra/
 │   │   ├── engine/   # SignalClient (NATS protobuf → bars + signals), BarAggregator
-│   │   ├── exchange/ # Broker adapters: alpaca, binance, bybit, oanda, okx
-│   │   ├── marketdata/ # Market-data listeners (alpaca, okx WebSocket) — optional
+│   │   ├── exchange/ # Broker adapters: alpaca, binance, bybit, fbinance (Binance futures), okx
+│   │   ├── marketdata/ # Market-data listeners (okx, binance, bybit WebSocket; alpaca/oanda dirs exist but errored out of global config, see MARKET_DATA_SOURCE) — optional
 │   │   ├── nats/     # NATS + JetStream setup (streams: user.>, signals, trade.filled.>, helm.pos.>, helm.trades.>, helm.equity.>, portfolio.>)
 │   │   ├── natsapi/  # NATS req/rep protocol (subjects, CallerMeta, envelopes)
 │   │   ├── perflog/  # Per-helm and per-hand performance log (portfolio + trades)
@@ -531,7 +531,8 @@ NATS_URL
 ENCRYPTION_KEY              # AES-GCM key for broker credentials
 PYROSCOPE_URL               # empty = profiling disabled
 SYNC_INTERVAL               # portfolio sync interval (default: 5m)
-MARKET_DATA_SOURCE          # none | alpaca | okx (default: none)
+MARKET_DATA_SOURCE          # none | okx | binance | bybit (default: none) — alpaca/ibkr/oanda now rejected here;
+                             # those need per-account provider credentials from helm config, not global env
 MARKET_DATA_SYMBOLS         # comma-separated symbols for market-data listener
 MARKET_DATA_CRYPTO          # true | false
 ALPACA_MD_API_KEY           # Alpaca market-data key

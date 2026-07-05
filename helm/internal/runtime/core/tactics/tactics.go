@@ -129,10 +129,6 @@ type SizingConfig struct {
 	// RiskPerTradePct is used by SizingFixedFractional and SizingVolatility (e.g. 0.01 = 1%).
 	RiskPerTradePct float64 `json:"risk_per_trade_pct"`
 
-	// MaxPositionPct is the notional exposure ceiling as a fraction of equity (cap only —
-	// it never sources position size). Zero → default 100% of equity.
-	MaxPositionPct float64 `json:"max_position_pct"`
-
 	// FixedQty is used only by SizingFixedQty.
 	FixedQty decimal.Decimal `json:"fixed_qty"`
 
@@ -143,6 +139,10 @@ type SizingConfig struct {
 	// Defaults to true; set false to trade at full declared size regardless of confidence.
 	// Risk-based modes (fixed_fractional, volatility) always ignore this.
 	StrengthSizing bool `json:"strength_sizing"`
+
+	// MaxPositionPct is the notional exposure ceiling as a fraction of equity (cap only —
+	// it never sources position size). Zero → default 100% of equity.
+	MaxPositionPct float64 `json:"max_position_pct"`
 }
 
 // DefaultSizingConfig returns conservative defaults (fixed_fractional, 10% unit).

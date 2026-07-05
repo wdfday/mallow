@@ -165,3 +165,10 @@ thesis:
 # Compile and open PDF
 thesis-open:
     @bash Thesis/tex/compile.sh --open
+
+# Clear temporary files, python cache and generated comparison notebooks
+alm-py-clear:
+    rm -f almanac/crates/alm-py/notebooks/comparison/cmp_*.ipynb
+    rm -rf almanac/crates/alm-py/.pytest_cache
+    find . -type d -name "__pycache__" -exec rm -rf {} +
+    @echo "Cleared temporary files, python cache and generated notebooks."

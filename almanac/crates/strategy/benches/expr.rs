@@ -78,13 +78,31 @@ fn bench_ema_run(c: &mut Criterion) {
     let bars = make_bars(1_000);
     let mut group = c.benchmark_group("ema_cross_run/1000bars");
 
-    group.bench_with_input(BenchmarkId::from_parameter("script"), &bars, |b, bars| {
+    group.bench_with_input(BenchmarkId::from_parameter("ind_script"), &bars, |b, bars| {
         let mut s = build_strategy("script", &json!({
             "script": "\
                 let ema20 = ind.ema(20);\
                 let ema50 = ind.ema(50);\
                 if cross_above(ema20, ema50) { entry = true; }\
                 if cross_below(ema20, ema50) { exit  = true; }\
+            "
+        })).unwrap();
+        b.iter(|| { s.reset(); run_all(s.as_mut(), bars) })
+    });
+
+    // `ta.*` calls execute as genuine Rhai function dispatch every bar
+    // (Map key lookup + write_lock downcast) instead of `ind.*`'s
+    // pre-computed-array-in-Scope model — this measures that overhead
+    // directly on an equivalent strategy.
+    group.bench_with_input(BenchmarkId::from_parameter("ta_script"), &bars, |b, bars| {
+        // Real newlines required — `ta.*` allows only one reference per
+        // physical line (see `validate_ta_declarations`), unlike `ind.*`.
+        let mut s = build_strategy("script", &json!({
+            "script": "\
+                let ema20 = ta.ema(20, close[0]);\n\
+                let ema50 = ta.ema(50, close[0]);\n\
+                if cross_above(ema20, ema50) { entry = true; }\n\
+                if cross_below(ema20, ema50) { exit  = true; }\n\
             "
         })).unwrap();
         b.iter(|| { s.reset(); run_all(s.as_mut(), bars) })
@@ -181,7 +199,7 @@ fn bench_kitchen_sink_run(c: &mut Criterion) {
     let bars = make_bars(1_000);
     let mut group = c.benchmark_group("kitchen_sink_run/1000bars");
 
-    let mut named = KitchenSinkStrategy::new("BTCUSDT");
+    let named = KitchenSinkStrategy::new("BTCUSDT");
     let script = named
         .script()
         .expect("KitchenSinkStrategy::script() must return canonical RHAI_SCRIPT");
@@ -215,7 +233,7 @@ fn bench_btc_m1_real(c: &mut Criterion) {
     let mut group = c.benchmark_group("btc_m1_real");
     group.sample_size(10);
 
-    let mut named = KitchenSinkStrategy::new("BTCUSDT");
+    let named = KitchenSinkStrategy::new("BTCUSDT");
     let script = named
         .script()
         .expect("KitchenSinkStrategy::script() must return canonical RHAI_SCRIPT");

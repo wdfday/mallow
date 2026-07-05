@@ -215,6 +215,7 @@ impl FeedVarBinding {
         }
     }
 
+    #[cfg(test)]
     pub(in crate::script) fn confirmed_len(&self) -> usize {
         self.history.len()
     }

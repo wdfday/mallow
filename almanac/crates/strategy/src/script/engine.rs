@@ -112,6 +112,7 @@ const MULTI_FIELDS: &[&str] = &[
 pub(crate) fn build_engine() -> Engine {
     let mut engine = Engine::new();
     engine.set_max_operations(500_000);
+    crate::script::ta::register_ta(&mut engine);
 
     // ── Exact f64 comparisons (override Rhai's epsilon comparison) ───────────
     engine.register_fn("==", |a: f64, b: f64| a == b);

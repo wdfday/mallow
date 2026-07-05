@@ -55,6 +55,17 @@ impl LiveBucketAggregator {
             "HTF interval ({tf_ms} ms) must be ≥ base TF interval ({base_tf_ms} ms); \
              declaring an indicator on a timeframe smaller than the base TF is not supported"
         );
+        // `fill_ratio` divides `tf_ms / base_tf_ms` to get the expected bar
+        // count per bucket — if that's not exact (e.g. base M3 + HTF M5:
+        // 300_000 / 180_000 truncates to 1 instead of the true ~1.67), the
+        // integer division silently under-counts and `fill_ratio` reports
+        // "bucket fully formed" far too early.
+        anyhow::ensure!(
+            tf_ms % base_tf_ms == 0,
+            "HTF interval ({tf_ms} ms) must be an exact multiple of the base TF interval \
+             ({base_tf_ms} ms) — e.g. M5 doesn't evenly divide into M3. Pick a base TF that \
+             evenly divides every declared HTF."
+        );
         Ok(Self {
             tf_ms,
             base_tf_ms,
@@ -137,6 +148,27 @@ mod tests {
 
     fn b(t: i64, o: f64, h: f64, l: f64, c: f64, v: f64) -> Bar {
         Bar::new(t, "T", o, h, l, c, v)
+    }
+
+    #[test]
+    fn rejects_htf_not_a_multiple_of_base_tf() {
+        // M5 (300_000 ms) doesn't evenly divide into M3 (180_000 ms) —
+        // `fill_ratio`'s `tf_ms / base_tf_ms` would silently truncate
+        // 1.666... down to 1, under-counting the expected bars per bucket.
+        let err = LiveBucketAggregator::new(
+            Timeframe::M5.duration_ms(),
+            Timeframe::M3.duration_ms(),
+        ).err().expect("M5 HTF over M3 base must be rejected");
+        assert!(err.to_string().contains("exact multiple"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn accepts_htf_exact_multiple_of_base_tf() {
+        // M15 (900_000 ms) is exactly 5x M3 (180_000 ms).
+        assert!(LiveBucketAggregator::new(
+            Timeframe::M15.duration_ms(),
+            Timeframe::M3.duration_ms(),
+        ).is_ok());
     }
 
     #[test]

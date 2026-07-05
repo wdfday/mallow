@@ -77,7 +77,8 @@ use crate::candle_type::{CandleType, CandleTransform};
 use super::binding::VarBinding;
 use super::parse::{
     extract_candle_directives, extract_regime_block, indicator_json_config,
-    make_indicator_box, try_parse_indicator_line, CandleDirective, IndicatorDecl,
+    make_indicator_box, rewrite_ta_line, try_parse_indicator_line, validate_ta_declarations,
+    brace_depth_delta, validate_ta_top_level, CandleDirective, IndicatorDecl,
 };
 use crate::script::engine::{build_engine, extract_max_lookback, BAR_FIELDS, DEFAULT_BUF_DEPTH};
 use crate::script::utils::{scalar_out, bool_out};
@@ -107,9 +108,70 @@ pub struct ScriptStrategy {
     /// Persistent key-value map shared across bar calls.
     /// Scripts read/write `state["key"]` to carry state between bars (e.g. `in_position`).
     persistent_state: rhai::Map,
+    /// Backing store for `ta.*` incremental primitives (`crate::script::ta`) —
+    /// same clone-in/read-back mechanism as `persistent_state`, kept separate
+    /// so user `state[...]` keys never collide with `ta.*` internal state.
+    ta_state: rhai::Map,
 }
 
-
+/// Process one script block (the `regime { ... }` body or the main body):
+/// dispatch each line to `ind.*` declaration collection or `ta.*` rewriting.
+/// `decl_names` is shared across both calls (see `ScriptStrategy::build`) so
+/// an `ind.*`/`ta.*` name can only be declared once across the whole script
+/// — reusing one is a build error instead of the silent state-key collision
+/// `ta.*` would otherwise hit (see `ta::fallback_array`).
+///
+/// This deliberately does **not** track plain local `let` variables: Rhai
+/// block-scopes `let` inside `if`/`while`/`for` bodies, so the same name
+/// (e.g. a scratch `let val = ...;`) legitimately repeats across independent
+/// branches in existing scripts (see `named::trend::scalping_ema`) — a flat,
+/// line-based scanner has no notion of brace depth and would misreport that
+/// as a collision. `ind.*`/`ta.*` declaration *names* don't have this
+/// problem: by convention they're always written at the top level, one per
+/// line. `ta.*` declarations specifically are also required to actually BE
+/// at the top level (brace depth 0) — see `validate_ta_top_level` — since
+/// unlike `ind.*` they execute as real Rhai code and must run every bar to
+/// keep their incremental state correct.
+fn process_script_block(
+    body: &str,
+    decls: &mut Vec<IndicatorDecl>,
+    decl_names: &mut std::collections::HashSet<String>,
+) -> Result<String> {
+    let mut cleaned_lines: Vec<String> = Vec::new();
+    let mut brace_depth: i32 = 0;
+    for line in body.lines() {
+        match try_parse_indicator_line(line) {
+            Some(decl) => {
+                if !decl_names.insert(decl.var_name.clone()) {
+                    anyhow::bail!(
+                        "`{}` is declared more than once (regime + main share one namespace \
+                         for `ind.*`/`ta.*` declarations)",
+                        decl.var_name
+                    );
+                }
+                decls.push(decl);
+            }
+            None => {
+                validate_ta_declarations(line)?;
+                match rewrite_ta_line(line)? {
+                    Some((var_name, rewritten)) => {
+                        validate_ta_top_level(&var_name, line, brace_depth)?;
+                        if !decl_names.insert(var_name.clone()) {
+                            anyhow::bail!(
+                                "`{var_name}` is declared more than once (regime + main share \
+                                 one namespace for `ind.*`/`ta.*` declarations)"
+                            );
+                        }
+                        cleaned_lines.push(rewritten);
+                    }
+                    None => cleaned_lines.push(line.to_string()),
+                }
+            }
+        }
+        brace_depth += brace_depth_delta(line);
+    }
+    Ok(cleaned_lines.join("\n"))
+}
 
 impl ScriptStrategy {
     /// Backtest / stream mode: indicator series auto-collected into `take_indicator_series()`.
@@ -143,47 +205,16 @@ impl ScriptStrategy {
         // is line-count preserving so error positions remain accurate.
         let (regime_body, main_source) = extract_regime_block(&after_candle)?;
 
-        // Step 2: collect indicator declarations from both blocks. Names must be
-        // unique across the whole strategy — if a name appears in both regime and
-        // main, that's an error. Indicators share bindings: declaring `ema9` in
-        // the regime block makes it readable from main too, and vice versa.
+        // Step 2: collect indicator declarations from both blocks. Names must
+        // be unique across the whole strategy, shared with `ta.*`
+        // declarations (see `process_script_block`) — one namespace across
+        // regime + main.
         let mut decls: Vec<IndicatorDecl> = Vec::new();
         let mut decl_names: std::collections::HashSet<String> = std::collections::HashSet::new();
 
         let regime_body_owned = regime_body.unwrap_or_default();
-        let mut regime_cleaned_lines: Vec<&str> = Vec::new();
-        for line in regime_body_owned.lines() {
-            match try_parse_indicator_line(line) {
-                Some(decl) => {
-                    if !decl_names.insert(decl.var_name.clone()) {
-                        anyhow::bail!(
-                            "indicator `{}` is declared more than once (regime + main share names)",
-                            decl.var_name
-                        );
-                    }
-                    decls.push(decl);
-                }
-                None => regime_cleaned_lines.push(line),
-            }
-        }
-        let regime_cleaned_script = regime_cleaned_lines.join("\n");
-
-        let mut main_cleaned_lines: Vec<&str> = Vec::new();
-        for line in main_source.lines() {
-            match try_parse_indicator_line(line) {
-                Some(decl) => {
-                    if !decl_names.insert(decl.var_name.clone()) {
-                        anyhow::bail!(
-                            "indicator `{}` is declared more than once (regime + main share names)",
-                            decl.var_name
-                        );
-                    }
-                    decls.push(decl);
-                }
-                None => main_cleaned_lines.push(line),
-            }
-        }
-        let main_cleaned_script = main_cleaned_lines.join("\n");
+        let regime_cleaned_script = process_script_block(&regime_body_owned, &mut decls, &mut decl_names)?;
+        let main_cleaned_script = process_script_block(main_source.as_str(), &mut decls, &mut decl_names)?;
 
         // V1 is strict single-TF: any indicator declared with a TF argument
         // (`ind.ema(20, "H1")` or `"live_H1"`) must go through V2. Reject early
@@ -256,6 +287,7 @@ impl ScriptStrategy {
             current_regime: None,
             error_sink: None,
             persistent_state: rhai::Map::new(),
+            ta_state: rhai::Map::new(),
         })
     }
 
@@ -367,6 +399,7 @@ impl Strategy for ScriptStrategy {
         scope.push("reason",    String::new());
         scope.push("atr",       0.0_f64);
         scope.push("state", rhai::Dynamic::from_map(self.persistent_state.clone()));
+        scope.push("ta",    rhai::Dynamic::from_map(self.ta_state.clone()));
 
         // Bar arrays pushed after output vars so user can't shadow open/close/etc.
         for field in BAR_FIELDS {
@@ -437,6 +470,9 @@ impl Strategy for ScriptStrategy {
         if let Some(new_state) = scope.get_value::<rhai::Map>("state") {
             self.persistent_state = new_state;
         }
+        if let Some(new_ta) = scope.get_value::<rhai::Map>("ta") {
+            self.ta_state = new_ta;
+        }
 
         let strength  = scalar_out(&scope, "strength").unwrap_or(1.0).clamp(0.0, 1.0);
         let target    = scalar_out(&scope, "tp").filter(|&v| v != 0.0);
@@ -502,6 +538,7 @@ impl Strategy for ScriptStrategy {
         if let Some(s) = &mut self.series { s.clear(); }
         self.current_regime = None;
         self.persistent_state.clear();
+        self.ta_state.clear();
     }
 }
 
@@ -595,9 +632,166 @@ if falling(h1_ema20) || m1_rsi5[0] > 65.0 { exit = true; }
     }
 
     #[test]
+    fn rejects_inline_ta_use_at_build_time() {
+        const SCRIPT: &str = r#"
+if close[0] > ta.ema(9, close[0])[0] { entry = true; }
+"#;
+        let err = ScriptStrategy::from_script(SCRIPT)
+            .err()
+            .expect("inline ta.* use (not a `let` declaration) must fail to build");
+        assert!(
+            err.to_string().contains("must be declared as `let NAME"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_buf_at_build_time() {
+        const NON_NUMERIC: &str = r#"
+let fast = ta.ema(9, close[0], buf=ngu);
+entry = true;
+"#;
+        let err = ScriptStrategy::from_script(NON_NUMERIC)
+            .err()
+            .expect("buf=ngu (non-numeric) must fail to build, not silently fall back");
+        assert!(
+            err.to_string().contains("not a valid non-negative integer"),
+            "unexpected error: {err}"
+        );
+
+        const ZERO: &str = r#"
+let fast = ta.ema(9, close[0], buf=0);
+entry = true;
+"#;
+        let err = ScriptStrategy::from_script(ZERO)
+            .err()
+            .expect("buf=0 must fail to build, not silently clamp to 1");
+        assert!(err.to_string().contains("too small"), "unexpected error: {err}");
+    }
+
+    #[test]
     fn runs_200_bars_no_panic() {
         let mut s = ScriptStrategy::from_script(EMA_CROSS_SCRIPT).unwrap();
         for i in 0..200 { let _ = s.on_bar(&make_bar(i)); }
+    }
+
+    /// End-to-end `ta.*` — `let fast = ta.ema(9, close[0]);` must compile
+    /// (rewrite_ta_line injects the "fast" key), persist across bars via
+    /// `ta_state`, and match a plain Rust EMA computed on the same closes.
+    /// `ta.ema` returns an `Array` (not a scalar), so `fast[0]` reads the
+    /// current value — smuggled out via `sl` since `fast` isn't itself a
+    /// signal output var.
+    #[test]
+    fn ta_ema_end_to_end_matches_reference() {
+        const SCRIPT: &str = r#"
+let fast = ta.ema(9, close[0]);
+entry = true;
+sl = fast[0];
+"#;
+        let mut s = ScriptStrategy::from_script(SCRIPT).unwrap();
+
+        struct RefEma { val: f64, alpha: f64, seeded: bool }
+        impl RefEma {
+            fn update(&mut self, v: f64) -> f64 {
+                self.val = if self.seeded { v * self.alpha + self.val * (1.0 - self.alpha) } else { v };
+                self.seeded = true;
+                self.val
+            }
+        }
+        let mut rust_ema = RefEma { val: 0.0, alpha: 2.0 / 10.0, seeded: false };
+
+        // No `ind.*` declared, so the only warmup gate is `bar_buf_depth`
+        // (default 2) — `on_bar` returns early before the script ever runs
+        // until that fills, so `ta.ema` isn't called (and doesn't seed) for
+        // bar 0 either.
+        for i in 0..50 {
+            let bar = make_bar(i);
+            let signals = s.on_bar(&bar);
+            if i == 0 {
+                assert!(signals.is_empty(), "bar 0 should still be warming up");
+                continue;
+            }
+            let expected = rust_ema.update(bar.close);
+            let sig = signals.into_iter().next().expect("entry=true should always emit a signal");
+            let got = sig.stop_price.expect("sl was set from fast[0]");
+            assert!((got - expected).abs() < 1e-9, "bar {i}: expected {expected}, got {got}");
+        }
+    }
+
+    /// The actual point of returning `Array` instead of a scalar: `ta.*`
+    /// outputs must work directly with `cross_above`/`cross_below` — the
+    /// same way `ind.*` bindings do. Two EMAs of different speed on the same
+    /// close must cross at least once over enough bars of a trending series.
+    #[test]
+    fn ta_ema_outputs_work_with_cross_above() {
+        const SCRIPT: &str = r#"
+let fast = ta.ema(3, close[0]);
+let slow = ta.ema(15, close[0]);
+if cross_above(fast, slow) { long = true; }
+if cross_below(fast, slow) { exit = true; }
+"#;
+        let mut s = ScriptStrategy::from_script(SCRIPT).unwrap();
+        let mut saw_long = false;
+        let mut saw_exit = false;
+
+        // Oscillating series so fast/slow EMAs actually cross both ways.
+        for i in 0..200 {
+            let c = 100.0 + (i as f64 * 0.15).sin() * 10.0;
+            let bar = Bar::new(i as i64 * 60_000, "TEST", c, c * 1.001, c * 0.999, c, 1000.0);
+            for sig in s.on_bar(&bar) {
+                if sig.direction == alm_core::signal::Direction::Long { saw_long = true; }
+                if sig.direction == alm_core::signal::Direction::Exit { saw_exit = true; }
+            }
+        }
+
+        assert!(saw_long, "cross_above(fast, slow) should fire at least once over an oscillating series");
+        assert!(saw_exit, "cross_below(fast, slow) should fire at least once over an oscillating series");
+    }
+
+    /// `buf=N` on a `ta.*` declaration is parsed statically by `rewrite_ta_line`
+    /// (same convention as `ind.*`'s `buf=N`) — verify end-to-end through
+    /// `ScriptStrategy` that adding `buf=5` doesn't break the call and `[0]`
+    /// still matches a plain Rust EMA reference.
+    ///
+    /// Deliberately does NOT use the built-in `highest(arr, n)` here: that
+    /// helper hard-errors at runtime if `arr` is shorter than `n`, and a
+    /// runtime error aborts `on_bar` *before* `ta_state` gets persisted back
+    /// (see `persistent_state`/`ta_state` write-back after `run_ast_with_scope`
+    /// succeeds) — so a `ta.*` array still warming towards `buf` would never
+    /// progress past its first entry if paired with `highest()`. Use
+    /// `ta.highest`/`ta.lowest` (gate gracefully via `()`) instead of the
+    /// strict built-in when reading a still-warming `ta.*` output.
+    #[test]
+    fn ta_buf_end_to_end_through_script_strategy() {
+        const SCRIPT: &str = r#"
+let wide = ta.ema(3, close[0], buf=5);
+entry = true;
+sl = wide[0];
+"#;
+        let mut s = ScriptStrategy::from_script(SCRIPT).unwrap();
+
+        struct RefEma { val: f64, alpha: f64, seeded: bool }
+        impl RefEma {
+            fn update(&mut self, v: f64) -> f64 {
+                self.val = if self.seeded { v * self.alpha + self.val * (1.0 - self.alpha) } else { v };
+                self.seeded = true;
+                self.val
+            }
+        }
+        let mut rust_ema = RefEma { val: 0.0, alpha: 2.0 / 4.0, seeded: false };
+
+        for i in 0..10 {
+            let bar = make_bar(i);
+            let signals = s.on_bar(&bar);
+            if i == 0 {
+                assert!(signals.is_empty(), "bar 0 should still be warming up (bar_buf_depth)");
+                continue;
+            }
+            let expected = rust_ema.update(bar.close);
+            let sig = signals.into_iter().next().expect("entry=true should always emit a signal");
+            let got = sig.stop_price.expect("sl was set from wide[0]");
+            assert!((got - expected).abs() < 1e-9, "bar {i}: expected {expected}, got {got}");
+        }
     }
 
     /// Multi-field exposure for atr (`.tr`) + lsma (`.slope`), plus MEntry⊕MEntry
@@ -1192,5 +1386,57 @@ plot("rsi",      rsi[0]);
         for i in 0..200 { let _ = s.on_bar(&make_bar(i)); }
         let runtime_err = sink.lock().unwrap().clone();
         assert!(runtime_err.is_none(), "script runtime error: {:?}", runtime_err);
+    }
+
+    /// The bug this whole `decl_names` sharing exists to prevent: without it,
+    /// the second declaration's `write_lock::<TaWindowSum>()` silently fails
+    /// against the `TaEma` already stored under "fast" and falls into
+    /// `ta::fallback_array` (raw-value passthrough) forever, no error at all.
+    #[test]
+    fn duplicate_ta_var_name_rejected_at_build_time() {
+        const SCRIPT: &str = r#"
+let fast = ta.ema(9, close[0]);
+let fast = ta.sma(5, close[0]);
+entry = true;
+sl = fast[0];
+"#;
+        let err = ScriptStrategy::from_script(SCRIPT).err().expect("must be rejected at build time");
+        assert!(err.to_string().contains("declared more than once"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn duplicate_name_across_ind_and_ta_rejected_at_build_time() {
+        const SCRIPT: &str = r#"
+let fast = ind.ema(9);
+let fast = ta.sma(5, close[0]);
+entry = true;
+"#;
+        let err = ScriptStrategy::from_script(SCRIPT).err().expect("must be rejected at build time");
+        assert!(err.to_string().contains("declared more than once"), "unexpected error: {err}");
+    }
+
+    /// A `ta.*` declaration nested inside `if`/`while`/`for` would only
+    /// advance its incremental state on bars where that branch actually
+    /// runs — silently corrupting the smoothing math the rest of the time.
+    /// Must be a build-time error, not a subtle runtime footgun.
+    #[test]
+    fn ta_declaration_nested_in_if_block_rejected_at_build_time() {
+        const SCRIPT: &str = r#"
+if close[0] > 0.0 {
+    let fast = ta.ema(9, close[0]);
+    entry = true;
+}
+"#;
+        let err = ScriptStrategy::from_script(SCRIPT).err().expect("nested ta.* declaration must be rejected");
+        assert!(err.to_string().contains("must be at the top level"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn ta_declaration_at_top_level_still_compiles() {
+        const SCRIPT: &str = r#"
+let fast = ta.ema(9, close[0]);
+if close[0] > 0.0 { entry = true; }
+"#;
+        ScriptStrategy::from_script(SCRIPT).expect("top-level ta.* declaration should compile fine");
     }
 }

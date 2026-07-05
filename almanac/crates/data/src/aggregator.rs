@@ -14,6 +14,14 @@
 //! // let mut h1_agg = BarAggregator::standalone(Timeframe::H1);
 //! // within on_bar(): if let Some(h1) = h1_agg.update(&bar) { ... }
 //! ```
+//!
+//! `StandaloneAggregator`/`BarAggregator` themselves are `#[deprecated]` (no
+//! longer re-exported from `lib.rs` — the MTF engine handles multiple feeds
+//! directly now) and kept only for their own tests below; `allow(deprecated)`
+//! module-wide so their own `impl`s using their own deprecated fields don't
+//! generate warnings about themselves.
+
+#![allow(deprecated)]
 
 use std::collections::VecDeque;
 

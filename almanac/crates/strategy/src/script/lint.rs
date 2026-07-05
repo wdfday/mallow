@@ -792,6 +792,23 @@ fn check_htf_vs_base(
             ),
             severity: "warning",
         })
+    } else if htf_ms % base_ms != 0 {
+        // V2 gives every HTF binding "live" bucket projection
+        // (`LiveBucketAggregator`), which divides `htf_ms / base_ms` to know
+        // how many base bars fill one HTF bucket — if that's not exact (e.g.
+        // base M3 + HTF M5), the count is silently wrong and `fill_ratio`
+        // reports the bucket as fully formed too early. Mirrored as a hard
+        // error here (not just at `MtfScriptStrategy::build` time) so the
+        // editor catches it before the script is ever run.
+        Some(LintDiagnostic {
+            line: lineno, col: 1,
+            message: format!(
+                "'{var_name}': HTF timeframe '{htf}' ({htf_ms} ms) is not an exact multiple of \
+                 the base TF '{base}' ({base_ms} ms) — e.g. M5 doesn't evenly divide into M3. \
+                 Pick a base TF that evenly divides every declared HTF."
+            ),
+            severity: "error",
+        })
     } else {
         None
     }
@@ -1043,6 +1060,34 @@ if ema9[0] > 0.0 { entry = true; }
         let (errors, _) = script_lint(script, Some(Timeframe::M1));
         let htf_errors: Vec<_> = errors.iter()
             .filter(|e| e.message.contains("H4") || e.message.contains("timeframe"))
+            .collect();
+        assert!(htf_errors.is_empty(), "unexpected htf errors: {htf_errors:?}");
+    }
+
+    #[test]
+    fn lint_htf_not_multiple_of_base_tf_is_error() {
+        // M5 (300_000 ms) doesn't evenly divide into M3 (180_000 ms) —
+        // `LiveBucketAggregator::fill_ratio`'s integer division would
+        // silently under-count the expected bars per bucket.
+        let script = r#"let ema9 = ind.ema(9, "M5");
+if ema9[0] > 0.0 { entry = true; }
+"#;
+        let (errors, _) = script_lint(script, Some(Timeframe::M3));
+        assert!(
+            errors.iter().any(|e| e.severity == "error" && e.message.contains("exact multiple")),
+            "expected error for HTF M5 not a multiple of base M3, got: {errors:?}"
+        );
+    }
+
+    #[test]
+    fn lint_htf_exact_multiple_of_base_tf_is_clean() {
+        // M15 (900_000 ms) is exactly 5x M3 (180_000 ms).
+        let script = r#"let ema9 = ind.ema(9, "M15");
+if ema9[0] > 0.0 { entry = true; }
+"#;
+        let (errors, _) = script_lint(script, Some(Timeframe::M3));
+        let htf_errors: Vec<_> = errors.iter()
+            .filter(|e| e.message.contains("M15") || e.message.contains("multiple"))
             .collect();
         assert!(htf_errors.is_empty(), "unexpected htf errors: {htf_errors:?}");
     }

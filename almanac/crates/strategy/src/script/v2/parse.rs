@@ -19,7 +19,10 @@ pub(super) use crate::script::v1::{
     CandleDirective,
     DEFAULT_BUF_DEPTH,
     extract_max_lookback,
-    PERIOD_EXEMPT,
+    rewrite_ta_line,
+    validate_ta_declarations,
+    brace_depth_delta,
+    validate_ta_top_level,
 };
 
 // Shared parser internals reused from v1 (single source of truth). v2 only
@@ -30,7 +33,6 @@ use crate::script::v1::{
     IndicatorKind,
     map_indicator_type as v1_map_indicator_type,
     positional_param_names,
-    indicator_json_config,
 };
 
 // ── IndicatorDecl ─────────────────────────────────────────────────────────────

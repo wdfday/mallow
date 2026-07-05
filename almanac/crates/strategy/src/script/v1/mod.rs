@@ -20,11 +20,12 @@ pub(crate) use binding::MEntry;
 pub(crate) use crate::script::utils::{scalar_out, bool_out};
 pub(crate) use crate::script::engine::{
     build_engine, extract_max_lookback, BAR_FIELDS, DEFAULT_BUF_DEPTH,
-    eval_const_int_expr, second_arg_is_static_literal,
+    second_arg_is_static_literal,
 };
 pub(crate) use parse::{
     extract_candle_directives, extract_regime_block, CandleDirective,
-    try_parse_indicator_line, IndicatorKind,
+    try_parse_indicator_line, IndicatorKind, rewrite_ta_line, validate_ta_declarations,
+    brace_depth_delta, validate_ta_top_level,
     map_indicator_type, positional_param_names, indicator_json_config,
     PERIOD_EXEMPT,
 };

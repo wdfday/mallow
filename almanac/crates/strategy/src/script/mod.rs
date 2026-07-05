@@ -24,9 +24,7 @@ mod lint;
 mod probe;
 pub(crate) mod utils;
 pub(crate) mod engine;
-
-#[cfg(test)]
-pub(crate) mod poc_stateful;
+pub(crate) mod ta;
 
 pub use probe::probe_script_htfs;
 

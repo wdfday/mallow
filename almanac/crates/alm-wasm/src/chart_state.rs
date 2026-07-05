@@ -246,6 +246,13 @@ fn f64_to_json(v: f64) -> Value {
     }
 }
 
+/// User-facing message for both on-chart entry points (`ScriptSlot::new` and
+/// `ChartState::backtest`) when a script declares an HTF indicator — the
+/// on-chart preview only ever runs a single-TF `ScriptStrategy`, it can't
+/// load/warm the extra feed(s) an HTF binding needs.
+const HTF_ON_CHART_NOT_SUPPORTED: &str =
+    "HTF (multi-timeframe) indicators in the on-chart view are coming soon — use Deep backtest for now.";
+
 // ── ScriptSlot — Rhai script evaluated for indicator output only ───────────────
 
 /// Wraps a `ScriptStrategy` in collection mode and replays raw bars through it.
@@ -264,6 +271,15 @@ struct ScriptSlot {
 
 impl ScriptSlot {
     fn new(script: &str) -> Result<Self, String> {
+        // On-chart is single-timeframe — HTF scripts can't load/warm extra
+        // feeds here. Caught before `ScriptStrategy::from_script` so the
+        // user sees a plain "coming soon" message instead of V1's internal
+        // "does not support timeframe arguments... use MtfScriptStrategy"
+        // error (accurate, but leaks implementation detail no chart user
+        // needs — see `ChartState::backtest` for the same guard).
+        if !alm_strategy::probe_script_htfs(script).is_empty() {
+            return Err(HTF_ON_CHART_NOT_SUPPORTED.to_string());
+        }
         let strategy = ScriptStrategy::from_script(script)
             .map_err(|e| e.to_string())?;
         Ok(Self { strategy, signals: Vec::new() })
@@ -684,12 +700,8 @@ impl ChartState {
             return js_error("no bars loaded");
         }
         // On-chart is single-timeframe — HTF scripts can't load/warm extra feeds here.
-        let htfs = alm_strategy::probe_script_htfs(script);
-        if !htfs.is_empty() {
-            let tfs = htfs.iter().map(|t| format!("{t:?}")).collect::<Vec<_>>().join(", ");
-            return js_error(&format!(
-                "Multi-timeframe script (uses {tfs}) — on-chart is single-timeframe only. Run it with Deep backtest."
-            ));
+        if !alm_strategy::probe_script_htfs(script).is_empty() {
+            return js_error(HTF_ON_CHART_NOT_SUPPORTED);
         }
         let strategy = match ScriptStrategy::from_script(script) {
             Ok(s) => s,

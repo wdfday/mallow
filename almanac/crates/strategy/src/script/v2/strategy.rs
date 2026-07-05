@@ -32,8 +32,9 @@ use crate::candle_type::{CandleType, CandleTransform};
 use super::feed_binding::FeedVarBinding;
 use super::parse::{
     extract_candle_directives, extract_max_lookback, extract_regime_block,
-    make_indicator_box,
-    try_parse_indicator_line, CandleDirective, DEFAULT_BUF_DEPTH,
+    make_indicator_box, IndicatorDecl,
+    rewrite_ta_line, try_parse_indicator_line, validate_ta_declarations,
+    brace_depth_delta, validate_ta_top_level, CandleDirective, DEFAULT_BUF_DEPTH,
 };
 use crate::script::utils::parse_timeframe;
 use crate::script::engine::{build_engine, BAR_FIELDS};
@@ -54,9 +55,59 @@ pub struct MtfScriptStrategy {
     current_regime:   Option<RegimeState>,
     pub error_sink:   Option<std::sync::Arc<std::sync::Mutex<Option<String>>>>,
     persistent_state: rhai::Map,
+    /// Backing store for `ta.*` incremental primitives — see v1's field of the
+    /// same name (`v1::strategy::ScriptStrategy::ta_state`) for the rationale.
+    ta_state: rhai::Map,
 }
 
-
+/// Process one script block (the `regime { ... }` body or the main body) —
+/// see `v1::strategy::process_script_block` for the full rationale (shared
+/// name-uniqueness namespace across `ind.*`/`ta.*` declarations only — plain
+/// local `let` variables are deliberately NOT tracked, since Rhai
+/// block-scopes them and a flat line scanner can't tell a safe nested reuse
+/// from a top-level one). Kept as a separate copy from v1's because
+/// `IndicatorDecl`/`try_parse_indicator_line` are distinct types per version
+/// (v2 produces `FieldExtract`, not `IndicatorKind`).
+fn process_script_block(
+    body: &str,
+    decls: &mut Vec<IndicatorDecl>,
+    decl_names: &mut HashSet<String>,
+) -> Result<String> {
+    let mut cleaned_lines: Vec<String> = Vec::new();
+    let mut brace_depth: i32 = 0;
+    for line in body.lines() {
+        match try_parse_indicator_line(line) {
+            Some(decl) => {
+                if !decl_names.insert(decl.var_name.clone()) {
+                    anyhow::bail!(
+                        "`{}` is declared more than once (regime + main share one namespace \
+                         for `ind.*`/`ta.*` declarations)",
+                        decl.var_name
+                    );
+                }
+                decls.push(decl);
+            }
+            None => {
+                validate_ta_declarations(line)?;
+                match rewrite_ta_line(line)? {
+                    Some((var_name, rewritten)) => {
+                        validate_ta_top_level(&var_name, line, brace_depth)?;
+                        if !decl_names.insert(var_name.clone()) {
+                            anyhow::bail!(
+                                "`{var_name}` is declared more than once (regime + main share \
+                                 one namespace for `ind.*`/`ta.*` declarations)"
+                            );
+                        }
+                        cleaned_lines.push(rewritten);
+                    }
+                    None => cleaned_lines.push(line.to_string()),
+                }
+            }
+        }
+        brace_depth += brace_depth_delta(line);
+    }
+    Ok(cleaned_lines.join("\n"))
+}
 
 impl MtfScriptStrategy {
     /// Backtest mode — collects plot series.
@@ -104,45 +155,15 @@ impl MtfScriptStrategy {
         let (regime_body, main_source) = extract_regime_block(&after_candle)?;
 
         // ── Step 2: collect indicator declarations from both blocks ───────────
-        let mut decls: Vec<_> = Vec::new();
-        let mut decl_names = HashSet::new();
+        // Names must be unique across the whole strategy, shared with `ta.*`
+        // declarations (see `process_script_block`) — one namespace across
+        // regime + main.
+        let mut decls: Vec<IndicatorDecl> = Vec::new();
+        let mut decl_names: HashSet<String> = HashSet::new();
 
         let regime_body_owned = regime_body.unwrap_or_default();
-        let mut regime_cleaned_lines: Vec<&str> = Vec::new();
-        for line in regime_body_owned.lines() {
-            match try_parse_indicator_line(line) {
-                Some(decl) => {
-                    if !decl_names.insert(decl.var_name.clone()) {
-                        anyhow::bail!(
-                            "indicator `{}` is declared more than once \
-                             (regime + main share names)",
-                            decl.var_name
-                        );
-                    }
-                    decls.push(decl);
-                }
-                None => regime_cleaned_lines.push(line),
-            }
-        }
-        let regime_cleaned_script = regime_cleaned_lines.join("\n");
-
-        let mut main_cleaned_lines: Vec<&str> = Vec::new();
-        for line in main_source.lines() {
-            match try_parse_indicator_line(line) {
-                Some(decl) => {
-                    if !decl_names.insert(decl.var_name.clone()) {
-                        anyhow::bail!(
-                            "indicator `{}` is declared more than once \
-                             (regime + main share names)",
-                            decl.var_name
-                        );
-                    }
-                    decls.push(decl);
-                }
-                None => main_cleaned_lines.push(line),
-            }
-        }
-        let main_cleaned_script = main_cleaned_lines.join("\n");
+        let regime_cleaned_script = process_script_block(&regime_body_owned, &mut decls, &mut decl_names)?;
+        let main_cleaned_script = process_script_block(main_source.as_str(), &mut decls, &mut decl_names)?;
 
         // ── Step 3: compile ASTs ──────────────────────────────────────────────
         let engine = build_engine();
@@ -209,6 +230,7 @@ impl MtfScriptStrategy {
             current_regime: None,
             error_sink: None,
             persistent_state: rhai::Map::new(),
+            ta_state: rhai::Map::new(),
         })
     }
 
@@ -253,6 +275,7 @@ impl MtfStrategy for MtfScriptStrategy {
         if let Some(s) = &mut self.series { s.clear(); }
         self.current_regime = None;
         self.persistent_state.clear();
+        self.ta_state.clear();
     }
 
     fn on_bars(&mut self, snap: MtfSnapshot<'_>) -> Vec<Signal> {
@@ -344,6 +367,7 @@ impl MtfStrategy for MtfScriptStrategy {
         scope.push("reason",    String::new());
         scope.push("atr",       0.0_f64);
         scope.push("state",     rhai::Dynamic::from_map(self.persistent_state.clone()));
+        scope.push("ta",        rhai::Dynamic::from_map(self.ta_state.clone()));
 
         // Bar field arrays (newest bar at index [0]).
         for field in BAR_FIELDS {
@@ -422,6 +446,9 @@ impl MtfStrategy for MtfScriptStrategy {
         // Persist state map for the next bar.
         if let Some(new_state) = scope.get_value::<rhai::Map>("state") {
             self.persistent_state = new_state;
+        }
+        if let Some(new_ta) = scope.get_value::<rhai::Map>("ta") {
+            self.ta_state = new_ta;
         }
 
         // ── 10. Auto-collect indicator series ─────────────────────────────────
@@ -537,6 +564,20 @@ if falling(h1_ema20) { exit = true; }
     #[test]
     fn from_params_requires_script_key() {
         assert!(MtfScriptStrategy::from_params(&serde_json::json!({})).is_err());
+    }
+
+    /// M5 (300_000 ms) doesn't evenly divide into an M3 (180_000 ms) base —
+    /// `LiveBucketAggregator::fill_ratio` would silently under-count the
+    /// expected base bars per HTF bucket. Must fail at build time.
+    #[test]
+    fn htf_not_multiple_of_base_tf_rejected_at_build_time() {
+        let script = r#"
+let m5_ema = ind.ema(9, "M5");
+if m5_ema[0] > 0.0 { entry = true; }
+"#;
+        let err = MtfScriptStrategy::from_script(script, Timeframe::M3)
+            .err().expect("HTF M5 over base M3 must be rejected");
+        assert!(err.to_string().contains("exact multiple"), "unexpected error: {err}");
     }
 
     #[test]

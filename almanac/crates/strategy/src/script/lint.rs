@@ -14,7 +14,15 @@ use crate::script::v1::{
     try_parse_indicator_line, IndicatorKind,
     second_arg_is_static_literal,
     PERIOD_EXEMPT,
+    rewrite_ta_line, validate_ta_declarations, brace_depth_delta, validate_ta_top_level,
 };
+
+/// Bare method names callable on the `ta` state map — `ta.ema(...)`,
+/// `ta.smma(...)`, etc. Mirrors the registrations in `crate::script::ta::register_ta`.
+pub const KNOWN_TA_FUNCS: &[&str] = &[
+    "ema", "smma", "decay", "sma", "rsum", "stdev",
+    "highest", "lowest", "wma", "hma", "vwma", "reset",
+];
 
 // ── Known types ───────────────────────────────────────────────────────────────
 
@@ -104,6 +112,11 @@ pub struct ScriptLintScope {
     pub bar_fields:  Vec<&'static str>,
     pub output_vars: Vec<&'static str>,
     pub functions:   Vec<&'static str>,
+    /// Names bound via `let NAME = ta.FUNC(...)` — separate from `indicators`
+    /// since `ta.*` state isn't a `DeclaredIndicator` (no fixed type/period).
+    pub ta_vars:      Vec<String>,
+    /// Method names callable on `ta.*` — see `KNOWN_TA_FUNCS`.
+    pub ta_functions: Vec<&'static str>,
 }
 
 // ── Lint implementation ───────────────────────────────────────────────────────
@@ -122,9 +135,14 @@ pub struct ScriptLintScope {
 /// Pass `base_tf = None` to skip checks 4–5 (e.g. when base TF is unknown at lint time).
 pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnostic>, ScriptLintScope) {
     let mut diags: Vec<LintDiagnostic>          = Vec::new();
-    let mut cleaned_lines: Vec<&str>            = Vec::new();
+    let mut cleaned_lines: Vec<String>          = Vec::new();
     let mut line_map: Vec<usize>                = Vec::new();
     let mut scope_inds: Vec<DeclaredIndicator>  = Vec::new();
+    // Shared across regime + main blocks — mirrors the one namespace
+    // `ind.*`/`ta.*` declarations share at real build time (see
+    // `v1::strategy::process_script_block`).
+    let mut decl_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut ta_vars: Vec<String> = Vec::new();
 
     // Strip setup directives + regime block first so the Rhai parser sees
     // clean logic (candle.transform / regime {} are pre-parse constructs).
@@ -156,9 +174,11 @@ pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnos
 
     // Collect indicator decls from inside the regime block.
     if let Some(body) = regime_body_opt.as_deref() {
+        let mut regime_brace_depth: i32 = 0;
         for (idx, line) in body.lines().enumerate() {
             let lineno = idx + 1;
-            if let Some(decl) = try_parse_indicator_line(line.trim()) {
+            let trimmed = line.trim();
+            if let Some(decl) = try_parse_indicator_line(trimmed) {
                 if let Some(d) = check_htf_vs_base(&decl.var_name, decl.timeframe, base_tf, lineno) {
                     diags.push(d);
                 }
@@ -178,6 +198,16 @@ pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnos
                         severity: "warning",
                     });
                 }
+                if !decl_names.insert(decl.var_name.clone()) {
+                    diags.push(LintDiagnostic {
+                        line: lineno, col: 1,
+                        message: format!(
+                            "`{}` is declared more than once (`ind.*`/`ta.*` declarations share one namespace)",
+                            decl.var_name
+                        ),
+                        severity: "error",
+                    });
+                }
                 let multi = matches!(decl.kind, IndicatorKind::Multi(_));
                 scope_inds.push(DeclaredIndicator {
                     name:      decl.var_name,
@@ -187,15 +217,44 @@ pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnos
                     live:      decl.live,
                     multi,
                 });
+            } else if let Err(e) = validate_ta_declarations(trimmed) {
+                diags.push(LintDiagnostic { line: lineno, col: 1, message: e.to_string(), severity: "error" });
+            } else {
+                match rewrite_ta_line(trimmed) {
+                    Err(e) => diags.push(LintDiagnostic { line: lineno, col: 1, message: e.to_string(), severity: "error" }),
+                    Ok(Some((var_name, _))) => {
+                        if let Err(e) = validate_ta_top_level(&var_name, trimmed, regime_brace_depth) {
+                            diags.push(LintDiagnostic { line: lineno, col: 1, message: e.to_string(), severity: "error" });
+                        }
+                        if !decl_names.insert(var_name.clone()) {
+                            diags.push(LintDiagnostic {
+                                line: lineno, col: 1,
+                                message: format!(
+                                    "`{var_name}` is declared more than once (`ind.*`/`ta.*` declarations share one namespace)"
+                                ),
+                                severity: "error",
+                            });
+                        } else {
+                            ta_vars.push(var_name);
+                        }
+                    }
+                    Ok(None) => {}
+                }
             }
+            regime_brace_depth += brace_depth_delta(line);
         }
     }
 
+    let mut main_brace_depth: i32 = 0;
     for (idx, line) in main_source.lines().enumerate() {
         let lineno  = idx + 1;
         let trimmed = line.trim();
 
-        if let Some((prefix, raw_type)) = extract_raw_indicator_type(trimmed) {
+        // `ta.*` isn't an `ind.*`-prefix typo — route it to the dedicated
+        // handling below instead of the "wrong indicator prefix" check.
+        let ind_prefix = extract_raw_indicator_type(trimmed).filter(|(p, _)| p != "ta");
+
+        if let Some((prefix, raw_type)) = ind_prefix {
             if prefix != "ind" {
                 diags.push(LintDiagnostic {
                     line: lineno, col: 1,
@@ -204,7 +263,7 @@ pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnos
                     ),
                     severity: "error",
                 });
-                cleaned_lines.push(line);
+                cleaned_lines.push(line.to_string());
                 line_map.push(lineno);
             } else {
                 if !KNOWN_INDICATOR_TYPES.contains(&raw_type.as_str()) {
@@ -239,6 +298,16 @@ pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnos
                             severity: "warning",
                         });
                     }
+                    if !decl_names.insert(decl.var_name.clone()) {
+                        diags.push(LintDiagnostic {
+                            line: lineno, col: 1,
+                            message: format!(
+                                "`{}` is declared more than once (`ind.*`/`ta.*` declarations share one namespace)",
+                                decl.var_name
+                            ),
+                            severity: "error",
+                        });
+                    }
                     let multi = matches!(decl.kind, IndicatorKind::Multi(_));
                     scope_inds.push(DeclaredIndicator {
                         name:      decl.var_name,
@@ -249,14 +318,53 @@ pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnos
                         multi,
                     });
                 } else {
-                    cleaned_lines.push(line);
+                    cleaned_lines.push(line.to_string());
                     line_map.push(lineno);
                 }
             }
         } else {
-            cleaned_lines.push(line);
-            line_map.push(lineno);
+            // `ta.*` declarations (rewritten with injected key + buf so the
+            // later `engine.compile(&cleaned)` pass sees valid call arity)
+            // plus every other non-indicator line.
+            match validate_ta_declarations(trimmed) {
+                Err(e) => {
+                    diags.push(LintDiagnostic { line: lineno, col: 1, message: e.to_string(), severity: "error" });
+                    cleaned_lines.push(line.to_string());
+                    line_map.push(lineno);
+                }
+                Ok(()) => match rewrite_ta_line(trimmed) {
+                    Err(e) => {
+                        diags.push(LintDiagnostic { line: lineno, col: 1, message: e.to_string(), severity: "error" });
+                        cleaned_lines.push(line.to_string());
+                        line_map.push(lineno);
+                    }
+                    Ok(Some((var_name, rewritten))) => {
+                        if let Err(e) = validate_ta_top_level(&var_name, trimmed, main_brace_depth) {
+                            diags.push(LintDiagnostic { line: lineno, col: 1, message: e.to_string(), severity: "error" });
+                        }
+                        if !decl_names.insert(var_name.clone()) {
+                            diags.push(LintDiagnostic {
+                                line: lineno, col: 1,
+                                message: format!(
+                                    "`{var_name}` is declared more than once (`ind.*`/`ta.*` declarations share one namespace)"
+                                ),
+                                severity: "error",
+                            });
+                        } else {
+                            ta_vars.push(var_name);
+                        }
+                        cleaned_lines.push(rewritten);
+                        line_map.push(lineno);
+                    }
+                    Ok(None) => {
+                        cleaned_lines.push(line.to_string());
+                        line_map.push(lineno);
+                    }
+                },
+            }
         }
+
+        main_brace_depth += brace_depth_delta(line);
     }
 
     // ── Semantic check: field access on scalar indicators ────────────────────
@@ -272,7 +380,7 @@ pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnos
             .collect();
 
         // Check main-block non-declaration lines.
-        for (i, &line) in cleaned_lines.iter().enumerate() {
+        for (i, line) in cleaned_lines.iter().enumerate() {
             let orig = line_map[i];
             for diag in field_access_on_scalar(line, orig, &scalar_names) {
                 diags.push(diag);
@@ -363,6 +471,8 @@ pub fn script_lint(script: &str, base_tf: Option<Timeframe>) -> (Vec<LintDiagnos
             // debug
             "log",
         ],
+        ta_vars,
+        ta_functions: KNOWN_TA_FUNCS.to_vec(),
     };
 
     (diags, scope)
@@ -869,6 +979,43 @@ fn edit_distance(a: &str, b: &str) -> usize {
 mod tests {
     use crate::test_utils::*;
     use super::*;
+
+    #[test]
+    fn lint_ta_ema_not_flagged_as_wrong_prefix() {
+        let script = "let ema20 = ta.ema(20, close[0]);\nif ema20[0] > 0.0 { entry = true; }";
+        let (diags, scope) = script_lint(script, None);
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:#?}");
+        assert_eq!(scope.ta_vars, vec!["ema20".to_string()]);
+        assert!(scope.ta_functions.contains(&"ema"));
+    }
+
+    #[test]
+    fn lint_ta_invalid_buf_is_error() {
+        let script = "let ema20 = ta.ema(20, close[0], buf=0);\nif ema20[0] > 0.0 { entry = true; }";
+        let (diags, _) = script_lint(script, None);
+        assert!(diags.iter().any(|d| d.severity == "error" && d.message.contains("too small")), "{diags:#?}");
+    }
+
+    #[test]
+    fn lint_ta_two_refs_one_line_is_error() {
+        let script = "let x = ta.ema(9, close[0]) + ta.ema(20, close[0]);\nif x[0] > 0.0 { entry = true; }";
+        let (diags, _) = script_lint(script, None);
+        assert!(diags.iter().any(|d| d.severity == "error" && d.message.contains("only one")), "{diags:#?}");
+    }
+
+    #[test]
+    fn lint_ta_nested_in_if_is_error() {
+        let script = "if close[0] > 0.0 {\n    let ema20 = ta.ema(20, close[0]);\n}\n";
+        let (diags, _) = script_lint(script, None);
+        assert!(diags.iter().any(|d| d.severity == "error" && d.message.contains("top level")), "{diags:#?}");
+    }
+
+    #[test]
+    fn lint_ta_duplicate_name_across_ind_and_ta_is_error() {
+        let script = "let ema20 = ind.ema(20);\nlet ema20 = ta.ema(20, close[0]);\nif ema20[0] > 0.0 { entry = true; }";
+        let (diags, _) = script_lint(script, None);
+        assert!(diags.iter().any(|d| d.severity == "error" && d.message.contains("declared more than once")), "{diags:#?}");
+    }
 
     /// `let x = !flag(st[1].bullish) && flag(st[0].bullish)` is a valid expression,
     /// NOT an indicator declaration — must not be flagged as "wrong indicator prefix".

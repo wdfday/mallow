@@ -5,7 +5,27 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from _generate_cmp import STRATEGY_IMPLS
 
 # Cấu hình số lượng worker song song
-MAX_WORKERS = 4 
+MAX_WORKERS = 4
+
+# Tên kernel dùng riêng cho pipeline này — KHÔNG dùng tên kernel cố định kiểu
+# "alm-py-venv" đã đăng ký thủ công trước đây: kernelspec đó neo cứng đường
+# dẫn tuyệt đối tới .venv tại thời điểm cài, nên nếu repo bị di chuyển/nhân
+# bản (vd. "mallow copy") kernelspec cũ trỏ sai chỗ và fail âm thầm (nbconvert
+# nuốt lỗi qua stdout/stderr=DEVNULL). `ensure_kernel()` đăng ký lại kernel
+# này từ `sys.executable` hiện tại mỗi lần chạy pipeline — tự phục hồi, không
+# bao giờ trỏ nhầm venv nữa.
+KERNEL_NAME = "alm-py-current"
+
+def ensure_kernel() -> None:
+    """(Re)đăng ký kernelspec `KERNEL_NAME` trỏ đúng vào `sys.executable` hiện tại."""
+    subprocess.run(
+        [
+            sys.executable, "-m", "ipykernel", "install", "--user",
+            "--name", KERNEL_NAME,
+            "--display-name", f"alm-py (current venv: {sys.executable})",
+        ],
+        check=True,
+    )
 
 def run_notebook(nb_file: str) -> tuple[str, bool, float]:
     """Chạy một file notebook thông qua jupyter nbconvert trong một subprocess."""
@@ -15,7 +35,7 @@ def run_notebook(nb_file: str) -> tuple[str, bool, float]:
             sys.executable, "-m", "jupyter", "nbconvert",
             "--to", "notebook",
             "--execute",
-            "--ExecutePreprocessor.kernel_name=alm-py-venv",
+            f"--ExecutePreprocessor.kernel_name={KERNEL_NAME}",
             "--inplace",
             nb_file
         ]
@@ -27,10 +47,12 @@ def run_notebook(nb_file: str) -> tuple[str, bool, float]:
         return nb_file, False, duration
 
 def main():
+    ensure_kernel()
+
     # Lấy danh sách notebook từ định nghĩa chiến lược trong _generate_cmp.py
     notebooks = [f"cmp_{name}.ipynb" for name in STRATEGY_IMPLS.keys()]
     total_files = len(notebooks)
-    
+
     print(f"=== Bắt đầu chạy song song {total_files} notebooks với {MAX_WORKERS} workers ===")
     start_all = time.time()
     

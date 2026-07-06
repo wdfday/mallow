@@ -377,7 +377,14 @@ fn find_ta_occurrences(code: &str) -> Vec<(usize, String)> {
             continue;
         }
         if bytes[i] == b'"' { in_str = true; i += 1; continue; }
-        if code[i..].starts_with("ta.") {
+        // `bytes[i] == b't'` first: cheap, and — since ASCII bytes are never a
+        // continuation byte of a multi-byte UTF-8 sequence — it guarantees `i`
+        // is a valid char boundary before we slice `code[i..]` as a `&str`.
+        // Without this guard, non-ASCII input (e.g. a Vietnamese identifier)
+        // can land `i` mid-codepoint and panic ("byte index N is not a char
+        // boundary") the instant the slice is taken, before `starts_with`
+        // even runs.
+        if bytes[i] == b't' && code[i..].starts_with("ta.") {
             let word_boundary = i == 0 || {
                 let prev = bytes[i - 1];
                 !(prev.is_ascii_alphanumeric() || prev == b'_')
@@ -980,6 +987,38 @@ mod tests {
     use crate::test_utils::*;
     use super::*;
     use alm_core::Timeframe;
+
+    /// A live-typed script containing a multi-byte UTF-8 identifier/comment
+    /// (e.g. a Vietnamese word) used to panic — `find_ta_occurrences` sliced
+    /// `code[i..]` at every byte position without first checking `i` landed on
+    /// a char boundary, so mid-codepoint bytes (e.g. inside "ó") triggered
+    /// "byte index N is not a char boundary". This crashed the whole WASM
+    /// instance on-chart (a Rust panic poisons wasm-bindgen's borrow tracking
+    /// for every subsequent call, not just the one that panicked) — see the
+    /// `bytes[i] == b't'` guard added to `find_ta_occurrences`.
+    #[test]
+    fn validate_ta_declarations_does_not_panic_on_multibyte_utf8() {
+        let attempts = [
+            "let có",
+            "let có = ind.ema(9);",
+            "let ema9_có = ind.ema(9);",
+            "// bình luận tiếng việt có dấu\nlet ema9 = ind.ema(9);",
+            "if giá[0] > 0.0 { entry = true; }",
+            "let vsma = ta.sma(20, có[0]);",
+            "let vsma_có = ta.sma(20, volume[0]);",
+            "regime {\n  let có = 1;\n}",
+        ];
+        for s in attempts {
+            for line in s.lines() {
+                let _ = brace_depth_delta(line);
+                let _ = try_parse_indicator_line(line);
+                let _ = validate_ta_declarations(line);
+                let _ = rewrite_ta_line(line);
+            }
+            let _ = extract_regime_block(s);
+            let _ = extract_candle_directives(s);
+        }
+    }
 
     #[test]
     fn parse_single_output() {

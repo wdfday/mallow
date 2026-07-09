@@ -12,7 +12,7 @@ import (
 )
 
 // Manager enforces portfolio-level risk gates.
-// It is a pure approve/reject gate — position sizing is the Tactician's job.
+// It is a pure approval/reject gate — position sizing is the Tactician's job.
 //
 // Gate order on every non-exit intent:
 //  1. Global halt (max drawdown breached in a prior call)

@@ -14,6 +14,11 @@ import (
 // SupportsFutures implements exchange.FuturesTrader — fbinance is a futures-only client.
 func (c *Client) SupportsFutures() bool { return true }
 
+// SupportsSpot implements exchange.SpotSupportChecker — fbinance's PlaceOrder always
+// hits the USDM futures API (see orders.go), so a spot hand on this adapter would
+// silently trade futures instead. Opt out explicitly.
+func (c *Client) SupportsSpot() bool { return false }
+
 // SupportsIsolatedMargin implements exchange.IsolatedMarginTrader.
 func (c *Client) SupportsIsolatedMargin() bool { return true }
 

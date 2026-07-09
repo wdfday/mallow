@@ -103,6 +103,9 @@ func (h *Hand) runLoop(ctx context.Context) {
 			// Off-loop order placement came back — record/poslog on success, clean up on
 			// failure, all on the loop (single-owner).
 			h.applyPlaceResult(ctx, pp)
+		case plt := <-h.limitTimeoutCh:
+			// Off-loop limit-timeout cancel/fallback came back — poslog + tracking on-loop.
+			h.applyLimitTimeoutResult(ctx, plt)
 		case batch := <-h.pollCh:
 			// Off-loop poll batch came back — apply its state transitions on the loop.
 			h.pollInFlight = false

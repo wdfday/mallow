@@ -168,7 +168,7 @@ func (r *HelmRuntime) SymbolsByExchange() (exchange.Exchange, []string) {
 }
 
 // StartRunning starts the runner for every hand whose persisted status is HandStatusRunning.
-// Called during service hydration after RegisterHandAll has already been called.
+// Called during service hydration after RegisterHand has already been called.
 func (r *HelmRuntime) StartRunning() {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -191,7 +191,7 @@ func (r *HelmRuntime) StartHand(ctx context.Context, id string) error {
 	if e.data.Status.IsTerminal() {
 		return fmt.Errorf("hand %q is %s — terminal hands cannot be restarted", id, e.data.Status)
 	}
-	if err := r.RegisterHandAll(ctx, id, r.HelmID.String(), e.data.Symbols, e.data.Strategy.Script, e.data.Strategy.Timeframe, e.data.Market == handdomain.MarketTypeFutures); err != nil {
+	if err := r.RegisterHand(ctx, id, r.HelmID.String(), e.data.Symbols, e.data.Strategy.Script, e.data.Strategy.Timeframe, e.data.Market == handdomain.MarketTypeFutures); err != nil {
 		return fmt.Errorf("hand start: %w", err)
 	}
 	e.h.Start()
@@ -215,7 +215,7 @@ func (r *HelmRuntime) ReregisterHand(ctx context.Context, id string) bool {
 	}
 	rctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	if err := r.RegisterHandAll(rctx, id, r.HelmID.String(), e.data.Symbols, e.data.Strategy.Script, e.data.Strategy.Timeframe, e.data.Market == handdomain.MarketTypeFutures); err != nil {
+	if err := r.RegisterHand(rctx, id, r.HelmID.String(), e.data.Symbols, e.data.Strategy.Script, e.data.Strategy.Timeframe, e.data.Market == handdomain.MarketTypeFutures); err != nil {
 		slog.Error("herald re-register: failed", "hand_id", id, "err", err)
 		return false
 	}

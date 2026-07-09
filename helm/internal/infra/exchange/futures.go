@@ -20,3 +20,12 @@ type FuturesTrader interface {
 	// MarkPrice returns the current mark price used for liquidation calculation.
 	MarkPrice(ctx context.Context, symbol string) (decimal.Decimal, error)
 }
+
+// SpotSupportChecker is implemented only by futures-only exchanges (e.g. fbinance) to
+// opt OUT of spot trading — PlaceOrder on such an adapter always hits the futures API
+// regardless of the requested order's intent, so a spot hand would silently trade
+// futures. Exchanges that don't implement this interface are assumed spot-capable
+// (the historical default, since every adapter except fbinance supports spot).
+type SpotSupportChecker interface {
+	SupportsSpot() bool
+}

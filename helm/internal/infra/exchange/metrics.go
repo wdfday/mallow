@@ -460,6 +460,16 @@ func (m *MeteredExchange) SupportsFutures() bool {
 	return false
 }
 
+// SupportsSpot delegates to inner if inner implements SpotSupportChecker.
+// Returns true (safe default) when inner doesn't implement it — every adapter except
+// fbinance supports spot and never needed to declare it.
+func (m *MeteredExchange) SupportsSpot() bool {
+	if st, ok := m.inner.(SpotSupportChecker); ok {
+		return st.SupportsSpot()
+	}
+	return true
+}
+
 // SupportsIsolatedMargin implements IsolatedMarginTrader — delegates to inner.
 // Returns false when inner does not implement IsolatedMarginTrader (cross margin only).
 func (m *MeteredExchange) SupportsIsolatedMargin() bool {
@@ -512,6 +522,7 @@ var _ ClidCapable = (*MeteredExchange)(nil)
 var _ ClientOrderQuerier = (*MeteredExchange)(nil)
 var _ TimeSyncer = (*MeteredExchange)(nil)
 var _ IsolatedMarginTrader = (*MeteredExchange)(nil)
+var _ SpotSupportChecker = (*MeteredExchange)(nil)
 
 // AtomicMinStore atomically stores v only if v < current (or current == 0).
 // Exported for testing.

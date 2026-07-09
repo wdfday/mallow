@@ -66,7 +66,7 @@ func (s *Service) hydrateOne(data *domain.Hand) error {
 	if data.Status == domain.HandStatusRunning {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		if err := rt.RegisterHandAll(ctx, data.ID.String(), data.HelmID.String(), data.Symbols, data.Strategy.Script, data.Strategy.Timeframe, data.Market == domain.MarketTypeFutures); err != nil {
+		if err := rt.RegisterHand(ctx, data.ID.String(), data.HelmID.String(), data.Symbols, data.Strategy.Script, data.Strategy.Timeframe, data.Market == domain.MarketTypeFutures); err != nil {
 			slog.Warn("herald re-register on hydrate failed", "hand_id", data.ID, "err", err)
 		}
 	}

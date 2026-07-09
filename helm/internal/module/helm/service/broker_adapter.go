@@ -21,7 +21,7 @@ type BrokerAdapter struct {
 
 var _ brokerservice.HelmCreator = (*BrokerAdapter)(nil)
 
-func (a *BrokerAdapter) AutoCreateForAccount(ctx context.Context, req brokerservice.HelmAutoCreateReq) error {
+func (a *BrokerAdapter) AutoCreateForAccount(_ context.Context, req brokerservice.HelmAutoCreateReq) error {
 	_, err := a.Svc.CreateForAccount(helmDto.CreateForAccountReq{
 		UserID:    req.UserID,
 		AccountID: req.AccountID,

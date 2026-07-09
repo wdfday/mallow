@@ -142,6 +142,9 @@ func (s *Service) Create(cfg domain.HandConfig) (domain.HandSummary, error) {
 	if cfg.Market == domain.MarketTypeFutures {
 		return domain.HandSummary{}, fmt.Errorf("futures trading is not yet supported")
 	}
+	if cfg.OrderType == domain.OrderTypeLimit {
+		return domain.HandSummary{}, fmt.Errorf("limit order type is not yet supported — use market")
+	}
 	if cfg.Name == "" {
 		return domain.HandSummary{}, fmt.Errorf("hand name is required")
 	}
@@ -180,6 +183,10 @@ func (s *Service) Create(cfg domain.HandConfig) (domain.HandSummary, error) {
 				return domain.HandSummary{}, fmt.Errorf("exchange %q does not support isolated margin — use cross margin", rt.Exchange.Name())
 			}
 		}
+	} else if st, ok := rt.Exchange.(exchange.SpotSupportChecker); ok && !st.SupportsSpot() {
+		// Futures-only exchange (e.g. fbinance) — its PlaceOrder always hits the futures
+		// API, so a spot hand here would silently trade futures instead. See SpotSupportChecker.
+		return domain.HandSummary{}, fmt.Errorf("exchange %q does not support spot trading — use market: futures", rt.Exchange.Name())
 	}
 
 	if err := s.heraldValidate(cfg, rt); err != nil {
@@ -296,6 +303,14 @@ func validateSizingConfig(p domain.PositionConfig) error {
 	case "volatility":
 		if p.RiskPerTradePct == 0 {
 			return fmt.Errorf("position: volatility mode requires risk_per_trade_pct > 0")
+		}
+	case "fixed_fractional":
+		if p.RiskPerTradePct == 0 {
+			return fmt.Errorf("position: fixed_fractional mode requires risk_per_trade_pct > 0")
+		}
+	case "percent_equity":
+		if p.UnitPct == 0 {
+			return fmt.Errorf("position: percent_equity mode requires unit_pct > 0")
 		}
 	}
 	return nil

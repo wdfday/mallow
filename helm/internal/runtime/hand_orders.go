@@ -13,7 +13,9 @@ import (
 	"mallow/helm/internal/infra/journal/poslog"
 	"mallow/helm/internal/infra/natsapi"
 	handdomain "mallow/helm/internal/module/hand/domain"
+	"mallow/helm/internal/runtime/clid"
 	"mallow/helm/internal/runtime/position"
+	"mallow/helm/internal/safe"
 )
 
 // polledOrder pairs an open order with its freshly-fetched exchange state.
@@ -300,8 +302,30 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 	}
 }
 
-// handleLimitTimeout cancels a stale limit order and, depending on LimitFallback,
-// either records a cancel-only event or re-places the remaining qty as a market order.
+// pendingLimitTimeout carries a limit-order timeout (cancel + optional market fallback)
+// across the off-loop REST boundary, mirroring pendingPlace / runPlaceREST / applyPlaceResult.
+type pendingLimitTimeout struct {
+	order        handdomain.Order
+	origPosID    string
+	origPhase    position.Phase
+	remainingQty decimal.Decimal
+	age          time.Duration
+	// fallbackClid is non-empty only when a market fallback was attempted (remainingQty > 0
+	// and h.cfg.limitFallback == LimitFallbackMarket). It is generated and tracked on-loop
+	// BEFORE runLimitTimeoutREST runs, same discipline as handleSignal (see CLIENT_ORDER_ID.md).
+	fallbackClid string
+
+	cancelErr error
+	// result/placeErr are only meaningful when fallbackClid != "".
+	result   *exchange.OrderResult
+	placeErr error
+}
+
+// handleLimitTimeout snapshots poslog context and applies any already-known partial fill
+// (pure in-memory bookkeeping — no REST), then hands the actual CancelOrder/PlaceOrder REST
+// calls to runLimitTimeoutREST, OFF the actor loop, so a slow exchange can't stall the fill
+// mailbox — the same discipline handleSignal uses for entry/exit placement (runPlaceREST).
+// applyLimitTimeoutResult finishes the bookkeeping back on-loop once the REST returns.
 func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polled *exchange.OrderResult) {
 	age := time.Since(o.SubmitTime).Truncate(time.Second)
 
@@ -312,11 +336,6 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 	h.mu.RLock()
 	origPosID := h.pendingOrderPos[o.ID]
 	h.mu.RUnlock()
-
-	if cancelErr := h.helmRuntime.Exchange.CancelOrder(ctx, h.helmRuntime.Creds, o.ID); cancelErr != nil {
-		h.log.Warn("hand: limit timeout cancel failed", "order_id", o.ID, "err", cancelErr)
-		return
-	}
 
 	var alreadyFilledQty decimal.Decimal
 	if polled.FilledQty.IsPositive() {
@@ -358,26 +377,6 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 		return
 	}
 
-	// Publish KindOrderCancelled for the original limit so:
-	// 1. pendingOrderPos[o.ID] is cleared (pollOrders won't re-publish on next cycle)
-	// 2. The leg phase transitions back (Entering→Idle, Exiting→Open) so the fallback
-	//    order_placed applies cleanly.
-	if origPosID != "" {
-		cancelPayload, _ := json.Marshal(poslog.OrderCancelledPayload{
-			OrderID: o.ID,
-			Reason:  "limit_timeout",
-		})
-		h.publishAndApply(ctx, poslog.Event{
-			ID:         o.ID + "_cancelled",
-			HandID:     h.id.String(),
-			HelmID:     h.helmID.String(),
-			PositionID: origPosID,
-			Kind:       poslog.KindOrderCancelled,
-			Payload:    cancelPayload,
-			At:         time.Now().UTC(),
-		})
-	}
-
 	remainingQty := o.Qty.Sub(alreadyFilledQty)
 	h.log.Info("hand: limit order timed out", "order_id", o.ID, "age", age,
 		"filled", alreadyFilledQty, "remaining", remainingQty, "fallback", h.cfg.limitFallback)
@@ -392,81 +391,155 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 		Msg:     "order: limit timeout",
 	})
 
-	if h.cfg.limitFallback == handdomain.LimitFallbackMarket && remainingQty.IsPositive() {
-		result, err := h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, exchange.OrderRequest{
-			Symbol: o.Symbol,
-			Side:   exchange.OrderSide(o.Side),
-			Type:   exchange.Market,
-			Qty:    remainingQty,
-		})
-		if err != nil {
-			h.log.Error("hand: limit fallback market order failed", "order_id", o.ID, "err", err)
-			return
-		}
-		h.log.Info("hand: limit fallback market placed", "new_order_id", result.ID, "qty", remainingQty)
-		h.helmRuntime.EmitEvent(natsapi.HelmEvent{
-			HandID:  h.id.String(),
-			Code:    CodeOrderLimitFallback,
-			Symbol:  o.Symbol,
-			OrderID: result.ID,
-			Side:    string(o.Side),
-			Qty:     remainingQty,
-			Reason:  fmt.Sprintf("fallback from timed-out limit %s", o.ID),
-			Msg:     "order: limit fallback to market",
-		})
-		h.trackOrder(result.ID)
-
-		// Register fallback order in poslog using the same positionID as the original
-		// limit. origPhase tells us whether this is an entry or exit fallback:
-		//   Idle/Entering → entry (original was entering; cancel reset to Idle)
-		//   Open/Exiting  → exit  (original was exiting; cancel reset to Open)
-		if origPosID != "" {
-			isExitFallback := origPhase == position.PhaseExiting
-			fallbackPayload, _ := json.Marshal(poslog.OrderPlacedPayload{
-				OrderID:   result.ID,
-				Symbol:    o.Symbol,
-				Side:      string(o.Side),
-				Qty:       remainingQty.String(),
-				Price:     "0",
-				OrderType: "market",
-				IsClose:   isExitFallback,
-			})
-			h.publishAndApply(ctx, poslog.Event{
-				ID:         result.ID,
-				HandID:     h.id.String(),
-				HelmID:     h.helmID.String(),
-				PositionID: origPosID,
-				Kind:       poslog.KindOrderPlaced,
-				Payload:    fallbackPayload,
-				At:         time.Now().UTC(),
-			})
-		}
-
-		// Add to h.orders so pollOrders can detect a delayed fill.
-		now := time.Now().UTC()
-		h.mu.Lock()
-		h.orders = append(h.orders, handdomain.Order{
-			HandId:     h.id.String(),
-			HelmId:     h.helmID.String(),
-			ID:         result.ID,
-			Symbol:     o.Symbol,
-			Side:       string(o.Side),
-			Qty:        remainingQty,
-			Type:       "market",
-			Status:     result.Status,
-			FilledQty:  result.FilledQty,
-			FilledAvg:  result.FilledAvg,
-			SubmitTime: now,
-		})
-		h.mu.Unlock()
-
-		if result.Status == "filled" {
-			h.mu.Lock()
-			h.seenFills[result.ID] = time.Now()
-			h.mu.Unlock()
-			h.applyFill(ctx, result.ID, o.Symbol, string(o.Side), result.FilledQty, result.FilledAvg, decimal.Zero, "limit_fallback")
-		}
+	plt := &pendingLimitTimeout{
+		order: o, origPosID: origPosID, origPhase: origPhase, remainingQty: remainingQty, age: age,
 	}
+	wantFallback := h.cfg.limitFallback == handdomain.LimitFallbackMarket && remainingQty.IsPositive()
+	if wantFallback {
+		// Generate + track the fallback clid BEFORE placing — the single, race-free
+		// routing key for a WS fill that races ahead of the REST response. Untracked
+		// again in applyLimitTimeoutResult if the cancel or the placement fails.
+		plt.fallbackClid = clid.New()
+		h.trackOrder(plt.fallbackClid)
+	}
+	go func() {
+		defer safe.Recover()
+		h.runLimitTimeoutREST(ctx, plt)
+		select {
+		case h.limitTimeoutCh <- plt:
+		case <-ctx.Done():
+		}
+	}()
+}
+
+// runLimitTimeoutREST is the I/O phase of a limit timeout: CancelOrder, and — only if the
+// cancel succeeded and a market fallback is wanted (fallbackClid != "") — PlaceOrder for the
+// remaining qty. Pure REST, mutates no hand state, so it runs OFF the actor loop.
+func (h *Hand) runLimitTimeoutREST(ctx context.Context, plt *pendingLimitTimeout) {
+	o := plt.order
+	if err := h.helmRuntime.Exchange.CancelOrder(ctx, h.helmRuntime.Creds, o.ID); err != nil {
+		plt.cancelErr = err
+		return
+	}
+	if plt.fallbackClid == "" {
+		return
+	}
+	plt.result, plt.placeErr = h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, exchange.OrderRequest{
+		Symbol:        o.Symbol,
+		Side:          exchange.OrderSide(o.Side),
+		Type:          exchange.Market,
+		Qty:           plt.remainingQty,
+		ClientOrderID: plt.fallbackClid,
+	})
+}
+
+// applyLimitTimeoutResult is the state-mutation phase of a limit timeout: it runs ON the
+// actor loop after runLimitTimeoutREST returned. It publishes the cancel event and, on a
+// successful fallback placement, tracks the new order for pollOrders/WS to pick up.
+//
+// It deliberately does NOT call applyFill off the PlaceOrder result: that result is a
+// placement acknowledgement, not an execution report. fbinance never populates FilledAvg on
+// it; bybit/okx never report "filled" on it; and even where an adapter does echo fill data,
+// it's an instant-of-placement snapshot, not the authoritative post-trade record. The real
+// fill is applied later via handleWsFill or the next poll cycle, exactly like every other
+// order placement — applyPlaceResult (the entry/exit path) never calls applyFill either.
+func (h *Hand) applyLimitTimeoutResult(ctx context.Context, plt *pendingLimitTimeout) {
+	o := plt.order
+	if plt.cancelErr != nil {
+		h.log.Warn("hand: limit timeout cancel failed", "order_id", o.ID, "err", plt.cancelErr)
+		if plt.fallbackClid != "" {
+			h.helmRuntime.RemoveOrderTracking(plt.fallbackClid)
+		}
+		return
+	}
+
+	// Publish KindOrderCancelled for the original limit so:
+	// 1. pendingOrderPos[o.ID] is cleared (pollOrders won't re-publish on next cycle)
+	// 2. The leg phase transitions back (Entering→Idle, Exiting→Open) so the fallback
+	//    order_placed applies cleanly.
+	if plt.origPosID != "" {
+		cancelPayload, _ := json.Marshal(poslog.OrderCancelledPayload{
+			OrderID: o.ID,
+			Reason:  "limit_timeout",
+		})
+		h.publishAndApply(ctx, poslog.Event{
+			ID:         o.ID + "_cancelled",
+			HandID:     h.id.String(),
+			HelmID:     h.helmID.String(),
+			PositionID: plt.origPosID,
+			Kind:       poslog.KindOrderCancelled,
+			Payload:    cancelPayload,
+			At:         time.Now().UTC(),
+		})
+	}
+
+	if plt.fallbackClid == "" {
+		return
+	}
+	if plt.placeErr != nil {
+		h.log.Error("hand: limit fallback market order failed", "order_id", o.ID, "err", plt.placeErr)
+		h.helmRuntime.RemoveOrderTracking(plt.fallbackClid)
+		return
+	}
+
+	result := plt.result
+	h.log.Info("hand: limit fallback market placed", "new_order_id", result.ID, "qty", plt.remainingQty)
+	h.helmRuntime.EmitEvent(natsapi.HelmEvent{
+		HandID:  h.id.String(),
+		Code:    CodeOrderLimitFallback,
+		Symbol:  o.Symbol,
+		OrderID: result.ID,
+		Side:    string(o.Side),
+		Qty:     plt.remainingQty,
+		Reason:  fmt.Sprintf("fallback from timed-out limit %s", o.ID),
+		Msg:     "order: limit fallback to market",
+	})
+
+	// Register fallback order in poslog using the same positionID as the original
+	// limit. origPhase tells us whether this is an entry or exit fallback:
+	//   Idle/Entering → entry (original was entering; cancel reset to Idle)
+	//   Open/Exiting  → exit  (original was exiting; cancel reset to Open)
+	if plt.origPosID != "" {
+		isExitFallback := plt.origPhase == position.PhaseExiting
+		fallbackPayload, _ := json.Marshal(poslog.OrderPlacedPayload{
+			OrderID:   result.ID,
+			Symbol:    o.Symbol,
+			Side:      string(o.Side),
+			Qty:       plt.remainingQty.String(),
+			Price:     "0",
+			OrderType: "market",
+			IsClose:   isExitFallback,
+		})
+		h.publishAndApply(ctx, poslog.Event{
+			ID:         result.ID,
+			HandID:     h.id.String(),
+			HelmID:     h.helmID.String(),
+			PositionID: plt.origPosID,
+			Kind:       poslog.KindOrderPlaced,
+			Payload:    fallbackPayload,
+			At:         time.Now().UTC(),
+		})
+	}
+
+	// Add to h.orders so pollOrders/WS can detect the real fill. The order is already
+	// tracked by fallbackClid (routed before placement) — no applyFill here, see comment above.
+	now := time.Now().UTC()
+	h.mu.Lock()
+	h.orders = append(h.orders, handdomain.Order{
+		HandId:        h.id.String(),
+		HelmId:        h.helmID.String(),
+		ID:            result.ID,
+		ClientOrderID: plt.fallbackClid,
+		Symbol:        o.Symbol,
+		Side:          string(o.Side),
+		Qty:           plt.remainingQty,
+		Type:          "market",
+		Status:        result.Status,
+		FilledQty:     result.FilledQty,
+		FilledAvg:     result.FilledAvg,
+		SubmitTime:    now,
+	})
+	h.mu.Unlock()
 }
 
 // recoverAmbiguousPlace handles a PlaceOrder failure that does NOT clearly mean the

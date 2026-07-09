@@ -73,6 +73,7 @@ func NewHand(
 		fillSignal:      make(chan struct{}, 1),
 		pollCh:          make(chan pollBatch, 1),
 		placeResultCh:   make(chan *pendingPlace, 16),
+		limitTimeoutCh:  make(chan *pendingLimitTimeout, 4),
 		seenFills:       make(map[string]time.Time),
 		wsFillCache:     make(map[string]cachedWsFill),
 

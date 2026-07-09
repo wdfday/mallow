@@ -39,12 +39,12 @@ func (r *HelmRuntime) ValidateHandAll(ctx context.Context, helmID string, symbol
 	return nil
 }
 
-// RegisterHandAll registers all (hand, symbol) pairs with herald.
+// RegisterHand registers all (hand, symbol) pairs with herald.
 // Exchange name is taken from rt.Exchange so callers do not need to know it.
 //
 // ErrUnavailable — herald offline: warn and return nil (hand will re-register on next heartbeat).
 // ErrRejected    — herald refused the registration: return to caller.
-func (r *HelmRuntime) RegisterHandAll(ctx context.Context, handID, helmID string, symbols []string, script, timeframe string, isFuture bool) error {
+func (r *HelmRuntime) RegisterHand(ctx context.Context, handID, helmID string, symbols []string, script, timeframe string, isFuture bool) error {
 	if r.Herald == nil {
 		slog.Warn("herald not wired — hand will not receive signals", "hand_id", handID, "helm_id", helmID)
 		return nil

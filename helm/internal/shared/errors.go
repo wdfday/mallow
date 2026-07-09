@@ -35,7 +35,7 @@ const (
 const (
 	// Helm lifecycle errors
 	CodeErrHelmNotFound           = 20000
-	CodeErrHelmDisabled           = 20001 // admin soft-lock; no trading allowed
+	CodeErrHelmDisabled           = 20001 // no trading allowed
 	CodeErrHelmPaused             = 20002 // cascade-paused; all hands suspended
 	CodeErrHelmHalted             = 20003 // post-kill; requires /halt/reset
 	CodeErrHelmRuntimeUnavailable = 20004 // in-memory runtime not yet spawned

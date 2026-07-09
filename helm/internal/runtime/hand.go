@@ -91,6 +91,12 @@ type Hand struct {
 	// (track order, poslog, or failure cleanup) on-loop, preserving the single-owner invariant.
 	placeResultCh chan *pendingPlace
 
+	// limitTimeoutCh carries a limit-order timeout (cancel + optional market fallback)
+	// back to the run loop after its REST (CancelOrder, then PlaceOrder) ran OFF the loop,
+	// mirroring placeResultCh. The loop applies the result (poslog cancel event, track the
+	// fallback order) on-loop, preserving the single-owner invariant.
+	limitTimeoutCh chan *pendingLimitTimeout
+
 	// ── Fill dedup ───────────────────────────────────────────────────────────
 	// seenFills records the time each fill was applied so duplicate fill events
 	// (WS + REST for the same order) are silently dropped. Entries are pruned

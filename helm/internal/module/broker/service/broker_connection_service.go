@@ -438,6 +438,10 @@ func (s *brokerConnectionService) RotateKey(ctx context.Context, id, userID uuid
 	}
 
 	// Validate before touching the DB — fail fast if the new key is bad.
+	// KNOWN GAP: this only checks the new key works, not that it's the same
+	// underlying exchange account as the old one — see "Known gap" under Rotate
+	// Key in BUSINESS.md. Rotate reuses this connection's Account/Helm/hand
+	// history unconditionally.
 	if err := bc.Validate(ctx, newCreds); err != nil {
 		return nil, mapBrokerError("new credentials rejected by broker", err)
 	}

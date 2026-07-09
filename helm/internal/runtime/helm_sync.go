@@ -247,7 +247,7 @@ func (r *HelmRuntime) RecoverGapFills(ctx context.Context) {
 		if r.HasProcessedTrade(txn.TradeID) {
 			continue
 		}
-		r.applyWsFill(exchange.WsFillEvent{
+		r.applyWsFill(ctx, exchange.WsFillEvent{
 			OrderID:         txn.OrderID,
 			TradeID:         txn.TradeID,
 			Symbol:          txn.Symbol,

@@ -26,15 +26,22 @@ const (
 // isPermanentOKXError returns true for login errors that won't self-heal on retry —
 // bad key, bad sign, bad timestamp, revoked key. These stop the reconnect loop instead
 // of retrying forever. Codes come from wsLogin's "login failed: code=%s msg=%s" wrap.
+//
+// 50111/50113/50114/50119 are REST-API error codes; the WS login channel uses a
+// separate numbering (60xxx) for the same failure classes — e.g. a revoked/nonexistent
+// key comes back as code=60032 msg="API key doesn't exist" on WS, not 50119. Without
+// 60032 here, a dead OKX key retries forever (capped backoff) instead of firing
+// onCredentialError, so the helm never flips to status=error.
 func isPermanentOKXError(err error) bool {
 	if err == nil {
 		return false
 	}
 	s := err.Error()
-	return strings.Contains(s, "code=50111") || // Invalid API Key
-		strings.Contains(s, "code=50113") || // Invalid sign
-		strings.Contains(s, "code=50114") || // Invalid timestamp
-		strings.Contains(s, "code=50119") // API key doesn't exist
+	return strings.Contains(s, "code=50111") || // Invalid API Key (REST)
+		strings.Contains(s, "code=50113") || // Invalid sign (REST)
+		strings.Contains(s, "code=50114") || // Invalid authorization (REST)
+		strings.Contains(s, "code=50119") || // API key doesn't exist (REST)
+		strings.Contains(s, "code=60032") // API key doesn't exist (WS)
 }
 
 // StreamOrders implements exchange.AccountStreamer.

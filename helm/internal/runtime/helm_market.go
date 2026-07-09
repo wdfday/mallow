@@ -62,8 +62,22 @@ func (r *HelmRuntime) EnqueueWsFill(ev exchange.WsFillEvent) {
 
 // normalizeCommission returns the commission converted to the quote currency (e.g. USDT)
 // and updates the fill quantity (by deducting commission) if the fee is paid in the base asset.
-// It uses lastKnownPrice to fetch exchange rates for non-standard assets like BNB.
-func (r *HelmRuntime) normalizeCommission(symbol string, side exchange.OrderSide, qty, price, commission decimal.Decimal, asset string) (decimal.Decimal, decimal.Decimal) {
+//
+// For a fee paid in a third asset (exchange-native fee-discount tokens: Binance BNB,
+// OKX OKB, Bybit MNT, ...) it looks up {asset}USDT via lastKnownPrice first (cheap,
+// no I/O) and falls back to a live REST quote (exchange.PriceFetcher) only on a cache
+// miss — this runs on the hand/helm fill-processing path, so a cold cache costs one
+// REST round-trip per miss, not per fill; the result is cached via marketData.setPrice
+// so subsequent fills for the same fee asset hit the warm path. This mirrors the same
+// cache-miss-falls-back-to-REST pattern already used in ProcessTrade for entry pricing
+// (helm_trading.go) — accepted there for the same reason: blocking occasionally on a
+// cold cache beats either a wrong number or an unconverted one.
+//
+// Previously this only handled BNB, via a hardcoded fallback price (staleness risk) if
+// even lastKnownPrice missed, and silently returned commission UNCONVERTED (wrong units,
+// no warning) for every other fee asset — including OKB/MNT, which this system's own
+// supported exchanges (OKX, Bybit) actually use. Fixed 2026-07-10.
+func (r *HelmRuntime) normalizeCommission(ctx context.Context, symbol string, side exchange.OrderSide, qty, price, commission decimal.Decimal, asset string) (decimal.Decimal, decimal.Decimal) {
 	if !commission.IsPositive() || asset == "" {
 		return qty, commission
 	}
@@ -81,10 +95,33 @@ func (r *HelmRuntime) normalizeCommission(symbol string, side exchange.OrderSide
 		return qty, commission
 	}
 
-	feeSymbol := assetUpper + "USDT"
+	// Match the separator convention of the fill's own symbol (e.g. OKX pairs arrive
+	// and are queried as "OKB-USDT" — the OKX adapter passes symbol straight through
+	// to instId with no dash insertion of its own, see okx/act/price.go tickerLast and
+	// okx/act/orders.go PlaceOrder — so a hardcoded no-dash "OKBUSDT" would silently
+	// never match a real OKX instrument). Binance-style symbols have no separator.
+	sep := ""
+	if strings.Contains(symbol, "-") {
+		sep = "-"
+	}
+	feeSymbol := assetUpper + sep + "USDT"
 	feePrice := r.lastKnownPrice(feeSymbol)
-	if feePrice.IsZero() && assetUpper == "BNB" {
-		feePrice = decimal.NewFromFloat(600.0)
+	if feePrice.IsZero() {
+		if pf, ok := r.Exchange.(exchange.PriceFetcher); ok {
+			fetchCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+			p, err := pf.GetCurrentPrice(fetchCtx, r.Creds, feeSymbol)
+			cancel()
+			if err == nil && p.IsPositive() {
+				feePrice = p
+				r.marketData.setPrice(feeSymbol, p)
+			} else {
+				slog.Warn("normalizeCommission: fee asset price unavailable — commission left unconverted",
+					"helm_id", r.HelmID, "fee_asset", assetUpper, "fee_symbol", feeSymbol, "err", err)
+			}
+		} else {
+			slog.Warn("normalizeCommission: fee asset price unavailable, exchange has no PriceFetcher — commission left unconverted",
+				"helm_id", r.HelmID, "fee_asset", assetUpper, "fee_symbol", feeSymbol)
+		}
 	}
 	if feePrice.IsPositive() {
 		commission = commission.Mul(feePrice)

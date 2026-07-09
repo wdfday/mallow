@@ -204,6 +204,18 @@ func (r *HelmRuntime) applyLifecycleEvent(ctx context.Context, ev exchange.Order
 				// order ID. When the delayed cancel finally arrives via
 				// exitCancelCh, HandleExitOrderCanceled finds it in pendingCancels
 				// and returns early — no false orphan.
+				//
+				// 2026-07-10: this predates HandleExitOrderCanceled's Case 3
+				// PhaseOpen branch (remainingCount > 0, added 2026-06-30 —
+				// this delay is from 2026-06-07). Traced through today: with that
+				// branch in place, the race this delay guards against should now
+				// self-resolve without it — the cancelled ID's sibling is still in
+				// ExchangeOrderIDs at the moment the cancel is processed (the fill
+				// hasn't removed it yet), so remainingCount > 0 and Case 3 already
+				// returns early on its own. Can probably be removed now — leaving it
+				// as-is (belt-and-suspenders, not costing anything) rather than
+				// pulling a safety net that's been live this long without re-verifying
+				// against production traffic first.
 				handCtx := ctx
 				go func(orderID string) {
 					defer safe.Recover()
@@ -237,7 +249,7 @@ func (r *HelmRuntime) runFillProcessor(ctx context.Context) {
 			r.wsFillQueue = nil
 			r.wsFillMu.Unlock()
 			for _, ev := range batch {
-				r.applyWsFill(ev)
+				r.applyWsFill(ctx, ev)
 			}
 		case <-ctx.Done():
 			return
@@ -248,9 +260,9 @@ func (r *HelmRuntime) runFillProcessor(ctx context.Context) {
 // applyWsFill processes a single WS fill event.
 // Fulfills are routed to the owning hand (poslog + metrics + exit logic).
 // Partial fills are applied incrementally to the portfolio and tracked for REST dedup.
-func (r *HelmRuntime) applyWsFill(ev exchange.WsFillEvent) {
+func (r *HelmRuntime) applyWsFill(ctx context.Context, ev exchange.WsFillEvent) {
 	// Normalize commission to quote currency and adjust qty for buys where fee is paid in the base asset or standard non-quote assets like BNB.
-	ev.FilledQty, ev.Commission = r.normalizeCommission(ev.Symbol, ev.Side, ev.FilledQty, ev.FilledAvg, ev.Commission, ev.CommissionAsset)
+	ev.FilledQty, ev.Commission = r.normalizeCommission(ctx, ev.Symbol, ev.Side, ev.FilledQty, ev.FilledAvg, ev.Commission, ev.CommissionAsset)
 
 	helmID := r.HelmID.String()
 

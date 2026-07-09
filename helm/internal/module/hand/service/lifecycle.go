@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -16,6 +17,12 @@ func (s *Service) Start(handID, helmID uuid.UUID) error {
 	rt, err := s.registry.Get(helmID)
 	if err != nil {
 		return err
+	}
+	// Paused/halted/error helms reject manual hand starts — stop/kill/release stay
+	// open as the exit path, but nothing that resumes trading should proceed while
+	// the parent helm isn't active.
+	if rt.IsPaused() {
+		return fmt.Errorf("helm is not active — cannot start a hand")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

@@ -17,22 +17,21 @@ import (
 	"gateway/internal/handler"
 	"gateway/internal/service"
 	"gateway/internal/ws"
-	pkgtelemetry "mallow/pkg/telemetry"
 )
 
 // Run wires all components and blocks until ctx is cancelled.
 func Run(ctx context.Context) {
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
-	shutdownTracing, err := pkgtelemetry.Setup("gateway")
-	if err != nil {
-		log.Fatalf("otel setup failed: %v", err)
-	}
-	defer func() {
-		tctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = shutdownTracing(tctx)
-	}()
+	//shutdownTracing, err := pkgtelemetry.Setup("gateway")
+	//if err != nil {
+	//	log.Fatalf("otel setup failed: %v", err)
+	//}
+	//defer func() {
+	//	tctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	//	defer cancel()
+	//	_ = shutdownTracing(tctx)
+	//}()
 
 	cfg := config.Load()
 

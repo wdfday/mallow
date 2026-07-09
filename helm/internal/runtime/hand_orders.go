@@ -103,7 +103,7 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 			// by the WS partial-fill path (registry → rt.ReportFill + MarkPartialApplied)
 			// so we only apply the remaining delta — no double-count.
 			h.mu.Lock()
-			cumQty, cumCommission, netQty, netCommission := h.deductPartial(result.ID, result)
+			cumQty, cumCommission, netQty, netCommission := h.deductPartial(ctx, result.ID, result)
 			// Only consume pendingExits here for the netQty==0 path.
 			// When netQty > 0, applyFill reads and deletes pendingExits itself
 			// inside its own lock section — that is where scheduleBracketPlacement
@@ -182,7 +182,7 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 					}
 					h.mu.Lock()
 					if _, seen := h.seenFills[result.ID]; !seen {
-						cumQty, cumCommission, netQty, netCommission := h.deductPartial(result.ID, result)
+						cumQty, cumCommission, netQty, netCommission := h.deductPartial(ctx, result.ID, result)
 						h.seenFills[result.ID] = time.Now()
 						// Consume pendingExits even when netQty==0: the WS partial path
 						// already applied all qty but never had pendingExits populated
@@ -348,7 +348,7 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 		}
 		h.mu.Lock()
 		if _, seen := h.seenFills[o.ID]; !seen {
-			cumQty, _, netQty, netCommission := h.deductPartial(o.ID, polled)
+			cumQty, _, netQty, netCommission := h.deductPartial(ctx, o.ID, polled)
 			h.seenFills[o.ID] = time.Now()
 			h.mu.Unlock()
 			alreadyFilledQty = cumQty
@@ -613,9 +613,9 @@ func isLotSizeError(err error) bool {
 // applied (via MarkPartialApplied). Returns both the cumulative normalised values and
 // the net delta — callers need cumQty/cumCommission for the netQty==0 completion path.
 // Caller must hold h.mu.Lock().
-func (h *Hand) deductPartial(orderID string, result *exchange.OrderResult) (cumQty, cumCommission, netQty, netCommission decimal.Decimal) {
+func (h *Hand) deductPartial(ctx context.Context, orderID string, result *exchange.OrderResult) (cumQty, cumCommission, netQty, netCommission decimal.Decimal) {
 	cumQty, cumCommission = h.helmRuntime.normalizeCommission(
-		result.Symbol, result.Side,
+		ctx, result.Symbol, result.Side,
 		result.FilledQty, result.FilledAvg,
 		result.Commission, result.CommissionAsset,
 	)

@@ -92,7 +92,13 @@ func (r *Registry) Spawn(cfg *helmdomain.Helm, exchCfg helmdomain.ExchangeConfig
 
 	// If the app is already running (SetRuntime was called), start fill streaming immediately
 	// so hot-plugged helms (from accountLinked events) get WS fills right away.
-	if ctx != nil {
+	//
+	// Skip for HelmStatusError: those credentials are already known bad (that's how the
+	// helm got here). Reconnecting on every restart just re-runs the same doomed WS login,
+	// re-fires TriggerAuthError → MarkCredentialError, and spams reconnect-loop logs forever
+	// until the user rotates the key. RotateCredsForAccount → RotateStream reconnects
+	// explicitly with the new credentials once that happens, independent of this path.
+	if ctx != nil && cfg.Status != helmdomain.HelmStatusError {
 		rt.StartStreaming(ctx)
 	}
 	return nil

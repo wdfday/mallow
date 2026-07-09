@@ -174,6 +174,12 @@ func (s *Service) Create(cfg domain.HandConfig) (domain.HandSummary, error) {
 	if err != nil {
 		return domain.HandSummary{}, fmt.Errorf("helm runtime not found: %w", err)
 	}
+	// Paused/halted/error helms reject new hand creation — the exit path (stop/kill/
+	// release) stays open regardless, but nothing that expands exposure should proceed
+	// while the parent helm isn't active.
+	if rt.IsPaused() {
+		return domain.HandSummary{}, fmt.Errorf("helm is not active — cannot create a hand")
+	}
 	if cfg.Market == domain.MarketTypeFutures {
 		if ft, ok := rt.Exchange.(interface{ SupportsFutures() bool }); !ok || !ft.SupportsFutures() {
 			return domain.HandSummary{}, fmt.Errorf("exchange %q does not support futures trading", rt.Exchange.Name())
@@ -225,6 +231,9 @@ func (s *Service) Update(id uuid.UUID, patch domain.HandConfig) error {
 	helmID := data.HelmID
 
 	if rt, err := s.registry.Get(helmID); err == nil {
+		if rt.IsPaused() {
+			return fmt.Errorf("helm is not active — cannot update a hand")
+		}
 		if h, _, ok := rt.GetHandEntry(id.String()); ok && h.IsRunning() {
 			return fmt.Errorf("hand %q is running — stop it first", id)
 		}
@@ -273,6 +282,10 @@ func (s *Service) AllocateCapital(id, helmID uuid.UUID, delta decimal.Decimal) (
 	newCapital := data.AllocatedCapital.Add(delta)
 	if !newCapital.IsPositive() {
 		return decimal.Zero, fmt.Errorf("new allocated capital must be greater than zero")
+	}
+
+	if rt, err := s.registry.Get(helmID); err == nil && rt.IsPaused() {
+		return decimal.Zero, fmt.Errorf("helm is not active — cannot allocate capital")
 	}
 
 	if err := s.repo.Update(id, func(d *domain.Hand) error {

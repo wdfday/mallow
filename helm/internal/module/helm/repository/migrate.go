@@ -35,6 +35,13 @@ func Migrate(db *gorm.DB) error {
 					ELSE '{}'::jsonb END
 			WHERE portfolio_config ? 'max_positions'`,
 		`ALTER TABLE helms DROP COLUMN IF EXISTS portfolio_config`,
+		// helm_schema.sql (fresh-install seed) originally checked status against only
+		// active/paused/halted/disabled — 'error' (domain.HelmStatusError) was added later
+		// without updating that constraint, so MarkErrorForAccount silently failed on any
+		// DB bootstrapped from the old seed (SQLSTATE 23514) and the credential-error state
+		// never reached the UI. Re-create the constraint with 'error' included; idempotent.
+		`ALTER TABLE helms DROP CONSTRAINT IF EXISTS helms_status_check`,
+		`ALTER TABLE helms ADD CONSTRAINT helms_status_check CHECK (status IN ('active', 'paused', 'halted', 'disabled', 'error'))`,
 	}
 	for _, s := range stmts {
 		if err := db.Exec(s).Error; err != nil {

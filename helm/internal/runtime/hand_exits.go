@@ -409,7 +409,6 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 	h.mu.Lock()
 	delete(h.exitLevels, affectedSymbol)
 	h.mu.Unlock()
-
 }
 
 // rearmLocalExit hands a position's protection back to the in-process SL/TP monitor
@@ -471,8 +470,6 @@ func (h *Hand) orphanLegsForSymbol(ctx context.Context, symbol, source string) {
 		// Write audit trade record: exit_price="", gross_pnl="0", exit_reason="orphaned".
 		h.appendOrphanTradeRecord(ctx, leg, source)
 	}
-	h.helmRuntime.RemovePosition(symbol)
-
 	h.mu.Lock()
 	delete(h.exitLevels, symbol)
 	h.mu.Unlock()
@@ -820,45 +817,29 @@ func (h *Hand) handlePositionDesync(ctx context.Context, leg *position.LegState)
 	})
 
 	now := time.Now().UTC()
-	closePrice := h.helmRuntime.lastKnownPrice(leg.Symbol)
-	var realizedPnL decimal.Decimal
-	if closePrice.IsPositive() && leg.EntryPrice.IsPositive() {
-		diff := closePrice.Sub(leg.EntryPrice)
-		if leg.Side == "sell" { // short: profit when price falls
-			diff = diff.Neg()
-		}
-		realizedPnL = diff.Mul(leg.Qty.Abs())
-	}
-	cp := poslog.PositionClosedPayload{
-		OrderID:     leg.PositionID,
-		Symbol:      leg.Symbol,
-		Side:        leg.Side,
-		Qty:         leg.Qty.Abs().String(),
-		EntryPrice:  leg.EntryPrice.String(),
-		EntryAt:     leg.OpenedAt,
-		ClosePrice:  closePrice.String(), // best-effort; zero when price data unavailable
-		RealizedPnL: realizedPnL.String(),
-		ExitReason:  "external",
-	}
-	payload, _ := json.Marshal(cp)
+	// Orphan, not closed: a desync (portfolio qty < leg qty, no bracket/signal exit of
+	// ours in flight) means something moved this position outside helm's control — the
+	// same "we don't actually know what happened" situation as the external-close branch
+	// in HandleExitOrderCanceled and orphanLegsForSymbol. Those two correctly emit
+	// KindPositionOrphaned with no claimed PnL; this one used to emit KindPositionClosed
+	// with a PnL guessed from lastKnownPrice (never a real fill price) and feed it into
+	// appendTradeRecord — a fabricated number counted into win-rate/Sharpe like a genuine
+	// trade. Same underlying event (CodePositionExtClosed), inconsistent treatment. Fixed
+	// 2026-07-10 to match the other two: KindPositionOrphaned + appendOrphanTradeRecord.
+	payload, _ := json.Marshal(poslog.PositionOrphanedPayload{Symbol: leg.Symbol, Source: "desync"})
 	h.publishAndApply(ctx, poslog.Event{
 		ID:         h.id.String() + "_desync_" + leg.PositionID,
 		HandID:     h.id.String(),
 		HelmID:     h.helmID.String(),
 		PositionID: leg.PositionID,
-		Kind:       poslog.KindPositionClosed,
+		Kind:       poslog.KindPositionOrphaned,
 		Payload:    payload,
 		At:         now,
 	})
 	// Portfolio already updated by Sync() — no need to call RemovePosition.
 	// If partial close, portfolio still has exchangeQty; removing is wrong.
 	// Let the next Sync() or WS fill settle the remainder.
-	if closePrice.IsPositive() {
-		h.appendTradeRecord(ctx, cp, decimal.Zero, now)
-	} else {
-		h.log.Warn("checkPositionDesync: skipping trade record — close price unknown",
-			"symbol", leg.Symbol, "position_id", leg.PositionID)
-	}
+	h.appendOrphanTradeRecord(ctx, leg, "desync")
 
 	h.mu.Lock()
 	delete(h.exitLevels, leg.Symbol)

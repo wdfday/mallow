@@ -19,15 +19,25 @@ import (
 )
 
 // authErrThreshold is the number of consecutive ErrClassAuth responses from PlaceOrder
-// before the helm self-pauses and the broker connection is marked error. A value of 3
-// tolerates transient 401s (exchange glitch, clock skew) while catching real revocations.
-const authErrThreshold = 3
+// before the helm self-pauses and the broker connection is marked error. Lowered from 3
+// to 1 (2026-07-09) — the only plausible transient-auth cases (IP-whitelist propagation,
+// a rotate-key race) were never confirmed against real traffic, while a genuinely revoked
+// key should self-pause immediately rather than keep placing orders that can't land.
+const authErrThreshold = 1
 
 // exitMinFreeFraction is the share of a spot exit's intended qty that must be free
 // in the wallet for the exit to proceed. Below it the leg is orphaned, not partially
-// sold. 0.99 leaves headroom for the base-asset fee (~0.1%); a genuine shortfall
-// (locked co-hand coins, external partial close) is a whole-leg fraction far below
-// this, so the two never blur. See design note in runPlaceREST.
+// sold. NOT headroom for the base-asset fee — normalizeCommission already nets that
+// out of leg.Qty when the fee is paid in the base asset (helm_market.go), and leaves
+// qty untouched when it's paid in quote/BNB, so poslog qty already tracks close to the
+// true wallet share either way. 0.99 is a buffer for what normalizeCommission does NOT
+// model: rounding drift across many partial fills, exchange-specific fee quirks (see
+// the OKX base-asset fee deduction note in applyPolledOrders), and order-placement vs.
+// exit-time truncation mismatches. A genuine shortfall (locked co-hand coins, external
+// partial close) is a whole-leg fraction far below this, so the two never blur — do not
+// tighten toward 1.0 without evidence that residual noise stays under it on every
+// exchange; orphaning is irreversible, so slack here is cheaper than a false positive.
+// See design note in runPlaceREST.
 var exitMinFreeFraction = decimal.NewFromFloat(0.99)
 
 // Immediate retry budget for a failed EXIT order. The strategy wants out now and the
@@ -713,31 +723,46 @@ func (h *Hand) runPlaceREST(ctx context.Context, pp *pendingPlace) {
 				}
 			}
 		balanceDone:
-			if freeQty.IsZero() {
-				// Balance is zero after cancel + retry. Two distinct causes:
+			if freeQty.LessThan(enough) {
+				// Balance is short of our share after cancel + retry — not just the
+				// exactly-zero case, any shortfall (including a partial one from a
+				// different hand's lock on the same wallet) gets the same chance at an
+				// explanation below, rather than skipping straight to orphan. The retry
+				// loop above already spent up to ~4.5s waiting out ordinary OKX unfreeze
+				// lag (its own comment: a shortfall surviving that long is no longer
+				// "lag"), so reaching here means one of two things, not "maybe still lag":
 				//   A. Exchange triggered the OCO concurrently → position really closed
-				//   B. OKX balance unfreeze lag (we cancelled the OCO ourselves; the
-				//      exchange confirms cancel but takes > 600ms to reflect in balance)
+				//   B. Our own cancel is independently confirmed done (GetOrder says
+				//      "cancelled") but the wallet still hasn't caught up — unusually
+				//      slow even by OKX standards, but the cancel itself is a known fact,
+				//      not a guess, so it's still safe to proceed on poslog qty
 				//
 				// Distinguish by querying the OCO order status:
 				//   • "filled"    → genuine external close (case A)
-				//   • "cancelled" → helm-initiated cancel confirmed; balance just slow
-				//                   to unfreeze (case B) → use poslog qty for PlaceOrder
-				//   • anything else / error → treat as position gone (safe default)
+				//   • "cancelled" → our cancel confirmed done independently of the
+				//                   balance reading (case B) → use poslog qty for PlaceOrder
+				//   • anything else / error → inconclusive; falls through to the
+				//     all-or-orphan check below like any other unexplained shortfall
+				caseAMatched := false
 				for _, id := range bracketIDs {
 					r, qErr := h.helmRuntime.Exchange.GetOrder(ctx, h.helmRuntime.Creds, id)
 					if qErr != nil || r == nil {
 						continue
 					}
 					if r.Status == "filled" && r.FilledQty.IsPositive() && r.FilledAvg.IsPositive() {
-						// Case A: exchange triggered the OCO → recover fill price.
+						// Case A: exchange triggered the OCO → recover fill price. Does NOT
+						// touch freeQty — the recovery lives entirely in the ocoFill* fields,
+						// so the outcome below must key off caseAMatched, not freeQty being
+						// zero (freeQty can be a nonzero-but-insufficient shortfall here now
+						// that the outer gate is LessThan(enough) instead of IsZero()).
 						pp.ocoFillPrice = r.FilledAvg
 						pp.ocoFillQty = r.FilledQty
 						pp.ocoFillSide = string(r.Side)
 						if pp.ocoFillSide == "" {
 							pp.ocoFillSide = "sell"
 						}
-						h.log.Info("hand: OCO fill recovered from exchange (balance=0 after cancel)",
+						caseAMatched = true
+						h.log.Info("hand: OCO fill recovered from exchange (balance short after cancel)",
 							"symbol", pp.sig.Symbol,
 							"order_id", id, "price", r.FilledAvg, "qty", r.FilledQty)
 						break
@@ -754,9 +779,10 @@ func (h *Hand) runPlaceREST(ctx context.Context, pp *pendingPlace) {
 						break
 					}
 				}
-				if freeQty.IsZero() {
-					// Balance still zero and no "cancelled" OCO found to explain it.
-					// Position is genuinely gone (external close, manual sell, etc.).
+				if caseAMatched || freeQty.IsZero() {
+					// Either case A resolved it directly, or balance is still exactly zero
+					// with no "cancelled" OCO found to explain it either — position is
+					// genuinely gone (external close, manual sell, etc.).
 					h.log.Warn("hand: pre-exit balance check — base asset gone, skipping PlaceOrder",
 						"symbol", pp.sig.Symbol, "poslog_qty", pp.orderQty)
 					pp.positionGoneAtExchange = true
@@ -1156,7 +1182,6 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 
 // computeDefaultSL returns a stop-loss price to use when the signal provides none.
 // ATR×5 offset is preferred; falls back to 8% fixed when ATR is zero.
-
 func computeDefaultSL(side string, entryPrice, atr decimal.Decimal) decimal.Decimal {
 	if atr.IsPositive() {
 		offset := atr.Mul(decimal.NewFromInt(5))
@@ -1171,3 +1196,293 @@ func computeDefaultSL(side string, entryPrice, atr decimal.Decimal) decimal.Deci
 	}
 	return entryPrice.Mul(decimal.NewFromInt(1).Add(pct))
 }
+
+// KNOWN GAP (2026-07-09, not yet fixed): a futures SL/TP bracket order can reduce the
+// WRONG hand's share of a shared exchange position.
+//
+// scheduleBracketPlacement (hand_fills.go:650) sizes a futures bracket's Qty from THIS
+// hand's own poslog leg (h.pos.PrimaryLeg().Qty) at the moment the bracket is placed —
+// see hand_fills.go:680-684. That qty is baked into the exchange order as a fixed
+// quantity, ReduceOnly, NOT closePosition=true (see fbinance/act/orders.go
+// PlaceExitOrders), and is never revisited before the bracket actually triggers, which
+// can be minutes or hours later.
+//
+// The exchange has no concept of "hands." A futures position is netted per symbol per
+// account — one pooled number, not N per-hand silos. A ReduceOnly order just subtracts
+// its fixed Qty from whatever the pool holds at trigger time; it does not verify that
+// the qty it removes is still "this hand's own" contribution.
+//
+// Failure mode: two hands trade the same futures symbol under the same helm. Hand A
+// places a bracket sized for its qty at T0. Between T0 and the bracket's trigger, Hand
+// A's own signal exit fires (which cancels ITS bracket via applyExitFill ->
+// cancelExitOrders — but only once the exit fill is confirmed; the bracket is live and
+// uncancelled for the whole placement-to-confirmation window, see the discussion in
+// runPlaceREST's pre-flight cancel comment) and/or Hand B adds to its own position on
+// the same symbol in that window. When Hand A's stale bracket then triggers, it reduces
+// the CURRENT pooled position by Hand A's OLD qty — which may now belong, in whole or
+// in part, to Hand B. Hand B's poslog never learns this: the fill routes back to Hand A
+// only (orders are tracked per-owner via TrackOrder), so Hand B's in-memory leg quietly
+// diverges from the real exchange position until something notices the mismatch (a
+// reconcile pass, or never, if the drift is small enough to pass unnoticed).
+//
+// Distinct from the multi-hand-same-symbol gap already tracked for spot (net portfolio
+// qty vs h.pos in hand_signal.go; wallet-level all-or-orphan in runPlaceREST) — that one
+// is decision-level (a check reads the wrong number). This one is execution-level: the
+// exchange order itself, once placed, has no way to re-check "is this qty still mine"
+// at trigger time — no decision in Go code is even wrong, the order type itself can't
+// express the right constraint.
+//
+// Two fix directions discussed, neither implemented:
+//  1. Re-verify remaining attributable qty at trigger time — requires per-hand exchange
+//     position attribution, which doesn't exist (futures has none by nature; this would
+//     mean helm keeping its own shadow ledger of "whose contracts are these" and
+//     reconciling it against the pooled exchange position on every fill).
+//  2. Move brackets from per-hand to per-(helm,symbol): one shared bracket tracking net
+//     qty across all hands on that symbol, re-sized on every entry/exit by any hand.
+//     Bigger change — bracket ownership/cancellation (cancelExitOrders, exitLevels) is
+//     currently keyed and reasoned about per-hand throughout this file and hand_fills.go.
+//
+// Only matters when >1 hand under the same helm trades the same futures symbol
+// concurrently. Spot does not have this exact failure mode — no ReduceOnly pooling;
+// the spot bracket cancel is pre-flight and balance-gated (see runPlaceREST), so a spot
+// exit can never even attempt to place its market order while a stale bracket is still
+// live enough to race it.
+
+// KNOWN GAP (2026-07-09, not yet fixed): a failed pre-exit bracket CancelOrder can be
+// misread as "position already gone" and cause a live spot position to be dropped from
+// poslog while it is still open and protected at the exchange.
+//
+// In the pre-flight cancel loop (runPlaceREST, spot sell-exit branch), a CancelOrder
+// failure per bracket ID is only logged, never surfaced as a distinct outcome:
+//
+//	for _, id := range bracketIDs {
+//		if err := h.helmRuntime.Exchange.CancelOrder(cancelCtx, h.helmRuntime.Creds, id); err != nil {
+//			h.log.Warn("hand: pre-exit bracket cancel", "symbol", pp.sig.Symbol, "order_id", id, "err", err)
+//		}
+//	}
+//	...
+//	pp.cancelledBracketIDs = bracketIDs // set unconditionally — "attempted" is treated as "cancelled"
+//
+// If the cancel genuinely failed (network blip, exchange timeout), the bracket is still
+// live and still holds pp.orderQty locked at the exchange — nothing about that order
+// changed. The balance-check loop that follows sees freeQty == 0 (same as it would if
+// the cancel HAD succeeded but OKX's unfreeze just hadn't propagated yet — the two are
+// indistinguishable from freeQty alone, see the IsZero() note further up this file), so
+// it falls into the ambiguity-resolving diagnostic: query the bracket's own order status
+// via GetOrder and classify:
+//
+//	"filled"            -> case A, exchange triggered the OCO for real
+//	"cancelled"/"canceled" -> case B, our cancel is confirmed, balance is just slow
+//	anything else / error  -> "safe default": treat as position gone
+//
+// A bracket that failed to cancel is still resting — its GetOrder status is "new" or
+// equivalent, which is neither "filled" nor "cancelled". It falls into the third,
+// "safe default" branch, which is only safe under the assumption that reaching this
+// diagnostic at all already implies the position is gone. That assumption breaks here:
+// the position is very much still open, guarded by the bracket that never got cancelled.
+//
+// Consequence: pp.positionGoneAtExchange is set to true with no recovered OCO fill price
+// (ocoFillPrice stays zero, since the status wasn't "filled"). applyPlaceResult then
+// takes the no-fill-price branch and calls closeLegAsDust at lastKnownPrice — closing the
+// poslog leg as if the position were sold, with no exchange order ever placed and no real
+// exit. The exchange still holds the position, still guarded by the (never-cancelled)
+// bracket. helm now believes the hand is flat while it is not: the next signal on this
+// symbol sees NO_POS and can re-enter as if starting fresh, on top of a position it no
+// longer knows exists.
+//
+// Not fixed. Tracking per-ID CancelOrder success is NOT the fix — if CancelOrder itself
+// fails on a network error, whether the cancel actually reached the exchange is exactly
+// as unknowable as a PlaceOrder ambiguous failure (see recoverAmbiguousPlace); there is
+// no equivalent recovery path for cancels today. The real fix is narrower: the GetOrder
+// diagnostic loop right below already distinguishes two truly different outcomes and
+// wrongly treats them the same —
+//   qErr != nil || r == nil        -> genuinely unknown (the query itself failed)
+//   r.Status is neither filled nor
+//     cancelled, but the query SUCCEEDED -> definitively still resting, NOT ambiguous
+// Only the first is real ambiguity. The second is a confident "still open" answer that
+// currently falls through into the same "treat as gone" bucket as the first. Give it its
+// own branch (bracket confirmed still live -> do not dust-exit; retry the cancel or leave
+// the leg alone and let the bracket keep protecting it) and the failure mode above closes
+// for every case except a CancelOrder failure immediately followed by a GetOrder failure
+// on the very same order — a much smaller, genuinely irreducible window.
+
+// KNOWN GAP (2026-07-09, not yet fixed): bracket orders (SL/TP) cannot be WAL'd the way
+// entry/exit market orders are, because ExitOrderRequest carries no ClientOrderID field.
+//
+// The entry/exit path (this file, handleSignal) generates a clid and tracks it ON-LOOP
+// BEFORE placing the order off-loop, then publishes KindOrderPlace to poslog as a WAL
+// entry before the REST call — see the "Generate the client order id and track it
+// BEFORE placing the order" comment above and runPlaceREST's "Publish KindOrderPlace to
+// poslog as WAL before we make the exchange REST calls" line. This means a WS fill that
+// races ahead of the REST response still routes correctly (the clid is already known),
+// and a crash between "placed" and "REST returned" still leaves a durable trail.
+//
+// scheduleBracketPlacement (hand_fills.go) has none of this: it calls PlaceExitOrders
+// and only learns the real order IDs from the result, tracking them (h.trackOrder) and
+// writing KindBracketPlaced to poslog AFTER the REST call returns successfully. A WS
+// fill or crash in the placement window has nothing to route to or recover from — the
+// bracket is placed at the exchange with zero durable trace until the REST call comes
+// back.
+//
+// This is NOT an exchange limitation — checked all four adapters. Binance spot OCO
+// (binance/act/orders.go, NewCreateOCOService) never calls the SDK's available
+// ListClientOrderId/LimitClientOrderId/StopClientOrderId setters. Binance futures algo
+// orders (fbinance/act/orders.go, NewCreateAlgoOrderService) never call the SDK's
+// available client-order-id setter either. OKX and Bybit conditional/algo orders support
+// client-supplied IDs too. The gap is entirely in ExitOrderRequest/ExitOrderPlacer: the
+// interface was designed after the entry/exit clid-first pattern already existed (see
+// CLIENT_ORDER_ID.md) and was never retrofitted to carry one.
+//
+// Not fixed. Retrofitting would mean: add ClientOrderID to ExitOrderRequest, generate +
+// track it in scheduleBracketPlacement before calling PlaceExitOrders (same discipline as
+// handleSignal), wire the setter through all four adapters, and decide what "WAL" means
+// for a bracket specifically — unlike an entry/exit, a bracket is TWO orders (SL + TP) on
+// most exchanges, so the WAL entry would need to represent a pending pair, not a single
+// clid.
+
+// IMPLEMENTED (2026-07-09): the freeQty.IsZero() special case in runPlaceREST's
+// balance-check block used to be a separate tier from the freeQty.LessThan(enough)
+// "all-or-orphan" check further down — the diagnostic (query the bracket's own order
+// status to recover a real OCO fill price, or confirm a helm-initiated cancel just
+// hasn't unfrozen yet) only ran when freeQty was EXACTLY zero. Any insufficient-but-
+// nonzero balance — which is exactly what the multi-hand-shared-wallet gap noted
+// elsewhere in this file would produce (another hand's lock eating part, but not all,
+// of the free balance) — used to skip the diagnostic entirely and orphan immediately,
+// even though the same case-A/case-B recovery could apply just as well there.
+//
+// Now gated on `freeQty.LessThan(enough)` instead of `freeQty.IsZero()`, so the
+// diagnostic runs for any shortfall, not just an exact-zero one; the exact-zero check
+// is still the deciding line for positionGoneAtExchange vs. falling through to the
+// all-or-orphan check below, since that distinction (dust-exit vs. orphan) is still
+// meaningful downstream in applyPlaceResult.
+//
+// Deliberately scoped narrow — NOT bundled with the other two notes above it in this
+// same change:
+//  1. The "confirmed still resting" branch (distinguishing a successful GetOrder that
+//     shows the bracket is still live from a GetOrder that errored) is still missing —
+//     "anything else / error" still falls straight through to the shortfall check below
+//     rather than being treated as "definitely not gone." That's a separate, slightly
+//     riskier behavioral change (it changes what happens on the still-resting path, not
+//     just when the diagnostic runs) and stays deferred.
+//  2. Bracket ClientOrderID/WAL is untouched — bigger, cross-adapter change.
+// This change only widens WHEN the existing diagnostic runs; it does not change what any
+// branch of the diagnostic itself decides. Smallest safe slice of the three.
+
+// KNOWN GAP (2026-07-09, not yet fixed): checkExits can fire a second, duplicate exit
+// signal for a leg whose first exit is still in flight, when that leg has no
+// exchange-side bracket.
+//
+// checkExits (hand_exits.go) skips its local SL/TP trigger only when a bracket exists:
+//
+//	if len(el.ExchangeOrderIDs) > 0 {
+//		continue // exchange-side orders will close the position
+//	}
+//
+// For a leg with NO bracket — PlaceExitOrders failed earlier (see the
+// "position now relies on the local monitor only" log in scheduleBracketPlacement), or
+// the bracket simply hasn't been placed yet — this guard never fires. checkExits only
+// additionally checks h.pos.ActiveCount() > 0 (true for any non-Idle phase, including
+// PhaseExiting — the same phase-blindness already noted for the Gate 3 TOCTOU race) and
+// whether price is still past the SL/TP level. Neither check knows an exit for this
+// exact leg is already in flight off-loop in a runPlaceREST goroutine.
+//
+// If that first exit is slow — stuck in the exit-retry loop, a clock-skew resync, or
+// just a slow network — for longer than one poll tick (30s), checkExits fires again on
+// the next tick. handleSignal processes it immediately (the run loop is free; it only
+// spawned a goroutine for the first exit and returned), spawning a SECOND runPlaceREST
+// for the same symbol and the same poslog qty (the leg hasn't closed yet, so its tracked
+// qty hasn't changed).
+//
+// The balance-check that follows (the freeQty.LessThan(enough) block above) is a
+// natural but non-atomic safety net here: it only protects if one PlaceOrder call has
+// already landed and reduced the wallet by the time the other checks its balance. Two
+// concurrent balance-checks that both read the wallet before either PlaceOrder executes
+// will both see "enough" and both proceed — whichever's PlaceOrder lands first wins,
+// but the other has already committed to placing its own order too, not merely lost a
+// race it could still back out of.
+//
+// Not fixed. Would need checkExits to know "an exit is already pending for this symbol"
+// before firing — e.g. a per-symbol in-flight-exit flag set when handleSignal spawns an
+// exit's runPlaceREST goroutine and cleared in applyPlaceResult, checked by checkExits
+// alongside the existing ExchangeOrderIDs guard. Same family as the Gate 3 TOCTOU gap
+// (runtime/core/risk/manager.go) — both are "leg phase should have gated this but
+// didn't" — worth revisiting together.
+
+// STRUCTURAL NOTE (2026-07-09): the pre-exit OCO-cancel + balance-check block (the spot
+// sell-exit branch at the top of runPlaceREST, roughly lines 635-793) has accumulated
+// more loosely-specified behavior than any other single block in this file — five
+// separate notes above touch it (cancel-failure ambiguity, the IsZero/LessThan gate,
+// the "confirmed still resting" branch that's still missing, bracket ClientOrderID/WAL,
+// and the checkExits race). None of that behavior is under test — it's ~160 lines
+// inlined into runPlaceREST, reachable only through a live (or fully mocked) exchange,
+// with no seam to unit-test the cancel/diagnose/decide logic in isolation from the rest
+// of order placement.
+//
+// Worth pulling into its own function — something like
+// `resolveSpotExitBalance(ctx, pp, bracketIDs) (freeQty decimal.Decimal, outcome
+// exitBalanceOutcome)` — with an explicit result type instead of writing directly onto
+// pp.positionGoneAtExchange / pp.orphanInsufficientFree / pp.ocoFillPrice from deep
+// inside a nested if/for. That would (a) make the five gaps above independently
+// testable against a fake Exchange instead of requiring a real one, and (b) force the
+// "confirmed still resting" case to become a real, named outcome instead of silently
+// falling through whatever the surrounding code happens to do next. Not done tonight —
+// this is a refactor, not a fix, and refactoring the exact block this many open
+// questions are still attached to, right before defending it, is its own risk. Revisit
+// once the behavior itself is settled, not before.
+
+// CONFIRMED IN PRODUCTION (2026-07-09, not yet fixed): the pre-exit bracket cancel loop
+// (spot sell-exit branch, the `for _, id := range bracketIDs { CancelOrder(...) }` right
+// before the balance-check block) logs a spurious WARN on every single spot exit that
+// had a 2-leg bracket (SL + TP). Real prod log sample, ETHUSDT, same hand, 5 separate
+// exits across 2026-07-03 through 2026-07-07, same shape every time:
+//
+//	INFO "hand: pre-exit bracket cancelled" cancelled=[legA, legB]   (both IDs listed)
+//	WARN "hand: pre-exit bracket cancel" order_id=legB
+//	     err="<APIError> code=-2011, msg=Unknown order sent."
+//
+// legA cancels cleanly. legB's explicit cancel then fails with Binance -2011 ("Unknown
+// order sent" — the order no longer exists) EVERY time, with no exceptions in the
+// sample. This confirms Binance auto-cancels the sibling leg of a spot OCO when the
+// other leg is cancelled — by the time this loop reaches legB, the exchange has already
+// removed it. The loop's second CancelOrder call is not just non-atomic (see the
+// "không thể hủy cả cụm" note above about CancelOCOService) — for Binance spot
+// specifically, it is a call that is *expected* to fail on every 2-leg bracket cancel,
+// logged at WARN as if it were a real problem each time. That's log noise on the
+// majority-case exit path, and it dilutes the same log line's signal value for a case
+// where CancelOrder genuinely does fail for an unrelated reason.
+//
+// Also relevant to the cancel-ambiguity note further up this file: -2011 specifically is
+// NOT the ambiguous "don't know if it landed" case that note is about — it is Binance's
+// clean, unambiguous "this order does not exist" signal, same family as the -2013
+// handling already done in GetOrder (binance/act/orders.go, isBinanceCode helper) that
+// maps to a "not_found" sentinel instead of a bare error. CancelOrder has no equivalent
+// treatment: every caller sees a generic error regardless of whether it means "genuinely
+// failed" or "already gone, nothing to do."
+//
+// Not fixed tonight. Smallest correct fix: classify CancelOrder errors the same way
+// GetOrder already does (isBinanceCode(err, -2011) -> treat as success, don't warn) —
+// narrow, exchange-specific, low-risk. Larger fix: adopt CancelOCOService (Binance) /
+// the equivalent group-cancel primitive per exchange where available, which would avoid
+// attempting the second cancel at all instead of catching its expected failure after the
+// fact — see the ClientOrderID/WAL note and the "không thể hủy cả cụm" discussion above.
+
+// STRUCTURAL NOTE (2026-07-09): the group-cancel fix above (CancelOCOService /
+// OrderListID) cannot be done as a local change inside the cancel loop — the storage
+// pipeline has nowhere to hold a group/parent id at all, at any layer:
+//
+//	exchange.ExitOrderResult   { OrderIDs []string }               (exchange.go)
+//	exitLevel.ExchangeOrderIDs []string                             (hand.go:225)
+//	poslog KindBracketPlaced payload                                (writes the same slice)
+//
+// All three only ever carry a flat list of individual leg order IDs. binance/act/
+// orders.go:153-157 already receives resp.OrderListID from Binance's own OCO placement
+// response and discards it on the spot — it never reaches ExitOrderResult, so there is
+// currently no path for it to reach exitLevel or poslog even if CancelOCOService were
+// wired in tomorrow.
+//
+// A real fix needs a group/parent id field threaded through all three layers together
+// (e.g. exitLevel.GroupID string, same on ExitOrderResult and the poslog payload), not
+// just a change to the cancel loop. Bigger than the log-noise fix noted above — same
+// shape of gap as the bracket ClientOrderID/WAL note (interface designed before this
+// need existed, never retrofitted). Worth doing together with that one, since both touch
+// ExitOrderResult and exitLevel at the same time.

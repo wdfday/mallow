@@ -89,6 +89,11 @@ func (s *Service) Resume(id uuid.UUID) error {
 		return fmt.Errorf("persist active status: %w", err)
 	}
 	slog.Info("helm resumed", "id", id, "hands_restarted", len(toRestart))
+	// Fire-and-forget SyncOne so portfolio state (cash/equity/positions) reflects
+	// the exchange immediately — otherwise it stays at whatever it was when the
+	// helm paused/errored (often zero) until the next 5-minute poll tick. Mirrors
+	// Enable's step 3; this path is also how auto-resume-after-rotate-key recovers.
+	s.spawner.SyncOne(id)
 	return nil
 }
 
@@ -184,6 +189,12 @@ func (s *Service) HydrateAll(ctx context.Context) error {
 			slog.Error("helm hydrate: fetch credentials failed", "helm_id", cfg.ID, "account_id", cfg.AccountID, "err", err)
 			continue
 		}
+		// BrokerType is authoritative from the helm config (not the credentials resp) —
+		// GetCredentialsByAccountID returns the parent BrokerConnection's type (e.g.
+		// "binance"), which is wrong for a futures_usdm sub-account remapped to "fbinance"
+		// at creation time. Without this, every restart re-spawns that helm with the
+		// spot binance client instead of fbinance, silently reading the spot balance.
+		exchCfg.BrokerType = cfg.BrokerType
 		if err := s.spawner.Spawn(cfg, exchCfg); err != nil {
 			slog.Error("helm hydrate: spawn failed", "helm_id", cfg.ID, "err", err)
 			continue

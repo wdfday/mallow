@@ -43,6 +43,7 @@ pub enum IntraBarMode {
     /// (close vs open) to determine which extreme happened first.
     /// Up-bar (close > open): low before high → SL checked first for long.
     /// Down-bar (close < open): high before low → TP checked first for long.
+    /// It feel like never. So, Pessimistic, or will be Look Intra-Bar.
     OhlcHeuristic,
 }
 
@@ -183,11 +184,11 @@ impl PositionTracker {
             }
         }
 
-        // Update running extremum for trailing stop (always use close).
+        // Update running extremum for trailing stop
         if self.is_long {
-            if close > self.extreme { self.extreme = close; }
-        } else if close < self.extreme {
-            self.extreme = close;
+            if high > self.extreme { self.extreme = high; }
+        } else if low < self.extreme {
+            self.extreme = low;
         }
 
         // Determine which prices to use for stop and target checks.

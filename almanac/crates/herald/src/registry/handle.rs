@@ -94,7 +94,7 @@ impl Handle {
             for &htf in &htfs {
                 ledger.ensure_symbol(&symbol, htf, None);
             }
-            warmup_v2(probe.as_mut(), &symbol, target_tf, base_tf, &htfs, ledger);
+            warmup_v2(probe.as_mut(), &symbol, target_tf, &htfs, ledger);
             debug!(
                 %hand_id, %symbol,
                 base_tf = %base_tf, target_tf = %target_tf, htfs = ?htfs,
@@ -260,47 +260,107 @@ fn on_bar_v2(
 
 /// Replay ledger history into `strategy` to warm up indicator state.
 ///
-/// Merges base-TF and HTF bar windows chronologically using alignment points:
-/// for each base bar, we first deliver any HTF bars that closed at or before it
-/// (using the ledger-resident HTF windows), then the base bar itself.
+/// Two phases, both anchored on the hand's own `target_tf` (not any
+/// ledger-wide "base" feed):
+///
+/// 1. **Pre-window HTF backlog** — every declared HTF bar that closed
+///    *before* `target_tf`'s own window even starts gets fed as an HTF-only
+///    tick (no base-TF event in the snapshot). `MtfScriptStrategy::on_bars`
+///    is built to handle this: it always advances HTF-side indicator
+///    bindings first, then only evaluates the script body if a base bar is
+///    present (`snap.base_bar()` — see `script/v2/strategy.rs`). Skipping
+///    this phase (an earlier version of this function did) leaves any
+///    `ind.X(period, "HTF")` binding cold, since `target_tf`'s window is
+///    almost always far shorter in calendar time than a longer-period HTF's
+///    own window (both ledger rings are bootstrapped to a fixed *bar count*
+///    of their own granularity, so the HTF one covers much more real time
+///    per bar) — there just aren't enough in-window HTF closes to warm it
+///    otherwise.
+/// 2. **In-window merge-join** — once past `window_start_ts`, deliver each
+///    `target_tf` bar together with any HTF bars that closed at or before
+///    it, same shape as live evaluation (`on_bar_v2`), just walking stored
+///    history instead of being driven by live ticks. Unlike `on_bar_v2`,
+///    which always reads the ledger's *latest* HTF bar (correct only
+///    because live time has actually elapsed to match), replay must thread
+///    through the real historical HTF sequence — reusing `on_bar_v2` here
+///    would seed every historical alignment point with today's single
+///    latest HTF bar instead of the one that was actually current then.
+///
+/// The split at `window_start_ts` is also what keeps phase 2 paced at one
+/// HTF bar per real alignment point instead of dumping the whole backlog
+/// into the first `on_bars()` call — phase 1 already drained everything
+/// older.
 fn warmup_v2(
     strategy: &mut dyn MtfStrategy,
     symbol: &str,
-    eval_tf: Timeframe,
-    base_tf: Timeframe,
+    target_tf: Timeframe,
     declared_htfs: &[Timeframe],
     ledger: &Arc<Ledger>,
 ) {
-    let base_bars: Vec<Bar> = ledger
-        .with_state(symbol, base_tf, |s| s.bar_window.iter().cloned().collect())
+    let target_bars: Vec<Bar> = ledger
+        .with_state(symbol, target_tf, |s| s.bar_window.iter().cloned().collect())
         .unwrap_or_default();
 
-    if base_bars.is_empty() {
+    let Some(first_bar) = target_bars.first() else {
         tracing::warn!(
-            %symbol, %base_tf,
-            "v2 warmup: no base-TF history in ledger — strategy starts cold; \
+            %symbol, %target_tf,
+            "v2 warmup: no history at hand's own target_tf in ledger — strategy starts cold; \
              indicators will not be warmed until the ledger window fills up. \
-             Check that parquet bootstrap completed before the first hand was registered."
+             Check that parquet bootstrap / gap-fill completed before the first hand was registered."
         );
         return;
+    };
+    let window_start_ts = first_bar.timestamp;
+    let empty_views: HashMap<Timeframe, TfView<'_>> = HashMap::new();
+
+    // ── Phase 1: pre-window HTF backlog, HTF-only ticks (no base bar) ──────
+    let mut pre_window: Vec<(Timeframe, Bar)> = Vec::new();
+    for &htf in declared_htfs {
+        let htf_dur = htf.duration_ms();
+        let bars: Vec<Bar> = ledger
+            .with_state(symbol, htf, |s| s.bar_window.iter().cloned().collect())
+            .unwrap_or_default();
+        pre_window.extend(
+            bars.into_iter()
+                .filter(|b| b.timestamp + htf_dur < window_start_ts)
+                .map(|b| (htf, b)),
+        );
+    }
+    // Chronological by close time; ties (simultaneous HTF closes) largest-TF
+    // first, matching the ordering `on_bar_v2`/live use.
+    pre_window.sort_by(|(tf_a, a), (tf_b, b)| {
+        let close_a = a.timestamp + tf_a.duration_ms();
+        let close_b = b.timestamp + tf_b.duration_ms();
+        close_a.cmp(&close_b).then_with(|| tf_b.duration_ms().cmp(&tf_a.duration_ms()))
+    });
+    for (htf, bar) in &pre_window {
+        let ev = [TfBarEvent { tf: *htf, bar }];
+        let snap = MtfSnapshot {
+            base_tf: target_tf,
+            close_ts: bar.timestamp + htf.duration_ms(),
+            events: &ev,
+            views: &empty_views,
+        };
+        let _ = strategy.on_bars(snap);
     }
 
-    // Load HTF windows from ledger into mutable queues for consumption.
+    // ── Phase 2: in-window merge-join (base_tf bar + due HTF bars) ─────────
     let mut htf_remaining: HashMap<Timeframe, std::collections::VecDeque<Bar>> = declared_htfs
         .iter()
         .map(|&htf| {
+            let htf_dur = htf.duration_ms();
             let bars: std::collections::VecDeque<Bar> = ledger
                 .with_state(symbol, htf, |s| s.bar_window.iter().cloned().collect::<Vec<_>>())
-                .map(std::collections::VecDeque::from)
-                .unwrap_or_default();
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|b| b.timestamp + htf_dur >= window_start_ts)
+                .collect();
             (htf, bars)
         })
         .collect();
 
-    let empty_views: HashMap<Timeframe, TfView<'_>> = HashMap::new();
-
-    for base_bar in &base_bars {
-        let m1_close = base_bar.timestamp + base_tf.duration_ms();
+    for base_bar in &target_bars {
+        let close_ts = base_bar.timestamp + target_tf.duration_ms();
 
         // Deliver HTF bars whose close is at or before this base close.
         let mut htf_events: Vec<(Timeframe, Bar)> = Vec::new();
@@ -308,7 +368,7 @@ fn warmup_v2(
             let htf_dur = htf.duration_ms();
             while let Some(front) = deq.front() {
                 let htf_close = front.timestamp + htf_dur;
-                if htf_close <= m1_close {
+                if htf_close <= close_ts {
                     let htf_bar = deq.pop_front().unwrap();
                     htf_events.push((htf, htf_bar));
                 } else {
@@ -319,7 +379,7 @@ fn warmup_v2(
         htf_events.sort_by(|a, b| b.0.duration_ms().cmp(&a.0.duration_ms()));
 
         let mut events_owned: Vec<(Timeframe, Bar)> = htf_events;
-        events_owned.push((eval_tf, base_bar.clone()));
+        events_owned.push((target_tf, base_bar.clone()));
 
         let tf_bar_events: Vec<TfBarEvent<'_>> = events_owned
             .iter()
@@ -327,8 +387,8 @@ fn warmup_v2(
             .collect();
 
         let snap = MtfSnapshot {
-            base_tf: eval_tf,
-            close_ts: m1_close,
+            base_tf: target_tf,
+            close_ts,
             events: &tf_bar_events,
             views: &empty_views,
         };
@@ -439,5 +499,121 @@ impl SymbolGroup {
 
     pub fn hand_infos(&self) -> impl Iterator<Item = &Handle> {
         self.hands.iter()
+    }
+}
+
+#[cfg(test)]
+mod warmup_v2_tests {
+    use super::*;
+    use alm_core::regime::RegimeState;
+    use alm_ledger::LedgerConfig;
+
+    fn mk_bar(t: i64, c: f64) -> Bar {
+        Bar::new(t, "BTCUSDT", c, c, c, c, 1.0)
+    }
+
+    /// Records the shape of every `on_bars` call it receives — how many HTF
+    /// events came bundled with the base bar, and each HTF bar's own
+    /// timestamp — without running any real strategy logic.
+    struct SpyStrategy {
+        /// One entry per `on_bars` call: (base bar ts, HTF bar timestamps seen).
+        calls: Vec<(i64, Vec<i64>)>,
+    }
+
+    impl MtfStrategy for SpyStrategy {
+        fn on_bars(&mut self, snap: MtfSnapshot<'_>) -> Vec<Signal> {
+            let base_ts = snap
+                .events
+                .iter()
+                .find(|e| e.tf == snap.base_tf)
+                .map(|e| e.bar.timestamp)
+                .unwrap_or(-1);
+            let htf_ts: Vec<i64> = snap
+                .events
+                .iter()
+                .filter(|e| e.tf != snap.base_tf)
+                .map(|e| e.bar.timestamp)
+                .collect();
+            self.calls.push((base_ts, htf_ts));
+            vec![]
+        }
+        fn name(&self) -> &str { "spy" }
+        fn reset(&mut self) {}
+        fn current_regime(&self) -> Option<&RegimeState> { None }
+    }
+
+    /// Reproduces the scenario that used to either dump the whole HTF
+    /// backlog into the first `on_bars()` call, or (an intermediate,
+    /// also-wrong fix) discard it outright and leave HTF-side indicators
+    /// cold: an H4 ledger window that reaches calendar-further back than the
+    /// M15 window (same bar-count convention, wildly different calendar
+    /// depth per TF).
+    ///
+    /// Correct behavior: the 50-bar backlog is fed as HTF-only ticks (phase
+    /// 1, warms indicator state, no base bar / no signal evaluation), then
+    /// exactly one M15 bar in the merge-join (phase 2) carries the one H4
+    /// bar that genuinely falls inside the M15 window — no call ever carries
+    /// more than one HTF bar, and every HTF bar delivered is the historically
+    /// correct one, never "whatever is latest in the ledger".
+    #[test]
+    fn warmup_v2_paces_htf_bars_and_still_warms_pre_window_backlog() {
+        let ledger = Arc::new(Ledger::new(LedgerConfig::default()));
+        let m15_ms = Timeframe::M15.duration_ms();
+        let h4_ms = Timeframe::H4.duration_ms();
+        let w = 1_000 * h4_ms; // window_start_ts — arbitrary anchor
+
+        // M15 window: 20 bars covering 5h (> 1 H4 period), starting at `w`.
+        for i in 0..20i64 {
+            ledger.advance(Timeframe::M15, mk_bar(w + i * m15_ms, 100.0 + i as f64)).unwrap();
+        }
+
+        // Backlog: 50 H4 bars all closing *strictly before* `w` (close = w -
+        // k*h4_ms, k=1..=50, oldest first) — this is the pre-window history
+        // that used to get dumped in full into the first replayed M15 bar,
+        // and which the clip-only fix wrongly discarded entirely.
+        let mut backlog_closes = Vec::new();
+        for k in (1..=50i64).rev() {
+            let open_ts = w - (k + 1) * h4_ms; // close = open_ts + h4_ms = w - k*h4_ms
+            backlog_closes.push(open_ts + h4_ms);
+            ledger.advance(Timeframe::H4, mk_bar(open_ts, 200.0 + k as f64)).unwrap();
+        }
+        // The one H4 bar that genuinely closes inside the M15 replay window
+        // (opens at `w`, closes at `w + h4_ms`, which falls within the 5h span).
+        ledger.advance(Timeframe::H4, mk_bar(w, 999.0)).unwrap();
+
+        let mut spy = SpyStrategy { calls: Vec::new() };
+        warmup_v2(&mut spy, "BTCUSDT", Timeframe::M15, &[Timeframe::H4], &ledger);
+
+        assert_eq!(spy.calls.len(), 70, "50 HTF-only warmup ticks + 20 M15 replay ticks");
+
+        // Phase 1: first 50 calls are HTF-only (no base bar), chronological,
+        // one bar each — the backlog that must NOT be discarded.
+        let (phase1, phase2) = spy.calls.split_at(50);
+        for (i, (base_ts, htf_ts)) in phase1.iter().enumerate() {
+            assert_eq!(*base_ts, -1, "call {i}: pre-window tick must carry no base bar");
+            assert_eq!(htf_ts.len(), 1, "call {i}: expected exactly one HTF bar");
+            assert_eq!(htf_ts[0] + h4_ms, backlog_closes[i], "call {i}: wrong backlog bar / out of order");
+        }
+
+        // Phase 2: one on_bars() call per M15 bar, no call carries more than
+        // one HTF bar (no dump), and exactly one carries the in-window H4 bar.
+        assert_eq!(phase2.len(), 20);
+        for (base_ts, htf_ts) in phase2 {
+            assert!(
+                htf_ts.len() <= 1,
+                "base_ts={base_ts}: expected at most 1 HTF bar per call, got {htf_ts:?} — backlog dump regression"
+            );
+        }
+        let with_htf: Vec<_> = phase2.iter().filter(|(_, h)| !h.is_empty()).collect();
+        assert_eq!(with_htf.len(), 1, "exactly one M15 bar should align with the in-window H4 close");
+        assert_eq!(with_htf[0].1[0], w, "must carry the historically-correct H4 bar, not backlog or latest");
+    }
+
+    #[test]
+    fn warmup_v2_empty_target_history_starts_cold_without_panic() {
+        let ledger = Arc::new(Ledger::new(LedgerConfig::default()));
+        let mut spy = SpyStrategy { calls: Vec::new() };
+        warmup_v2(&mut spy, "BTCUSDT", Timeframe::M15, &[Timeframe::H4], &ledger);
+        assert!(spy.calls.is_empty());
     }
 }

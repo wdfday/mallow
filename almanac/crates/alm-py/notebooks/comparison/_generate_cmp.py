@@ -2016,32 +2016,38 @@ class BtStrat(bt.Strategy):
     # ── Waddah Attar ──────────────────────────────────────────────────────────
 
     "waddah_attar": {
-        "params": {"fast": 12, "slow": 26, "bb_period": 20, "bb_std": 2.0},
-        "description": "Waddah Attar explosion: (MACD diff × 150) > BB width AND hist > 0 → long.",
+        "params": {"fast": 20, "slow": 40, "bb_period": 20, "bb_std": 2.0},
+        "description": "Waddah Attar Explosion (canonical LazyBear WAE): |t1|=|ΔMACD×150| must clear BOTH the BB-width power line AND an ATR(100)×3.7 deadzone; sign of t1 (not MACD histogram) gives direction.",
         "pta_code": """\
 macd_df  = ta.macd(close, fast={fast}, slow={slow}, signal=9)
 macd_line = macd_df[f'MACD_{{{fast}}}_{{{slow}}}_9']
-hist      = macd_df[f'MACDh_{{{fast}}}_{{{slow}}}_9']
 bb        = ta.bbands(close, length={bb_period}, std={bb_std})
 bb_bw     = bb.filter(like='BBU').iloc[:,0] - bb.filter(like='BBL').iloc[:,0]
-explosion = (macd_line - macd_line.shift(1)) * 150
-entries   = (explosion > bb_bw) & (hist > 0)
-exits     = (explosion < bb_bw) | (hist < 0)
+atr100    = ta.atr(high, low, close, length=100)
+deadzone  = atr100 * 3.7
+t1        = (macd_line - macd_line.shift(1)) * 150
+power     = t1.abs()
+confirmed = (power > bb_bw) & (power > deadzone)
+entries   = confirmed & (t1 > 0)
+exits     = ~confirmed | (t1 <= 0)
 """,
         "bt_code": """\
 class BtStrat(bt.Strategy):
     def __init__(self):
         macd     = bt.indicators.MACDHisto(self.data.close, period_me1={fast}, period_me2={slow}, period_signal=9)
         self.macd_line = macd.lines.macd
-        self.hist      = macd.lines.histo
         bb = bt.indicators.BollingerBands(self.data.close, period={bb_period}, devfactor={bb_std})
         self.bbu = bb.lines.top
         self.bbl = bb.lines.bot
+        self.atr100 = bt.indicators.ATR(self.data, period=100)
     def next(self):
-        explosion = (self.macd_line[0] - self.macd_line[-1]) * 150
+        t1        = (self.macd_line[0] - self.macd_line[-1]) * 150
         bb_bw     = self.bbu[0] - self.bbl[0]
-        if not self.position and explosion > bb_bw and self.hist[0] > 0: self.buy()
-        elif self.position and (explosion < bb_bw or self.hist[0] < 0):  self.close()
+        deadzone  = self.atr100[0] * 3.7
+        power     = abs(t1)
+        confirmed = power > bb_bw and power > deadzone
+        if not self.position and confirmed and t1 > 0: self.buy()
+        elif self.position and (not confirmed or t1 <= 0): self.close()
 """,
     },
 

@@ -17,6 +17,7 @@ impl AtrSizing {
     pub fn new(risk_per_trade: f64, atr_multiplier: f64, max_positions: usize) -> Self {
         Self { risk_per_trade, atr_multiplier, max_positions, strength_sizing: true }
     }
+
     pub fn with_strength_sizing(mut self, v: bool) -> Self { self.strength_sizing = v; self }
 
     fn equity(portfolio: &Portfolio) -> f64 {
@@ -45,7 +46,6 @@ impl RiskManager for AtrSizing {
         };
         let stop_dist = atr * self.atr_multiplier;
         if stop_dist <= f64::EPSILON { return 0.0; }
-        let s = if self.strength_sizing { signal.strength } else { 1.0 };
-        (Self::equity(portfolio) * self.risk_per_trade * s / stop_dist).max(0.0)
+        (Self::equity(portfolio) * self.risk_per_trade / stop_dist).max(0.0)
     }
 }

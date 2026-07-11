@@ -176,7 +176,7 @@ fn translation_rows() -> Vec<(&'static str, Value, &'static str)> {
         ("elder_ray", json!({"period": 13}), crate::named::pattern::elder_ray_strategy::RHAI_SCRIPT),
         ("pixel_3", json!({}), crate::named::composite::pixel_3::RHAI_SCRIPT),
         ("ma_pullback", json!({"ma_period": 50}), crate::named::trend::ma_pullback::RHAI_SCRIPT),
-        ("waddah_attar", json!({"fast": 12, "slow": 26, "bb_period": 20, "bb_std": 2.0}), crate::named::volume::waddah_attar::RHAI_SCRIPT),
+        ("waddah_attar", json!({"fast": 20, "slow": 40, "bb_period": 20, "bb_std": 2.0}), crate::named::volume::waddah_attar::RHAI_SCRIPT),
         ("oscillator_overlord", json!({"rsi_period": 14, "stoch_k": 14, "stoch_d": 3, "cci_period": 20}), crate::named::composite::oscillator_overlord::RHAI_SCRIPT),
         ("heiken_ashi_harmonizer", json!({"smooth": 1, "ema_period": 50}), crate::named::pattern::heiken_ashi_harmonizer::RHAI_SCRIPT),
         ("scalping_ema", json!({"fast": 8, "slow": 21, "atr_period": 14, "atr_ma_period": 20}), crate::named::trend::scalping_ema::RHAI_SCRIPT),

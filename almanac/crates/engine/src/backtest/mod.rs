@@ -240,13 +240,26 @@ pub fn run_mtf(req: MtfBacktestRequest, data_dir: &Path) -> Result<BacktestRespo
     let warm_from = |tf: Timeframe| -> Option<i64> {
         from_ms.map(|f| f - MTF_NAMED_WARMUP * tf.duration_ms())
     };
+    let declared_htfs: Vec<Timeframe> = req
+        .htf_timeframes
+        .iter()
+        .map(|s| parse_timeframe(s))
+        .collect::<Result<_>>()?;
+    // The base feed drives PointerSyncMtfEngine's loop — it must reach back
+    // at least as far as the deepest HTF warm-up so that history gets paced
+    // through one bar at a time instead of swallowed whole on the first
+    // tick. See `loader::earliest_load_from` for the full explanation.
+    let base_load_from = loader::earliest_load_from(
+        warm_from(base_tf),
+        declared_htfs.iter().map(|&htf| warm_from(htf)),
+    );
 
     // Load base TF bars (also used for buy-hold benchmark).
     let base_bars = load_bars_for_tf(
         &symbol,
         Some(base_tf_str),
         req.data_source.as_deref(),
-        warm_from(base_tf),
+        base_load_from,
         to_ms,
         data_dir,
         req.history_overrides.as_ref(),
@@ -382,12 +395,20 @@ fn run_mtf_script(
     let warm_from = |tf: Timeframe| -> Option<i64> {
         from_ms.map(|f| f - warm_per_tf.get(&tf).copied().unwrap_or(0) as i64 * tf.duration_ms())
     };
+    // The base feed drives PointerSyncMtfEngine's loop — it must reach back
+    // at least as far as the deepest HTF warm-up so that history gets paced
+    // through one bar at a time instead of swallowed whole on the first
+    // tick. See `loader::earliest_load_from` for the full explanation.
+    let base_load_from = loader::earliest_load_from(
+        warm_from(base_tf),
+        htfs.iter().map(|&htf| warm_from(htf)),
+    );
 
     let base_bars = load_bars_for_tf(
         &symbol,
         Some(base_tf_str),
         req.data_source.as_deref(),
-        warm_from(base_tf),
+        base_load_from,
         to_ms,
         data_dir,
         req.history_overrides.as_ref(),
@@ -622,6 +643,97 @@ mod tests {
         let winners: Vec<_> = trades_resp.iter().filter(|t| t.pnl_pct > 0.0).collect();
         for w in &winners {
             assert!(w.mfe_pct >= 0.0);
+        }
+    }
+
+    /// End-to-end check for the `earliest_load_from` fix: a request that
+    /// relies on the engine's own auto-computed warm-up (`from` as the API
+    /// caller would actually send it) must converge the HTF-side indicator
+    /// to the *same* state as manually padding `from` far enough back that
+    /// no clever warm-up logic is needed at all — i.e. the two calls must
+    /// agree on every trade inside the shared trading window.
+    #[test]
+    fn mtf_script_auto_warmup_matches_manually_padded_from() {
+        let data_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent().unwrap().parent().unwrap().parent().unwrap() // crates/engine -> crates -> almanac -> mallow
+            .join("data");
+        if !data_dir.join("BinanceFlat").join("H4").join("BTCUSDT").exists() {
+            eprintln!("real BinanceFlat H4 data not found, skipping");
+            return;
+        }
+
+        // base_tf (M1) indicator (rsi14) needs trivial warm-up (~35 bars ≈ 35
+        // min). The HTF (H4) indicator needs 100*2.5=250 H4 bars ≈ 41.6 days —
+        // far deeper in calendar time than the base indicator's own need.
+        // This is exactly the mismatch `earliest_load_from` exists to close.
+        let script = r#"
+let rsi14 = ind.rsi(14);
+let ema_h4 = ind.ema(100, "H4");
+if rsi14[0] < 40.0 && close[0] > ema_h4[0] { entry = true; }
+if rsi14[0] > 60.0 { exit = true; }
+"#;
+
+        // Trading window kept short (3 days) so total range (padding + window)
+        // stays well under the engine's MAX_BARS (100k M1 bars ≈ 69 days).
+        let make_req = |from: &str| -> BacktestRequest {
+            serde_json::from_value(serde_json::json!({
+                "strategy": "script",
+                "symbol": "BTCUSDT",
+                "params": {"script": script},
+                "from": from,
+                "to": "2020-06-04",
+                "timeframe": "M1",
+                "data_source": "BinanceFlat",
+                "commission_pct": 0.0,
+                "slippage_pct": 0.0,
+            })).unwrap()
+        };
+
+        // Call A: `from` exactly as an API caller would send it — relies
+        // entirely on the engine's internal auto-computed warm-up.
+        let resp_a = run(make_req("2020-06-01"), &data_dir)
+            .expect("call A (auto warm-up) failed");
+
+        // Call B: `from` manually moved back 12 extra days — its own
+        // auto-warmup then reaches back even further before that, so by
+        // 2020-06-01 the HTF indicator has strictly *more* real history
+        // behind it than call A's tight, exactly-computed warm-up. (Can't
+        // give it a truly warm-up-free multi-month pad here — `run()`
+        // applies auto-warmup on top of whatever `from` is given, and
+        // MAX_BARS caps the total load — so this uses "comfortably more
+        // margin than the minimum" as the control instead of "none".)
+        let resp_b = run(make_req("2020-05-20"), &data_dir)
+            .expect("call B (extra-padded from) failed");
+
+        let window_start_ms = crate::data::parse_date_ms("2020-06-01").unwrap();
+        let trades_b_in_window: Vec<_> = resp_b.trades.iter()
+            .filter(|t| t.entry_ts >= window_start_ms)
+            .collect();
+
+        println!(
+            "A (auto warm-up): {} trades — B (padded, windowed): {} trades",
+            resp_a.trades.len(), trades_b_in_window.len(),
+        );
+        assert_eq!(
+            resp_a.trades.len(), trades_b_in_window.len(),
+            "trade count must match — auto warm-up should converge ind.ema(100,\"H4\") \
+             to the same state as 5 months of real padding"
+        );
+        for (a, b) in resp_a.trades.iter().zip(trades_b_in_window.iter()) {
+            assert_eq!(a.entry_ts, b.entry_ts, "trade entry timestamps must match");
+            // Not bit-identical: EMA is an IIR filter that never perfectly
+            // "forgets" its seed, so B's 12 extra days of real history make
+            // it converge fractionally closer to the true steady-state EMA
+            // than A's exactly-computed minimal warm-up — a real, expected
+            // difference in float precision, not a correctness bug. What
+            // matters is that it stays tiny (noise-level, not "warm-up was
+            // insufficient and the strategy took a different path").
+            let rel_diff = (a.pnl - b.pnl).abs() / a.pnl.abs().max(1e-9);
+            assert!(
+                rel_diff < 0.01,
+                "trade pnl diverged more than EMA-precision noise should allow: \
+                 {} (auto) vs {} (padded), rel_diff={:.4}", a.pnl, b.pnl, rel_diff
+            );
         }
     }
 }

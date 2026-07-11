@@ -36,7 +36,7 @@ pub struct SymbolState {
     pub last_ts: Option<i64>,
     /// Currently-forming bar for this timeframe — the incomplete bucket whose
     /// base-TF bars have arrived but whose close has not been confirmed yet.
-    /// Set by `advance_live()`; `None` until the first base-TF bar is seen.
+    /// Set by `advance_live()`;
     pub live_bar: Option<Bar>,
 }
 

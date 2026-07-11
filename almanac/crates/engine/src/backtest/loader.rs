@@ -190,6 +190,60 @@ pub(crate) fn script_warmup_per_tf(
         .collect()
 }
 
+/// The base-TF feed driving `PointerSyncMtfEngine` must itself start at
+/// least as far back (in calendar time) as every HTF feed's own warm-up
+/// start.
+///
+/// Each feed is independently warmed by a bar *count* of its own
+/// granularity (`warm_from` closures in `backtest/mod.rs`), so a deep HTF
+/// warm-up (e.g. `ind.ema(200, "D1")` → hundreds of days) can reach far
+/// further back in real time than the base feed's own warm-up (e.g. a
+/// shallow `ind.rsi(14)` on M1 → tens of minutes). If the base feed doesn't
+/// also start back that far, `PointerSyncMtfEngine`'s pointer-sync loop has
+/// no base-TF ticks to pace through that pre-`from` HTF history one bar at a
+/// time — its very first tick's inner `while` swallows the *entire* HTF
+/// backlog into `htf.window`, but only the single most-recent bar of that
+/// gulp ever reaches `events` (and therefore
+/// `MtfScriptStrategy::feed_confirmed`, which advances the HTF-side
+/// indicator exactly one step per event) — so the indicator starts
+/// effectively cold from that one bar instead of having converged.
+///
+/// Returns the earliest (smallest) timestamp among the base feed's own
+/// warm-up start and every HTF's.
+pub fn earliest_load_from(
+    base_load_from: Option<i64>,
+    htf_load_froms: impl IntoIterator<Item = Option<i64>>,
+) -> Option<i64> {
+    let mut earliest = base_load_from;
+    for htf_from in htf_load_froms {
+        earliest = match (earliest, htf_from) {
+            (Some(e), Some(h)) => Some(e.min(h)),
+            (None, Some(h)) => Some(h),
+            (e, None) => e,
+        };
+    }
+    earliest
+}
+
+#[cfg(test)]
+mod earliest_load_from_tests {
+    use super::*;
+
+    #[test]
+    fn picks_the_earliest_of_base_and_every_htf() {
+        assert_eq!(earliest_load_from(Some(100), [Some(50), Some(200)]), Some(50));
+        assert_eq!(earliest_load_from(Some(100), [Some(150), Some(200)]), Some(100));
+    }
+
+    #[test]
+    fn none_from_ms_stays_none_regardless_of_htfs() {
+        // `from_ms = None` (no `from` in the request) means "load everything" —
+        // warm-up is meaningless in that case, and every `warm_from` closure
+        // returns `None` too, so this should stay `None`.
+        assert_eq!(earliest_load_from(None, [None, None]), None);
+    }
+}
+
 #[cfg(test)]
 mod warmup_tests {
     use super::*;

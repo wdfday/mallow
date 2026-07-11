@@ -2,9 +2,8 @@ use crate::event::Event;
 
 /// Abstraction over event queue (DIP).
 ///
-/// Two implementations:
+/// implementations:
 /// - `SyncBus` — `VecDeque<Event>` for max throughput backtesting
-/// - `TokioBus` — `tokio::mpsc` for live trading extensibility
 pub trait EventBus: Send {
     /// Push an event into the bus.
     fn send(&self, event: Event);

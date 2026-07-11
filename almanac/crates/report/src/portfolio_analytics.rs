@@ -28,7 +28,7 @@ pub struct PortfolioAnalytics {
 ///
 /// - `symbol_reports` — slice of `(name, BacktestReport, equity_curve)` tuples, one per symbol.
 /// - `benchmark_equity` — raw equity series used as the market benchmark for beta/alpha
-///   (e.g. a buy-and-hold equity curve from [`crate::benchmark::BuyHoldBenchmark`]).
+///   (e.g. a buy-and-hold equity curve from [`crate::buy_hold_benchmark::BuyHoldBenchmark`]).
 ///
 /// Equity curves of different lengths are aligned by zero-padding the shorter ones.
 /// Alpha is expressed as an annualised daily excess return (`alpha_daily * 252`).
@@ -94,7 +94,7 @@ pub fn analyze(
         let strat_mean = metrics::mean(returns);
         // Annualized alpha: per-bar excess × empirical bars/year. Derived from the
         // symbol's own equity timestamps so it auto-adapts (stocks ≈252, crypto ≈365)
-        // instead of assuming a hardcoded 252 — matches report.rs / benchmark.rs.
+        // instead of assuming a hardcoded 252 — matches report.rs / buy_hold_benchmark.
         let alpha_per_bar = strat_mean - b * bench_mean;
         alpha_annualized[i] = alpha_per_bar * bars_per_year(&symbol_reports[i].2);
     }

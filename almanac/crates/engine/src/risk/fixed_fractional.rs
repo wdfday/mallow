@@ -46,8 +46,7 @@ impl RiskManager for FixedFractional {
             None => return 0.0,
         };
         if dist <= f64::EPSILON { return 0.0; }
-        let s = if self.strength_sizing { signal.strength } else { 1.0 };
-        let raw = Self::equity(portfolio) * self.risk_per_trade * s / dist;
+        let raw = Self::equity(portfolio) * self.risk_per_trade / dist;
         if self.lot_size > f64::EPSILON { (raw / self.lot_size).floor() * self.lot_size } else { raw }
     }
 }

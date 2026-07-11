@@ -910,18 +910,19 @@ if close[0] < bb20[0].middle {
     exit = true;
 }
 """),
-    ("waddah_attar", {"fast": 12, "slow": 26, "bb_period": 20, "bb_std": 2.0}, """
-let macd12 = ind.macd(12);
-let bb20 = ind.bbands(20, buf=1);
-let prev_macd = macd12[1].macd;
-let explosion = (macd12[0].macd - prev_macd) * 150.0;
-let dead_zone = bb20[0].upper - bb20[0].lower;
-if explosion > dead_zone && macd12[0].histogram > 0.0 {
-    entry = true;
-}
-if explosion < dead_zone || macd12[0].histogram < 0.0 {
-    exit = true;
-}
+    ("waddah_attar", {"fast": 20, "slow": 40, "bb_period": 20, "bb_std": 2.0}, """
+let macd1 = ind.macd(20, 40, 9);
+let bb20 = ind.bbands(20, 2.0);
+let atr100 = ind.atr(100);
+
+let t1 = (macd1[0].macd - macd1[1].macd) * 150.0;
+let explosion_line = bb20[0].upper - bb20[0].lower;
+let deadzone_line = atr100[0].atr * 3.7;
+let power = if t1 >= 0.0 { t1 } else { -t1 };
+let confirmed = power > explosion_line && power > deadzone_line;
+
+if confirmed && t1 > 0.0 { entry = true; }
+if !confirmed || t1 <= 0.0 { exit = true; }
 """),
     ("bb_keltner_squeeze", {"bb_period": 20, "bb_std": 2.0, "kc_period": 20, "kc_atr": 10, "kc_mult": 1.5}, """
 let bb20 = ind.bbands(20, buf=1);

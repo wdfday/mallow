@@ -11,20 +11,6 @@ use alm_core::{
 use alm_data::BarFeed;
 use alm_report::BacktestReport;
 use tracing::{debug, info};
-
-
-/// Controls engine behaviour when a directional signal arrives while the
-/// opposite position is already open.
-///
-/// | Variant | What happens |
-/// |---------|-------------|
-/// | `Exit`  | Close the existing position; **do not** open a new one. |
-/// | `Flip`  | Close the existing position, then immediately open a new one in the signalled direction using the normal `risk.size()` path. |
-///
-/// When no policy is set (default), the engine's original net-qty behaviour
-/// is preserved: the directional order is sent as-is and the portfolio nets
-/// the quantities, which may leave a residual or an unintended exposure when
-/// the two legs are sized differently.
 pub use crate::reverse_policy::ReversePolicy;
 
 /// Strip the synthetic pyramiding leg suffix (`SYM#3` → `SYM`).
@@ -194,13 +180,13 @@ impl<S: Strategy, R: RiskManager> Engine<S, R> {
                 "strategy" => strategy_name.clone()
             ).increment(1);
 
-            // Flush next-bar pending signals: execute at this bar's open.
-            if self.next_bar && !self.pending_signals.is_empty() {
-                let pending = std::mem::take(&mut self.pending_signals);
-                for sig in pending {
-                    self.execute_signal_at_open(&sig, &bar);
-                }
-            }
+            // // Flush next-bar pending signals: execute at this bar's open.
+            // if self.next_bar && !self.pending_signals.is_empty() {
+            //     let pending = std::mem::take(&mut self.pending_signals);
+            //     for sig in pending {
+            //         self.execute_signal_at_open(&sig, &bar);
+            //     }
+            // }
 
             // Update sliding window before dispatch.
             self.bar_window.push_back(bar.clone());
@@ -466,13 +452,12 @@ impl<S: Strategy, R: RiskManager> Engine<S, R> {
         self.core.reset(initial_capital);
         self.bar_window.clear();
         self.pending_signals.clear();
-        self.strategy.reset();
+        // self.strategy.reset();
     }
 }
 
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;

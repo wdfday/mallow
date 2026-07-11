@@ -173,6 +173,55 @@ pub struct BacktestReport {
     pub exit_reasons: ExitReasonBreakdown,
 }
 
+
+/// Collapse the equity curve to one value per calendar day (last bar of each day),
+/// and return the daily-equity series alongside an empirical `days_per_year`.
+///
+/// `days_per_year` = actual trading days observed / elapsed calendar years:
+///   - US stocks → ~252 (weekdays only)
+///   - Crypto    → ~365 (24/7)
+///   - Both correct without any hardcoded constant
+///
+/// Using daily returns as the base unit for Sharpe/Sortino:
+///   1. Makes M1 and H1 backtests directly comparable
+///   2. Avoids the variance inflation from consecutive zero-return bars
+///      (equity unchanged while no position is open)
+fn aggregate_to_daily(portfolio: &Portfolio) -> (Vec<f64>, f64) {
+    use std::collections::BTreeMap;
+
+    if portfolio.equity_curve.is_empty() {
+        return (vec![], 252.0);
+    }
+
+    // Key = calendar day (ms → day index), value = last equity of that day.
+    let mut days: BTreeMap<i64, f64> = BTreeMap::new();
+    for p in &portfolio.equity_curve {
+        let day = p.timestamp / 86_400_000;
+        days.insert(day, p.equity);
+    }
+
+    let mut daily_equity: Vec<f64> = days.values().copied().collect();
+    // Prepend initial capital to daily equity curve to capture the returns of the first trading day.
+    daily_equity.insert(0, portfolio.initial_capital);
+
+    let n = daily_equity.len();
+    if n < 2 {
+        return (daily_equity, 252.0);
+    }
+
+    let first_day = *days.keys().next().unwrap() as f64;
+    let last_day  = *days.keys().last().unwrap() as f64;
+    // We add 1.0 to elapsed days to account for the starting day prepended at the beginning.
+    let elapsed_years = (last_day - first_day + 1.0) / 365.25;  // day index units
+    let days_per_year = if elapsed_years > 1e-6 {
+        (n - 1) as f64 / elapsed_years
+    } else {
+        252.0
+    };
+
+    (daily_equity, days_per_year)
+}
+
 impl BacktestReport {
     /// Build a complete [`BacktestReport`] from a finished backtest portfolio.
     ///
@@ -829,53 +878,6 @@ impl BacktestReport {
     }
 }
 
-/// Collapse the equity curve to one value per calendar day (last bar of each day),
-/// and return the daily-equity series alongside an empirical `days_per_year`.
-///
-/// `days_per_year` = actual trading days observed / elapsed calendar years:
-///   - US stocks → ~252 (weekdays only)
-///   - Crypto    → ~365 (24/7)
-///   - Both correct without any hardcoded constant
-///
-/// Using daily returns as the base unit for Sharpe/Sortino:
-///   1. Makes M1 and H1 backtests directly comparable
-///   2. Avoids the variance inflation from consecutive zero-return bars
-///      (equity unchanged while no position is open)
-fn aggregate_to_daily(portfolio: &Portfolio) -> (Vec<f64>, f64) {
-    use std::collections::BTreeMap;
-
-    if portfolio.equity_curve.is_empty() {
-        return (vec![], 252.0);
-    }
-
-    // Key = calendar day (ms → day index), value = last equity of that day.
-    let mut days: BTreeMap<i64, f64> = BTreeMap::new();
-    for p in &portfolio.equity_curve {
-        let day = p.timestamp / 86_400_000;
-        days.insert(day, p.equity);
-    }
-
-    let mut daily_equity: Vec<f64> = days.values().copied().collect();
-    // Prepend initial capital to daily equity curve to capture the returns of the first trading day.
-    daily_equity.insert(0, portfolio.initial_capital);
-
-    let n = daily_equity.len();
-    if n < 2 {
-        return (daily_equity, 252.0);
-    }
-
-    let first_day = *days.keys().next().unwrap() as f64;
-    let last_day  = *days.keys().last().unwrap() as f64;
-    // We add 1.0 to elapsed days to account for the starting day prepended at the beginning.
-    let elapsed_years = (last_day - first_day + 1.0) / 365.25;  // day index units
-    let days_per_year = if elapsed_years > 1e-6 {
-        (n - 1) as f64 / elapsed_years
-    } else {
-        252.0
-    };
-
-    (daily_equity, days_per_year)
-}
 
 #[cfg(test)]
 mod tests {

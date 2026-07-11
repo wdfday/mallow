@@ -82,6 +82,43 @@
 //! `vwma`) use [`KahanSum`] internally to avoid the float drift a naive
 //! `sum += x; sum -= old` accumulates over long series (see
 //! `alm-indicator`'s `Sma` for the bug this avoids).
+//!
+//! # Warm-up — which functions gate, which don't
+//!
+//! `sma`, `rsum`†, `stdev`, `highest`, `lowest`, `wma`, `hma`, `vwma` are
+//! window-based and self-gate correctly: they return `()` until their
+//! `period`-sized buffer is full, exactly like `ind.*`.
+//!
+//! `ema`, `smma`, `decay` are recursive and **do not gate at all** — the
+//! first call seeds `val` directly from the single input value (`self.val =
+//! if self.seeded { blend } else { value }`) and immediately returns a real
+//! number, never `()`. Unlike `ind.ema` (catalog binding), which seeds from
+//! an N-bar SMA and stays `None` until `period` bars have accumulated,
+//! `ta.ema(200, x)` looks "ready" on bar 1 — the number just hasn't
+//! converged yet. A script relying on `ta.ema`/`ta.smma`/`ta.decay` for a
+//! long period will silently trade on unconverged values for the first many
+//! bars unless the caller supplies enough extra history itself.
+//!
+//! † `rsum` also never gates (`ta_rsum` doesn't check `is_ready()`) — this
+//! is intentional (a "sum of however many samples seen so far" is a
+//! well-defined running quantity), but it means `rsum` can't be used as a
+//! warm-up signal either.
+//!
+//! **This matters most for the backtest HTTP API**, not live: on
+//! registration, herald's `Handle::new` replays *everything currently in the
+//! ledger* (`HERALD_WARM_BARS`, default 5000 M1 bars) into a hand before it
+//! goes live, regardless of what the script needs — brute-force but safe in
+//! practice (see `crates/herald/src/registry/handle.rs`). The backtest API's
+//! `compute_warmup_bars`/`script_warmup_bars`
+//! (`crates/engine/src/backtest/loader.rs`) instead tries to compute a
+//! *precise* extra-lookback count before `from` by text-scanning for
+//! `"ind."` declarations — it has **no visibility into `ta.*` calls at all**
+//! (they can appear anywhere in the script body, not just as top-level
+//! declarations with a static period argument). A backtest whose only
+//! long-period smoothing comes from `ta.ema`/`ta.smma`/`ta.decay` gets zero
+//! extra lookback requested, so the first bars right after `from` — the ones
+//! actually shown/scored — can be unconverged, with no indication to the
+//! user that this happened. See `crates/engine/docs/backtest-warmup-ta-gap.md`.
 
 use rhai::{Dynamic, Engine, Map};
 use std::collections::VecDeque;

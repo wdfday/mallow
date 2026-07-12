@@ -286,6 +286,7 @@ impl<S: Strategy, R: RiskManager> Engine<S, R> {
     }
 
     /// Execute a buffered signal directly at bar.open (used when `next_bar = true`).
+    #[allow(dead_code)]
     fn execute_signal_at_open(&mut self, signal: &Signal, bar: &Bar) {
         match signal.direction {
             Direction::Exit => {

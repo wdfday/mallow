@@ -111,6 +111,7 @@ fn detect_bar_gaps(bars: &[BarRecord], timeframe: &str, symbol: &str, source: &s
 }
 
 /// Same as [`detect_bar_gaps`] but for `alm_core::Bar` slices (compute path).
+#[allow(dead_code)]
 fn detect_core_bar_gaps(bars: &[Bar], timeframe: &str, symbol: &str, source: &str) {
     let interval_ms = timeframe_to_ms(timeframe);
     if interval_ms == 0 || bars.len() < 2 {
@@ -215,6 +216,7 @@ fn timeframe_to_ms(tf: &str) -> i64 {
 ///
 /// Falls back to M1 files + DuckDB GROUP BY resampling when no dedicated
 /// parquet files exist for the requested timeframe.
+#[allow(dead_code)]
 pub fn query_bars_for_compute(
     data_dir: &Path,
     parquet_symbol: &str,

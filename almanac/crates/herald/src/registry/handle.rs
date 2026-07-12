@@ -50,10 +50,10 @@ pub struct Handle {
     pub hand_id: String,
     pub helm_id: String,
     pub symbol: String,   // raw ticker: "BTCUSDT", "BTC-USDT"
-    pub exchange: String, // "binance" | "okx" | "alpaca" | "" (empty = backtest/test)
+    pub exchange: String, // "binance" | "okx" | "alpaca" | "" (empty = test)
     pub is_future: bool,  // false = spot; true = perpetual/futures
     pub script: String,
-    /// The timeframe this hand evaluates at (may differ from registry base TF).
+    /// The timeframe this hand evaluates
     pub target_tf: Timeframe,
     live: LiveStrategy,
     ledger: Arc<Ledger>,
@@ -401,7 +401,6 @@ fn warmup_v2(
 /// All hands watching the same symbol. The bar window is NOT stored here —
 /// it lives in the ledger and is read on demand in `evaluate`.
 pub struct SymbolGroup {
-    #[allow(dead_code)]
     pub symbol: String,
     hands: Vec<Handle>,
 }
@@ -483,14 +482,14 @@ impl SymbolGroup {
                     hand_id = %h.hand_id, helm_id = %h.helm_id,
                     symbol = %self.symbol, direction = ?sig.direction,
                     strength = sig.strength, bot_us,
-                    "bot evaluate → signal"
+                    "hand evaluate → signal"
                 );
                 results.push((h.hand_id.clone(), h.helm_id.clone(), sig));
             } else {
                 trace!(
                     hand_id = %h.hand_id, symbol = %self.symbol,
                     bot_us,
-                    "bot evaluate → DoNothing"
+                    "hand evaluate → DoNothing"
                 );
             }
         }

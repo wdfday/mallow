@@ -415,10 +415,6 @@ impl<S: MultiStrategy, R: RiskManager> MultiEngine<S, R> {
             }
 
             Event::Equity(_) => {
-                // No-op in backtest: the equity curve is built directly by
-                // `portfolio.record_equity()`. The event is emitted as an
-                // extension hook for a live bus whose subscribers (dashboards,
-                // realtime feeds) tap equity snapshots — SyncBus has none.
             }
         }
     }

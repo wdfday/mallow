@@ -15,7 +15,7 @@ use tokio::time::timeout;
 use metrics::{counter, gauge};
 use serde::Deserialize;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
 use super::{BarEvent, BarTx};
 use super::rest::{gap_fill_symbol, Exchange};

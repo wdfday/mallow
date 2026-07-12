@@ -40,7 +40,6 @@ use axum::routing::post;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use alm_core::Timeframe;
 use alm_strategy::{script_lint, LintDiagnostic, ScriptLintScope};
 
 use axum::http::StatusCode;

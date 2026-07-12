@@ -246,6 +246,8 @@ func TestBinance_AbsoluteSLTP(t *testing.T) {
 	t.Logf("signal SL=%s TP=%s (absolute)", sl, tp)
 
 	hand := newBinanceHand(env)
+	rec := recordEvents(hand)
+	defer rec.dump(t, "TestBinance_AbsoluteSLTP event log")
 	hand.Start()
 	defer hand.Stop()
 
@@ -299,6 +301,8 @@ func TestBinance_OffsetSLTP(t *testing.T) {
 	t.Logf("signal offsets: SL%+.0f TP%+.0f (relative to fill)", slOffset, tpOffset)
 
 	hand := newBinanceHand(env)
+	rec := recordEvents(hand)
+	defer rec.dump(t, "TestBinance_OffsetSLTP event log")
 	hand.Start()
 	defer hand.Stop()
 
@@ -398,6 +402,8 @@ func TestBinance_PyramidAndKill(t *testing.T) {
 	hand.EnableEventSink()
 	env.rt.AddHand(hand, &domain.Hand{ID: hand.ID(), HelmID: env.rt.HelmID, Symbols: domain.StringSlice{hand.Symbol}})
 
+	rec := recordEvents(hand)
+	defer rec.dump(t, "TestBinance_PyramidAndKill event log")
 	hand.Start()
 	defer func() {
 		if hand.IsRunning() {
@@ -535,6 +541,8 @@ func TestBinance_Release(t *testing.T) {
 	tp := env.price.Mul(decimal.NewFromFloat(1.05)).Round(2)
 
 	hand := newBinanceHand(env)
+	rec := recordEvents(hand)
+	defer rec.dump(t, "TestBinance_Release event log")
 	hand.Start()
 	defer func() {
 		if hand.IsRunning() {
@@ -658,6 +666,8 @@ func TestBinance_ExitSignalCancelsBracket(t *testing.T) {
 	tp := env.price.Mul(decimal.NewFromFloat(1.05)).Round(2)
 
 	hand := newBinanceHand(env)
+	rec := recordEvents(hand)
+	defer rec.dump(t, "TestBinance_ExitSignalCancelsBracket event log")
 	hand.Start()
 	defer func() {
 		if hand.IsRunning() {
@@ -772,6 +782,115 @@ func TestBinance_ExitSignalCancelsBracket(t *testing.T) {
 	} else {
 		t.Log("position dropped by exactly the exit fill's qty ✓")
 	}
+}
+
+// TestBinance_OCOExternallyCancelled verifies that when BOTH SL/TP bracket legs are
+// cancelled directly at the exchange — bypassing the hand entirely, so neither ID is
+// ever added to pendingCancels — HandleExitOrderCanceled treats this as a genuine
+// external close (user cancelled the OCO manually from the exchange UI) rather than
+// helm-initiated cleanup: it disowns the leg (KindPositionOrphaned, CodePositionExtClosed),
+// books no realized PnL, and does NOT sell anything (the asset stays at the exchange).
+// Not covered by TestBinance_ExitSignalCancelsBracket, where the cancel IS helm-initiated
+// (via cancelExitOrders, IDs pre-marked in pendingCancels).
+func TestBinance_OCOExternallyCancelled(t *testing.T) {
+	env := newBinanceEnv(t)
+	if env.price.IsZero() {
+		t.Skip("price not available — cannot compute SL/TP")
+	}
+
+	const symbol = "ETHUSDT"
+	sl := env.price.Mul(decimal.NewFromFloat(0.97)).Round(2)
+	tp := env.price.Mul(decimal.NewFromFloat(1.05)).Round(2)
+
+	hand := newBinanceHand(env)
+	rec := recordEvents(hand)
+	defer rec.dump(t, "TestBinance_OCOExternallyCancelled event log")
+	hand.Start()
+	defer func() {
+		if hand.IsRunning() {
+			hand.Stop()
+		}
+	}()
+
+	entryPlaced := orderNotify(hand, 20*time.Second)
+	entryFilled := fillNotify(hand, 40*time.Second)
+	hand.DeliverSignal(longSigWithSLTP(symbol, sl, tp, false))
+
+	if e, ok := recvEvent(entryPlaced, 20*time.Second); ok {
+		t.Logf("entry placed: order_id=%s qty=%s", e.OrderID, e.Qty)
+		if e.Code == runtime.CodeOrderFailed {
+			if isBalanceError(e.Reason) {
+				t.Skipf("sandbox needs top-up: %s", e.Reason)
+			}
+			logHandState(t, env.rt, hand, symbol)
+			t.Fatalf("entry order failed: %s", e.Reason)
+		}
+	} else {
+		logHandState(t, env.rt, hand, symbol)
+		t.Fatal("timeout: entry order not placed")
+	}
+
+	if _, ok := recvEvent(entryFilled, 40*time.Second); !ok {
+		logHandState(t, env.rt, hand, symbol)
+		t.Fatal("timeout: entry fill not observed")
+	}
+
+	// Give the bracket-placement goroutine time to land the SL/TP orders.
+	bracketOrders := waitOCO(t, env, 20*time.Second)
+	if len(bracketOrders) < 2 {
+		t.Skipf("bracket did not land (got %d legs) — cannot verify external-cancel handling of something that isn't there", len(bracketOrders))
+	}
+	t.Logf("bracket confirmed live: %d orders", len(bracketOrders))
+
+	if legs := hand.ActiveLegs(); len(legs) == 0 {
+		t.Fatal("expected an active leg before simulating external cancel")
+	}
+
+	// Settle past the 3s debounce window so this baseline isn't a stale pre-resync
+	// reading (see the analogous comment in TestBinance_Release).
+	time.Sleep(5 * time.Second)
+	preCancelQty := portfolioQty(env.rt, symbol)
+	t.Logf("portfolio qty before external cancel: %s", preCancelQty)
+
+	extClosed := codeNotify(hand, runtime.CodePositionExtClosed, 20*time.Second)
+
+	// Cancel BOTH bracket legs directly against the exchange, bypassing the hand
+	// entirely (never goes through cancelExitOrders, so neither ID is ever marked in
+	// pendingCancels) — simulating a user manually cancelling the OCO from the
+	// exchange UI. Binance auto-cancels the OCO sibling as a side effect of cancelling
+	// either leg, so the second call here is expected to (harmlessly) find it already gone.
+	cancelCtx, cancelCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancelCancel()
+	for _, o := range bracketOrders {
+		if err := env.ex.CancelOrder(cancelCtx, env.creds, o.ID); err != nil {
+			t.Logf("direct cancel of bracket leg %s: %v (non-fatal — Binance OCO auto-cancels the sibling)", o.ID, err)
+		}
+	}
+
+	if e, ok := recvEvent(extClosed, 20*time.Second); ok {
+		t.Logf("external close detected: reason=%s", e.Reason)
+	} else {
+		logHandState(t, env.rt, hand, symbol)
+		t.Fatal("timeout: CodePositionExtClosed not observed after cancelling both bracket legs externally")
+	}
+
+	if legs := hand.ActiveLegs(); len(legs) != 0 {
+		t.Errorf("expected leg disowned (no longer active) after external cancel, still active: %+v", legs)
+	}
+
+	// Disowning does NOT sell anything — the asset is left at the exchange (now the
+	// user's to manage) — so portfolio qty must be unchanged, unlike a real exit fill.
+	time.Sleep(6 * time.Second)
+	postCancelQty := portfolioQty(env.rt, symbol)
+	t.Logf("portfolio qty after external cancel: %s (was %s before)", postCancelQty, preCancelQty)
+	tolerance := decimal.NewFromFloat(0.0005)
+	if postCancelQty.Sub(preCancelQty).Abs().GreaterThan(tolerance) {
+		t.Errorf("expected qty unchanged by external cancel (asset stays at the exchange), before=%s after=%s", preCancelQty, postCancelQty)
+	} else {
+		t.Log("qty unchanged after external cancel — position disowned, not sold ✓")
+	}
+
+	t.Logf("NOTE: this entry's ETH remains physically held at the exchange (disowned, not sold) — cleanup below only sells back the warmup qty, not this.")
 }
 
 // mockFilterStore is a no-op SymbolFilterStore for tests that don't need precision rules.

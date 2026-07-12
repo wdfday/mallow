@@ -111,7 +111,10 @@ func (h *Hand) Kill(ctx context.Context) {
 	h.mu.Lock()
 	h.health.Status = HealthKilled
 	h.mu.Unlock()
-	h.flattenPositions(ctx)
+	pending := h.flattenPositions(ctx)
+	// Wait for any flatten order that didn't fill synchronously to land via the normal
+	// WS/poll path before Stop() tears down the run loop that path depends on.
+	h.awaitFlattenFills(pending)
 
 	h.Stop()
 	// Membership (removal from the runtime's hand map) is the runtime's job —

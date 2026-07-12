@@ -701,7 +701,14 @@ func (h *Hand) scheduleBracketPlacement(lv exitLevel, symbol string, bracketQty 
 				return
 			case <-time.After(time.Duration(attempt) * time.Second):
 			}
-			exitCtx, cancel := context.WithTimeout(handCtx, 10*time.Second)
+			// Detached from handCtx deliberately: this is a single in-flight HTTP call to
+			// place a real exchange order, and aborting it mid-flight on Stop() leaves the
+			// exchange-side state ambiguous (did the bracket land or not?) — same failure
+			// shape as cancelExitOrders's h.ctx race (hand_exits.go). The retry loop's OWN
+			// decision to attempt another try still checks handCtx.Done() below, so a
+			// stopped hand still stops retrying between attempts — only an attempt already
+			// in flight is allowed to finish instead of being cut short.
+			exitCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			result, err = placer.PlaceExitOrders(exitCtx, h.helmRuntime.Creds, exitReq)
 			cancel()
 			if err == nil {

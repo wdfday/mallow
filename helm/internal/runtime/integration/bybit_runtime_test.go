@@ -179,6 +179,8 @@ func TestBybit_AbsoluteSLTP(t *testing.T) {
 	t.Logf("signal SL=%s TP=%s (absolute, isOffset=false)", sl, tp)
 
 	hand := newBybitHand(env)
+	rec := recordEvents(hand)
+	defer rec.dump(t, "TestBybit_AbsoluteSLTP event log")
 	hand.Start()
 	defer hand.Stop()
 
@@ -232,6 +234,8 @@ func TestBybit_OffsetSLTP(t *testing.T) {
 	t.Logf("signal offsets: SL%+.0f TP%+.0f (isOffset=true)", slOffset, tpOffset)
 
 	hand := newBybitHand(env)
+	rec := recordEvents(hand)
+	defer rec.dump(t, "TestBybit_OffsetSLTP event log")
 	hand.Start()
 	defer hand.Stop()
 
@@ -319,6 +323,8 @@ func TestBybit_PyramidAndKill(t *testing.T) {
 	hand.StrategyName = "signal_follower"
 	hand.EnableEventSink()
 
+	rec := recordEvents(hand)
+	defer rec.dump(t, "TestBybit_PyramidAndKill event log")
 	hand.Start()
 	defer func() {
 		if hand.IsRunning() {

@@ -20,7 +20,16 @@ import (
 const (
 	okxPrivateWSURL     = "wss://ws.okx.com:8443/ws/v5/private"
 	okxPrivateWSDemoURL = "wss://wspap.okx.com:8443/ws/v5/private"
-	okxPingInterval     = 25 * time.Second
+	// The "orders-algo" channel (OCO/conditional bracket status pushes) migrated to a
+	// separate business endpoint — subscribing to it on /private is rejected with
+	// "Wrong URL or channel" (error 60018), which is exactly what it says: wrong URL,
+	// not a bad param. This was silently broken (subscribed on /private, always
+	// rejected) until 2026-07-13 — no live WS notification for external bracket
+	// cancels/triggers ever reached the hand; only startup reconcile (RecoverBrackets)
+	// caught it, via REST GetOrder, not WS.
+	okxBusinessWSURL     = "wss://ws.okx.com:8443/ws/v5/business"
+	okxBusinessWSDemoURL = "wss://wspap.okx.com:8443/ws/v5/business"
+	okxPingInterval      = 25 * time.Second
 )
 
 // isPermanentOKXError returns true for login errors that won't self-heal on retry —
@@ -58,6 +67,31 @@ func (c *Client) StreamOrders(
 	onRisk func(exchange.RiskEvent),
 	onCredentialError func(string),
 ) error {
+	c.runOKXReconnectLoop(ctx, "order", onCredentialError, func() error {
+		return c.streamOrdersOnce(ctx, creds, onLifecycle, onFill, onPosition, onRisk)
+	})
+	slog.Info("okx: order streaming started")
+
+	// Separate connection: "orders-algo" (OCO/conditional bracket status pushes) lives
+	// on the business endpoint, not /private — see okxBusinessWSURL comment. Runs its
+	// own independent reconnect loop so a drop on one connection never takes down the
+	// other; either can hit isPermanentOKXError on the same shared credentials.
+	c.runOKXReconnectLoop(ctx, "algo order", onCredentialError, func() error {
+		return c.streamAlgoOrdersOnce(ctx, creds, onLifecycle, onFill)
+	})
+	slog.Info("okx: algo order streaming started")
+	return nil
+}
+
+// runOKXReconnectLoop launches the shared dial/backoff/reconnect goroutine used by
+// both the order stream (/private) and the algo-order stream (/business) — same
+// backoff policy, same permanent-error handling, only the connect function differs.
+func (c *Client) runOKXReconnectLoop(
+	ctx context.Context,
+	label string,
+	onCredentialError func(string),
+	connectOnce func() error,
+) {
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
@@ -71,7 +105,7 @@ func (c *Client) StreamOrders(
 				return
 			}
 			start := time.Now()
-			err := c.streamOrdersOnce(ctx, creds, onLifecycle, onFill, onPosition, onRisk)
+			err := connectOnce()
 			if ctx.Err() != nil {
 				return
 			}
@@ -79,15 +113,15 @@ func (c *Client) StreamOrders(
 				attempt = 0
 			}
 			if isPermanentOKXError(err) {
-				slog.Error("okx: permanent stream error — stopping reconnect loop", "err", err)
+				slog.Error("okx: permanent stream error — stopping reconnect loop", "stream", label, "err", err)
 				if onCredentialError != nil {
-					onCredentialError(fmt.Errorf("okx WS stream: %w", err).Error())
+					onCredentialError(fmt.Errorf("okx WS %s stream: %w", label, err).Error())
 				}
 				return
 			}
 			sleepDur := bo.Next(attempt)
 			attempt++
-			slog.Warn("okx: order stream disconnected, reconnecting", "err", err, "attempt", attempt, "sleep_dur", sleepDur)
+			slog.Warn("okx: stream disconnected, reconnecting", "stream", label, "err", err, "attempt", attempt, "sleep_dur", sleepDur)
 			select {
 			case <-time.After(sleepDur):
 			case <-ctx.Done():
@@ -95,8 +129,6 @@ func (c *Client) StreamOrders(
 			}
 		}
 	}()
-	slog.Info("okx: order streaming started")
-	return nil
 }
 
 func (c *Client) streamOrdersOnce(
@@ -111,7 +143,52 @@ func (c *Client) streamOrdersOnce(
 	if c.paper {
 		wsURL = okxPrivateWSDemoURL
 	}
+	// "orders" and "positions" both support instType:ANY on the private endpoint.
+	args := []map[string]string{
+		{"channel": "orders", "instType": "ANY"},
+		{"channel": "positions", "instType": "ANY"}, // futures position updates
+	}
+	return c.runOKXWSConn(ctx, wsURL, creds, args, func(msg []byte) {
+		handleOKXMessage(msg, onLifecycle, onFill, onPosition, onRisk)
+	})
+}
 
+// streamAlgoOrdersOnce connects to the business endpoint for "orders-algo" (OCO/
+// conditional bracket status pushes: triggered, cancelled, etc). Separate connection
+// from streamOrdersOnce — see okxBusinessWSURL comment for why.
+func (c *Client) streamAlgoOrdersOnce(
+	ctx context.Context,
+	creds exchange.Credentials,
+	onLifecycle func(exchange.OrderLifecycleEvent),
+	onFill func(exchange.WsFillEvent),
+) error {
+	wsURL := okxBusinessWSURL
+	if c.paper {
+		wsURL = okxBusinessWSDemoURL
+	}
+	// "orders-algo" rejects instType:ANY (error 60018) — requires an explicit
+	// instType. Subscribe to both SPOT and SWAP so this one connection covers spot
+	// OCO brackets and futures conditional orders.
+	args := []map[string]string{
+		{"channel": "orders-algo", "instType": "SPOT"},
+		{"channel": "orders-algo", "instType": "SWAP"},
+	}
+	return c.runOKXWSConn(ctx, wsURL, creds, args, func(msg []byte) {
+		handleOKXAlgoMessage(msg, onLifecycle, onFill)
+	})
+}
+
+// runOKXWSConn is the shared dial → login → subscribe → ping → read-dispatch loop
+// used by both streamOrdersOnce (/private) and streamAlgoOrdersOnce (/business).
+// dispatch is called with every non-pong message; the caller supplies the right
+// handler (handleOKXMessage or handleOKXAlgoMessage) for its channel(s).
+func (c *Client) runOKXWSConn(
+	ctx context.Context,
+	wsURL string,
+	creds exchange.Credentials,
+	subscribeArgs []map[string]string,
+	dispatch func(msg []byte),
+) error {
 	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, nil)
 	if err != nil {
 		return fmt.Errorf("dial: %w", err)
@@ -122,20 +199,7 @@ func (c *Client) streamOrdersOnce(
 		return fmt.Errorf("login: %w", err)
 	}
 
-	// OKX processes each arg independently in a single subscribe message.
-	// "orders" supports instType:ANY; "orders-algo" rejects ANY (error 60018)
-	// and requires an explicit instType. Subscribe to both SPOT and SWAP so
-	// the same connection covers spot OCO brackets and futures algo orders.
-	// "positions" with instType:ANY receives futures position update pushes.
-	algoInstTypes := []string{"SPOT", "SWAP"}
-	args := []map[string]string{
-		{"channel": "orders", "instType": "ANY"},
-		{"channel": "positions", "instType": "ANY"}, // futures position updates
-	}
-	for _, t := range algoInstTypes {
-		args = append(args, map[string]string{"channel": "orders-algo", "instType": t})
-	}
-	sub := map[string]any{"op": "subscribe", "args": args}
+	sub := map[string]any{"op": "subscribe", "args": subscribeArgs}
 	if err := conn.WriteJSON(sub); err != nil {
 		return fmt.Errorf("subscribe: %w", err)
 	}
@@ -176,7 +240,7 @@ func (c *Client) streamOrdersOnce(
 				continue
 			}
 			slog.Info("okx: raw ws message", "raw", string(msg))
-			handleOKXMessage(msg, onLifecycle, onFill, onPosition, onRisk)
+			dispatch(msg)
 		}
 	}
 }

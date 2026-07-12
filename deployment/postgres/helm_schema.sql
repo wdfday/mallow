@@ -71,7 +71,7 @@ CREATE TABLE IF NOT EXISTS helms (
     -- folded in here — there is no separate portfolio_config column.
     risk_config      JSONB           NOT NULL DEFAULT '{}',
     status           TEXT            NOT NULL DEFAULT 'active'
-                     CHECK (status IN ('active', 'paused', 'halted', 'disabled')),
+                     CHECK (status IN ('active', 'paused', 'halted', 'disabled', 'error')),
     last_synced_at   TIMESTAMPTZ,                             -- last successful REST sync
     created_at       TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
     updated_at       TIMESTAMPTZ     NOT NULL DEFAULT NOW()

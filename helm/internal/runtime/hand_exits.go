@@ -19,9 +19,12 @@ import (
 
 // cancelExitOrders cancels any exchange-side SL/TP orders for the given symbol.
 // Must be called while h.mu is held (reads exitLevels without locking).
-// Launches a goroutine to avoid blocking the caller on network I/O.
-// Uses the hand's lifecycle context so the goroutine exits immediately when
-// Hand.Stop() is called — prevents goroutine leaks during shutdown.
+// Launches a goroutine to avoid blocking the caller on network I/O, detached from
+// h.ctx on its own bounded timeout instead — Release/Kill call Stop() right after
+// triggering this cancel, and tying the goroutine to h.ctx raced Stop()'s cancel()
+// against the in-flight HTTP call ("context canceled"), sometimes leaving the
+// SL/TP/algo bracket un-cancelled on the exchange. The 10s timeout below already
+// bounds the goroutine's lifetime, so it doesn't need h.ctx to avoid leaking.
 func (h *Hand) cancelExitOrders(_ context.Context, symbol string, skipOrderID string) {
 	lv, ok := h.exitLevels[symbol]
 	if !ok || len(lv.ExchangeOrderIDs) == 0 {
@@ -43,11 +46,9 @@ func (h *Hand) cancelExitOrders(_ context.Context, symbol string, skipOrderID st
 	for _, id := range ids {
 		h.pendingCancels[id] = struct{}{}
 	}
-	// Capture hand context under existing lock (caller already holds h.mu).
-	handCtx := h.ctx
 	go func() {
 		defer safe.Recover()
-		cancelCtx, cancel := context.WithTimeout(handCtx, 10*time.Second)
+		cancelCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		for _, id := range ids {
 			if err := h.helmRuntime.Exchange.CancelOrder(cancelCtx, h.helmRuntime.Creds, id); err != nil {
@@ -61,7 +62,12 @@ func (h *Hand) cancelExitOrders(_ context.Context, symbol string, skipOrderID st
 
 // flattenPositions closes this hand's own open legs with market orders. Called by Kill.
 // Only closes the qty tracked in this hand's poslog — does not touch other hands' positions.
-func (h *Hand) flattenPositions(ctx context.Context) {
+// Returns the order IDs of flatten orders that did NOT fill synchronously (the REST ack
+// came back before the exchange confirmed execution) — Kill waits on these via
+// awaitFlattenFills before tearing down the run loop, so the real fill (arriving shortly
+// after via WS/poll) has a chance to land instead of being silently lost.
+func (h *Hand) flattenPositions(ctx context.Context) []string {
+	var pendingOrderIDs []string
 	for _, leg := range h.pos.ActiveLegs() {
 		if leg.Phase == position.PhaseEntering {
 			h.log.Info("hand: kill flattening pending entry order", "symbol", leg.Symbol, "order_id", leg.PendingOrderID)
@@ -215,12 +221,53 @@ func (h *Hand) flattenPositions(ctx context.Context) {
 			h.seenFills[result.ID] = time.Now()
 			h.mu.Unlock()
 			h.applyFill(ctx, result.ID, leg.Symbol, closeSideStr, result.FilledQty, result.FilledAvg, decimal.Zero, "kill")
+		} else {
+			pendingOrderIDs = append(pendingOrderIDs, result.ID)
 		}
 	}
 
 	h.mu.Lock()
 	h.exitLevels = make(map[string]exitLevel)
 	h.mu.Unlock()
+	return pendingOrderIDs
+}
+
+// awaitFlattenFills blocks briefly so any flatten order that didn't fill synchronously
+// (REST ack raced the exchange's execution) has a chance to reach this hand through the
+// normal WS/poll fill path — which needs the run loop alive — before Kill calls Stop()
+// and tears it down. Without this wait, a flatten fill arriving moments after Stop()
+// would sit in the run loop's fill queue undrained forever: the position never actually
+// closes in the portfolio even though the asset was really sold at the exchange.
+//
+// Polls h.seenFills (set by handleWsFill/pollOrders/REST-immediate — whichever path
+// actually applies the fill) rather than re-querying the exchange, so this only confirms
+// what the hand's own bookkeeping already recorded. Bounded — gives up and lets Kill
+// proceed to Stop() after the timeout so Kill can never hang indefinitely.
+func (h *Hand) awaitFlattenFills(orderIDs []string) {
+	if len(orderIDs) == 0 {
+		return
+	}
+	const timeout = 5 * time.Second
+	const pollInterval = 100 * time.Millisecond
+	deadline := time.Now().Add(timeout)
+	for {
+		h.mu.RLock()
+		var stillPending []string
+		for _, id := range orderIDs {
+			if _, seen := h.seenFills[id]; !seen {
+				stillPending = append(stillPending, id)
+			}
+		}
+		h.mu.RUnlock()
+		if len(stillPending) == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			h.log.Warn("hand: kill flatten fill not confirmed before shutdown", "order_ids", stillPending, "timeout", timeout)
+			return
+		}
+		time.Sleep(pollInterval)
+	}
 }
 
 // HandleExitOrderCanceled is called when the exchange fires OrderEventCanceled for

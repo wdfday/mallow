@@ -1167,18 +1167,51 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 	// were set, applyFill cached the fill data in wsFillCache. Use that data (not the
 	// REST ack, which returns status="submitted" with qty=0 after the ACK refactor) to
 	// complete the poslog transition and bracket placement without re-touching the portfolio.
-	h.mu.Lock()
-	cached, hasCached := h.wsFillCache[result.ID]
-	if hasCached {
-		delete(h.wsFillCache, result.ID)
+	//
+	// Must run here (on-loop, after pendingOrderPos/pendingExits are set up above by
+	// this same function) — NOT earlier in runPlaceREST: completeWsFillFromREST reads
+	// h.pendingOrderPos[orderID] itself, and that map is only populated by this
+	// function's own bookkeeping, not by runPlaceREST. A retry loop placed in
+	// runPlaceREST would therefore always see it empty, no matter how long it waited.
+	//
+	// Retried a few times over a short bounded window instead of checked once: WS
+	// delivery doesn't always land before the REST response by much, and a same-tick
+	// miss here previously fell all the way through to the next 30s poll cycle to
+	// catch it (observed live: bracket placement stalled ~30s after a fill that had,
+	// in fact, already landed a few ms too late for a one-shot check). The retry
+	// blocks this hand's own run loop briefly — bounded to wsFillCacheRetries ×
+	// wsFillCacheRetryInterval — which is an acceptable, deliberate trade against a
+	// 30s stall in bracket protection.
+	var cached cachedWsFill
+	var hasCached bool
+	for i := 0; i < wsFillCacheRetries; i++ {
+		h.mu.Lock()
+		cached, hasCached = h.wsFillCache[result.ID]
+		if hasCached {
+			delete(h.wsFillCache, result.ID)
+		}
+		h.mu.Unlock()
+		if hasCached {
+			break
+		}
+		if i < wsFillCacheRetries-1 {
+			time.Sleep(wsFillCacheRetryInterval)
+		}
 	}
-	h.mu.Unlock()
 	if hasCached {
 		h.completeWsFillFromREST(ctx, result.ID, sig.Symbol, reply.Side,
 			cached.qty, cached.price, cached.commission, pending, isExitOrder)
 	}
-
 }
+
+// wsFillCacheRetries × wsFillCacheRetryInterval bounds the WS-before-ACK recovery
+// wait in applyPlaceResult above — 5 × 20ms = 100ms, enough to cover the network
+// jitter that occasionally lands WS a few ms after the REST response instead of
+// before it, without meaningfully delaying this hand's run loop.
+const (
+	wsFillCacheRetries       = 5
+	wsFillCacheRetryInterval = 20 * time.Millisecond
+)
 
 // computeDefaultSL returns a stop-loss price to use when the signal provides none.
 // ATR×5 offset is preferred; falls back to 8% fixed when ATR is zero.

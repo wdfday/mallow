@@ -19,6 +19,7 @@ import (
 	"context"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,6 +58,34 @@ func fillNotify(hand *runtime.Hand, timeout time.Duration) <-chan natsapi.HelmEv
 					return
 				}
 				if ev.Code == runtime.CodeOrderFilled {
+					ch <- ev
+					return
+				}
+			case <-deadline:
+				close(ch)
+				return
+			}
+		}
+	}()
+	return ch
+}
+
+// codeNotify subscribes to the hand event bus and sends the first event matching code.
+// Generic building block for one-off listeners (e.g. CodePositionExtClosed) that don't
+// warrant their own dedicated fillNotify/orderNotify-style wrapper.
+func codeNotify(hand *runtime.Hand, code int, timeout time.Duration) <-chan natsapi.HelmEvent {
+	events := hand.Subscribe(64) // create once, outside the loop
+	ch := make(chan natsapi.HelmEvent, 1)
+	go func() {
+		deadline := time.After(timeout)
+		for {
+			select {
+			case ev, ok := <-events:
+				if !ok {
+					close(ch)
+					return
+				}
+				if ev.Code == code {
 					ch <- ev
 					return
 				}
@@ -559,6 +588,72 @@ func logHandState(t *testing.T, rt *runtime.HelmRuntime, hand *runtime.Hand, sym
 		t.Logf("portfolio position: flat (nil)")
 	}
 	t.Logf("──────────────────────────────────────────────────────────")
+}
+
+// ── eventRecorder: full-run event dump ────────────────────────────────────────
+
+// eventRecorder captures every event a hand emits, in arrival order, for a full
+// post-mortem dump at the end of a test. hand.emitEvent always also calls
+// h.helmRuntime.EmitEvent (helm.go) — so this is effectively "helm and hand"
+// combined, since every test env in this package runs exactly one hand per helm.
+type eventRecorder struct {
+	mu     sync.Mutex
+	events []recordedEvent
+}
+
+// recordedEvent pairs a HelmEvent with the recorder's own receipt time. e.At is NOT
+// usable here: hand.emitEvent (hand_control.go) passes ev by value to both
+// h.helmRuntime.EmitEvent (which stamps .At on ITS OWN copy) and h.eventBus.publish
+// (which gets the original, never-stamped copy) — so every event arriving on the
+// test event bus always has a zero-value .At. recvAt is this recorder's own
+// timestamp instead, close enough for a test post-mortem.
+type recordedEvent struct {
+	ev     natsapi.HelmEvent
+	recvAt time.Time
+}
+
+// recordEvents subscribes to hand's event bus immediately with a generous buffer —
+// this is a whole-test capture, not a wait for one specific event — and starts
+// draining it in the background. Call as early as possible (right after
+// EnableEventSink/AddHand, before Start()) so nothing from the very first signal
+// onward is missed. Typically paired with `defer rec.dump(t, "...")` right after,
+// so the dump always runs — pass or fail.
+func recordEvents(hand *runtime.Hand) *eventRecorder {
+	r := &eventRecorder{}
+	ch := hand.Subscribe(1024)
+	go func() {
+		for ev := range ch {
+			r.mu.Lock()
+			r.events = append(r.events, recordedEvent{ev: ev, recvAt: time.Now()})
+			r.mu.Unlock()
+		}
+	}()
+	return r
+}
+
+// dump prints every event captured so far, oldest first, framed in a box. Safe to
+// call more than once (e.g. once from a t.Fatal path mid-test, once deferred at
+// the end) — each call reflects whatever has arrived up to that point.
+func (r *eventRecorder) dump(t *testing.T, title string) {
+	t.Helper()
+	r.mu.Lock()
+	events := append([]recordedEvent(nil), r.events...)
+	r.mu.Unlock()
+
+	t.Logf("╔═ %s (%d events) ═══════════════════════════════════", title, len(events))
+	for i, re := range events {
+		e := re.ev
+		name := runtime.CodeNames[e.Code]
+		if name == "" {
+			name = "?"
+		}
+		t.Logf("║ %2d. [%s] %-28s code=%-5d hand=%s symbol=%-10s side=%-4s qty=%-14s price=%-10s order=%s",
+			i+1, re.recvAt.Format("15:04:05.000"), name, e.Code, e.HandID, e.Symbol, e.Side, e.Qty, e.Price, e.OrderID)
+		if e.Reason != "" {
+			t.Logf("║      reason: %s", e.Reason)
+		}
+	}
+	t.Logf("╚═══════════════════════════════════════════════════════════")
 }
 
 // ── Binance Demo — round-trip ─────────────────────────────────────────────────

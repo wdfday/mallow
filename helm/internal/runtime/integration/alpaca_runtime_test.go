@@ -161,6 +161,8 @@ func TestAlpaca_AbsoluteSLTP(t *testing.T) {
 	t.Logf("signal SL=%s TP=%s (absolute, isOffset=false)", sl, tp)
 
 	hand := newAlpacaHand(env)
+	rec := recordEvents(hand)
+	defer rec.dump(t, "TestAlpaca_AbsoluteSLTP event log")
 	hand.Start()
 	defer hand.Stop()
 
@@ -219,6 +221,8 @@ func TestAlpaca_OffsetSLTP(t *testing.T) {
 	t.Logf("signal offsets: SL%+.2f TP%+.2f (isOffset=true)", slOffset, tpOffset)
 
 	hand := newAlpacaHand(env)
+	rec := recordEvents(hand)
+	defer rec.dump(t, "TestAlpaca_OffsetSLTP event log")
 	hand.Start()
 	defer hand.Stop()
 
@@ -317,6 +321,8 @@ func TestAlpaca_PyramidAndKill(t *testing.T) {
 	hand.StrategyName = "signal_follower"
 	hand.EnableEventSink()
 
+	rec := recordEvents(hand)
+	defer rec.dump(t, "TestAlpaca_PyramidAndKill event log")
 	hand.Start()
 	defer func() {
 		if hand.IsRunning() {

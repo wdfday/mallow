@@ -48,6 +48,9 @@ type HandLifecycle interface {
 	StopBots(helmID uuid.UUID, ids []string)
 	StartBots(helmID uuid.UUID, ids []string)
 	KillBots(helmID uuid.UUID, ids []string)
+	// NonTerminalHandIDs returns every non-killed/released hand ID for a helm,
+	// read from persisted status rather than live runtime state.
+	NonTerminalHandIDs(helmID uuid.UUID) []string
 	// DeleteBotsByHelm hard-deletes all Hand rows for a helm from the DB.
 	// Called during helm teardown so broker connection delete is a clean sweep.
 	DeleteBotsByHelm(helmID uuid.UUID) error

@@ -330,7 +330,7 @@ func BuildHandSummary(h *Hand, data *handdomain.Hand) handdomain.HandSummary {
 		Futures:          data.Futures,
 		CreatedAt:        data.CreatedAt,
 		AllocatedCapital: data.AllocatedCapital,
-		DeployedCapital:  h.DeployedCapital(),
+		DeployedCapital:  h.EntryCap(),
 		AvailableCash:    h.AvailableCash(),
 		SignalTTLSec:     data.SignalTTLSec,
 		Legs:             h.ActiveLegs(),

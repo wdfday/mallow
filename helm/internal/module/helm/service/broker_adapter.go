@@ -61,6 +61,11 @@ func (a *BrokerAdapter) PauseForAccount(_ context.Context, accountID uuid.UUID) 
 	if err != nil {
 		return err
 	}
+	// Don't overwrite an error-halted helm with a plain pause — that would erase the
+	// credential-error signal the UI relies on to prompt a rotate-key.
+	if h.Status == domain.HelmStatusError {
+		return nil
+	}
 	return a.Svc.Pause(h.ID)
 }
 

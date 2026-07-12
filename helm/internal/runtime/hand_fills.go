@@ -255,7 +255,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 	}
 
 	equity := h.realizedEquity()
-	deployed := h.DeployedCapital()
+	deployed := h.EntryCap()
 	// Compute unrealized PnL across all open legs using last known price.
 	var unrealized decimal.Decimal
 	h.mu.RLock()
@@ -1162,3 +1162,16 @@ func (h *Hand) completeWsFillFromREST(
 		})
 	}
 }
+
+// ── handEdgeGuard restart survival ──────────────────────────────────────────
+//
+// checkEdgeRisk's sliding-window ring buffer (h.guard.ring/head/full) and
+// consecutive-loss streak (h.guard.consecLoss) are only ever mutated in-memory via
+// guard.push. The Hand constructor always builds a fresh, zero-valued handEdgeGuard —
+// for both brand-new hands and hands rehydrated on startup — so without further
+// action a hand mid-way through a losing streak (e.g. 4/5 toward MaxConsecLoss) would
+// have that streak silently reset to 0 on any restart. Fixed by Hand.RestoreGuard
+// (hand_lifecycle.go), called alongside RestorePnL/RestoreCounters in reconcileHand
+// (reconcile.go): it replays this hand's KindPositionClosed history back into
+// guard.ring/head/full/consecLoss, so the next live closing fill after restart
+// evaluates against correctly restored history instead of an empty window.

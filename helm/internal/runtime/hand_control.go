@@ -329,9 +329,15 @@ func (h *Hand) Subscribe(chanCap int) <-chan natsapi.HelmEvent {
 	return h.eventBus.subscribe(chanCap)
 }
 
-// DeployedCapital returns the notional capital currently committed in open
-// positions: sum(leg.Qty × leg.EntryPrice) across all active legs.
-func (h *Hand) DeployedCapital() decimal.Decimal {
+// EntryCap returns the notional value of open positions at entry price:
+// sum(leg.Qty × leg.EntryPrice) across all active legs. Renamed from
+// DeployedCapital (2026-07-10) to stop it being confused with the unrelated,
+// fee-inclusive LegState.DeployedCapital field (persisted per-leg, computed
+// as net_qty×price + entry_fee_quote in applyEntryFill — see hand_fills.go —
+// and used for the trade record's entry-commission derivation). EntryCap does
+// NOT include fee; it's a live, in-memory-only figure for "how much notional
+// is tied up right now" (available-cash display), not an accounting record.
+func (h *Hand) EntryCap() decimal.Decimal {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	total := decimal.Zero
@@ -378,7 +384,7 @@ func (h *Hand) ActiveLegs() []domain.LegView {
 // AvailableCash returns USDT liquid for this hand — not locked in open positions.
 // = realizedEquity (allocated + cumPnL) - deployedCapital (entry cost of open legs).
 func (h *Hand) AvailableCash() decimal.Decimal {
-	avail := h.realizedEquity().Sub(h.DeployedCapital())
+	avail := h.realizedEquity().Sub(h.EntryCap())
 	if avail.IsNegative() {
 		return decimal.Zero
 	}

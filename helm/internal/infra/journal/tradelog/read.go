@@ -19,6 +19,10 @@ type Log interface {
 	// SumHandPnL returns aggregate PnL metrics for one hand in a single query.
 	// Used by RestorePnL on startup instead of draining the full JetStream history.
 	SumHandPnL(ctx context.Context, handID uuid.UUID) (totalPnL, totalCommission decimal.Decimal, wins, losses int64, err error)
+	// RecentClosedPnL returns the PnL of a hand's last `limit` closed trades,
+	// oldest first. Used by RestoreGuard on startup to rebuild the edge-risk
+	// guard's ring buffer instead of replaying poslog history.
+	RecentClosedPnL(ctx context.Context, handID uuid.UUID, limit int) ([]decimal.Decimal, error)
 }
 
 type postgresLog struct {
@@ -147,6 +151,35 @@ func (l *postgresLog) SumHandPnL(ctx context.Context, handID uuid.UUID) (totalPn
 	totalPnL, _ = decimal.NewFromString(pnlStr)
 	totalCommission, _ = decimal.NewFromString(commStr)
 	return
+}
+
+// RecentClosedPnL returns the last `limit` closed trades' PnL for a hand, oldest
+// first (reversed from the DESC query order) to match chronological replay order.
+func (l *postgresLog) RecentClosedPnL(ctx context.Context, handID uuid.UUID, limit int) ([]decimal.Decimal, error) {
+	rows, err := l.db.QueryContext(ctx,
+		`SELECT pnl FROM trades WHERE hand_id = $1 ORDER BY exit_at DESC LIMIT $2`,
+		handID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []decimal.Decimal
+	for rows.Next() {
+		var pnlStr string
+		if err := rows.Scan(&pnlStr); err != nil {
+			return nil, err
+		}
+		out = append(out, decimalOrZero(sql.NullString{String: pnlStr, Valid: true}))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, nil
 }
 
 func decimalOrZero(s sql.NullString) decimal.Decimal {

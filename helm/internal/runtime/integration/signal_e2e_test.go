@@ -219,6 +219,51 @@ func fillNotifyOrder(hand *runtime.Hand, targetID string, timeout time.Duration)
 	return ch
 }
 
+// recvEvent waits for either a delivered HelmEvent on ch or a timeout, returning
+// ok=false in both the "channel closed" and "wall-clock timeout" cases.
+//
+// fillNotify/orderNotify/orderNotifyNew/fillNotifyOrder each run their own internal
+// goroutine that closes ch once ITS OWN deadline elapses. A bare `select { case e :=
+// <-ch: ...; case <-time.After(d): ... }` at the call site races that internal close
+// against its own timer: if the internal deadline wins, the receive on the
+// already-closed channel returns a zero-value HelmEvent immediately, and code that
+// doesn't check the second (ok) return value treats that zero value as a real event
+// — e.g. logging "filled: order_id= qty=0 fill_price=0" or, worse, proceeding past a
+// nil-position check as if a fill had actually happened. Route every receive through
+// this helper instead of a bare select so ok=false is impossible to miss.
+func recvEvent(ch <-chan natsapi.HelmEvent, timeout time.Duration) (natsapi.HelmEvent, bool) {
+	select {
+	case e, ok := <-ch:
+		return e, ok
+	case <-time.After(timeout):
+		return natsapi.HelmEvent{}, false
+	}
+}
+
+// portfolioQty reads rt.Portfolio.GetPosition(symbol).Qty, or zero if flat.
+//
+// rt.Portfolio is helm-wide, not per-hand: every fill (hand-owned, orphan, or
+// gap-recovery) funnels through HelmRuntime.ReportFill, which calls MarkSyncDirty
+// and schedules a debounced (3s) full-account resync (helm_trading.go). That resync
+// pulls the REAL exchange balance for the symbol — correctly, by design — which on a
+// shared demo/paper account can include ETH/BTC this test never touched (pre-funded
+// balance, other tests' dust, etc). A reading taken here is never guaranteed to be
+// "just this hand's contribution."
+//
+// Because of this, NEVER assert an absolute value against portfolioQty (e.g. "== 0"
+// after a hand's own exit) — it will flake depending on whether the debounced resync
+// has landed yet and what unrelated balance the account happens to hold. Instead,
+// capture a baseline before the action under test, capture again after (allowing the
+// same ~3s+ for the resync to settle each time), and assert on the DELTA between the
+// two readings — that isolates exactly what this hand's own trade did, independent of
+// whatever the shared account balance happened to be at either point in time.
+func portfolioQty(rt *runtime.HelmRuntime, symbol string) decimal.Decimal {
+	if pos := rt.Portfolio.GetPosition(symbol); pos != nil {
+		return pos.Qty
+	}
+	return decimal.Zero
+}
+
 // ── Binance Demo ──────────────────────────────────────────────────────────────
 
 func TestSignalToOrder_Binance(t *testing.T) {

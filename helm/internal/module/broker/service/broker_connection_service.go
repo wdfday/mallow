@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 
 	"github.com/google/uuid"
@@ -544,6 +545,17 @@ func (s *brokerConnectionService) Activate(ctx context.Context, id, userID uuid.
 	if err != nil {
 		return err
 	}
+	// error means the broker already rejected these credentials 3x — flipping the
+	// status back to active here would resume trading without ever re-checking them.
+	// rotate-key is the only path that revalidates against the exchange, so route
+	// recovery through it instead of trusting a bare activate call.
+	if conn.Status == domain.BrokerConnectionStatusError {
+		return pkgshared.NewAppError(
+			"BROKER_CONNECTION_CREDENTIAL_ERROR",
+			"This broker connection has a credential error and cannot be reactivated directly — rotate the API key via /rotate-key first",
+			http.StatusConflict,
+		)
+	}
 	conn.Status = domain.BrokerConnectionStatusActive
 	return s.repo.Update(ctx, conn)
 }
@@ -553,11 +565,21 @@ func (s *brokerConnectionService) Deactivate(ctx context.Context, id, userID uui
 	if err != nil {
 		return err
 	}
+	if conn.Status == domain.BrokerConnectionStatusDisconnected {
+		return pkgshared.NewAppError(
+			"BROKER_CONNECTION_ALREADY_INACTIVE",
+			"This broker connection is already deactivated",
+			http.StatusConflict,
+		)
+	}
 	conn.Status = domain.BrokerConnectionStatusDisconnected
 	if err := s.repo.Update(ctx, conn); err != nil {
 		return err
 	}
 	// Pause the live helm so it stops accepting signals while the connection is inactive.
+	// If the helm was already halted by a credential error, leave it as-is: pausing here
+	// would overwrite HelmStatusError with HelmStatusPaused and erase the error signal
+	// the UI relies on to prompt a rotate-key.
 	accounts, _ := s.accountRepo.ListByUserID(ctx, conn.UserID.String(), accountDomain.ListAccountsFilter{})
 	for i := range accounts {
 		if accounts[i].BrokerConnectionID != nil && *accounts[i].BrokerConnectionID == conn.ID {

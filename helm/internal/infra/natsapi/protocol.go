@@ -193,16 +193,22 @@ type PortfolioSyncEvent struct {
 
 // PublishTradeFill publishes txn to TRADE_FILLS JetStream stream (trade.filled.{accountID}).
 // Nats-Msg-Id = TradeID for dedup across real-time and sync paths; falls back to helmID+orderID.
+// The fallback is written back into txn.TradeID before marshaling so the persisted payload
+// (filllog's Postgres `fills` table, UNIQUE INDEX on trade_id) carries the same value as the
+// dedup key — otherwise every fill with no exchange trade ID (poll/kill/limit-timeout paths)
+// would marshal with trade_id="", and the second such fill anywhere in the table would violate
+// the unique index and be silently dropped by filllog's `ON CONFLICT (trade_id) DO NOTHING`.
 func PublishTradeFill(js nats.JetStreamContext, txn TransactionMsg) {
+	dedupKey := txn.TradeID
+	if dedupKey == "" {
+		dedupKey = txn.HelmID + "-" + txn.OrderID
+		txn.TradeID = dedupKey
+	}
 	data, _ := json.Marshal(txn)
 	natMsg := &nats.Msg{
 		Subject: fmt.Sprintf(SubjTradeFilled, txn.AccountID),
 		Data:    data,
 		Header:  nats.Header{},
-	}
-	dedupKey := txn.TradeID
-	if dedupKey == "" {
-		dedupKey = txn.HelmID + "-" + txn.OrderID
 	}
 	natMsg.Header.Set(nats.MsgIdHdr, dedupKey)
 	if _, err := js.PublishMsg(natMsg); err != nil {

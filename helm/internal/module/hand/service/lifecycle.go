@@ -41,6 +41,17 @@ func (s *Service) Stop(handID, helmID uuid.UUID) error {
 	if err != nil {
 		return err
 	}
+	// killed/released are terminal — StopHand is a no-op against the runtime once the
+	// hand has already been removed from it (RemoveHand), so without this guard the DB
+	// write below would silently flip a terminal status back to "stopped", making a
+	// flattened/orphaned hand look startable again and erasing the terminal audit trail.
+	cur, err := s.repo.Get(handID)
+	if err != nil {
+		return err
+	}
+	if cur.Status.IsTerminal() {
+		return fmt.Errorf("hand %q is %s — terminal hands cannot be stopped", handID, cur.Status)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	rt.StopHand(ctx, handID.String())
@@ -56,6 +67,17 @@ func (s *Service) Kill(ctx context.Context, handID, helmID uuid.UUID) error {
 	rt, err := s.registry.Get(helmID)
 	if err != nil {
 		return err
+	}
+	// Block killing an already-terminal hand: if it was previously released, the
+	// runtime has already dropped it (RemoveHand), so KillHand would return found=false
+	// and this would just overwrite HandStatusReleased with HandStatusKilled — a false
+	// audit record claiming positions were flattened when they were actually orphaned.
+	cur, err := s.repo.Get(handID)
+	if err != nil {
+		return err
+	}
+	if cur.Status.IsTerminal() {
+		return fmt.Errorf("hand %q is already %s", handID, cur.Status)
 	}
 	finalMetrics, found := rt.KillHand(ctx, handID.String())
 	return s.repo.Update(handID, func(d *domain.Hand) error {
@@ -73,6 +95,15 @@ func (s *Service) Release(ctx context.Context, handID, helmID uuid.UUID) error {
 	if err != nil {
 		return err
 	}
+	// Same terminal guard as Kill — prevents a killed hand from being silently
+	// relabeled as released (or double-released) with no matching runtime effect.
+	cur, err := s.repo.Get(handID)
+	if err != nil {
+		return err
+	}
+	if cur.Status.IsTerminal() {
+		return fmt.Errorf("hand %q is already %s", handID, cur.Status)
+	}
 	finalMetrics, found := rt.ReleaseHand(ctx, handID.String())
 	return s.repo.Update(handID, func(d *domain.Hand) error {
 		d.Status = domain.HandStatusReleased
@@ -84,6 +115,22 @@ func (s *Service) Release(ctx context.Context, handID, helmID uuid.UUID) error {
 }
 
 // ── Cascade operations (called by helm lifecycle) ─────────────────────────────
+
+// NonTerminalHandIDs returns the IDs of every hand under helmID that is not yet
+// killed/released. Used by helm Disable instead of the live "was running" set:
+// deriving the kill list from in-memory IsRunning() misses hands that were already
+// stopped by an earlier pause (a stopped hand can still hold an open position),
+// so a helm disabled after being paused would otherwise skip flattening entirely.
+func (s *Service) NonTerminalHandIDs(helmID uuid.UUID) []string {
+	all := s.repo.AllByHelm(helmID)
+	ids := make([]string, 0, len(all))
+	for _, d := range all {
+		if !d.Status.IsTerminal() {
+			ids = append(ids, d.ID.String())
+		}
+	}
+	return ids
+}
 
 // StopBots cascade-stops hands in-memory only (no DB persist). Called by helm pause.
 func (s *Service) StopBots(helmID uuid.UUID, ids []string) {

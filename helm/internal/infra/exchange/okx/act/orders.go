@@ -308,8 +308,15 @@ func (c *Client) GetPendingOrders(ctx context.Context, creds exchange.Credential
 // ListLiveAlgoOrders implements exchange.AlgoOrderLister.
 // Returns active OCO/conditional algo orders for the given instrument.
 // Used during startup recovery to find existing brackets before re-placing.
+//
+// Two bugs fixed here (2026-07): the endpoint was "/api/v5/trade/orders-algo"
+// (404 — the correct path is "orders-algo-pending", see getAlgoOrder's doc comment
+// above), and ordType was passed as a single comma-joined "oco,conditional" value —
+// OKX's orders-algo-pending endpoint requires ordType to be a single value per
+// request, same constraint getAlgoOrder already works around by querying each
+// ordType separately. This was silently finding 0 brackets on every restart before,
+// since the pre-fix endpoint 404'd unconditionally regardless of ordType.
 func (c *Client) ListLiveAlgoOrders(ctx context.Context, creds exchange.Credentials, instID string) ([]exchange.LiveAlgoOrder, error) {
-	path := fmt.Sprintf("/api/v5/trade/orders-algo?instId=%s&ordType=oco,conditional&state=live", instID)
 	var resp struct {
 		okxEnvelope
 		Data []struct {
@@ -320,21 +327,25 @@ func (c *Client) ListLiveAlgoOrders(ctx context.Context, creds exchange.Credenti
 			TpTriggerPx string `json:"tpTriggerPx"`
 		} `json:"data"`
 	}
-	if err := c.doRequest(ctx, creds, http.MethodGet, path, nil, &resp); err != nil {
-		return nil, fmt.Errorf("list live algo orders: %w", err)
-	}
-	if resp.Code != "0" {
-		return nil, fmt.Errorf("okx list algo orders: code=%s msg=%s", resp.Code, resp.Msg)
-	}
-	result := make([]exchange.LiveAlgoOrder, 0, len(resp.Data))
-	for _, d := range resp.Data {
-		result = append(result, exchange.LiveAlgoOrder{
-			AlgoID:     d.InstId + ":A:" + d.AlgoId,
-			InstID:     d.InstId,
-			OrdType:    d.OrdType,
-			StopLoss:   parseDecimal(d.SlTriggerPx),
-			TakeProfit: parseDecimal(d.TpTriggerPx),
-		})
+	result := make([]exchange.LiveAlgoOrder, 0, 2)
+	for _, ordType := range []string{"oco", "conditional"} {
+		path := fmt.Sprintf("/api/v5/trade/orders-algo-pending?instId=%s&ordType=%s", instID, ordType)
+		resp.Data = nil
+		if err := c.doRequest(ctx, creds, http.MethodGet, path, nil, &resp); err != nil {
+			return nil, fmt.Errorf("list live algo orders (%s): %w", ordType, err)
+		}
+		if resp.Code != "0" {
+			return nil, fmt.Errorf("okx list algo orders (%s): code=%s msg=%s", ordType, resp.Code, resp.Msg)
+		}
+		for _, d := range resp.Data {
+			result = append(result, exchange.LiveAlgoOrder{
+				AlgoID:     d.InstId + ":A:" + d.AlgoId,
+				InstID:     d.InstId,
+				OrdType:    d.OrdType,
+				StopLoss:   parseDecimal(d.SlTriggerPx),
+				TakeProfit: parseDecimal(d.TpTriggerPx),
+			})
+		}
 	}
 	return result, nil
 }

@@ -103,7 +103,7 @@ func TestPoslog_E2E(t *testing.T) {
 	defer hand.Stop()
 
 	placed := orderNotify(hand, 20*time.Second)
-	filled := fillNotify(hand, 30*time.Second)
+	filled := fillNotify(hand, 40*time.Second)
 
 	hand.DeliverSignal(longSig("BTCUSDT"))
 
@@ -276,7 +276,7 @@ func TestTradeRoundTrip_E2E(t *testing.T) {
 
 	// Wait for entry fill.
 	select {
-	case e := <-fillNotify(hand, 30*time.Second):
+	case e := <-fillNotify(hand, 40*time.Second):
 		t.Logf("entry filled: order_id=%s qty=%s avg=%s", e.OrderID, e.Qty, e.Price)
 	case <-time.After(30 * time.Second):
 		t.Log("entry fill not observed in activity (WS may not be running) — proceeding with exit")

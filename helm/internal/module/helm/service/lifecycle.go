@@ -11,16 +11,75 @@ import (
 	"mallow/helm/internal/module/helm/domain"
 )
 
-// Enable marks an orchestrator as enabled, spawns its runtime if it is not already
-// in the registry, and triggers an initial portfolio sync.
+// reactivate is the single path back to HelmStatusActive: it un-gates the live
+// runtime (spawner.Resume clears rt.paused, which is the real gate — DB status
+// alone does not stop or start anything), restarts whichever hands were running
+// before the runtime was gated, persists the active status, and re-syncs the
+// portfolio. Every recovery action that ends in "active" — Resume, Enable on an
+// already-spawned (paused/halted/error) helm, and ResetHalt — routes through
+// this so the DB status and the runtime's actual gating state can never diverge
+// the way a bare `status = active` write would let them.
 //
-// Flow:
-//  1. Persist Enabled=true in DB.
-//  2. If a CredentialFetcher is wired, fetch exchange credentials and spawn the runtime
-//     (no-op if it already exists — Registry.Spawn is idempotent).
-//  3. Fire-and-forget SyncOne so portfolio state is refreshed from the exchange.
+// Returns an error if there is no live runtime to reactivate (e.g. the helm was
+// disabled and torn down) — callers that also handle the "cold start" case
+// (Enable) use that to fall back to spawning a fresh runtime instead.
+func (s *Service) reactivate(id uuid.UUID) (int, error) {
+	toRestart, err := s.spawner.Resume(id)
+	if err != nil {
+		return 0, err
+	}
+	if s.hands != nil && len(toRestart) > 0 {
+		s.hands.StartBots(id, toRestart)
+	}
+	if err := s.repo.Update(id, func(o *domain.Helm) error {
+		o.Status = domain.HelmStatusActive
+		return nil
+	}); err != nil {
+		return 0, fmt.Errorf("persist active status: %w", err)
+	}
+	// Fire-and-forget SyncOne so portfolio state (cash/equity/positions) reflects
+	// the exchange immediately — otherwise it stays at whatever it was when the
+	// helm paused/errored (often zero) until the next 5-minute poll tick.
+	s.spawner.SyncOne(id)
+	return len(toRestart), nil
+}
+
+// canonicalRecoveryFrom returns the error to reject a request with when the
+// helm is in a state that has its own dedicated way back to active — paused
+// (/resume), halted (/halt/reset), or error (rotate the broker connection's
+// API key). Every other action must route through that path instead of
+// jumping straight to enable/disable, so the DB status and the runtime's
+// actual gating/position state can't drift apart. Returns nil for
+// active/disabled, where the caller's own transition is valid.
+func canonicalRecoveryFrom(status domain.HelmStatus) error {
+	switch status {
+	case domain.HelmStatusPaused:
+		return fmt.Errorf("helm is paused — use /resume first")
+	case domain.HelmStatusHalted:
+		return fmt.Errorf("helm is halted — use /halt/reset first")
+	case domain.HelmStatusError:
+		return fmt.Errorf("helm has a credential error — rotate the broker connection's API key first")
+	default:
+		return nil
+	}
+}
+
+// Enable marks an orchestrator as enabled and, for a true disabled→active
+// transition, spawns a fresh runtime. Rejected if the helm is paused/halted/error:
+// each of those has its own dedicated recovery action (resume/halt-reset/rotate-key)
+// that un-gates the *existing* runtime correctly — Enable's Spawn is idempotent and
+// does nothing when a runtime already exists, so allowing Enable here would flip the
+// DB status to active while the runtime stayed silently gated.
 func (s *Service) Enable(id uuid.UUID) error {
-	// 1. Persist status=active.
+	cfg, err := s.repo.Get(id)
+	if err != nil {
+		return err
+	}
+	if err := canonicalRecoveryFrom(cfg.Status); err != nil {
+		return err
+	}
+
+	// Persist status=active.
 	if err := s.repo.Update(id, func(o *domain.Helm) error {
 		o.Status = domain.HelmStatusActive
 		return nil
@@ -28,28 +87,21 @@ func (s *Service) Enable(id uuid.UUID) error {
 		return err
 	}
 
-	// 2. Spawn runtime if credentials are available and runtime is not yet live.
 	if s.creds != nil {
-		cfg, err := s.repo.Get(id)
+		exchCfg, err := s.creds.GetCredentialsByAccountID(context.Background(), cfg.AccountID.String())
 		if err != nil {
-			slog.Warn("helm enable: could not load config for spawn", "helm_id", id, "err", err)
+			slog.Warn("helm enable: could not fetch credentials for spawn", "helm_id", id, "err", err)
 		} else {
-			exchCfg, err := s.creds.GetCredentialsByAccountID(context.Background(), cfg.AccountID.String())
-			if err != nil {
-				slog.Warn("helm enable: could not fetch credentials for spawn", "helm_id", id, "err", err)
+			// BrokerType is authoritative from the helm config (not the credentials resp).
+			exchCfg.BrokerType = cfg.BrokerType
+			if spawnErr := s.spawner.Spawn(cfg, exchCfg); spawnErr != nil {
+				slog.Error("helm enable: spawn failed", "helm_id", id, "err", spawnErr)
 			} else {
-				// BrokerType is authoritative from the helm config (not the credentials resp).
-				exchCfg.BrokerType = cfg.BrokerType
-				if spawnErr := s.spawner.Spawn(cfg, exchCfg); spawnErr != nil {
-					slog.Error("helm enable: spawn failed", "helm_id", id, "err", spawnErr)
-				} else {
-					slog.Info("helm enable: runtime spawned", "helm_id", id)
-				}
+				slog.Info("helm enable: runtime spawned", "helm_id", id)
 			}
 		}
 	}
 
-	// 3. Sync portfolio from exchange (no-op if runtime not in registry).
 	s.spawner.SyncOne(id)
 	return nil
 }
@@ -75,29 +127,15 @@ func (s *Service) Pause(id uuid.UUID) error {
 
 // Resume resumes a paused orchestrator and restarts hands that were running before pause.
 func (s *Service) Resume(id uuid.UUID) error {
-	toRestart, err := s.spawner.Resume(id)
+	n, err := s.reactivate(id)
 	if err != nil {
 		return err
 	}
-	if s.hands != nil && len(toRestart) > 0 {
-		s.hands.StartBots(id, toRestart)
-	}
-	if err := s.repo.Update(id, func(o *domain.Helm) error {
-		o.Status = domain.HelmStatusActive
-		return nil
-	}); err != nil {
-		return fmt.Errorf("persist active status: %w", err)
-	}
-	slog.Info("helm resumed", "id", id, "hands_restarted", len(toRestart))
-	// Fire-and-forget SyncOne so portfolio state (cash/equity/positions) reflects
-	// the exchange immediately — otherwise it stays at whatever it was when the
-	// helm paused/errored (often zero) until the next 5-minute poll tick. Mirrors
-	// Enable's step 3; this path is also how auto-resume-after-rotate-key recovers.
-	s.spawner.SyncOne(id)
+	slog.Info("helm resumed", "id", id, "hands_restarted", n)
 	return nil
 }
 
-// Disable flattens all open positions across every running hand, marks the helm
+// Disable flattens all open positions across every non-terminal hand, marks the helm
 // disabled, and tears down the runtime after a short grace period so in-flight
 // WS fills can settle before the runtime is removed from the registry.
 //
@@ -108,14 +146,37 @@ func (s *Service) Resume(id uuid.UUID) error {
 //  4. Async teardown after 5 s — market fills should arrive well within this window
 //
 // Use Enable to re-spawn a fresh runtime.
+//
+// Rejected if the helm is paused/halted/error: those states must go back to
+// active through their own recovery action first (resume/halt-reset/rotate-key),
+// same reasoning as Enable — jumping straight to disable from a gated state
+// would tear the runtime down without ever going through the un-gating step
+// those actions perform.
 func (s *Service) Disable(id uuid.UUID) error {
+	cfg, err := s.repo.Get(id)
+	if err != nil {
+		return err
+	}
+	if err := canonicalRecoveryFrom(cfg.Status); err != nil {
+		return err
+	}
+
 	// Step 1: pause runtime so no new signals are accepted.
-	runningHandIDs, _ := s.spawner.Pause(id)
+	_, _ = s.spawner.Pause(id)
 
 	// Step 2: flatten open positions — runtime remains in registry so WS fills
 	// from the close orders can still be routed and applied to poslog.
-	if s.hands != nil && len(runningHandIDs) > 0 {
-		s.hands.KillBots(id, runningHandIDs)
+	// Deliberately NOT using Pause's "was running" return value here: it only
+	// reflects the hand runner's live IsRunning() state, which can lag behind
+	// what's actually open at the exchange (e.g. a runner that crashed mid-position).
+	// NonTerminalHandIDs reads persisted status instead, so every hand that could
+	// still hold a position gets a kill attempt.
+	var handIDs []string
+	if s.hands != nil {
+		handIDs = s.hands.NonTerminalHandIDs(id)
+	}
+	if len(handIDs) > 0 {
+		s.hands.KillBots(id, handIDs)
 	}
 
 	// Step 3: persist immediately so restarts do not re-spawn this helm.
@@ -138,7 +199,7 @@ func (s *Service) Disable(id uuid.UUID) error {
 		slog.Info("helm disabled: runtime torn down", "id", id)
 	}()
 
-	slog.Info("helm disabled", "id", id, "hands_killed", len(runningHandIDs))
+	slog.Info("helm disabled", "id", id, "hands_killed", len(handIDs))
 	return nil
 }
 
@@ -152,19 +213,21 @@ func (s *Service) MarkError(id uuid.UUID) error {
 	})
 }
 
-// ResetHalt clears the risk-manager halt flag and restores the orchestrator to active.
-// Does NOT automatically restart hands — caller must call Resume or Start each hand manually.
+// ResetHalt clears the risk-manager halt flag and restores the orchestrator to active
+// via reactivate. A halt tripped live never sets rt.paused or stops hands (RiskMgr.IsHalted
+// alone gates new entries), so reactivate's Resume/StartBots are no-ops there — but if the
+// helm was hydrated from a restart while halted, Spawn does set rt.paused, and without
+// routing through reactivate this would clear the risk flag while leaving the runtime
+// gated and its hands never restarted.
 func (s *Service) ResetHalt(id uuid.UUID) error {
 	if err := s.spawner.ResetHalt(id); err != nil {
 		return err
 	}
-	if err := s.repo.Update(id, func(o *domain.Helm) error {
-		o.Status = domain.HelmStatusActive
-		return nil
-	}); err != nil {
-		return fmt.Errorf("persist active status: %w", err)
+	n, err := s.reactivate(id)
+	if err != nil {
+		return err
 	}
-	slog.Info("helm halt reset", "id", id)
+	slog.Info("helm halt reset", "id", id, "hands_restarted", n)
 	return nil
 }
 

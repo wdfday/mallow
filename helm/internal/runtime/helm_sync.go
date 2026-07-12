@@ -15,7 +15,7 @@ import (
 	"mallow/helm/internal/runtime/position"
 )
 
-// Fill idempotency delegates to fillDedup (see helpers.go).
+// Fill idempotency delegates to fillDedup
 
 // MarkOrderFillPublished records an orderID whose trade.filled was already published
 // via the WS fill path. Subsequent calls to Sync() skip transactions with this orderID
@@ -372,3 +372,36 @@ func (r *HelmRuntime) checkPositionDesync(ctx context.Context) {
 		}
 	}
 }
+
+// KNOWN GAP (2026-07-10, not fixed): when total hand-tracked qty for a symbol exceeds
+// the real exchange qty (multi-hand-same-symbol desync — see the RemovePosition /
+// Portfolio.positions notes elsewhere in this codebase for how that state can arise
+// in the first place), there is no principled policy for which hand's leg absorbs the
+// shortfall. Here, it's whichever hand happens first in `unprotected`'s iteration
+// order — which traces back to ranging over r.hands (a Go map, deliberately
+// randomized iteration by the language spec) at the top of this function. Two hands
+// in the exact same real desync get two different outcomes purely by map-iteration
+// luck: the first exhausts the remaining exchangeQty and passes; the next one checked
+// finds it empty and gets orphaned.
+//
+// The same absence of policy shows up a second way, at a different layer: the
+// freeQty.LessThan(enough) balance-check in runPlaceREST (hand_runner.go) runs
+// independently per hand, off-loop, when each hand's own exit attempt happens to
+// reach the exchange. If two hands both try to exit into a real shortfall at close to
+// the same time, whichever hand's REST round-trip lands first consumes the free
+// balance and exits cleanly; the slower one's check then finds it gone and orphans.
+// Same failure shape (no allocation policy under scarcity), different trigger
+// (periodic map-order race here vs. live network-timing race there).
+//
+// Not fixed — a real fix means picking and implementing an actual policy (proportional
+// split across all affected legs? oldest-position-first? something else?), not a
+// one-line change, and every case the two paths above touch already got real edits
+// tonight. Worth resolving both together, once a policy is chosen, not patched twice
+// in the same style that produced them.
+//
+// Whatever the eventual policy, the state this reacts to — total hand-tracked qty for
+// a symbol not matching real exchange qty — still traces back to something outside
+// helm's own control in every case this codebase has actually observed tonight
+// (see the earlier "chắc chắn do user" thread): multi-hand overlap the user configured,
+// or the user's own hand at the exchange. Not a helm accounting bug on its own — just
+// one without a fair answer yet for who eats it when it happens.

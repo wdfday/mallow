@@ -34,6 +34,10 @@ type handEntry struct {
 // history on every startup.
 type HandPnLSummer interface {
 	SumHandPnL(ctx context.Context, handID uuid.UUID) (totalPnL, totalCommission decimal.Decimal, wins, losses int64, err error)
+	// RecentClosedPnL returns the PnL of a hand's last `limit` closed trades,
+	// oldest first. Used by RestoreGuard to rebuild the edge-risk guard's ring
+	// buffer on startup instead of replaying poslog history.
+	RecentClosedPnL(ctx context.Context, handID uuid.UUID, limit int) ([]decimal.Decimal, error)
 }
 
 // HandEventCounter returns a hand's activity-event counts grouped by code, in one
@@ -129,7 +133,7 @@ type HelmRuntime struct {
 	// nil fields degrade gracefully: poslog events are lost, events go to slog only.
 	PosLog       poslog.Log            // JetStream WAL for position events
 	TradeLog     perf.TradeLog         // JetStream HELM_TRADES — closed round-trip trades; TradePersister drains into PG
-	PnLSummer    HandPnLSummer         // postgres aggregate query for RestorePnL; nil = fallback to JetStream drain
+	PnLSummer    HandPnLSummer         // postgres aggregate query for RestorePnL + RestoreGuard; nil = degrade gracefully
 	EventCounter HandEventCounter      // postgres event-count aggregate for RestoreCounters; nil = counters start at 0
 	syncStore    SyncStore             // persists last_synced_at after each successful portfolio sync
 	nc           *nats.Conn            // NATS connection; used for portfolio.synced.* (nc.Publish path)

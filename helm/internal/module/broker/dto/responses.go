@@ -98,13 +98,13 @@ func GetBrokerProviders() *ListBrokerProvidersResponse {
 				RequiredFields:    []string{"api_key", "api_secret"},
 				SupportedFeatures: []string{"portfolio", "positions"},
 			},
-			{
-				BrokerType:        string(domain.BrokerTypeBybit),
-				DisplayName:       "Bybit",
-				Description:       "Crypto derivatives and spot trading platform",
-				RequiredFields:    []string{"api_key", "api_secret"},
-				SupportedFeatures: []string{"portfolio", "positions"},
-			},
+			//{
+			//	BrokerType:        string(domain.BrokerTypeBybit),
+			//	DisplayName:       "Bybit",
+			//	Description:       "Crypto derivatives and spot trading platform",
+			//	RequiredFields:    []string{"api_key", "api_secret"},
+			//	SupportedFeatures: []string{"portfolio", "positions"},
+			//},
 		},
 	}
 }

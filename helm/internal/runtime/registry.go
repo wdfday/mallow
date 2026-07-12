@@ -62,7 +62,7 @@ type Registry struct {
 	syncStore    SyncStore
 	posLog       poslog.Log       // nil when NATS unavailable
 	tradeLog     perf.TradeLog    // JetStream HELM_TRADES — drained into PG by TradePersister
-	pnlSummer    HandPnLSummer    // postgres aggregate querier for RestorePnL
+	pnlSummer    HandPnLSummer    // postgres aggregate querier for RestorePnL + RestoreGuard
 	eventCounter HandEventCounter // postgres event-count aggregate for RestoreCounters
 
 	// ── Signal routing ────────────────────────────────────────────────────

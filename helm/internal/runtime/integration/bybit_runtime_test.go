@@ -77,14 +77,14 @@ func newBybitEnv(t *testing.T) *bybitTestEnv {
 
 	// Bybit has no PriceFetcher — use MarkPrice.
 	var price decimal.Decimal
-	if p, err := ex.MarkPrice(ctx, creds, "BTCUSDT"); err == nil && p.IsPositive() {
-		rt.UpdatePrice("BTCUSDT", p)
+	if p, err := ex.MarkPrice(ctx, creds, "ETHUSDT"); err == nil && p.IsPositive() {
+		rt.UpdatePrice("ETHUSDT", p)
 		price = p
-		t.Logf("BTCUSDT mark price seeded: %s", p)
+		t.Logf("ETHUSDT mark price seeded: %s", p)
 	} else {
 		t.Logf("mark price fetch failed (%v) — seeding approximate 65000", err)
 		price = decimal.NewFromFloat(65_000)
-		rt.UpdatePrice("BTCUSDT", price)
+		rt.UpdatePrice("ETHUSDT", price)
 	}
 
 	t.Cleanup(func() {
@@ -99,10 +99,10 @@ func newBybitHand(env *bybitTestEnv) *runtime.Hand {
 	strat := strategy.NewSignalFollower(0.3)
 	tact := tactics.New(tactics.SizingConfig{
 		Mode:     tactics.SizingFixedQty,
-		FixedQty: decimal.NewFromFloat(0.001),
+		FixedQty: decimal.NewFromFloat(0.1),
 	})
 	hand := runtime.NewHand(uuid.New(), env.rt.HelmID, env.rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
-	hand.Symbol = "BTCUSDT"
+	hand.Symbol = "ETHUSDT"
 	hand.StrategyName = "signal_follower"
 	hand.EnableEventSink()
 	return hand
@@ -113,17 +113,56 @@ func cleanupBybit(t *testing.T, ex *bybitact.Client, creds exchange.Credentials)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	orders, err := ex.ListOpenOrders(ctx, creds, "BTCUSDT")
+	orders, err := ex.ListOpenOrders(ctx, creds, "ETHUSDT")
 	if err != nil {
 		t.Logf("cleanup ListOpenOrders: %v (non-fatal)", err)
+	} else {
+		for _, o := range orders {
+			if err := ex.CancelOrder(ctx, creds, o.ID); err != nil {
+				t.Logf("cleanup CancelOrder %s: %v (non-fatal)", o.ID, err)
+			} else {
+				t.Logf("cleanup: cancelled order %s (%s)", o.ID, o.Side)
+			}
+		}
+	}
+
+	// Best-effort: stop orders (SL/TP legs) live in a separate order-filter bucket
+	// on Bybit v5 (orderFilter=StopOrder) and won't show up in the plain
+	// ListOpenOrders call above. api-demo.bybit.com is known to silently drop these
+	// (see INTEGRATION_TESTS.md), so cancellation failures here are expected and non-fatal.
+	stopOrders, err := ex.GetOrders(ctx, creds, "spot", "ETHUSDT", "", "StopOrder")
+	if err != nil {
+		t.Logf("cleanup GetOrders(StopOrder): %v (non-fatal — demo may not support the filter)", err)
 		return
 	}
-	for _, o := range orders {
+	for _, o := range stopOrders {
 		if err := ex.CancelOrder(ctx, creds, o.ID); err != nil {
-			t.Logf("cleanup CancelOrder %s: %v (non-fatal)", o.ID, err)
+			t.Logf("cleanup CancelOrder (stop) %s: %v (non-fatal, demo known to drop these)", o.ID, err)
 		} else {
-			t.Logf("cleanup: cancelled order %s (%s)", o.ID, o.Side)
+			t.Logf("cleanup: cancelled stop order %s (%s)", o.ID, o.Side)
 		}
+	}
+}
+
+// checkBybitStopOrders queries the StopOrder filter bucket and logs what it finds.
+// Best-effort diagnostic only — api-demo.bybit.com is documented (INTEGRATION_TESTS.md)
+// to accept spot stop orders and return valid IDs while silently dropping them, so an
+// empty result here does NOT necessarily mean PlaceExitOrders failed. Never asserted on.
+func checkBybitStopOrders(t *testing.T, ex *bybitact.Client, creds exchange.Credentials, symbol string) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	orders, err := ex.GetOrders(ctx, creds, "spot", symbol, "", "StopOrder")
+	if err != nil {
+		t.Logf("stop-order check: GetOrders(StopOrder) failed: %v (non-fatal)", err)
+		return
+	}
+	t.Logf("stop-order check: %d live StopOrder-filter order(s) for %s", len(orders), symbol)
+	for _, o := range orders {
+		t.Logf("  stop order: id=%s side=%s status=%s qty=%s filled_avg=%s", o.ID, o.Side, o.Status, o.Qty, o.FilledAvg)
+	}
+	if len(orders) == 0 {
+		t.Log("  (0 found — consistent with the documented demo silent-drop limitation, not necessarily a failure)")
 	}
 }
 
@@ -144,24 +183,27 @@ func TestBybit_AbsoluteSLTP(t *testing.T) {
 	defer hand.Stop()
 
 	placed := orderNotify(hand, 20*time.Second)
-	filled := fillNotify(hand, 30*time.Second)
+	filled := fillNotify(hand, 45*time.Second)
 
-	hand.DeliverSignal(longSigWithSLTP("BTCUSDT", sl, tp, false))
+	hand.DeliverSignal(longSigWithSLTP("ETHUSDT", sl, tp, false))
 
-	select {
-	case e := <-placed:
+	if e, ok := recvEvent(placed, 20*time.Second); ok {
 		t.Logf("placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
 		if e.Code == runtime.CodeOrderFailed {
+			if isBalanceError(e.Reason) {
+				t.Skipf("sandbox needs top-up: %s", e.Reason)
+			}
+			logHandState(t, env.rt, hand, "ETHUSDT")
 			t.Fatalf("entry order failed: %s", e.Reason)
 		}
-	case <-time.After(20 * time.Second):
+	} else {
+		logHandState(t, env.rt, hand, "ETHUSDT")
 		t.Fatal("timeout: entry order not placed within 20s")
 	}
 
-	select {
-	case e := <-filled:
+	if e, ok := recvEvent(filled, 45*time.Second); ok {
 		t.Logf("filled: order_id=%s qty=%s fill_price=%s", e.OrderID, e.Qty, e.Price)
-	case <-time.After(30 * time.Second):
+	} else {
 		t.Log("fill not observed — giving bracket goroutine time")
 	}
 
@@ -176,6 +218,8 @@ func TestBybit_AbsoluteSLTP(t *testing.T) {
 	// We assert the API call succeeded (no CodeOrderFailed in activity) rather than
 	// checking ListOpenOrders count which will always be 0 on demo.
 	t.Log("PlaceExitOrders API call succeeded (demo drops stop orders silently — verify on production)")
+	checkBybitStopOrders(t, env.ex, env.creds, "ETHUSDT")
+	logHandState(t, env.rt, hand, "ETHUSDT")
 }
 
 // TestBybit_OffsetSLTP tests IsOffset=true with delta offsets.
@@ -183,8 +227,8 @@ func TestBybit_AbsoluteSLTP(t *testing.T) {
 func TestBybit_OffsetSLTP(t *testing.T) {
 	env := newBybitEnv(t)
 
-	const slOffset = -2000.0
-	const tpOffset = 4000.0
+	const slOffset = -50.0
+	const tpOffset = 100.0
 	t.Logf("signal offsets: SL%+.0f TP%+.0f (isOffset=true)", slOffset, tpOffset)
 
 	hand := newBybitHand(env)
@@ -192,30 +236,33 @@ func TestBybit_OffsetSLTP(t *testing.T) {
 	defer hand.Stop()
 
 	placed := orderNotify(hand, 20*time.Second)
-	filled := fillNotify(hand, 30*time.Second)
+	filled := fillNotify(hand, 45*time.Second)
 
-	hand.DeliverSignal(longSigWithSLTP("BTCUSDT",
+	hand.DeliverSignal(longSigWithSLTP("ETHUSDT",
 		decimal.NewFromFloat(slOffset),
 		decimal.NewFromFloat(tpOffset),
 		true,
 	))
 
-	select {
-	case e := <-placed:
+	if e, ok := recvEvent(placed, 20*time.Second); ok {
 		t.Logf("placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
 		if e.Code == runtime.CodeOrderFailed {
+			if isBalanceError(e.Reason) {
+				t.Skipf("sandbox needs top-up: %s", e.Reason)
+			}
+			logHandState(t, env.rt, hand, "ETHUSDT")
 			t.Fatalf("entry order failed: %s", e.Reason)
 		}
-	case <-time.After(20 * time.Second):
+	} else {
+		logHandState(t, env.rt, hand, "ETHUSDT")
 		t.Fatal("timeout: entry order not placed within 20s")
 	}
 
 	var fillPrice decimal.Decimal
-	select {
-	case e := <-filled:
+	if e, ok := recvEvent(filled, 45*time.Second); ok {
 		fillPrice = e.Price
 		t.Logf("filled: order_id=%s qty=%s fill_price=%s", e.OrderID, e.Qty, fillPrice)
-	case <-time.After(30 * time.Second):
+	} else {
 		t.Log("fill not observed — continuing with bracket check")
 	}
 
@@ -231,4 +278,153 @@ func TestBybit_OffsetSLTP(t *testing.T) {
 	// Same demo limitation as TestBybit_AbsoluteSLTP: spot stop orders are silently
 	// dropped by api-demo.bybit.com. Verify offset resolution and API call success only.
 	t.Log("PlaceExitOrders API call succeeded (demo drops stop orders silently — verify on production)")
+	checkBybitStopOrders(t, env.ex, env.creds, "ETHUSDT")
+	logHandState(t, env.rt, hand, "ETHUSDT")
+}
+
+// TestBybit_PyramidAndKill mirrors TestBinance_PyramidAndKill: verifies that a
+// pyramid-enabled hand accepts a 2nd entry on the same symbol up to maxUnits, and
+// that Kill(ctx) flattens the accumulated spot position synchronously. Parity
+// coverage for Bybit — the bracket/offset tests above only exercise a single entry.
+func TestBybit_PyramidAndKill(t *testing.T) {
+	env := newBybitEnv(t)
+	if env.price.IsZero() {
+		t.Skip("price not available — cannot compute pyramid sizes")
+	}
+
+	const symbol = "ETHUSDT"
+
+	strat := strategy.NewSignalFollower(0.3)
+	tact := tactics.New(tactics.SizingConfig{
+		Mode:     tactics.SizingFixedQty,
+		FixedQty: decimal.NewFromFloat(0.1),
+	})
+	hand := runtime.NewHand(
+		uuid.New(),
+		env.rt.HelmID,
+		env.rt,
+		strat,
+		tact,
+		true, // pyramid = true
+		3,    // maxUnits = 3
+		0,    // signalTTL = 0
+		nil,  // futuresConfig = nil
+		domain.OrderTypeMarket,
+		0,  // limitTimeoutSec = 0
+		"", // limitFallback = ""
+		domain.HandGuardConfig{},
+		decimal.Zero,
+	)
+	hand.Symbol = symbol
+	hand.StrategyName = "signal_follower"
+	hand.EnableEventSink()
+
+	hand.Start()
+	defer func() {
+		if hand.IsRunning() {
+			hand.Stop()
+		}
+	}()
+
+	// 1st entry.
+	placed1 := orderNotify(hand, 20*time.Second)
+	filled1 := fillNotify(hand, 45*time.Second)
+	hand.DeliverSignal(longSigWithSLTP(symbol, decimal.Zero, decimal.Zero, false))
+
+	var fill1OrderID string
+	if e, ok := recvEvent(placed1, 20*time.Second); ok {
+		t.Logf("1st order placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
+		if e.Code == runtime.CodeOrderFailed {
+			if isBalanceError(e.Reason) {
+				t.Skipf("sandbox needs top-up: %s", e.Reason)
+			}
+			logHandState(t, env.rt, hand, symbol)
+			t.Fatalf("1st order failed: %s", e.Reason)
+		}
+	} else {
+		logHandState(t, env.rt, hand, symbol)
+		t.Fatal("timeout: 1st order not placed")
+	}
+
+	if e, ok := recvEvent(filled1, 45*time.Second); ok {
+		fill1OrderID = e.OrderID
+		t.Logf("1st fill: order_id=%s qty=%s price=%s", e.OrderID, e.Qty, e.Price)
+	} else {
+		logHandState(t, env.rt, hand, symbol)
+		t.Fatal("timeout: 1st fill not observed")
+	}
+
+	pos := env.rt.Portfolio.GetPosition(symbol)
+	if pos == nil || !pos.Qty.IsPositive() {
+		t.Fatal("expected positive position after 1st fill")
+	}
+	t.Logf("position after 1st fill: qty=%s avg_px=%s", pos.Qty, pos.AvgPrice)
+
+	// 2nd entry (pyramid add). The avg-anchor gate only adds to a winning leg, so
+	// nudge the known price above the entry avg first (a live tick rarely moves
+	// on its own within the test window).
+	env.rt.UpdatePrice(symbol, pos.AvgPrice.Mul(decimal.NewFromFloat(1.001)))
+	placed2 := orderNotifyNew(hand, fill1OrderID, 20*time.Second)
+	filled2 := fillNotify(hand, 45*time.Second)
+	hand.DeliverSignal(longSigWithSLTP(symbol, decimal.Zero, decimal.Zero, false))
+
+	if e, ok := recvEvent(placed2, 20*time.Second); ok {
+		t.Logf("2nd order placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
+		if e.Code == runtime.CodeOrderFailed {
+			logHandState(t, env.rt, hand, symbol)
+			t.Fatalf("2nd order failed: %s", e.Reason)
+		}
+	} else {
+		logHandState(t, env.rt, hand, symbol)
+		t.Fatal("timeout: 2nd order not placed")
+	}
+
+	if e, ok := recvEvent(filled2, 45*time.Second); ok {
+		t.Logf("2nd fill: order_id=%s qty=%s price=%s", e.OrderID, e.Qty, e.Price)
+	} else {
+		logHandState(t, env.rt, hand, symbol)
+		t.Fatal("timeout: 2nd fill not observed")
+	}
+
+	pos = env.rt.Portfolio.GetPosition(symbol)
+	if pos == nil || pos.Qty.LessThan(decimal.NewFromFloat(0.19)) {
+		t.Fatalf("expected accumulated position size >= 0.19, got %v", pos)
+	}
+	t.Logf("accumulated position: qty=%s avg_px=%s", pos.Qty, pos.AvgPrice)
+
+	// Trigger KILL to emergency flatten the accumulated position.
+	killCtx, killCancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer killCancel()
+
+	t.Log("triggering Hand.Kill()...")
+	hand.Kill(killCtx)
+
+	// api-demo.bybit.com fills are observed to land via the REST poll cycle at ~30s,
+	// same latency seen on the entry/pyramid fills above — give the flatten sell the
+	// same headroom (empirically even 40s wasn't always enough; see INTEGRATION_TESTS.md).
+	flatDeadline := time.Now().Add(60 * time.Second)
+	var flat bool
+	for time.Now().Before(flatDeadline) {
+		pos = env.rt.Portfolio.GetPosition(symbol)
+		if pos == nil || pos.Qty.IsZero() {
+			flat = true
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	logHandState(t, env.rt, hand, symbol)
+	if !flat {
+		t.Errorf("expected position to be flat after Kill, but got qty = %s", pos.Qty)
+	} else {
+		t.Log("position successfully flattened after Kill")
+	}
+
+	if hand.IsRunning() {
+		t.Error("expected hand to be stopped after Kill")
+	}
+	h := hand.Health()
+	if h.Status != runtime.HealthKilled {
+		t.Errorf("expected hand health status to be HealthKilled, got %s", h.Status)
+	}
 }

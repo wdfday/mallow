@@ -304,6 +304,63 @@ func (h *Hand) RestorePnL(ctx context.Context, events []poslog.Event) {
 	)
 }
 
+// RestoreGuard rebuilds the sliding-window edge-risk guard (guard.ring/head/full/
+// consecLoss) from the hand's last WindowTrades closed trades in PostgreSQL. Without
+// this, checkEdgeRisk's ring buffer is always fresh/zero-valued after any restart
+// (NewHand builds a zero-valued handEdgeGuard unconditionally) — a hand mid-way
+// through a losing streak (e.g. 4/5 toward MaxConsecLoss) would silently have that
+// streak reset to 0 on restart. That defeats the guard exactly when a losing streak
+// is in progress.
+//
+// consecLoss is deliberately bounded by the same WindowTrades query, not the full
+// trade history: any win within the window resets the streak to 0 anyway, and a
+// streak longer than WindowTrades would already have tripped MaxTotalLossPct/
+// MaxAvgLossPct first in practice — so nobody configures MaxConsecLoss > WindowTrades.
+//
+// Only rebuilds state — does not re-run checkEdgeRisk's breach evaluation or
+// auto-stop. If a threshold was already breached before shutdown, checkEdgeRisk would
+// have auto-stopped the hand at that time (persisted status reflects it); this only
+// ensures the NEXT live closing fill after restart evaluates against correctly
+// restored history instead of an empty window.
+func (h *Hand) RestoreGuard(ctx context.Context) {
+	if h.guard.cfg.WindowTrades == 0 {
+		return
+	}
+	ps := h.helmRuntime.PnLSummer
+	if ps == nil {
+		return
+	}
+
+	closes, err := ps.RecentClosedPnL(ctx, h.id, h.guard.cfg.WindowTrades)
+	if err != nil {
+		h.log.Warn("hand: edge-risk guard restore query failed", "err", err)
+		return
+	}
+	if len(closes) == 0 {
+		return
+	}
+
+	for _, pnl := range closes {
+		h.guard.push(pnl)
+	}
+
+	// Count trailing losses from the most recent close backward, same rule
+	// checkEdgeRisk uses live: negative pnl increments the streak, a non-negative
+	// close resets it.
+	consecLoss := 0
+	for i := len(closes) - 1; i >= 0; i-- {
+		if !closes[i].IsNegative() {
+			break
+		}
+		consecLoss++
+	}
+	h.guard.consecLoss = consecLoss
+
+	h.log.Info("hand: edge-risk guard restored from postgres",
+		"closes_replayed", len(closes), "consec_loss", consecLoss,
+		"window_trades", h.guard.cfg.WindowTrades)
+}
+
 // RestoreCounters rebuilds the activity counters (signals/orders) from the persisted
 // event log on startup, in one aggregate query. PnL/win/loss come from RestorePnL.
 //

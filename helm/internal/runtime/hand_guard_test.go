@@ -15,6 +15,8 @@ package runtime_test
 // go test -v -run TestGuard ./internal/runtime/ -count=1
 
 import (
+	"context"
+	"errors"
 	"testing"
 
 	"github.com/google/uuid"
@@ -445,4 +447,142 @@ func TestGuard_RingWrap_TwoLossesFireWhenFull(t *testing.T) {
 	noCode(t, h, runtime.CodeHandAutoStopped, simWait)
 	roundTrip(t, sim, rt, h, symbol, 100, 10) // -90 USDT; window full, sum=-180 < -100 → FIRE
 	mustWaitCodeCh(t, stoppedCh, runtime.CodeHandAutoStopped, simWait)
+}
+
+// ── RestoreGuard: edge-risk guard survives a restart ─────────────────────────
+//
+// Without RestoreGuard, NewHand always builds a fresh, zero-valued handEdgeGuard —
+// on a real restart (hydrateHands + reconcileHand replay), a hand mid-way through a
+// losing streak would silently have that streak reset to 0. RestoreGuard rebuilds it
+// from a single postgres query (HandPnLSummer.RecentClosedPnL) instead of replaying
+// poslog. These tests fake that querier and feed it canned PnL history, then verify
+// the guard reacts as if it had never restarted.
+
+// fakePnLSummer is a canned HandPnLSummer for RestoreGuard tests — only
+// RecentClosedPnL matters here; SumHandPnL is unused by these tests.
+type fakePnLSummer struct {
+	recentPnL []decimal.Decimal
+	err       error
+}
+
+func (f fakePnLSummer) SumHandPnL(_ context.Context, _ uuid.UUID) (decimal.Decimal, decimal.Decimal, int64, int64, error) {
+	return decimal.Zero, decimal.Zero, 0, 0, nil
+}
+
+func (f fakePnLSummer) RecentClosedPnL(_ context.Context, _ uuid.UUID, limit int) ([]decimal.Decimal, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if limit > 0 && len(f.recentPnL) > limit {
+		return f.recentPnL[len(f.recentPnL)-limit:], nil
+	}
+	return f.recentPnL, nil
+}
+
+// TestRestoreGuard_ConsecLossSurvivesRestart verifies that a consecutive-loss streak
+// built up before a (simulated) restart still counts toward MaxConsecLoss afterward,
+// instead of restarting from 0.
+func TestRestoreGuard_ConsecLossSurvivesRestart(t *testing.T) {
+	const symbol = "BTCUSDT"
+	guard := domain.HandGuardConfig{
+		WindowTrades:  5, // wide enough that total/avg/single-loss thresholds never fire
+		MaxConsecLoss: 3,
+	}
+
+	sim := newSim(10_000)
+	rt := buildSimRuntime(sim, 100_000, 10)
+	defer rt.Stop()
+	rt.UpdatePrice(symbol, decimal.NewFromFloat(10_000))
+
+	h := addGuardHand(rt, symbol, guard, decimal.NewFromFloat(10_000))
+
+	// Simulate what a restart would query: 2 consecutive losing closes already
+	// happened "before" this process started.
+	rt.PnLSummer = fakePnLSummer{recentPnL: []decimal.Decimal{decimal.NewFromInt(-50), decimal.NewFromInt(-50)}}
+	h.RestoreGuard(context.Background())
+
+	h.Start()
+	defer h.Stop()
+
+	stoppedCh := h.Subscribe(256)
+	// Exactly one more loss should now reach MaxConsecLoss=3 and auto-stop —
+	// a fresh (non-restored) guard would only be at streak=1 here.
+	roundTrip(t, sim, rt, h, symbol, 10_000, 9_900)
+	mustWaitCodeCh(t, stoppedCh, runtime.CodeHandAutoStopped, simWait)
+}
+
+// TestRestoreGuard_WinInHistoryResetsStreak verifies that if the most recent closed
+// trade before restart was a win, the restored consecLoss streak is 0, not just
+// "whatever the losses before it summed to".
+func TestRestoreGuard_WinInHistoryResetsStreak(t *testing.T) {
+	const symbol = "ETHUSDT"
+	guard := domain.HandGuardConfig{
+		WindowTrades:  5,
+		MaxConsecLoss: 2,
+	}
+
+	sim := newSim(2_000)
+	rt := buildSimRuntime(sim, 100_000, 10)
+	defer rt.Stop()
+	rt.UpdatePrice(symbol, decimal.NewFromFloat(2_000))
+
+	h := addGuardHand(rt, symbol, guard, decimal.NewFromFloat(10_000))
+
+	// Two losses, then a win — the win must reset the streak to 0 on restore.
+	rt.PnLSummer = fakePnLSummer{recentPnL: []decimal.Decimal{
+		decimal.NewFromInt(-50), decimal.NewFromInt(-50), decimal.NewFromInt(30),
+	}}
+	h.RestoreGuard(context.Background())
+
+	h.Start()
+	defer h.Stop()
+
+	// One more loss should only bring the streak to 1 — must NOT breach MaxConsecLoss=2.
+	roundTrip(t, sim, rt, h, symbol, 2_000, 1_980)
+	noCode(t, h, runtime.CodeHandAutoStopped, simWait)
+}
+
+// TestRestoreGuard_Disabled_NoOp verifies RestoreGuard is a safe no-op when the
+// guard is disabled (WindowTrades=0), matching checkEdgeRisk's own early-out.
+func TestRestoreGuard_Disabled_NoOp(t *testing.T) {
+	const symbol = "BTCUSDT"
+	guard := domain.HandGuardConfig{WindowTrades: 0}
+
+	rt := buildSimRuntime(newSim(10_000), 100_000, 10)
+	defer rt.Stop()
+	h := addGuardHand(rt, symbol, guard, decimal.NewFromFloat(10_000))
+
+	// Must not panic even with a fake summer standing by — WindowTrades==0 must
+	// return before ever touching PnLSummer.
+	rt.PnLSummer = fakePnLSummer{recentPnL: []decimal.Decimal{decimal.NewFromInt(-100), decimal.NewFromInt(-100), decimal.NewFromInt(-100)}}
+	h.RestoreGuard(context.Background())
+}
+
+// TestRestoreGuard_NilOrErroringSummer_NoOp verifies RestoreGuard tolerates a nil
+// PnLSummer and a query error without panicking, leaving the guard untouched
+// (streak 0) in both cases.
+func TestRestoreGuard_NilOrErroringSummer_NoOp(t *testing.T) {
+	const symbol = "BTCUSDT"
+	guard := domain.HandGuardConfig{WindowTrades: 3, MaxConsecLoss: 1}
+
+	sim := newSim(10_000)
+	rt := buildSimRuntime(sim, 100_000, 10)
+	defer rt.Stop()
+	rt.UpdatePrice(symbol, decimal.NewFromFloat(10_000))
+
+	h := addGuardHand(rt, symbol, guard, decimal.NewFromFloat(10_000))
+
+	rt.PnLSummer = nil
+	h.RestoreGuard(context.Background())
+
+	rt.PnLSummer = fakePnLSummer{err: errors.New("connection reset")}
+	h.RestoreGuard(context.Background())
+
+	h.Start()
+	defer h.Stop()
+
+	// No auto-stop should fire just from calling RestoreGuard against a nil or
+	// erroring summer — it must not panic and must leave the guard in its
+	// zero-valued starting state.
+	noCode(t, h, runtime.CodeHandAutoStopped, simWait)
 }

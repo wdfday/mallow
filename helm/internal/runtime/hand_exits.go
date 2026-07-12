@@ -400,11 +400,6 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 	// Write audit trade record: exit_price="", gross_pnl="0", exit_reason="orphaned".
 	h.appendOrphanTradeRecord(ctx, affectedLeg, "manual")
 
-	// Drop the leg from the hand's view of the shared portfolio.
-	// RemovePosition acquires tradeMu internally — Hand must never lock tradeMu directly to
-	// avoid a mutex-ordering violation (tradeMu is owned by HelmRuntime, not Hand).
-	h.helmRuntime.RemovePosition(affectedSymbol)
-
 	// Clear local exit level tracking for this symbol.
 	h.mu.Lock()
 	delete(h.exitLevels, affectedSymbol)

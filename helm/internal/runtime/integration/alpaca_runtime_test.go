@@ -165,25 +165,24 @@ func TestAlpaca_AbsoluteSLTP(t *testing.T) {
 	defer hand.Stop()
 
 	placed := orderNotify(hand, 20*time.Second)
-	filled := fillNotify(hand, 30*time.Second)
+	filled := fillNotify(hand, 40*time.Second)
 
 	hand.DeliverSignal(longSigWithSLTP("AAPL", sl, tp, false))
 
-	select {
-	case e := <-placed:
+	if e, ok := recvEvent(placed, 20*time.Second); ok {
 		t.Logf("placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
 		if e.Code == runtime.CodeOrderFailed {
 			t.Logf("entry order failed (market may be closed): %s — skipping bracket check", e.Reason)
 			return
 		}
-	case <-time.After(20 * time.Second):
+	} else {
+		logHandState(t, env.rt, hand, "AAPL")
 		t.Fatal("timeout: entry order not placed within 20s")
 	}
 
-	select {
-	case e := <-filled:
+	if e, ok := recvEvent(filled, 40*time.Second); ok {
 		t.Logf("filled: order_id=%s qty=%s fill_price=%s", e.OrderID, e.Qty, e.Price)
-	case <-time.After(30 * time.Second):
+	} else {
 		t.Log("fill not observed — market may not have filled; giving bracket goroutine time")
 	}
 
@@ -205,6 +204,7 @@ func TestAlpaca_AbsoluteSLTP(t *testing.T) {
 	if len(openOrders) < 2 {
 		t.Errorf("expected ≥2 bracket orders (Stop GTC + Limit GTC), got %d", len(openOrders))
 	}
+	logHandState(t, env.rt, hand, "AAPL")
 }
 
 // TestAlpaca_OffsetSLTP tests IsOffset=true: SL/TP as deltas from fill price.
@@ -223,7 +223,7 @@ func TestAlpaca_OffsetSLTP(t *testing.T) {
 	defer hand.Stop()
 
 	placed := orderNotify(hand, 20*time.Second)
-	filled := fillNotify(hand, 30*time.Second)
+	filled := fillNotify(hand, 40*time.Second)
 
 	hand.DeliverSignal(longSigWithSLTP("AAPL",
 		decimal.NewFromFloat(slOffset),
@@ -231,23 +231,22 @@ func TestAlpaca_OffsetSLTP(t *testing.T) {
 		true,
 	))
 
-	select {
-	case e := <-placed:
+	if e, ok := recvEvent(placed, 20*time.Second); ok {
 		t.Logf("placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
 		if e.Code == runtime.CodeOrderFailed {
 			t.Logf("entry order failed (market may be closed): %s — skipping bracket check", e.Reason)
 			return
 		}
-	case <-time.After(20 * time.Second):
+	} else {
+		logHandState(t, env.rt, hand, "AAPL")
 		t.Fatal("timeout: entry order not placed within 20s")
 	}
 
 	var fillPrice decimal.Decimal
-	select {
-	case e := <-filled:
+	if e, ok := recvEvent(filled, 40*time.Second); ok {
 		fillPrice = e.Price
 		t.Logf("filled: order_id=%s qty=%s fill_price=%s", e.OrderID, e.Qty, fillPrice)
-	case <-time.After(30 * time.Second):
+	} else {
 		t.Log("fill not observed — continuing with bracket check")
 	}
 
@@ -273,5 +272,151 @@ func TestAlpaca_OffsetSLTP(t *testing.T) {
 
 	if len(openOrders) < 2 {
 		t.Errorf("expected ≥2 bracket orders (Stop GTC + Limit GTC), got %d", len(openOrders))
+	}
+	logHandState(t, env.rt, hand, "AAPL")
+}
+
+// TestAlpaca_PyramidAndKill mirrors TestBinance_PyramidAndKill: verifies that a
+// pyramid-enabled hand accepts a 2nd entry on the same symbol up to maxUnits, and
+// that Kill(ctx) flattens the accumulated equity position synchronously. Parity
+// coverage for Alpaca — the bracket/offset tests above only exercise a single entry.
+//
+// Skips entirely if the entry order fails (market closed) — see isUSMarketOpen guard
+// in newAlpacaEnv, which already prevents most of this, but the 2nd entry can still
+// legitimately fail near the open/close edges.
+func TestAlpaca_PyramidAndKill(t *testing.T) {
+	env := newAlpacaEnv(t)
+	if env.price.IsZero() {
+		t.Skip("price not available — cannot compute pyramid sizes")
+	}
+
+	const symbol = "AAPL"
+
+	strat := strategy.NewSignalFollower(0.3)
+	tact := tactics.New(tactics.SizingConfig{
+		Mode:     tactics.SizingFixedQty,
+		FixedQty: decimal.NewFromFloat(1), // 1 share minimum for Alpaca
+	})
+	hand := runtime.NewHand(
+		uuid.New(),
+		env.rt.HelmID,
+		env.rt,
+		strat,
+		tact,
+		true, // pyramid = true
+		3,    // maxUnits = 3
+		0,    // signalTTL = 0
+		nil,  // futuresConfig = nil
+		domain.OrderTypeMarket,
+		0,  // limitTimeoutSec = 0
+		"", // limitFallback = ""
+		domain.HandGuardConfig{},
+		decimal.Zero,
+	)
+	hand.Symbol = symbol
+	hand.StrategyName = "signal_follower"
+	hand.EnableEventSink()
+
+	hand.Start()
+	defer func() {
+		if hand.IsRunning() {
+			hand.Stop()
+		}
+	}()
+
+	// 1st entry.
+	placed1 := orderNotify(hand, 20*time.Second)
+	filled1 := fillNotify(hand, 40*time.Second)
+	hand.DeliverSignal(longSigWithSLTP(symbol, decimal.Zero, decimal.Zero, false))
+
+	if e, ok := recvEvent(placed1, 20*time.Second); ok {
+		t.Logf("1st order placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
+		if e.Code == runtime.CodeOrderFailed {
+			t.Logf("1st order failed (market may be closed): %s — skipping test", e.Reason)
+			return
+		}
+	} else {
+		logHandState(t, env.rt, hand, symbol)
+		t.Fatal("timeout: 1st order not placed")
+	}
+
+	var fill1OrderID string
+	if e, ok := recvEvent(filled1, 40*time.Second); ok {
+		fill1OrderID = e.OrderID
+		t.Logf("1st fill: order_id=%s qty=%s price=%s", e.OrderID, e.Qty, e.Price)
+	} else {
+		logHandState(t, env.rt, hand, symbol)
+		t.Fatal("timeout: 1st fill not observed")
+	}
+
+	pos := env.rt.Portfolio.GetPosition(symbol)
+	if pos == nil || !pos.Qty.IsPositive() {
+		t.Fatal("expected positive position after 1st fill")
+	}
+	t.Logf("position after 1st fill: qty=%s avg_px=%s", pos.Qty, pos.AvgPrice)
+
+	// 2nd entry (pyramid add). The avg-anchor gate only adds to a winning leg, so
+	// nudge the known price above the entry avg first (a live tick rarely moves
+	// on its own within the test window).
+	env.rt.UpdatePrice(symbol, pos.AvgPrice.Mul(decimal.NewFromFloat(1.001)))
+	placed2 := orderNotifyNew(hand, fill1OrderID, 20*time.Second)
+	filled2 := fillNotify(hand, 40*time.Second)
+	hand.DeliverSignal(longSigWithSLTP(symbol, decimal.Zero, decimal.Zero, false))
+
+	if e, ok := recvEvent(placed2, 20*time.Second); ok {
+		t.Logf("2nd order placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
+		if e.Code == runtime.CodeOrderFailed {
+			logHandState(t, env.rt, hand, symbol)
+			t.Fatalf("2nd order failed: %s", e.Reason)
+		}
+	} else {
+		logHandState(t, env.rt, hand, symbol)
+		t.Fatal("timeout: 2nd order not placed")
+	}
+
+	if e, ok := recvEvent(filled2, 40*time.Second); ok {
+		t.Logf("2nd fill: order_id=%s qty=%s price=%s", e.OrderID, e.Qty, e.Price)
+	} else {
+		logHandState(t, env.rt, hand, symbol)
+		t.Fatal("timeout: 2nd fill not observed")
+	}
+
+	pos = env.rt.Portfolio.GetPosition(symbol)
+	if pos == nil || pos.Qty.LessThan(decimal.NewFromFloat(1.9)) {
+		t.Fatalf("expected accumulated position size >= 1.9 shares, got %v", pos)
+	}
+	t.Logf("accumulated position: qty=%s avg_px=%s", pos.Qty, pos.AvgPrice)
+
+	// Trigger KILL to emergency flatten the accumulated position.
+	killCtx, killCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer killCancel()
+
+	t.Log("triggering Hand.Kill()...")
+	hand.Kill(killCtx)
+
+	flatDeadline := time.Now().Add(10 * time.Second)
+	var flat bool
+	for time.Now().Before(flatDeadline) {
+		pos = env.rt.Portfolio.GetPosition(symbol)
+		if pos == nil || pos.Qty.IsZero() {
+			flat = true
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+
+	logHandState(t, env.rt, hand, symbol)
+	if !flat {
+		t.Errorf("expected position to be flat after Kill, but got qty = %s", pos.Qty)
+	} else {
+		t.Log("position successfully flattened after Kill")
+	}
+
+	if hand.IsRunning() {
+		t.Error("expected hand to be stopped after Kill")
+	}
+	h := hand.Health()
+	if h.Status != runtime.HealthKilled {
+		t.Errorf("expected hand health status to be HealthKilled, got %s", h.Status)
 	}
 }

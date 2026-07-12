@@ -32,7 +32,7 @@ func (r *HelmRuntime) AvailableCash() decimal.Decimal {
 	var handCashSum decimal.Decimal
 
 	for _, e := range r.hands {
-		deployed := e.h.DeployedCapital()
+		deployed := e.h.EntryCap()
 		handCash := e.h.realizedEquity().Sub(deployed)
 		if handCash.IsPositive() {
 			handCashSum = handCashSum.Add(handCash)

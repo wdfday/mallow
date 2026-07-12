@@ -155,17 +155,19 @@ func (m *mockSpawner) RotateCreds(_ uuid.UUID, _ exchange.Credentials) {}
 func (m *mockSpawner) PurgeHelmData(_, _ uuid.UUID)                    {}
 
 type mockBotLifecycle struct {
-	stopped []string
-	started []string
-	killed  []string
+	stopped           []string
+	started           []string
+	killed            []string
+	nonTerminalResult []string // hand IDs returned by NonTerminalHandIDs
 }
 
 func (m *mockBotLifecycle) StopBots(_ uuid.UUID, ids []string) { m.stopped = append(m.stopped, ids...) }
 func (m *mockBotLifecycle) StartBots(_ uuid.UUID, ids []string) {
 	m.started = append(m.started, ids...)
 }
-func (m *mockBotLifecycle) KillBots(_ uuid.UUID, ids []string) { m.killed = append(m.killed, ids...) }
-func (m *mockBotLifecycle) DeleteBotsByHelm(_ uuid.UUID) error { return nil }
+func (m *mockBotLifecycle) KillBots(_ uuid.UUID, ids []string)      { m.killed = append(m.killed, ids...) }
+func (m *mockBotLifecycle) NonTerminalHandIDs(_ uuid.UUID) []string { return m.nonTerminalResult }
+func (m *mockBotLifecycle) DeleteBotsByHelm(_ uuid.UUID) error      { return nil }
 
 // ── test helpers ─────────────────────────────────────────────────────────────
 
@@ -212,12 +214,33 @@ func TestEnable_SetsStatusActive(t *testing.T) {
 	}
 }
 
+// Enable must reject a paused/halted/error helm outright — same reasoning as
+// Disable: those states have their own dedicated recovery action, and Enable's
+// Spawn is a no-op against an already-live runtime, so allowing Enable here
+// would flip the DB status to active while the runtime stays gated.
+func TestEnable_RejectsNonActiveNonDisabledStates(t *testing.T) {
+	for _, status := range []domain.HelmStatus{domain.HelmStatusPaused, domain.HelmStatusHalted, domain.HelmStatusError} {
+		svc, _, _, store := setup()
+		id := uuid.New()
+		_ = store.Save(newOrch(id, status))
+
+		err := svc.Enable(id)
+		if err == nil {
+			t.Fatalf("Enable(%s) expected an error, got nil", status)
+		}
+		got, _ := store.Get(id)
+		if got.Status != status {
+			t.Fatalf("Enable(%s) must not change status, got %q", status, got.Status)
+		}
+	}
+}
+
 func TestDisable_PersistsDisabledAndKillsBots(t *testing.T) {
 	svc, spawner, bots, store := setup()
 	id := uuid.New()
 	_ = store.Save(newOrch(id, domain.HelmStatusActive))
 
-	spawner.pauseResult = []string{"bot-x", "bot-y"}
+	bots.nonTerminalResult = []string{"bot-x", "bot-y"}
 	spawner.teardownResult = []string{"bot-x", "bot-y"}
 
 	if err := svc.Disable(id); err != nil {
@@ -243,6 +266,52 @@ func TestDisable_PauseCalledBeforeKill(t *testing.T) {
 
 	if len(spawner.paused) == 0 {
 		t.Fatal("Disable must call spawner.Pause before killing bots")
+	}
+}
+
+// Disable must reject a paused/halted/error helm outright: those states have
+// their own dedicated recovery action (resume/halt-reset/rotate-key) that
+// un-gates the runtime correctly, so jumping straight to disable is rejected
+// rather than silently tearing the runtime down from a gated state.
+func TestDisable_RejectsNonActiveStates(t *testing.T) {
+	for _, status := range []domain.HelmStatus{domain.HelmStatusPaused, domain.HelmStatusHalted, domain.HelmStatusError} {
+		svc, _, bots, store := setup()
+		id := uuid.New()
+		_ = store.Save(newOrch(id, status))
+
+		err := svc.Disable(id)
+		if err == nil {
+			t.Fatalf("Disable(%s) expected an error, got nil", status)
+		}
+		if len(bots.killed) != 0 {
+			t.Fatalf("Disable(%s) must not kill any bots when rejected, got %v", status, bots.killed)
+		}
+		got, _ := store.Get(id)
+		if got.Status != status {
+			t.Fatalf("Disable(%s) must not change status, got %q", status, got.Status)
+		}
+	}
+}
+
+// NonTerminalHandIDs (rather than spawner.Pause's live "was running" list) is
+// still what drives the kill list from a valid active→disabled transition —
+// IsRunning() only reflects a hand runner's live state and can lag behind what
+// actually has a position open at the exchange (e.g. a runner that crashed
+// mid-position), so persisted status is the correct source of truth here.
+func TestDisable_FromActive_KillsNonTerminalBots(t *testing.T) {
+	svc, spawner, bots, store := setup()
+	id := uuid.New()
+	_ = store.Save(newOrch(id, domain.HelmStatusActive))
+
+	spawner.pauseResult = nil // simulates a runner whose live IsRunning() already lagged
+	bots.nonTerminalResult = []string{"bot-x", "bot-y"}
+
+	if err := svc.Disable(id); err != nil {
+		t.Fatalf("Disable returned error: %v", err)
+	}
+
+	if len(bots.killed) != 2 {
+		t.Fatalf("expected 2 hands killed from NonTerminalHandIDs despite empty Pause result, got %d", len(bots.killed))
 	}
 }
 

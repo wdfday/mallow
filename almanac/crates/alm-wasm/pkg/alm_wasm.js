@@ -7,3 +7,4 @@ wasm.__wbindgen_start();
 export {
     ChartState, heikin_ashi, indicator_catalog, init, list_indicators, list_mtf_strategies, list_strategies, metric_catalog, run_indicators, smooth_ha, validate_script
 } from "./alm_wasm_bg.js";
+export { wasm as __wasm }

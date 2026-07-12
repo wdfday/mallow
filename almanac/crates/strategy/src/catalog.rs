@@ -102,7 +102,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let sma20 = ind.sma(20);",
-            example: "if close > sma20[0] { long = 1; }",
+            example: "if close > sma20[0] { long = true; }",
             overlay: true,
         },
         IndicatorMeta {
@@ -112,7 +112,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let ema9 = ind.ema(9); let ema21 = ind.ema(21);",
-            example: "if ema9[0] > ema21[0] && ema9[1] <= ema21[1] { long = 1; }",
+            example: "if ema9[0] > ema21[0] && ema9[1] <= ema21[1] { long = true; }",
             overlay: true,
         },
         IndicatorMeta {
@@ -122,7 +122,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let wma14 = ind.wma(14);",
-            example: "if close > wma14[0] { long = 1; }",
+            example: "if close > wma14[0] { long = true; }",
             overlay: true,
         },
         IndicatorMeta {
@@ -132,7 +132,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let hma20 = ind.hma(20);",
-            example: "if hma20[0] > hma20[1] { long = 1; }",
+            example: "if hma20[0] > hma20[1] { long = true; }",
             overlay: true,
         },
         IndicatorMeta {
@@ -142,7 +142,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let dema9 = ind.dema(9); let dema21 = ind.dema(21);",
-            example: "if dema9[0] > dema21[0] && dema9[1] <= dema21[1] { long = 1; }",
+            example: "if dema9[0] > dema21[0] && dema9[1] <= dema21[1] { long = true; }",
             overlay: true,
         },
         IndicatorMeta {
@@ -152,7 +152,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let tema9 = ind.tema(9); let tema21 = ind.tema(21);",
-            example: "if tema9[0] > tema21[0] && tema9[1] <= tema21[1] { long = 1; }",
+            example: "if tema9[0] > tema21[0] && tema9[1] <= tema21[1] { long = true; }",
             overlay: true,
         },
         IndicatorMeta {
@@ -162,7 +162,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let smma14 = ind.smma(14);",
-            example: "if close > smma14[0] { long = 1; }",
+            example: "if close > smma14[0] { long = true; }",
             overlay: true,
         },
         IndicatorMeta {
@@ -176,7 +176,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let alma9 = ind.alma(9, offset=0.85, sigma=6.0);",
-            example: "if close > alma9[0] { long = 1; }",
+            example: "if close > alma9[0] { long = true; }",
             overlay: true,
         },
         IndicatorMeta {
@@ -186,7 +186,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let mc14 = ind.mcginley(14);",
-            example: "if close > mc14[0] { long = 1; }",
+            example: "if close > mc14[0] { long = true; }",
             overlay: true,
         },
         IndicatorMeta {
@@ -196,7 +196,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value", "slope"],
             multi: true, primary: "value",
             declaration: "let ls25 = ind.lsma(25);",
-            example: "if ls25[0].slope > 0 && close > ls25[0].value { long = 1; }",
+            example: "if ls25[0].slope > 0 && close > ls25[0].value { long = true; }",
             overlay: true,
         },
         IndicatorMeta {
@@ -206,7 +206,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let vwma20 = ind.vwma(20);",
-            example: "if close > vwma20[0] { long = 1; }",
+            example: "if close > vwma20[0] { long = true; }",
             overlay: true,
         },
         IndicatorMeta {
@@ -220,7 +220,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let kama10 = ind.kama(10, fast=2, slow=30);",
-            example: "if kama10[0] > kama10[1] { long = 1; }",
+            example: "if kama10[0] > kama10[1] { long = true; }",
             overlay: true,
         },
         IndicatorMeta {
@@ -230,7 +230,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["macd", "signal", "histogram"],
             multi: true, primary: "macd",
             declaration: "let macd1 = ind.macd(12, 26, 9);",
-            example: "if macd1[0].histogram > 0 && macd1[1].histogram <= 0 { long = 1; }",
+            example: "if macd1[0].histogram > 0 && macd1[1].histogram <= 0 { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -240,7 +240,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["trix", "signal", "histogram"],
             multi: true, primary: "trix",
             declaration: "let trix18 = ind.trix(18, 9);",
-            example: "if trix18[0].trix > trix18[0].signal && trix18[1].trix <= trix18[1].signal { long = 1; }",
+            example: "if trix18[0].trix > trix18[0].signal && trix18[1].trix <= trix18[1].signal { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -250,7 +250,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["adx", "plus_di", "minus_di"],
             multi: true, primary: "adx",
             declaration: "let adx14 = ind.adx(14);",
-            example: "if adx14[0] > 25 && adx14[0].plus_di > adx14[0].minus_di { long = 1; }",
+            example: "if adx14[0] > 25 && adx14[0].plus_di > adx14[0].minus_di { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -260,7 +260,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["plus_di", "minus_di"],
             multi: true, primary: "plus_di",
             declaration: "let dmi14 = ind.dmi(14);",
-            example: "if dmi14[0].plus_di > dmi14[0].minus_di && dmi14[1].plus_di <= dmi14[1].minus_di { long = 1; }",
+            example: "if dmi14[0].plus_di > dmi14[0].minus_di && dmi14[1].plus_di <= dmi14[1].minus_di { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -270,7 +270,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["up", "down"],
             multi: true, primary: "up",
             declaration: "let aroon25 = ind.aroon(25);",
-            example: "if aroon25[0].up > 70 && aroon25[0].down < 30 { long = 1; }",
+            example: "if aroon25[0].up > 70 && aroon25[0].down < 30 { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -280,7 +280,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let arosc25 = ind.aroon_osc(25);",
-            example: "if arosc25[0] > 0 && arosc25[1] <= 0 { long = 1; }",
+            example: "if arosc25[0] > 0 && arosc25[1] <= 0 { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -290,7 +290,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["plus_vi", "minus_vi"],
             multi: true, primary: "plus_vi",
             declaration: "let vx14 = ind.vortex(14);",
-            example: "if vx14[0].plus_vi > vx14[0].minus_vi && vx14[1].plus_vi <= vx14[1].minus_vi { long = 1; }",
+            example: "if vx14[0].plus_vi > vx14[0].minus_vi && vx14[1].plus_vi <= vx14[1].minus_vi { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -304,7 +304,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["jaw", "teeth", "lips", "bullish", "bearish"],
             multi: true, primary: "teeth",
             declaration: "let ali = ind.alligator(13, 8, 5);",
-            example: "if flag(ali[0].bullish) && !flag(ali[1].bullish) { long = 1; }",
+            example: "if flag(ali[0].bullish) && !flag(ali[1].bullish) { long = true; }",
             overlay: true,
         },
         IndicatorMeta {
@@ -316,7 +316,7 @@ pub fn all() -> Vec<IndicatorMeta> {
                 "long_0","long_1","long_2","long_3","long_4","long_5"],
             multi: true, primary: "spread",
             declaration: "let gmma = ind.gmma(0);",
-            example: "if gmma[0] > 0 && flag(gmma[0].bullish) { long = 1; }",
+            example: "if gmma[0] > 0 && flag(gmma[0].bullish) { long = true; }",
             overlay: true,
         },
         IndicatorMeta {
@@ -326,7 +326,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["k", "d", "j"],
             multi: true, primary: "k",
             declaration: "let kdj9 = ind.kdj(9, 3, 3);",
-            example: "if kdj9[0].k > kdj9[0].d && kdj9[0].k < 20 { long = 1; }",
+            example: "if kdj9[0].k > kdj9[0].d && kdj9[0].k < 20 { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -340,7 +340,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value", "velocity"],
             multi: true, primary: "value",
             declaration: "let kf = ind.kalman(0, q_pos=0.001, q_vel=0.001, r=1.0);",
-            example: "if kf[0].velocity > 0 && close > kf[0].value { long = 1; }",
+            example: "if kf[0].velocity > 0 && close > kf[0].value { long = true; }",
             overlay: true,
         },
         // ── Momentum / Oscillator ─────────────────────────────────────────────
@@ -351,7 +351,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let rsi14 = ind.rsi(14);",
-            example: "if rsi14[0] < 30 { long = 1; } else if rsi14[0] > 70 { short = 1; }",
+            example: "if rsi14[0] < 30 { long = true; } else if rsi14[0] > 70 { short = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -361,7 +361,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let cci20 = ind.cci(20);",
-            example: "if cci20[0] > 100 { long = 1; } else if cci20[0] < -100 { short = 1; }",
+            example: "if cci20[0] > 100 { long = true; } else if cci20[0] < -100 { short = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -371,7 +371,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let roc10 = ind.roc(10);",
-            example: "if roc10[0] > 0 && roc10[1] <= 0 { long = 1; }",
+            example: "if roc10[0] > 0 && roc10[1] <= 0 { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -381,7 +381,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let mom10 = ind.mom(10);",
-            example: "if mom10[0] > 0 && mom10[1] <= 0 { long = 1; }",
+            example: "if mom10[0] > 0 && mom10[1] <= 0 { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -391,7 +391,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let cmo14 = ind.cmo(14);",
-            example: "if cmo14[0] > 50 { long = 1; } else if cmo14[0] < -50 { short = 1; }",
+            example: "if cmo14[0] > 50 { long = true; } else if cmo14[0] < -50 { short = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -401,7 +401,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let dpo20 = ind.dpo(20);",
-            example: "if dpo20[0] > 0 && dpo20[1] <= 0 { long = 1; }",
+            example: "if dpo20[0] > 0 && dpo20[1] <= 0 { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -411,7 +411,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let mfi14 = ind.mfi(14);",
-            example: "if mfi14[0] < 20 { long = 1; } else if mfi14[0] > 80 { short = 1; }",
+            example: "if mfi14[0] < 20 { long = true; } else if mfi14[0] > 80 { short = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -421,7 +421,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let bop = ind.bop(0);",
-            example: "if bop[0] > 0 && bop[1] <= 0 { long = 1; }",
+            example: "if bop[0] > 0 && bop[1] <= 0 { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -431,7 +431,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let wr14 = ind.williams_r(14);",
-            example: "if wr14[0] < -80 { long = 1; } else if wr14[0] > -20 { short = 1; }",
+            example: "if wr14[0] < -80 { long = true; } else if wr14[0] > -20 { short = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -441,7 +441,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["k", "d"],
             multi: true, primary: "k",
             declaration: "let stoch14 = ind.stochastic(14, 3);",
-            example: "if stoch14[0].k > stoch14[0].d && stoch14[0].k < 20 { long = 1; }",
+            example: "if stoch14[0].k > stoch14[0].d && stoch14[0].k < 20 { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -451,7 +451,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["k", "d"],
             multi: true, primary: "k",
             declaration: "let srsi14 = ind.stoch_rsi(14, 3);",
-            example: "if srsi14[0].k > srsi14[0].d && srsi14[0].k < 0.2 { long = 1; }",
+            example: "if srsi14[0].k > srsi14[0].d && srsi14[0].k < 0.2 { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -464,7 +464,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let tsi = ind.tsi(25, 13);",
-            example: "if tsi[0] > 0 && tsi[1] <= 0 { long = 1; }",
+            example: "if tsi[0] > 0 && tsi[1] <= 0 { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -474,7 +474,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let rci9 = ind.rci(9);",
-            example: "if rci9[0] < -80 { long = 1; } else if rci9[0] > 80 { short = 1; }",
+            example: "if rci9[0] < -80 { long = true; } else if rci9[0] > 80 { short = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -484,7 +484,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["bull", "bear", "ema"],
             multi: true, primary: "bull",
             declaration: "let bb13 = ind.bull_bear(13);",
-            example: "if bb13[0].bull > 0 && bb13[0].bear < 0 { long = 1; }",
+            example: "if bb13[0].bull > 0 && bb13[0].bear < 0 { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -494,7 +494,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["fisher", "signal"],
             multi: true, primary: "fisher",
             declaration: "let fsh9 = ind.fisher(9);",
-            example: "if fsh9[0].fisher > fsh9[0].signal && fsh9[1].fisher <= fsh9[1].signal { long = 1; }",
+            example: "if fsh9[0].fisher > fsh9[0].signal && fsh9[1].fisher <= fsh9[1].signal { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -504,7 +504,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["kst", "signal", "histogram"],
             multi: true, primary: "kst",
             declaration: "let kst = ind.kst(9);",
-            example: "if kst[0].kst > kst[0].signal && kst[1].kst <= kst[1].signal { long = 1; }",
+            example: "if kst[0].kst > kst[0].signal && kst[1].kst <= kst[1].signal { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -514,7 +514,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["pmo", "signal", "histogram"],
             multi: true, primary: "pmo",
             declaration: "let pmo = ind.pmo(35, 20, 10);",
-            example: "if pmo[0].pmo > pmo[0].signal && pmo[1].pmo <= pmo[1].signal { long = 1; }",
+            example: "if pmo[0].pmo > pmo[0].signal && pmo[1].pmo <= pmo[1].signal { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -524,7 +524,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["ppo", "signal", "histogram"],
             multi: true, primary: "ppo",
             declaration: "let ppo = ind.ppo(12, 26, 9);",
-            example: "if ppo[0].histogram > 0 && ppo[1].histogram <= 0 { long = 1; }",
+            example: "if ppo[0].histogram > 0 && ppo[1].histogram <= 0 { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -534,7 +534,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["rvi", "signal"],
             multi: true, primary: "rvi",
             declaration: "let rvi10 = ind.rvi(10);",
-            example: "if rvi10[0].rvi > rvi10[0].signal { long = 1; }",
+            example: "if rvi10[0].rvi > rvi10[0].signal { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -549,7 +549,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["smi", "signal"],
             multi: true, primary: "smi",
             declaration: "let smi13 = ind.smi(13, 25, 2, 9);",
-            example: "if smi13[0].smi > smi13[0].signal { long = 1; }",
+            example: "if smi13[0].smi > smi13[0].signal { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -559,7 +559,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let uo = ind.uo(7, 14, 28);",
-            example: "if uo[0] < 30 { long = 1; } else if uo[0] > 70 { short = 1; }",
+            example: "if uo[0] < 30 { long = true; } else if uo[0] > 70 { short = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -573,7 +573,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let crsi = ind.connors_rsi(3, 2, 100);",
-            example: "if crsi[0] < 10 { long = 1; } else if crsi[0] > 90 { short = 1; }",
+            example: "if crsi[0] < 10 { long = true; } else if crsi[0] > 90 { short = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -586,7 +586,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let ao = ind.ao(0, fast=5, slow=34);",
-            example: "if ao[0] > 0 && ao[1] <= 0 { long = 1; }",
+            example: "if ao[0] > 0 && ao[1] <= 0 { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -600,7 +600,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let cop = ind.coppock(0, short=11, long=14, wma=10);",
-            example: "if cop[0] > 0 && cop[1] <= 0 { long = 1; }",
+            example: "if cop[0] > 0 && cop[1] <= 0 { long = true; }",
             overlay: false,
         },
         // ── Volatility ────────────────────────────────────────────────────────
@@ -624,7 +624,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["upper", "middle", "lower", "bandwidth", "percent_b"],
             multi: true, primary: "middle",
             declaration: "let bb20 = ind.bbands(20, multiplier=2.0);",
-            example: "if close < bb20[0].lower { long = 1; } else if close > bb20[0].upper { short = 1; }",
+            example: "if close < bb20[0].lower { long = true; } else if close > bb20[0].upper { short = true; }",
             overlay: true,
         },
         IndicatorMeta {
@@ -638,7 +638,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["upper", "middle", "lower"],
             multi: true, primary: "middle",
             declaration: "let kc20 = ind.keltner(20, 10, multiplier=2.0);",
-            example: "if close > kc20[0].upper { long = 1; } else if close < kc20[0].lower { short = 1; }",
+            example: "if close > kc20[0].upper { long = true; } else if close < kc20[0].lower { short = true; }",
             overlay: true,
         },
         IndicatorMeta {
@@ -651,7 +651,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value", "bullish", "bearish"],
             multi: true, primary: "value",
             declaration: "let st10 = ind.supertrend(10, multiplier=3.0);",
-            example: "if flag(st10[0].bullish) && !flag(st10[1].bullish) { long = 1; }",
+            example: "if flag(st10[0].bullish) && !flag(st10[1].bullish) { long = true; }",
             overlay: true,
         },
         IndicatorMeta {
@@ -661,7 +661,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["upper", "middle", "lower"],
             multi: true, primary: "middle",
             declaration: "let dc20 = ind.donchian(20);",
-            example: "if close > dc20[0].upper { long = 1; } else if close < dc20[0].lower { short = 1; }",
+            example: "if close > dc20[0].upper { long = true; } else if close < dc20[0].lower { short = true; }",
             overlay: true,
         },
         IndicatorMeta {
@@ -671,7 +671,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let chop14 = ind.chop(14);",
-            example: "if chop14[0] < 38.2 { long = 1; }",
+            example: "if chop14[0] < 38.2 { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -684,7 +684,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["angle", "zone"],
             multi: true, primary: "zone",
             declaration: "let cz34 = ind.chop_zone(34, threshold=5.0);",
-            example: "if cz34[0].angle > 5.0 { long = 1; } else if cz34[0].angle < -5.0 { short = 1; }",
+            example: "if cz34[0].angle > 5.0 { long = true; } else if cz34[0].angle < -5.0 { short = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -697,7 +697,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["long_stop", "short_stop", "atr"],
             multi: true, primary: "long_stop",
             declaration: "let ce22 = ind.chandelier_exit(22, multiplier=3.0);",
-            example: "if close > ce22[1].long_stop && close[1] <= ce22[1].long_stop { long = 1; }",
+            example: "if close > ce22[1].long_stop && close[1] <= ce22[1].long_stop { long = true; }",
             overlay: true,
         },
         IndicatorMeta {
@@ -711,7 +711,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["stop_long", "stop_short"],
             multi: true, primary: "stop_long",
             declaration: "let ck = ind.chande_kroll(10, factor=1.5, stop_period=9);",
-            example: "if close > ck[0].stop_long { long = 1; } else if close < ck[0].stop_short { short = 1; }",
+            example: "if close > ck[0].stop_long { long = true; } else if close < ck[0].stop_short { short = true; }",
             overlay: true,
         },
         IndicatorMeta {
@@ -721,7 +721,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let vr10 = ind.volatility_ratio(10);",
-            example: "if vr10[0] > 1.0 { long = 1; }",
+            example: "if vr10[0] > 1.0 { long = true; }",
             overlay: false,
         },
         // ── Volume ────────────────────────────────────────────────────────────
@@ -732,7 +732,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let obv = ind.obv(0); let obv_ema = ind.ema(20);",
-            example: "if obv[0] > obv_ema[0] && obv[1] <= obv_ema[1] { long = 1; }",
+            example: "if obv[0] > obv_ema[0] && obv[1] <= obv_ema[1] { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -742,7 +742,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let cmf20 = ind.cmf(20);",
-            example: "if cmf20[0] > 0 && cmf20[1] <= 0 { long = 1; }",
+            example: "if cmf20[0] > 0 && cmf20[1] <= 0 { long = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -752,7 +752,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["value"],
             multi: false, primary: "value",
             declaration: "let vwap = ind.vwap(0);",
-            example: "if close > vwap[0] { long = 1; }",
+            example: "if close > vwap[0] { long = true; }",
             overlay: true,
         },
         // ── Pattern ───────────────────────────────────────────────────────────
@@ -768,7 +768,7 @@ pub fn all() -> Vec<IndicatorMeta> {
                           "above_cloud","below_cloud","chikou_above","chikou_below"],
             multi: true, primary: "tenkan",
             declaration: "let ichi = ind.ichimoku(9, 26, 52);",
-            example: "if ichi[0].tenkan > ichi[0].kijun && flag(ichi[0].above_cloud) { long = 1; }",
+            example: "if ichi[0].tenkan > ichi[0].kijun && flag(ichi[0].above_cloud) { long = true; }",
             overlay: true,
         },
         IndicatorMeta {
@@ -781,7 +781,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["sar", "bullish"],
             multi: true, primary: "sar",
             declaration: "let psar = ind.parabolic_sar(0, step=0.02, max=0.2);",
-            example: "if flag(psar[0].bullish) && !flag(psar[1].bullish) { long = 1; }",
+            example: "if flag(psar[0].bullish) && !flag(psar[1].bullish) { long = true; }",
             overlay: true,
         },
         IndicatorMeta {
@@ -791,7 +791,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["rwi_high", "rwi_low"],
             multi: true, primary: "rwi_high",
             declaration: "let rwi14 = ind.rwi(14);",
-            example: "if rwi14[0].rwi_high > 1.0 { long = 1; } else if rwi14[0].rwi_low > 1.0 { short = 1; }",
+            example: "if rwi14[0].rwi_high > 1.0 { long = true; } else if rwi14[0].rwi_low > 1.0 { short = true; }",
             overlay: false,
         },
         IndicatorMeta {
@@ -801,7 +801,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["bullish", "bearish", "fractal_high", "fractal_low"],
             multi: true, primary: "bullish",
             declaration: "let frac = ind.fractal(0);",
-            example: "if flag(frac[0].bullish) { long = 1; } else if flag(frac[0].bearish) { short = 1; }",
+            example: "if flag(frac[0].bullish) { long = true; } else if flag(frac[0].bearish) { short = true; }",
             overlay: true,
         },
         IndicatorMeta {
@@ -811,7 +811,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             outputs: vec!["bull_power", "bear_power", "ema"],
             multi: true, primary: "bull_power",
             declaration: "let er13 = ind.elder_ray(13);",
-            example: "if er13[0].bull_power > 0 && er13[0].bear_power < 0 { long = 1; }",
+            example: "if er13[0].bull_power > 0 && er13[0].bear_power < 0 { long = true; }",
             overlay: false,
         },
     ]

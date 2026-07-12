@@ -68,6 +68,12 @@ struct ChartSnapshot<'a> {
     /// Live signals emitted by the script slot as bars stream in (entry/exit +
     /// resolved TP/SL levels). Empty when no script is set.
     signals:    &'a [SignalOut],
+    /// slot label (same keys as `indicators`) → `true` if it belongs on the
+    /// main price pane, `false` for a sub-pane — resolved here from the
+    /// indicator catalogue (both named slots and script-declared `ind.TYPE`
+    /// vars), so the FE never has to guess pane placement from value/price
+    /// ratios or keyword-matching a variable name.
+    overlay:    HashMap<String, bool>,
 }
 
 /// One live signal emitted by the script, shaped for chart overlay: entry/exit
@@ -267,6 +273,13 @@ struct ScriptSlot {
     /// Live signals emitted so far, in bar order. Drives chart overlays
     /// (entry/exit markers + TP/SL boxes). Grows on `feed`, cleared on `rebuild`.
     signals:  Vec<SignalOut>,
+    /// `let NAME = ind.TYPE(...)` variable name → declared `TYPE`, e.g.
+    /// `{"ar": "aroon"}`. Computed once here (via the same Rhai-aware lint
+    /// parser used for Monaco hints) instead of per-snapshot, so the FE can
+    /// resolve each series' main/sub pane straight from the indicator
+    /// catalogue — see `ChartState::build_snapshot`'s `overlay` map — rather
+    /// than re-parsing the script or guessing from computed values.
+    indicator_types: HashMap<String, String>,
 }
 
 impl ScriptSlot {
@@ -282,7 +295,11 @@ impl ScriptSlot {
         }
         let strategy = ScriptStrategy::from_script(script)
             .map_err(|e| e.to_string())?;
-        Ok(Self { strategy, signals: Vec::new() })
+        let (_, scope) = alm_strategy::script_lint(script, None);
+        let indicator_types = scope.indicators.into_iter()
+            .map(|d| (d.name, d.ind_type))
+            .collect();
+        Ok(Self { strategy, signals: Vec::new(), indicator_types })
     }
 
     /// Feed one raw bar through the strategy and collect any emitted signal.
@@ -327,6 +344,21 @@ impl ScriptSlot {
                 .insert("value".to_string(), v);
         }
         out
+    }
+
+    /// var_name → `true` if its declared type overlays the price chart (main
+    /// pane), looked up in the indicator catalogue. Unknown/unresolvable
+    /// types (e.g. a future `ta.*` primitive with no fixed type) are simply
+    /// omitted — the FE falls back to its own heuristics only for those.
+    fn overlay_map(&self) -> HashMap<String, bool> {
+        let catalog = alm_strategy::catalog::all();
+        self.indicator_types.iter()
+            .filter_map(|(name, ind_type)| {
+                catalog.iter()
+                    .find(|m| m.name == ind_type)
+                    .map(|m| (name.clone(), m.overlay))
+            })
+            .collect()
     }
 }
 
@@ -854,6 +886,21 @@ impl ChartState {
             .map(|ss| ss.signals.as_slice())
             .unwrap_or(&[]);
 
-        ChartSnapshot { bars: bars_out, indicators, signals }
+        // Overlay (main/sub pane) resolution — named slots via their own
+        // config's `type`, script slots via `ScriptSlot::overlay_map` (see
+        // its doc comment for why this beats FE-side guessing).
+        let catalog = alm_strategy::catalog::all();
+        let mut overlay: HashMap<String, bool> = self.slots.iter()
+            .filter_map(|slot| {
+                let type_name = slot.config.get("type")?.as_str()?;
+                let meta = catalog.iter().find(|m| m.name == type_name)?;
+                Some((slot.label.clone(), meta.overlay))
+            })
+            .collect();
+        if let Some(ss) = &self.script_slot {
+            overlay.extend(ss.overlay_map());
+        }
+
+        ChartSnapshot { bars: bars_out, indicators, signals, overlay }
     }
 }

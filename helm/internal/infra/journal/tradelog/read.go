@@ -135,13 +135,17 @@ func (l *postgresLog) Query(ctx context.Context, f TradeFilter) ([]TradeRecord, 
 
 // SumHandPnL returns aggregate PnL, commission, win/loss counts for a hand.
 // Single index scan on hand_id — O(1) from PG perspective.
+//
+// Win/loss is classified on net_pnl (pnl − commission), not gross pnl: a trade
+// whose price moved favorably but whose fees exceed that gain is a loss, not a
+// win — matching the Net P&L the UI shows for the hand.
 func (l *postgresLog) SumHandPnL(ctx context.Context, handID uuid.UUID) (totalPnL, totalCommission decimal.Decimal, wins, losses int64, err error) {
 	row := l.db.QueryRowContext(ctx, `
 		SELECT
 			COALESCE(SUM(pnl), 0),
 			COALESCE(SUM(commission), 0),
-			COUNT(CASE WHEN pnl > 0 THEN 1 END),
-			COUNT(CASE WHEN pnl < 0 THEN 1 END)
+			COUNT(CASE WHEN net_pnl > 0 THEN 1 END),
+			COUNT(CASE WHEN net_pnl < 0 THEN 1 END)
 		FROM trades
 		WHERE hand_id = $1`, handID)
 	var pnlStr, commStr string
@@ -153,11 +157,13 @@ func (l *postgresLog) SumHandPnL(ctx context.Context, handID uuid.UUID) (totalPn
 	return
 }
 
-// RecentClosedPnL returns the last `limit` closed trades' PnL for a hand, oldest
+// RecentClosedPnL returns the last `limit` closed trades' net PnL for a hand, oldest
 // first (reversed from the DESC query order) to match chronological replay order.
+// net_pnl (not gross pnl) so the restored edge-risk ring buffer matches what
+// checkEdgeRisk pushes live (see hand_fills.go applyExitFill).
 func (l *postgresLog) RecentClosedPnL(ctx context.Context, handID uuid.UUID, limit int) ([]decimal.Decimal, error) {
 	rows, err := l.db.QueryContext(ctx,
-		`SELECT pnl FROM trades WHERE hand_id = $1 ORDER BY exit_at DESC LIMIT $2`,
+		`SELECT net_pnl FROM trades WHERE hand_id = $1 ORDER BY exit_at DESC LIMIT $2`,
 		handID, limit)
 	if err != nil {
 		return nil, err

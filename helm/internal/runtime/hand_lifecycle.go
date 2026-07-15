@@ -247,9 +247,11 @@ func (h *Hand) RestorePnL(ctx context.Context, events []poslog.Event) {
 				comm, _ := decimal.NewFromString(t.Commission)
 				totalPnL = totalPnL.Add(pnl)
 				totalCommission = totalCommission.Add(comm)
-				if pnl.IsPositive() {
+				// t.Commission is total fees (entry+exit) — net directly, no per-leg split needed.
+				netPnL := pnl.Sub(comm)
+				if netPnL.IsPositive() {
 					wins++
-				} else if pnl.IsNegative() {
+				} else if netPnL.IsNegative() {
 					losses++
 				}
 			}
@@ -284,13 +286,26 @@ func (h *Hand) RestorePnL(ctx context.Context, events []poslog.Event) {
 		}
 		pnl, _ := decimal.NewFromString(p.RealizedPnL)
 		totalPnL = totalPnL.Add(pnl)
-		if pnl.IsPositive() {
-			wins++
-		} else if pnl.IsNegative() {
-			losses++
-		}
 		commission, _ := decimal.NewFromString(p.Commission)
 		totalCommission = totalCommission.Add(commission)
+
+		// netPnL nets out both sides' commission, same derivation as applyExitFill:
+		// entry fee is backed out of DeployedCapital (= sum(qty*price + fee) across
+		// all entry fills), since PositionClosedPayload has no separate entry-fee field.
+		netPnL := pnl.Sub(commission)
+		qty, _ := decimal.NewFromString(p.Qty)
+		entryPrice, _ := decimal.NewFromString(p.EntryPrice)
+		deployedCapital, _ := decimal.NewFromString(p.DeployedCapital)
+		if qty.IsPositive() && deployedCapital.IsPositive() {
+			if entryCommission := deployedCapital.Sub(qty.Mul(entryPrice)); entryCommission.IsPositive() {
+				netPnL = netPnL.Sub(entryCommission)
+			}
+		}
+		if netPnL.IsPositive() {
+			wins++
+		} else if netPnL.IsNegative() {
+			losses++
+		}
 	}
 	h.metrics.mu.Lock()
 	h.metrics.totalPnL = totalPnL

@@ -116,6 +116,19 @@ func (c *Client) CancelOrder(ctx context.Context, creds exchange.Credentials, or
 		return err
 	}
 	_, err = c.newSpot(creds).NewCancelOrderService().Symbol(symbol).OrderID(oid).Do(ctx)
+	if err != nil && isBinanceCode(err, -2011) {
+		// -2011 "Unknown order sent": the order is already gone at the exchange —
+		// same "definitively not there" signal -2013 gives GetOrder (see above),
+		// just the cancel endpoint's version of it. The most common trigger is
+		// cancelling one leg of a spot OCO right after its sibling leg already
+		// auto-cancelled it. Treat as a successful no-op instead of a real
+		// failure — every caller here wants "make sure nothing is left resting
+		// under this ID," which is already true. Confirmed in production: every
+		// 2-leg bracket cancel hit this on the second leg, logging a spurious
+		// WARN on the majority-case exit path (see hand_runner.go's pre-exit
+		// bracket cancel loop).
+		return nil
+	}
 	return err
 }
 

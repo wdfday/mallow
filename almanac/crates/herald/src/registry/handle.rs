@@ -14,10 +14,29 @@ use tracing::{debug, info, trace};
 /// bucket, i.e. the HTF bar closes exactly when this M1 bar closes.
 ///
 /// `close_ts = m1_bar_ts + base_tf.duration_ms()`
-/// alignment iff `close_ts % htf.duration_ms() == 0`
+/// alignment iff `close_ts % htf.duration_ms() == 0` — except `MN`, whose
+/// `duration_ms()` is a fixed 30-day stand-in (real months run 28–31 days),
+/// so a modulo against that constant almost never lines up with an actual
+/// calendar month close. `MN` alignment is instead checked against the real
+/// UTC month boundary.
 pub fn is_htf_align_point(m1_bar_ts: i64, base_tf: Timeframe, htf: Timeframe) -> bool {
     let close_ts = m1_bar_ts + base_tf.duration_ms();
+    if htf == Timeframe::MN {
+        return is_month_boundary(close_ts);
+    }
     close_ts % htf.duration_ms() == 0
+}
+
+/// True iff `ts_ms` lands exactly on 00:00:00 UTC of the 1st of a month —
+/// the real close boundary of an exchange `1M` candle.
+fn is_month_boundary(ts_ms: i64) -> bool {
+    use chrono::{Datelike, TimeZone, Timelike, Utc};
+    match Utc.timestamp_millis_opt(ts_ms) {
+        chrono::LocalResult::Single(dt) => {
+            dt.day() == 1 && dt.hour() == 0 && dt.minute() == 0 && dt.second() == 0
+        }
+        _ => false,
+    }
 }
 
 // ── LiveStrategy ──────────────────────────────────────────────────────────────
@@ -614,5 +633,33 @@ mod warmup_v2_tests {
         let mut spy = SpyStrategy { calls: Vec::new() };
         warmup_v2(&mut spy, "BTCUSDT", Timeframe::M15, &[Timeframe::H4], &ledger);
         assert!(spy.calls.is_empty());
+    }
+
+    /// `MN.duration_ms()` is a fixed 30-day stand-in; real months run 28-31
+    /// days, so multiples of it drift away from true calendar month starts.
+    /// A modulo check against that constant would reject virtually every
+    /// real month close (only ever true here by 30-day-multiple coincidence,
+    /// not by matching any actual month boundary).
+    #[test]
+    fn is_htf_align_point_mn_uses_real_calendar_month_not_30day_modulo() {
+        use chrono::{TimeZone, Utc};
+
+        let mar_1_2024 = Utc.with_ymd_and_hms(2024, 3, 1, 0, 0, 0).unwrap().timestamp_millis();
+        let feb_1_2024 = Utc.with_ymd_and_hms(2024, 2, 1, 0, 0, 0).unwrap().timestamp_millis();
+        // Real calendar boundary (Feb 2024 has 29 days, not 30) — must align.
+        assert!(is_htf_align_point(mar_1_2024 - Timeframe::M1.duration_ms(), Timeframe::M1, Timeframe::MN));
+        // 30 days after a month start lands mid-March, not on a real
+        // boundary — must NOT align even though it's a multiple of the
+        // constant used before this fix.
+        let mid_march = feb_1_2024 + 30 * Timeframe::D1.duration_ms() - Timeframe::M1.duration_ms();
+        assert!(!is_htf_align_point(mid_march, Timeframe::M1, Timeframe::MN));
+    }
+
+    #[test]
+    fn is_htf_align_point_non_mn_still_uses_modulo() {
+        // Sanity: the fast-path modulo for regular (fixed-duration) TFs is untouched.
+        let h4_ms = Timeframe::H4.duration_ms();
+        assert!(is_htf_align_point(h4_ms * 3 - Timeframe::M1.duration_ms(), Timeframe::M1, Timeframe::H4));
+        assert!(!is_htf_align_point(h4_ms * 3 - 2 * Timeframe::M1.duration_ms(), Timeframe::M1, Timeframe::H4));
     }
 }

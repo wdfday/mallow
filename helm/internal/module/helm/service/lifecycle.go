@@ -106,6 +106,45 @@ func (s *Service) Enable(id uuid.UUID) error {
 	return nil
 }
 
+// KNOWN GAP (2026-07-13, not yet fixed): Enable() called during Disable()'s
+// 5-second teardown grace period leaves the runtime silently paused instead
+// of actually reactivating it.
+//
+// Disable() pauses the runtime, kills all non-terminal hands, persists
+// status=disabled synchronously, then tears the runtime down from the
+// registry 5 SECONDS LATER in a background goroutine (see Disable, Step 4;
+// that goroutine now re-checks status before deleting — see the fix noted
+// there — but that only stops the runtime from being deleted out from under
+// a re-enabled helm, it does not make the re-enable itself correct).
+//
+// If Enable() runs inside that 5s window: canonicalRecoveryFrom allows it
+// (status is genuinely "disabled" at that point — this is not a caller
+// error), so it proceeds to call spawner.Spawn(cfg, exchCfg). But Spawn is a
+// no-op when a runtime already exists for this helm ID (registry_lifecycle.go
+// Spawn, the `if exists { return nil }` guard) — and the OLD runtime is still
+// registered, still paused from Disable's Step 1, with rt.pausedHands holding
+// whatever hands were running *before* Disable, which have since been killed.
+// Enable never calls Resume() on that stale runtime, so nothing un-pauses it.
+// Net effect: the helm shows status=active in the DB, but its actual runtime
+// stays paused (or, in the exact window this comment's neighboring fix now
+// closes, would previously have been deleted outright a few seconds later) —
+// the helm looks live but drops every signal until something else fixes it
+// (another Enable call, now that Spawn will no longer skip because Teardown
+// already ran; or a full restart via HydrateAll).
+//
+// Not fixed here — the obvious-looking fix (call spawner.Resume(id) and
+// restart whatever hands it returns whenever Spawn skips) is NOT safe as a
+// quick patch: Resume() returns rt.pausedHands, which is the hand list from
+// BEFORE Disable's KillBots ran. Those hands are now killed (Hand.Kill sets
+// running=false same as Stop, with no "permanently killed" flag distinct from
+// a normal stop), so blindly restarting them would resurrect hands the user
+// just explicitly killed — worse than the current silent-gating symptom. A
+// real fix needs Enable to distinguish "stale runtime survived from a Disable
+// still in its grace period" from "runtime genuinely still active/paused for
+// an unrelated reason" and decide per-hand whether restarting is safe (e.g.
+// skip any hand whose persisted status shows killed/released since the
+// pause), not just replay whatever Pause() captured.
+
 // Pause pauses an orchestrator and cascade-stops all its running bots.
 func (s *Service) Pause(id uuid.UUID) error {
 	wasRunning, err := s.spawner.Pause(id)
@@ -195,6 +234,22 @@ func (s *Service) Disable(id uuid.UUID) error {
 			}
 		}()
 		time.Sleep(5 * time.Second)
+		// Re-check status before tearing down: Enable() treats "disabled" as its
+		// green light to (re-)spawn, and canonicalRecoveryFrom allows it — so a
+		// disable immediately followed by an enable, both within this grace
+		// window, is a legitimate sequence, not a race the caller did anything
+		// wrong to trigger. Without this check, this goroutine would blindly
+		// delete the just-re-enabled runtime out from under it: the helm would
+		// be left showing "active" in the DB with no runtime at all in the
+		// registry, silently dropping every signal until the next full restart
+		// (HydrateAll) or another Enable call.
+		cur, err := s.repo.Get(id)
+		if err != nil {
+			slog.Warn("helm disable: could not re-check status before teardown — proceeding anyway", "id", id, "err", err)
+		} else if cur.Status != domain.HelmStatusDisabled {
+			slog.Info("helm disable: skipping stale teardown — helm was re-enabled during the grace period", "id", id, "status", cur.Status)
+			return
+		}
 		s.spawner.Teardown(id)
 		slog.Info("helm disabled: runtime torn down", "id", id)
 	}()

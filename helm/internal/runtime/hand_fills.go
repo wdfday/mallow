@@ -450,10 +450,12 @@ func (h *Hand) applyExitFill(ctx context.Context, symbol, orderID, side, source,
 	h.cancelExitOrders(ctx, symbol, orderID)
 	h.mu.Unlock()
 
+	var deployedCapital decimal.Decimal
 	h.mu.RLock()
 	entryPrice = h.pos.LegEntryPrice(posID)
 	if snap, ok := h.pos.LegSnapshot(posID); ok {
 		legQty = snap.Qty.Abs()
+		deployedCapital = snap.DeployedCapital
 	}
 	h.mu.RUnlock()
 
@@ -532,13 +534,27 @@ func (h *Hand) applyExitFill(ctx context.Context, symbol, orderID, side, source,
 		} else { // closing a short position (buy to cover)
 			closePnL = entryPrice.Sub(cumulativeAvgPrice).Mul(cumulativeQty)
 		}
+		// netPnL nets out BOTH sides' commission (entry + this exit) so win/loss
+		// classification matches the Net P&L shown to the user — a trade whose price
+		// moved favorably but whose fees exceed that gain is a loss, not a win.
+		// Entry commission is backed out of DeployedCapital (= sum(qty*price + fee)
+		// across all entry fills for this leg) and prorated by the fraction of the
+		// leg this fill closes, so partial exits don't over-subtract.
+		netPnL := closePnL.Sub(cumulativeCommission)
+		if legQty.IsPositive() && deployedCapital.IsPositive() {
+			entryCommission := deployedCapital.Sub(legQty.Mul(entryPrice))
+			if entryCommission.IsPositive() {
+				netPnL = netPnL.Sub(entryCommission.Mul(cumulativeQty).Div(legQty))
+			}
+		}
+
 		h.metrics.mu.Lock()
 		h.metrics.totalPnL = h.metrics.totalPnL.Add(closePnL)
 		h.metrics.totalCommission = h.metrics.totalCommission.Add(cumulativeCommission)
 		// dust_exit is a synthetic rounding fill — same trade, not a new trade event.
 		// Accumulate PnL for accurate totals, but skip win/loss count and edge risk.
 		if source != "dust_exit" {
-			if closePnL.IsPositive() {
+			if netPnL.IsPositive() {
 				h.metrics.winCount++
 			} else {
 				h.metrics.lossCount++
@@ -546,7 +562,7 @@ func (h *Hand) applyExitFill(ctx context.Context, symbol, orderID, side, source,
 		}
 		h.metrics.mu.Unlock()
 		if source != "dust_exit" {
-			h.checkEdgeRisk(closePnL)
+			h.checkEdgeRisk(netPnL)
 		}
 	}
 
@@ -1169,16 +1185,3 @@ func (h *Hand) completeWsFillFromREST(
 		})
 	}
 }
-
-// ── handEdgeGuard restart survival ──────────────────────────────────────────
-//
-// checkEdgeRisk's sliding-window ring buffer (h.guard.ring/head/full) and
-// consecutive-loss streak (h.guard.consecLoss) are only ever mutated in-memory via
-// guard.push. The Hand constructor always builds a fresh, zero-valued handEdgeGuard —
-// for both brand-new hands and hands rehydrated on startup — so without further
-// action a hand mid-way through a losing streak (e.g. 4/5 toward MaxConsecLoss) would
-// have that streak silently reset to 0 on any restart. Fixed by Hand.RestoreGuard
-// (hand_lifecycle.go), called alongside RestorePnL/RestoreCounters in reconcileHand
-// (reconcile.go): it replays this hand's KindPositionClosed history back into
-// guard.ring/head/full/consecLoss, so the next live closing fill after restart
-// evaluates against correctly restored history instead of an empty window.

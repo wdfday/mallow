@@ -26,7 +26,7 @@ type Config struct {
 func Load() Config {
 	return Config{
 		Port:               envOr("PORT", "8080"),
-		RateLimitPerMinute: envInt("RATE_LIMIT_PER_MINUTE", 1000),
+		RateLimitPerMinute: envInt("RATE_LIMIT_PER_MINUTE", 10000),
 		NatsURL:            envOr("NATS_URL", "nats://localhost:4222"),
 		JWTSecret:          os.Getenv("JWT_SECRET"), // no default — empty string disables HMAC fallback
 		JWTPublicKey:       envOr("JWT_PUBLIC_KEY", ""),

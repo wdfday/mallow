@@ -845,6 +845,32 @@ func (h *Hand) applyBracketStates(ctx context.Context, checks []bracketState) {
 
 // handlePositionDesync closes the leg locally due to external desync.
 // Called by HelmRuntime during the sync desync check.
+//
+// DESIGN NOTE (2026-07-13): orphans the leg's FULL qty on any deficit, even a
+// partial one (checkPositionDesync's caller triggers this the moment
+// exchangeQty < legQty by any amount, not just when the leg is fully gone).
+// Deliberate, not a bug: an unprotected leg (checkPositionDesync only ever
+// calls this for legs with no SL/TP/bracket — see the protected/unprotected
+// split there) is a contract between helm and the user that nothing else
+// touches that symbol's exchange balance. Touching it even partially — a
+// manual partial sell, another uncoordinated process — already breaks that
+// contract; there is no partial-qty state left worth trying to preserve,
+// because the whole premise of "the hand's own bookkeeping is authoritative"
+// is what just got violated. Splitting the qty and keeping the remainder
+// tracked would mean trusting a number (legQty − actual deficit) derived from
+// the same desynced state this function exists to react to.
+//
+// Also worth flagging for later, not fixing now: this runs OFF the hand's own
+// actor run-loop. checkPositionDesync (helm_sync.go) calls it directly from
+// HelmRuntime's periodic sync goroutine, and it mutates h.pos/h.exitLevels
+// and publishes poslog under h.mu — the same state the run-loop treats as
+// single-owner everywhere else (fillSignal/placeResultCh/exitCancelCh all
+// exist specifically so state mutations happen on the hand's own goroutine,
+// not from whichever external goroutine noticed something). Mutex-protected,
+// so not a data race, but it is a different concurrency discipline than the
+// rest of this file — an external goroutine reaching in and mutating hand
+// state directly, bypassing the actor loop's ordering guarantees relative to
+// signals/fills in flight at the same moment.
 func (h *Hand) handlePositionDesync(ctx context.Context, leg *position.LegState) {
 	legQty := leg.Qty.Abs()
 	h.log.Warn("checkPositionDesync: portfolio qty < leg qty — external close suspected",
@@ -854,7 +880,7 @@ func (h *Hand) handlePositionDesync(ctx context.Context, leg *position.LegState)
 	h.emitEvent(natsapi.HelmEvent{
 		Code:   CodePositionExtClosed,
 		Symbol: leg.Symbol,
-		Reason: fmt.Sprintf("position externally closed — detected via portfolio desync"),
+		Reason: "position externally closed — detected via portfolio desync",
 		Msg:    "hand: position externally closed — detected via portfolio desync",
 	})
 

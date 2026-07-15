@@ -66,6 +66,17 @@ pub async fn fetch_binance(symbol: &str, tf: Timeframe, from_ms: i64, to_ms: i64
     let interval = binance_interval(tf)
         .with_context(|| format!("no Binance interval for {tf:?}"))?;
     let tf_ms = tf.duration_ms();
+    // Binance's kline rows carry no "closed/confirmed" flag (unlike its own WS
+    // stream's `x` field, or OKX REST's `confirm` field checked below) — a row
+    // whose bucket hasn't ended yet is still returned, mid-update. For
+    // fixed-duration TFs `to_ms` already lands exactly on the bucket boundary
+    // so this can't happen, but `MN`'s `duration_ms()` is a fixed 30-day
+    // stand-in for a real (28-31 day) calendar month, so `to_ms` can land
+    // *inside* the current, still-open month — reject any row whose close
+    // time hasn't passed yet so we never feed a partial bar into
+    // `Ledger::advance` (which then permanently rejects the real closed bar
+    // later as a duplicate/out-of-order timestamp).
+    let now_ms = chrono::Utc::now().timestamp_millis();
     let client = reqwest::Client::new();
     let mut bars = Vec::new();
     let mut cursor = from_ms;
@@ -95,9 +106,14 @@ pub async fn fetch_binance(symbol: &str, tf: Timeframe, from_ms: i64, to_ms: i64
 
         let mut last_page_ts: Option<i64> = bars.last().map(|b: &Bar| b.timestamp);
         for row in rows {
-            if row.len() < 6 { continue; }
+            if row.len() < 7 { continue; }
             let ts = row[0].as_i64().unwrap_or(0);
             if ts >= to_ms { break; }
+            let close_time = row[6].as_i64().unwrap_or(i64::MAX);
+            if close_time >= now_ms {
+                debug!(symbol, ?tf, bar_ts = ts, close_time, now_ms, "binance REST: skipping still-open bar");
+                continue;
+            }
             if let Some(prev) = last_page_ts {
                 let gap = ts - prev;
                 if gap > tf_ms * 2 {

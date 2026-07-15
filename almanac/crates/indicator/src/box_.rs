@@ -109,10 +109,17 @@ pub enum IndicatorBox {
     ElderRay(ElderRay),
 }
 
+// Clamped to >= 1: every indicator constructor in this crate `assert!(period > 0, ...)`
+// rather than returning a `Result`, and that assert panics while `ChartState`'s
+// wasm-bindgen `&mut self` borrow guard is held — the panic unwinds across the
+// wasm/JS boundary without running the guard's `Drop`, permanently "poisoning" the
+// object (every later call throws "recursive use of an object detected"). `period: 0`
+// reaches here routinely from the FE while a user is mid-edit on an indicator's period
+// input, so this must never panic — clamp instead of trusting callers to pre-validate.
 fn get_usize(v: &Value, key: &str, default: usize) -> usize {
     v.get(key)
         .and_then(Value::as_f64)
-        .map(|x| x as usize)
+        .map(|x| (x as usize).max(1))
         .unwrap_or(default)
 }
 
@@ -122,6 +129,7 @@ fn get_f64(v: &Value, key: &str, default: f64) -> f64 {
         .unwrap_or(default)
 }
 
+// Same >= 1 clamp as `get_usize` — see its comment for why this must never yield 0.
 fn get_usize_arr4(v: &Value, key: &str, default: [usize; 4]) -> [usize; 4] {
     v.get(key)
         .and_then(Value::as_array)
@@ -129,7 +137,7 @@ fn get_usize_arr4(v: &Value, key: &str, default: [usize; 4]) -> [usize; 4] {
             if arr.len() == 4 {
                 let mut out = [0usize; 4];
                 for (i, el) in arr.iter().enumerate() {
-                    out[i] = el.as_f64()? as usize;
+                    out[i] = (el.as_f64()? as usize).max(1);
                 }
                 Some(out)
             } else {
@@ -139,6 +147,7 @@ fn get_usize_arr4(v: &Value, key: &str, default: [usize; 4]) -> [usize; 4] {
         .unwrap_or(default)
 }
 
+// Same >= 1 clamp as `get_usize` — see its comment for why this must never yield 0.
 fn get_usize_arr6(v: &Value, key: &str, default: [usize; 6]) -> [usize; 6] {
     v.get(key)
         .and_then(Value::as_array)
@@ -146,7 +155,7 @@ fn get_usize_arr6(v: &Value, key: &str, default: [usize; 6]) -> [usize; 6] {
             if arr.len() == 6 {
                 let mut out = [0usize; 6];
                 for (i, el) in arr.iter().enumerate() {
-                    out[i] = el.as_f64()? as usize;
+                    out[i] = (el.as_f64()? as usize).max(1);
                 }
                 Some(out)
             } else {

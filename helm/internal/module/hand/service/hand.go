@@ -228,6 +228,12 @@ func (s *Service) Update(id uuid.UUID, patch domain.HandConfig) error {
 	if err != nil {
 		return err
 	}
+	// Same terminal guard as Stop/Kill/Release: a killed/released hand exists for
+	// record-keeping only — its config must stay exactly as it was at the moment
+	// it went terminal, not silently editable afterward.
+	if data.Status.IsTerminal() {
+		return fmt.Errorf("hand %q is %s — terminal hands cannot be updated", id, data.Status)
+	}
 	helmID := data.HelmID
 
 	if rt, err := s.registry.Get(helmID); err == nil {
@@ -277,6 +283,12 @@ func (s *Service) AllocateCapital(id, helmID uuid.UUID, delta decimal.Decimal) (
 	data, err := s.repo.Get(id)
 	if err != nil {
 		return decimal.Zero, err
+	}
+	// Same terminal guard as Update/Stop/Kill/Release — a killed/released hand
+	// has no live runtime to allocate capital to, and its record should stay
+	// exactly as it was when it went terminal.
+	if data.Status.IsTerminal() {
+		return decimal.Zero, fmt.Errorf("hand %q is %s — terminal hands cannot allocate capital", id, data.Status)
 	}
 
 	newCapital := data.AllocatedCapital.Add(delta)

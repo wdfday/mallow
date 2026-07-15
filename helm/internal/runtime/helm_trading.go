@@ -210,14 +210,3 @@ func (r *HelmRuntime) MarkSyncDirty() {
 		r.persistSyncTime()
 	})
 }
-
-// RemovePosition removes an open position from the portfolio under tradeMu.
-// Callers (e.g. Hand.HandleExitOrderCanceled) must use this method rather than
-// accessing tradeMu directly, so the mutex ordering stays:
-//
-//	tradeMu always acquired by HelmRuntime, never by a Hand goroutine.
-func (r *HelmRuntime) RemovePosition(symbol string) {
-	r.tradeMu.Lock()
-	r.Portfolio.RemovePosition(symbol)
-	r.tradeMu.Unlock()
-}

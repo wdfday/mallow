@@ -165,26 +165,35 @@ func (s *Service) StartBots(helmID uuid.UUID, ids []string) {
 	}
 }
 
-// KillBots cascade-kills hands (flatten positions + stop) and persists stopped status. Called by helm kill.
+// KillBots cascade-kills hands (flatten positions + stop) and persists killed
+// status — terminal, same as the single-hand Kill above. Called by helm disable.
 func (s *Service) KillBots(helmID uuid.UUID, ids []string) {
 	rt, err := s.registry.Get(helmID)
 	if err != nil {
 		return
 	}
 	ctx := context.Background()
+	finalMetrics := make(map[string]domain.HandMetricsView, len(ids))
 	for _, idStr := range ids {
-		rt.KillHand(ctx, idStr)
+		fm, found := rt.KillHand(ctx, idStr)
+		if found {
+			finalMetrics[idStr] = fm
+		}
 	}
 	for _, idStr := range ids {
 		id, err := uuid.Parse(idStr)
 		if err != nil {
 			continue
 		}
+		fm, hasFm := finalMetrics[idStr]
 		if err := s.repo.Update(id, func(d *domain.Hand) error {
-			d.Status = domain.HandStatusStopped
+			d.Status = domain.HandStatusKilled
+			if hasFm {
+				d.FinalMetrics = &fm
+			}
 			return nil
 		}); err != nil {
-			slog.Error("hand: persist stopped status failed on helm kill", "hand_id", id, "err", err)
+			slog.Error("hand: persist killed status failed on helm disable", "hand_id", id, "err", err)
 		}
 	}
 }

@@ -217,13 +217,7 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 	if sig.Reason != "" {
 		receivedReason += " herald=" + sig.Reason
 	}
-	h.log.Debug("signal: hand received",
-		"symbol", sig.Symbol,
-		"direction", sig.Direction,
-		"strength", sig.Strength,
-		"lag", dispatchLag,
-		"herald_reason", sig.Reason,
-	)
+
 	h.emitEvent(natsapi.HelmEvent{
 		Code:      CodeSignalReceived,
 		Symbol:    sig.Symbol,
@@ -871,6 +865,15 @@ func (h *Hand) runPlaceREST(ctx context.Context, pp *pendingPlace) {
 	pp.err = err
 }
 
+// wsFillCacheRetries × wsFillCacheRetryInterval bounds the WS-before-ACK recovery
+// wait in applyPlaceResult above — 5 × 20ms = 100ms, enough to cover the network
+// jitter that occasionally lands WS a few ms after the REST response instead of
+// before it, without meaningfully delaying this hand's run loop.
+const (
+	wsFillCacheRetries       = 5
+	wsFillCacheRetryInterval = 20 * time.Millisecond
+)
+
 // applyPlaceResult is the state-mutation phase of an entry/exit: it runs ON the actor loop
 // (single-owner) after runPlaceREST returned, recording the order / poslog on success or
 // cleaning up tracking + auto-pausing on failure.
@@ -931,18 +934,17 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 				h.applyFill(ctx, bracketID, sig.Symbol, closeSide,
 					pp.ocoFillQty, pp.ocoFillPrice, decimal.Zero, "bracket_recovered")
 			} else {
-				// Fill price not recoverable — fall back to dust exit at last known price.
-				h.log.Warn("order: exit failed — base asset gone (OCO likely triggered) — dust exit",
+				// Fill price not recoverable — we don't actually know how (or whether)
+				// this position closed, only that the exchange balance says it's gone.
+				// closeLegAsDust would fabricate a PnL from lastKnownPrice (never a real
+				// fill price) and book it as a genuine trade via appendTradeRecord —
+				// exactly the pattern db3ed18 removed from handlePositionDesync for the
+				// same "external close suspected, no real price" situation. Use the
+				// orphan path instead: no claimed PnL, tagged for audit, consistent with
+				// orphanLegsForSymbol / HandleExitOrderCanceled / handlePositionDesync.
+				h.log.Warn("order: exit failed — base asset gone (OCO likely triggered), no fill price recovered — orphaning leg",
 					"symbol", sig.Symbol, "qty", orderQty)
-				h.emitEvent(natsapi.HelmEvent{
-					Code:   CodeOrderDustExit,
-					Symbol: sig.Symbol,
-					Qty:    orderQty,
-					Reason: "position gone at exchange — OCO likely triggered concurrently",
-					Msg:    "order: dust exit — base asset unavailable",
-				})
-				lastPrice := h.helmRuntime.lastKnownPrice(sig.Symbol)
-				h.closeLegAsDust(ctx, sig.Symbol, reply.Side, orderQty, lastPrice)
+				h.orphanLegsForSymbol(ctx, sig.Symbol, "position_gone_no_fill_price")
 			}
 		}
 		return
@@ -1203,15 +1205,6 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 			cached.qty, cached.price, cached.commission, pending, isExitOrder)
 	}
 }
-
-// wsFillCacheRetries × wsFillCacheRetryInterval bounds the WS-before-ACK recovery
-// wait in applyPlaceResult above — 5 × 20ms = 100ms, enough to cover the network
-// jitter that occasionally lands WS a few ms after the REST response instead of
-// before it, without meaningfully delaying this hand's run loop.
-const (
-	wsFillCacheRetries       = 5
-	wsFillCacheRetryInterval = 20 * time.Millisecond
-)
 
 // computeDefaultSL returns a stop-loss price to use when the signal provides none.
 // ATR×5 offset is preferred; falls back to 8% fixed when ATR is zero.

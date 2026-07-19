@@ -63,7 +63,11 @@ func (c *Client) PlaceOrder(ctx context.Context, creds exchange.Credentials, req
 		if len(resp.Data) > 0 && resp.Data[0].SMsg != "" {
 			msg = resp.Data[0].SMsg
 		}
-		return nil, fmt.Errorf("okx order failed: code=%s msg=%s", resp.Code, msg)
+		// Outer-envelope rejection (auth, rate-limit, clock-skew, server error —
+		// rejected before per-order routing). Wrap as okxRejectedError, same as
+		// the per-order sCode case below, so ClassifyError sees the real code
+		// instead of falling back to ClassifyGeneric's fragile string match.
+		return nil, fmt.Errorf("okx order failed: %w", &okxRejectedError{SCode: resp.Code, SMsg: msg})
 	}
 	// OKX may return outer code="0" but per-order sCode != "0" when the trading
 	// engine rejects the order after initial validation (e.g. insufficient balance
@@ -98,7 +102,7 @@ func (c *Client) GetOrder(ctx context.Context, creds exchange.Credentials, order
 		return nil, fmt.Errorf("get order: %w", err)
 	}
 	if resp.Code != "0" || len(resp.Data) == 0 {
-		return nil, fmt.Errorf("okx get order: code=%s msg=%s", resp.Code, resp.Msg)
+		return nil, fmt.Errorf("okx get order: %w", &okxRejectedError{SCode: resp.Code, SMsg: resp.Msg})
 	}
 	r := orderDataToResult(&resp.Data[0])
 	r.ID = orderID
@@ -193,7 +197,7 @@ func (c *Client) getAlgoOrder(ctx context.Context, creds exchange.Credentials, o
 			if histResp.Code == "51603" {
 				continue // not in this ordType's history — try next
 			}
-			return nil, fmt.Errorf("okx get algo order history: code=%s msg=%s", histResp.Code, histResp.Msg)
+			return nil, fmt.Errorf("okx get algo order history: %w", &okxRejectedError{SCode: histResp.Code, SMsg: histResp.Msg})
 		}
 		if len(histResp.Data) > 0 {
 			return toResult(histResp.Data[0]), nil
@@ -252,7 +256,7 @@ func (c *Client) CancelOrder(ctx context.Context, creds exchange.Credentials, or
 		if resp.Code == "51400" {
 			return nil
 		}
-		return fmt.Errorf("okx cancel: code=%s msg=%s", resp.Code, resp.Msg)
+		return fmt.Errorf("okx cancel: %w", &okxRejectedError{SCode: resp.Code, SMsg: resp.Msg})
 	}
 	return nil
 }
@@ -272,14 +276,14 @@ func (c *Client) cancelAlgoOrder(ctx context.Context, creds exchange.Credentials
 		return fmt.Errorf("cancel algo order: %w", err)
 	}
 	if resp.Code != "0" {
-		return fmt.Errorf("okx cancel algo: code=%s msg=%s", resp.Code, resp.Msg)
+		return fmt.Errorf("okx cancel algo: %w", &okxRejectedError{SCode: resp.Code, SMsg: resp.Msg})
 	}
 	if len(resp.Data) > 0 && resp.Data[0].SCode != "" && resp.Data[0].SCode != "0" {
 		// 51298 = algo order does not exist (already triggered/cancelled).
 		if resp.Data[0].SCode == "51298" {
 			return nil
 		}
-		return fmt.Errorf("okx cancel algo: sCode=%s sMsg=%s", resp.Data[0].SCode, resp.Data[0].SMsg)
+		return fmt.Errorf("okx cancel algo: %w", &okxRejectedError{SCode: resp.Data[0].SCode, SMsg: resp.Data[0].SMsg})
 	}
 	return nil
 }
@@ -365,7 +369,7 @@ func (c *Client) AmendOrder(ctx context.Context, creds exchange.Credentials, ins
 		return fmt.Errorf("amend order: %w", err)
 	}
 	if resp.Code != "0" {
-		return fmt.Errorf("okx amend: code=%s msg=%s", resp.Code, resp.Msg)
+		return fmt.Errorf("okx amend: %w", &okxRejectedError{SCode: resp.Code, SMsg: resp.Msg})
 	}
 	return nil
 }
@@ -432,10 +436,10 @@ func (c *Client) PlaceExitOrders(ctx context.Context, creds exchange.Credentials
 		if len(resp.Data) > 0 && resp.Data[0].SMsg != "" {
 			msg = resp.Data[0].SMsg
 		}
-		return nil, fmt.Errorf("okx algo order failed: code=%s msg=%s", resp.Code, msg)
+		return nil, fmt.Errorf("okx algo order failed: %w", &okxRejectedError{SCode: resp.Code, SMsg: msg})
 	}
 	if d := resp.Data[0]; d.SCode != "" && d.SCode != "0" {
-		return nil, fmt.Errorf("okx algo order rejected: sCode=%s sMsg=%s", d.SCode, d.SMsg)
+		return nil, fmt.Errorf("okx algo order rejected: %w", &okxRejectedError{SCode: d.SCode, SMsg: d.SMsg})
 	}
 	// Use ":A:" infix to mark this as an algo order ID throughout the runtime.
 	return &exchange.ExitOrderResult{

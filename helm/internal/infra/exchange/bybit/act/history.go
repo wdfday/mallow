@@ -19,7 +19,7 @@ func (c *Client) FilledOrders(ctx context.Context, creds exchange.Credentials, _
 		return nil, fmt.Errorf("bybit execution/list: %w", err)
 	}
 	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit execution/list: retCode=%d msg=%s", resp.RetCode, resp.RetMsg)
+		return nil, bybitErr("execution list", resp.RetCode, resp.RetMsg)
 	}
 
 	all := make([]exchange.AccountTransaction, 0, len(resp.Result.List))

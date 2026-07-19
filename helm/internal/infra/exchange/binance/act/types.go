@@ -37,7 +37,8 @@ func (c *Client) ClassifyError(err error) exchange.ErrClass {
 		return exchange.ClassifyGeneric(err)
 	}
 	switch apiErr.Code {
-	case -2014, -2015, -2008: // API-key format invalid, invalid key/IP/permissions, no internet
+	// Reference: https://developers.binance.com/docs/binance-spot-api-docs/errors
+	case -2014, -2015, -2008, -1002, -1022: // API-key format invalid, invalid key/IP/permissions, no internet, unauthorized, bad signature
 		return exchange.ErrClassAuth
 	case -1003, -1015: // too many requests, too many new orders
 		return exchange.ErrClassRateLimit
@@ -65,9 +66,9 @@ func (c *Client) ClassifyError(err error) exchange.ErrClass {
 		return exchange.ErrClassInvalidSymbol
 	case -1021: // timestamp outside recvWindow — local clock drift
 		return exchange.ErrClassClockSkew
-	case -1001, -1007: // internal error, timeout waiting for response
+	case -1001, -1006, -1007: // internal disconnect, unexpected response, timeout waiting for response
 		return exchange.ErrClassNetwork
-	case -1008: // server overloaded
+	case -1000, -1008, -1016: // unknown server error, server overloaded, service shutting down
 		return exchange.ErrClassServerError
 	default:
 		return exchange.ClassifyGeneric(err)

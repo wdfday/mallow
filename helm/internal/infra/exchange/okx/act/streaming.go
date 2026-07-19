@@ -54,7 +54,6 @@ func isPermanentOKXError(err error) bool {
 }
 
 // StreamOrders implements exchange.AccountStreamer.
-// onBalance is ignored — OKX does not push balance updates on the orders channel.
 // onCredentialError is called (once) when isPermanentOKXError classifies the login
 // failure as unrecoverable; the reconnect loop stops afterward (see AccountStreamer doc).
 func (c *Client) StreamOrders(
@@ -62,13 +61,13 @@ func (c *Client) StreamOrders(
 	creds exchange.Credentials,
 	onLifecycle func(exchange.OrderLifecycleEvent),
 	onFill func(exchange.WsFillEvent),
-	_ func(exchange.BalanceEvent),
+	onBalance func(exchange.BalanceEvent),
 	onPosition func(exchange.PositionEvent),
 	onRisk func(exchange.RiskEvent),
 	onCredentialError func(string),
 ) error {
 	c.runOKXReconnectLoop(ctx, "order", onCredentialError, func() error {
-		return c.streamOrdersOnce(ctx, creds, onLifecycle, onFill, onPosition, onRisk)
+		return c.streamOrdersOnce(ctx, creds, onLifecycle, onFill, onBalance, onPosition, onRisk)
 	})
 	slog.Info("okx: order streaming started")
 
@@ -136,6 +135,7 @@ func (c *Client) streamOrdersOnce(
 	creds exchange.Credentials,
 	onLifecycle func(exchange.OrderLifecycleEvent),
 	onFill func(exchange.WsFillEvent),
+	onBalance func(exchange.BalanceEvent),
 	onPosition func(exchange.PositionEvent),
 	onRisk func(exchange.RiskEvent),
 ) error {
@@ -143,13 +143,15 @@ func (c *Client) streamOrdersOnce(
 	if c.paper {
 		wsURL = okxPrivateWSDemoURL
 	}
-	// "orders" and "positions" both support instType:ANY on the private endpoint.
+	// "orders" and "positions" both support instType:ANY on the private endpoint;
+	// "account" has no instType parameter — it's account-wide.
 	args := []map[string]string{
 		{"channel": "orders", "instType": "ANY"},
 		{"channel": "positions", "instType": "ANY"}, // futures position updates
+		{"channel": "account"},                      // balance/equity updates
 	}
 	return c.runOKXWSConn(ctx, wsURL, creds, args, func(msg []byte) {
-		handleOKXMessage(msg, onLifecycle, onFill, onPosition, onRisk)
+		handleOKXMessage(msg, onLifecycle, onFill, onBalance, onPosition, onRisk)
 	})
 }
 
@@ -352,6 +354,7 @@ func handleOKXMessage(
 	msg []byte,
 	onLifecycle func(exchange.OrderLifecycleEvent),
 	onFill func(exchange.WsFillEvent),
+	onBalance func(exchange.BalanceEvent),
 	onPosition func(exchange.PositionEvent),
 	onRisk func(exchange.RiskEvent),
 ) {
@@ -365,6 +368,9 @@ func handleOKXMessage(
 		return
 	case "positions":
 		handleOKXPositionMessage(msg, onPosition, onRisk)
+		return
+	case "account":
+		handleOKXAccountMessage(msg, onBalance)
 		return
 	case "orders":
 		// handled below
@@ -446,6 +452,42 @@ func handleOKXMessage(
 					Timestamp:     ts,
 				})
 			}
+		}
+	}
+}
+
+// okxAccountEvent is the private WebSocket "account" channel message — same
+// totalEq/details[].ccy/availBal shape as the REST balance endpoint parsed in
+// account.go's GetBalance.
+type okxAccountEvent struct {
+	Data []struct {
+		Details []struct {
+			Ccy      string `json:"ccy"`
+			AvailBal string `json:"availBal"`
+		} `json:"details"`
+	} `json:"data"`
+}
+
+// handleOKXAccountMessage processes "account" WS channel events, emitting a
+// BalanceEvent per currency. AvailBal (not CashBal) is used for Free — the
+// same "free, not frozen in open orders" semantic as every other adapter's
+// BalanceEvent.Free.
+func handleOKXAccountMessage(msg []byte, onBalance func(exchange.BalanceEvent)) {
+	if onBalance == nil {
+		return
+	}
+	var ev okxAccountEvent
+	if err := json.Unmarshal(msg, &ev); err != nil {
+		return
+	}
+	at := time.Now().UTC()
+	for _, d := range ev.Data {
+		for _, det := range d.Details {
+			onBalance(exchange.BalanceEvent{
+				Asset: det.Ccy,
+				Free:  parseDecimal(det.AvailBal),
+				At:    at,
+			})
 		}
 	}
 }

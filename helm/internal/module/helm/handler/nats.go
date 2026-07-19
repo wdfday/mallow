@@ -8,21 +8,22 @@ import (
 	"github.com/google/uuid"
 	"github.com/nats-io/nats.go"
 
+	"mallow/helm/internal/fleet"
+	"mallow/helm/internal/fleet/actor"
 	"mallow/helm/internal/infra/natsapi"
 	helmDto "mallow/helm/internal/module/helm/dto"
-	"mallow/helm/internal/runtime"
 )
 
 // NATSHandler is the NATS request/reply transport adapter for orchestrator operations.
 type NATSHandler struct {
 	svc     HelmService
 	handMgr HandManager
-	reg     *runtime.Registry
+	reg     *fleet.Registry
 	nc      *nats.Conn
 	subs    []*nats.Subscription
 }
 
-func NewNATSHandler(svc HelmService, handMgr HandManager, reg *runtime.Registry) *NATSHandler {
+func NewNATSHandler(svc HelmService, handMgr HandManager, reg *fleet.Registry) *NATSHandler {
 	return &NATSHandler{svc: svc, handMgr: handMgr, reg: reg}
 }
 
@@ -284,7 +285,7 @@ func (h *NATSHandler) resetHalt(msg *nats.Msg) {
 
 // requireRuntimeOwned parses CallerMeta + helm ID, enforces ownership, then
 // returns the live HelmRuntime. Responds with an error and returns (nil, false) on any failure.
-func (h *NATSHandler) requireRuntimeOwned(msg *nats.Msg) (*runtime.HelmRuntime, bool) {
+func (h *NATSHandler) requireRuntimeOwned(msg *nats.Msg) (*actor.HelmRuntime, bool) {
 	caller := natsapi.ParseCaller(msg.Data)
 	userID, err := uuid.Parse(caller.CallerUserID)
 	if err != nil {

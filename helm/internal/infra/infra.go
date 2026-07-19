@@ -8,11 +8,11 @@ import (
 	"go.uber.org/fx"
 
 	"mallow/helm/internal/config"
+	"mallow/helm/internal/fleet/perf"
 	"mallow/helm/internal/infra/journal/filllog"
 	"mallow/helm/internal/infra/journal/tradelog"
 	infraNats "mallow/helm/internal/infra/nats"
 	"mallow/helm/internal/infra/postgres"
-	"mallow/helm/internal/runtime/perf"
 	internalService "mallow/helm/internal/service"
 )
 

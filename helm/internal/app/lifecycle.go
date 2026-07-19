@@ -9,22 +9,17 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/nats-io/nats.go"
-	"github.com/shopspring/decimal"
 	"go.uber.org/fx"
 
-	"google.golang.org/protobuf/proto"
-
 	"mallow/helm/internal/config"
+	"mallow/helm/internal/fleet"
+	"mallow/helm/internal/fleet/actor"
+	"mallow/helm/internal/fleet/dispatcher"
 	"mallow/helm/internal/infra/herald"
 	"mallow/helm/internal/infra/journal/poslog"
-	"mallow/helm/internal/infra/marketdata"
-	mdbinance "mallow/helm/internal/infra/marketdata/binance"
-	mdbybit "mallow/helm/internal/infra/marketdata/bybit"
-	mdokx "mallow/helm/internal/infra/marketdata/okx"
 	handhandler "mallow/helm/internal/module/hand/handler"
 	handservice "mallow/helm/internal/module/hand/service"
 	orchhandler "mallow/helm/internal/module/helm/handler"
-	"mallow/helm/internal/runtime"
 	"mallow/helm/internal/safe"
 )
 
@@ -52,13 +47,13 @@ func startNATSAPI(
 
 // subscribeSignals wires NATS signal subscription → runtime SignalDispatcher
 // and registers the dispatcher with the Registry for metrics export.
-func subscribeSignals(lc fx.Lifecycle, sc *herald.SignalClient, dispatcher *runtime.SignalDispatcher, reg *runtime.Registry) {
-	reg.SetDispatcher(dispatcher)
+func subscribeSignals(lc fx.Lifecycle, sc *herald.SignalClient, sd *dispatcher.SignalDispatcher, reg *fleet.Registry) {
+	reg.SetDispatcher(sd)
 	var sub interface{ Drain() error }
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
 			s, err := sc.SubscribeSignals(func(resp *herald.SignalResponse, receivedAt time.Time) {
-				dispatcher.Dispatch(resp, receivedAt)
+				sd.Dispatch(resp, receivedAt)
 			})
 			if err != nil {
 				return err
@@ -77,7 +72,7 @@ func subscribeSignals(lc fx.Lifecycle, sc *herald.SignalClient, dispatcher *runt
 
 // heraldReregisterAll re-registers every running hand with herald.
 // Called on herald restart detection.
-func heraldReregisterAll(reg *runtime.Registry) {
+func heraldReregisterAll(reg *fleet.Registry) {
 	count := 0
 	for _, rt := range reg.All() {
 		for _, id := range rt.RunningHandIDs() {
@@ -92,7 +87,7 @@ func heraldReregisterAll(reg *runtime.Registry) {
 }
 
 // heraldReregisterByIDs re-registers specific hands by string IDs.
-func heraldReregisterByIDs(reg *runtime.Registry, handIDs []string) {
+func heraldReregisterByIDs(reg *fleet.Registry, handIDs []string) {
 	if len(handIDs) == 0 {
 		return
 	}
@@ -134,7 +129,7 @@ func heraldDeregisterByIDs(hc *herald.Client, handIDs []string) {
 
 // subscribeHeraldReady subscribes to engine.ready and triggers re-registration
 // of all running hands when herald restarts (detected by herald_id change).
-func subscribeHeraldReady(lc fx.Lifecycle, hc *herald.Client, reg *runtime.Registry) {
+func subscribeHeraldReady(lc fx.Lifecycle, hc *herald.Client, reg *fleet.Registry) {
 	var (
 		sub          interface{ Drain() error }
 		lastHeraldID string
@@ -171,7 +166,7 @@ func subscribeHeraldReady(lc fx.Lifecycle, hc *herald.Client, reg *runtime.Regis
 
 // startHeartbeatLoop periodically checks that all running hands are registered
 // in herald. Runs every 30s; re-registers any that herald reports as missing.
-func startHeartbeatLoop(lc fx.Lifecycle, hc *herald.Client, reg *runtime.Registry) {
+func startHeartbeatLoop(lc fx.Lifecycle, hc *herald.Client, reg *fleet.Registry) {
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
 			runCtx, cancel := context.WithCancel(context.Background())
@@ -187,7 +182,7 @@ func startHeartbeatLoop(lc fx.Lifecycle, hc *herald.Client, reg *runtime.Registr
 	})
 }
 
-func runHeraldHeartbeat(ctx context.Context, hc *herald.Client, reg *runtime.Registry, interval time.Duration) {
+func runHeraldHeartbeat(ctx context.Context, hc *herald.Client, reg *fleet.Registry, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {
@@ -200,7 +195,7 @@ func runHeraldHeartbeat(ctx context.Context, hc *herald.Client, reg *runtime.Reg
 	}
 }
 
-func doHeraldHeartbeat(ctx context.Context, hc *herald.Client, reg *runtime.Registry) { //nolint:unparam
+func doHeraldHeartbeat(ctx context.Context, hc *herald.Client, reg *fleet.Registry) { //nolint:unparam
 	resp, err := hc.ListHands(ctx)
 	if err != nil {
 		slog.Warn("herald heartbeat: failed to list hands from herald", "err", err)
@@ -268,7 +263,7 @@ func runOrchestrator(
 	lc fx.Lifecycle,
 	cfg *config.Config,
 	ginEngine *gin.Engine,
-	reg *runtime.Registry,
+	reg *fleet.Registry,
 	nc *nats.Conn,
 	hc *herald.Client,
 	posLog poslog.Log,
@@ -288,7 +283,7 @@ func runOrchestrator(
 			// Step 2: Reconcile hand positions from poslog WAL vs exchange.
 			// Runs synchronously so every hand is fully restored before signals arrive.
 			if posLog != nil {
-				reconciler := runtime.NewReconciler(posLog)
+				reconciler := actor.NewReconciler(posLog)
 				for _, rt := range reg.All() {
 					results := reconciler.Reconcile(ctx, rt)
 					for _, res := range results {
@@ -314,48 +309,13 @@ func runOrchestrator(
 			reg.StartStreaming(runCtx)
 			reg.StartPollingSync(runCtx, cfg.Runtime.SyncInterval)
 
-			// Subscribe to herald bar closes (bars.* NATS subject) to keep
-			// the per-helm price cache warm. This is the primary price source
-			// when no dedicated market-data listener is configured.
-			// Each bar carries the close price of the just-confirmed candle;
-			// the symbol already has the exchange prefix (e.g. "binance:ETHUSDT").
-			if _, err := nc.Subscribe(herald.SubjBarsPrefix+"*", func(msg *nats.Msg) {
-				var bar herald.BarMsg
-				if err := proto.Unmarshal(msg.Data, &bar); err != nil {
-					return
-				}
-				if bar.C <= 0 {
-					return
-				}
-				price := decimal.NewFromFloat(bar.C)
-				symbol := bar.S
-				for _, rt := range reg.All() {
-					rt.UpdatePrice(symbol, price)
-				}
-			}); err != nil {
-				slog.Warn("bars price feed subscribe failed", "err", err)
-			} else {
-				slog.Info("bars price feed subscribed", "subject", herald.SubjBarsPrefix+"*")
-			}
-
-			if cfg.MarketData.Source != "none" && cfg.MarketData.Source != "" {
-				listener, err := buildMarketDataListener(cfg)
-				if err != nil {
-					slog.Error("market data listener init failed", "err", err)
-				} else {
-					go func() {
-						defer safe.Recover()
-						slog.Info("market data listener starting", "source", listener.Name(), "symbols", cfg.MarketData.Symbols)
-						if err := listener.Subscribe(runCtx, cfg.MarketData.Symbols, func(symbol string, price decimal.Decimal) {
-							for _, rt := range reg.All() {
-								rt.UpdatePrice(symbol, price)
-							}
-						}); err != nil {
-							slog.Error("market data listener error", "err", err)
-						}
-					}()
-				}
-			}
+			// Self-connect to every exchange with live hands and stream public
+			// market data (price + L2 book) directly from it — independent of
+			// herald/NATS. See runtime/market: one WebSocket per exchange, sole
+			// writer of that exchange's public data cache. Idempotent per
+			// exchange, so safe even though hydrateHands (fx.go) already primed
+			// filters for the same set via PrewarmFilters.
+			reg.StartMarketStreaming(runCtx, handSvc.SymbolsByExchange())
 
 			go heartbeat(runCtx, reg, 30*time.Second)
 
@@ -378,7 +338,7 @@ func runOrchestrator(
 	})
 }
 
-func heartbeat(ctx context.Context, reg *runtime.Registry, interval time.Duration) {
+func heartbeat(ctx context.Context, reg *fleet.Registry, interval time.Duration) {
 	defer safe.Recover()
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -450,23 +410,5 @@ func heartbeat(ctx context.Context, reg *runtime.Registry, interval time.Duratio
 		case <-ctx.Done():
 			return
 		}
-	}
-}
-
-func buildMarketDataListener(cfg *config.Config) (marketdata.Listener, error) {
-	switch cfg.MarketData.Source {
-	case "okx":
-		return mdokx.New(), nil
-	case "binance":
-		return mdbinance.New(), nil
-	case "bybit":
-		return mdbybit.New(), nil
-	case "alpaca", "ibkr", "oanda":
-		return nil, fmt.Errorf(
-			"market data source %q now requires per-account provider credentials from helm config, not global env config",
-			cfg.MarketData.Source,
-		)
-	default:
-		return nil, fmt.Errorf("unknown market data source: %q", cfg.MarketData.Source)
 	}
 }

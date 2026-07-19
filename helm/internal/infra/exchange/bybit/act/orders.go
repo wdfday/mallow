@@ -46,7 +46,7 @@ func (c *Client) PlaceOrder(ctx context.Context, creds exchange.Credentials, req
 		return nil, fmt.Errorf("place order: %w", err)
 	}
 	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit order failed: code=%d msg=%s", resp.RetCode, resp.RetMsg)
+		return nil, bybitErr("place order", resp.RetCode, resp.RetMsg)
 	}
 
 	return &exchange.OrderResult{
@@ -68,7 +68,7 @@ func (c *Client) GetOrder(ctx context.Context, creds exchange.Credentials, order
 		return nil, fmt.Errorf("get order: %w", err)
 	}
 	if resp.RetCode != 0 || len(resp.Result.List) == 0 {
-		return nil, fmt.Errorf("bybit get order: code=%d msg=%s", resp.RetCode, resp.RetMsg)
+		return nil, bybitErr("get order", resp.RetCode, resp.RetMsg)
 	}
 	return orderDetailToResult(&resp.Result.List[0]), nil
 }
@@ -111,7 +111,7 @@ func (c *Client) GetOrders(ctx context.Context, creds exchange.Credentials, cate
 		return nil, fmt.Errorf("get orders: %w", err)
 	}
 	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit get orders: code=%d msg=%s", resp.RetCode, resp.RetMsg)
+		return nil, bybitErr("get orders", resp.RetCode, resp.RetMsg)
 	}
 
 	results := make([]exchange.OrderResult, len(resp.Result.List))
@@ -129,7 +129,7 @@ func (c *Client) CancelOrder(ctx context.Context, creds exchange.Credentials, or
 		return fmt.Errorf("cancel order: %w", err)
 	}
 	if resp.RetCode != 0 {
-		return fmt.Errorf("bybit cancel: code=%d msg=%s", resp.RetCode, resp.RetMsg)
+		return bybitErr("cancel order", resp.RetCode, resp.RetMsg)
 	}
 	return nil
 }
@@ -148,7 +148,7 @@ func (c *Client) AmendOrder(ctx context.Context, creds exchange.Credentials, cat
 		return fmt.Errorf("amend order: %w", err)
 	}
 	if resp.RetCode != 0 {
-		return fmt.Errorf("bybit amend: code=%d msg=%s", resp.RetCode, resp.RetMsg)
+		return bybitErr("amend order", resp.RetCode, resp.RetMsg)
 	}
 	return nil
 }
@@ -187,7 +187,7 @@ func (c *Client) PlaceExitOrders(ctx context.Context, creds exchange.Credentials
 			return nil, fmt.Errorf("bybit SL exit: %w", err)
 		}
 		if resp.RetCode != 0 {
-			return nil, fmt.Errorf("bybit SL exit: code=%d msg=%s", resp.RetCode, resp.RetMsg)
+			return nil, bybitErr("SL exit order", resp.RetCode, resp.RetMsg)
 		}
 		ids = append(ids, resp.Result.OrderID)
 	}
@@ -211,7 +211,7 @@ func (c *Client) PlaceExitOrders(ctx context.Context, creds exchange.Credentials
 			return nil, fmt.Errorf("bybit TP exit: %w", err)
 		}
 		if resp.RetCode != 0 {
-			return nil, fmt.Errorf("bybit TP exit: code=%d msg=%s", resp.RetCode, resp.RetMsg)
+			return nil, bybitErr("TP exit order", resp.RetCode, resp.RetMsg)
 		}
 		ids = append(ids, resp.Result.OrderID)
 	}

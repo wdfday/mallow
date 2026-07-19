@@ -9,6 +9,9 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 
+	"mallow/helm/internal/fleet"
+	"mallow/helm/internal/fleet/actor"
+	"mallow/helm/internal/fleet/perf"
 	"mallow/helm/internal/infra/journal/eventlog"
 	"mallow/helm/internal/infra/journal/filllog"
 	"mallow/helm/internal/infra/journal/orderlog"
@@ -16,8 +19,6 @@ import (
 	"mallow/helm/internal/module/analytics/domain"
 	analyticsservice "mallow/helm/internal/module/analytics/service"
 	dto "mallow/helm/internal/module/helm/dto"
-	"mallow/helm/internal/runtime"
-	"mallow/helm/internal/runtime/perf"
 	"mallow/helm/internal/shared"
 )
 
@@ -46,7 +47,7 @@ func parsePeriod(c *gin.Context) domain.Period {
 type Handler struct {
 	svc       HelmService
 	handMgr   HandManager
-	reg       *runtime.Registry
+	reg       *fleet.Registry
 	fillLog   *filllog.FillLog
 	posLog    poslog.Log
 	orderLog  orderlog.Log
@@ -57,7 +58,7 @@ type Handler struct {
 func New(
 	svc HelmService,
 	handMgr HandManager,
-	reg *runtime.Registry,
+	reg *fleet.Registry,
 	fillLog *filllog.FillLog,
 	posLog poslog.Log,
 	orderLog orderlog.Log,
@@ -410,7 +411,7 @@ func (h *Handler) resetHalt(c *gin.Context) {
 
 // requireRuntime looks up the runtime by path :id without an ownership check.
 // Use requireOwnedRuntime for user-facing endpoints.
-func (h *Handler) requireRuntime(c *gin.Context) *runtime.HelmRuntime {
+func (h *Handler) requireRuntime(c *gin.Context) *actor.HelmRuntime {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		shared.RespondWithError(c, http.StatusBadRequest, "invalid id")
@@ -426,7 +427,7 @@ func (h *Handler) requireRuntime(c *gin.Context) *runtime.HelmRuntime {
 
 // requireOwnedRuntime combines ownership check + runtime lookup.
 // Returns nil and writes the error response if either check fails.
-func (h *Handler) requireOwnedRuntime(c *gin.Context, userID uuid.UUID) *runtime.HelmRuntime {
+func (h *Handler) requireOwnedRuntime(c *gin.Context, userID uuid.UUID) *actor.HelmRuntime {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
 		shared.RespondWithError(c, http.StatusBadRequest, "invalid id")

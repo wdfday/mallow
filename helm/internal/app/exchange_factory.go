@@ -2,15 +2,14 @@ package app
 
 import (
 	"fmt"
-	"sync"
-
 	"mallow/helm/internal/infra/exchange"
 	alpacaact "mallow/helm/internal/infra/exchange/alpaca/act"
 	binanceact "mallow/helm/internal/infra/exchange/binance/act"
 	bybitact "mallow/helm/internal/infra/exchange/bybit/act"
 	fbinanceact "mallow/helm/internal/infra/exchange/fbinance/act"
 	okxact "mallow/helm/internal/infra/exchange/okx/act"
-	orchdomain "mallow/helm/internal/module/helm/domain"
+	helmdomain "mallow/helm/internal/module/helm/domain"
+	"sync"
 )
 
 // exchangeFactory implements runtime.ExchangeFactory.
@@ -27,7 +26,7 @@ func newExchangeFactory() *exchangeFactory {
 	return &exchangeFactory{clients: make(map[string]exchange.Exchange)}
 }
 
-func (f *exchangeFactory) New(cfg orchdomain.ExchangeConfig) (exchange.Exchange, error) {
+func (f *exchangeFactory) New(cfg helmdomain.ExchangeConfig) (exchange.Exchange, error) {
 	key := fmt.Sprintf("%s|%s|paper=%v", cfg.BrokerType, cfg.BaseURL, cfg.Paper)
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -45,7 +44,7 @@ func (f *exchangeFactory) New(cfg orchdomain.ExchangeConfig) (exchange.Exchange,
 	return cl, nil
 }
 
-func (f *exchangeFactory) create(cfg orchdomain.ExchangeConfig) (exchange.Exchange, error) {
+func (f *exchangeFactory) create(cfg helmdomain.ExchangeConfig) (exchange.Exchange, error) {
 	switch cfg.BrokerType {
 	case "okx":
 		return okxact.New(okxact.Config{

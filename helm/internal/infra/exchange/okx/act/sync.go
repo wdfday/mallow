@@ -46,7 +46,14 @@ func (c *Client) SyncAccount(ctx context.Context, creds exchange.Credentials, _ 
 			qty = equity
 		}
 		if available.IsPositive() {
-			balances = append(balances, exchange.AssetBalance{Asset: b.Currency, Free: available})
+			// b.Frozen (frozenBal) is OKX's locked-in-open-orders balance for this asset.
+			// Assets that are fully frozen (available == 0) never reach this branch —
+			// a pre-existing gap in the append condition above, not introduced here.
+			balances = append(balances, exchange.AssetBalance{
+				Asset:  b.Currency,
+				Free:   available,
+				Locked: decimal.NewFromFloat(b.Frozen),
+			})
 		}
 		if stablecoins[b.Currency] {
 			// Only USDT counts as cash; other stablecoins are held but not included.
@@ -89,19 +96,32 @@ func (c *Client) SyncAccount(ctx context.Context, creds exchange.Credentials, _ 
 			if qty.IsZero() {
 				continue
 			}
+			upl := decimal.NewFromFloat(d.Upl)
+			lever := decimal.NewFromFloat(d.Lever)
+			liqPx := decimal.NewFromFloat(d.LiqPx)
 			if i, ok := spotIdx[d.InstID]; ok {
 				// Already in spot list — overlay avgPx from positions API.
 				positions[i].AvgPrice = avgPx
 				if markPx.IsPositive() {
 					positions[i].CurPrice = markPx
 				}
+				positions[i].Side = exchange.PositionSide(d.PosSide)
+				positions[i].UnrealizedPnL = upl
+				positions[i].Leverage = lever
+				positions[i].LiquidationPrice = liqPx
+				positions[i].MarginMode = d.MgnMode
 			} else {
 				// Pure derivative not in balance (e.g. short, or coin-margined).
 				positions = append(positions, exchange.ExchangePosition{
-					Symbol:   d.InstID,
-					Qty:      qty,
-					AvgPrice: avgPx,
-					CurPrice: markPx,
+					Symbol:           d.InstID,
+					Qty:              qty,
+					AvgPrice:         avgPx,
+					CurPrice:         markPx,
+					Side:             exchange.PositionSide(d.PosSide),
+					UnrealizedPnL:    upl,
+					Leverage:         lever,
+					LiquidationPrice: liqPx,
+					MarginMode:       d.MgnMode,
 				})
 			}
 		}
@@ -117,5 +137,8 @@ func (c *Client) SyncAccount(ctx context.Context, creds exchange.Credentials, _ 
 		Equity:    cash.Add(mv),
 		Positions: positions,
 		Balances:  balances,
+		// AccountEquity is OKX's own margin-adjusted totalEq — already parsed
+		// into AccountInfo.TotalEquity, just unused here until now.
+		AccountEquity: decimal.NewFromFloat(info.TotalEquity),
 	}, nil
 }

@@ -7,12 +7,12 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"mallow/helm/internal/fleet/actor/core/portfolio"
 	"mallow/helm/internal/infra/journal/poslog"
 	"mallow/helm/internal/infra/natsapi"
 	analyticsdomain "mallow/helm/internal/module/analytics/domain"
 	handdomain "mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/module/helm/domain"
-	"mallow/helm/internal/runtime/core/portfolio"
 )
 
 // ── Config DTOs ────────────────────────────────────────────────────────────

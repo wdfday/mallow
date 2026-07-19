@@ -10,8 +10,8 @@ import (
 
 	"mallow/helm/internal/infra/exchange"
 
+	"mallow/helm/internal/fleet/actor"
 	"mallow/helm/internal/module/hand/domain"
-	"mallow/helm/internal/runtime"
 )
 
 // Get returns a HandSummary for any hand (live or terminal).
@@ -24,14 +24,14 @@ func (s *Service) Get(id uuid.UUID) (domain.HandSummary, error) {
 	}
 	if rt, err := s.registry.Get(data.HelmID); err == nil {
 		if h, _, ok := rt.GetHandEntry(id.String()); ok {
-			return runtime.BuildHandSummary(h, data), nil
+			return actor.BuildHandSummary(h, data), nil
 		}
 	}
 	return data.SummaryFromDB(), nil
 }
 
 // GetHand returns the live Hand runner for the given ID, or nil if not in memory.
-func (s *Service) GetHand(id uuid.UUID) *runtime.Hand {
+func (s *Service) GetHand(id uuid.UUID) *actor.Hand {
 	data, err := s.repo.Get(id)
 	if err != nil {
 		return nil
@@ -54,7 +54,7 @@ func (s *Service) List() []domain.HandSummary {
 	for _, data := range all {
 		if rt, err := s.registry.Get(data.HelmID); err == nil {
 			if h, _, ok := rt.GetHandEntry(data.ID.String()); ok {
-				out = append(out, runtime.BuildHandSummary(h, data))
+				out = append(out, actor.BuildHandSummary(h, data))
 				continue
 			}
 		}
@@ -80,7 +80,7 @@ func (s *Service) ListByHelm(orchID uuid.UUID) []domain.HandSummary {
 	for _, data := range all {
 		if rt != nil {
 			if h, _, ok := rt.GetHandEntry(data.ID.String()); ok {
-				out = append(out, runtime.BuildHandSummary(h, data))
+				out = append(out, actor.BuildHandSummary(h, data))
 				continue
 			}
 		}
@@ -120,7 +120,7 @@ func (s *Service) ListByHelms(helmIDs []uuid.UUID, live bool) []domain.HandSumma
 	// Full: single batched DB read, then enrich live ones from their runtime.
 	all := s.repo.AllByHelms(helmIDs)
 	out := make([]domain.HandSummary, 0, len(all))
-	rtCache := make(map[uuid.UUID]*runtime.HelmRuntime, len(helmIDs))
+	rtCache := make(map[uuid.UUID]*actor.HelmRuntime, len(helmIDs))
 	for _, data := range all {
 		rt, ok := rtCache[data.HelmID]
 		if !ok {
@@ -129,7 +129,7 @@ func (s *Service) ListByHelms(helmIDs []uuid.UUID, live bool) []domain.HandSumma
 		}
 		if rt != nil {
 			if h, _, found := rt.GetHandEntry(data.ID.String()); found {
-				out = append(out, runtime.BuildHandSummary(h, data))
+				out = append(out, actor.BuildHandSummary(h, data))
 				continue
 			}
 		}
@@ -211,13 +211,13 @@ func (s *Service) Create(cfg domain.HandConfig) (domain.HandSummary, error) {
 		return domain.HandSummary{}, fmt.Errorf("save hand: %w", err)
 	}
 
-	strat, tact := runtime.BuildHandComponents(data)
-	hand := runtime.NewHand(id, cfg.HelmID, rt, strat, tact, data.Position.Pyramid, data.Position.MaxUnits, runtime.SignalTTLFor(data), data.Futures, data.OrderType, data.LimitTimeoutSec, data.LimitFallback, data.Guard, data.AllocatedCapital)
+	strat, tact := actor.BuildHandComponents(data)
+	hand := actor.NewHand(id, cfg.HelmID, rt, strat, tact, data.Position.Pyramid, data.Position.MaxUnits, actor.SignalTTLFor(data), data.Futures, data.OrderType, data.LimitTimeoutSec, data.LimitFallback, data.Guard, data.AllocatedCapital)
 	setMeta(hand, data)
 	rt.AddHand(hand, data)
 
 	slog.Info("hand created", "id", id, "name", data.Name, "helm_id", data.HelmID)
-	return runtime.BuildHandSummary(hand, data), nil
+	return actor.BuildHandSummary(hand, data), nil
 }
 
 // Update patches mutable fields: Name, Position sizing, and Guard exit rules.
@@ -268,8 +268,8 @@ func (s *Service) Update(id uuid.UUID, patch domain.HandConfig) error {
 
 	if rt, err := s.registry.Get(helmID); err == nil {
 		rt.RemoveHand(id.String())
-		strat, tact := runtime.BuildHandComponents(updated)
-		hand := runtime.NewHand(updated.ID, helmID, rt, strat, tact, updated.Position.Pyramid, updated.Position.MaxUnits, runtime.SignalTTLFor(updated), updated.Futures, updated.OrderType, updated.LimitTimeoutSec, updated.LimitFallback, updated.Guard, updated.AllocatedCapital)
+		strat, tact := actor.BuildHandComponents(updated)
+		hand := actor.NewHand(updated.ID, helmID, rt, strat, tact, updated.Position.Pyramid, updated.Position.MaxUnits, actor.SignalTTLFor(updated), updated.Futures, updated.OrderType, updated.LimitTimeoutSec, updated.LimitFallback, updated.Guard, updated.AllocatedCapital)
 		setMeta(hand, updated)
 		rt.AddHand(hand, updated)
 	}
@@ -341,7 +341,7 @@ func validateSizingConfig(p domain.PositionConfig) error {
 	return nil
 }
 
-func setMeta(hand *runtime.Hand, b *domain.Hand) {
+func setMeta(hand *actor.Hand, b *domain.Hand) {
 	if len(b.Symbols) > 0 {
 		hand.Symbol = b.Symbols[0]
 	}

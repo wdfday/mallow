@@ -149,6 +149,10 @@ type positionDetail struct {
 	Size          string `json:"size"` // absolute position size
 	AvgPrice      string `json:"avgPrice"`
 	UnrealisedPnl string `json:"unrealisedPnl"`
+	MarkPrice     string `json:"markPrice"`
+	Leverage      string `json:"leverage"`
+	LiqPrice      string `json:"liqPrice"`
+	TradeMode     int    `json:"tradeMode"` // 0 = cross margin, 1 = isolated margin
 }
 
 // ── Futures types ─────────────────────────────────────────────────────────────

@@ -337,6 +337,17 @@ func (m *MeteredExchange) Snapshot() MetricsSnapshot {
 // MeteredExchange forwards all optional interfaces so type assertions on the
 // wrapped exchange reach the underlying adapter.
 
+// ClassifyError implements ErrorClassifier — delegates to the wrapped adapter's
+// precise classifier when it has one, else falls back to ClassifyGeneric. Without
+// this forwarding, every type assertion for ErrorClassifier against a
+// MeteredExchange (which is what Exchange fields are actually set to — see
+// app/exchange_factory.go) would fail, silently defeating every adapter's
+// ClassifyError in favor of the generic string heuristic — exactly the callers
+// in fleet/actor/hand_runner.go and account_events.go depend on this for.
+func (m *MeteredExchange) ClassifyError(err error) ErrClass {
+	return m.classifyErr(err)
+}
+
 // SyncAccount implements AccountSyncer — records latency and delegates to inner.
 func (m *MeteredExchange) SyncAccount(ctx context.Context, creds Credentials, since *time.Time) (*AccountSnapshot, error) {
 	s, ok := m.inner.(AccountSyncer)
@@ -523,6 +534,7 @@ var _ ClientOrderQuerier = (*MeteredExchange)(nil)
 var _ TimeSyncer = (*MeteredExchange)(nil)
 var _ IsolatedMarginTrader = (*MeteredExchange)(nil)
 var _ SpotSupportChecker = (*MeteredExchange)(nil)
+var _ ErrorClassifier = (*MeteredExchange)(nil)
 
 // AtomicMinStore atomically stores v only if v < current (or current == 0).
 // Exported for testing.

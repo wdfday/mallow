@@ -61,6 +61,26 @@ const (
 	KindBracketPlaced Kind = "bracket_placed"
 )
 
+// ExitReason classifies why a position closed — the "source" field on
+// PositionClosedPayload. Wire values are unchanged from before this type
+// existed; this only adds compile-time-checked names for the literals every
+// call site used inline. Only the reasons determined at fill-classification
+// time (hand_fills.go's applyExitFill, reconcile.go's tryRecoverBracketFill)
+// are named here — "kill" / "release" / "external" / "bracket_exit" stay
+// untyped string literals at their call sites (cast to ExitReason at the
+// point they're written into PositionClosedPayload). Orphan never reaches
+// this payload at all (see KindPositionOrphaned/PositionOrphanedPayload) so
+// it has no ExitReason constant — see strategy.ExitKindOrphan instead.
+type ExitReason string
+
+const (
+	ExitReasonTakeProfit ExitReason = "tp"
+	ExitReasonStopLoss   ExitReason = "sl"
+	// ExitReasonSignal is a plain strategy/NATS-originated exit (not a bracket
+	// fill, not kill/release/external) — matches strategy.ExitKindSignal.
+	ExitReasonSignal ExitReason = "signal"
+)
+
 // OrderPlacePayload carries the pre-flight order intent.
 type OrderPlacePayload struct {
 	ClientOrderID string `json:"client_order_id"`
@@ -149,9 +169,11 @@ type PositionClosedPayload struct {
 	EntryAt     time.Time `json:"entry_at"`
 	ClosePrice  string    `json:"close_price"`
 	RealizedPnL string    `json:"realized_pnl"`
-	// ExitReason: "signal" | "sl" | "tp" | "time_stop" | "external" | "kill" | "bracket_exit".
+	// ExitReason: ExitReasonSignal | ExitReasonStopLoss | ExitReasonTakeProfit |
+	// "external" | "kill" | "release" | "bracket_exit" (the last four are untyped
+	// literals — see the ExitReason type doc for why).
 	// (Wire tag kept as "source" for backward compat with already-published events.)
-	ExitReason string `json:"source"`
+	ExitReason ExitReason `json:"source"`
 	// StopLoss / TakeProfit prices active at time of close (zero = none).
 	StopLossPrice   string `json:"stop_loss_price,omitempty"`
 	TakeProfitPrice string `json:"take_profit_price,omitempty"`

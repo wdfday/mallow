@@ -9,9 +9,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
+	"mallow/helm/internal/fleet"
 	"mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/module/hand/service"
-	"mallow/helm/internal/runtime"
 )
 
 // ── in-process stub repo (replaces deleted memory store) ─────────────────────
@@ -101,7 +101,7 @@ func (r *stubHandRepo) DeleteByHelm(helmID uuid.UUID) error {
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func newSvc() *service.Service {
-	reg := runtime.NewRegistry(nil)
+	reg := fleet.NewRegistry(nil)
 	return service.NewService(newStubRepo(), reg)
 }
 

@@ -3,11 +3,11 @@ package app
 import (
 	"context"
 	"log/slog"
+	"mallow/helm/internal/fleet/actor"
 	"mallow/helm/internal/infra/journal/eventlog"
 	"mallow/helm/internal/infra/journal/tradelog"
 	brokerservice "mallow/helm/internal/module/broker/service"
 	handdomain "mallow/helm/internal/module/hand/domain"
-	"mallow/helm/internal/runtime"
 	"mallow/helm/internal/safe"
 	"time"
 
@@ -84,19 +84,19 @@ func backfillTerminalMetrics(lc fx.Lifecycle, repo handdomain.HandRepo, ec event
 func metricsViewFromCounts(counts map[int]int64) handdomain.HandMetricsView {
 	var filtered int64
 	for _, c := range []int{
-		runtime.CodeSignalStale, runtime.CodeSignalHelmPaused, runtime.CodeSignalRateLimited,
-		runtime.CodeSignalDoNothing, runtime.CodeSignalMaxUnits, runtime.CodeSignalRejected,
-		runtime.CodeSignalNoPosition,
+		actor.CodeSignalStale, actor.CodeSignalHelmPaused, actor.CodeSignalRateLimited,
+		actor.CodeSignalDoNothing, actor.CodeSignalMaxUnits, actor.CodeSignalRejected,
+		actor.CodeSignalNoPosition,
 	} {
 		filtered += counts[c]
 	}
 	return handdomain.HandMetricsView{
-		SignalsReceived: counts[runtime.CodeSignalReceived],
+		SignalsReceived: counts[actor.CodeSignalReceived],
 		SignalsFiltered: filtered,
-		SignalsDropped:  counts[runtime.CodeSignalDropped],
-		TradesApproved:  counts[runtime.CodeTradeApproved],
-		OrdersPlaced:    counts[runtime.CodeOrderPlaced],
-		OrdersFilled:    counts[runtime.CodeOrderFilled],
-		OrdersFailed:    counts[runtime.CodeOrderFailed],
+		SignalsDropped:  counts[actor.CodeSignalDropped],
+		TradesApproved:  counts[actor.CodeTradeApproved],
+		OrdersPlaced:    counts[actor.CodeOrderPlaced],
+		OrdersFilled:    counts[actor.CodeOrderFilled],
+		OrdersFailed:    counts[actor.CodeOrderFailed],
 	}
 }

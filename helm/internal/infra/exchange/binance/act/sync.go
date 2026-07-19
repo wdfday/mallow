@@ -40,7 +40,7 @@ func (c *Client) syncSpot(ctx context.Context, creds exchange.Credentials) (*exc
 			continue
 		}
 		if free.IsPositive() {
-			balances = append(balances, exchange.AssetBalance{Asset: b.Asset, Free: free})
+			balances = append(balances, exchange.AssetBalance{Asset: b.Asset, Free: free, Locked: locked})
 		}
 		if b.Asset == "USDT" {
 			cash = cash.Add(free)
@@ -74,6 +74,13 @@ func (c *Client) syncSpot(ctx context.Context, creds exchange.Credentials) (*exc
 		Equity:    cash.Add(mv),
 		Positions: positions,
 		Balances:  balances,
+		// CanTrade/CanWithdraw/CanDeposit are already on acct (the same
+		// GetAccountService response) — read directly, no extra REST call.
+		Permissions: &exchange.AccountPermissions{
+			CanTrade:    acct.CanTrade,
+			CanWithdraw: acct.CanWithdraw,
+			CanDeposit:  acct.CanDeposit,
+		},
 	}, nil
 }
 

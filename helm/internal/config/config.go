@@ -4,7 +4,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/spf13/viper"
@@ -14,13 +13,15 @@ import (
 //
 // Important boundary:
 //   - Per-account execution/broker settings belong to persisted helm configs in the domain layer.
-//   - Env config here is only for the service process itself: infra, HTTP/NATS, scheduling, and optional
-//     market-data adapters used by the process.
+//   - Env config here is only for the service process itself: infra, HTTP/NATS, scheduling.
+//
+// Public market-data streaming (price, filters, L2 book) is not configured here —
+// runtime/market self-connects to whichever exchanges have live hands, derived
+// from handservice.SymbolsByExchange() at startup. See runtime/market/stream.go.
 type Config struct {
-	Infra      InfraConfig
-	Server     ServerConfig
-	Runtime    RuntimeConfig
-	MarketData MarketDataConfig
+	Infra   InfraConfig
+	Server  ServerConfig
+	Runtime RuntimeConfig
 }
 
 type InfraConfig struct {
@@ -38,14 +39,6 @@ type RuntimeConfig struct {
 	SyncInterval time.Duration
 }
 
-type MarketDataConfig struct {
-	Source          string
-	Symbols         []string
-	IsCrypto        bool
-	AlpacaAPIKey    string // shared key for the Alpaca market data WebSocket streamer
-	AlpacaAPISecret string
-}
-
 // Load reads configuration from environment variables with sensible defaults.
 func Load() Config {
 	v := viper.New()
@@ -55,11 +48,6 @@ func Load() Config {
 	v.SetDefault("API_ADDR", "localhost:8084")
 	v.SetDefault("PYROSCOPE_URL", "")
 	v.SetDefault("SYNC_INTERVAL", "5m")
-	v.SetDefault("MARKET_DATA_SOURCE", "none")
-	v.SetDefault("MARKET_DATA_SYMBOLS", "")
-	v.SetDefault("MARKET_DATA_CRYPTO", false)
-	v.SetDefault("ALPACA_MD_API_KEY", "")
-	v.SetDefault("ALPACA_MD_API_SECRET", "")
 
 	if envFile := findDotEnv(); envFile != "" {
 		v.SetConfigFile(envFile)
@@ -81,21 +69,12 @@ func Load() Config {
 		Runtime: RuntimeConfig{
 			SyncInterval: getDuration(v, "SYNC_INTERVAL", 5*time.Minute),
 		},
-		MarketData: MarketDataConfig{
-			Source:          v.GetString("MARKET_DATA_SOURCE"),
-			Symbols:         getStringSlice(v.GetString("MARKET_DATA_SYMBOLS")),
-			IsCrypto:        v.GetBool("MARKET_DATA_CRYPTO"),
-			AlpacaAPIKey:    v.GetString("ALPACA_MD_API_KEY"),
-			AlpacaAPISecret: v.GetString("ALPACA_MD_API_SECRET"),
-		},
 	}
 
 	slog.Info("loaded config",
 		"nats_url", cfg.Infra.NATSURL,
 		"postgres_enabled", cfg.Infra.PostgresURL != "",
 		"sync_interval", cfg.Runtime.SyncInterval,
-		"market_data_source", cfg.MarketData.Source,
-		"market_data_symbols", cfg.MarketData.Symbols,
 		"api_addr", cfg.Server.APIAddr,
 	)
 
@@ -111,21 +90,6 @@ func getDuration(v *viper.Viper, key string, def time.Duration) time.Duration {
 		slog.Warn("invalid duration env var", "key", key, "value", raw, "err", err)
 	}
 	return def
-}
-
-func getStringSlice(value string) []string {
-	if value == "" {
-		return nil
-	}
-	parts := strings.Split(value, ",")
-	result := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			result = append(result, p)
-		}
-	}
-	return result
 }
 
 // findDotEnv locates the service env file.

@@ -43,7 +43,7 @@ func (c *Client) GetWalletBalance(ctx context.Context, creds exchange.Credential
 		return nil, fmt.Errorf("bybit wallet balance: %w", err)
 	}
 	if resp.RetCode != 0 {
-		return nil, fmt.Errorf("bybit wallet balance: code=%d msg=%s", resp.RetCode, resp.RetMsg)
+		return nil, bybitErr("wallet balance", resp.RetCode, resp.RetMsg)
 	}
 	if len(resp.Result.List) == 0 {
 		return nil, fmt.Errorf("bybit: no wallet data")
@@ -91,7 +91,7 @@ func (c *Client) GetFeeRate(ctx context.Context, creds exchange.Credentials, cat
 		return nil, fmt.Errorf("bybit fee rate: %w", err)
 	}
 	if resp.RetCode != 0 || len(resp.Result.List) == 0 {
-		return nil, fmt.Errorf("bybit fee rate: code=%d msg=%s", resp.RetCode, resp.RetMsg)
+		return nil, bybitErr("fee rate", resp.RetCode, resp.RetMsg)
 	}
 
 	f := resp.Result.List[0]

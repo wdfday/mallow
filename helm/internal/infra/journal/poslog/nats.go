@@ -130,7 +130,7 @@ func (l *NatsLog) TradesPaged(ctx context.Context, helmID, handID string, cursor
 					EntryAt:     p.EntryAt,
 					ExitAt:      e.At,
 					RealizedPnL: p.RealizedPnL,
-					Source:      p.ExitReason,
+					Source:      string(p.ExitReason),
 					Cursor:      lastSeq,
 				})
 			}

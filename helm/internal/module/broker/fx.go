@@ -8,6 +8,9 @@ import (
 	"go.uber.org/fx"
 	"gorm.io/gorm"
 
+	"mallow/helm/internal/fleet"
+	"mallow/helm/internal/fleet/actor"
+	"mallow/helm/internal/infra/exchange"
 	alpacaact "mallow/helm/internal/infra/exchange/alpaca/act"
 	binanceact "mallow/helm/internal/infra/exchange/binance/act"
 	bybitact "mallow/helm/internal/infra/exchange/bybit/act"
@@ -18,7 +21,6 @@ import (
 	repository2 "mallow/helm/internal/module/broker/repository"
 	service2 "mallow/helm/internal/module/broker/service"
 	helmService "mallow/helm/internal/module/helm/service"
-	"mallow/helm/internal/runtime"
 	internalService "mallow/helm/internal/service"
 )
 
@@ -38,7 +40,7 @@ var Module = fx.Module("broker",
 		// Handler
 		provideBrokerConnectionHandler,
 	),
-	fx.Invoke(wireCredentialErrorHook),
+	fx.Invoke(wireAccountEventHandler),
 )
 
 func provideBrokerRegistry(
@@ -76,15 +78,56 @@ func provideBrokerConnectionHandler(
 	return handler.NewBrokerConnectionHandler(svc, logger)
 }
 
-// wireCredentialErrorHook sets the registry callback that fires when a running
-// HelmRuntime receives an exchange auth error. The hook marks the broker connection
-// as error in the DB (via brokerSvc.MarkCredentialError) so the UI can surface it.
-// The helm is already self-paused by TriggerAuthError before this callback runs.
-func wireCredentialErrorHook(reg *runtime.Registry, brokerSvc service2.BrokerConnectionService) {
-	reg.SetCredentialErrorHook(func(accountID uuid.UUID, reason string) {
-		if err := brokerSvc.MarkCredentialError(context.Background(), accountID, reason); err != nil {
-			slog.Error("credential error hook: failed to mark broker connection error",
-				"account_id", accountID, "err", err)
-		}
-	})
+// accountEventHandler implements actor.AccountEventHandler, routing each
+// account/connection-level condition to the broker service. The runtime is
+// already self-paused (TriggerAccountError) before any of these run.
+type accountEventHandler struct {
+	brokerSvc service2.BrokerConnectionService
+}
+
+// OnAccountError marks the broker connection as error in the DB for the auth
+// case specifically — an auth rejection means this connection's credentials
+// are no longer usable, same DB-level consequence MarkCredentialError already
+// existed for. Other escalating classes (sustained network/exchange-server
+// errors) are logged only for now — they're transient infra conditions, not
+// necessarily "this connection's credentials are bad".
+func (h *accountEventHandler) OnAccountError(accountID uuid.UUID, class exchange.ErrClass, reason string) {
+	if class != exchange.ErrClassAuth {
+		slog.Warn("account error (non-auth, logged only)",
+			"account_id", accountID, "class", exchange.ErrClassName[class], "reason", reason)
+		return
+	}
+	if err := h.brokerSvc.MarkCredentialError(context.Background(), accountID, reason); err != nil {
+		slog.Error("account event: failed to mark broker connection error",
+			"account_id", accountID, "err", err)
+	}
+}
+
+// OnMarginCall logs the margin-ratio/liquidation warning. Notification-only
+// for now — auto-pausing on every margin call would be too aggressive without
+// a per-user configurable threshold (see risk.Config.MaxMarginRatioPct for
+// the entry-blocking side of this).
+func (h *accountEventHandler) OnMarginCall(accountID uuid.UUID, ev exchange.RiskEvent) {
+	slog.Warn("margin call",
+		"account_id", accountID, "symbol", ev.Symbol,
+		"margin_ratio", ev.MarginRatio, "liq_price", ev.LiquidationPrice)
+}
+
+// OnTradingRestricted marks the broker connection as error — the exchange
+// revoking trading permission has the same practical consequence as a
+// credential rejection (this connection can no longer place orders).
+func (h *accountEventHandler) OnTradingRestricted(accountID uuid.UUID, reason string) {
+	if err := h.brokerSvc.MarkCredentialError(context.Background(), accountID, reason); err != nil {
+		slog.Error("account event: failed to mark broker connection error (trading restricted)",
+			"account_id", accountID, "err", err)
+	}
+}
+
+// wireAccountEventHandler wires the registry's AccountEventHandler port to the
+// broker service, so account/connection-level conditions detected by a
+// running HelmRuntime (credential rejection, sustained errors, margin calls,
+// trading restrictions) get persisted/notified appropriately.
+func wireAccountEventHandler(reg *fleet.Registry, brokerSvc service2.BrokerConnectionService) {
+	var handler actor.AccountEventHandler = &accountEventHandler{brokerSvc: brokerSvc}
+	reg.SetAccountEventHandler(handler)
 }

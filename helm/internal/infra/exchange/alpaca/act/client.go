@@ -38,6 +38,7 @@ var (
 	_ exchange.AccountStreamer    = (*Client)(nil)
 	_ exchange.HistoryFetcher     = (*Client)(nil)
 	_ exchange.SymbolInfoProvider = (*Client)(nil)
+	_ exchange.ErrorClassifier    = (*Client)(nil)
 )
 
 // GetSymbolFilters implements exchange.SymbolInfoProvider.

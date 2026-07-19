@@ -26,17 +26,62 @@ import (
 // ── Account sync ──────────────────────────────────────────────────────────────
 
 // ExchangePosition is a position as reported by the exchange REST API.
+//
+// The margin/futures fields (Side, UnrealizedPnL, Leverage, LiquidationPrice,
+// MarginMode) are zero-valued for spot exchanges that don't have them (Binance
+// spot, Alpaca) — same pattern as AvgPrice already being zero for Binance spot
+// (no cost-basis endpoint there). Not split into per-account-kind DTOs: unlike
+// the four deliberately-distinct order-event surfaces above, every adapter
+// already populates this one struct uniformly today, so new fields are a
+// strict superset rather than a disjoint shape.
 type ExchangePosition struct {
 	Symbol   string
 	Qty      decimal.Decimal // positive = long, negative = short (futures)
 	AvgPrice decimal.Decimal
 	CurPrice decimal.Decimal
+
+	// Side is long/short/net — only meaningful for futures/margin positions
+	// (empty for spot, where Qty's sign already conveys direction).
+	Side PositionSide
+	// UnrealizedPnL is the exchange-reported mark-to-market PnL for this
+	// position, when the exchange provides it (OKX upl, fbinance UnrealizedProfit).
+	UnrealizedPnL decimal.Decimal
+	// Leverage is the position's leverage multiplier; zero if not applicable/unknown.
+	Leverage decimal.Decimal
+	// LiquidationPrice is the exchange-estimated liquidation price; zero if not provided.
+	LiquidationPrice decimal.Decimal
+	// MarginMode is "cross" | "isolated" | "" (spot, or unknown).
+	MarginMode string
+	// AccruedFunding is reserved for future perp funding-payment accumulation
+	// (see docs/design intent for funding ingestion) — not populated yet.
+	AccruedFunding decimal.Decimal
 }
 
-// AssetBalance is a single asset's free balance as returned by the exchange.
+// AssetBalance is a single asset's balance as returned by the exchange.
 type AssetBalance struct {
 	Asset string
 	Free  decimal.Decimal
+	// Locked is the portion reserved by open orders — zero if the exchange
+	// doesn't distinguish it (only Binance spot's Balance.Locked feeds this today).
+	Locked decimal.Decimal
+	// MarginBalance and UnrealizedPnL are futures/margin-account concepts
+	// (fbinance AccountAsset.MarginBalance/UnrealizedProfit); zero for spot.
+	MarginBalance decimal.Decimal
+	UnrealizedPnL decimal.Decimal
+}
+
+// AccountPermissions normalizes the trading-capability flags an exchange
+// reports for the account. Always used behind a pointer on AccountSnapshot
+// (nil = this exchange doesn't report permissions at all) so a real
+// CanTrade=false can never be confused with "not reported" — a plain zero
+// value of this struct would make both cases look identical.
+type AccountPermissions struct {
+	CanTrade        bool
+	CanWithdraw     bool
+	CanDeposit      bool
+	TradingBlocked  bool
+	AccountBlocked  bool
+	ShortingEnabled bool
 }
 
 // AccountTransaction is a single filled order as returned by the exchange REST API.
@@ -63,6 +108,21 @@ type AccountSnapshot struct {
 	Positions    []ExchangePosition
 	Transactions []AccountTransaction // recent filled orders since last sync
 	Balances     []AssetBalance       // per-asset free balances
+
+	// AccountEquity is the exchange's own margin-adjusted total equity (OKX
+	// totalEq, fbinance TotalMarginBalance, Alpaca Equity) — distinct from the
+	// locally-derived Equity above. Zero when the exchange doesn't report one
+	// (Binance spot has no margin concept); callers should prefer this over
+	// self-computed equity when non-zero. See Portfolio.ApplySync.
+	AccountEquity decimal.Decimal
+	// MarginRatio is the exchange-reported account-level maintenance margin
+	// ratio (approaches 1.0 near liquidation); zero when not applicable/reported.
+	MarginRatio decimal.Decimal
+	// AccountMode is "unified" | "classic" | "spot" | "" (unknown/not reported).
+	AccountMode string
+	// Permissions is nil when the exchange doesn't report trading-capability
+	// flags at all; see AccountPermissions for why this must stay a pointer.
+	Permissions *AccountPermissions
 }
 
 // AccountSyncer is optionally implemented by exchanges that support polling
@@ -269,18 +329,13 @@ type SpotBalanceFetcher interface {
 	GetFreeBalance(ctx context.Context, creds Credentials, asset string) (decimal.Decimal, error)
 }
 
-// ── Market data streaming ─────────────────────────────────────────────────────
-
-// MarketStreamer is a shared, broker-level WebSocket client for live market data.
-// One instance per broker type, shared across all helms of that broker.
-type MarketStreamer interface {
-	// Subscribe streams live prices for the given symbols until ctx is canceled.
-	Subscribe(ctx context.Context, symbols []string) error
-	// AddPriceHandler registers a callback fired on each live trade price.
-	AddPriceHandler(h func(symbol string, price decimal.Decimal))
-}
-
-// ── L2 order book streaming ───────────────────────────────────────────────────
+// ── L2 order book ─────────────────────────────────────────────────────────────
+//
+// Market data streaming itself (price ticks and L2 book ingestion) lives in
+// runtime/market, one self-connecting WebSocket per exchange — not behind a
+// pluggable Exchange-adapter interface, since every venue needs its own
+// message-format handling (flattened top-5 push for Binance/OKX, local
+// snapshot+delta merge for Bybit) rather than a uniform Subscribe/handler shape.
 
 // L2Level is one price level in a top-of-book snapshot.
 type L2Level struct {
@@ -288,19 +343,14 @@ type L2Level struct {
 	Size  decimal.Decimal
 }
 
-// L2Snapshot is a top-5 bid/ask snapshot from the books5 channel.
-// Timestamp is set at dispatch time (Go side), not from the exchange payload.
+// L2Snapshot is a top-5 bid/ask snapshot of an exchange's public order book.
+// Timestamp is set at dispatch time (Go side) unless the exchange payload
+// carries its own, in which case that is used instead.
 type L2Snapshot struct {
 	Symbol    string
 	Timestamp time.Time
 	Bids      [5]L2Level // descending: best bid first
 	Asks      [5]L2Level // ascending: best ask first
-}
-
-// BookStreamer is optionally implemented by market streamers that publish
-// L2 order book snapshots. Currently: OKX via the books5 channel.
-type BookStreamer interface {
-	AddBookHandler(h func(L2Snapshot))
 }
 
 // ── Order reconciliation ──────────────────────────────────────────────────────

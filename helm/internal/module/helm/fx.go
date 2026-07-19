@@ -6,6 +6,7 @@ import (
 	"go.uber.org/fx"
 	"gorm.io/gorm"
 
+	"mallow/helm/internal/fleet"
 	"mallow/helm/internal/infra/journal/eventlog"
 	"mallow/helm/internal/infra/journal/filllog"
 	"mallow/helm/internal/infra/journal/orderlog"
@@ -18,7 +19,6 @@ import (
 	"mallow/helm/internal/module/helm/handler"
 	"mallow/helm/internal/module/helm/repository"
 	"mallow/helm/internal/module/helm/service"
-	"mallow/helm/internal/runtime"
 )
 
 var Module = fx.Module("helm",
@@ -34,14 +34,14 @@ func provideHelmRepo(db *gorm.DB) domain.HelmRepo {
 	return repository.New(db)
 }
 
-func provideHelmService(repo domain.HelmRepo, reg *runtime.Registry) *service.Service {
+func provideHelmService(repo domain.HelmRepo, reg *fleet.Registry) *service.Service {
 	return service.New(repo, reg)
 }
 
 func provideHelmHandler(
 	svc *service.Service,
 	handMgr *handservice.Service,
-	reg *runtime.Registry,
+	reg *fleet.Registry,
 	fillLog *filllog.FillLog,
 	posLog poslog.Log,
 	orderLog orderlog.Log,
@@ -51,7 +51,7 @@ func provideHelmHandler(
 	return handler.New(svc, handMgr, reg, fillLog, posLog, orderLog, analytics, evLog)
 }
 
-func provideHelmNATSHandler(svc *service.Service, handMgr *handservice.Service, reg *runtime.Registry) *handler.NATSHandler {
+func provideHelmNATSHandler(svc *service.Service, handMgr *handservice.Service, reg *fleet.Registry) *handler.NATSHandler {
 	return handler.NewNATSHandler(svc, handMgr, reg)
 }
 
@@ -63,7 +63,7 @@ func wireHelmDeps(
 	brokerSvc brokerservice.BrokerConnectionService,
 	repo domain.HelmRepo,
 	db *gorm.DB,
-	reg *runtime.Registry,
+	reg *fleet.Registry,
 ) {
 	helmSvc.SetHandLifecycle(handMgr)
 	helmSvc.SetCredentialFetcher(service.BrokerCredentialAdapter{BrokerSvc: brokerSvc})

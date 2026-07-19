@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/adshao/go-binance/v2/futures"
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
@@ -35,7 +36,12 @@ func (c *Client) syncFuturesUSDM(ctx context.Context, creds exchange.Credentials
 		if wallet.GreaterThan(free) {
 			free = wallet
 		}
-		balances = append(balances, exchange.AssetBalance{Asset: a.Asset, Free: free})
+		balances = append(balances, exchange.AssetBalance{
+			Asset:         a.Asset,
+			Free:          free,
+			MarginBalance: parseDecimal(a.MarginBalance),
+			UnrealizedPnL: parseDecimal(a.UnrealizedProfit),
+		})
 		if a.Asset == "USDT" {
 			cash = cash.Add(avail)
 		}
@@ -57,11 +63,20 @@ func (c *Client) syncFuturesUSDM(ctx context.Context, creds exchange.Credentials
 		if qty.IsNegative() {
 			qty = qty.Neg()
 		}
+		marginMode := "cross"
+		if p.Isolated {
+			marginMode = "isolated"
+		}
 		positions = append(positions, exchange.ExchangePosition{
-			Symbol:   p.Symbol,
-			Qty:      qty,
-			AvgPrice: entryPx,
-			CurPrice: markPx,
+			Symbol:           p.Symbol,
+			Qty:              qty,
+			AvgPrice:         entryPx,
+			CurPrice:         markPx,
+			Side:             fbinancePositionSide(p.PositionSide),
+			UnrealizedPnL:    parseDecimal(p.UnrealizedProfit),
+			Leverage:         parseDecimal(p.Leverage),
+			LiquidationPrice: decimal.Zero, // not returned by /fapi/v2/account; only /fapi/v2/positionRisk has it
+			MarginMode:       marginMode,
 		})
 	}
 
@@ -75,7 +90,24 @@ func (c *Client) syncFuturesUSDM(ctx context.Context, creds exchange.Credentials
 		Equity:    cash.Add(mv),
 		Positions: positions,
 		Balances:  balances,
+		// AccountEquity is Binance's own margin-adjusted total (wallet balance +
+		// unrealized PnL across the account) — already returned by this same
+		// endpoint, just unused until now.
+		AccountEquity: parseDecimal(acct.TotalMarginBalance),
 	}, nil
+}
+
+// fbinancePositionSide maps go-binance's uppercase futures.PositionSideType
+// ("LONG"/"SHORT"/"BOTH") to exchange.PositionSide's lowercase convention.
+func fbinancePositionSide(s futures.PositionSideType) exchange.PositionSide {
+	switch s {
+	case futures.PositionSideTypeLong:
+		return exchange.PositionLong
+	case futures.PositionSideTypeShort:
+		return exchange.PositionShort
+	default:
+		return exchange.PositionNet
+	}
 }
 
 // tickerPriceFutures fetches the latest price for a symbol from the USDM futures endpoint.

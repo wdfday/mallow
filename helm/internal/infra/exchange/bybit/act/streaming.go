@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
 )
@@ -35,9 +36,9 @@ func isPermanentBybitError(err error) bool {
 }
 
 // StreamOrders implements exchange.AccountStreamer.
-// Connects to Bybit private WebSocket, authenticates, subscribes to the "order"
-// and "position" topics, and calls handlers on each event. Reconnects automatically.
-// onBalance is ignored — Bybit wallet updates arrive on a separate topic not yet subscribed.
+// Connects to Bybit private WebSocket, authenticates, subscribes to the
+// "order", "position", and "wallet" topics, and calls handlers on each event.
+// Reconnects automatically.
 // onCredentialError is called (once) when isPermanentBybitError classifies the auth
 // failure as an exchange-side rejection; the reconnect loop stops afterward.
 func (c *Client) StreamOrders(
@@ -45,7 +46,7 @@ func (c *Client) StreamOrders(
 	creds exchange.Credentials,
 	onLifecycle func(exchange.OrderLifecycleEvent),
 	onFill func(exchange.WsFillEvent),
-	_ func(exchange.BalanceEvent),
+	onBalance func(exchange.BalanceEvent),
 	onPosition func(exchange.PositionEvent),
 	onRisk func(exchange.RiskEvent),
 	onCredentialError func(string),
@@ -63,7 +64,7 @@ func (c *Client) StreamOrders(
 				return
 			}
 			start := time.Now()
-			err := c.streamOrdersOnce(ctx, creds, onLifecycle, onFill, onPosition, onRisk)
+			err := c.streamOrdersOnce(ctx, creds, onLifecycle, onFill, onBalance, onPosition, onRisk)
 			if ctx.Err() != nil {
 				return
 			}
@@ -96,6 +97,7 @@ func (c *Client) streamOrdersOnce(
 	creds exchange.Credentials,
 	onLifecycle func(exchange.OrderLifecycleEvent),
 	onFill func(exchange.WsFillEvent),
+	onBalance func(exchange.BalanceEvent),
 	onPosition func(exchange.PositionEvent),
 	onRisk func(exchange.RiskEvent),
 ) error {
@@ -116,7 +118,7 @@ func (c *Client) streamOrdersOnce(
 
 	sub := map[string]any{
 		"op":   "subscribe",
-		"args": []string{"order", "position"},
+		"args": []string{"order", "position", "wallet"},
 	}
 	if err := conn.WriteJSON(sub); err != nil {
 		return fmt.Errorf("subscribe: %w", err)
@@ -155,7 +157,7 @@ func (c *Client) streamOrdersOnce(
 			}
 		case msg := <-msgs:
 			slog.Info("bybit: raw ws message", "raw", string(msg))
-			c.handleBybitMessage(msg, onLifecycle, onFill, onPosition, onRisk)
+			c.handleBybitMessage(msg, onLifecycle, onFill, onBalance, onPosition, onRisk)
 		}
 	}
 }
@@ -203,20 +205,23 @@ func wsAuth(conn *websocket.Conn, creds exchange.Credentials) error {
 type bybitPositionEvent struct {
 	Topic string `json:"topic"`
 	Data  []struct {
-		Symbol        string `json:"symbol"`
-		Side          string `json:"side"` // Buy/Sell/None
-		Size          string `json:"size"`
-		AvgPrice      string `json:"avgPrice"`
-		UnrealisedPnl string `json:"unrealisedPnl"`
-		LiqPrice      string `json:"liqPrice"`
-		PositionMM    string `json:"positionMM"` // maintenance margin
-		UpdatedTime   string `json:"updatedTime"`
+		Symbol          string `json:"symbol"`
+		Side            string `json:"side"` // Buy/Sell/None
+		Size            string `json:"size"`
+		AvgPrice        string `json:"avgPrice"`
+		UnrealisedPnl   string `json:"unrealisedPnl"`
+		LiqPrice        string `json:"liqPrice"`
+		PositionMM      string `json:"positionMM"`      // maintenance margin
+		PositionBalance string `json:"positionBalance"` // margin allocated to this position
+		UpdatedTime     string `json:"updatedTime"`
 	} `json:"data"`
 }
 
 // handleBybitPositionMessage processes "position" topic WS events.
-// Emits PositionEvent for each position update, and RiskEvent when a liquidation price
-// is available (indicating the position has margin risk data).
+// Emits PositionEvent for each position update, and RiskEvent when margin-risk
+// data is available: MarginRatio = positionMM/positionBalance (Bybit's own
+// liquidation condition is positionMM > positionBalance, so this ratio
+// approaches 1.0 near liquidation — same semantic as OKX's own MgnRatio field).
 func handleBybitPositionMessage(msg []byte, onPosition func(exchange.PositionEvent), onRisk func(exchange.RiskEvent)) {
 	var ev bybitPositionEvent
 	if err := json.Unmarshal(msg, &ev); err != nil {
@@ -247,9 +252,14 @@ func handleBybitPositionMessage(msg []byte, onPosition func(exchange.PositionEve
 		}
 		if onRisk != nil {
 			liqPx := parseDecimal(d.LiqPrice)
-			if liqPx.IsPositive() {
+			var ratio decimal.Decimal
+			if bal := parseDecimal(d.PositionBalance); bal.IsPositive() {
+				ratio = parseDecimal(d.PositionMM).Div(bal)
+			}
+			if liqPx.IsPositive() || ratio.IsPositive() {
 				onRisk(exchange.RiskEvent{
 					Symbol:           d.Symbol,
+					MarginRatio:      ratio,
 					LiquidationPrice: liqPx,
 					At:               ts,
 				})
@@ -258,10 +268,47 @@ func handleBybitPositionMessage(msg []byte, onPosition func(exchange.PositionEve
 	}
 }
 
+// bybitWalletEvent is the private WebSocket "wallet" topic message.
+// Reference: https://bybit-exchange.github.io/docs/v5/websocket/private/wallet
+type bybitWalletEvent struct {
+	Topic string `json:"topic"`
+	Data  []struct {
+		Coin []struct {
+			Coin                string `json:"coin"`
+			AvailableToWithdraw string `json:"availableToWithdraw"`
+		} `json:"coin"`
+	} `json:"data"`
+}
+
+// handleBybitWalletMessage processes "wallet" topic WS events, emitting a
+// BalanceEvent per coin. AvailableToWithdraw (not walletBalance) is used for
+// Free — the same "free, not locked in margin/orders" semantic as every other
+// adapter's BalanceEvent.Free.
+func handleBybitWalletMessage(msg []byte, onBalance func(exchange.BalanceEvent)) {
+	if onBalance == nil {
+		return
+	}
+	var ev bybitWalletEvent
+	if err := json.Unmarshal(msg, &ev); err != nil {
+		return
+	}
+	at := time.Now().UTC()
+	for _, acct := range ev.Data {
+		for _, coin := range acct.Coin {
+			onBalance(exchange.BalanceEvent{
+				Asset: coin.Coin,
+				Free:  parseDecimal(coin.AvailableToWithdraw),
+				At:    at,
+			})
+		}
+	}
+}
+
 func (c *Client) handleBybitMessage(
 	msg []byte,
 	onLifecycle func(exchange.OrderLifecycleEvent),
 	onFill func(exchange.WsFillEvent),
+	onBalance func(exchange.BalanceEvent),
 	onPosition func(exchange.PositionEvent),
 	onRisk func(exchange.RiskEvent),
 ) {
@@ -271,6 +318,10 @@ func (c *Client) handleBybitMessage(
 	}
 	if ev.Topic == "position" {
 		handleBybitPositionMessage(msg, onPosition, onRisk)
+		return
+	}
+	if ev.Topic == "wallet" {
+		handleBybitWalletMessage(msg, onBalance)
 		return
 	}
 	if ev.Topic != "order" {

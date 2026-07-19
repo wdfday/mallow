@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/adshao/go-binance/v2/futures"
+	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/infra/exchange"
 )
@@ -36,12 +37,12 @@ func (c *Client) StreamOrders(
 	creds exchange.Credentials,
 	onLifecycle func(exchange.OrderLifecycleEvent),
 	onFill func(exchange.WsFillEvent),
-	_ func(exchange.BalanceEvent), // not pushed on futures ORDER_TRADE_UPDATE
+	onBalance func(exchange.BalanceEvent), // pushed on ACCOUNT_UPDATE's balances array
 	onPosition func(exchange.PositionEvent),
 	onRisk func(exchange.RiskEvent),
 	onCredentialError func(string),
 ) error {
-	go c.streamFuturesOrders(ctx, c.newFut(creds), onLifecycle, onFill, onPosition, onRisk, onCredentialError)
+	go c.streamFuturesOrders(ctx, c.newFut(creds), onLifecycle, onFill, onBalance, onPosition, onRisk, onCredentialError)
 	slog.Info("fbinance: futures order streaming started")
 	return nil
 }
@@ -51,6 +52,7 @@ func (c *Client) streamFuturesOrders(
 	fut *futures.Client,
 	onLifecycle func(exchange.OrderLifecycleEvent),
 	onFill func(exchange.WsFillEvent),
+	onBalance func(exchange.BalanceEvent),
 	onPosition func(exchange.PositionEvent),
 	onRisk func(exchange.RiskEvent),
 	onCredentialError func(string),
@@ -67,7 +69,7 @@ func (c *Client) streamFuturesOrders(
 			return
 		}
 		start := time.Now()
-		err := c.streamFuturesOrdersOnce(ctx, fut, onLifecycle, onFill, onPosition, onRisk)
+		err := c.streamFuturesOrdersOnce(ctx, fut, onLifecycle, onFill, onBalance, onPosition, onRisk)
 		if ctx.Err() != nil {
 			return
 		}
@@ -97,6 +99,7 @@ func (c *Client) streamFuturesOrdersOnce(
 	fut *futures.Client,
 	onLifecycle func(exchange.OrderLifecycleEvent),
 	onFill func(exchange.WsFillEvent),
+	onBalance func(exchange.BalanceEvent),
 	onPosition func(exchange.PositionEvent),
 	onRisk func(exchange.RiskEvent),
 ) error {
@@ -116,7 +119,16 @@ func (c *Client) streamFuturesOrdersOnce(
 		}
 		switch event.Event {
 		case futures.UserDataEventTypeAccountUpdate:
-			// ACCOUNT_UPDATE carries position changes — emit PositionEvent for each position.
+			// ACCOUNT_UPDATE carries both balance and position changes.
+			if onBalance != nil {
+				for _, bal := range event.AccountUpdate.Balances {
+					onBalance(exchange.BalanceEvent{
+						Asset: bal.Asset,
+						Free:  parseDecimal(bal.Balance),
+						At:    time.Now().UTC(),
+					})
+				}
+			}
 			if onPosition != nil {
 				for _, pos := range event.AccountUpdate.Positions {
 					side := exchange.PositionNet
@@ -139,11 +151,26 @@ func (c *Client) streamFuturesOrdersOnce(
 			return
 		case futures.UserDataEventTypeMarginCall:
 			// MARGIN_CALL — emit RiskEvent for each position in margin call.
+			// MarginRatio = maintenance margin required / the wallet balance that
+			// margin is drawn from (isolated wallet for an isolated position,
+			// account cross-wallet balance otherwise) — Binance's own documented
+			// risk relationship, not an estimate. LiquidationPrice isn't in this
+			// payload at all (Binance doesn't push it on MARGIN_CALL); left at
+			// zero rather than approximated from mark price/leverage.
 			if onRisk != nil {
 				for _, p := range event.MarginCallPositions {
+					denom := event.CrossWalletBalance
+					if p.MarginType == futures.MarginTypeIsolated {
+						denom = p.IsolatedWallet
+					}
+					var ratio decimal.Decimal
+					if d := parseDecimal(denom); d.IsPositive() {
+						ratio = parseDecimal(p.MaintenanceMarginRequired).Div(d)
+					}
 					onRisk(exchange.RiskEvent{
-						Symbol: p.Symbol,
-						At:     time.Now().UTC(),
+						Symbol:      p.Symbol,
+						MarginRatio: ratio,
+						At:          time.Now().UTC(),
 					})
 				}
 			}

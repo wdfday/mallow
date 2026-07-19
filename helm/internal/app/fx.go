@@ -11,6 +11,9 @@ import (
 	"gorm.io/gorm"
 
 	"mallow/helm/internal/config"
+	"mallow/helm/internal/fleet"
+	"mallow/helm/internal/fleet/dispatcher"
+	"mallow/helm/internal/fleet/perf"
 	"mallow/helm/internal/infra"
 	alpacaact "mallow/helm/internal/infra/exchange/alpaca/act"
 	binanceact "mallow/helm/internal/infra/exchange/binance/act"
@@ -36,8 +39,6 @@ import (
 	helmmodule "mallow/helm/internal/module/helm"
 	orchhandler "mallow/helm/internal/module/helm/handler"
 	helmrepo "mallow/helm/internal/module/helm/repository"
-	"mallow/helm/internal/runtime"
-	"mallow/helm/internal/runtime/perf"
 )
 
 // Module declares all orchestrator components and lifecycle.
@@ -63,8 +64,8 @@ var Module = fx.Options(
 	// Herald registry client (register/deregister/validate/heartbeat)
 	fx.Provide(func(nc *nats.Conn) *herald.Client { return herald.New(nc) }),
 
-	// Adapt *runtime.Registry → runtime.SignalSink for SignalDispatcher
-	fx.Provide(func(r *runtime.Registry) runtime.SignalSink { return r }),
+	// Adapt *fleet.Registry → dispatcher.SignalSink for SignalDispatcher
+	fx.Provide(func(r *fleet.Registry) dispatcher.SignalSink { return r }),
 
 	// Position event log (JetStream-backed; nil-safe when NATS unavailable)
 	fx.Provide(newPosLog),
@@ -81,8 +82,8 @@ var Module = fx.Options(
 	fx.Provide(newAnalyticsService),
 
 	// Runtime registry
-	fx.Provide(runtime.NewRegistry),
-	fx.Provide(runtime.NewSignalDispatcher),
+	fx.Provide(fleet.NewRegistry),
+	fx.Provide(dispatcher.NewSignalDispatcher),
 
 	// HTTP server (receives handlers from helm/hand modules via FX)
 	fx.Provide(newAccountHandler),
@@ -114,8 +115,8 @@ var Module = fx.Options(
 	fx.Invoke(subscribeSignals),
 )
 
-// asRuntimeFactory adapts *exchangeFactory to the runtime.ExchangeFactory interface.
-func asRuntimeFactory(f *exchangeFactory) runtime.ExchangeFactory { return f }
+// asRuntimeFactory adapts *exchangeFactory to the fleet.ExchangeFactory interface.
+func asRuntimeFactory(f *exchangeFactory) fleet.ExchangeFactory { return f }
 
 func runMigrations(db *gorm.DB) error {
 	if err := accountrepo.Migrate(db); err != nil {
@@ -213,7 +214,7 @@ func newPosLog(js nats.JetStreamContext) poslog.Log {
 }
 
 // wirePosLog injects the position event log into the registry so all new orchestrators receive it.
-func wirePosLog(reg *runtime.Registry, log poslog.Log) {
+func wirePosLog(reg *fleet.Registry, log poslog.Log) {
 	if log != nil {
 		reg.SetPosLog(log)
 	}
@@ -222,19 +223,19 @@ func wirePosLog(reg *runtime.Registry, log poslog.Log) {
 // wireTradeLog injects the JetStream perf.TradeLog into the registry so all
 // runtimes (current and future) publish completed trades to HELM_TRADES.
 // Trades are drained into Postgres asynchronously by TradePersister.
-func wireTradeLog(reg *runtime.Registry, log perf.TradeLog) {
+func wireTradeLog(reg *fleet.Registry, log perf.TradeLog) {
 	reg.SetTradeLog(log)
 }
 
 // wirePnLSummer injects the postgres tradelog reader as the PnLSummer so
 // RestorePnL uses a single SQL aggregate query instead of draining JetStream.
-func wirePnLSummer(reg *runtime.Registry, log tradelog.Log) {
+func wirePnLSummer(reg *fleet.Registry, log tradelog.Log) {
 	reg.SetPnLSummer(log)
 }
 
 // wireEventCounter injects the postgres event log as the EventCounter so
 // RestoreCounters rebuilds activity counters from helm_events on startup.
-func wireEventCounter(reg *runtime.Registry, log eventlog.Log) {
+func wireEventCounter(reg *fleet.Registry, log eventlog.Log) {
 	reg.SetEventCounter(log)
 }
 

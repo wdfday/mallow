@@ -34,7 +34,7 @@ func (c *Client) SetLeverage(ctx context.Context, creds exchange.Credentials, sy
 	}
 	// retCode 110043 = leverage not modified (already set) — non-fatal
 	if resp.RetCode != 0 && resp.RetCode != 110043 {
-		return fmt.Errorf("bybit set leverage: code=%d msg=%s", resp.RetCode, resp.RetMsg)
+		return bybitErr("set leverage", resp.RetCode, resp.RetMsg)
 	}
 
 	tradeMode := 0
@@ -54,7 +54,7 @@ func (c *Client) SetLeverage(ctx context.Context, creds exchange.Credentials, sy
 	}
 	// 110026 = margin mode already set — non-fatal
 	if modeResp.RetCode != 0 && modeResp.RetCode != 110026 {
-		return fmt.Errorf("bybit set margin mode: code=%d msg=%s", modeResp.RetCode, modeResp.RetMsg)
+		return bybitErr("set margin mode", modeResp.RetCode, modeResp.RetMsg)
 	}
 	return nil
 }
@@ -72,7 +72,7 @@ func (c *Client) FundingRate(ctx context.Context, creds exchange.Credentials, sy
 		return decimal.Zero, fmt.Errorf("bybit funding rate %s: %w", symbol, err)
 	}
 	if resp.RetCode != 0 || len(resp.Result.List) == 0 {
-		return decimal.Zero, fmt.Errorf("bybit funding rate: code=%d msg=%s", resp.RetCode, resp.RetMsg)
+		return decimal.Zero, bybitErr("funding rate", resp.RetCode, resp.RetMsg)
 	}
 	return parseDecimal(resp.Result.List[0].FundingRate), nil
 }
@@ -86,7 +86,7 @@ func (c *Client) MarkPrice(ctx context.Context, creds exchange.Credentials, symb
 		return decimal.Zero, fmt.Errorf("bybit mark price %s: %w", symbol, err)
 	}
 	if resp.RetCode != 0 || len(resp.Result.List) == 0 {
-		return decimal.Zero, fmt.Errorf("bybit mark price: code=%d msg=%s", resp.RetCode, resp.RetMsg)
+		return decimal.Zero, bybitErr("mark price", resp.RetCode, resp.RetMsg)
 	}
 	return parseDecimal(resp.Result.List[0].MarkPrice), nil
 }

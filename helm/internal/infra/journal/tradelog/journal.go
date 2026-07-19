@@ -9,7 +9,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
-	"mallow/helm/internal/runtime/perf"
+	"mallow/helm/internal/fleet/perf"
 )
 
 const (

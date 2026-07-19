@@ -6,9 +6,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
+	"mallow/helm/internal/fleet"
+	"mallow/helm/internal/fleet/actor"
 	"mallow/helm/internal/module/hand/domain"
 	helmdomain "mallow/helm/internal/module/helm/domain"
-	"mallow/helm/internal/runtime"
 )
 
 // HelmService is the subset of helm/service.Service used by the hand handler.
@@ -39,13 +40,13 @@ type HandService interface {
 	AllocateCapital(handID, helmID uuid.UUID, delta decimal.Decimal) (decimal.Decimal, error)
 }
 
-// RuntimeRegistry is the subset of runtime.Registry used by hand handlers.
+// RuntimeRegistry is the subset of fleet.Registry used by hand handlers.
 type RuntimeRegistry interface {
-	Get(id uuid.UUID) (*runtime.HelmRuntime, error)
-	All() []*runtime.HelmRuntime
+	Get(id uuid.UUID) (*actor.HelmRuntime, error)
+	All() []*actor.HelmRuntime
 	// DispatchStats returns registry-level signal routing error counts.
-	DispatchStats() runtime.DispatchStats
+	DispatchStats() fleet.DispatchStats
 	// NATSStats returns NATS-level dispatcher counters (total, missing IDs, nil payloads).
 	// Returns zero values if no dispatcher has been wired.
-	NATSStats() runtime.DispatcherSnapshot
+	NATSStats() fleet.DispatcherSnapshot
 }

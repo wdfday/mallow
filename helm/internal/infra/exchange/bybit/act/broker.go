@@ -44,7 +44,7 @@ func (b *Broker) Validate(ctx context.Context, cc brokerclient.Credentials) erro
 		return fmt.Errorf("bybit validate: %w", err)
 	}
 	if out.RetCode != 0 {
-		return fmt.Errorf("bybit validate: retCode=%d", out.RetCode)
+		return bybitErr("validate", out.RetCode, "")
 	}
 	return nil
 }

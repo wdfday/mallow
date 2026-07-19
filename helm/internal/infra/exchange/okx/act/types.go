@@ -69,15 +69,26 @@ func (c *Client) ClassifyError(err error) exchange.ErrClass {
 	return classifyOKXSCode(oe.SCode)
 }
 
-// classifyOKXSCode maps OKX V5 per-order sCodes to an ErrClass.
+// classifyOKXSCode maps OKX V5 codes (both per-order sCode and the outer
+// envelope's code — same numbering space) to an ErrClass.
 // Reference: https://www.okx.com/docs-v5/en/#error-code
+//
+// NOTE (2026-07-19): 50102 vs 50112 were previously swapped here — 50102 is
+// "Timestamp request expired" (the actual clock-drift condition), while 50112
+// is "Invalid OK_ACCESS_TIMESTAMP" (a malformed/missing auth header, not
+// drift). Same class of bug as the Binance DNS/signature incident: a
+// plausible-looking but wrong code→class mapping that would have silently
+// misrouted a genuine clock-skew condition into TriggerAccountError(Auth)
+// (self-pause + mark broker connection errored) instead of SyncTime+retry.
 func classifyOKXSCode(sCode string) exchange.ErrClass {
 	switch sCode {
-	case "50112": // request timestamp expired — local clock outside OKX tolerance
+	case "50102": // timestamp request expired — local clock outside OKX's ~30s tolerance
 		return exchange.ErrClassClockSkew
-	case "50111", "50113", "50119": // invalid API key, invalid sign, invalid broker
+	case "50111", "50112", "50113": // invalid API key, invalid timestamp header, invalid sign
 		return exchange.ErrClassAuth
-	case "50014", "50018": // rate limit exceeded, account suspended
+	case "50007", "50008", "50009", "50027": // account blocked, user does not exist, suspended (liquidation), restricted from trading
+		return exchange.ErrClassAuth
+	case "50011", "50061": // request too frequent, max order rate limit reached
 		return exchange.ErrClassRateLimit
 	case "51006", "51008", "51100", "51131", "51300": // insufficient balance / margin
 		return exchange.ErrClassInsufficientBalance
@@ -87,9 +98,16 @@ func classifyOKXSCode(sCode string) exchange.ErrClass {
 		return exchange.ErrClassLotSize
 	case "51010": // order does not exist
 		return exchange.ErrClassOrderNotFound
-	case "50000", "50001", "50002": // body empty / server unavailable / overloaded
+	case "50004": // endpoint request timeout — OKX docs: "does not indicate success or
+		// failure of order" — a transport-ambiguous timeout, not a definitive reject.
+		return exchange.ErrClassNetwork
+	case "50000", "50001", "50002", "50005", "50013", "50026": // body empty / matching engine upgrading / bad JSON / API offline / system busy / system error
 		return exchange.ErrClassServerError
 	default:
+		// 50014 (parameter empty), 50018/50017/50019-50023 (ADL/liquidation
+		// freezes), 50024/50025/50044 (request-shape validation) don't map
+		// cleanly onto any existing ErrClass — left as Unknown (metrics-only)
+		// rather than forced into a category that doesn't fit.
 		return exchange.ErrClassUnknown
 	}
 }

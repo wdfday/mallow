@@ -48,6 +48,7 @@ type PositionInfo struct {
 	Lever   float64
 	LiqPx   float64
 	MarkPx  float64
+	MgnMode string // cross, isolated
 }
 
 // GetBalance returns the unified account balance.
@@ -108,6 +109,7 @@ func (c *Client) GetPositions(ctx context.Context, creds exchange.Credentials, i
 			Lever   string `json:"lever"`
 			LiqPx   string `json:"liqPx"`
 			MarkPx  string `json:"markPx"`
+			MgnMode string `json:"mgnMode"`
 		} `json:"data"`
 	}
 
@@ -129,6 +131,7 @@ func (c *Client) GetPositions(ctx context.Context, creds exchange.Credentials, i
 			Lever:   parseFloat(p.Lever),
 			LiqPx:   parseFloat(p.LiqPx),
 			MarkPx:  parseFloat(p.MarkPx),
+			MgnMode: p.MgnMode,
 		}
 	}
 	return results, nil

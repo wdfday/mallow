@@ -9,10 +9,10 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
+	"mallow/helm/internal/fleet"
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/module/hand/domain"
 	helmdomain "mallow/helm/internal/module/helm/domain"
-	"mallow/helm/internal/runtime"
 )
 
 type stubHandRepo struct {
@@ -138,7 +138,7 @@ func validConfig(helmID uuid.UUID) domain.HandConfig {
 func TestKillAndRelease_FreesMemory(t *testing.T) {
 	mockEx := &stubExchange{}
 	factory := &stubExchFactory{ex: mockEx}
-	reg := runtime.NewRegistry(factory)
+	reg := fleet.NewRegistry(factory)
 	svc := NewService(newStubRepo(), reg)
 
 	helmID := uuid.New()
@@ -192,7 +192,7 @@ func TestKillAndRelease_FreesMemory(t *testing.T) {
 func TestAllocateCapital_DynamicScale(t *testing.T) {
 	mockEx := &stubExchange{}
 	factory := &stubExchFactory{ex: mockEx}
-	reg := runtime.NewRegistry(factory)
+	reg := fleet.NewRegistry(factory)
 	repo := newStubRepo()
 	svc := NewService(repo, reg)
 

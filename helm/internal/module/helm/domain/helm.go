@@ -32,7 +32,7 @@ const (
 // Helm is the persisted configuration of one orchestrator instance.
 // 1:1 with an investment account (via AccountID).
 // Auto-created on account.linked event; never manually created/deleted via API.
-// Runtime state (portfolio, orderbook, running bots) lives in runtime.OrchestratorRuntime.
+// Runtime state (portfolio, orderbook, running bots) lives in actor.HelmRuntime (package fleet/actor).
 // Capital and exchange credentials are NOT persisted — fetched transiently from investment service.
 type Helm struct {
 	ID           uuid.UUID  `json:"id"`

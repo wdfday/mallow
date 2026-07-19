@@ -12,8 +12,8 @@ import (
 
 	"github.com/shopspring/decimal"
 
+	"mallow/helm/internal/fleet/actor"
 	"mallow/helm/internal/infra/exchange"
-	"mallow/helm/internal/runtime"
 )
 
 // renderPrometheus builds the full /metrics exposition for all live runtimes.
@@ -143,7 +143,7 @@ func renderPrometheus(reg RuntimeRegistry, runningHands int) string {
 			if count == 0 {
 				continue
 			}
-			name, ok := runtime.CodeNames[code]
+			name, ok := actor.CodeNames[code]
 			if !ok {
 				name = fmt.Sprintf("code_%d", code)
 			}

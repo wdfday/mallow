@@ -32,11 +32,21 @@ func (c *Client) SyncAccount(_ context.Context, creds exchange.Credentials, sinc
 		if p.CurrentPrice != nil {
 			curPrice = *p.CurrentPrice
 		}
+		var unrealizedPL decimal.Decimal
+		if p.UnrealizedPL != nil {
+			unrealizedPL = *p.UnrealizedPL
+		}
 		positions[i] = exchange.ExchangePosition{
 			Symbol:   p.Symbol,
 			Qty:      p.Qty,
 			AvgPrice: p.AvgEntryPrice,
 			CurPrice: curPrice,
+			// Side is already "long"/"short" from Alpaca's API, matching
+			// exchange.PositionSide's convention directly.
+			Side:          exchange.PositionSide(p.Side),
+			UnrealizedPnL: unrealizedPL,
+			// No per-position leverage/liquidation-price/margin-mode field
+			// exists on Alpaca's Position — equities only, no perp-style margin.
 		}
 	}
 
@@ -78,5 +88,17 @@ func (c *Client) SyncAccount(_ context.Context, creds exchange.Credentials, sinc
 		Equity:       acct.Equity,
 		Positions:    positions,
 		Transactions: txns,
+		// Alpaca has one equity concept (cash + long/short market value);
+		// AccountEquity mirrors Equity so Portfolio's prefer-exchange-equity
+		// logic (see ApplySync) applies uniformly here too.
+		AccountEquity: acct.Equity,
+		Permissions: &exchange.AccountPermissions{
+			CanTrade:        !acct.TradingBlocked && !acct.AccountBlocked,
+			CanWithdraw:     !acct.TransfersBlocked && !acct.AccountBlocked,
+			CanDeposit:      !acct.AccountBlocked,
+			TradingBlocked:  acct.TradingBlocked,
+			AccountBlocked:  acct.AccountBlocked,
+			ShortingEnabled: acct.ShortingEnabled,
+		},
 	}, nil
 }

@@ -57,7 +57,14 @@ func ClassifyGeneric(err error) ErrClass {
 	}
 	msg := strings.ToLower(err.Error())
 	switch {
-	case containsAny(msg, "unauthorized", "invalid api-key", "api key", "signature", "authentication"):
+	// NOTE: bare "signature" is deliberately NOT a keyword here — every signed
+	// REST call's URL contains "signature=<hex>" as a query parameter, so a pure
+	// transport failure (DNS, dropped connection, timeout) on any signed endpoint
+	// would false-positive as auth if we matched on it, since Go's http/url error
+	// wrapping includes the full request URL in err.Error(). Use "invalid signature"
+	// instead — specific enough to only match a genuine rejection message, and it
+	// never occurs as a substring of "...&signature=<hex>...".
+	case containsAny(msg, "unauthorized", "invalid api-key", "api key", "invalid signature", "authentication"):
 		return ErrClassAuth
 	case containsAny(msg, "rate limit", "too many requests", "request too frequent"):
 		return ErrClassRateLimit
@@ -125,12 +132,23 @@ func IsAmbiguousPlaceError(err error) bool {
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		return true
 	}
+	// Typed detection: ANY DNS resolution failure is a transport failure, regardless
+	// of its Timeout()/Temporary() classification — a SERVFAIL ("server misbehaving")
+	// is neither a timeout nor "not found", but the request never reached the exchange
+	// either way. Confirmed in production: a Binance place-order call that failed to
+	// resolve demo-api.binance.com (resolver SERVFAIL) was misclassified as ErrClassAuth
+	// by the substring fallback below, because the failed request's URL itself contains
+	// "signature=..." (every signed REST call does) — see ClassifyGeneric's comment.
+	var dnsErr *net.DNSError
+	if errors.As(err, &dnsErr) {
+		return true
+	}
 	// Substring fallback for SDK errors wrapped via fmt.Errorf (losing the net.Error type).
 	msg := strings.ToLower(err.Error())
 	for _, kw := range []string{
 		"timeout", "deadline", "i/o timeout", "connection reset",
 		"connection refused", "eof", "no such host", "tls handshake",
-		"temporarily unavailable", "503", "502", "504",
+		"temporarily unavailable", "server misbehaving", "503", "502", "504",
 	} {
 		if strings.Contains(msg, kw) {
 			return true

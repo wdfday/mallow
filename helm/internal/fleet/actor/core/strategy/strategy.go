@@ -58,6 +58,14 @@ type Signal struct {
 	// knows (see the ExitKind type doc). Empty for herald-sourced signals.
 	ExitKind ExitKind
 
+	// PositionID pins this exit signal to one specific leg (its TradeID),
+	// set by checkExits for a locally-triggered SL/TP exit — required so
+	// independent same-symbol legs (non-pyramid, MaxUnits>1) each resolve to
+	// the leg that actually tripped, not just "the first leg on this symbol".
+	// Empty for herald/NATS-originated signals (herald has no concept of legs);
+	// those fall back to first-match-by-symbol, same as before this field existed.
+	PositionID string
+
 	// Reference price at signal time (bar.close). Informational only.
 	Price decimal.Decimal
 

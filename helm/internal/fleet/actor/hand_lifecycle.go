@@ -161,7 +161,7 @@ func (h *Hand) restorePosition(hp *position.HandPositions, currentPrice decimal.
 	// has exchange order IDs — this corrects those entries.)
 	for _, leg := range hp.ActiveLegs() {
 		if leg.HasPendingOrder() {
-			h.pendingOrderPos[leg.PendingOrderID] = leg.PositionID
+			h.pendingOrderPos[leg.PendingOrderID] = leg.TradeID
 			h.helmRuntime.TrackOrder(leg.PendingOrderID, h.id.String())
 		}
 	}
@@ -174,27 +174,27 @@ func (h *Hand) restorePosition(hp *position.HandPositions, currentPrice decimal.
 	// Pyramid: SL/TP from pos (latest signal levels); non-pyramid: per-leg.
 	restoredAt := time.Now()
 	if h.cfg.pyramid {
-		if pos.StopLoss.IsPositive() || pos.TakeProfit.IsPositive() {
-			var bracketIDs []string
-			if pl := hp.PrimaryLeg(); pl != nil {
-				bracketIDs = pl.ExchangeOrderIDs
-			}
-			h.exitLevels[pos.Symbol] = exitLevel{
+		if pl := hp.PrimaryLeg(); pl != nil && (pos.StopLoss.IsPositive() || pos.TakeProfit.IsPositive()) {
+			h.exitLevels[pl.TradeID] = exitLevel{
+				Symbol:           pos.Symbol,
 				Side:             pos.Side,
 				StopLoss:         pos.StopLoss,
 				TakeProfit:       pos.TakeProfit,
-				ExchangeOrderIDs: bracketIDs,
+				ExchangeOrderIDs: pl.ExchangeOrderIDs,
+				GroupID:          pl.GroupID,
 				PlacedAt:         restoredAt,
 			}
 		}
 	} else {
 		for _, leg := range hp.ActiveLegs() {
 			if leg.StopLoss.IsPositive() || leg.TakeProfit.IsPositive() {
-				h.exitLevels[leg.Symbol] = exitLevel{
+				h.exitLevels[leg.TradeID] = exitLevel{
+					Symbol:           leg.Symbol,
 					Side:             leg.Side,
 					StopLoss:         leg.StopLoss,
 					TakeProfit:       leg.TakeProfit,
 					ExchangeOrderIDs: leg.ExchangeOrderIDs,
+					GroupID:          leg.GroupID,
 					PlacedAt:         restoredAt,
 				}
 			}

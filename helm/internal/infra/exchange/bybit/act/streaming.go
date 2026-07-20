@@ -365,7 +365,7 @@ func (c *Client) handleBybitMessage(
 			onFill(exchange.WsFillEvent{
 				OrderID:         d.OrderID,
 				ClientOrderID:   d.OrderLinkId,
-				TradeID:         tradeID,
+				FillID:          tradeID,
 				Symbol:          d.Symbol,
 				Side:            side,
 				Partial:         d.OrderStatus != "Filled",

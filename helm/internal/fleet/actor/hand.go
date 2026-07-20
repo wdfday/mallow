@@ -131,9 +131,9 @@ type Hand struct {
 	// ── Live order & position state (all under mu) ────────────────────────────
 	orders          []domain.Order
 	pendingExits    map[string]exitPending  // orderID → raw SL/TP from signal; resolved on entry fill
-	exitLevels      map[string]exitLevel    // symbol → active local SL/TP safety net
+	exitLevels      map[string]exitLevel    // TradeID → active local SL/TP safety net
 	pos             *position.HandPositions // in-memory mirror of poslog
-	pendingOrderPos map[string]string       // orderID → positionID for fill/cancel attribution
+	pendingOrderPos map[string]string       // orderID → tradeID for fill/cancel attribution
 	// pendingCancels tracks bracket/OCO order IDs that helm itself initiated a cancel for.
 	// When OrderEventCanceled arrives, IDs in this set are normal cleanup (OCO sibling closed);
 	// IDs NOT in this set are external cancels (user closed position manually at exchange).
@@ -217,13 +217,19 @@ type exitPending struct {
 
 // exitLevel holds resolved SL/TP after an entry fill.
 // StopLoss and TakeProfit are always absolute prices.
-// Stored in exitLevels[symbol] as the local safety net while the position is open.
+// Stored in exitLevels[tradeID] as the local safety net while the position is open.
 type exitLevel struct {
+	Symbol           string // needed for price lookup + signal construction now that the map key is TradeID, not symbol
 	Side             string
 	StopLoss         decimal.Decimal // absolute stop price; zero = not set
 	TakeProfit       decimal.Decimal // absolute take-profit price; zero = not set
 	ExchangeOrderIDs []string        // exchange-side SL/TP order IDs; canceled when position closes
-	PlacedAt         time.Time       // when the bracket order was placed; used for not_found grace period
+	// GroupID is the exchange-side identifier for the whole bracket group (Binance
+	// orderListId, OKX algoId) — lets cancelExitOrders cancel with one atomic call.
+	// Empty when the exchange has no true group, or the bracket was resolved via
+	// reconcile.go's ambiguous-bracket recovery (group id unknown there).
+	GroupID  string
+	PlacedAt time.Time // when the bracket order was placed; used for not_found grace period
 }
 
 // ── handConfig ────────────────────────────────────────────────────────────────

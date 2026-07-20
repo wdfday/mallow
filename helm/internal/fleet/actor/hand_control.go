@@ -367,7 +367,7 @@ func (h *Hand) ActiveLegs() []domain.LegView {
 	out := make([]domain.LegView, 0, len(legs))
 	for _, l := range legs {
 		out = append(out, domain.LegView{
-			PositionID:      l.PositionID,
+			PositionID:      l.TradeID,
 			Symbol:          l.Symbol,
 			Side:            l.Side,
 			Phase:           string(l.Phase),

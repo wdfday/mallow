@@ -100,12 +100,27 @@ type ExitOrderRequest struct {
 	TakeProfit decimal.Decimal // absolute trigger price; zero = not set
 	// MarginMode selects futures margin mode: "isolated" | "cross" | "" (exchange default).
 	MarginMode string
+	// ClientOrderID is the caller-generated clOrdId (see fleet/actor/clid), sent
+	// to the exchange if the adapter supports it (Binance OCO listClientOrderId,
+	// OKX algoClOrdId, Bybit orderLinkId, Alpaca client_order_id) — empty means
+	// the adapter doesn't support one, same "optional, ignored if unsupported"
+	// convention as OrderRequest.ClientOrderID. See CLIENT_ORDER_ID.md.
+	ClientOrderID string
 }
 
 // ExitOrderResult holds the exchange-assigned order IDs for placed exit orders.
 // May contain 1 ID (OCO) or 2 IDs (STOP + TP as separate futures orders).
 type ExitOrderResult struct {
 	OrderIDs []string
+	// ClientOrderID echoes back ExitOrderRequest.ClientOrderID where the
+	// adapter's bracket surface supports it; empty otherwise.
+	ClientOrderID string
+	// GroupID is the exchange-side identifier for the WHOLE bracket group
+	// (Binance orderListId, OKX algoId), letting ExitOrderGroupCanceller cancel
+	// every leg with one atomic call instead of cancelling OrderIDs one at a
+	// time. Empty when the exchange has no true group (Bybit, fbinance, Alpaca —
+	// SL/TP are independent orders); callers fall back to per-order CancelOrder.
+	GroupID string
 }
 
 // ExitOrderPlacer is an optional interface for exchanges that support

@@ -16,8 +16,8 @@ import (
 func d(s string) decimal.Decimal { v, _ := decimal.NewFromString(s); return v }
 
 // mkPlaced creates an order_placed event.
-// positionID = opening order_id of the leg (same as orderID for initial entries).
-func mkPlaced(orderID, positionID, symbol, side string, sl, tp decimal.Decimal, isClose, isPyramidAdd bool) poslog.Event {
+// tradeID = opening order_id of the leg (same as orderID for initial entries).
+func mkPlaced(orderID, tradeID, symbol, side string, sl, tp decimal.Decimal, isClose, isPyramidAdd bool) poslog.Event {
 	p := poslog.OrderPlacedPayload{
 		OrderID:      orderID,
 		Symbol:       symbol,
@@ -29,16 +29,16 @@ func mkPlaced(orderID, positionID, symbol, side string, sl, tp decimal.Decimal, 
 	}
 	b, _ := json.Marshal(p)
 	return poslog.Event{
-		ID:         orderID,
-		PositionID: positionID,
-		Kind:       poslog.KindOrderPlaced,
-		Payload:    b,
-		At:         time.Now(),
+		ID:      orderID,
+		TradeID: tradeID,
+		Kind:    poslog.KindOrderPlaced,
+		Payload: b,
+		At:      time.Now(),
 	}
 }
 
 // mkFilled creates an order_filled event.
-func mkFilled(orderID, positionID string, price, qty decimal.Decimal) poslog.Event {
+func mkFilled(orderID, tradeID string, price, qty decimal.Decimal) poslog.Event {
 	p := poslog.OrderFilledPayload{
 		OrderID:   orderID,
 		FillPrice: price.String(),
@@ -47,73 +47,73 @@ func mkFilled(orderID, positionID string, price, qty decimal.Decimal) poslog.Eve
 	}
 	b, _ := json.Marshal(p)
 	return poslog.Event{
-		ID:         orderID + "_filled",
-		PositionID: positionID,
-		Kind:       poslog.KindOrderFilled,
-		Payload:    b,
-		At:         time.Now(),
+		ID:      orderID + "_filled",
+		TradeID: tradeID,
+		Kind:    poslog.KindOrderFilled,
+		Payload: b,
+		At:      time.Now(),
 	}
 }
 
 // mkCancelled creates an order_cancelled event.
-func mkCancelled(orderID, positionID string) poslog.Event {
+func mkCancelled(orderID, tradeID string) poslog.Event {
 	p := poslog.OrderCancelledPayload{OrderID: orderID, Reason: "cancelled"}
 	b, _ := json.Marshal(p)
 	return poslog.Event{
-		ID:         orderID + "_cancelled",
-		PositionID: positionID,
-		Kind:       poslog.KindOrderCancelled,
-		Payload:    b,
-		At:         time.Now(),
+		ID:      orderID + "_cancelled",
+		TradeID: tradeID,
+		Kind:    poslog.KindOrderCancelled,
+		Payload: b,
+		At:      time.Now(),
 	}
 }
 
 // mkPositionClosed creates a position_closed event (external close or kill).
-func mkPositionClosed(positionID string, pnl decimal.Decimal) poslog.Event {
+func mkPositionClosed(tradeID string, pnl decimal.Decimal) poslog.Event {
 	p := poslog.PositionClosedPayload{
-		OrderID:     positionID,
+		OrderID:     tradeID,
 		ClosePrice:  "0",
 		RealizedPnL: pnl.String(),
 		ExitReason:  "external",
 	}
 	b, _ := json.Marshal(p)
 	return poslog.Event{
-		ID:         positionID + "_ext_closed",
-		PositionID: positionID,
-		Kind:       poslog.KindPositionClosed,
-		Payload:    b,
-		At:         time.Now(),
+		ID:      tradeID + "_ext_closed",
+		TradeID: tradeID,
+		Kind:    poslog.KindPositionClosed,
+		Payload: b,
+		At:      time.Now(),
 	}
 }
 
 // mkSLUpdated creates an sl_updated event.
-func mkSLUpdated(positionID string, sl, tp decimal.Decimal) poslog.Event {
+func mkSLUpdated(tradeID string, sl, tp decimal.Decimal) poslog.Event {
 	p := poslog.SLUpdatedPayload{
-		OrderID: positionID,
+		OrderID: tradeID,
 		NewSL:   sl.String(),
 		NewTP:   tp.String(),
 		Reason:  "trailing",
 	}
 	b, _ := json.Marshal(p)
 	return poslog.Event{
-		ID:         positionID + "_sl_updated",
-		PositionID: positionID,
-		Kind:       poslog.KindSLUpdated,
-		Payload:    b,
-		At:         time.Now(),
+		ID:      tradeID + "_sl_updated",
+		TradeID: tradeID,
+		Kind:    poslog.KindSLUpdated,
+		Payload: b,
+		At:      time.Now(),
 	}
 }
 
 // mkOrphaned creates a position_orphaned event.
-func mkOrphaned(positionID, symbol string) poslog.Event {
+func mkOrphaned(tradeID, symbol string) poslog.Event {
 	p := poslog.PositionOrphanedPayload{Symbol: symbol, Source: "release"}
 	b, _ := json.Marshal(p)
 	return poslog.Event{
-		ID:         positionID + "_orphaned",
-		PositionID: positionID,
-		Kind:       poslog.KindPositionOrphaned,
-		Payload:    b,
-		At:         time.Now(),
+		ID:      tradeID + "_orphaned",
+		TradeID: tradeID,
+		Kind:    poslog.KindPositionOrphaned,
+		Payload: b,
+		At:      time.Now(),
 	}
 }
 
@@ -344,7 +344,7 @@ func TestReplayHand_PyramidAdd(t *testing.T) {
 	events := []poslog.Event{
 		mkPlaced("ord1", "ord1", "BTCUSDT", "buy", d("29000"), d("34000"), false, false),
 		mkFilled("ord1", "ord1", d("30000"), d("0.1")),
-		{ID: "ord2", PositionID: "ord1", Kind: poslog.KindOrderPlaced, Payload: addBytes, At: time.Now()},
+		{ID: "ord2", TradeID: "ord1", Kind: poslog.KindOrderPlaced, Payload: addBytes, At: time.Now()},
 		mkFilled("ord2", "ord1", d("32000"), d("0.1")),
 	}
 	hp := position.ReplayHand(events, true, 3)
@@ -385,7 +385,7 @@ func TestReplayHand_PyramidAddCancelled(t *testing.T) {
 	events := []poslog.Event{
 		mkPlaced("ord1", "ord1", "BTCUSDT", "buy", d("29000"), d("33000"), false, false),
 		mkFilled("ord1", "ord1", d("30000"), d("0.1")),
-		{ID: "ord2", PositionID: "ord1", Kind: poslog.KindOrderPlaced, Payload: addBytes, At: time.Now()},
+		{ID: "ord2", TradeID: "ord1", Kind: poslog.KindOrderPlaced, Payload: addBytes, At: time.Now()},
 		mkCancelled("ord2", "ord1"),
 	}
 	hp := position.ReplayHand(events, true, 3)
@@ -443,11 +443,11 @@ func TestReplayHand_Orphaned(t *testing.T) {
 // Invalid event in the middle (e.g. corrupted log entry) is skipped — replay is best-effort.
 func TestReplayHand_InvalidEventSkipped(t *testing.T) {
 	bad := poslog.Event{
-		ID:         "bad",
-		PositionID: "nonexistent",
-		Kind:       poslog.KindOrderFilled, // no preceding order_placed
-		Payload:    []byte(`{}`),
-		At:         time.Now(),
+		ID:      "bad",
+		TradeID: "nonexistent",
+		Kind:    poslog.KindOrderFilled, // no preceding order_placed
+		Payload: []byte(`{}`),
+		At:      time.Now(),
 	}
 	events := []poslog.Event{
 		mkPlaced("ord1", "ord1", "BTCUSDT", "buy", decimal.Zero, decimal.Zero, false, false),

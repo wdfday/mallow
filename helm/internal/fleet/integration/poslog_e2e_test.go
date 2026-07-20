@@ -143,7 +143,7 @@ func TestPoslog_E2E(t *testing.T) {
 
 	t.Logf("poslog events replayed: %d", len(events))
 	for _, ev := range events {
-		t.Logf("  [%s] id=%s pos=%s at=%s", ev.Kind, ev.ID, ev.PositionID, ev.At.Format(time.RFC3339))
+		t.Logf("  [%s] id=%s pos=%s at=%s", ev.Kind, ev.ID, ev.TradeID, ev.At.Format(time.RFC3339))
 	}
 
 	if len(events) == 0 {
@@ -324,7 +324,7 @@ func TestTradeRoundTrip_E2E(t *testing.T) {
 	}
 	t.Logf("poslog events: %d", len(events))
 	for _, ev := range events {
-		t.Logf("  [%s] pos=%s at=%s", ev.Kind, ev.PositionID, ev.At.Format(time.RFC3339))
+		t.Logf("  [%s] pos=%s at=%s", ev.Kind, ev.TradeID, ev.At.Format(time.RFC3339))
 	}
 
 	var closedPayload *poslog.PositionClosedPayload

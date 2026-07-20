@@ -99,7 +99,7 @@ func (s *simExchange) PlaceOrder(_ context.Context, _ exchange.Credentials, req 
 			Side:          req.Side,
 			FilledQty:     qty,
 			FilledAvg:     price,
-			TradeID:       "sim-trade-" + id,
+			FillID:        "sim-fill-" + id,
 			Timestamp:     time.Now(),
 		})
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"mallow/helm/internal/fleet/actor/clid"
 	"mallow/helm/internal/fleet/actor/position"
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/journal/poslog"
@@ -60,18 +61,20 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 	}
 
 	// ── Detect fill type: entry vs exit ──────────────────────────────────────
-	// posID and preFillPhase are captured here, before publishOrderFilled mutates
+	// tradeID and preFillPhase are captured here, before publishOrderFilled mutates
 	// leg state, so they correctly reflect the leg's intent at fill time.
 	h.mu.RLock()
-	posID := h.pendingOrderPos[orderID]
-	preFillPhase := h.pos.LegPhase(posID)
+	tradeID := h.pendingOrderPos[orderID]
+	preFillPhase := h.pos.LegPhase(tradeID)
 	isBracketExit := false
-	if lv, ok := h.exitLevels[symbol]; ok {
+	// Scan all exitLevels entries (keyed by TradeID, not symbol) for the one whose
+	// bracket owns this order ID — correctly attributes the fill to its exact leg
+	// even when multiple independent legs share a symbol (non-pyramid, MaxUnits>1).
+	for tid, lv := range h.exitLevels {
 		if slices.Contains(lv.ExchangeOrderIDs, orderID) {
 			isBracketExit = true
-			if primaryLeg := h.pos.PrimaryLeg(); primaryLeg != nil {
-				posID = primaryLeg.PositionID
-			}
+			tradeID = tid
+			break
 		}
 	}
 	h.mu.RUnlock()
@@ -85,12 +88,12 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 
 	if isClosingFill {
 		legQty, entryPrice, closePnL, closeSource = h.applyExitFill(
-			ctx, symbol, orderID, side, source, posID, isBracketExit,
+			ctx, symbol, orderID, side, source, tradeID, isBracketExit,
 			cumulativeAvgPrice, cumulativeQty, cumulativeCommission,
 		)
 	} else {
 		resolvedEl, offsetResolved = h.applyEntryFill(
-			ctx, symbol, orderID, posID,
+			ctx, symbol, orderID, tradeID,
 			cumulativeQty, cumulativeAvgPrice, cumulativeCommission,
 		)
 		h.metrics.mu.Lock()
@@ -179,14 +182,14 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 	// the dust portion at approximately the same price).
 	h.publishOrderFilled(ctx, orderID, cumulativeQty, legQty, cumulativeAvgPrice, closePnL, cumulativeCommission, deployedCapital, source, closeSource)
 
-	// Delete exitLevels[symbol] AFTER publishOrderFilled so that publishOrderFilled
+	// Delete exitLevels[tradeID] AFTER publishOrderFilled so that publishOrderFilled
 	// can detect isBracketExit by finding the bracket order ID in exitLevels.
 	// cancelExitOrders already ran above (marks sibling in pendingCancels and
 	// launches a REST cancel goroutine) — it only needs exitLevels to exist during
 	// its own execution, not during publishOrderFilled.
 	if isClosingFill {
 		h.mu.Lock()
-		delete(h.exitLevels, symbol)
+		delete(h.exitLevels, tradeID)
 		h.mu.Unlock()
 	}
 
@@ -199,7 +202,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 	//   2. Poslog replay on restart restores the resolved levels independently of
 	//      whether the bracket-order goroutine succeeded.
 	// Must run AFTER publishOrderFilled so the leg is in PhaseOpen (applySLUpdated requires it).
-	if offsetResolved && !isClosingFill && posID != "" &&
+	if offsetResolved && !isClosingFill && tradeID != "" &&
 		(resolvedEl.StopLoss.IsPositive() || resolvedEl.TakeProfit.IsPositive()) {
 		var newSL, newTP string
 		if resolvedEl.StopLoss.IsPositive() {
@@ -209,24 +212,24 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 			newTP = resolvedEl.TakeProfit.String()
 		}
 		payload, _ := json.Marshal(poslog.SLUpdatedPayload{
-			OrderID: posID,
+			OrderID: tradeID,
 			NewSL:   newSL,
 			NewTP:   newTP,
 			Reason:  "offset_resolved",
 		})
 		h.publishAndApply(ctx, poslog.Event{
-			ID:         posID + "_sl_resolved_" + orderID,
-			HandID:     h.id.String(),
-			HelmID:     h.helmID.String(),
-			PositionID: posID,
-			Kind:       poslog.KindSLUpdated,
-			Payload:    payload,
-			At:         time.Now().UTC(),
+			ID:      tradeID + "_sl_resolved_" + orderID,
+			HandID:  h.id.String(),
+			HelmID:  h.helmID.String(),
+			TradeID: tradeID,
+			Kind:    poslog.KindSLUpdated,
+			Payload: payload,
+			At:      time.Now().UTC(),
 		})
 	}
 
 	// ── 6. Non-WS fill publish ────────────────────────────────────────────────
-	// source="ws"  → registry_fills.go already published with real TradeID + fee.
+	// source="ws"  → registry_fills.go already published with real FillID + fee.
 	// other sources (poll, kill, …) → no WS echo expected; publish now.
 	//                 MarkOrderFillPublished blocks Sync() re-publish.
 	if source != "ws" {
@@ -237,7 +240,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 				AccountID: h.helmRuntime.AccountID.String(),
 				UserID:    h.helmRuntime.UserID.String(),
 				HandID:    h.id.String(),
-				TradeID:   "", // no exchange trade ID on poll/timeout paths; dedup falls back to helmID+orderID
+				TradeID:   "", // no exchange fill ID on poll/timeout paths; dedup falls back to helmID+orderID
 				OrderID:   orderID,
 				Kind:      "fill",
 				Symbol:    symbol,
@@ -315,7 +318,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 			Side:            side,
 			Qty:             cumulativeQty,
 			Price:           cumulativeAvgPrice,
-			PositionID:      posID,
+			PositionID:      tradeID,
 			EntryPrice:      entryPrice,
 			PnL:             closePnL,
 			PnLPct:          pnlPct,
@@ -329,7 +332,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 		// Pyramid add confirmed — show total position qty and new blended avg entry.
 		var newAvgEntry, totalQty decimal.Decimal
 		h.mu.RLock()
-		if snap, ok := h.pos.LegSnapshot(posID); ok {
+		if snap, ok := h.pos.LegSnapshot(tradeID); ok {
 			newAvgEntry = snap.EntryPrice
 			totalQty = snap.Qty.Abs()
 		}
@@ -340,7 +343,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 			Side:            side,
 			Qty:             totalQty,           // total position qty after add
 			Price:           cumulativeAvgPrice, // this add's fill price
-			PositionID:      posID,
+			PositionID:      tradeID,
 			EntryPrice:      newAvgEntry, // new blended avg across all legs
 			Reason:          source,
 			Msg:             "position: pyramid add",
@@ -356,7 +359,7 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 			Side:            side,
 			Qty:             cumulativeQty,
 			Price:           cumulativeAvgPrice,
-			PositionID:      posID,
+			PositionID:      tradeID,
 			EntryPrice:      cumulativeAvgPrice,
 			Reason:          source,
 			Msg:             "position: opened",
@@ -371,19 +374,19 @@ func (h *Hand) applyFill(ctx context.Context, orderID, symbol, side string,
 // applyEntryFill handles the entry path for fills where the leg phase is
 // PhaseEntering or PhaseAdding: resolves pending exit levels, caches WS-before-REST
 // fill data, and schedules exchange-side bracket order placement.
-func (h *Hand) applyEntryFill(ctx context.Context, symbol, orderID, posID string,
+func (h *Hand) applyEntryFill(ctx context.Context, symbol, orderID, tradeID string,
 	cumulativeQty, cumulativeAvgPrice, cumulativeCommission decimal.Decimal,
 ) (resolvedEl exitLevel, offsetResolved bool) {
 	bracketQty := cumulativeQty
 	var shouldPlaceBracket bool
 	var oldBracketIDs []string
-	var posIDForBracket string
+	var tradeIDForBracket string
 
 	h.mu.Lock()
-	posIDForBracket = h.pendingOrderPos[orderID]
+	tradeIDForBracket = h.pendingOrderPos[orderID]
 	// WS-before-REST: pendingOrderPos not yet set because PlaceOrder has not returned.
 	// Cache fill data so applyPlaceResult can complete poslog + bracket after the REST ack.
-	if posIDForBracket == "" {
+	if tradeIDForBracket == "" {
 		h.wsFillCache[orderID] = cachedWsFill{
 			qty:        cumulativeQty,
 			price:      cumulativeAvgPrice,
@@ -395,18 +398,18 @@ func (h *Hand) applyEntryFill(ctx context.Context, symbol, orderID, posID string
 		// Pre-add leg state (LegSnapshot is pre-fill — this fill is applied later via
 		// publishOrderFilled). Drives both the blended-avg anchor and the merged bracket qty.
 		var preQty, preAvg decimal.Decimal
-		if snap, ok := h.pos.LegSnapshot(posIDForBracket); ok && snap.Qty.IsPositive() {
+		if snap, ok := h.pos.LegSnapshot(tradeIDForBracket); ok && snap.Qty.IsPositive() {
 			preQty, preAvg = snap.Qty, snap.EntryPrice
 			bracketQty = preQty.Add(cumulativeQty) // merged total
 		}
 		// Capture existing bracket IDs BEFORE resolvePendingExit cancels them.
 		// Used after the lock is released to emit a bracket-replaced event.
 		if preQty.IsPositive() {
-			if old, ok := h.exitLevels[symbol]; ok {
+			if old, ok := h.exitLevels[tradeIDForBracket]; ok {
 				oldBracketIDs = append([]string(nil), old.ExchangeOrderIDs...)
 			}
 		}
-		resolvedEl, shouldPlaceBracket, offsetResolved = h.resolvePendingExit(ctx, symbol, pending, cumulativeAvgPrice, cumulativeQty, preQty, preAvg)
+		resolvedEl, shouldPlaceBracket, offsetResolved = h.resolvePendingExit(ctx, symbol, tradeIDForBracket, pending, cumulativeAvgPrice, cumulativeQty, preQty, preAvg)
 	}
 	h.mu.Unlock()
 
@@ -424,7 +427,7 @@ func (h *Hand) applyEntryFill(ctx context.Context, symbol, orderID, posID string
 	}
 
 	if shouldPlaceBracket {
-		h.scheduleBracketPlacement(resolvedEl, symbol, bracketQty, posIDForBracket)
+		h.scheduleBracketPlacement(resolvedEl, symbol, bracketQty, tradeIDForBracket)
 	}
 
 	return resolvedEl, offsetResolved
@@ -434,23 +437,23 @@ func (h *Hand) applyEntryFill(ctx context.Context, symbol, orderID, posID string
 // or the fill matches a bracket OCO order (isBracketExit). It cancels the sibling
 // bracket order, classifies the close source (sl/tp/signal/kill/…), computes realized
 // PnL, and updates hand metrics.
-func (h *Hand) applyExitFill(ctx context.Context, symbol, orderID, side, source, posID string,
+func (h *Hand) applyExitFill(ctx context.Context, symbol, orderID, side, source, tradeID string,
 	isBracketExit bool, cumulativeAvgPrice, cumulativeQty, cumulativeCommission decimal.Decimal,
 ) (legQty, entryPrice, closePnL decimal.Decimal, closeSource string) {
 
 	h.mu.Lock()
 	// Read exitLevels BEFORE cancelling — needed to classify bracket exit as sl/tp.
-	// NOTE: do NOT delete exitLevels[symbol] here. publishOrderFilled (called in the
-	// shared tail of applyFill) needs exitLevels[symbol] intact to detect isBracketExit.
+	// NOTE: do NOT delete exitLevels[tradeID] here. publishOrderFilled (called in the
+	// shared tail of applyFill) needs exitLevels[tradeID] intact to detect isBracketExit.
 	// The delete is deferred to after publishOrderFilled in applyFill.
-	el := h.exitLevels[symbol]
-	h.cancelExitOrders(ctx, symbol, orderID)
+	el := h.exitLevels[tradeID]
+	h.cancelExitOrders(ctx, tradeID, symbol, orderID)
 	h.mu.Unlock()
 
 	var deployedCapital decimal.Decimal
 	h.mu.RLock()
-	entryPrice = h.pos.LegEntryPrice(posID)
-	if snap, ok := h.pos.LegSnapshot(posID); ok {
+	entryPrice = h.pos.LegEntryPrice(tradeID)
+	if snap, ok := h.pos.LegSnapshot(tradeID); ok {
 		legQty = snap.Qty.Abs()
 		deployedCapital = snap.DeployedCapital
 	}
@@ -658,9 +661,9 @@ func (h *Hand) checkEdgeRisk(pnl decimal.Decimal) {
 
 // scheduleBracketPlacement launches the exchange OCO bracket placement goroutine.
 // Shared between the entry-fill path and the post-restart recovery path.
-// bracketQty is the full position size to protect. posID is the poslog position ID
+// bracketQty is the full position size to protect. tradeID is the poslog position ID
 // (used to write KindBracketPlaced on success; empty string skips poslog write).
-func (h *Hand) scheduleBracketPlacement(lv exitLevel, symbol string, bracketQty decimal.Decimal, posID string) {
+func (h *Hand) scheduleBracketPlacement(lv exitLevel, symbol string, bracketQty decimal.Decimal, tradeID string) {
 	placer, ok := h.helmRuntime.Exchange.(exchange.ExitOrderPlacer)
 	if !ok {
 		return
@@ -692,18 +695,31 @@ func (h *Hand) scheduleBracketPlacement(lv exitLevel, symbol string, bracketQty 
 		// concurrent exit before the bracket goroutine ran).
 		actualBracketQty := bracketQty
 		h.mu.RLock()
-		if pl := h.pos.PrimaryLeg(); pl != nil && pl.Symbol == symbol && pl.Qty.IsPositive() {
-			actualBracketQty = pl.Qty
+		for _, l := range h.pos.ActiveLegs() {
+			if l.TradeID == tradeID && l.Qty.IsPositive() {
+				actualBracketQty = l.Qty
+				break
+			}
 		}
 		h.mu.RUnlock()
+		bracketQtyTruncated := truncateQty(h.helmRuntime.filtersFor(bktCtx, symbol), actualBracketQty)
+		// Generated once, before the retry loop — every attempt reuses the same
+		// clid (idempotent: a lost-response retry either lands as a genuine
+		// duplicate-clid rejection at the exchange, or resolves later via
+		// reconcile's ambiguous-bracket recovery, same as entry/exit orders).
+		clientOrderID := clid.New()
+		if tradeID != "" {
+			h.publishBracketPlace(bktCtx, tradeID, symbol, clientOrderID, bracketQtyTruncated, el.StopLoss, el.TakeProfit)
+		}
 		exitReq := exchange.ExitOrderRequest{
-			Symbol:     symbol,
-			Market:     market,
-			Side:       exitSide,
-			Qty:        truncateQty(h.helmRuntime.filtersFor(bktCtx, symbol), actualBracketQty),
-			StopLoss:   el.StopLoss,
-			TakeProfit: el.TakeProfit,
-			MarginMode: marginMode,
+			Symbol:        symbol,
+			Market:        market,
+			Side:          exitSide,
+			Qty:           bracketQtyTruncated,
+			StopLoss:      el.StopLoss,
+			TakeProfit:    el.TakeProfit,
+			MarginMode:    marginMode,
+			ClientOrderID: clientOrderID,
 		}
 		var result *exchange.ExitOrderResult
 		var err error
@@ -755,14 +771,18 @@ func (h *Hand) scheduleBracketPlacement(lv exitLevel, symbol string, bracketQty 
 			h.trackOrder(id)
 		}
 		h.mu.Lock()
-		if cur, ok := h.exitLevels[symbol]; ok {
+		if cur, ok := h.exitLevels[tradeID]; ok {
 			cur.ExchangeOrderIDs = result.OrderIDs
+			cur.GroupID = result.GroupID
 			cur.PlacedAt = time.Now()
-			h.exitLevels[symbol] = cur
+			h.exitLevels[tradeID] = cur
 		}
 		h.mu.Unlock()
-		if posID != "" {
-			h.publishBracketPlaced(handCtx, posID, symbol, result.OrderIDs)
+		if tradeID != "" {
+			// Use the clid we generated (clientOrderID), not result.ClientOrderID —
+			// we already know it regardless of whether this adapter echoes it back
+			// in the response, and every adapter isn't wired to send/echo it yet.
+			h.publishBracketPlaced(handCtx, tradeID, symbol, clientOrderID, result.GroupID, result.OrderIDs)
 		}
 	}(lv)
 }
@@ -796,12 +816,14 @@ func (h *Hand) restoreExitLevelsFromPoslog() {
 			continue
 		}
 		lv := exitLevel{
+			Symbol:           leg.Symbol,
 			Side:             leg.Side,
 			StopLoss:         leg.StopLoss,
 			TakeProfit:       leg.TakeProfit,
 			ExchangeOrderIDs: append([]string(nil), leg.ExchangeOrderIDs...),
+			GroupID:          leg.GroupID,
 		}
-		h.exitLevels[leg.Symbol] = lv
+		h.exitLevels[leg.TradeID] = lv
 		h.log.Info("startup: restoreExitLevels — exit level restored from poslog",
 			"symbol", leg.Symbol,
 			"qty", leg.Qty,
@@ -830,10 +852,10 @@ func (h *Hand) restoreExitLevelsFromPoslog() {
 func (h *Hand) RecoverBrackets(ctx context.Context) {
 	h.mu.RLock()
 	type toPlaceEntry struct {
-		symbol string
-		lv     exitLevel
-		posID  string
-		qty    decimal.Decimal
+		symbol  string
+		lv      exitLevel
+		tradeID string
+		qty     decimal.Decimal
 	}
 	type toCheckEntry struct {
 		symbol string
@@ -845,7 +867,8 @@ func (h *Hand) RecoverBrackets(ctx context.Context) {
 	h.log.Info("startup: RecoverBrackets — scanning exitLevels",
 		"exit_levels_count", len(h.exitLevels))
 
-	for symbol, lv := range h.exitLevels {
+	for tradeID, lv := range h.exitLevels {
+		symbol := lv.Symbol
 		if len(lv.ExchangeOrderIDs) > 0 {
 			h.log.Info("startup: RecoverBrackets — checking known bracket IDs",
 				"symbol", symbol,
@@ -862,11 +885,17 @@ func (h *Hand) RecoverBrackets(ctx context.Context) {
 		h.log.Info("startup: RecoverBrackets — no OCO ids, will re-place bracket",
 			"symbol", symbol,
 			"sl", lv.StopLoss, "tp", lv.TakeProfit)
-		if pl := h.pos.PrimaryLeg(); pl != nil && pl.Symbol == symbol {
-			toPlace = append(toPlace, toPlaceEntry{
-				symbol: symbol, lv: lv,
-				posID: pl.PositionID, qty: pl.Qty.Abs(),
-			})
+		// Match the exact leg this exitLevels entry belongs to (by TradeID), not just
+		// "the" leg for this symbol — a symbol can have multiple independent legs
+		// (non-pyramid, MaxUnits>1), each needing its own bracket re-placed.
+		for _, l := range h.pos.ActiveLegs() {
+			if l.TradeID == tradeID {
+				toPlace = append(toPlace, toPlaceEntry{
+					symbol: symbol, lv: lv,
+					tradeID: tradeID, qty: l.Qty.Abs(),
+				})
+				break
+			}
 		}
 	}
 	h.mu.RUnlock()
@@ -909,7 +938,7 @@ func (h *Hand) RecoverBrackets(ctx context.Context) {
 			if result.FilledQty.IsPositive() && result.FilledAvg.IsPositive() {
 				h.EnqueueFill(exchange.WsFillEvent{
 					OrderID:   c.id,
-					TradeID:   c.id + "_recovery",
+					FillID:    c.id + "_recovery",
 					Symbol:    c.symbol,
 					Side:      exchange.OrderSide(closeSide),
 					FilledQty: result.FilledQty,
@@ -964,14 +993,20 @@ func (h *Hand) RecoverBrackets(ctx context.Context) {
 				if adopted != "" {
 					h.log.Info("hand: found existing live algo — adopting IDs instead of re-placing",
 						"symbol", p.symbol, "algo_id", adopted)
-					h.trackOrder(adopted)
+					// ListLiveAlgoOrders returns the raw algoId (no "instID:A:" prefix) —
+					// format it the same way PlaceExitOrders does so a later CancelOrder
+					// correctly routes it through parseOKXOrderID's algo branch instead of
+					// misreading it as a regular order id.
+					adoptedOrderID := p.symbol + ":A:" + adopted
+					h.trackOrder(adoptedOrderID)
 					h.mu.Lock()
-					if lv, ok := h.exitLevels[p.symbol]; ok {
-						lv.ExchangeOrderIDs = []string{adopted}
-						h.exitLevels[p.symbol] = lv
+					if lv, ok := h.exitLevels[p.tradeID]; ok {
+						lv.ExchangeOrderIDs = []string{adoptedOrderID}
+						lv.GroupID = adopted
+						h.exitLevels[p.tradeID] = lv
 					}
 					h.mu.Unlock()
-					h.publishBracketPlaced(ctx, p.posID, p.symbol, []string{adopted})
+					h.publishBracketPlaced(ctx, p.tradeID, p.symbol, "", adopted, []string{adoptedOrderID})
 					continue
 				}
 			}
@@ -980,12 +1015,12 @@ func (h *Hand) RecoverBrackets(ctx context.Context) {
 		h.log.Info("hand: re-placing bracket after restart — KindBracketPlaced was not confirmed",
 			"symbol", p.symbol,
 			"stop_loss", p.lv.StopLoss, "take_profit", p.lv.TakeProfit, "qty", p.qty)
-		h.scheduleBracketPlacement(p.lv, p.symbol, p.qty, p.posID)
+		h.scheduleBracketPlacement(p.lv, p.symbol, p.qty, p.tradeID)
 	}
 }
 
 // resolvePendingExit resolves raw SL/TP from a just-filled entry order into an absolute
-// exitLevel, updates h.exitLevels[symbol], and returns whether a bracket should be placed.
+// exitLevel, updates h.exitLevels[tradeID], and returns whether a bracket should be placed.
 //
 // MUST be called with h.mu held (for exitLevels read/write and cancelExitOrders).
 //
@@ -995,10 +1030,10 @@ func (h *Hand) RecoverBrackets(ctx context.Context) {
 // Returns (resolved exitLevel, shouldPlaceBracket, offsetResolved).
 func (h *Hand) resolvePendingExit(
 	ctx context.Context,
-	symbol string, pending exitPending,
+	symbol, tradeID string, pending exitPending,
 	price, qty, preQty, preAvg decimal.Decimal,
 ) (resolvedEl exitLevel, shouldPlaceBracket bool, offsetResolved bool) {
-	resolved := exitLevel{Side: pending.Side}
+	resolved := exitLevel{Side: pending.Side, Symbol: symbol}
 	if pending.IsOffset {
 		// ── avg-anchor (pyramiding-design.md) ──
 		// Anchor offsets to the blended avg entry AFTER this add so the SL/TP tracks
@@ -1053,10 +1088,10 @@ func (h *Hand) resolvePendingExit(
 	}
 
 	// Pyramid add: cancel prior consolidated bracket before overwriting exitLevels.
-	if old, ok := h.exitLevels[symbol]; ok && len(old.ExchangeOrderIDs) > 0 {
-		h.cancelExitOrders(ctx, symbol, "")
+	if old, ok := h.exitLevels[tradeID]; ok && len(old.ExchangeOrderIDs) > 0 {
+		h.cancelExitOrders(ctx, tradeID, symbol, "")
 	}
-	h.exitLevels[symbol] = resolved
+	h.exitLevels[tradeID] = resolved
 
 	if resolved.StopLoss.IsPositive() || resolved.TakeProfit.IsPositive() {
 		slTpOK := true
@@ -1111,9 +1146,9 @@ func (h *Hand) completeWsFillFromREST(
 		"order_id", orderID, "symbol", symbol,
 		"qty", restQty, "price", fillAvg)
 
-	// Capture posID BEFORE publishOrderFilled deletes it from pendingOrderPos.
+	// Capture tradeID BEFORE publishOrderFilled deletes it from pendingOrderPos.
 	h.mu.RLock()
-	posIDForBracket := h.pendingOrderPos[orderID]
+	tradeIDForBracket := h.pendingOrderPos[orderID]
 	h.mu.RUnlock()
 
 	// 1. publishOrderFilled: transitions leg from PhaseEntering → PhaseOpen
@@ -1133,8 +1168,8 @@ func (h *Hand) completeWsFillFromREST(
 	// and checkExits auto-stops the hand on the next tick.
 	if isExitOrder {
 		h.mu.Lock()
-		h.cancelExitOrders(ctx, symbol, orderID)
-		delete(h.exitLevels, symbol)
+		h.cancelExitOrders(ctx, tradeIDForBracket, symbol, orderID)
+		delete(h.exitLevels, tradeIDForBracket)
 		h.mu.Unlock()
 		return
 	}
@@ -1146,17 +1181,17 @@ func (h *Hand) completeWsFillFromREST(
 	h.mu.Lock()
 	delete(h.pendingExits, orderID) // consume (was set at line ~680 of applyPlaceResult)
 	resolvedEl, shouldPlaceBracket, offsetResolved := h.resolvePendingExit(
-		ctx, symbol, pending, fillAvg, restQty, decimal.Zero, decimal.Zero,
+		ctx, symbol, tradeIDForBracket, pending, fillAvg, restQty, decimal.Zero, decimal.Zero,
 	)
 	h.mu.Unlock()
 
 	if shouldPlaceBracket {
-		h.scheduleBracketPlacement(resolvedEl, symbol, restQty, posIDForBracket)
+		h.scheduleBracketPlacement(resolvedEl, symbol, restQty, tradeIDForBracket)
 	}
 
 	// 3. Persist resolved offset SL/TP to poslog so restart replay sees the absolute levels
 	//    (same KindSLUpdated emitted by the normal applyFill path at step 4).
-	if offsetResolved && posIDForBracket != "" &&
+	if offsetResolved && tradeIDForBracket != "" &&
 		(resolvedEl.StopLoss.IsPositive() || resolvedEl.TakeProfit.IsPositive()) {
 		var newSL, newTP string
 		if resolvedEl.StopLoss.IsPositive() {
@@ -1166,19 +1201,19 @@ func (h *Hand) completeWsFillFromREST(
 			newTP = resolvedEl.TakeProfit.String()
 		}
 		payload, _ := json.Marshal(poslog.SLUpdatedPayload{
-			OrderID: posIDForBracket,
+			OrderID: tradeIDForBracket,
 			NewSL:   newSL,
 			NewTP:   newTP,
 			Reason:  "offset_resolved",
 		})
 		h.publishAndApply(ctx, poslog.Event{
-			ID:         posIDForBracket + "_sl_resolved_" + orderID,
-			HandID:     h.id.String(),
-			HelmID:     h.helmID.String(),
-			PositionID: posIDForBracket,
-			Kind:       poslog.KindSLUpdated,
-			Payload:    payload,
-			At:         time.Now().UTC(),
+			ID:      tradeIDForBracket + "_sl_resolved_" + orderID,
+			HandID:  h.id.String(),
+			HelmID:  h.helmID.String(),
+			TradeID: tradeIDForBracket,
+			Kind:    poslog.KindSLUpdated,
+			Payload: payload,
+			At:      time.Now().UTC(),
 		})
 	}
 }

@@ -103,6 +103,10 @@ const (
 	// clients subscribe to `helm.events.{helm_id}` for live activity feed.
 	// Format with helm_id: fmt.Sprintf(SubjHelmEvents, helmID)
 	SubjHelmEvents = "helm.events.%s"
+
+	// Signal audit stream — only herald-originated signals (see PublishSignal doc).
+	// Format with helm_id: fmt.Sprintf(SubjSignalReceived, helmID)
+	SubjSignalReceived = "helm.signals.%s"
 )
 
 // AccountLinkedEvent is published to helm.accounts.linked when a broker account is linked.
@@ -213,6 +217,50 @@ func PublishTradeFill(js nats.JetStreamContext, txn TransactionMsg) {
 	natMsg.Header.Set(nats.MsgIdHdr, dedupKey)
 	if _, err := js.PublishMsg(natMsg); err != nil {
 		slog.Warn("trade fill publish failed", "subject", natMsg.Subject, "trade_id", txn.TradeID, "err", err)
+	}
+}
+
+// SignalMsg is an audit record of a herald-originated signal a hand processed.
+// Internal signals (checkExits' local SL/TP monitor, checkPositionDesync's orphan
+// detection) are never published here — only what herald actually told us, so the
+// audit trail reflects the strategy's real inputs, not helm's own reactive machinery.
+// ExitKind is "" for entry signals or "signal" for herald-originated exits — see
+// strategy.ExitKind's doc for why "tp"/"sl"/"orphaned" never reach this struct.
+type SignalMsg struct {
+	ID          string  `json:"id"` // fresh UUID per signal — dedup key; signals have no natural idempotent key like fills/orders do
+	HelmID      string  `json:"helm_id"`
+	HandID      string  `json:"hand_id"`
+	UserID      string  `json:"user_id"`
+	Symbol      string  `json:"symbol"`
+	Direction   string  `json:"direction"`
+	ExitKind    string  `json:"exit_kind,omitempty"`
+	Strength    float64 `json:"strength"`
+	Price       string  `json:"price,omitempty"`
+	TargetPrice string  `json:"target_price,omitempty"`
+	StopPrice   string  `json:"stop_price,omitempty"`
+	IsOffset    bool    `json:"is_offset,omitempty"`
+	ATR         string  `json:"atr,omitempty"`
+	// Reason is a human-readable explanation from the herald script (audit log only).
+	Reason      string    `json:"reason,omitempty"`
+	GeneratedAt time.Time `json:"generated_at"`
+	ReceivedAt  time.Time `json:"received_at"`
+}
+
+// PublishSignal publishes msg to the HELM_SIGNALS JetStream stream (helm.signals.{helmID}).
+// Nats-Msg-Id = msg.ID (a fresh UUID minted by the caller at publish time).
+func PublishSignal(js nats.JetStreamContext, msg SignalMsg) {
+	if msg.ID == "" {
+		msg.ID = uuid.NewString()
+	}
+	data, _ := json.Marshal(msg)
+	natMsg := &nats.Msg{
+		Subject: fmt.Sprintf(SubjSignalReceived, msg.HelmID),
+		Data:    data,
+		Header:  nats.Header{},
+	}
+	natMsg.Header.Set(nats.MsgIdHdr, msg.ID)
+	if _, err := js.PublishMsg(natMsg); err != nil {
+		slog.Warn("signal publish failed", "subject", natMsg.Subject, "id", msg.ID, "err", err)
 	}
 }
 

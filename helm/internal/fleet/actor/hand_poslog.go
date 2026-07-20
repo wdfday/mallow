@@ -35,23 +35,23 @@ func (h *Hand) publishAndApply(ctx context.Context, e poslog.Event) {
 	case poslog.KindOrderPlace:
 		var p poslog.OrderPlacePayload
 		if jsonErr := unmarshalJSON(e.Payload, &p); jsonErr == nil {
-			h.pendingOrderPos[p.ClientOrderID] = e.PositionID
+			h.pendingOrderPos[p.ClientOrderID] = e.TradeID
 		}
 	case poslog.KindOrderPlaced:
 		var p poslog.OrderPlacedPayload
 		if jsonErr := unmarshalJSON(e.Payload, &p); jsonErr == nil {
-			h.pendingOrderPos[p.OrderID] = e.PositionID
+			h.pendingOrderPos[p.OrderID] = e.TradeID
 			if p.ClientOrderID != "" {
-				h.pendingOrderPos[p.ClientOrderID] = e.PositionID
+				h.pendingOrderPos[p.ClientOrderID] = e.TradeID
 			}
 		}
 	case poslog.KindOrderFilled:
 		var p poslog.OrderFilledPayload
 		if jsonErr := unmarshalJSON(e.Payload, &p); jsonErr == nil {
-			posID := h.pendingOrderPos[p.OrderID]
-			if posID != "" {
+			tradeID := h.pendingOrderPos[p.OrderID]
+			if tradeID != "" {
 				for k, v := range h.pendingOrderPos {
-					if v == posID {
+					if v == tradeID {
 						delete(h.pendingOrderPos, k)
 					}
 				}
@@ -62,10 +62,10 @@ func (h *Hand) publishAndApply(ctx context.Context, e poslog.Event) {
 	case poslog.KindOrderCancelled:
 		var p poslog.OrderCancelledPayload
 		if jsonErr := unmarshalJSON(e.Payload, &p); jsonErr == nil {
-			posID := h.pendingOrderPos[p.OrderID]
-			if posID != "" {
+			tradeID := h.pendingOrderPos[p.OrderID]
+			if tradeID != "" {
 				for k, v := range h.pendingOrderPos {
-					if v == posID {
+					if v == tradeID {
 						delete(h.pendingOrderPos, k)
 					}
 				}
@@ -89,23 +89,23 @@ func (h *Hand) publishOrderPlace(
 	// Determine pyramid add vs new leg vs close.
 	h.mu.RLock()
 	isFlat := h.pos.IsFlat()
-	primaryPosID := ""
+	primaryTradeID := ""
 	if leg := h.pos.PrimaryLeg(); leg != nil {
-		primaryPosID = leg.PositionID
+		primaryTradeID = leg.TradeID
 	}
 	h.mu.RUnlock()
 
 	isClose := isExitIntent
 	isPyramidAdd := !isClose && h.cfg.pyramid && !isFlat
 
-	var positionID string
+	var tradeID string
 	switch {
 	case isClose || isPyramidAdd:
-		positionID = primaryPosID
+		tradeID = primaryTradeID
 	default:
-		positionID = clientOrderID // new leg: PositionID = opening client_order_id
+		tradeID = clientOrderID // new leg: TradeID = opening client_order_id
 	}
-	if positionID == "" {
+	if tradeID == "" {
 		return // no active leg context — skip
 	}
 
@@ -131,33 +131,33 @@ func (h *Hand) publishOrderPlace(
 		IsClose:       isClose,
 	})
 	h.publishAndApply(ctx, poslog.Event{
-		ID:         clientOrderID,
-		HandID:     h.id.String(),
-		HelmID:     h.helmID.String(),
-		PositionID: positionID,
-		Kind:       poslog.KindOrderPlace,
-		Payload:    payload,
-		At:         time.Now().UTC(),
+		ID:      clientOrderID,
+		HandID:  h.id.String(),
+		HelmID:  h.helmID.String(),
+		TradeID: tradeID,
+		Kind:    poslog.KindOrderPlace,
+		Payload: payload,
+		At:      time.Now().UTC(),
 	})
 }
 
 // publishOrderCancelled emits KindOrderCancelled to the durable poslog.
 func (h *Hand) publishOrderCancelled(
 	ctx context.Context,
-	orderID, positionID, reason string,
+	orderID, tradeID, reason string,
 ) error {
 	payload, _ := json.Marshal(poslog.OrderCancelledPayload{
 		OrderID: orderID,
 		Reason:  reason,
 	})
 	h.publishAndApply(ctx, poslog.Event{
-		ID:         orderID + "_cancelled",
-		HandID:     h.id.String(),
-		HelmID:     h.helmID.String(),
-		PositionID: positionID,
-		Kind:       poslog.KindOrderCancelled,
-		Payload:    payload,
-		At:         time.Now().UTC(),
+		ID:      orderID + "_cancelled",
+		HandID:  h.id.String(),
+		HelmID:  h.helmID.String(),
+		TradeID: tradeID,
+		Kind:    poslog.KindOrderCancelled,
+		Payload: payload,
+		At:      time.Now().UTC(),
 	})
 	return nil
 }
@@ -175,27 +175,27 @@ func (h *Hand) publishOrderPlaced(
 	// Determine pyramid add vs new leg vs close.
 	h.mu.RLock()
 	isFlat := h.pos.IsFlat()
-	primaryPosID := ""
+	primaryTradeID := ""
 	if leg := h.pos.PrimaryLeg(); leg != nil {
-		primaryPosID = leg.PositionID
+		primaryTradeID = leg.TradeID
 	}
 	h.mu.RUnlock()
 
 	isClose := isExitIntent
 	isPyramidAdd := !isClose && h.cfg.pyramid && !isFlat
 
-	var positionID string
+	var tradeID string
 	switch {
 	case isClose || isPyramidAdd:
-		positionID = primaryPosID
+		tradeID = primaryTradeID
 	default:
 		if clientOrderID != "" {
-			positionID = clientOrderID
+			tradeID = clientOrderID
 		} else {
-			positionID = orderID
+			tradeID = orderID
 		}
 	}
-	if positionID == "" {
+	if tradeID == "" {
 		return // no active leg context — skip
 	}
 
@@ -222,13 +222,13 @@ func (h *Hand) publishOrderPlaced(
 		IsClose:       isClose,
 	})
 	h.publishAndApply(ctx, poslog.Event{
-		ID:         orderID,
-		HandID:     h.id.String(),
-		HelmID:     h.helmID.String(),
-		PositionID: positionID,
-		Kind:       poslog.KindOrderPlaced,
-		Payload:    payload,
-		At:         time.Now().UTC(),
+		ID:      orderID,
+		HandID:  h.id.String(),
+		HelmID:  h.helmID.String(),
+		TradeID: tradeID,
+		Kind:    poslog.KindOrderPlaced,
+		Payload: payload,
+		At:      time.Now().UTC(),
 	})
 }
 
@@ -239,31 +239,31 @@ func (h *Hand) publishOrderPlaced(
 // zero for exit fills (not a capital deployment). closeSource identifies what triggered the close.
 func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, legQty, price, pnl, commission, deployedCapital decimal.Decimal, source, closeSource string) {
 	h.mu.RLock()
-	positionID := h.pendingOrderPos[orderID]
+	tradeID := h.pendingOrderPos[orderID]
 	var isBracketExit bool
 	var snap position.LegSnapshot
 	var hasSnap bool
-	if positionID == "" {
+	if tradeID == "" {
 		// Look for orderID in exitLevels
 		for _, lv := range h.exitLevels {
 			if slices.Contains(lv.ExchangeOrderIDs, orderID) {
 				isBracketExit = true
 				if primaryLeg := h.pos.PrimaryLeg(); primaryLeg != nil {
-					positionID = primaryLeg.PositionID
-					snap, hasSnap = h.pos.LegSnapshot(positionID)
+					tradeID = primaryLeg.TradeID
+					snap, hasSnap = h.pos.LegSnapshot(tradeID)
 				}
 			}
-			if positionID != "" {
+			if tradeID != "" {
 				break
 			}
 		}
 	} else {
-		snap, hasSnap = h.pos.LegSnapshot(positionID)
+		snap, hasSnap = h.pos.LegSnapshot(tradeID)
 	}
-	isClosingFill := isBracketExit || (positionID != "" && h.pos.LegPhase(positionID) == position.PhaseExiting)
+	isClosingFill := isBracketExit || (tradeID != "" && h.pos.LegPhase(tradeID) == position.PhaseExiting)
 	h.mu.RUnlock()
 
-	if positionID == "" {
+	if tradeID == "" {
 		return // order not tracked in poslog
 	}
 
@@ -279,24 +279,24 @@ func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, legQ
 			DeployedCapital: decimalToString(deployedCapital),
 		})
 		h.publishAndApply(ctx, poslog.Event{
-			ID:         orderID + "_filled",
-			HandID:     h.id.String(),
-			HelmID:     h.helmID.String(),
-			PositionID: positionID,
-			Kind:       poslog.KindOrderFilled,
-			Payload:    payload,
-			At:         time.Now().UTC(),
+			ID:      orderID + "_filled",
+			HandID:  h.id.String(),
+			HelmID:  h.helmID.String(),
+			TradeID: tradeID,
+			Kind:    poslog.KindOrderFilled,
+			Payload: payload,
+			At:      time.Now().UTC(),
 		})
 	}
 
 	if isClosingFill {
 		now := time.Now().UTC()
 		cp := poslog.PositionClosedPayload{
-			OrderID:      positionID,
+			OrderID:      tradeID,
 			ClosePrice:   price.String(),
 			RealizedPnL:  pnl.String(),
 			ExitReason:   poslog.ExitReason(closeSource),
-			EntryOrderID: positionID,
+			EntryOrderID: tradeID,
 			ExitOrderID:  orderID,
 			Commission:   decimalToString(commission),
 		}
@@ -321,13 +321,13 @@ func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, legQ
 		}
 		closedPayload, _ := json.Marshal(cp)
 		h.publishAndApply(ctx, poslog.Event{
-			ID:         positionID + "_closed_" + orderID,
-			HandID:     h.id.String(),
-			HelmID:     h.helmID.String(),
-			PositionID: positionID,
-			Kind:       poslog.KindPositionClosed,
-			Payload:    closedPayload,
-			At:         now,
+			ID:      tradeID + "_closed_" + orderID,
+			HandID:  h.id.String(),
+			HelmID:  h.helmID.String(),
+			TradeID: tradeID,
+			Kind:    poslog.KindPositionClosed,
+			Payload: closedPayload,
+			At:      now,
 		})
 		h.appendTradeRecord(ctx, cp, commission, now)
 	}
@@ -544,29 +544,65 @@ func plannedRisk(qtyStr, entryStr, stopStr string) string {
 	return risk.String()
 }
 
+// publishBracketPlace writes KindBracketPlace to the durable poslog BEFORE the
+// exchange call — pre-flight intent, mirrors publishOrderPlace for the main
+// order. Lets a restart discover an in-flight bracket placement via
+// clientOrderID even if the process crashes before publishBracketPlaced ever
+// runs. Called from within the PlaceExitOrders goroutine, once, before the
+// retry loop (retries reuse the same clientOrderID — idempotent by design).
+func (h *Hand) publishBracketPlace(ctx context.Context, tradeID, symbol, clientOrderID string, qty, stopLoss, takeProfit decimal.Decimal) {
+	payload, err := json.Marshal(poslog.BracketPlacePayload{
+		Symbol:        symbol,
+		ClientOrderID: clientOrderID,
+		StopLoss:      decimalToString(stopLoss),
+		TakeProfit:    decimalToString(takeProfit),
+		Qty:           qty.String(),
+	})
+	if err != nil {
+		h.log.Error("publishBracketPlace: marshal failed", "err", err)
+		return
+	}
+	h.publishAndApply(ctx, poslog.Event{
+		ID:      tradeID + "_bracket_place_" + clientOrderID,
+		HandID:  h.id.String(),
+		HelmID:  h.helmID.String(),
+		TradeID: tradeID,
+		Kind:    poslog.KindBracketPlace,
+		Payload: payload,
+		At:      time.Now().UTC(),
+	})
+}
+
 // publishBracketPlaced writes KindBracketPlaced to the durable poslog so bracket
 // order IDs survive a restart. Called from within the PlaceExitOrders goroutine.
-// positionID is the leg's opening order_id (stable PositionID); orderIDs are the
-// exchange-returned SL/TP order IDs.
-func (h *Hand) publishBracketPlaced(ctx context.Context, positionID, symbol string, orderIDs []string) {
+// tradeID is the leg's opening order_id (stable TradeID); orderIDs are the
+// exchange-returned SL/TP order IDs. clientOrderID is the clid the bracket was
+// placed with (empty for adapters that don't support one, or when adopting an
+// existing live algo order found by RecoverBrackets rather than placed by us).
+// groupID is the exchange-side bracket group id (Binance orderListId, OKX
+// algoId) when known — empty when the exchange has no true group, or when
+// resolved via reconcile.go's ambiguous-bracket recovery.
+func (h *Hand) publishBracketPlaced(ctx context.Context, tradeID, symbol, clientOrderID, groupID string, orderIDs []string) {
 	if len(orderIDs) == 0 {
 		return
 	}
 	payload, err := json.Marshal(poslog.BracketPlacedPayload{
-		Symbol:   symbol,
-		OrderIDs: orderIDs,
+		Symbol:        symbol,
+		OrderIDs:      orderIDs,
+		ClientOrderID: clientOrderID,
+		GroupID:       groupID,
 	})
 	if err != nil {
 		h.log.Error("publishBracketPlaced: marshal failed", "err", err)
 		return
 	}
 	h.publishAndApply(ctx, poslog.Event{
-		ID:         positionID + "_bracket_" + orderIDs[0],
-		HandID:     h.id.String(),
-		HelmID:     h.helmID.String(),
-		PositionID: positionID,
-		Kind:       poslog.KindBracketPlaced,
-		Payload:    payload,
-		At:         time.Now().UTC(),
+		ID:      tradeID + "_bracket_" + orderIDs[0],
+		HandID:  h.id.String(),
+		HelmID:  h.helmID.String(),
+		TradeID: tradeID,
+		Kind:    poslog.KindBracketPlaced,
+		Payload: payload,
+		At:      time.Now().UTC(),
 	})
 }

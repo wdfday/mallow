@@ -4,10 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"time"
-
-	"github.com/shopspring/decimal"
-
 	"mallow/helm/internal/fleet/actor/core/strategy"
 	"mallow/helm/internal/fleet/actor/position"
 	"mallow/helm/internal/infra/exchange"
@@ -15,9 +11,13 @@ import (
 	"mallow/helm/internal/infra/natsapi"
 	handdomain "mallow/helm/internal/module/hand/domain"
 	"mallow/helm/internal/safe"
+	"slices"
+	"time"
+
+	"github.com/shopspring/decimal"
 )
 
-// cancelExitOrders cancels any exchange-side SL/TP orders for the given symbol.
+// cancelExitOrders cancels any exchange-side SL/TP orders for the given leg.
 // Must be called while h.mu is held (reads exitLevels without locking).
 // Launches a goroutine to avoid blocking the caller on network I/O, detached from
 // h.ctx on its own bounded timeout instead — Release/Kill call Stop() right after
@@ -25,8 +25,8 @@ import (
 // against the in-flight HTTP call ("context canceled"), sometimes leaving the
 // SL/TP/algo bracket un-cancelled on the exchange. The 10s timeout below already
 // bounds the goroutine's lifetime, so it doesn't need h.ctx to avoid leaking.
-func (h *Hand) cancelExitOrders(_ context.Context, symbol string, skipOrderID string) {
-	lv, ok := h.exitLevels[symbol]
+func (h *Hand) cancelExitOrders(_ context.Context, tradeID string, symbol string, skipOrderID string) {
+	lv, ok := h.exitLevels[tradeID]
 	if !ok || len(lv.ExchangeOrderIDs) == 0 {
 		return
 	}
@@ -46,16 +46,66 @@ func (h *Hand) cancelExitOrders(_ context.Context, symbol string, skipOrderID st
 	for _, id := range ids {
 		h.pendingCancels[id] = struct{}{}
 	}
+
+	groupID := lv.GroupID
+	groupCanceller, hasGroupCanceller := h.helmRuntime.Exchange.(exchange.ExitOrderGroupCanceller)
+	market := exchange.MarketSpot
+	if h.cfg.isFutures {
+		market = exchange.MarketFutures
+	}
+
 	go func() {
 		defer safe.Recover()
 		cancelCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+
+		if hasGroupCanceller && groupID != "" {
+			// One atomic call cancels the whole bracket group instead of cancelling
+			// each leg blind. skipOrderID doesn't apply here: a group cancel tears
+			// down the whole bracket, which is already what "cancel the sibling"
+			// means once one leg fires — OKX's bracket IS one algo id (nothing to
+			// skip), and Binance's OCO already auto-cancels the sibling leg when one
+			// fills, so this call is idempotent by design, not a race.
+			if err := groupCanceller.CancelExitOrderGroup(cancelCtx, h.helmRuntime.Creds, symbol, market, groupID); err != nil {
+				h.log.Error("hand: cancel exit order group failed", "symbol", symbol, "group_id", groupID, "err", err)
+				h.helmRuntime.EmitEvent(natsapi.HelmEvent{
+					HandID: h.id.String(),
+					Code:   CodeOrderExitFailed,
+					Symbol: symbol,
+					Reason: fmt.Sprintf("cancel bracket group %s failed: %s", groupID, err),
+					Msg:    "hand: cancel exit order group FAILED — bracket may still be live at the exchange",
+				})
+				return
+			}
+			h.log.Info("hand: exit order group cancelled", "symbol", symbol, "group_id", groupID)
+			return
+		}
+
+		// No group id known — Bybit/fbinance/Alpaca always (no true exchange-side
+		// group), OKX/Binance when the bracket was resolved via reconcile.go's
+		// ambiguous-bracket recovery (group id unknown there). Cancel each leg
+		// individually, but aggregate the result instead of silently swallowing a
+		// per-leg failure the way this loop used to (Warn-and-continue, no signal
+		// to the caller or the activity feed that a leg may still be live).
+		var failed []string
 		for _, id := range ids {
 			if err := h.helmRuntime.Exchange.CancelOrder(cancelCtx, h.helmRuntime.Creds, id); err != nil {
 				h.log.Warn("hand: cancel exit order failed", "symbol", symbol, "order_id", id, "err", err)
+				failed = append(failed, id)
 			} else {
 				h.log.Info("hand: exit order cancelled", "symbol", symbol, "order_id", id)
 			}
+		}
+		if len(failed) > 0 {
+			h.log.Error("hand: cancel exit orders incomplete — some legs may still be live",
+				"symbol", symbol, "failed_order_ids", failed)
+			h.helmRuntime.EmitEvent(natsapi.HelmEvent{
+				HandID: h.id.String(),
+				Code:   CodeOrderExitFailed,
+				Symbol: symbol,
+				Reason: fmt.Sprintf("cancel failed for order ids: %v", failed),
+				Msg:    "hand: cancel exit orders incomplete — bracket may still be partially live at the exchange",
+			})
 		}
 	}()
 }
@@ -80,13 +130,13 @@ func (h *Hand) flattenPositions(ctx context.Context) []string {
 				Reason:  "kill",
 			})
 			h.publishAndApply(ctx, poslog.Event{
-				ID:         leg.PendingOrderID + "_cancelled",
-				HandID:     h.id.String(),
-				HelmID:     h.helmID.String(),
-				PositionID: leg.PositionID,
-				Kind:       poslog.KindOrderCancelled,
-				Payload:    payload,
-				At:         time.Now().UTC(),
+				ID:      leg.PendingOrderID + "_cancelled",
+				HandID:  h.id.String(),
+				HelmID:  h.helmID.String(),
+				TradeID: leg.TradeID,
+				Kind:    poslog.KindOrderCancelled,
+				Payload: payload,
+				At:      time.Now().UTC(),
 			})
 			continue
 		}
@@ -102,19 +152,19 @@ func (h *Hand) flattenPositions(ctx context.Context) []string {
 				Reason:  "kill",
 			})
 			h.publishAndApply(ctx, poslog.Event{
-				ID:         leg.PendingOrderID + "_cancelled",
-				HandID:     h.id.String(),
-				HelmID:     h.helmID.String(),
-				PositionID: leg.PositionID,
-				Kind:       poslog.KindOrderCancelled,
-				Payload:    payload,
-				At:         time.Now().UTC(),
+				ID:      leg.PendingOrderID + "_cancelled",
+				HandID:  h.id.String(),
+				HelmID:  h.helmID.String(),
+				TradeID: leg.TradeID,
+				Kind:    poslog.KindOrderCancelled,
+				Payload: payload,
+				At:      time.Now().UTC(),
 			})
 		}
 
-		// Cancel exchange-side bracket orders (OCO) for this symbol synchronously before placing the market close order.
+		// Cancel exchange-side bracket orders (OCO) for this leg synchronously before placing the market close order.
 		h.mu.Lock()
-		lv, ok := h.exitLevels[leg.Symbol]
+		lv, ok := h.exitLevels[leg.TradeID]
 		var exitOrderIDs []string
 		if ok && len(lv.ExchangeOrderIDs) > 0 {
 			exitOrderIDs = make([]string, len(lv.ExchangeOrderIDs))
@@ -176,7 +226,7 @@ func (h *Hand) flattenPositions(ctx context.Context) []string {
 		// transitions Open → Exiting and pendingOrderPos is populated.
 		// When the fill arrives (WS, poll, or REST-immediate below), applyFill
 		// will detect isClosingFill=true and emit position_closed correctly.
-		positionID := leg.PositionID
+		tradeID := leg.TradeID
 		placedPayload, _ := json.Marshal(poslog.OrderPlacedPayload{
 			OrderID:   result.ID,
 			Symbol:    leg.Symbol,
@@ -187,13 +237,13 @@ func (h *Hand) flattenPositions(ctx context.Context) []string {
 			IsClose:   true,
 		})
 		h.publishAndApply(ctx, poslog.Event{
-			ID:         result.ID,
-			HandID:     h.id.String(),
-			HelmID:     h.helmID.String(),
-			PositionID: positionID,
-			Kind:       poslog.KindOrderPlaced,
-			Payload:    placedPayload,
-			At:         time.Now().UTC(),
+			ID:      result.ID,
+			HandID:  h.id.String(),
+			HelmID:  h.helmID.String(),
+			TradeID: tradeID,
+			Kind:    poslog.KindOrderPlaced,
+			Payload: placedPayload,
+			At:      time.Now().UTC(),
 		})
 
 		// Add to h.orders so pollOrders can detect a delayed fill.
@@ -288,24 +338,22 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 		h.mu.Unlock()
 		return
 	}
-	// Case 2: external cancel — find the leg that owns this order ID.
+	// Case 2: external cancel — find the leg that owns this order ID. Keyed by
+	// TradeID (not symbol) so that when two independent legs share a symbol
+	// (non-pyramid, MaxUnits>1), the cancel is attributed to the exact leg whose
+	// bracket order this is, not whichever same-symbol leg happens to match first.
 	var affectedLeg *position.LegState
-	var affectedSymbol string
-	for sym, lv := range h.exitLevels {
-		for _, id := range lv.ExchangeOrderIDs {
-			if id == orderID {
-				affectedSymbol = sym
-				break
-			}
-		}
-		if affectedSymbol != "" {
+	var affectedTradeID, affectedSymbol string
+	for tid, lv := range h.exitLevels {
+		if slices.Contains(lv.ExchangeOrderIDs, orderID) {
+			affectedTradeID = tid
+			affectedSymbol = lv.Symbol
 			break
 		}
 	}
-	// Also search active legs for the matching symbol.
-	if affectedSymbol != "" {
+	if affectedTradeID != "" {
 		for _, leg := range h.pos.ActiveLegs() {
-			if leg.Symbol == affectedSymbol {
+			if leg.TradeID == affectedTradeID {
 				affectedLeg = leg
 				break
 			}
@@ -313,8 +361,8 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 	}
 
 	remainingCount := 0
-	if affectedSymbol != "" {
-		if lv, ok := h.exitLevels[affectedSymbol]; ok {
+	if affectedTradeID != "" {
+		if lv, ok := h.exitLevels[affectedTradeID]; ok {
 			filtered := lv.ExchangeOrderIDs[:0]
 			for _, id := range lv.ExchangeOrderIDs {
 				if id != orderID {
@@ -322,7 +370,7 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 				}
 			}
 			lv.ExchangeOrderIDs = filtered
-			h.exitLevels[affectedSymbol] = lv
+			h.exitLevels[affectedTradeID] = lv
 			remainingCount = len(filtered)
 		}
 	}
@@ -357,11 +405,11 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 		// arrive first. We apply KindOrderCancelled idempotently so whichever path wins,
 		// the second sees an empty pendingOrderPos and skips.
 		h.mu.RLock()
-		entryPosID := h.pendingOrderPos[orderID]
-		preCancelPhase := h.pos.LegPhase(entryPosID)
+		entryTradeID := h.pendingOrderPos[orderID]
+		preCancelPhase := h.pos.LegPhase(entryTradeID)
 		h.mu.RUnlock()
 
-		if entryPosID == "" ||
+		if entryTradeID == "" ||
 			(preCancelPhase != position.PhaseEntering && preCancelPhase != position.PhaseAdding) {
 			return
 		}
@@ -376,13 +424,13 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 		// Use the same deterministic ID as the poll path so JetStream dedup
 		// prevents a double poslog event if both WS and poll paths fire.
 		h.publishAndApply(ctx, poslog.Event{
-			ID:         orderID + "_cancelled",
-			HandID:     h.id.String(),
-			HelmID:     h.helmID.String(),
-			PositionID: entryPosID,
-			Kind:       poslog.KindOrderCancelled,
-			Payload:    payload,
-			At:         time.Now().UTC(),
+			ID:      orderID + "_cancelled",
+			HandID:  h.id.String(),
+			HelmID:  h.helmID.String(),
+			TradeID: entryTradeID,
+			Kind:    poslog.KindOrderCancelled,
+			Payload: payload,
+			At:      time.Now().UTC(),
 		})
 
 		switch preCancelPhase {
@@ -407,7 +455,7 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 	h.log.Warn("hand: external position close detected via bracket order cancel",
 		"symbol", affectedSymbol,
 		"order_id", orderID,
-		"position_id", affectedLeg.PositionID,
+		"position_id", affectedLeg.TradeID,
 	)
 	h.emitEvent(natsapi.HelmEvent{
 		Code:   CodePositionExtClosed,
@@ -436,20 +484,20 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 	})
 	// Deterministic dedup ID — safe to replay on restart; the reconciler never reclaims an orphaned leg.
 	h.publishAndApply(ctx, poslog.Event{
-		ID:         h.id.String() + "_extcancel_" + affectedLeg.PositionID,
-		HandID:     h.id.String(),
-		HelmID:     h.helmID.String(),
-		PositionID: affectedLeg.PositionID,
-		Kind:       poslog.KindPositionOrphaned,
-		Payload:    payload,
-		At:         now,
+		ID:      h.id.String() + "_extcancel_" + affectedLeg.TradeID,
+		HandID:  h.id.String(),
+		HelmID:  h.helmID.String(),
+		TradeID: affectedLeg.TradeID,
+		Kind:    poslog.KindPositionOrphaned,
+		Payload: payload,
+		At:      now,
 	})
 	// Write audit trade record: exit_price="", gross_pnl="0", exit_reason="orphaned".
 	h.appendOrphanTradeRecord(ctx, affectedLeg, "manual")
 
-	// Clear local exit level tracking for this symbol.
+	// Clear local exit level tracking for this leg.
 	h.mu.Lock()
-	delete(h.exitLevels, affectedSymbol)
+	delete(h.exitLevels, affectedTradeID)
 	h.mu.Unlock()
 }
 
@@ -459,9 +507,9 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 // but those IDs now point at cancelled orders that will never fire, so the position is
 // effectively naked. Clearing the IDs (keeping the SL/TP levels) lets checkExits resume
 // triggering on price crosses. The leg stays open; the strategy may still re-emit an exit.
-func (h *Hand) rearmLocalExit(symbol string) {
+func (h *Hand) rearmLocalExit(tradeID, symbol string) {
 	h.mu.Lock()
-	el, ok := h.exitLevels[symbol]
+	el, ok := h.exitLevels[tradeID]
 	if !ok || (el.StopLoss.IsZero() && el.TakeProfit.IsZero()) {
 		h.mu.Unlock()
 		h.log.Error("hand: exit failed with no local SL/TP to fall back on — position UNPROTECTED",
@@ -469,7 +517,7 @@ func (h *Hand) rearmLocalExit(symbol string) {
 		return
 	}
 	el.ExchangeOrderIDs = nil // dead (cancelled) — stop checkExits from skipping
-	h.exitLevels[symbol] = el
+	h.exitLevels[tradeID] = el
 	h.mu.Unlock()
 	h.log.Warn("hand: exit failed — exchange OCO cancelled, local SL/TP monitor re-armed",
 		"symbol", symbol, "stop_loss", el.StopLoss, "take_profit", el.TakeProfit)
@@ -501,20 +549,24 @@ func (h *Hand) orphanLegsForSymbol(ctx context.Context, symbol, source string) {
 		})
 		payload, _ := json.Marshal(poslog.PositionOrphanedPayload{Symbol: symbol, Source: source})
 		h.publishAndApply(ctx, poslog.Event{
-			ID:         h.id.String() + "_orphan_" + source + "_" + leg.PositionID,
-			HandID:     h.id.String(),
-			HelmID:     h.helmID.String(),
-			PositionID: leg.PositionID,
-			Kind:       poslog.KindPositionOrphaned,
-			Payload:    payload,
-			At:         time.Now().UTC(),
+			ID:      h.id.String() + "_orphan_" + source + "_" + leg.TradeID,
+			HandID:  h.id.String(),
+			HelmID:  h.helmID.String(),
+			TradeID: leg.TradeID,
+			Kind:    poslog.KindPositionOrphaned,
+			Payload: payload,
+			At:      time.Now().UTC(),
 		})
 		// Write audit trade record: exit_price="", gross_pnl="0", exit_reason="orphaned".
 		h.appendOrphanTradeRecord(ctx, leg, source)
+
+		// Clear THIS leg's exit level — not just one shared symbol-keyed entry — so
+		// a co-located independent leg on the same symbol (non-pyramid, MaxUnits>1)
+		// keeps its own bracket tracking intact.
+		h.mu.Lock()
+		delete(h.exitLevels, leg.TradeID)
+		h.mu.Unlock()
 	}
-	h.mu.Lock()
-	delete(h.exitLevels, symbol)
-	h.mu.Unlock()
 }
 
 // releasePositions performs a synthetic close (buyback) at market price for every open leg.
@@ -532,7 +584,7 @@ func (h *Hand) releasePositions(ctx context.Context) {
 		releaseID := fmt.Sprintf("release_%s_%d", leg.Symbol, time.Now().UnixNano())
 
 		h.mu.Lock()
-		h.pendingOrderPos[releaseID] = leg.PositionID
+		h.pendingOrderPos[releaseID] = leg.TradeID
 		h.mu.Unlock()
 
 		// Transition leg to PhaseExiting so applyFill detects isClosingFill.
@@ -546,20 +598,20 @@ func (h *Hand) releasePositions(ctx context.Context) {
 			IsClose:   true,
 		})
 		h.publishAndApply(ctx, poslog.Event{
-			ID:         releaseID,
-			HandID:     h.id.String(),
-			HelmID:     h.helmID.String(),
-			PositionID: leg.PositionID,
-			Kind:       poslog.KindOrderPlaced,
-			Payload:    placedPayload,
-			At:         time.Now().UTC(),
+			ID:      releaseID,
+			HandID:  h.id.String(),
+			HelmID:  h.helmID.String(),
+			TradeID: leg.TradeID,
+			Kind:    poslog.KindOrderPlaced,
+			Payload: placedPayload,
+			At:      time.Now().UTC(),
 		})
 
 		// Cancel exchange-side bracket orders BEFORE the synthetic fill.
-		// applyFill may clear exitLevels[sym] on close detection; cancelling first
+		// applyFill may clear exitLevels[leg.TradeID] on close detection; cancelling first
 		// ensures the order IDs are still readable from exitLevels when cancelExitOrders runs.
 		h.mu.Lock()
-		h.cancelExitOrders(ctx, leg.Symbol, "")
+		h.cancelExitOrders(ctx, leg.TradeID, leg.Symbol, "")
 		h.mu.Unlock()
 
 		// Apply synthetic fill → emits KindPositionClosed + trade record.
@@ -574,7 +626,7 @@ func (h *Hand) releasePositions(ctx context.Context) {
 // Called on every pollTicker tick (every 30s) as a safety net in case
 // exchange-side bracket orders fail to execute.
 //
-// exitLevels[sym] is deleted unconditionally right after DeliverSignal, without checking
+// exitLevels[tid] is deleted unconditionally right after DeliverSignal, without checking
 // whether the send succeeded or was dropped — DeliverSignal returns void, so there is
 // nothing to check. This is safe ONLY because DeliverSignal is now the sole writer to
 // h.Signals and serialises all callers under signalsMu (2026-07-06): drain-then-send
@@ -586,12 +638,13 @@ func (h *Hand) releasePositions(ctx context.Context) {
 func (h *Hand) checkExits() {
 	h.mu.RLock()
 	exits := make(map[string]exitLevel, len(h.exitLevels))
-	for sym, el := range h.exitLevels {
-		exits[sym] = el
+	for tid, el := range h.exitLevels {
+		exits[tid] = el
 	}
 	h.mu.RUnlock()
 
-	for sym, el := range exits {
+	for tid, el := range exits {
+		sym := el.Symbol
 		price := h.helmRuntime.lastKnownPrice(sym)
 		if !price.IsPositive() {
 			continue
@@ -625,7 +678,7 @@ func (h *Hand) checkExits() {
 		h.mu.RUnlock()
 		if !handActive {
 			h.mu.Lock()
-			delete(h.exitLevels, sym)
+			delete(h.exitLevels, tid)
 			h.mu.Unlock()
 			h.log.Warn("exit monitor: hand flat but exitLevels present — external close detected, stopping hand",
 				"symbol", sym)
@@ -667,9 +720,12 @@ func (h *Hand) checkExits() {
 		// ExitKind carries WHY (sl/tp) — previously discarded, only the generic
 		// DirExit reached the signal; applyExitFill still re-derives it independently
 		// for now (see plan's non-goal note), this is for tagging/logging today.
-		h.DeliverSignal(Signal{Symbol: sym, Direction: strategy.DirExit, ExitKind: kind, Strength: 1.0, ReceivedAt: time.Now()})
+		// PositionID pins this signal to the exact leg that tripped — required so
+		// handleSignal doesn't fall back to "first matching leg on this symbol" when
+		// multiple independent legs share a symbol (non-pyramid, MaxUnits>1).
+		h.DeliverSignal(Signal{Symbol: sym, PositionID: tid, Direction: strategy.DirExit, ExitKind: kind, Strength: 1.0, ReceivedAt: time.Now()})
 		h.mu.Lock()
-		delete(h.exitLevels, sym)
+		delete(h.exitLevels, tid)
 		h.mu.Unlock()
 	}
 }
@@ -707,11 +763,11 @@ func (h *Hand) fetchBracketStates(ctx context.Context) []bracketState {
 	h.mu.RLock()
 	var checks []bracketState
 	now := time.Now()
-	for sym, lv := range h.exitLevels {
+	for _, lv := range h.exitLevels {
 		if len(lv.ExchangeOrderIDs) == 0 {
 			continue
 		}
-		// Skip symbols whose bracket was placed too recently — the exchange may not
+		// Skip legs whose bracket was placed too recently — the exchange may not
 		// have propagated the order yet, so GetOrder/getAlgoOrder would return
 		// not_found and falsely trigger pollExternalClose.
 		if !lv.PlacedAt.IsZero() && now.Sub(lv.PlacedAt) < bracketPollGrace {
@@ -719,7 +775,7 @@ func (h *Hand) fetchBracketStates(ctx context.Context) []bracketState {
 		}
 		for _, id := range lv.ExchangeOrderIDs {
 			if _, pending := h.pendingCancels[id]; !pending {
-				checks = append(checks, bracketState{symbol: sym, id: id})
+				checks = append(checks, bracketState{symbol: lv.Symbol, id: id})
 			}
 		}
 	}
@@ -894,7 +950,7 @@ func (h *Hand) handleOrphanSignal(ctx context.Context, sig Signal) {
 func (h *Hand) handlePositionDesync(ctx context.Context, leg *position.LegState) {
 	legQty := leg.Qty.Abs()
 	h.log.Warn("checkPositionDesync: portfolio qty < leg qty — external close suspected",
-		"symbol", leg.Symbol, "position_id", leg.PositionID,
+		"symbol", leg.Symbol, "position_id", leg.TradeID,
 		"leg_qty", legQty,
 	)
 	h.emitEvent(natsapi.HelmEvent{
@@ -916,13 +972,13 @@ func (h *Hand) handlePositionDesync(ctx context.Context, leg *position.LegState)
 	// 2026-07-10 to match the other two: KindPositionOrphaned + appendOrphanTradeRecord.
 	payload, _ := json.Marshal(poslog.PositionOrphanedPayload{Symbol: leg.Symbol, Source: "desync"})
 	h.publishAndApply(ctx, poslog.Event{
-		ID:         h.id.String() + "_desync_" + leg.PositionID,
-		HandID:     h.id.String(),
-		HelmID:     h.helmID.String(),
-		PositionID: leg.PositionID,
-		Kind:       poslog.KindPositionOrphaned,
-		Payload:    payload,
-		At:         now,
+		ID:      h.id.String() + "_desync_" + leg.TradeID,
+		HandID:  h.id.String(),
+		HelmID:  h.helmID.String(),
+		TradeID: leg.TradeID,
+		Kind:    poslog.KindPositionOrphaned,
+		Payload: payload,
+		At:      now,
 	})
 	// Portfolio already updated by Sync() — no need to call RemovePosition.
 	// If partial close, portfolio still has exchangeQty; removing is wrong.
@@ -930,7 +986,7 @@ func (h *Hand) handlePositionDesync(ctx context.Context, leg *position.LegState)
 	h.appendOrphanTradeRecord(ctx, leg, "desync")
 
 	h.mu.Lock()
-	delete(h.exitLevels, leg.Symbol)
+	delete(h.exitLevels, leg.TradeID)
 	h.mu.Unlock()
 }
 
@@ -944,36 +1000,36 @@ func (h *Hand) handlePositionDesync(ctx context.Context, leg *position.LegState)
 //  3. Calls applyFill("dust_exit") → detects isClosingFill=true → emits KindPositionClosed.
 func (h *Hand) closeLegAsDust(ctx context.Context, symbol, side string, qty, price decimal.Decimal) {
 	h.mu.RLock()
-	var posID string
+	var tradeID string
 	for _, leg := range h.pos.ActiveLegs() {
 		if leg.Symbol == symbol && (leg.Phase == position.PhaseOpen || leg.Phase == position.PhaseAdding) {
-			posID = leg.PositionID
+			tradeID = leg.TradeID
 			break
 		}
 	}
 	h.mu.RUnlock()
-	if posID == "" {
+	if tradeID == "" {
 		return // already flat — nothing to close
 	}
 
 	dustID := fmt.Sprintf("dust_%s_%d", symbol, time.Now().UnixNano())
 
 	h.mu.Lock()
-	h.pendingOrderPos[dustID] = posID
+	h.pendingOrderPos[dustID] = tradeID
 	// Snapshot bracket IDs before clearing exitLevels.
 	// Mark them in seenFills + remove routing so that if the exchange-side bracket
 	// fill event (e.g. orders-algo WS for OKX) arrives AFTER this synthetic close,
 	// it is recognised as already handled and doesn't trigger a second ReportFill
 	// (which would double-sell the portfolio, producing a negative SOL balance).
 	var bracketIDs []string
-	if lv, ok := h.exitLevels[symbol]; ok {
+	if lv, ok := h.exitLevels[tradeID]; ok {
 		bracketIDs = append(bracketIDs, lv.ExchangeOrderIDs...)
 	}
 	for _, id := range bracketIDs {
 		h.seenFills[id] = time.Now()
 	}
 	// Clear the exit level so checkExits stops retrying.
-	delete(h.exitLevels, symbol)
+	delete(h.exitLevels, tradeID)
 	h.mu.Unlock()
 
 	// Remove routing for bracket IDs off the actor loop — prevents the orphan
@@ -993,13 +1049,13 @@ func (h *Hand) closeLegAsDust(ctx context.Context, symbol, side string, qty, pri
 		IsClose:   true,
 	})
 	h.publishAndApply(ctx, poslog.Event{
-		ID:         dustID,
-		HandID:     h.id.String(),
-		HelmID:     h.helmID.String(),
-		PositionID: posID,
-		Kind:       poslog.KindOrderPlaced,
-		Payload:    placedPayload,
-		At:         time.Now().UTC(),
+		ID:      dustID,
+		HandID:  h.id.String(),
+		HelmID:  h.helmID.String(),
+		TradeID: tradeID,
+		Kind:    poslog.KindOrderPlaced,
+		Payload: placedPayload,
+		At:      time.Now().UTC(),
 	})
 
 	// Apply synthetic fill → emits KindPositionClosed + trade record.

@@ -191,7 +191,7 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 						if hasPendingExit {
 							delete(h.pendingExits, result.ID)
 						}
-						posIDForBracket := h.pendingOrderPos[result.ID]
+						tradeIDForBracket := h.pendingOrderPos[result.ID]
 						h.mu.Unlock()
 						if netQty.IsPositive() {
 							h.applyFill(ctx, result.ID, result.Symbol, side, netQty, result.FilledAvg, netCommission, "partial_cancel")
@@ -203,7 +203,7 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 								// WS already applied all qty; schedule the missing bracket now.
 								h.completeWsFillFromREST(ctx, result.ID, result.Symbol, side,
 									cumQty, result.FilledAvg, cumCommission, pendingExit, false)
-								_ = posIDForBracket // captured above, used by completeWsFillFromREST internally
+								_ = tradeIDForBracket // captured above, used by completeWsFillFromREST internally
 							}
 						}
 					} else {
@@ -216,22 +216,22 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 			// Capture pre-cancel phase BEFORE publishAndApply changes leg state.
 			// Used to emit the correct position-level cancel event below.
 			h.mu.RLock()
-			posID := h.pendingOrderPos[o.ID]
-			preCancelPhase := h.pos.LegPhase(posID)
+			tradeID := h.pendingOrderPos[o.ID]
+			preCancelPhase := h.pos.LegPhase(tradeID)
 			h.mu.RUnlock()
-			if posID != "" {
+			if tradeID != "" {
 				payload, _ := json.Marshal(poslog.OrderCancelledPayload{
 					OrderID: o.ID,
 					Reason:  result.Status,
 				})
 				h.publishAndApply(ctx, poslog.Event{
-					ID:         o.ID + "_cancelled",
-					HandID:     h.id.String(),
-					HelmID:     h.helmID.String(),
-					PositionID: posID,
-					Kind:       poslog.KindOrderCancelled,
-					Payload:    payload,
-					At:         time.Now().UTC(),
+					ID:      o.ID + "_cancelled",
+					HandID:  h.id.String(),
+					HelmID:  h.helmID.String(),
+					TradeID: tradeID,
+					Kind:    poslog.KindOrderCancelled,
+					Payload: payload,
+					At:      time.Now().UTC(),
 				})
 			}
 			// Terminal: remove from routing map so cancelled orders don't accumulate.
@@ -306,7 +306,7 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 // across the off-loop REST boundary, mirroring pendingPlace / runPlaceREST / applyPlaceResult.
 type pendingLimitTimeout struct {
 	order        handdomain.Order
-	origPosID    string
+	origTradeID  string
 	origPhase    position.Phase
 	remainingQty decimal.Decimal
 	age          time.Duration
@@ -330,11 +330,11 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 	age := time.Since(o.SubmitTime).Truncate(time.Second)
 
 	// Snapshot poslog context before cancelling so we can propagate it to the fallback.
-	// Snapshot origPosID before cancelling. origPhase will be re-read AFTER any
+	// Snapshot origTradeID before cancelling. origPhase will be re-read AFTER any
 	// partial applyFill so it reflects the post-fill leg state — avoids targeting
 	// a dead (PhaseIdle) position with KindOrderCancelled and the fallback order.
 	h.mu.RLock()
-	origPosID := h.pendingOrderPos[o.ID]
+	origTradeID := h.pendingOrderPos[o.ID]
 	h.mu.RUnlock()
 
 	var alreadyFilledQty decimal.Decimal
@@ -369,7 +369,7 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 	// position (e.g. fill qty == leg qty), the leg is now PhaseIdle. Publishing
 	// KindOrderCancelled or placing a fallback market order on a dead position would error.
 	h.mu.RLock()
-	origPhase := h.pos.LegPhase(origPosID)
+	origPhase := h.pos.LegPhase(origTradeID)
 	h.mu.RUnlock()
 	if origPhase == position.PhaseIdle {
 		h.log.Info("hand: limit timeout partial fill fully closed position — skipping cancel event and fallback",
@@ -392,7 +392,7 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 	})
 
 	plt := &pendingLimitTimeout{
-		order: o, origPosID: origPosID, origPhase: origPhase, remainingQty: remainingQty, age: age,
+		order: o, origTradeID: origTradeID, origPhase: origPhase, remainingQty: remainingQty, age: age,
 	}
 	wantFallback := h.cfg.limitFallback == handdomain.LimitFallbackMarket && remainingQty.IsPositive()
 	if wantFallback {
@@ -457,19 +457,19 @@ func (h *Hand) applyLimitTimeoutResult(ctx context.Context, plt *pendingLimitTim
 	// 1. pendingOrderPos[o.ID] is cleared (pollOrders won't re-publish on next cycle)
 	// 2. The leg phase transitions back (Entering→Idle, Exiting→Open) so the fallback
 	//    order_placed applies cleanly.
-	if plt.origPosID != "" {
+	if plt.origTradeID != "" {
 		cancelPayload, _ := json.Marshal(poslog.OrderCancelledPayload{
 			OrderID: o.ID,
 			Reason:  "limit_timeout",
 		})
 		h.publishAndApply(ctx, poslog.Event{
-			ID:         o.ID + "_cancelled",
-			HandID:     h.id.String(),
-			HelmID:     h.helmID.String(),
-			PositionID: plt.origPosID,
-			Kind:       poslog.KindOrderCancelled,
-			Payload:    cancelPayload,
-			At:         time.Now().UTC(),
+			ID:      o.ID + "_cancelled",
+			HandID:  h.id.String(),
+			HelmID:  h.helmID.String(),
+			TradeID: plt.origTradeID,
+			Kind:    poslog.KindOrderCancelled,
+			Payload: cancelPayload,
+			At:      time.Now().UTC(),
 		})
 	}
 
@@ -495,11 +495,11 @@ func (h *Hand) applyLimitTimeoutResult(ctx context.Context, plt *pendingLimitTim
 		Msg:     "order: limit fallback to market",
 	})
 
-	// Register fallback order in poslog using the same positionID as the original
+	// Register fallback order in poslog using the same tradeID as the original
 	// limit. origPhase tells us whether this is an entry or exit fallback:
 	//   Idle/Entering → entry (original was entering; cancel reset to Idle)
 	//   Open/Exiting  → exit  (original was exiting; cancel reset to Open)
-	if plt.origPosID != "" {
+	if plt.origTradeID != "" {
 		isExitFallback := plt.origPhase == position.PhaseExiting
 		fallbackPayload, _ := json.Marshal(poslog.OrderPlacedPayload{
 			OrderID:   result.ID,
@@ -511,13 +511,13 @@ func (h *Hand) applyLimitTimeoutResult(ctx context.Context, plt *pendingLimitTim
 			IsClose:   isExitFallback,
 		})
 		h.publishAndApply(ctx, poslog.Event{
-			ID:         result.ID,
-			HandID:     h.id.String(),
-			HelmID:     h.helmID.String(),
-			PositionID: plt.origPosID,
-			Kind:       poslog.KindOrderPlaced,
-			Payload:    fallbackPayload,
-			At:         time.Now().UTC(),
+			ID:      result.ID,
+			HandID:  h.id.String(),
+			HelmID:  h.helmID.String(),
+			TradeID: plt.origTradeID,
+			Kind:    poslog.KindOrderPlaced,
+			Payload: fallbackPayload,
+			At:      time.Now().UTC(),
 		})
 	}
 

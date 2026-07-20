@@ -86,7 +86,7 @@ type AccountPermissions struct {
 
 // AccountTransaction is a single filled order as returned by the exchange REST API.
 type AccountTransaction struct {
-	TradeID string // exchange fill/trade ID — dedup key; empty if exchange doesn't provide one
+	FillID  string // exchange fill/trade ID — dedup key; empty if exchange doesn't provide one
 	OrderID string
 	// ClientOrderID is the caller-supplied clOrdId echoed by the exchange, when available.
 	// Lets the REST-sync path attribute a fill to its hand via the clid (race-free key),
@@ -217,7 +217,7 @@ type WsFillEvent struct {
 	// so it is always known by the time the fill arrives). Empty for bracket/manual
 	// orders and adapters that do not yet map it — those fall back to OrderID routing.
 	ClientOrderID   string
-	TradeID         string // exchange fill ID; unique per partial fill
+	FillID          string // exchange fill ID; unique per partial fill
 	Symbol          string
 	Side            OrderSide
 	Partial         bool            // true = partial fill; false = fully filled
@@ -263,6 +263,30 @@ type ClientOrderQuerier interface {
 	// (Binance, OKX); market selects the spot vs futures endpoint/category for venues
 	// that segregate them (Binance, Bybit). Alpaca ignores both.
 	GetOrderByClientOrderID(ctx context.Context, creds Credentials, symbol string, market MarketKind, clientOrderID string) (*OrderResult, error)
+}
+
+// ExitOrderQuerier is optionally implemented by exchanges whose bracket/exit
+// orders (OCO, algo, conditional) live on a different query surface than
+// regular orders — so ClientOrderQuerier.GetOrderByClientOrderID can't reach
+// them. Used the same way ClientOrderQuerier is, but for resolving an
+// ambiguous PlaceExitOrders call after a crash (see poslog.KindBracketPlace).
+// Adapters whose bracket orders ARE plain orders (Alpaca) don't need this —
+// GetOrderByClientOrderID already covers them.
+type ExitOrderQuerier interface {
+	// GetExitOrderByClientOrderID returns every leg matching clientOrderID (an
+	// OCO/bracket group can be more than one order), or nil/empty when none are
+	// found. Same symbol/market semantics as GetOrderByClientOrderID.
+	GetExitOrderByClientOrderID(ctx context.Context, creds Credentials, symbol string, market MarketKind, clientOrderID string) ([]OrderResult, error)
+}
+
+// ExitOrderGroupCanceller is optionally implemented by exchanges whose bracket/exit
+// orders support cancelling the whole OCO/algo group with one atomic call via the
+// group id returned in ExitOrderResult.GroupID — avoiding the ambiguity of cancelling
+// each leg individually (partial-cancel races, unclear per-leg error codes). Adapters
+// without a true exchange-side group (Bybit, fbinance, Alpaca — SL/TP are independent
+// orders) don't implement this; callers fall back to per-order CancelOrder.
+type ExitOrderGroupCanceller interface {
+	CancelExitOrderGroup(ctx context.Context, creds Credentials, symbol string, market MarketKind, groupID string) error
 }
 
 // AccountStreamer is optionally implemented by exchanges that support private

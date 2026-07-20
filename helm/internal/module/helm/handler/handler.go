@@ -16,6 +16,7 @@ import (
 	"mallow/helm/internal/infra/journal/filllog"
 	"mallow/helm/internal/infra/journal/orderlog"
 	"mallow/helm/internal/infra/journal/poslog"
+	"mallow/helm/internal/infra/journal/signallog"
 	"mallow/helm/internal/module/analytics/domain"
 	analyticsservice "mallow/helm/internal/module/analytics/service"
 	dto "mallow/helm/internal/module/helm/dto"
@@ -53,6 +54,7 @@ type Handler struct {
 	orderLog  orderlog.Log
 	analytics *analyticsservice.Service
 	eventLog  eventlog.Log
+	signalLog *signallog.Log
 }
 
 func New(
@@ -64,6 +66,7 @@ func New(
 	orderLog orderlog.Log,
 	analytics *analyticsservice.Service,
 	eventLog eventlog.Log,
+	signalLog *signallog.Log,
 ) *Handler {
 	return &Handler{
 		svc:       svc,
@@ -74,6 +77,7 @@ func New(
 		orderLog:  orderLog,
 		analytics: analytics,
 		eventLog:  eventLog,
+		signalLog: signalLog,
 	}
 }
 
@@ -104,6 +108,7 @@ func (h *Handler) Register(rg *gin.RouterGroup) {
 		o.GET("/:id/positions", h.positions)
 		o.GET("/:id/trades", h.trades)
 		o.GET("/:id/fills", h.fills)
+		o.GET("/:id/signals", h.signals)
 		o.GET("/:id/stats", h.stats)
 		o.GET("/:id/orders", h.orders)
 		o.GET("/:id/orders/history", h.ordersHistory)
@@ -660,6 +665,61 @@ func (h *Handler) fills(c *gin.Context) {
 		resp.Fills = append(resp.Fills, dto.FillToResp(f))
 	}
 	shared.RespondWithSuccess(c, http.StatusOK, "Fills retrieved successfully", resp)
+}
+
+// signals godoc
+// @Summary List herald-originated signals for a helm (from HELM_SIGNALS JetStream stream)
+// @Tags helms
+// @Security BearerAuth
+// @Produce json
+// @Param id path string true "Helm ID"
+// @Param after query string false "RFC3339 cursor (exclusive); omit for all"
+// @Param limit query int false "Page size" default(200)
+// @Success 200 {object} shared.SuccessResponse[dto.SignalPageResp]
+// @Failure 404 {object} shared.ErrorResponse
+// @Router /api/v1/helms/{id}/signals [get]
+func (h *Handler) signals(c *gin.Context) {
+	userID, ok := shared.CallerUserID(c)
+	if !ok {
+		return
+	}
+	id, err := uuid.Parse(c.Param("id"))
+	if err != nil {
+		shared.RespondWithError(c, http.StatusBadRequest, "invalid id")
+		return
+	}
+	if err := h.svc.CheckOwner(id, userID); err != nil {
+		shared.RespondWithError(c, http.StatusNotFound, "not found")
+		return
+	}
+	if h.signalLog == nil {
+		shared.RespondWithError(c, http.StatusServiceUnavailable, "signal log unavailable")
+		return
+	}
+	_, limit := parsePage(c)
+	page := perf.Page{Limit: limit}
+	if afterStr := c.Query("after"); afterStr != "" {
+		if t, tErr := time.Parse(time.RFC3339, afterStr); tErr == nil {
+			page.After = t
+		}
+	}
+	result, err := h.signalLog.Query(c.Request.Context(), id.String(), page)
+	if err != nil {
+		shared.RespondWithError(c, http.StatusInternalServerError, err.Error())
+		return
+	}
+	resp := dto.SignalPageResp{
+		Signals: make([]dto.SignalResp, 0, len(result.Signals)),
+		HasMore: result.HasMore,
+		Limit:   limit,
+	}
+	if result.HasMore {
+		resp.Next = result.Next.UTC().Format(time.RFC3339)
+	}
+	for _, s := range result.Signals {
+		resp.Signals = append(resp.Signals, dto.SignalToResp(s))
+	}
+	shared.RespondWithSuccess(c, http.StatusOK, "Signals retrieved successfully", resp)
 }
 
 // stats godoc

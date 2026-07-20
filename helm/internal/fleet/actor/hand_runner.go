@@ -203,6 +203,32 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		return
 	}
 
+	// Signal audit log: herald-originated signals only (empty ExitKind = entry,
+	// ExitKindSignal = herald exit). checkExits' local TP/SL triggers are
+	// helm's own reactive machinery, not something herald told us — excluded
+	// so the audit trail reflects the strategy's real inputs. ExitKindOrphan
+	// never reaches here (already returned above).
+	if h.helmRuntime.js != nil &&
+		sig.ExitKind != strategy.ExitKindTakeProfit && sig.ExitKind != strategy.ExitKindStopLoss {
+		natsapi.PublishSignal(h.helmRuntime.js, natsapi.SignalMsg{
+			HelmID:      h.helmID.String(),
+			HandID:      h.id.String(),
+			UserID:      h.helmRuntime.UserID.String(),
+			Symbol:      sig.Symbol,
+			Direction:   string(sig.Direction),
+			ExitKind:    string(sig.ExitKind),
+			Strength:    sig.Strength,
+			Price:       sig.Price.String(),
+			TargetPrice: sig.TargetPrice.String(),
+			StopPrice:   sig.StopPrice.String(),
+			IsOffset:    sig.IsOffset,
+			ATR:         sig.ATR.String(),
+			Reason:      sig.Reason,
+			GeneratedAt: sig.GeneratedAt,
+			ReceivedAt:  sig.ReceivedAt,
+		})
+	}
+
 	signalAt := time.Now()
 	h.metrics.signalsReceived.Add(1)
 
@@ -293,6 +319,11 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		return
 	}
 
+	// exitTradeID is the specific leg this exit targets, threaded through
+	// pendingPlace to runPlaceREST/rearmLocalExit — both need it to key
+	// h.exitLevels (which is keyed by TradeID, not symbol, so that independent
+	// same-symbol legs each keep their own bracket tracking).
+	var exitTradeID string
 	if sig.IsUrgent() {
 		// Resolve close direction against this hand's own position, not the net
 		// helm-level portfolio. Portfolio.GetPosition aggregates all hands on the
@@ -305,12 +336,30 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		// Only PhaseOpen and PhaseAdding legs have an actual exchange position.
 		// PhaseEntering = entry order placed but not yet filled (qty=0 at exchange).
 		// PhaseExiting  = close order already in-flight; another exit is redundant.
+		//
+		// sig.PositionID (set by checkExits for a locally-triggered exit) pins the
+		// exact leg that tripped SL/TP — required when multiple independent legs
+		// share a symbol (non-pyramid, MaxUnits>1), since "first match" would
+		// otherwise pick an arbitrary leg. Herald/NATS-originated exit signals
+		// carry no PositionID (herald has no concept of legs) and fall back to
+		// the existing first-match-by-symbol convention.
 		h.mu.RLock()
 		var handSide string
 		for _, leg := range h.pos.ActiveLegs() {
-			if leg.Symbol == sig.Symbol &&
-				(leg.Phase == position.PhaseOpen || leg.Phase == position.PhaseAdding) {
+			if leg.Phase != position.PhaseOpen && leg.Phase != position.PhaseAdding {
+				continue
+			}
+			if sig.PositionID != "" {
+				if leg.TradeID == sig.PositionID {
+					handSide = leg.Side
+					exitTradeID = leg.TradeID
+					break
+				}
+				continue
+			}
+			if leg.Symbol == sig.Symbol {
 				handSide = leg.Side
+				exitTradeID = leg.TradeID
 				break
 			}
 		}
@@ -567,6 +616,7 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 		sig: sig, intent: intent, reply: reply, pending: pending, clid: clid,
 		orderReq: orderReq, orderType: orderType, limitPrice: limitPrice, orderQty: orderQty,
 		isFutures: isFutures, isExitOrder: isExitOrder, signalAt: signalAt,
+		exitTradeID: exitTradeID,
 	}
 	go func() {
 		defer safe.Recover()
@@ -594,6 +644,10 @@ type pendingPlace struct {
 	isFutures   bool
 	isExitOrder bool
 	signalAt    time.Time
+	// exitTradeID is the specific leg being exited (empty for entries) — resolved
+	// in handleSignal's sig.IsUrgent() branch. h.exitLevels is keyed by TradeID,
+	// not symbol, so runPlaceREST/rearmLocalExit need this to find the right entry.
+	exitTradeID string
 
 	result *exchange.OrderResult // set by runPlaceREST
 	err    error
@@ -639,7 +693,7 @@ func (h *Hand) runPlaceREST(ctx context.Context, pp *pendingPlace) {
 	// check or balance-unfreeze wait is required before PlaceOrder.
 	if pp.isExitOrder && !pp.isFutures && pp.reply.Side == "sell" {
 		h.mu.Lock()
-		lv, hasBracket := h.exitLevels[pp.sig.Symbol]
+		lv, hasBracket := h.exitLevels[pp.exitTradeID]
 		var bracketIDs []string
 		if hasBracket && len(lv.ExchangeOrderIDs) > 0 {
 			bracketIDs = append(bracketIDs, lv.ExchangeOrderIDs...)
@@ -978,13 +1032,13 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 		})
 
 		// Revert the in-memory pending state machine transition by publishing order_cancelled
-		positionID := clid // opening entry fallback
+		tradeID := clid // opening entry fallback
 		h.mu.RLock()
 		if leg := h.pos.PrimaryLeg(); leg != nil {
-			positionID = leg.PositionID
+			tradeID = leg.TradeID
 		}
 		h.mu.RUnlock()
-		if publishErr := h.publishOrderCancelled(ctx, clid, positionID, err.Error()); publishErr != nil {
+		if publishErr := h.publishOrderCancelled(ctx, clid, tradeID, err.Error()); publishErr != nil {
 			h.log.Error("hand: failed to publish order_cancelled after placement failure", "err", publishErr)
 		}
 		// Account-level error escalation: auth rejection, or a sustained network/
@@ -1040,7 +1094,7 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 		// SL/TP monitor by clearing the stale exchange order IDs so checkExits resumes
 		// triggering on price crosses (it skips while ExchangeOrderIDs is non-empty).
 		if isExitOrder && !isFutures && len(pp.cancelledBracketIDs) > 0 {
-			h.rearmLocalExit(sig.Symbol)
+			h.rearmLocalExit(pp.exitTradeID, sig.Symbol)
 		}
 		return
 	}
@@ -1118,11 +1172,11 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 	// Skipped for exit orders — those have their own post-fill lifecycle.
 	if !isExitOrder {
 		h.mu.RLock()
-		posID := h.pendingOrderPos[result.ID]
-		phase := h.pos.LegPhase(posID)
+		tradeID := h.pendingOrderPos[result.ID]
+		phase := h.pos.LegPhase(tradeID)
 		var preQty, preAvg decimal.Decimal
 		if phase == position.PhaseAdding {
-			if snap, ok := h.pos.LegSnapshot(posID); ok {
+			if snap, ok := h.pos.LegSnapshot(tradeID); ok {
 				preQty = snap.Qty.Abs()
 				preAvg = snap.EntryPrice
 			}
@@ -1137,7 +1191,7 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 				Side:       reply.Side,
 				Qty:        orderedQty,
 				Price:      limitPrice,
-				PositionID: posID,
+				PositionID: tradeID,
 				OrderID:    order.ID,
 				Msg:        "position: entering",
 			})
@@ -1150,7 +1204,7 @@ func (h *Hand) applyPlaceResult(ctx context.Context, pp *pendingPlace) {
 				Side:       reply.Side,
 				Qty:        orderedQty, // this add's order qty
 				Price:      limitPrice,
-				PositionID: posID,
+				PositionID: tradeID,
 				OrderID:    order.ID,
 				EntryPrice: preAvg, // current avg BEFORE this add
 				Reason:     fmt.Sprintf("current_qty=%s current_avg=%s", preQty, preAvg),

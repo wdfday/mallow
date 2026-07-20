@@ -134,7 +134,7 @@ func (p *Persister) upsertPlaced(ctx context.Context, e poslog.Event, pl poslog.
 		nullableText(pl.ClientOrderID),
 		e.HelmID,
 		nullableUUID(e.HandID),
-		nullableText(e.PositionID),
+		nullableText(e.TradeID),
 		pl.Symbol,
 		nullableText(pl.Side),
 		nullableText(pl.OrderType),

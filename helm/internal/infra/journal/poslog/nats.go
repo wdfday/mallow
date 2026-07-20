@@ -43,7 +43,7 @@ func (l *NatsLog) Publish(ctx context.Context, e Event) error {
 	if err != nil {
 		return fmt.Errorf("poslog marshal: %w", err)
 	}
-	subject := fmt.Sprintf("%s.%s.%s.%s", subjectBase, e.HelmID, e.HandID, e.PositionID)
+	subject := fmt.Sprintf("%s.%s.%s.%s", subjectBase, e.HelmID, e.HandID, e.TradeID)
 	msg := nats.NewMsg(subject)
 	msg.Data = data
 	msg.Header.Set(nats.MsgIdHdr, e.ID)
@@ -58,8 +58,8 @@ func (l *NatsLog) ReplayHand(ctx context.Context, helmID, handID string) ([]Even
 }
 
 // ReplayLeg returns all events for a single position leg, in order.
-func (l *NatsLog) ReplayLeg(ctx context.Context, helmID, handID, positionID string) ([]Event, error) {
-	filter := fmt.Sprintf("%s.%s.%s.%s", subjectBase, helmID, handID, positionID)
+func (l *NatsLog) ReplayLeg(ctx context.Context, helmID, handID, tradeID string) ([]Event, error) {
+	filter := fmt.Sprintf("%s.%s.%s.%s", subjectBase, helmID, handID, tradeID)
 	return l.drain(ctx, filter)
 }
 

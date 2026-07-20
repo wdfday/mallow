@@ -184,13 +184,13 @@ func TestReconcile_PreFlightNeverPlaced_Binance(t *testing.T) {
 	})
 	seedCtx, seedCancel := context.WithTimeout(context.Background(), 10*time.Second)
 	err := env.pl.Publish(seedCtx, poslog.Event{
-		ID:         cid,
-		HandID:     handID.String(),
-		HelmID:     helmID.String(),
-		PositionID: cid, // new leg: PositionID = opening client_order_id, see hand_poslog.go
-		Kind:       poslog.KindOrderPlace,
-		Payload:    placePayload,
-		At:         time.Now().UTC(),
+		ID:      cid,
+		HandID:  handID.String(),
+		HelmID:  helmID.String(),
+		TradeID: cid, // new leg: TradeID = opening client_order_id, see hand_poslog.go
+		Kind:    poslog.KindOrderPlace,
+		Payload: placePayload,
+		At:      time.Now().UTC(),
 	})
 	seedCancel()
 	if err != nil {

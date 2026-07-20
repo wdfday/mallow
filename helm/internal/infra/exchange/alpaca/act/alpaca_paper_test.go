@@ -964,7 +964,7 @@ func TestPaper_FilledOrders(t *testing.T) {
 			break
 		}
 		t.Logf("  %s  %s %s  qty=%s @ $%s  at=%s",
-			tx.TradeID[:8], tx.Symbol, tx.Side, tx.Qty, tx.AvgPrice,
+			tx.FillID, tx.Symbol, tx.Side, tx.Qty, tx.AvgPrice,
 			tx.FilledAt.Format("2006-01-02 15:04:05"))
 	}
 }

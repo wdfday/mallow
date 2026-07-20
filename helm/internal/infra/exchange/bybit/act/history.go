@@ -30,7 +30,7 @@ func (c *Client) FilledOrders(ctx context.Context, creds exchange.Credentials, _
 			side = "sell"
 		}
 		all = append(all, exchange.AccountTransaction{
-			TradeID:       e.ExecID,
+			FillID:        e.ExecID,
 			OrderID:       e.OrderID,
 			ClientOrderID: e.OrderLinkId,
 			Symbol:        e.Symbol,

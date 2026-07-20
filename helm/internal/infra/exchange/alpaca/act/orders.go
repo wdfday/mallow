@@ -114,16 +114,26 @@ func (c *Client) PlaceExitOrders(_ context.Context, creds exchange.Credentials, 
 	side := alpacasdk.Side(req.Side)
 
 	var ids []string
+	// Like Bybit/fbinance, these are two independent plain orders (no shared
+	// group id) — suffix the clid per leg so both can hold it. Reconciliation
+	// reuses the existing GetOrderByClientOrderID (regular order query) since
+	// these are plain orders, not a distinct bracket surface.
+	var slClientOrderID, tpClientOrderID string
+	if req.ClientOrderID != "" {
+		slClientOrderID = req.ClientOrderID + "S"
+		tpClientOrderID = req.ClientOrderID + "T"
+	}
 
 	if req.StopLoss.IsPositive() {
 		sl := req.StopLoss
 		stopReq := alpacasdk.PlaceOrderRequest{
-			Symbol:      req.Symbol,
-			Qty:         &req.Qty,
-			Side:        side,
-			Type:        alpacasdk.Stop,
-			TimeInForce: alpacasdk.GTC,
-			StopPrice:   &sl,
+			Symbol:        req.Symbol,
+			Qty:           &req.Qty,
+			Side:          side,
+			Type:          alpacasdk.Stop,
+			TimeInForce:   alpacasdk.GTC,
+			StopPrice:     &sl,
+			ClientOrderID: slClientOrderID,
 		}
 		slog.Info("alpaca: placing SL exit", "symbol", req.Symbol, "side", side, "sl", sl)
 		order, err := sdk.PlaceOrder(stopReq)
@@ -136,12 +146,13 @@ func (c *Client) PlaceExitOrders(_ context.Context, creds exchange.Credentials, 
 	if req.TakeProfit.IsPositive() {
 		tp := req.TakeProfit
 		tpReq := alpacasdk.PlaceOrderRequest{
-			Symbol:      req.Symbol,
-			Qty:         &req.Qty,
-			Side:        side,
-			Type:        alpacasdk.Limit,
-			TimeInForce: alpacasdk.GTC,
-			LimitPrice:  &tp,
+			Symbol:        req.Symbol,
+			Qty:           &req.Qty,
+			Side:          side,
+			Type:          alpacasdk.Limit,
+			TimeInForce:   alpacasdk.GTC,
+			LimitPrice:    &tp,
+			ClientOrderID: tpClientOrderID,
 		}
 		slog.Info("alpaca: placing TP exit", "symbol", req.Symbol, "side", side, "tp", tp)
 		order, err := sdk.PlaceOrder(tpReq)
@@ -151,7 +162,7 @@ func (c *Client) PlaceExitOrders(_ context.Context, creds exchange.Credentials, 
 		ids = append(ids, order.ID)
 	}
 
-	return &exchange.ExitOrderResult{OrderIDs: ids}, nil
+	return &exchange.ExitOrderResult{OrderIDs: ids, ClientOrderID: req.ClientOrderID}, nil
 }
 
 // alpacaTIF maps canonical TIF to Alpaca TimeInForce.

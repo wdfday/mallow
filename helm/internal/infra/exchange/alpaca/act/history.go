@@ -42,13 +42,13 @@ func (c *Client) FilledOrders(ctx context.Context, creds exchange.Credentials, _
 			filledAt = o.FilledAt.UTC()
 		}
 		all = append(all, exchange.AccountTransaction{
-			// TradeID left empty: the Orders API has no per-execution fill ID (only
+			// FillID left empty: the Orders API has no per-execution fill ID (only
 			// GetAccountActivities does, via ActivityType "FILL" — a separate endpoint
 			// this adapter doesn't call). o.ID is the ORDER id, not a fill id; using it
-			// here would collide with a real per-execution TradeID the WS path may have
+			// here would collide with a real per-execution FillID the WS path may have
 			// already published for the same fill under a different key. Leaving it empty
 			// routes through PublishTradeFill's helmID+orderID fallback, consistent with
-			// every other no-trade-id path (poll/kill/limit-timeout) in the system.
+			// every other no-fill-id path (poll/kill/limit-timeout) in the system.
 			OrderID:       o.ID,
 			ClientOrderID: o.ClientOrderID,
 			Symbol:        o.Symbol,
@@ -61,10 +61,10 @@ func (c *Client) FilledOrders(ctx context.Context, creds exchange.Credentials, _
 	return all, nil
 }
 
-// ── KNOWN GAP: cross-path TradeID mismatch can still let a duplicate trade.filled
+// ── KNOWN GAP: cross-path FillID mismatch can still let a duplicate trade.filled
 // through for Alpaca specifically (2026-07-10, found during pre-defense review) ──
 //
-// FilledOrders (this function) always leaves TradeID empty because the Orders API
+// FilledOrders (this function) always leaves FillID empty because the Orders API
 // has no per-execution fill ID — PublishTradeFill's fallback then keys the NATS
 // Nats-Msg-Id on helmID+orderID (see PublishTradeFill in natsapi/protocol.go).
 //
@@ -77,7 +77,7 @@ func (c *Client) FilledOrders(ctx context.Context, creds exchange.Credentials, _
 //
 // Exposure window: this only matters when BOTH paths fire for the same fill,
 // which needs a restart between them (the in-memory hasOrderFillPublished/orderID
-// guard — not TradeID-keyed — is what normally prevents the second publish; it is
+// guard — not FillID-keyed — is what normally prevents the second publish; it is
 // wiped on restart, same failure mode as the fillDedup gaps already documented
 // elsewhere in this session).
 //

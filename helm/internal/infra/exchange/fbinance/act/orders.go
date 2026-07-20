@@ -119,17 +119,28 @@ func (c *Client) PlaceExitOrders(ctx context.Context, creds exchange.Credentials
 	}
 
 	var ids []string
+	// Like Bybit, fbinance places SL/TP as two independent algo orders (no
+	// shared group id), so a single clid can't be reused for both — suffix per
+	// leg. The base clid alone is what reconcile queries both variants from.
+	var slClientAlgoID, tpClientAlgoID string
+	if req.ClientOrderID != "" {
+		slClientAlgoID = req.ClientOrderID + "S"
+		tpClientAlgoID = req.ClientOrderID + "T"
+	}
 
 	if req.StopLoss.IsPositive() {
 		slog.Info("fbinance: placing futures SL exit", "symbol", req.Symbol, "side", side, "sl", req.StopLoss)
-		resp, err := c.newFut(creds).NewCreateAlgoOrderService().
+		svc := c.newFut(creds).NewCreateAlgoOrderService().
 			Symbol(req.Symbol).
 			Side(side).
 			Type(futures.AlgoOrderTypeStopMarket).
 			TriggerPrice(req.StopLoss.String()).
 			Quantity(req.Qty.String()).
-			ReduceOnly(true).
-			Do(ctx)
+			ReduceOnly(true)
+		if slClientAlgoID != "" {
+			svc = svc.ClientAlgoId(slClientAlgoID)
+		}
+		resp, err := svc.Do(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("fbinance futures SL exit: %w", err)
 		}
@@ -138,19 +149,47 @@ func (c *Client) PlaceExitOrders(ctx context.Context, creds exchange.Credentials
 
 	if req.TakeProfit.IsPositive() {
 		slog.Info("fbinance: placing futures TP exit", "symbol", req.Symbol, "side", side, "tp", req.TakeProfit)
-		resp, err := c.newFut(creds).NewCreateAlgoOrderService().
+		svc := c.newFut(creds).NewCreateAlgoOrderService().
 			Symbol(req.Symbol).
 			Side(side).
 			Type(futures.AlgoOrderTypeTakeProfitMarket).
 			TriggerPrice(req.TakeProfit.String()).
 			Quantity(req.Qty.String()).
-			ReduceOnly(true).
-			Do(ctx)
+			ReduceOnly(true)
+		if tpClientAlgoID != "" {
+			svc = svc.ClientAlgoId(tpClientAlgoID)
+		}
+		resp, err := svc.Do(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("fbinance futures TP exit: %w", err)
 		}
 		ids = append(ids, strconv.FormatInt(resp.AlgoId, 10))
 	}
 
-	return &exchange.ExitOrderResult{OrderIDs: ids}, nil
+	return &exchange.ExitOrderResult{OrderIDs: ids, ClientOrderID: req.ClientOrderID}, nil
+}
+
+// GetExitOrderByClientOrderID implements exchange.ExitOrderQuerier — resolves an
+// ambiguous PlaceExitOrders call (crash between the REST call and
+// KindBracketPlaced) after a restart. Tries both suffixed client algo ids
+// (clientOrderID+"S" for SL, +"T" for TP — see PlaceExitOrders) via
+// GetAlgoOrderService.ClientAlgoID, which covers any algo status (not just
+// open), unlike Bybit/OKX's realtime-only fallback.
+func (c *Client) GetExitOrderByClientOrderID(ctx context.Context, creds exchange.Credentials, _ string, _ exchange.MarketKind, clientOrderID string) ([]exchange.OrderResult, error) {
+	var results []exchange.OrderResult
+	for _, id := range []string{clientOrderID + "S", clientOrderID + "T"} {
+		resp, err := c.newFut(creds).NewGetAlgoOrderService().ClientAlgoID(id).Do(ctx)
+		if err != nil || resp == nil || resp.AlgoId == 0 {
+			continue
+		}
+		results = append(results, exchange.OrderResult{
+			ID:        strconv.FormatInt(resp.AlgoId, 10),
+			Symbol:    resp.Symbol,
+			Side:      exchange.OrderSide(resp.Side),
+			Status:    strings.ToLower(string(resp.AlgoStatus)),
+			Qty:       parseDecimal(resp.Quantity),
+			FilledAvg: parseDecimal(resp.ActualPrice),
+		})
+	}
+	return results, nil
 }

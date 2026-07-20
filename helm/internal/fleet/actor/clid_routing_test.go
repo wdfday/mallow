@@ -63,7 +63,7 @@ func (s *raceExchange) PlaceOrder(_ context.Context, _ exchange.Credentials, req
 		onFill(exchange.WsFillEvent{
 			OrderID:       exID,
 			ClientOrderID: req.ClientOrderID, // echoed by the exchange
-			TradeID:       "race-trade-1",
+			FillID:        "race-fill-1",
 			Symbol:        req.Symbol,
 			Side:          req.Side,
 			Partial:       false,

@@ -48,11 +48,11 @@ func TestPersister_OrderPlaced_Inserts(t *testing.T) {
 	helmID := uuid.New()
 	handID := uuid.New()
 	e := poslog.Event{
-		HelmID:     helmID.String(),
-		HandID:     handID.String(),
-		PositionID: "ex-1",
-		Kind:       poslog.KindOrderPlaced,
-		At:         time.Now().UTC(),
+		HelmID:  helmID.String(),
+		HandID:  handID.String(),
+		TradeID: "ex-1",
+		Kind:    poslog.KindOrderPlaced,
+		At:      time.Now().UTC(),
 		Payload: payload(t, poslog.OrderPlacedPayload{
 			OrderID:       "ex-1",
 			ClientOrderID: "mlwabc123",

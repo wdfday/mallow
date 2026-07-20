@@ -314,7 +314,7 @@ func (r *HelmRuntime) applyWsFill(ctx context.Context, ev exchange.WsFillEvent) 
 		"order_id", ev.OrderID,
 		"client_order_id", ev.ClientOrderID,
 		"fill_route", fillRoute,
-		"trade_id", ev.TradeID,
+		"fill_id", ev.FillID,
 		"symbol", ev.Symbol,
 		"side", ev.Side,
 		"fill_qty", ev.FilledQty,
@@ -324,7 +324,7 @@ func (r *HelmRuntime) applyWsFill(ctx context.Context, ev exchange.WsFillEvent) 
 		"processing_lag", time.Since(ev.Timestamp).Truncate(time.Millisecond),
 	)
 
-	r.MarkTradeProcessed(ev.TradeID)
+	r.MarkFillProcessed(ev.FillID)
 
 	fillReport := helmdomain.FillReport{
 		HandID:     botID,
@@ -415,7 +415,7 @@ func (r *HelmRuntime) tradeFillMsg(botID string, ev exchange.WsFillEvent) natsap
 		AccountID: r.AccountID.String(),
 		UserID:    r.UserID.String(),
 		HandID:    botID,
-		TradeID:   ev.TradeID,
+		TradeID:   ev.FillID,
 		OrderID:   ev.OrderID,
 		Kind:      "fill",
 		Symbol:    ev.Symbol,

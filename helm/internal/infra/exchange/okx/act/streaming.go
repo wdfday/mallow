@@ -430,7 +430,7 @@ func handleOKXMessage(
 			onFill(exchange.WsFillEvent{
 				OrderID:         orderID,
 				ClientOrderID:   d.ClOrdId,
-				TradeID:         tradeID,
+				FillID:          tradeID,
 				Symbol:          d.InstId,
 				Side:            side,
 				Partial:         d.State == "partially_filled",
@@ -592,7 +592,7 @@ func handleOKXAlgoMessage(
 			if onFill != nil {
 				onFill(exchange.WsFillEvent{
 					OrderID:   orderID,
-					TradeID:   d.AlgoId + "_algo", // synthetic; avoids collision with regular fill IDs
+					FillID:    d.AlgoId + "_algo", // synthetic; avoids collision with regular fill IDs
 					Symbol:    d.InstId,
 					Side:      side,
 					FilledQty: actualQty,

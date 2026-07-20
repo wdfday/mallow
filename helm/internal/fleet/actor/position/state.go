@@ -50,13 +50,13 @@ const (
 	PhaseExiting Phase = "exiting"
 )
 
-// LegState is the state machine for a single position leg (one PositionID).
+// LegState is the state machine for a single position leg (one TradeID).
 //
 // Pyramid mode: one LegState per hand; Qty/EntryPrice accumulate on each add.
 // Non-pyramid:  one LegState per entry; each has its own SL/TP.
 type LegState struct {
-	Phase      Phase
-	PositionID string // = opening order_id; stable across pyramid adds
+	Phase   Phase
+	TradeID string // = opening order_id; stable across pyramid adds
 
 	Symbol string
 	Side   string // "buy" | "sell"
@@ -88,6 +88,21 @@ type LegState struct {
 	// entry fill. Populated via KindBracketPlaced poslog events so they survive restarts.
 	// Used by cancelExitOrders to cancel the OCO sibling on position close.
 	ExchangeOrderIDs []string
+
+	// GroupID is the exchange-side identifier for the whole bracket group (Binance
+	// orderListId, OKX algoId) — lets cancelExitOrders cancel every leg with one
+	// atomic call. Empty when the exchange has no true group (Bybit, fbinance,
+	// Alpaca) or when this leg's bracket was resolved via reconcile.go's
+	// ambiguous-bracket recovery (which doesn't know the group id — falls back
+	// to per-ID cancel until the next full bracket replacement).
+	GroupID string
+
+	// PendingBracketClientOrderID is set by KindBracketPlace (pre-flight intent)
+	// and cleared by KindBracketPlaced (confirmed) or a position close. A
+	// restart that sees this non-empty with ExchangeOrderIDs still empty means
+	// the bracket placement's outcome is unknown — the reconciler queries the
+	// exchange by this clid to resolve it. See poslog.KindBracketPlace.
+	PendingBracketClientOrderID string
 }
 
 // IsActive reports whether the leg has an open position or a pending order.
@@ -335,7 +350,7 @@ type HandPositions struct {
 	Pyramid  bool
 	MaxUnits int
 
-	// legs maps PositionID → leg for active legs only.
+	// legs maps TradeID → leg for active legs only.
 	// Closed legs are evicted immediately when they transition to PhaseIdle so the map
 	// stays bounded regardless of how many trades the hand executes over its lifetime.
 	// Dedup for duplicate position_closed events is handled by the !exists early-return
@@ -384,7 +399,7 @@ func (h *HandPositions) EntryCount() int {
 	return leg.entryCount
 }
 
-// ActiveLegs returns a slice of all currently active legs, ordered by PositionID.
+// ActiveLegs returns a slice of all currently active legs, ordered by TradeID.
 func (h *HandPositions) ActiveLegs() []*LegState {
 	out := make([]*LegState, 0, len(h.legs))
 	for _, l := range h.legs {
@@ -413,28 +428,28 @@ func (h *HandPositions) PrimaryLeg() *LegState {
 // IsFlat reports whether the hand has no open exposure and no pending order.
 func (h *HandPositions) IsFlat() bool { return h.ActiveCount() == 0 }
 
-// LegPhase returns the Phase of the leg with the given PositionID.
+// LegPhase returns the Phase of the leg with the given TradeID.
 // Returns PhaseIdle if the leg does not exist or has been closed.
-func (h *HandPositions) LegPhase(positionID string) Phase {
-	if leg, ok := h.legs[positionID]; ok {
+func (h *HandPositions) LegPhase(tradeID string) Phase {
+	if leg, ok := h.legs[tradeID]; ok {
 		return leg.Phase
 	}
 	return PhaseIdle
 }
 
-// LegEntryPrice returns the avg entry price of the leg with the given PositionID.
+// LegEntryPrice returns the avg entry price of the leg with the given TradeID.
 // Returns zero if the leg does not exist or has not yet been entered.
-func (h *HandPositions) LegEntryPrice(positionID string) decimal.Decimal {
-	if leg, ok := h.legs[positionID]; ok {
+func (h *HandPositions) LegEntryPrice(tradeID string) decimal.Decimal {
+	if leg, ok := h.legs[tradeID]; ok {
 		return leg.EntryPrice
 	}
 	return decimal.Zero
 }
 
 // LegSnapshot returns a snapshot of a leg's trade-relevant fields.
-// ok=false when the positionID is not tracked.
-func (h *HandPositions) LegSnapshot(positionID string) (LegSnapshot, bool) {
-	leg, ok := h.legs[positionID]
+// ok=false when the tradeID is not tracked.
+func (h *HandPositions) LegSnapshot(tradeID string) (LegSnapshot, bool) {
+	leg, ok := h.legs[tradeID]
 	if !ok {
 		return LegSnapshot{}, false
 	}
@@ -483,27 +498,43 @@ func (h *HandPositions) Apply(e poslog.Event) error {
 	// position_orphaned: hand released this leg without closing.
 	// Remove it so reconciler never restores it to this hand.
 	if e.Kind == poslog.KindPositionOrphaned {
-		delete(h.legs, e.PositionID)
+		delete(h.legs, e.TradeID)
 		return nil
 	}
 
-	// bracket_placed: persist exchange-side SL/TP order IDs so they survive restarts.
-	if e.Kind == poslog.KindBracketPlaced {
-		leg, ok := h.legs[e.PositionID]
+	// bracket_place: pre-flight intent, written before the exchange call. Records
+	// the clid so a restart can resolve an in-flight placement if bracket_placed
+	// never arrives (crash between the two). See LegState.PendingBracketClientOrderID.
+	if e.Kind == poslog.KindBracketPlace {
+		leg, ok := h.legs[e.TradeID]
 		if ok {
-			var p poslog.BracketPlacedPayload
+			var p poslog.BracketPlacePayload
 			if err := json.Unmarshal(e.Payload, &p); err == nil {
-				leg.ExchangeOrderIDs = p.OrderIDs
+				leg.PendingBracketClientOrderID = p.ClientOrderID
 			}
 		}
 		return nil
 	}
 
-	leg, exists := h.legs[e.PositionID]
+	// bracket_placed: persist exchange-side SL/TP order IDs so they survive restarts.
+	if e.Kind == poslog.KindBracketPlaced {
+		leg, ok := h.legs[e.TradeID]
+		if ok {
+			var p poslog.BracketPlacedPayload
+			if err := json.Unmarshal(e.Payload, &p); err == nil {
+				leg.ExchangeOrderIDs = p.OrderIDs
+				leg.GroupID = p.GroupID
+			}
+			leg.PendingBracketClientOrderID = ""
+		}
+		return nil
+	}
+
+	leg, exists := h.legs[e.TradeID]
 	if !exists {
 		// Leg can be created by a new entry order_place (new path) or order_placed (legacy path).
 		if e.Kind != poslog.KindOrderPlace && e.Kind != poslog.KindOrderPlaced {
-			return fmt.Errorf("no leg for position_id %q (event: %s)", e.PositionID, e.Kind)
+			return fmt.Errorf("no leg for position_id %q (event: %s)", e.TradeID, e.Kind)
 		}
 		var pIsPyramidAdd, pIsClose bool
 		if e.Kind == poslog.KindOrderPlace {
@@ -522,10 +553,10 @@ func (h *HandPositions) Apply(e poslog.Event) error {
 			pIsClose = p.IsClose
 		}
 		if pIsPyramidAdd || pIsClose {
-			return fmt.Errorf("no active leg for position_id %q but got %s with pyramid_add/close", e.PositionID, e.Kind)
+			return fmt.Errorf("no active leg for position_id %q but got %s with pyramid_add/close", e.TradeID, e.Kind)
 		}
-		leg = &LegState{PositionID: e.PositionID, Phase: PhaseIdle}
-		h.legs[e.PositionID] = leg
+		leg = &LegState{TradeID: e.TradeID, Phase: PhaseIdle}
+		h.legs[e.TradeID] = leg
 	}
 
 	// For a closing fill, snapshot what we need for PnL before Apply resets the leg.
@@ -548,20 +579,20 @@ func (h *HandPositions) Apply(e poslog.Event) error {
 			h.RealizedPnL = h.RealizedPnL.Add(computePnL(snapSide, snapEntryPrice, fillPrice, fillQty))
 		}
 		// Leg is fully closed — evict to keep map bounded.
-		delete(h.legs, e.PositionID)
+		delete(h.legs, e.TradeID)
 		return nil
 	}
 
 	// Entry cancel: leg never opened — evict immediately.
 	if e.Kind == poslog.KindOrderCancelled && snapPhase == PhaseEntering && leg.Phase == PhaseIdle {
-		delete(h.legs, e.PositionID)
+		delete(h.legs, e.TradeID)
 	}
 
 	return nil
 }
 
 func (h *HandPositions) applyPositionClosed(e poslog.Event) error {
-	leg, exists := h.legs[e.PositionID]
+	leg, exists := h.legs[e.TradeID]
 	if !exists || leg.Phase == PhaseIdle {
 		// Already closed via order_filled (leg evicted), or never opened — no-op.
 		return nil
@@ -574,7 +605,7 @@ func (h *HandPositions) applyPositionClosed(e poslog.Event) error {
 	pnl, _ := decimal.NewFromString(p.RealizedPnL)
 	h.RealizedPnL = h.RealizedPnL.Add(pnl)
 	// Evict — leg is fully closed.
-	delete(h.legs, e.PositionID)
+	delete(h.legs, e.TradeID)
 	return nil
 }
 
@@ -632,7 +663,7 @@ func (h *HandPositions) ToPosition(handID, helmID string, currentPrice decimal.D
 		pos.Side = leg.Side
 
 		dLeg := domain.Leg{
-			PositionID: leg.PositionID,
+			PositionID: leg.TradeID,
 			EntryPrice: leg.EntryPrice,
 			Qty:        leg.Qty,
 			StopLoss:   leg.StopLoss,

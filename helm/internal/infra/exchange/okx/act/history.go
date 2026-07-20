@@ -61,7 +61,7 @@ func (c *Client) fetchAllFills(ctx context.Context, creds exchange.Credentials, 
 				fee = fee.Neg()
 			}
 			all = append(all, exchange.AccountTransaction{
-				TradeID:       f.TradeID,
+				FillID:        f.TradeID,
 				OrderID:       f.OrdID,
 				ClientOrderID: f.ClOrdID,
 				Symbol:        f.InstID,

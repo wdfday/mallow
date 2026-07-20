@@ -167,6 +167,15 @@ func (c *Client) PlaceExitOrders(ctx context.Context, creds exchange.Credentials
 	reduceOnly := req.Market == exchange.MarketFutures
 
 	var ids []string
+	// Bybit places SL/TP as two independent orders (no shared group id like
+	// Binance OCO/OKX algo), so a single clid can't be reused for both — Bybit
+	// rejects a duplicate orderLinkId. Suffix it per leg instead; the base
+	// clid alone (without suffix) is what reconcile queries both variants from.
+	var slLinkID, tpLinkID string
+	if req.ClientOrderID != "" {
+		slLinkID = req.ClientOrderID + "S"
+		tpLinkID = req.ClientOrderID + "T"
+	}
 
 	if req.StopLoss.IsPositive() {
 		body := createOrderReq{
@@ -175,6 +184,7 @@ func (c *Client) PlaceExitOrders(ctx context.Context, creds exchange.Credentials
 			Side:          side,
 			OrderType:     "Market",
 			Qty:           req.Qty.String(),
+			OrderLinkId:   slLinkID,
 			TimeInForce:   "IOC",
 			ReduceOnly:    reduceOnly,
 			StopOrderType: "Stop",
@@ -199,6 +209,7 @@ func (c *Client) PlaceExitOrders(ctx context.Context, creds exchange.Credentials
 			Side:          side,
 			OrderType:     "Market",
 			Qty:           req.Qty.String(),
+			OrderLinkId:   tpLinkID,
 			TimeInForce:   "IOC",
 			ReduceOnly:    reduceOnly,
 			StopOrderType: "TakeProfit",
@@ -216,7 +227,35 @@ func (c *Client) PlaceExitOrders(ctx context.Context, creds exchange.Credentials
 		ids = append(ids, resp.Result.OrderID)
 	}
 
-	return &exchange.ExitOrderResult{OrderIDs: ids}, nil
+	return &exchange.ExitOrderResult{OrderIDs: ids, ClientOrderID: req.ClientOrderID}, nil
+}
+
+// GetExitOrderByClientOrderID implements exchange.ExitOrderQuerier — resolves an
+// ambiguous PlaceExitOrders call (crash between the REST call and
+// KindBracketPlaced) after a restart. Tries both suffixed link ids (clientOrderID+"S"
+// for the SL leg, +"T" for TP — see PlaceExitOrders) against /v5/order/realtime with
+// orderFilter=StopOrder (conditional/TP-SL orders live in a different filter bucket
+// than regular orders — GetOrderByClientOrderID's default omits them). NOTE: only
+// covers still-open conditional orders; one already triggered/filled/cancelled before
+// restart won't be found here (same limitation noted on the OKX/Binance equivalents).
+func (c *Client) GetExitOrderByClientOrderID(ctx context.Context, creds exchange.Credentials, _ string, market exchange.MarketKind, clientOrderID string) ([]exchange.OrderResult, error) {
+	category := "spot"
+	if market == exchange.MarketFutures {
+		category = "linear"
+	}
+	var results []exchange.OrderResult
+	for _, linkID := range []string{clientOrderID + "S", clientOrderID + "T"} {
+		body := map[string]string{"category": category, "orderLinkId": linkID, "orderFilter": "StopOrder"}
+		var resp apiResponse[orderListResult]
+		if err := c.doSigned(ctx, creds, "GET", "/v5/order/realtime", body, &resp); err != nil {
+			continue
+		}
+		if resp.RetCode != 0 || len(resp.Result.List) == 0 {
+			continue
+		}
+		results = append(results, *orderDetailToResult(&resp.Result.List[0]))
+	}
+	return results, nil
 }
 
 // bybitTIF maps canonical TIF to Bybit V5 timeInForce string. Default: GTC.

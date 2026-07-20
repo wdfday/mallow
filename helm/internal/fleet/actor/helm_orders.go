@@ -51,46 +51,46 @@ func (o *orderRouter) handID(orderID string) string {
 
 // ── fillDedup ───────────────────────────────────────────────────────────────────
 
-// fillDedup is the idempotency bookkeeping for fill processing: trade IDs already applied
+// fillDedup is the idempotency bookkeeping for fill processing: fill IDs already applied
 // by gap recovery, and order IDs whose trade.filled was already published. Both maps are
 // bounded and reset wholesale when full (a brief re-dedup window is acceptable — it needs
 // tens of thousands of fills between two 5-minute Sync cycles, which never happens).
 type fillDedup struct {
-	tradesMu sync.Mutex
-	trades   map[string]struct{}
-	fillsMu  sync.Mutex
-	fills    map[string]struct{}
+	fillIDsMu sync.Mutex
+	fillIDs   map[string]struct{}
+	fillsMu   sync.Mutex
+	fills     map[string]struct{}
 }
 
 const (
-	maxProcessedTrades     = 50_000
+	maxProcessedFillIDs    = 50_000
 	maxProcessedOrderFills = 10_000
 )
 
 func newFillDedup() *fillDedup {
-	return &fillDedup{trades: make(map[string]struct{}), fills: make(map[string]struct{})}
+	return &fillDedup{fillIDs: make(map[string]struct{}), fills: make(map[string]struct{})}
 }
 
-func (f *fillDedup) hasTrade(tradeID string) bool {
-	if tradeID == "" {
+func (f *fillDedup) hasFillID(fillID string) bool {
+	if fillID == "" {
 		return false
 	}
-	f.tradesMu.Lock()
-	_, ok := f.trades[tradeID]
-	f.tradesMu.Unlock()
+	f.fillIDsMu.Lock()
+	_, ok := f.fillIDs[fillID]
+	f.fillIDsMu.Unlock()
 	return ok
 }
 
-func (f *fillDedup) markTrade(tradeID string) {
-	if tradeID == "" {
+func (f *fillDedup) markFillID(fillID string) {
+	if fillID == "" {
 		return
 	}
-	f.tradesMu.Lock()
-	if len(f.trades) >= maxProcessedTrades {
-		f.trades = make(map[string]struct{}, maxProcessedTrades)
+	f.fillIDsMu.Lock()
+	if len(f.fillIDs) >= maxProcessedFillIDs {
+		f.fillIDs = make(map[string]struct{}, maxProcessedFillIDs)
 	}
-	f.trades[tradeID] = struct{}{}
-	f.tradesMu.Unlock()
+	f.fillIDs[fillID] = struct{}{}
+	f.fillIDsMu.Unlock()
 }
 
 func (f *fillDedup) hasFillPublished(orderID string) bool {

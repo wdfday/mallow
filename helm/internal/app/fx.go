@@ -24,6 +24,7 @@ import (
 	"mallow/helm/internal/infra/journal/filllog"
 	"mallow/helm/internal/infra/journal/orderlog"
 	"mallow/helm/internal/infra/journal/poslog"
+	"mallow/helm/internal/infra/journal/signallog"
 	"mallow/helm/internal/infra/journal/tradelog"
 	accountmodule "mallow/helm/internal/module/account"
 	accountHandler "mallow/helm/internal/module/account/handler"
@@ -76,6 +77,8 @@ var Module = fx.Options(
 	fx.Provide(newOrdersPersister),
 	fx.Provide(newTradePersister),
 	fx.Provide(newFillPersister),
+	fx.Provide(newSignalPersister),
+	fx.Provide(newSignalLogReader),
 	fx.Provide(newTradelogReader),
 	fx.Provide(newOrderlogReader),
 	fx.Provide(newStatsRunner),
@@ -95,6 +98,7 @@ var Module = fx.Options(
 	fx.Invoke(startOrdersPersister),
 	fx.Invoke(startTradePersister),
 	fx.Invoke(startFillPersister),
+	fx.Invoke(startSignalPersister),
 	fx.Invoke(wirePosLog),
 	fx.Invoke(wireTradeLog),
 	fx.Invoke(wirePnLSummer),
@@ -141,6 +145,9 @@ func runMigrations(db *gorm.DB) error {
 		return err
 	}
 	if err := tradelog.Migrate(db); err != nil {
+		return err
+	}
+	if err := signallog.Migrate(db); err != nil {
 		return err
 	}
 	return nil
@@ -273,6 +280,28 @@ func newFillPersister(js nats.JetStreamContext, db *sql.DB) *filllog.FillPersist
 }
 
 func startFillPersister(lc fx.Lifecycle, p *filllog.FillPersister) {
+	ctx, cancel := context.WithCancel(context.Background())
+	lc.Append(fx.Hook{
+		OnStart: func(_ context.Context) error {
+			go p.Run(ctx)
+			return nil
+		},
+		OnStop: func(_ context.Context) error {
+			cancel()
+			return nil
+		},
+	})
+}
+
+func newSignalPersister(js nats.JetStreamContext, db *sql.DB) *signallog.SignalPersister {
+	return signallog.NewSignalPersister(js, db)
+}
+
+func newSignalLogReader(db *sql.DB) *signallog.Log {
+	return signallog.New(db)
+}
+
+func startSignalPersister(lc fx.Lifecycle, p *signallog.SignalPersister) {
 	ctx, cancel := context.WithCancel(context.Background())
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {

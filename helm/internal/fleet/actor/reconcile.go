@@ -319,7 +319,7 @@ func (r *DefaultReconciler) reconcileLeg(
 
 	case position.PhaseOpen:
 		if positions == nil {
-			return ReconcileFailed, fmt.Errorf("reconcile: open leg %s cannot be confirmed — ListPositions failed: %w", leg.PositionID, errPositions)
+			return ReconcileFailed, fmt.Errorf("reconcile: open leg %s cannot be confirmed — ListPositions failed: %w", leg.TradeID, errPositions)
 		}
 		return r.reconcileOpenLeg(ctx, helmRuntime, hand, leg, positions)
 
@@ -357,7 +357,7 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 		// If we only had KindOrderPlace (so PendingOrderID was the ClientOrderID),
 		// we must now emit KindOrderPlaced with the actual exchange OrderID.
 		if clid.IsOurClid(orderID) {
-			if err := r.emitOrderPlaced(ctx, hand, leg.PositionID, &exOrder, leg); err != nil {
+			if err := r.emitOrderPlaced(ctx, hand, leg.TradeID, &exOrder, leg); err != nil {
 				return ReconcileFailed, fmt.Errorf("emitOrderPlaced: %w", err)
 			}
 			orderID = exOrder.ID
@@ -423,7 +423,7 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 			}
 			if termOrder == nil {
 				// Order never reached the exchange. Emit cancelled event.
-				if err := r.emitOrderCancelled(ctx, hand, leg.PositionID, orderID, "not_found_at_exchange"); err != nil {
+				if err := r.emitOrderCancelled(ctx, hand, leg.TradeID, orderID, "not_found_at_exchange"); err != nil {
 					return ReconcileFailed, err
 				}
 				hand.emitEvent(natsapi.HelmEvent{
@@ -448,7 +448,7 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 	// If we only had KindOrderPlace (so PendingOrderID was the ClientOrderID),
 	// we must now emit KindOrderPlaced with the actual exchange OrderID before terminal event.
 	if clid.IsOurClid(orderID) {
-		if err := r.emitOrderPlaced(ctx, hand, leg.PositionID, termOrder, leg); err != nil {
+		if err := r.emitOrderPlaced(ctx, hand, leg.TradeID, termOrder, leg); err != nil {
 			return ReconcileFailed, fmt.Errorf("emitOrderPlaced: %w", err)
 		}
 		orderID = termOrder.ID
@@ -456,7 +456,7 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 
 	switch termOrder.Status {
 	case "filled":
-		if err := r.emitOrderFilled(ctx, hand, leg.PositionID, termOrder, "reconcile"); err != nil {
+		if err := r.emitOrderFilled(ctx, hand, leg.TradeID, termOrder, "reconcile"); err != nil {
 			return ReconcileFailed, err
 		}
 		hand.emitEvent(natsapi.HelmEvent{
@@ -471,7 +471,7 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 		return ReconcileFillApplied, nil
 
 	case "cancelled", "rejected", "expired":
-		if err := r.emitOrderCancelled(ctx, hand, leg.PositionID, orderID, termOrder.Status); err != nil {
+		if err := r.emitOrderCancelled(ctx, hand, leg.TradeID, orderID, termOrder.Status); err != nil {
 			return ReconcileFailed, err
 		}
 		hand.emitEvent(natsapi.HelmEvent{
@@ -558,7 +558,7 @@ func (r *DefaultReconciler) reconcileOpenLeg(
 
 		// No bracket fill found — cancel any dangling OCO orders and record as external close.
 		hand.mu.Lock()
-		hand.cancelExitOrders(ctx, leg.Symbol, "")
+		hand.cancelExitOrders(ctx, leg.TradeID, leg.Symbol, "")
 		hand.mu.Unlock()
 
 		if err := r.emitExternalClose(ctx, hand, leg); err != nil {
@@ -590,6 +590,13 @@ func (r *DefaultReconciler) reconcileOpenLeg(
 		}
 	}
 
+	// Bracket placement left ambiguous by a crash (KindBracketPlace written, but
+	// KindBracketPlaced never followed — see poslog.KindBracketPlace) — resolve
+	// via the clid before falling through to "position restored, unprotected".
+	if len(leg.ExchangeOrderIDs) == 0 && leg.PendingBracketClientOrderID != "" {
+		r.resolveAmbiguousBracket(ctx, orch, hand, leg)
+	}
+
 	// No bracket fill → position is genuinely still open.
 	hand.emitEvent(natsapi.HelmEvent{
 		Code:   CodeReconcileRestored,
@@ -600,6 +607,68 @@ func (r *DefaultReconciler) reconcileOpenLeg(
 		Msg:    "reconcile: position restored",
 	})
 	return ReconcileRestored, nil
+}
+
+// resolveAmbiguousBracket queries the exchange for a bracket placement whose
+// outcome is unknown after a crash (KindBracketPlace with no matching
+// KindBracketPlaced — see poslog.KindBracketPlace and
+// LegState.PendingBracketClientOrderID). Found → restores ExchangeOrderIDs on
+// exitLevels and emits KindBracketPlaced, same as a normal successful
+// placement. Not found → treated as never placed; the caller's normal
+// "position restored, unprotected" path already covers that (the local exit
+// monitor becomes the only net, same as a live PlaceExitOrders failure).
+func (r *DefaultReconciler) resolveAmbiguousBracket(ctx context.Context, orch *HelmRuntime, hand *Hand, leg *position.LegState) {
+	clientOrderID := leg.PendingBracketClientOrderID
+	marketKind := exchange.MarketSpot
+	if hand.cfg.futuresConfig != nil {
+		marketKind = exchange.MarketFutures
+	}
+
+	var found []exchange.OrderResult
+	if eq, ok := orch.Exchange.(exchange.ExitOrderQuerier); ok {
+		results, err := eq.GetExitOrderByClientOrderID(ctx, orch.Creds, leg.Symbol, marketKind, clientOrderID)
+		if err != nil {
+			slog.Warn("reconcile: GetExitOrderByClientOrderID failed", "hand_id", hand.id, "symbol", leg.Symbol, "err", err)
+		}
+		found = results
+	} else if cq, ok := orch.Exchange.(exchange.ClientOrderQuerier); ok {
+		// Adapters without ExitOrderQuerier (Alpaca) place brackets as plain
+		// orders under suffixed clids (see PlaceExitOrders) — query both legs.
+		for _, suffix := range []string{"S", "T"} {
+			o, err := cq.GetOrderByClientOrderID(ctx, orch.Creds, leg.Symbol, marketKind, clientOrderID+suffix)
+			if err != nil {
+				slog.Warn("reconcile: GetOrderByClientOrderID failed", "hand_id", hand.id, "symbol", leg.Symbol, "err", err)
+				continue
+			}
+			if o != nil {
+				found = append(found, *o)
+			}
+		}
+	}
+	if len(found) == 0 {
+		return
+	}
+
+	orderIDs := make([]string, len(found))
+	for i, o := range found {
+		orderIDs[i] = o.ID
+	}
+	hand.mu.Lock()
+	if lv, ok := hand.exitLevels[leg.TradeID]; ok {
+		lv.ExchangeOrderIDs = orderIDs
+		lv.PlacedAt = time.Now()
+		hand.exitLevels[leg.TradeID] = lv
+	}
+	hand.mu.Unlock()
+	for _, id := range orderIDs {
+		hand.trackOrder(id)
+	}
+	// GroupID left empty: ExitOrderQuerier/ClientOrderQuerier results don't carry
+	// one — this leg falls back to per-ID cancel until the next full bracket
+	// replacement re-populates it via scheduleBracketPlacement.
+	hand.publishBracketPlaced(ctx, leg.TradeID, leg.Symbol, clientOrderID, "", orderIDs)
+	hand.log.Info("reconcile: ambiguous bracket placement resolved — found at exchange",
+		"symbol", leg.Symbol, "order_ids", orderIDs, "client_order_id", clientOrderID)
 }
 
 // tryRecoverBracketFill queries each bracket order ID stored in the poslog to find a fill
@@ -688,7 +757,7 @@ func (r *DefaultReconciler) emitBracketFill(
 	pnl decimal.Decimal,
 ) error {
 	cp := poslog.PositionClosedPayload{
-		OrderID:         leg.PositionID,
+		OrderID:         leg.TradeID,
 		Symbol:          leg.Symbol,
 		Side:            leg.Side,
 		Qty:             exOrder.FilledQty.String(),
@@ -697,7 +766,7 @@ func (r *DefaultReconciler) emitBracketFill(
 		ClosePrice:      exOrder.FilledAvg.String(),
 		RealizedPnL:     pnl.String(),
 		ExitReason:      poslog.ExitReason(exitReason),
-		EntryOrderID:    leg.PositionID,
+		EntryOrderID:    leg.TradeID,
 		ExitOrderID:     exOrder.ID,
 		DeployedCapital: decimalToString(leg.DeployedCapital),
 	}
@@ -715,13 +784,13 @@ func (r *DefaultReconciler) emitBracketFill(
 	// Deterministic ID: safe to re-run if reconciler crashes mid-write.
 	// JetStream dedup prevents double-recording on retry.
 	if err := r.log.Publish(ctx, poslog.Event{
-		ID:         hand.id.String() + "_bracketfill_" + leg.PositionID + "_" + exOrder.ID,
-		HandID:     hand.id.String(),
-		HelmID:     hand.helmID.String(),
-		PositionID: leg.PositionID,
-		Kind:       poslog.KindPositionClosed,
-		Payload:    payload,
-		At:         time.Now().UTC(),
+		ID:      hand.id.String() + "_bracketfill_" + leg.TradeID + "_" + exOrder.ID,
+		HandID:  hand.id.String(),
+		HelmID:  hand.helmID.String(),
+		TradeID: leg.TradeID,
+		Kind:    poslog.KindPositionClosed,
+		Payload: payload,
+		At:      time.Now().UTC(),
 	}); err != nil {
 		return err
 	}
@@ -736,7 +805,7 @@ func (r *DefaultReconciler) emitBracketFill(
 func (r *DefaultReconciler) emitOrderPlaced(
 	ctx context.Context,
 	hand *Hand,
-	positionID string,
+	tradeID string,
 	exOrder *exchange.OrderResult,
 	leg *position.LegState,
 ) error {
@@ -764,20 +833,20 @@ func (r *DefaultReconciler) emitOrderPlaced(
 		IsClose:       isClose,
 	})
 	return r.log.Publish(ctx, poslog.Event{
-		ID:         exOrder.ID,
-		HandID:     hand.id.String(),
-		HelmID:     hand.helmID.String(),
-		PositionID: positionID,
-		Kind:       poslog.KindOrderPlaced,
-		Payload:    payload,
-		At:         time.Now().UTC(),
+		ID:      exOrder.ID,
+		HandID:  hand.id.String(),
+		HelmID:  hand.helmID.String(),
+		TradeID: tradeID,
+		Kind:    poslog.KindOrderPlaced,
+		Payload: payload,
+		At:      time.Now().UTC(),
 	})
 }
 
 func (r *DefaultReconciler) emitOrderFilled(
 	ctx context.Context,
 	hand *Hand,
-	positionID string,
+	tradeID string,
 	exOrder *exchange.OrderResult,
 	source string,
 ) error {
@@ -788,33 +857,33 @@ func (r *DefaultReconciler) emitOrderFilled(
 		Source:    source,
 	})
 	return r.log.Publish(ctx, poslog.Event{
-		ID:         exOrder.ID + "_filled",
-		HandID:     hand.id.String(),
-		HelmID:     hand.helmID.String(),
-		PositionID: positionID,
-		Kind:       poslog.KindOrderFilled,
-		Payload:    payload,
-		At:         time.Now().UTC(),
+		ID:      exOrder.ID + "_filled",
+		HandID:  hand.id.String(),
+		HelmID:  hand.helmID.String(),
+		TradeID: tradeID,
+		Kind:    poslog.KindOrderFilled,
+		Payload: payload,
+		At:      time.Now().UTC(),
 	})
 }
 
 func (r *DefaultReconciler) emitOrderCancelled(
 	ctx context.Context,
 	hand *Hand,
-	positionID, orderID, reason string,
+	tradeID, orderID, reason string,
 ) error {
 	payload, _ := json.Marshal(poslog.OrderCancelledPayload{
 		OrderID: orderID,
 		Reason:  reason,
 	})
 	return r.log.Publish(ctx, poslog.Event{
-		ID:         orderID + "_cancelled",
-		HandID:     hand.id.String(),
-		HelmID:     hand.helmID.String(),
-		PositionID: positionID,
-		Kind:       poslog.KindOrderCancelled,
-		Payload:    payload,
-		At:         time.Now().UTC(),
+		ID:      orderID + "_cancelled",
+		HandID:  hand.id.String(),
+		HelmID:  hand.helmID.String(),
+		TradeID: tradeID,
+		Kind:    poslog.KindOrderCancelled,
+		Payload: payload,
+		At:      time.Now().UTC(),
 	})
 }
 
@@ -833,13 +902,13 @@ func (r *DefaultReconciler) emitExternalClose(
 		// Deterministic ID: reconciler may run multiple times for the same leg
 		// (e.g. crash during reconcile itself). Same position_id → same dedup key
 		// → JetStream discards the duplicate, replay stays correct.
-		ID:         hand.id.String() + "_ext_" + leg.PositionID,
-		HandID:     hand.id.String(),
-		HelmID:     hand.helmID.String(),
-		PositionID: leg.PositionID,
-		Kind:       poslog.KindPositionClosed,
-		Payload:    payload,
-		At:         time.Now().UTC(),
+		ID:      hand.id.String() + "_ext_" + leg.TradeID,
+		HandID:  hand.id.String(),
+		HelmID:  hand.helmID.String(),
+		TradeID: leg.TradeID,
+		Kind:    poslog.KindPositionClosed,
+		Payload: payload,
+		At:      time.Now().UTC(),
 	})
 }
 

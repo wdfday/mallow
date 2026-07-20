@@ -41,7 +41,7 @@ func (c *Client) FilledOrders(ctx context.Context, creds exchange.Credentials, s
 				side = exchange.Sell
 			}
 			all = append(all, exchange.AccountTransaction{
-				TradeID:  fmt.Sprintf("fut-%d", t.ID),
+				FillID:   fmt.Sprintf("fut-%d", t.ID),
 				OrderID:  strconv.FormatInt(t.OrderID, 10),
 				Symbol:   t.Symbol,
 				Side:     string(side),

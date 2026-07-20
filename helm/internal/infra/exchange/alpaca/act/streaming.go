@@ -155,7 +155,7 @@ func handleTradeUpdate(
 		onFill(exchange.WsFillEvent{
 			OrderID:       tu.Order.ID,
 			ClientOrderID: tu.Order.ClientOrderID,
-			TradeID:       tradeID,
+			FillID:        tradeID,
 			Symbol:        tu.Order.Symbol,
 			Side:          side,
 			Partial:       tu.Event == "partial_fill",

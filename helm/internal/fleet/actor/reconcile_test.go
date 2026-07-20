@@ -88,6 +88,14 @@ type fakeExchange struct {
 	positions            map[string]exchange.PositionResult
 	orderByID            map[string]exchange.OrderResult // all terminal orders (filled/cancelled)
 	orderByClientOrderID map[string]exchange.OrderResult
+	// exitOrdersByClientOrderID, keyed by clid, backs GetExitOrderByClientOrderID
+	// (exchange.ExitOrderQuerier) — used by the ambiguous-bracket reconcile tests.
+	exitOrdersByClientOrderID map[string][]exchange.OrderResult
+}
+
+// GetExitOrderByClientOrderID implements exchange.ExitOrderQuerier.
+func (f *fakeExchange) GetExitOrderByClientOrderID(_ context.Context, _ exchange.Credentials, _ string, _ exchange.MarketKind, clientOrderID string) ([]exchange.OrderResult, error) {
+	return f.exitOrdersByClientOrderID[clientOrderID], nil
 }
 
 func (f *fakeExchange) Name() string { return "fake" }
@@ -154,28 +162,34 @@ func addHand(rt *actor.HelmRuntime, pyramid bool, maxUnits int) *actor.Hand {
 
 // poslog event helpers (mirror state_test.go helpers, duplicated here to keep tests self-contained)
 
-func recPlace(clientOrderID, positionID, symbol, side string, isClose bool) poslog.Event {
+func recPlace(clientOrderID, tradeID, symbol, side string, isClose bool) poslog.Event {
 	p := poslog.OrderPlacePayload{
 		ClientOrderID: clientOrderID, Symbol: symbol, Side: side, IsClose: isClose,
 		Qty: "0.1", StopLoss: "29000", Price: "30000", OrderType: "limit",
 	}
 	b, _ := json.Marshal(p)
-	return poslog.Event{ID: clientOrderID, PositionID: positionID, Kind: poslog.KindOrderPlace, Payload: b, At: time.Now()}
+	return poslog.Event{ID: clientOrderID, TradeID: tradeID, Kind: poslog.KindOrderPlace, Payload: b, At: time.Now()}
 }
 
-func recPlaced(orderID, positionID, symbol, side string, isClose bool) poslog.Event {
+func recPlaced(orderID, tradeID, symbol, side string, isClose bool) poslog.Event {
 	p := poslog.OrderPlacedPayload{
 		OrderID: orderID, Symbol: symbol, Side: side, IsClose: isClose,
 		Qty: "0.1", StopLoss: "29000", Price: "30000", OrderType: "limit",
 	}
 	b, _ := json.Marshal(p)
-	return poslog.Event{ID: orderID, PositionID: positionID, Kind: poslog.KindOrderPlaced, Payload: b, At: time.Now()}
+	return poslog.Event{ID: orderID, TradeID: tradeID, Kind: poslog.KindOrderPlaced, Payload: b, At: time.Now()}
 }
 
-func recFilled(orderID, positionID string, price string) poslog.Event {
+func recFilled(orderID, tradeID string, price string) poslog.Event {
 	p := poslog.OrderFilledPayload{OrderID: orderID, FillPrice: price, FillQty: "0.1", Source: "ws"}
 	b, _ := json.Marshal(p)
-	return poslog.Event{ID: orderID + "_filled", PositionID: positionID, Kind: poslog.KindOrderFilled, Payload: b, At: time.Now()}
+	return poslog.Event{ID: orderID + "_filled", TradeID: tradeID, Kind: poslog.KindOrderFilled, Payload: b, At: time.Now()}
+}
+
+func recBracketPlace(clientOrderID, tradeID, symbol string) poslog.Event {
+	p := poslog.BracketPlacePayload{Symbol: symbol, ClientOrderID: clientOrderID, StopLoss: "29000", Qty: "0.1"}
+	b, _ := json.Marshal(p)
+	return poslog.Event{ID: tradeID + "_bracket_place_" + clientOrderID, TradeID: tradeID, Kind: poslog.KindBracketPlace, Payload: b, At: time.Now()}
 }
 
 // ── tests ──────────────────────────────────────────────────────────────────────
@@ -304,6 +318,91 @@ func TestReconcile_OpenPositionConfirmed(t *testing.T) {
 	}
 	if len(log.publishedIDs()) != 0 {
 		t.Fatal("want no events published — position confirmed at exchange")
+	}
+}
+
+// TestReconcile_AmbiguousBracket_FoundAtExchange: crash left a KindBracketPlace
+// with no matching KindBracketPlaced. The exchange confirms the bracket landed
+// (GetExitOrderByClientOrderID finds it) — reconcile must emit KindBracketPlaced
+// to restore ExchangeOrderIDs, same as a normal successful placement would.
+func TestReconcile_AmbiguousBracket_FoundAtExchange(t *testing.T) {
+	log := &fakePosLog{
+		events: []poslog.Event{
+			recPlaced("ord1", "ord1", "BTCUSDT", "buy", false),
+			recFilled("ord1", "ord1", "30000"),
+			recBracketPlace("mlwabc123", "ord1", "BTCUSDT"),
+		},
+	}
+	ex := &fakeExchange{
+		openOrders: map[string]exchange.OrderResult{},
+		positions: map[string]exchange.PositionResult{
+			"BTCUSDT": {Symbol: "BTCUSDT", Qty: decimal.NewFromFloat(0.1), AvgPrice: decimal.NewFromInt(30000)},
+		},
+		exitOrdersByClientOrderID: map[string][]exchange.OrderResult{
+			"mlwabc123": {{ID: "BTCUSDT:99", Symbol: "BTCUSDT", Status: "new"}},
+		},
+	}
+	rt := buildRuntime(ex, log)
+	addHand(rt, false, 1)
+
+	results := actor.NewReconciler(log).Reconcile(context.Background(), rt)
+
+	if results[0].Action != actor.ReconcileRestored {
+		t.Fatalf("want ReconcileRestored, got %s", results[0].Action)
+	}
+	var sawBracketPlaced bool
+	for _, e := range log.published {
+		if e.Kind == poslog.KindBracketPlaced {
+			sawBracketPlaced = true
+			var p poslog.BracketPlacedPayload
+			if err := json.Unmarshal(e.Payload, &p); err != nil {
+				t.Fatalf("unmarshal BracketPlacedPayload: %v", err)
+			}
+			if len(p.OrderIDs) != 1 || p.OrderIDs[0] != "BTCUSDT:99" {
+				t.Errorf("want OrderIDs=[BTCUSDT:99], got %v", p.OrderIDs)
+			}
+			if p.ClientOrderID != "mlwabc123" {
+				t.Errorf("want ClientOrderID=mlwabc123, got %s", p.ClientOrderID)
+			}
+		}
+	}
+	if !sawBracketPlaced {
+		t.Fatal("want KindBracketPlaced emitted — exchange confirmed the bracket landed")
+	}
+}
+
+// TestReconcile_AmbiguousBracket_NotFound: crash left a KindBracketPlace with no
+// matching KindBracketPlaced, and the exchange has no record of it either
+// (never actually reached the exchange, or GetExitOrderByClientOrderID is
+// unconfigured/empty). Reconcile must NOT emit KindBracketPlaced and must still
+// restore the position (unprotected — the local exit monitor becomes the only net).
+func TestReconcile_AmbiguousBracket_NotFound(t *testing.T) {
+	log := &fakePosLog{
+		events: []poslog.Event{
+			recPlaced("ord1", "ord1", "BTCUSDT", "buy", false),
+			recFilled("ord1", "ord1", "30000"),
+			recBracketPlace("mlwabc123", "ord1", "BTCUSDT"),
+		},
+	}
+	ex := &fakeExchange{
+		openOrders: map[string]exchange.OrderResult{},
+		positions: map[string]exchange.PositionResult{
+			"BTCUSDT": {Symbol: "BTCUSDT", Qty: decimal.NewFromFloat(0.1), AvgPrice: decimal.NewFromInt(30000)},
+		},
+		exitOrdersByClientOrderID: map[string][]exchange.OrderResult{}, // nothing found
+	}
+	rt := buildRuntime(ex, log)
+	addHand(rt, false, 1)
+
+	results := actor.NewReconciler(log).Reconcile(context.Background(), rt)
+
+	if results[0].Action != actor.ReconcileRestored {
+		t.Fatalf("want ReconcileRestored, got %s", results[0].Action)
+	}
+	for _, e := range log.published {
+		if e.Kind == poslog.KindBracketPlaced {
+			t.Fatal("want no KindBracketPlaced — exchange has no record of this bracket")
+		}
 	}
 }
 
@@ -567,14 +666,14 @@ func TestReconcile_WAL_PreFlight_NotFound(t *testing.T) {
 	}
 }
 
-func recPlaceAdd(clientOrderID, positionID, symbol, side string) poslog.Event {
+func recPlaceAdd(clientOrderID, tradeID, symbol, side string) poslog.Event {
 	p := poslog.OrderPlacePayload{
 		ClientOrderID: clientOrderID, Symbol: symbol, Side: side,
 		Qty: "0.1", StopLoss: "29000", Price: "30000", OrderType: "limit",
 		IsPyramidAdd: true,
 	}
 	b, _ := json.Marshal(p)
-	return poslog.Event{ID: clientOrderID, PositionID: positionID, Kind: poslog.KindOrderPlace, Payload: b, At: time.Now()}
+	return poslog.Event{ID: clientOrderID, TradeID: tradeID, Kind: poslog.KindOrderPlace, Payload: b, At: time.Now()}
 }
 
 // Scenario 13: Crash after KindOrderPlace of a pyramid add. Order still open at exchange.

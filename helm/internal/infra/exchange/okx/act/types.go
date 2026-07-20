@@ -146,6 +146,9 @@ type algoOrderReq struct {
 	TpOrdPx     string `json:"tpOrdPx,omitempty"`     // "-1" = market execution
 	SlTriggerPx string `json:"slTriggerPx,omitempty"` // stop-loss trigger price
 	SlOrdPx     string `json:"slOrdPx,omitempty"`     // "-1" = market execution
+	// AlgoClOrdID is our caller-generated clid (see fleet/actor/clid), sent so a
+	// restart can resolve an ambiguous placement via GetExitOrderByClientOrderID.
+	AlgoClOrdID string `json:"algoClOrdId,omitempty"`
 }
 
 // ── Order response types ──────────────────────────────────────────────────────
@@ -165,9 +168,10 @@ type placeOrderResp struct {
 type algoOrderResp struct {
 	okxEnvelope
 	Data []struct {
-		AlgoID string `json:"algoId"`
-		SCode  string `json:"sCode"`
-		SMsg   string `json:"sMsg"`
+		AlgoID      string `json:"algoId"`
+		AlgoClOrdID string `json:"algoClOrdId"`
+		SCode       string `json:"sCode"`
+		SMsg        string `json:"sMsg"`
 	} `json:"data"`
 }
 

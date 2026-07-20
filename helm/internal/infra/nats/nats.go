@@ -76,6 +76,16 @@ func NewJetStream(nc *nats.Conn) (nats.JetStreamContext, error) {
 			MaxAge:     365 * 24 * time.Hour,
 			Duplicates: 30 * time.Minute,
 		},
+		// HELM_SIGNALS: audit trail of herald-originated signals (persisted to Postgres by
+		// signallog.SignalPersister). Distinct from the SIGNALS stream above, which is
+		// ephemeral (60s) and sized for real-time herald→hand dispatch, not audit history.
+		{
+			Name:       "HELM_SIGNALS",
+			Subjects:   []string{"helm.signals.>"},
+			Storage:    nats.FileStorage,
+			MaxAge:     30 * 24 * time.Hour,
+			Duplicates: 1 * time.Minute,
+		},
 		// HELM_EVENTS: real-time activity feed (was fire-and-forget nc.Publish).
 		// 7 days retention so reconnecting UI/strategist clients can replay recent events.
 		{

@@ -207,6 +207,62 @@ func (c *Client) getAlgoOrder(ctx context.Context, creds exchange.Credentials, o
 	return &exchange.OrderResult{ID: orderID, Status: "not_found"}, nil
 }
 
+// GetExitOrderByClientOrderID implements exchange.ExitOrderQuerier — resolves an
+// ambiguous PlaceExitOrders call (crash between the REST call and
+// KindBracketPlaced) after a restart, keyed by algoClOrdId instead of algoId
+// (which we don't know yet — that's exactly what this discovers). Mirrors
+// getAlgoOrder's three-tier fallback (details → pending → history), since OKX
+// accepts algoClOrdId as an alternative to algoId on the same endpoints. A
+// single algo order object covers the whole OCO/conditional bracket (both
+// legs), so this returns at most one result, not one per leg.
+func (c *Client) GetExitOrderByClientOrderID(ctx context.Context, creds exchange.Credentials, _ string, _ exchange.MarketKind, clientOrderID string) ([]exchange.OrderResult, error) {
+	type algoResp struct {
+		okxEnvelope
+		Data []algoOrderData `json:"data"`
+	}
+	toResult := func(d algoOrderData) exchange.OrderResult {
+		r := exchange.OrderResult{
+			ID:        d.InstId + ":A:" + d.AlgoId,
+			Symbol:    d.InstId,
+			Side:      exchange.OrderSide(d.Side),
+			Status:    mapAlgoOrderStatus(d.State),
+			Qty:       parseDecimal(d.Sz),
+			FilledQty: parseDecimal(d.ActualSz),
+			FilledAvg: parseDecimal(d.ActualPx),
+		}
+		if d.ActualSide != "" {
+			r.Tag = d.ActualSide
+		}
+		return r
+	}
+
+	detailPath := fmt.Sprintf("/api/v5/trade/order-algo?algoClOrdId=%s", clientOrderID)
+	var detailResp algoResp
+	if err := c.doRequest(ctx, creds, http.MethodGet, detailPath, nil, &detailResp); err == nil &&
+		detailResp.Code == "0" && len(detailResp.Data) > 0 {
+		return []exchange.OrderResult{toResult(detailResp.Data[0])}, nil
+	}
+
+	for _, ordType := range []string{"oco", "conditional"} {
+		activePath := fmt.Sprintf("/api/v5/trade/orders-algo-pending?ordType=%s&algoClOrdId=%s", ordType, clientOrderID)
+		var activeResp algoResp
+		if err := c.doRequest(ctx, creds, http.MethodGet, activePath, nil, &activeResp); err == nil &&
+			activeResp.Code == "0" && len(activeResp.Data) > 0 {
+			return []exchange.OrderResult{toResult(activeResp.Data[0])}, nil
+		}
+	}
+
+	for _, ordType := range []string{"oco", "conditional"} {
+		histPath := fmt.Sprintf("/api/v5/trade/orders-algo-history?algoClOrdId=%s&ordType=%s", clientOrderID, ordType)
+		var histResp algoResp
+		if err := c.doRequest(ctx, creds, http.MethodGet, histPath, nil, &histResp); err == nil &&
+			histResp.Code == "0" && len(histResp.Data) > 0 {
+			return []exchange.OrderResult{toResult(histResp.Data[0])}, nil
+		}
+	}
+	return nil, nil
+}
+
 // mapAlgoOrderStatus maps OKX algo order state to canonical order status strings.
 func mapAlgoOrderStatus(state string) string {
 	switch state {
@@ -286,6 +342,13 @@ func (c *Client) cancelAlgoOrder(ctx context.Context, creds exchange.Credentials
 		return fmt.Errorf("okx cancel algo: %w", &okxRejectedError{SCode: resp.Data[0].SCode, SMsg: resp.Data[0].SMsg})
 	}
 	return nil
+}
+
+// CancelExitOrderGroup implements exchange.ExitOrderGroupCanceller. An OKX bracket IS
+// one algo order (OCO/conditional), so this is a thin wrapper over cancelAlgoOrder —
+// symbol is the instId, groupID is the algoId from ExitOrderResult.GroupID.
+func (c *Client) CancelExitOrderGroup(ctx context.Context, creds exchange.Credentials, symbol string, _ exchange.MarketKind, groupID string) error {
+	return c.cancelAlgoOrder(ctx, creds, symbol, groupID)
 }
 
 // GetPendingOrders returns all open orders for an optional instrument.
@@ -401,11 +464,12 @@ func (c *Client) PlaceExitOrders(ctx context.Context, creds exchange.Credentials
 	}
 
 	body := algoOrderReq{
-		InstID:     req.Symbol,
-		TdMode:     tdMode,
-		Side:       side,
-		Sz:         req.Qty.String(),
-		ReduceOnly: reduceOnly,
+		InstID:      req.Symbol,
+		TdMode:      tdMode,
+		Side:        side,
+		Sz:          req.Qty.String(),
+		ReduceOnly:  reduceOnly,
+		AlgoClOrdID: req.ClientOrderID,
 	}
 
 	if hasSL && hasTP {
@@ -443,7 +507,9 @@ func (c *Client) PlaceExitOrders(ctx context.Context, creds exchange.Credentials
 	}
 	// Use ":A:" infix to mark this as an algo order ID throughout the runtime.
 	return &exchange.ExitOrderResult{
-		OrderIDs: []string{req.Symbol + ":A:" + resp.Data[0].AlgoID},
+		OrderIDs:      []string{req.Symbol + ":A:" + resp.Data[0].AlgoID},
+		ClientOrderID: resp.Data[0].AlgoClOrdID,
+		GroupID:       resp.Data[0].AlgoID,
 	}, nil
 }
 

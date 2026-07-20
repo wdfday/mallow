@@ -508,6 +508,15 @@ func (m *MeteredExchange) GetOrderByClientOrderID(ctx context.Context, creds Cre
 	return nil, fmt.Errorf("exchange %q does not implement ClientOrderQuerier", m.Name())
 }
 
+// GetExitOrderByClientOrderID implements ExitOrderQuerier — delegates to inner.
+// Used by reconcile to resolve an ambiguous PlaceExitOrders call after a restart.
+func (m *MeteredExchange) GetExitOrderByClientOrderID(ctx context.Context, creds Credentials, symbol string, market MarketKind, clientOrderID string) ([]OrderResult, error) {
+	if s, ok := m.inner.(ExitOrderQuerier); ok {
+		return s.GetExitOrderByClientOrderID(ctx, creds, symbol, market, clientOrderID)
+	}
+	return nil, fmt.Errorf("exchange %q does not implement ExitOrderQuerier", m.Name())
+}
+
 // SyncTime implements TimeSyncer — delegates to inner.
 // Syncs local clock against exchange server time to prevent -1021 errors.
 func (m *MeteredExchange) SyncTime(ctx context.Context) error {
@@ -531,6 +540,7 @@ var _ SymbolInfoProvider = (*MeteredExchange)(nil)
 var _ SpotBalanceFetcher = (*MeteredExchange)(nil)
 var _ ClidCapable = (*MeteredExchange)(nil)
 var _ ClientOrderQuerier = (*MeteredExchange)(nil)
+var _ ExitOrderQuerier = (*MeteredExchange)(nil)
 var _ TimeSyncer = (*MeteredExchange)(nil)
 var _ IsolatedMarginTrader = (*MeteredExchange)(nil)
 var _ SpotSupportChecker = (*MeteredExchange)(nil)

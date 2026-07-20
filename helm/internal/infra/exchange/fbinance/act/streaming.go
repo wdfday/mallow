@@ -222,7 +222,7 @@ func (c *Client) streamFuturesOrdersOnce(
 			onFill(exchange.WsFillEvent{
 				OrderID:       orderID,
 				ClientOrderID: ou.ClientOrderID,
-				TradeID:       strconv.FormatInt(ou.TradeID, 10),
+				FillID:        strconv.FormatInt(ou.TradeID, 10),
 				Symbol:        ou.Symbol,
 				Side:          side,
 				Partial:       ou.Status != futures.OrderStatusTypeFilled,

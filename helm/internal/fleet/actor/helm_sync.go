@@ -30,11 +30,11 @@ func (r *HelmRuntime) hasOrderFillPublished(orderID string) bool {
 	return r.dedup.hasFillPublished(orderID)
 }
 
-// HasProcessedTrade returns true if this TradeID was already applied in the current session.
-func (r *HelmRuntime) HasProcessedTrade(tradeID string) bool { return r.dedup.hasTrade(tradeID) }
+// HasProcessedFill returns true if this FillID was already applied in the current session.
+func (r *HelmRuntime) HasProcessedFill(fillID string) bool { return r.dedup.hasFillID(fillID) }
 
-// MarkTradeProcessed records a TradeID so duplicate gap recovery fills are skipped.
-func (r *HelmRuntime) MarkTradeProcessed(tradeID string) { r.dedup.markTrade(tradeID) }
+// MarkFillProcessed records a FillID so duplicate gap recovery fills are skipped.
+func (r *HelmRuntime) MarkFillProcessed(fillID string) { r.dedup.markFillID(fillID) }
 
 // LastSyncAt returns the timestamp of the most recent portfolio sync, or zero if never synced.
 func (r *HelmRuntime) LastSyncAt() time.Time {
@@ -148,7 +148,7 @@ func (r *HelmRuntime) Sync(ctx context.Context) error {
 			AccountID: accountID,
 			UserID:    userID,
 			HandID:    handID,
-			TradeID:   t.TradeID,
+			TradeID:   t.FillID,
 			OrderID:   t.OrderID,
 			Kind:      "fill",
 			Symbol:    t.Symbol,
@@ -268,12 +268,12 @@ func (r *HelmRuntime) RecoverGapFills(ctx context.Context) {
 
 	applied := 0
 	for _, txn := range fills {
-		if r.HasProcessedTrade(txn.TradeID) {
+		if r.HasProcessedFill(txn.FillID) {
 			continue
 		}
 		r.applyWsFill(ctx, exchange.WsFillEvent{
 			OrderID:         txn.OrderID,
-			TradeID:         txn.TradeID,
+			FillID:          txn.FillID,
 			Symbol:          txn.Symbol,
 			Side:            exchange.OrderSide(txn.Side),
 			Partial:         false,
@@ -294,7 +294,7 @@ func (r *HelmRuntime) RecoverGapFills(ctx context.Context) {
 // downtime are already applied — otherwise we would re-place a bracket for a position
 // that is already closed.
 //
-// A bracket is considered missing when exitLevels[symbol].ExchangeOrderIDs is empty
+// A bracket is considered missing when exitLevels[tradeID].ExchangeOrderIDs is empty
 // but SL/TP levels are known from poslog (KindSLUpdated was persisted but
 // KindBracketPlaced was not — crash window between the two events).
 func (r *HelmRuntime) RecoverHandBrackets(ctx context.Context) {
@@ -366,7 +366,7 @@ func (r *HelmRuntime) checkPositionDesync(ctx context.Context) {
 		var unprotected []handLeg
 		for _, hl := range hlList {
 			hl.hand.mu.RLock()
-			el, hasExit := hl.hand.exitLevels[symbol]
+			el, hasExit := hl.hand.exitLevels[hl.leg.TradeID]
 			hl.hand.mu.RUnlock()
 
 			if hasExit && (len(el.ExchangeOrderIDs) > 0 || el.StopLoss.IsPositive() || el.TakeProfit.IsPositive()) {

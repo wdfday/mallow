@@ -211,7 +211,7 @@ func spotAccountHandler(
 			onFill(exchange.WsFillEvent{
 				OrderID:         orderID,
 				ClientOrderID:   ou.ClientOrderId,
-				TradeID:         strconv.FormatInt(ou.TradeId, 10),
+				FillID:          strconv.FormatInt(ou.TradeId, 10),
 				Symbol:          ou.Symbol,
 				Side:            side,
 				Partial:         ou.Status != "FILLED",

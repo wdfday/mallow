@@ -11,6 +11,7 @@ import (
 	"mallow/helm/internal/infra/journal/filllog"
 	"mallow/helm/internal/infra/journal/orderlog"
 	"mallow/helm/internal/infra/journal/poslog"
+	"mallow/helm/internal/infra/journal/signallog"
 	"mallow/helm/internal/infra/purge"
 	analyticsservice "mallow/helm/internal/module/analytics/service"
 	brokerservice "mallow/helm/internal/module/broker/service"
@@ -47,8 +48,9 @@ func provideHelmHandler(
 	orderLog orderlog.Log,
 	analytics *analyticsservice.Service,
 	evLog eventlog.Log,
+	signalLog *signallog.Log,
 ) *handler.Handler {
-	return handler.New(svc, handMgr, reg, fillLog, posLog, orderLog, analytics, evLog)
+	return handler.New(svc, handMgr, reg, fillLog, posLog, orderLog, analytics, evLog, signalLog)
 }
 
 func provideHelmNATSHandler(svc *service.Service, handMgr *handservice.Service, reg *fleet.Registry) *handler.NATSHandler {

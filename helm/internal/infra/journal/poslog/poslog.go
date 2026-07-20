@@ -7,9 +7,12 @@
 // Stream:   HELM_POSITIONS
 // Subjects: helm.pos.{helm_id}.{hand_id}.{position_id}
 //
-// position_id = opening order_id of the leg. For pyramid mode this is stable
-// across all adds (all events go to the same subject). For non-pyramid mode
-// each independent leg has its own subject.
+// position_id = opening order_id of the leg — the wire/JSON field is kept as
+// "position_id" for JetStream replay compatibility with events persisted
+// before Event.TradeID was renamed from PositionID; the Go-side name is
+// TradeID. For pyramid mode this is stable across all adds (all events go to
+// the same subject). For non-pyramid mode each independent leg has its own
+// subject.
 //
 // Dedup:    Nats-Msg-Id = Event.ID  (order_id + kind suffix)
 package poslog
@@ -54,6 +57,15 @@ const (
 	// On replay, this event removes the leg from HandPositions so the hand never
 	// reclaims it on restart.
 	KindPositionOrphaned Kind = "position_orphaned"
+
+	// KindBracketPlace is written BEFORE submitting SL/TP bracket orders to the
+	// exchange (pre-flight) — mirrors KindOrderPlace for the main order. Without
+	// this, a crash between the PlaceExitOrders REST call and KindBracketPlaced
+	// leaves no record a bracket was ever attempted, so restart can't tell
+	// "never sent" from "sent but the response never came back" — it just sees
+	// an unprotected leg. ClientOrderID is what a restart queries the exchange
+	// by to resolve which of those actually happened.
+	KindBracketPlace Kind = "bracket_place"
 
 	// KindBracketPlaced is written after exchange-side SL/TP bracket orders are placed
 	// successfully. Persists the order IDs so cancelExitOrders and checkBracketOrders
@@ -137,7 +149,7 @@ type OrderCancelledPayload struct {
 
 // SLUpdatedPayload records a stop-loss or take-profit level change on an open leg.
 type SLUpdatedPayload struct {
-	OrderID string `json:"order_id"` // opening order_id of the leg (= PositionID)
+	OrderID string `json:"order_id"` // opening order_id of the leg (= TradeID)
 	NewSL   string `json:"new_sl"`
 	NewTP   string `json:"new_tp,omitempty"`
 	Reason  string `json:"reason"` // "trailing" | "manual"
@@ -148,6 +160,27 @@ type SLUpdatedPayload struct {
 type BracketPlacedPayload struct {
 	Symbol   string   `json:"symbol"`
 	OrderIDs []string `json:"order_ids"`
+	// ClientOrderID is the clid this bracket was placed with (matches the
+	// preceding KindBracketPlace event's payload); empty for adapters that
+	// don't support one.
+	ClientOrderID string `json:"client_order_id,omitempty"`
+	// GroupID is the exchange-side identifier for the whole bracket group
+	// (Binance orderListId, OKX algoId) — lets cancelExitOrders cancel every
+	// leg with one atomic call instead of OrderIDs one at a time. Empty for
+	// adapters with no true exchange-side group (Bybit, fbinance, Alpaca) and
+	// for old events persisted before this field existed.
+	GroupID string `json:"group_id,omitempty"`
+}
+
+// BracketPlacePayload carries the pre-flight bracket-order intent — written
+// before the exchange call, so a restart can discover an in-flight bracket
+// placement (see KindBracketPlace).
+type BracketPlacePayload struct {
+	Symbol        string `json:"symbol"`
+	ClientOrderID string `json:"client_order_id"`
+	StopLoss      string `json:"stop_loss,omitempty"`
+	TakeProfit    string `json:"take_profit,omitempty"`
+	Qty           string `json:"qty"`
 }
 
 // PositionOrphanedPayload records that a hand released a leg without closing it.
@@ -177,7 +210,7 @@ type PositionClosedPayload struct {
 	// StopLoss / TakeProfit prices active at time of close (zero = none).
 	StopLossPrice   string `json:"stop_loss_price,omitempty"`
 	TakeProfitPrice string `json:"take_profit_price,omitempty"`
-	// EntryOrderID = leg's opening order_id (= PositionID).
+	// EntryOrderID = leg's opening order_id (= TradeID).
 	// ExitOrderID  = the closing fill's order_id.
 	EntryOrderID string `json:"entry_order_id,omitempty"`
 	ExitOrderID  string `json:"exit_order_id,omitempty"`
@@ -194,13 +227,13 @@ type PositionClosedPayload struct {
 type Event struct {
 	// ID is the dedup key for JetStream idempotent publish.
 	// Convention: order_id for KindOrderPlaced; order_id+"_filled" for KindOrderFilled; etc.
-	ID         string    `json:"id"`
-	HandID     string    `json:"hand_id"`
-	HelmID     string    `json:"helm_id"`
-	PositionID string    `json:"position_id"` // = opening order_id of the leg
-	Kind       Kind      `json:"kind"`
-	Payload    []byte    `json:"payload"` // JSON-encoded kind-specific struct above
-	At         time.Time `json:"at"`
+	ID      string    `json:"id"`
+	HandID  string    `json:"hand_id"`
+	HelmID  string    `json:"helm_id"`
+	TradeID string    `json:"position_id"` // = opening order_id of the leg
+	Kind    Kind      `json:"kind"`
+	Payload []byte    `json:"payload"` // JSON-encoded kind-specific struct above
+	At      time.Time `json:"at"`
 }
 
 // TradeRecord is a completed round-trip trade reconstructed from a position_closed event.
@@ -239,7 +272,7 @@ type Log interface {
 
 	// ReplayLeg returns events for a single position leg.
 	// position_id = opening order_id of the leg.
-	ReplayLeg(ctx context.Context, helmID, handID, positionID string) ([]Event, error)
+	ReplayLeg(ctx context.Context, helmID, handID, tradeID string) ([]Event, error)
 
 	// TradesPaged returns at most limit completed trades for a hand, ordered by close time.
 	// cursor=0 starts from the beginning of the stream; pass TradeRecord.Cursor+1 for the

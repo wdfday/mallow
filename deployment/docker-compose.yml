@@ -186,6 +186,14 @@ services:
       - ../data:/data:ro
       - ./symbols.yaml:/config/symbols.yaml:ro
     restart: unless-stopped
+    # Must exceed main.rs's GRACEFUL_SHUTDOWN_TIMEOUT (8s) — otherwise Docker
+    # SIGKILLs the process before it finishes its own graceful-shutdown path,
+    # silently swallowing the "[herald] EXIT pid=... reason=..." log line that
+    # explains why the container restarted. This container was previously
+    # observed running with an effective 1s stop timeout (not set anywhere in
+    # this repo — likely a stray `docker stop -t 1` / GUI action), which is
+    # why past restarts left no shutdown-reason trace at all.
+    stop_grace_period: 15s
     healthcheck:
       # /health = liveness (always 200 while process is alive — no 503 during gap-fill).
       # /ready  = readiness (503 during warmup; use this for traffic gating, not Docker).
@@ -225,6 +233,15 @@ services:
       timeout: 5s
       retries: 3
     restart: unless-stopped
+    # Default Docker/host FD limit (1024-4096) gets eaten fast: one WS per
+    # broker account (fills/orders) + Postgres pool (50) + NATS + HTTP conns.
+    # A few hundred concurrent helms can hit the default before 10k-helm
+    # scale is even a question. Raise it here rather than at the host level
+    # so it travels with the container regardless of host defaults.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
 
   # ═══════════════════════════════════════════════════════════════════
   # API layer
@@ -299,14 +316,37 @@ services:
     restart: unless-stopped
 
   # cAdvisor — container CPU / RAM / network / disk metrics
+  #
+  # --docker_only: on Docker Desktop (macOS/Windows) the raw /rootfs, /sys,
+  # /var/lib/docker mounts below don't reflect real paths — Docker Desktop
+  # runs containers inside a hidden Linux VM, not directly on the host, so
+  # cAdvisor's default cgroupfs/sysfs walk reads garbage and metric export
+  # breaks. --docker_only makes it pull stats via the Docker Engine API
+  # (through the docker.sock mount) instead, which is always correct
+  # regardless of host OS. On native Linux hosts this flag is harmless — the
+  # Engine API still reports accurate cgroup-backed stats.
   cadvisor:
-    image: gcr.io/cadvisor/cadvisor:latest
+    image: gcr.io/cadvisor/cadvisor:v0.49.1
     container_name: cadvisor
     profiles: ["monitoring"]
     privileged: true
+    command:
+      - "--docker_only=true"
+      # disk/diskIO metrics force cAdvisor to resolve each container's overlay2
+      # read-write layer path under /rootfs/var/lib/docker/... — on Docker
+      # Desktop for Mac that path is never real (all storage lives inside the
+      # hidden LinuxKit VM's virtual disk, not on the macOS host filesystem),
+      # so every container fails "failed to identify the read-write layer ID"
+      # and gets dropped entirely, including its cpu/memory/network stats.
+      # We don't need disk stats for OOM/restart correlation, so drop them.
+      - "--disable_metrics=disk,diskIO,advtcp,cpu_topology,cpuset,hugetlb,memory_numa,process,referenced_memory,resctrl,sched,tcp,udp"
     volumes:
       - /:/rootfs:ro
-      - /var/run:/var/run:ro
+      # docker.sock mounted explicitly (not the whole /var/run dir) — on Docker
+      # Desktop for Mac, bind-mounting the parent directory instead of the
+      # socket file itself often hands a stale/unreachable proxy path to
+      # nested containers, which is exactly what broke --docker_only above.
+      - /var/run/docker.sock:/var/run/docker.sock:ro
       - /sys:/sys:ro
       - /var/lib/docker:/var/lib/docker:ro
       - /dev/disk:/dev/disk:ro

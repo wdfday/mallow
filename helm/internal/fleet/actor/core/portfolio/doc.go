@@ -56,6 +56,8 @@
 //
 // Equity = cash + Σ(position.Qty × position.CurrentPrice)
 //
-// CurrentPrice is updated in real-time by UpdatePrice (called on every price tick
-// delivered to HelmRuntime).
+// CurrentPrice is refreshed by ApplyFill (every own fill) and ApplySync/RestorePosition
+// (REST account sync) — Portfolio only reads market data, it never writes it. Live
+// market price belongs solely to the shared registry (fleet/market's *market.ExchangeData,
+// read via HelmRuntime.lastKnownPrice) — helm has no price-push path into Portfolio.
 package portfolio

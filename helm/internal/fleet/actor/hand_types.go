@@ -84,6 +84,7 @@ const (
 	CodeHandReleased      = 10206 // hand released — open positions orphaned (left live at exchange)
 	CodeHandLeverageSet   = 10208 // futures leverage and margin type configured at exchange
 	CodePositionExtClosed = 10209 // position externally closed (user manual exit at exchange detected via bracket order cancel)
+	CodeFeeAttributed     = 10210 // account-level fee/funding event attributed a proportional share to this hand (see FeeEvent)
 
 	// Helm lifecycle codes.
 	CodeHelmPaused          = 10300 // helm paused — all hands will ignore signals

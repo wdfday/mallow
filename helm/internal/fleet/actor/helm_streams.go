@@ -167,7 +167,6 @@ func (r *HelmRuntime) handleRiskEvent(ev exchange.RiskEvent) {
 //   - Live:     informational — our orders are already tracked by clid before placement
 //   - Canceled: remove from orderbook and notify the owning hand
 func (r *HelmRuntime) runLifecycleProcessor(ctx context.Context) {
-	defer safe.Recover()
 	for {
 		select {
 		case <-r.lifecycleSignal:
@@ -176,12 +175,25 @@ func (r *HelmRuntime) runLifecycleProcessor(ctx context.Context) {
 			r.lifecycleQueue = nil
 			r.lifecycleMu.Unlock()
 			for _, ev := range batch {
-				r.applyLifecycleEvent(ctx, ev)
+				r.applyLifecycleEventSafe(ctx, ev)
 			}
 		case <-ctx.Done():
 			return
 		}
 	}
+}
+
+// applyLifecycleEventSafe isolates a single event's panic from the rest of
+// the batch and from the processor goroutine itself. Previously
+// safe.Recover() was deferred once at the top of runLifecycleProcessor: a
+// panic in any single event's handling unwound that defer, which returns
+// the whole function — the goroutine was never restarted (it's spawned
+// exactly once, in StartStreaming), silently killing lifecycle processing
+// for this helm for the rest of the process's life while lifecycleQueue
+// (an intentionally unbounded mailbox) kept accepting new events forever.
+func (r *HelmRuntime) applyLifecycleEventSafe(ctx context.Context, ev exchange.OrderLifecycleEvent) {
+	defer safe.Recover()
+	r.applyLifecycleEvent(ctx, ev)
 }
 
 func (r *HelmRuntime) applyLifecycleEvent(ctx context.Context, ev exchange.OrderLifecycleEvent) {
@@ -261,7 +273,6 @@ func (r *HelmRuntime) applyLifecycleEvent(ctx context.Context, ev exchange.Order
 // Batching amortizes the per-event overhead when fill bursts arrive (e.g.
 // multiple partial fills from OKX OCO execution).
 func (r *HelmRuntime) runFillProcessor(ctx context.Context) {
-	defer safe.Recover()
 	for {
 		select {
 		case <-r.wsFillSignal:
@@ -270,12 +281,22 @@ func (r *HelmRuntime) runFillProcessor(ctx context.Context) {
 			r.wsFillQueue = nil
 			r.wsFillMu.Unlock()
 			for _, ev := range batch {
-				r.applyWsFill(ctx, ev)
+				r.applyWsFillSafe(ctx, ev)
 			}
 		case <-ctx.Done():
 			return
 		}
 	}
+}
+
+// applyWsFillSafe isolates a single fill's panic from the rest of the batch
+// and from the processor goroutine itself — see applyLifecycleEventSafe for
+// why: safe.Recover() deferred once at the top of the goroutine only fires
+// on function return, so it used to turn one bad fill into permanent, silent
+// death of fill processing for this helm.
+func (r *HelmRuntime) applyWsFillSafe(ctx context.Context, ev exchange.WsFillEvent) {
+	defer safe.Recover()
+	r.applyWsFill(ctx, ev)
 }
 
 // applyWsFill processes a single WS fill event.

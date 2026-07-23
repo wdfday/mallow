@@ -613,7 +613,7 @@ func (h *Handler) eventsHistory(c *gin.Context) {
 // @Security BearerAuth
 // @Produce json
 // @Param id path string true "Helm ID"
-// @Param after query string false "RFC3339 cursor (exclusive); omit for all"
+// @Param before query string false "RFC3339 cursor (exclusive); omit for newest"
 // @Param limit query int false "Page size" default(200)
 // @Success 200 {object} shared.SuccessResponse[dto.FillPageResp]
 // @Failure 404 {object} shared.ErrorResponse
@@ -643,8 +643,12 @@ func (h *Handler) fills(c *gin.Context) {
 	}
 	_, limit := parsePage(c)
 	page := perf.Page{Limit: limit}
-	if afterStr := c.Query("after"); afterStr != "" {
-		if t, tErr := time.Parse(time.RFC3339, afterStr); tErr == nil {
+	// perf.Page.After is shared with tradelog's JetStream replay (genuinely a
+	// lower bound there); FillLog.Query uses it as an exclusive upper bound
+	// (newest-first backward paging) — hence the `before` API param name here
+	// despite the Go field being called After. See docs/API_PAGING.md.
+	if beforeStr := c.Query("before"); beforeStr != "" {
+		if t, tErr := time.Parse(time.RFC3339, beforeStr); tErr == nil {
 			page.After = t
 		}
 	}
@@ -673,7 +677,7 @@ func (h *Handler) fills(c *gin.Context) {
 // @Security BearerAuth
 // @Produce json
 // @Param id path string true "Helm ID"
-// @Param after query string false "RFC3339 cursor (exclusive); omit for all"
+// @Param before query string false "RFC3339 cursor (exclusive); omit for newest"
 // @Param limit query int false "Page size" default(200)
 // @Success 200 {object} shared.SuccessResponse[dto.SignalPageResp]
 // @Failure 404 {object} shared.ErrorResponse
@@ -698,8 +702,11 @@ func (h *Handler) signals(c *gin.Context) {
 	}
 	_, limit := parsePage(c)
 	page := perf.Page{Limit: limit}
-	if afterStr := c.Query("after"); afterStr != "" {
-		if t, tErr := time.Parse(time.RFC3339, afterStr); tErr == nil {
+	// See docs/API_PAGING.md — perf.Page.After is used as an exclusive upper
+	// bound here (newest-first backward paging), hence `before` as the API
+	// param name despite the Go field being called After.
+	if beforeStr := c.Query("before"); beforeStr != "" {
+		if t, tErr := time.Parse(time.RFC3339, beforeStr); tErr == nil {
 			page.After = t
 		}
 	}
@@ -789,14 +796,15 @@ func (h *Handler) orders(c *gin.Context) {
 // projected from the poslog by the orders persister. Distinct from /orders which
 // returns only the in-memory live order list.
 //
-// @Summary List persisted order history for a helm
+// @Summary Paged order history for a helm (newest-first, backward time cursor)
 // @Tags helms
 // @Produce json
 // @Param id path string true "Helm ID"
 // @Param hand_id query string false "filter by hand"
 // @Param status query string false "filter by status (placed|filled|cancelled)"
-// @Param limit query int false "max rows (default 100)"
-// @Success 200 {object} shared.SuccessResponse[[]dto.OrderHistoryResp]
+// @Param before query string false "RFC3339 placed_at cursor (exclusive); omit for newest"
+// @Param limit query int false "Page size" default(100)
+// @Success 200 {object} shared.SuccessResponse[dto.OrderHistoryPageResp]
 // @Failure 404 {object} shared.ErrorResponse
 // @Router /api/v1/helms/{id}/orders/history [get]
 func (h *Handler) ordersHistory(c *gin.Context) {
@@ -809,18 +817,25 @@ func (h *Handler) ordersHistory(c *gin.Context) {
 		return
 	}
 	if h.orderLog == nil {
-		shared.RespondWithSuccess(c, http.StatusOK, "Order history unavailable", []dto.OrderHistoryResp{})
+		shared.RespondWithSuccess(c, http.StatusOK, "Order history unavailable", dto.OrderHistoryPageResp{Orders: []dto.OrderHistoryResp{}})
 		return
 	}
 
+	limit := 100
+	if v := c.Query("limit"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			limit = n
+		}
+	}
 	f := orderlog.OrderFilter{
 		HelmID: rt.HelmID,
 		HandID: c.Query("hand_id"),
 		Status: c.Query("status"),
+		Limit:  limit,
 	}
-	if v := c.Query("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			f.Limit = n
+	if bs := c.Query("before"); bs != "" {
+		if t, tErr := time.Parse(time.RFC3339, bs); tErr == nil {
+			f.Before = t
 		}
 	}
 
@@ -831,9 +846,18 @@ func (h *Handler) ordersHistory(c *gin.Context) {
 		return
 	}
 
-	out := make([]dto.OrderHistoryResp, 0, len(records))
-	for _, r := range records {
-		out = append(out, dto.OrderRecordToHistoryResp(r))
+	resp := dto.OrderHistoryPageResp{
+		Orders: make([]dto.OrderHistoryResp, 0, len(records)),
+		Limit:  limit,
 	}
-	shared.RespondWithSuccess(c, http.StatusOK, "Order history retrieved successfully", out)
+	for _, r := range records {
+		resp.Orders = append(resp.Orders, dto.OrderRecordToHistoryResp(r))
+	}
+	// orderLog.Query returns at most `limit` rows (no +1 lookahead row) — same
+	// heuristic as eventsHistory: a full page implies there may be older rows.
+	if len(records) == limit && !records[len(records)-1].PlacedAt.IsZero() {
+		resp.HasMore = true
+		resp.Next = records[len(records)-1].PlacedAt.UTC().Format(time.RFC3339Nano)
+	}
+	shared.RespondWithSuccess(c, http.StatusOK, "Order history retrieved successfully", resp)
 }

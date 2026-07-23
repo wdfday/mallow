@@ -3,7 +3,6 @@ package actor
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"time"
 
@@ -15,9 +14,7 @@ import (
 	"mallow/helm/internal/fleet/actor/core/strategy"
 	"mallow/helm/internal/fleet/actor/core/tactics"
 	"mallow/helm/internal/fleet/actor/position"
-	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/journal/poslog"
-	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/module/hand/domain"
 )
 
@@ -66,16 +63,15 @@ func NewHand(
 			cfg:  edgeRisk,
 			ring: ring,
 		},
-		allocatedCap:    allocatedCap,
-		leverageApplied: make(map[string]bool),
-		Signals:         make(chan Signal, 1),
-		UrgentSignals:   make(chan Signal, 4),
-		fillSignal:      make(chan struct{}, 1),
-		pollCh:          make(chan pollBatch, 1),
-		placeResultCh:   make(chan *pendingPlace, 16),
-		limitTimeoutCh:  make(chan *pendingLimitTimeout, 4),
-		seenFills:       make(map[string]time.Time),
-		wsFillCache:     make(map[string]cachedWsFill),
+		allocatedCap:   allocatedCap,
+		Signals:        make(chan Signal, 1),
+		UrgentSignals:  make(chan Signal, 4),
+		fillSignal:     make(chan struct{}, 1),
+		pollCh:         make(chan pollBatch, 1),
+		placeResultCh:  make(chan *pendingPlace, 16),
+		limitTimeoutCh: make(chan *pendingLimitTimeout, 4),
+		seenFills:      make(map[string]time.Time),
+		wsFillCache:    make(map[string]cachedWsFill),
 
 		partialApplied:  make(map[string]partialAppliedState),
 		orders:          make([]domain.Order, 0, 256),
@@ -415,34 +411,4 @@ func (h *Hand) RestoreCounters(ctx context.Context) {
 		"filled", counts[CodeOrderFilled], "failed", counts[CodeOrderFailed],
 		"dropped", counts[CodeSignalDropped],
 	)
-}
-
-// applyFuturesLeverage calls SetLeverage on the exchange if the hand is configured
-// for futures and the exchange supports it. Non-blocking on failure (just logs).
-func (h *Hand) applyFuturesLeverage(ctx context.Context, symbol string, futures *domain.FuturesConfig) {
-	if futures == nil || futures.Leverage <= 0 {
-		return
-	}
-	setter, ok := h.helmRuntime.Exchange.(exchange.LeverageSetter)
-	if !ok {
-		return
-	}
-	marginType := string(futures.MarginType)
-	if marginType == "" {
-		marginType = "isolated"
-	}
-	if err := setter.SetLeverage(ctx, h.helmRuntime.Creds, symbol, futures.Leverage, marginType); err != nil {
-		h.log.Warn("hand: set leverage failed (non-fatal)", "symbol", symbol,
-			"leverage", futures.Leverage, "margin_type", marginType, "err", err)
-	} else {
-		h.log.Info("hand: leverage set", "symbol", symbol,
-			"leverage", futures.Leverage, "margin_type", marginType)
-		h.helmRuntime.EmitEvent(natsapi.HelmEvent{
-			HandID: h.id.String(),
-			Code:   CodeHandLeverageSet,
-			Symbol: symbol,
-			Reason: fmt.Sprintf("leverage=%d margin_type=%s", futures.Leverage, marginType),
-			Msg:    "hand: leverage & margin configured",
-		})
-	}
 }

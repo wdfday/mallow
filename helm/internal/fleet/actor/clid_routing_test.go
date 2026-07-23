@@ -132,7 +132,7 @@ func TestClidRouting_WsFillBeforeRestResponse(t *testing.T) {
 	rt.StartStreaming(ctx)
 
 	h := addSimHand(rt, symbol, 0.001, 0, 0.3, 1)
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(50_000))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(50_000))
 	h.Start()
 	defer h.Stop()
 

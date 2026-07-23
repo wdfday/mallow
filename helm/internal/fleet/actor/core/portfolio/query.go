@@ -13,8 +13,8 @@ func (p *Portfolio) RealizedPnL() decimal.Decimal {
 	return total
 }
 
-// UnrealizedPnL returns the mark-to-market PnL of all currently open positions.
-// Requires UpdatePrice to have been called with current market prices.
+// UnrealizedPnL returns the mark-to-market PnL of all currently open positions,
+// as of each position's CurrentPrice (refreshed by ApplyFill/ApplySync — see doc.go).
 func (p *Portfolio) UnrealizedPnL() decimal.Decimal {
 	p.mu.RLock()
 	defer p.mu.RUnlock()

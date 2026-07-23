@@ -44,6 +44,15 @@ func (b *Broker) Validate(_ context.Context, cc brokerclient.Credentials) error 
 	return nil
 }
 
+// GetExternalUID returns Alpaca's own account id (a stable UUID per brokerage account).
+func (b *Broker) GetExternalUID(_ context.Context, cc brokerclient.Credentials) (string, error) {
+	account, err := b.newSDKBroker(cc).GetAccount()
+	if err != nil {
+		return "", fmt.Errorf("alpaca get external uid: %w", err)
+	}
+	return account.ID, nil
+}
+
 func (b *Broker) GetPortfolio(_ context.Context, cc brokerclient.Credentials) (*brokerclient.Portfolio, error) {
 	account, err := b.newSDKBroker(cc).GetAccount()
 	if err != nil {

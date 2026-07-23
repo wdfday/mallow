@@ -99,7 +99,7 @@ func newBinanceEnv(t *testing.T) *binanceTestEnv {
 	// Seed live price for sizing.
 	var price decimal.Decimal
 	if p, err := ex.GetCurrentPrice(ctx, creds, "ETHUSDT"); err == nil && p.IsPositive() {
-		rt.UpdatePrice("ETHUSDT", p)
+		rt.MarketData.SetPrice("ETHUSDT", p)
 		price = p
 		t.Logf("ETH price seeded: %s", p)
 	} else {
@@ -448,7 +448,7 @@ func TestBinance_PyramidAndKill(t *testing.T) {
 	// Deliver 2nd signal (Pyramid Add). The avg-anchor gate only adds to a winning leg
 	// (price beyond the blended avg), so nudge the known price above the entry avg first —
 	// a live tick rarely moves on its own within the test window.
-	env.rt.UpdatePrice(symbol, pos.AvgPrice.Mul(decimal.NewFromFloat(1.001)))
+	env.rt.MarketData.SetPrice(symbol, pos.AvgPrice.Mul(decimal.NewFromFloat(1.001)))
 	placed2 := orderNotifyNew(hand, fill1OrderID, 20*time.Second)
 	filled2 := fillNotify(hand, 40*time.Second)
 	hand.DeliverSignal(longSigWithSLTP(symbol, decimal.Zero, decimal.Zero, false))

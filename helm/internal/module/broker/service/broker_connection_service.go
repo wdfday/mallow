@@ -87,6 +87,15 @@ func (s *brokerConnectionService) Create(ctx context.Context, req *dto.CreateBro
 		return nil, mapBrokerError("failed to fetch initial portfolio", err)
 	}
 
+	// Capture the exchange's own account uid as a baseline for RotateKey to compare
+	// against later. Best-effort: credentials are already validated above, so a
+	// failure here (e.g. an exchange without the lookup wired up) shouldn't block
+	// connection creation — it just means this connection can't be UID-checked on rotate.
+	externalUID, err := bc.GetExternalUID(ctx, creds)
+	if err != nil {
+		slog.Warn("broker: GetExternalUID failed on create, rotate-key account check will be skipped", "err", err)
+	}
+
 	encAPIKey, err := s.encrypt.Encrypt(req.APIKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to encrypt API key: %w", err)
@@ -97,15 +106,16 @@ func (s *brokerConnectionService) Create(ctx context.Context, req *dto.CreateBro
 	}
 
 	conn := &domain.BrokerConnection{
-		ID:         uuid.Must(uuid.NewV7()),
-		UserID:     req.UserID,
-		BrokerType: req.BrokerType,
-		BrokerName: req.BrokerName,
-		Status:     domain.BrokerConnectionStatusActive,
-		IsPaper:    req.IsPaper,
-		APIKey:     encAPIKey,
-		APISecret:  encAPISecret,
-		Notes:      req.Notes,
+		ID:          uuid.Must(uuid.NewV7()),
+		UserID:      req.UserID,
+		BrokerType:  req.BrokerType,
+		BrokerName:  req.BrokerName,
+		Status:      domain.BrokerConnectionStatusActive,
+		IsPaper:     req.IsPaper,
+		APIKey:      encAPIKey,
+		APISecret:   encAPISecret,
+		ExternalUID: externalUID,
+		Notes:       req.Notes,
 	}
 
 	if req.Passphrase != nil {
@@ -439,12 +449,27 @@ func (s *brokerConnectionService) RotateKey(ctx context.Context, id, userID uuid
 	}
 
 	// Validate before touching the DB — fail fast if the new key is bad.
-	// KNOWN GAP: this only checks the new key works, not that it's the same
-	// underlying exchange account as the old one — see "Known gap" under Rotate
-	// Key in BUSINESS.md. Rotate reuses this connection's Account/Helm/hand
-	// history unconditionally.
 	if err := bc.Validate(ctx, newCreds); err != nil {
 		return nil, mapBrokerError("new credentials rejected by broker", err)
+	}
+
+	// Confirm the new key points at the same underlying exchange account as the
+	// one this connection was created with — a rotate is a credential refresh,
+	// not a way to silently re-point Account/Helm/hand history at a different
+	// exchange account. conn.ExternalUID is empty for connections created before
+	// this check existed; those get backfilled here instead of blocked, since
+	// there's no baseline yet to compare against. A lookup failure here is
+	// non-fatal (Validate already confirmed the key works) — it just means this
+	// rotate can't be UID-checked, same as at Create time.
+	newUID, uidErr := bc.GetExternalUID(ctx, newCreds)
+	if uidErr != nil {
+		slog.Warn("broker: GetExternalUID failed on rotate-key, account-identity check skipped", "connection_id", conn.ID, "err", uidErr)
+	} else if conn.ExternalUID != "" && newUID != "" && newUID != conn.ExternalUID {
+		return nil, pkgshared.NewAppError("ROTATE_KEY_ACCOUNT_MISMATCH",
+			"The new API key belongs to a different exchange account than this connection. Create a new broker connection instead of rotating the key.",
+			http.StatusConflict)
+	} else if conn.ExternalUID == "" && newUID != "" {
+		conn.ExternalUID = newUID
 	}
 
 	encKey, err := s.encrypt.Encrypt(req.APIKey)

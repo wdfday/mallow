@@ -49,6 +49,13 @@ type BrokerConnection struct {
 	// Paper trading flag
 	IsPaper bool `gorm:"default:false;column:is_paper" json:"is_paper"`
 
+	// ExternalUID is the exchange's own account identifier (Binance uid, Bybit uid,
+	// Alpaca account id, OKX uid) captured on Create. RotateKey compares the new
+	// credentials' UID against this to reject a key swap that points at a different
+	// underlying exchange account. Empty for connections created before this field
+	// existed — those get backfilled on their next successful rotate.
+	ExternalUID string `gorm:"type:varchar(100);column:external_uid" json:"-"`
+
 	// Metadata
 	Notes *string `gorm:"type:text;column:notes" json:"notes,omitempty"`
 

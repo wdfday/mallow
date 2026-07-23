@@ -26,11 +26,22 @@ func NewDB(cfg *config.Config, lc fx.Lifecycle) (*sql.DB, error) {
 	if err != nil {
 		return nil, err
 	}
+	// database/sql defaults to MaxOpenConns=0 (unlimited) and MaxIdleConns=2.
+	// Unlimited is a real risk under load: the shared Postgres container's own
+	// max_connections is 100 (default, unconfigured — see deployment/docker-compose.yml),
+	// split across identity/herald/helm/exporters. helm gets the largest share
+	// since it has the most concurrent DB-touching goroutines (poslog/tradelog/
+	// fillog/eventlog/signallog persisters, one trade actor per helm). 50 leaves
+	// headroom for the other services within the 100 total; MaxIdleConns matches
+	// it to avoid connection churn under steady load (default of 2 would mean
+	// constant open/close under any real concurrency).
+	db.SetMaxOpenConns(50)
+	db.SetMaxIdleConns(50)
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
-	slog.Info("postgres connected")
+	slog.Info("postgres connected", "max_open_conns", 50, "max_idle_conns", 50)
 
 	lc.Append(fx.Hook{
 		OnStop: func(ctx context.Context) error {

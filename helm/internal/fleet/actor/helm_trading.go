@@ -36,13 +36,10 @@ type TradeProposal struct {
 	PositionQty decimal.Decimal
 }
 
-// ProcessTrade validates a trade against account-level guards and sizes via the hand's tactician.
-//
-// Price resolution is intentionally performed BEFORE acquiring tradeMu so that
-// a slow or missing exchange REST call never blocks ReportFill (which also needs
-// tradeMu) for other hands on the same helm.
-func (r *HelmRuntime) ProcessTrade(
-	ctx context.Context,
+// processTrade validates a trade against account-level guards and sizes via the hand's
+// tactician. Runs only on the trade actor goroutine (runTradeActor) — see ProcessTrade
+// (helm_actor.go) for the public request/reply wrapper every hand actually calls.
+func (r *HelmRuntime) processTrade(
 	proposal TradeProposal,
 	tact tactics.Planner,
 ) helmdomain.TradeReply {
@@ -55,9 +52,6 @@ func (r *HelmRuntime) ProcessTrade(
 		return helmdomain.TradeReply{Approved: false, Reason: "circuit breaker: too many requests"}
 	}
 
-	// ── Resolve price BEFORE acquiring tradeMu ────────────────────────────────
-	// lastKnownPrice and pricesMu are independent from tradeMu, so this does not
-	// block concurrent ReportFill calls from other hands.
 	price := proposal.Price
 	if price.IsZero() {
 		price = r.lastKnownPrice(proposal.Symbol)
@@ -66,8 +60,14 @@ func (r *HelmRuntime) ProcessTrade(
 		if pf, ok := r.Exchange.(exchange.PriceFetcher); ok {
 			// Fallback to REST only when WebSocket price cache is cold.
 			// proposal.Symbol is already a bare ticker (dispatcher strips the herald prefix).
-			// This call may take 100ms–2s but runs outside tradeMu.
-			if p, err := pf.GetCurrentPrice(ctx, r.Creds, proposal.Symbol); err == nil && p.IsPositive() {
+			// This call may take 100ms–2s — runs on the trade actor goroutine, so it does
+			// block other hands' ProcessTrade/ReportFill calls for its duration. Acceptable:
+			// a cold price cache is rare (first trade for a symbol) and the same tradeoff
+			// existed before (this ran inside tradeMu too).
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			p, err := pf.GetCurrentPrice(ctx, r.Creds, proposal.Symbol)
+			cancel()
+			if err == nil && p.IsPositive() {
 				price = p
 				r.MarketData.SetPrice(proposal.Symbol, p)
 			}
@@ -76,10 +76,6 @@ func (r *HelmRuntime) ProcessTrade(
 	if price.IsZero() {
 		return helmdomain.TradeReply{Approved: false, Reason: "no price available for " + proposal.Symbol}
 	}
-
-	// ── Critical section: risk check + portfolio read + sizing ────────────────
-	r.tradeMu.Lock()
-	defer r.tradeMu.Unlock()
 
 	wasHalted := r.RiskMgr.IsHalted()
 	if ok, reason := r.RiskMgr.Validate(proposal.Intent, proposal.HandID); !ok {
@@ -140,7 +136,9 @@ func (r *HelmRuntime) ProcessTrade(
 	}
 }
 
-// ReportFill is the single choke-point for updating portfolio state after any fill.
+// reportFill is the single choke-point for updating portfolio state after any fill.
+// Runs only on the trade actor goroutine (runTradeActor) — see ReportFill (helm_actor.go)
+// for the public fire-and-forget wrapper every caller actually uses.
 //
 // It is called from three paths:
 //   - hand.applyFill        — normal hand-owned fill after hand has updated its own state
@@ -151,9 +149,7 @@ func (r *HelmRuntime) ProcessTrade(
 // regardless of whether the owning hand is alive. Hand-level concerns (exit levels,
 // poslog, metrics) are handled by the hand before calling here; this function owns
 // only the helm-level aggregate state.
-func (r *HelmRuntime) ReportFill(fill helmdomain.FillReport) {
-	r.tradeMu.Lock()
-
+func (r *HelmRuntime) reportFill(fill helmdomain.FillReport) {
 	// Fill price is the freshest known price; update cache so the next
 	// ProcessTrade sizing call doesn't fall back to a stale tick.
 	if fill.Price.IsPositive() {
@@ -176,8 +172,6 @@ func (r *HelmRuntime) ReportFill(fill helmdomain.FillReport) {
 		Price:      fill.Price,
 		Commission: fill.Commission,
 	})
-
-	r.tradeMu.Unlock()
 
 	r.MarkSyncDirty()
 }

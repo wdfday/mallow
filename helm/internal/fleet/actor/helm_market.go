@@ -12,18 +12,6 @@ import (
 	"mallow/helm/internal/infra/exchange"
 )
 
-// UpdatePrice stores the latest market price for a symbol and forwards it to the portfolio.
-// symbol is a bare ticker (no exchange prefix). r.MarketData is a *market.ExchangeData
-// bucket shared by every helm on this exchange; market.MarketContext.StartStreaming's
-// per-exchange WebSocket is its sole streaming writer — see runtime/market/stream.go.
-func (r *HelmRuntime) UpdatePrice(symbol string, price decimal.Decimal) {
-	if !price.IsPositive() {
-		return
-	}
-	r.MarketData.SetPrice(symbol, price)
-	r.Portfolio.UpdatePrice(symbol, price)
-}
-
 func (r *HelmRuntime) lastKnownPrice(symbol string) decimal.Decimal {
 	// r.MarketData covers the trade cache; the Portfolio is the final fallback.
 	if p := r.MarketData.GetPrice(symbol); p.IsPositive() {

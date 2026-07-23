@@ -32,7 +32,7 @@ func buildCheckExitsHand(t *testing.T, symbol string) (*Hand, *HelmRuntime) {
 	pf := portfolio.New(decimal.NewFromFloat(10_000))
 	rm := risk.New(risk.DefaultConfig(), pf)
 	rt := NewHelmRuntime(uuid.New(), uuid.New(), uuid.New(), "test", pf, rm, nil, exchange.Credentials{}, nil, time.Now())
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(49_000)) // below the SL level set below
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(49_000)) // below the SL level set below
 
 	strat := strategy.NewSignalFollower(0.3)
 	tact := tactics.New(tactics.DefaultSizingConfig())
@@ -94,7 +94,7 @@ func TestCheckExits_MultiLegSameSymbol_AttributesCorrectLeg(t *testing.T) {
 	pf := portfolio.New(decimal.NewFromFloat(10_000))
 	rm := risk.New(risk.DefaultConfig(), pf)
 	rt := NewHelmRuntime(uuid.New(), uuid.New(), uuid.New(), "test", pf, rm, nil, exchange.Credentials{}, nil, time.Now())
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(49_000)) // below leg-1's SL; above leg-2's SL
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(49_000)) // below leg-1's SL; above leg-2's SL
 
 	strat := strategy.NewSignalFollower(0.3)
 	tact := tactics.New(tactics.DefaultSizingConfig())

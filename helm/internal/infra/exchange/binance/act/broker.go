@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"time"
 
 	gobinance "github.com/adshao/go-binance/v2"
@@ -50,6 +51,16 @@ func (b *Broker) Validate(_ context.Context, cc brokerclient.Credentials) error 
 		return fmt.Errorf("binance validate: %w", err)
 	}
 	return nil
+}
+
+// GetExternalUID returns Binance's own account uid, present on the same
+// /api/v3/account response Validate/GetPortfolio already fetch.
+func (b *Broker) GetExternalUID(ctx context.Context, cc brokerclient.Credentials) (string, error) {
+	acct, err := b.newSpotBroker(cc).NewGetAccountService().Do(ctx)
+	if err != nil {
+		return "", fmt.Errorf("binance get external uid: %w", err)
+	}
+	return strconv.FormatInt(acct.UID, 10), nil
 }
 
 func (b *Broker) GetPortfolio(ctx context.Context, cc brokerclient.Credentials) (*brokerclient.Portfolio, error) {

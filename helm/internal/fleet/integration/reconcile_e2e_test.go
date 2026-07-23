@@ -265,7 +265,7 @@ func TestReconcile_OpenPositionRestored_Binance(t *testing.T) {
 	rt1 := buildReconcileRuntime(env, helmID, decimal.NewFromFloat(100_000))
 	rt1.StartStreaming(context.Background()) // WS fills, same as newBinanceEnv
 	if p, err := env.ex.GetCurrentPrice(context.Background(), env.creds, "ETHUSDT"); err == nil && p.IsPositive() {
-		rt1.UpdatePrice("ETHUSDT", p)
+		rt1.MarketData.SetPrice("ETHUSDT", p)
 	}
 	hand1 := newReconcileHand(rt1, handID, qty)
 	rec1 := recordEvents(hand1)
@@ -379,7 +379,7 @@ func TestReconcile_ExternalCloseDuringDowntime_Binance(t *testing.T) {
 	rt1 := buildReconcileRuntime(env, helmID, decimal.NewFromFloat(100_000))
 	rt1.StartStreaming(context.Background())
 	if p, err := env.ex.GetCurrentPrice(context.Background(), env.creds, "ETHUSDT"); err == nil && p.IsPositive() {
-		rt1.UpdatePrice("ETHUSDT", p)
+		rt1.MarketData.SetPrice("ETHUSDT", p)
 	}
 	hand1 := newReconcileHand(rt1, handID, qty)
 	rec1 := recordEvents(hand1)

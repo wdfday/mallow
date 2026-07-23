@@ -47,7 +47,7 @@ func TestPyramid_AvgGate_AddsOnWinnerBlocksOnLoser(t *testing.T) {
 	defer rt.Stop()
 
 	h := addPyramidHand(rt, symbol, 0.001, 5)
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(100))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(100))
 	h.Start()
 	defer h.Stop()
 
@@ -60,7 +60,7 @@ func TestPyramid_AvgGate_AddsOnWinnerBlocksOnLoser(t *testing.T) {
 	}
 
 	// 2) Price rises to 105 (> avg 100) → winning → add allowed.
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(105))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(105))
 	ch = h.Subscribe(64)
 	h.DeliverSignal(longSignalFor(symbol))
 	mustWaitCodeCh(t, ch, actor.CodeOrderFilled, simWait)
@@ -69,7 +69,7 @@ func TestPyramid_AvgGate_AddsOnWinnerBlocksOnLoser(t *testing.T) {
 	}
 
 	// 3) Price drops to 95 (< avg 100) → not winning → add BLOCKED by the gate.
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(95))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(95))
 	ch = h.Subscribe(64)
 	h.DeliverSignal(longSignalFor(symbol))
 	mustWaitCodeCh(t, ch, actor.CodeSignalDoNothing, simWait) // pyramid gate fires
@@ -79,7 +79,7 @@ func TestPyramid_AvgGate_AddsOnWinnerBlocksOnLoser(t *testing.T) {
 	}
 
 	// 4) Price recovers above avg → add allowed again.
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(101))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(101))
 	ch = h.Subscribe(64)
 	h.DeliverSignal(longSignalFor(symbol))
 	mustWaitCodeCh(t, ch, actor.CodeOrderFilled, simWait)

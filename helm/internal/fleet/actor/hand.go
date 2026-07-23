@@ -44,10 +44,6 @@ type Hand struct {
 	tactician tactics.Planner
 	limiter   *rate.Limiter
 
-	// ── Leverage state (futures only; nil-safe for spot) ─────────────────────
-	leverageAppliedMu sync.Mutex
-	leverageApplied   map[string]bool // symbols where SetLeverage has been called
-
 	// ── Inbound channels ─────────────────────────────────────────────────────
 	// signalsMu serialises DeliverSignal callers (NATS dispatch + the hand's own
 	// local exit monitor) so the drain-replace on Signals is atomic. Without it, two

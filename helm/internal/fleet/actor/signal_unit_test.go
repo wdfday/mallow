@@ -329,7 +329,7 @@ func TestSignal_LongEntry_OrderPlacedAndFilled(t *testing.T) {
 	defer rt.Stop()
 
 	h := addSimHand(rt, symbol, 0.001, 0, 0.3, 1)
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(50_000))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(50_000))
 	h.Start()
 	defer h.Stop()
 
@@ -360,7 +360,7 @@ func TestSignal_RoundTrip_EntryThenExit(t *testing.T) {
 	defer rt.Stop()
 
 	h := addSimHand(rt, symbol, 0.001, 0, 0.3, 1)
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(50_000))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(50_000))
 	h.Start()
 	defer h.Stop()
 
@@ -402,7 +402,7 @@ func TestSignal_OrphanExitKind_DisownsLegWithoutOrder(t *testing.T) {
 	defer rt.Stop()
 
 	h := addSimHand(rt, symbol, 0.001, 0, 0.3, 1)
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(50_000))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(50_000))
 	h.Start()
 	defer h.Stop()
 
@@ -434,7 +434,7 @@ func TestSignal_ShortEntry(t *testing.T) {
 	defer rt.Stop()
 
 	h := addSimHand(rt, symbol, 0.001, 0, 0.3, 1)
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(50_000))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(50_000))
 	h.Start()
 	defer h.Stop()
 
@@ -462,7 +462,7 @@ func TestSignal_Stale_Dropped(t *testing.T) {
 
 	// TTL = 5 s; ReceivedAt = 1 minute ago → signal is expired.
 	h := addSimHand(rt, symbol, 0.001, 5*time.Second, 0.3, 1)
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(50_000))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(50_000))
 	h.Start()
 	defer h.Stop()
 
@@ -488,7 +488,7 @@ func TestSignal_PausedHelm_Dropped(t *testing.T) { //nolint:unused // scenario 5
 	defer rt.Stop()
 
 	h := addSimHand(rt, symbol, 0.001, 0, 0.3, 1)
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(50_000))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(50_000))
 	h.Start()
 	defer h.Stop()
 
@@ -510,7 +510,7 @@ func TestSignal_LowStrength_DoNothing(t *testing.T) {
 
 	// minStrength = 0.8; signal strength = 0.3 → filtered.
 	h := addSimHand(rt, symbol, 0.001, 0, 0.8, 1)
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(50_000))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(50_000))
 	h.Start()
 	defer h.Stop()
 
@@ -533,7 +533,7 @@ func TestSignal_MaxUnits_SecondEntryBlocked(t *testing.T) {
 
 	// maxUnits = 1 → only one leg allowed.
 	h := addSimHand(rt, symbol, 0.001, 0, 0.3, 1)
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(50_000))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(50_000))
 	h.Start()
 	defer h.Stop()
 
@@ -564,8 +564,8 @@ func TestSignal_MaxPositions_SecondHandBlocked(t *testing.T) {
 
 	h1 := addSimHand(rt, sym1, 0.001, 0, 0.3, 1)
 	h2 := addSimHand(rt, sym2, 0.001, 0, 0.3, 1)
-	rt.UpdatePrice(sym1, decimal.NewFromFloat(50_000))
-	rt.UpdatePrice(sym2, decimal.NewFromFloat(3_000))
+	rt.MarketData.SetPrice(sym1, decimal.NewFromFloat(50_000))
+	rt.MarketData.SetPrice(sym2, decimal.NewFromFloat(3_000))
 	h1.Start()
 	h2.Start()
 	defer h1.Stop()
@@ -595,7 +595,7 @@ func TestSignal_ExitLevelsPopulated_AfterFill(t *testing.T) {
 	defer rt.Stop()
 
 	h := addSimHand(rt, symbol, 0.001, 0, 0.3, 1)
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(50_000))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(50_000))
 	h.Start()
 	defer h.Stop()
 
@@ -656,7 +656,7 @@ func TestSignal_InsufficientCapital_AutoStop(t *testing.T) {
 	h.EnableEventSink()
 	rt.AddHand(h, &domain.Hand{ID: h.ID(), HelmID: rt.HelmID, Symbols: domain.StringSlice{symbol}})
 
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(50_000))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(50_000))
 	h.Start()
 	defer h.Stop()
 
@@ -684,7 +684,7 @@ func TestSignal_HaltedHelm_NotForwarded(t *testing.T) {
 	defer rt.Stop()
 
 	h := addSimHand(rt, symbol, 0.001, 0, 0.3, 1)
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(50_000))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(50_000))
 
 	// 1. Update risk manager config to trigger halt easily
 	rt.RiskMgr.UpdateConfig(risk.Config{

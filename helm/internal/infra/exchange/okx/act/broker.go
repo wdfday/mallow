@@ -53,6 +53,32 @@ func (b *Broker) Validate(ctx context.Context, cc brokerclient.Credentials) erro
 	return nil
 }
 
+// GetExternalUID returns OKX's own account uid via the account/config endpoint
+// (unlike Validate/GetPortfolio's account/balance, this is the one OKX endpoint
+// that actually reports the account uid).
+func (b *Broker) GetExternalUID(ctx context.Context, cc brokerclient.Credentials) (string, error) {
+	if cc.Passphrase == nil || *cc.Passphrase == "" {
+		return "", fmt.Errorf("passphrase is required for OKX")
+	}
+	var out struct {
+		Code string `json:"code"`
+		Msg  string `json:"msg"`
+		Data []struct {
+			Uid string `json:"uid"`
+		} `json:"data"`
+	}
+	if err := b.c.doRequestAs(ctx, toOKXCreds(cc), cc.IsPaper, http.MethodGet, "/api/v5/account/config", nil, &out); err != nil {
+		return "", fmt.Errorf("okx get external uid: %w", err)
+	}
+	if out.Code != "0" {
+		return "", fmt.Errorf("okx get external uid: %s", out.Msg)
+	}
+	if len(out.Data) == 0 {
+		return "", fmt.Errorf("okx get external uid: empty response")
+	}
+	return out.Data[0].Uid, nil
+}
+
 func (b *Broker) GetPortfolio(ctx context.Context, cc brokerclient.Credentials) (*brokerclient.Portfolio, error) {
 	if cc.Passphrase == nil || *cc.Passphrase == "" {
 		return nil, fmt.Errorf("passphrase is required for OKX")

@@ -138,27 +138,6 @@ func (p *Portfolio) ApplyFill(fill Fill) {
 	pos.MarketValue = pos.Qty.Mul(pos.CurrentPrice)
 }
 
-// UpdatePrice updates the current market price for a symbol and recalculates
-// unrealized PnL and market value. No-op if the symbol has no open position.
-func (p *Portfolio) UpdatePrice(symbol string, price decimal.Decimal) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	pos, ok := p.positions[symbol]
-	if !ok {
-		return
-	}
-	pos.CurrentPrice = price
-	// avg_price=0 means no fill event (e.g. paper account pre-seeded balance) —
-	// unrealized PnL is meaningless, suppress it.
-	if pos.AvgPrice.IsZero() {
-		pos.UnrealizedPnL = decimal.Zero
-	} else {
-		pos.UnrealizedPnL = price.Sub(pos.AvgPrice).Mul(pos.Qty)
-	}
-	pos.MarketValue = pos.Qty.Mul(price)
-}
-
 // ApplySync replaces portfolio state wholesale with authoritative data from
 // the exchange REST API. Called on helm create, enable, and every SYNC_INTERVAL.
 //

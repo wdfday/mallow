@@ -19,6 +19,11 @@ type BrokerClient interface {
 
 	// GetPositions retrieves the user's current positions.
 	GetPositions(ctx context.Context, creds Credentials) ([]Position, error)
+
+	// GetExternalUID returns the exchange's own stable account identifier for
+	// these credentials (Binance uid, Bybit uid, Alpaca account id, OKX uid).
+	// Used to detect a rotate-key swap onto a different underlying exchange account.
+	GetExternalUID(ctx context.Context, creds Credentials) (string, error)
 }
 
 // Credentials represents authentication credentials for a broker.

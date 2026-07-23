@@ -85,7 +85,7 @@ func TestPoslog_E2E(t *testing.T) {
 	ctx10s, cancel2 := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel2()
 	if price, err := ex.GetCurrentPrice(ctx10s, creds, "BTCUSDT"); err == nil && price.IsPositive() {
-		rt.UpdatePrice("BTCUSDT", price)
+		rt.MarketData.SetPrice("BTCUSDT", price)
 		t.Logf("BTC price: %s", price)
 	}
 
@@ -237,7 +237,7 @@ func TestTradeRoundTrip_E2E(t *testing.T) {
 
 	ctx10s, cancel10 := context.WithTimeout(context.Background(), 10*time.Second)
 	if price, priceErr := ex.GetCurrentPrice(ctx10s, creds, "BTCUSDT"); priceErr == nil && price.IsPositive() {
-		rt.UpdatePrice("BTCUSDT", price)
+		rt.MarketData.SetPrice("BTCUSDT", price)
 		t.Logf("BTC price seeded: %s", price)
 	}
 	cancel10()

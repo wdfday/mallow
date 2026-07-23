@@ -67,7 +67,7 @@ func roundTrip(t *testing.T, sim *simExchange, rt *actor.HelmRuntime, h *actor.H
 
 	// ── entry ────────────────────────────────────────────────────────────────
 	sim.setFillPrice(entryPrice)
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(entryPrice))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(entryPrice))
 
 	entryCh := h.Subscribe(256)
 	h.DeliverSignal(longSignalFor(symbol))
@@ -75,7 +75,7 @@ func roundTrip(t *testing.T, sim *simExchange, rt *actor.HelmRuntime, h *actor.H
 
 	// ── exit ─────────────────────────────────────────────────────────────────
 	sim.setFillPrice(exitPrice)
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(exitPrice))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(exitPrice))
 
 	exitCh := h.Subscribe(256)
 	h.DeliverSignal(exitSignalFor(symbol))
@@ -107,7 +107,7 @@ func TestGuard_MaxTotalLoss_StopsHand(t *testing.T) {
 	sim := newSim(10_000)
 	rt := buildSimRuntime(sim, 100_000, 10)
 	defer rt.Stop()
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(10_000))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(10_000))
 
 	h := addGuardHand(rt, symbol, guard, decimal.NewFromFloat(alloc))
 	h.Start()
@@ -144,7 +144,7 @@ func TestGuard_MaxAvgLoss_StopsHand(t *testing.T) {
 	sim := newSim(10_000)
 	rt := buildSimRuntime(sim, 100_000, 10)
 	defer rt.Stop()
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(10_000))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(10_000))
 
 	h := addGuardHand(rt, symbol, guard, decimal.NewFromFloat(alloc))
 	h.Start()
@@ -178,7 +178,7 @@ func TestGuard_MaxSingleLoss_StopsHand(t *testing.T) {
 	sim := newSim(1_000)
 	rt := buildSimRuntime(sim, 100_000, 10)
 	defer rt.Stop()
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(1_000))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(1_000))
 
 	h := addGuardHand(rt, symbol, guard, decimal.NewFromFloat(alloc))
 	h.Start()
@@ -205,7 +205,7 @@ func TestGuard_MaxConsecLoss_StopsHand(t *testing.T) {
 	sim := newSim(300)
 	rt := buildSimRuntime(sim, 100_000, 10)
 	defer rt.Stop()
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(300))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(300))
 
 	h := addGuardHand(rt, symbol, guard, decimal.Zero)
 	h.Start()
@@ -235,7 +235,7 @@ func TestGuard_MaxConsecLoss_WinResetsStreak(t *testing.T) {
 	sim := newSim(300)
 	rt := buildSimRuntime(sim, 100_000, 10)
 	defer rt.Stop()
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(300))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(300))
 
 	h := addGuardHand(rt, symbol, guard, decimal.Zero)
 	h.Start()
@@ -278,7 +278,7 @@ func TestGuard_WindowWarmup_NoStopBeforeFull(t *testing.T) {
 	sim := newSim(100)
 	rt := buildSimRuntime(sim, 100_000, 10)
 	defer rt.Stop()
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(100))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(100))
 
 	h := addGuardHand(rt, symbol, guard, decimal.NewFromFloat(1_000_000))
 	h.Start()
@@ -331,7 +331,7 @@ func TestGuard_Disabled_NoAutoStop(t *testing.T) {
 	sim := newSim(1)
 	rt := buildSimRuntime(sim, 100_000, 10)
 	defer rt.Stop()
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(1))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(1))
 
 	h := addGuardHand(rt, symbol, guard, decimal.Zero)
 	h.Start()
@@ -363,7 +363,7 @@ func TestGuard_AllocatedCap_UsedAsReference(t *testing.T) {
 	sim := newSim(500)
 	rt := buildSimRuntime(sim, 1_000_000, 10)
 	defer rt.Stop()
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(500))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(500))
 
 	h := addGuardHand(rt, symbol, guard, decimal.NewFromFloat(10_000))
 	h.Start()
@@ -397,7 +397,7 @@ func TestGuard_RingWrap_OldestEntryEvicted(t *testing.T) {
 	sim := newSim(100)
 	rt := buildSimRuntime(sim, 100_000, 10)
 	defer rt.Stop()
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(100))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(100))
 
 	h := addGuardHand(rt, symbol, guard, decimal.NewFromFloat(2_000))
 	h.Start()
@@ -436,7 +436,7 @@ func TestGuard_RingWrap_TwoLossesFireWhenFull(t *testing.T) {
 	sim := newSim(100)
 	rt := buildSimRuntime(sim, 100_000, 10)
 	defer rt.Stop()
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(100))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(100))
 
 	h := addGuardHand(rt, symbol, guard, decimal.NewFromFloat(2_000))
 	h.Start()
@@ -492,7 +492,7 @@ func TestRestoreGuard_ConsecLossSurvivesRestart(t *testing.T) {
 	sim := newSim(10_000)
 	rt := buildSimRuntime(sim, 100_000, 10)
 	defer rt.Stop()
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(10_000))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(10_000))
 
 	h := addGuardHand(rt, symbol, guard, decimal.NewFromFloat(10_000))
 
@@ -524,7 +524,7 @@ func TestRestoreGuard_WinInHistoryResetsStreak(t *testing.T) {
 	sim := newSim(2_000)
 	rt := buildSimRuntime(sim, 100_000, 10)
 	defer rt.Stop()
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(2_000))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(2_000))
 
 	h := addGuardHand(rt, symbol, guard, decimal.NewFromFloat(10_000))
 
@@ -568,7 +568,7 @@ func TestRestoreGuard_NilOrErroringSummer_NoOp(t *testing.T) {
 	sim := newSim(10_000)
 	rt := buildSimRuntime(sim, 100_000, 10)
 	defer rt.Stop()
-	rt.UpdatePrice(symbol, decimal.NewFromFloat(10_000))
+	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(10_000))
 
 	h := addGuardHand(rt, symbol, guard, decimal.NewFromFloat(10_000))
 

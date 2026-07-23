@@ -20,6 +20,7 @@ import (
 	"mallow/helm/internal/infra/journal/poslog"
 	"mallow/helm/internal/infra/natsapi"
 	handdomain "mallow/helm/internal/module/hand/domain"
+	helmdomain "mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/safe"
 )
 
@@ -121,10 +122,22 @@ type HelmRuntime struct {
 	MarketData *market.ExchangeData
 
 	// ── Trade gate (per-minute circuit breaker) ───────────────────────────────
-	tradeMu      sync.Mutex   // serialises ProcessTrade + ReportFill across all hands
 	requestCount atomic.Int64 // resets every minute via resetTicker goroutine
 	resetTicker  *time.Ticker
 	stopCh       chan struct{} // closed by Stop() to exit background goroutines
+
+	// ── Trade actor (see helm_actor.go) ───────────────────────────────────────
+	// runTradeActor is the single goroutine that owns Portfolio/leverage mutation —
+	// replaces the old tradeMu mutex. Started unconditionally in NewHelmRuntime.
+	tradeReqCh    chan *tradeRequest
+	fillReportCh  chan helmdomain.FillReport
+	leverageReqCh chan *leverageRequest
+	feeEventCh    chan FeeEvent
+	// leverageSet tracks which symbols already had SetLeverage applied for this
+	// helm's account — actor-owned (only runTradeActor touches it), replacing the
+	// old per-Hand leverageApplied map that let hands race on this account-level,
+	// single-value exchange setting.
+	leverageSet map[string]bool
 
 	// syncScheduled is 1 while a debounced post-order REST sync is pending.
 	// Set by MarkSyncDirty (after fills); coalesces a fill burst into a single sync.
@@ -208,10 +221,20 @@ func NewHelmRuntime(
 		dedup:           newFillDedup(),
 		resetTicker:     time.NewTicker(1 * time.Minute),
 		stopCh:          make(chan struct{}),
+		tradeReqCh:      make(chan *tradeRequest),
+		fillReportCh:    make(chan helmdomain.FillReport),
+		leverageReqCh:   make(chan *leverageRequest),
+		feeEventCh:      make(chan FeeEvent),
+		leverageSet:     make(map[string]bool),
 	}
 	if lastSyncedAt != nil {
 		rt.lastSyncAtNano.Store(lastSyncedAt.UnixNano())
 	}
+	// Trade actor: the sole owner of Portfolio mutation + leverage state (see
+	// helm_actor.go). Started unconditionally (not gated on StartStreaming/WS
+	// availability) — many callers (tests, ProcessTrade/ReportFill from hands)
+	// depend on it regardless of whether this exchange streams fills over WS.
+	go rt.runTradeActor(context.Background())
 	// Reset the per-minute request counter; goroutine exits when stopCh closes.
 	go func() {
 		defer safe.Recover()

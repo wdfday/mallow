@@ -78,13 +78,13 @@ func newBybitEnv(t *testing.T) *bybitTestEnv {
 	// Bybit has no PriceFetcher — use MarkPrice.
 	var price decimal.Decimal
 	if p, err := ex.MarkPrice(ctx, creds, "ETHUSDT"); err == nil && p.IsPositive() {
-		rt.UpdatePrice("ETHUSDT", p)
+		rt.MarketData.SetPrice("ETHUSDT", p)
 		price = p
 		t.Logf("ETHUSDT mark price seeded: %s", p)
 	} else {
 		t.Logf("mark price fetch failed (%v) — seeding approximate 65000", err)
 		price = decimal.NewFromFloat(65_000)
-		rt.UpdatePrice("ETHUSDT", price)
+		rt.MarketData.SetPrice("ETHUSDT", price)
 	}
 
 	t.Cleanup(func() {
@@ -369,7 +369,7 @@ func TestBybit_PyramidAndKill(t *testing.T) {
 	// 2nd entry (pyramid add). The avg-anchor gate only adds to a winning leg, so
 	// nudge the known price above the entry avg first (a live tick rarely moves
 	// on its own within the test window).
-	env.rt.UpdatePrice(symbol, pos.AvgPrice.Mul(decimal.NewFromFloat(1.001)))
+	env.rt.MarketData.SetPrice(symbol, pos.AvgPrice.Mul(decimal.NewFromFloat(1.001)))
 	placed2 := orderNotifyNew(hand, fill1OrderID, 20*time.Second)
 	filled2 := fillNotify(hand, 45*time.Second)
 	hand.DeliverSignal(longSigWithSLTP(symbol, decimal.Zero, decimal.Zero, false))

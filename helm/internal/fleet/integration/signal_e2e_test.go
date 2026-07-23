@@ -314,7 +314,7 @@ func TestSignalToOrder_Binance(t *testing.T) {
 	ctx10s, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if price, err := ex.GetCurrentPrice(ctx10s, creds, symbol); err == nil && price.IsPositive() {
-		rt.UpdatePrice(symbol, price)
+		rt.MarketData.SetPrice(symbol, price)
 		t.Logf("current %s price: %s", symbol, price)
 	} else {
 		t.Logf("price fetch failed (%v) — ProcessTrade will fetch inline", err)
@@ -374,7 +374,7 @@ func TestSignalToOrder_OKX(t *testing.T) {
 	ctx10s, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if price, err := ex.GetCurrentPrice(ctx10s, creds, symbol); err == nil && price.IsPositive() {
-		rt.UpdatePrice(symbol, price)
+		rt.MarketData.SetPrice(symbol, price)
 		t.Logf("current %s price: %s", symbol, price)
 	} else {
 		t.Logf("price fetch failed (%v) — ProcessTrade will fetch inline", err)
@@ -435,11 +435,11 @@ func TestSignalToOrder_Bybit(t *testing.T) {
 	ctx10s, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if price, err := ex.MarkPrice(ctx10s, creds, symbol); err == nil && price.IsPositive() {
-		rt.UpdatePrice(symbol, price)
+		rt.MarketData.SetPrice(symbol, price)
 		t.Logf("current %s mark price: %s", symbol, price)
 	} else {
 		t.Logf("mark price fetch failed (%v) — using approximate seed", err)
-		rt.UpdatePrice(symbol, decimal.NewFromFloat(65_000))
+		rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(65_000))
 	}
 
 	hand := newFixedQtyHand(rt, decimal.NewFromFloat(0.001))
@@ -496,7 +496,7 @@ func TestSignalToOrder_Alpaca(t *testing.T) {
 	ctx10s, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if price, err := ex.GetCurrentPrice(ctx10s, creds, symbol); err == nil && price.IsPositive() {
-		rt.UpdatePrice(symbol, price)
+		rt.MarketData.SetPrice(symbol, price)
 		t.Logf("current %s price: %s", symbol, price)
 	} else {
 		t.Logf("price fetch failed (%v) — ProcessTrade will fetch inline", err)
@@ -676,7 +676,7 @@ func TestSignalRoundTrip_Binance(t *testing.T) {
 	ctx10s, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if price, err := ex.GetCurrentPrice(ctx10s, creds, symbol); err == nil && price.IsPositive() {
-		rt.UpdatePrice(symbol, price)
+		rt.MarketData.SetPrice(symbol, price)
 		t.Logf("current %s price: %s", symbol, price)
 	}
 
@@ -766,7 +766,7 @@ func TestSignalRoundTrip_OKX(t *testing.T) {
 	ctx10s, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if price, err := ex.GetCurrentPrice(ctx10s, creds, symbol); err == nil && price.IsPositive() {
-		rt.UpdatePrice(symbol, price)
+		rt.MarketData.SetPrice(symbol, price)
 		t.Logf("current %s price: %s", symbol, price)
 	}
 
@@ -852,10 +852,10 @@ func TestSignalRoundTrip_Bybit(t *testing.T) {
 	ctx10s, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if price, err := ex.MarkPrice(ctx10s, creds, symbol); err == nil && price.IsPositive() {
-		rt.UpdatePrice(symbol, price)
+		rt.MarketData.SetPrice(symbol, price)
 		t.Logf("current %s mark price: %s", symbol, price)
 	} else {
-		rt.UpdatePrice(symbol, decimal.NewFromFloat(65_000))
+		rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(65_000))
 	}
 
 	hand := newFixedQtyHand(rt, decimal.NewFromFloat(0.001))
@@ -940,7 +940,7 @@ func TestSignalRoundTrip_Alpaca(t *testing.T) {
 	ctx10s, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if price, err := ex.GetCurrentPrice(ctx10s, creds, symbol); err == nil && price.IsPositive() {
-		rt.UpdatePrice(symbol, price)
+		rt.MarketData.SetPrice(symbol, price)
 		t.Logf("current %s price: %s", symbol, price)
 	}
 

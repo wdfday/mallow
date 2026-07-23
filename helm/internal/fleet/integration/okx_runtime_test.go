@@ -84,7 +84,7 @@ func newOKXEnv(t *testing.T) *okxTestEnv {
 
 	var price decimal.Decimal
 	if p, err := ex.GetCurrentPrice(ctx, creds, "ETH-USDT"); err == nil && p.IsPositive() {
-		rt.UpdatePrice("ETH-USDT", p)
+		rt.MarketData.SetPrice("ETH-USDT", p)
 		price = p
 		t.Logf("ETH-USDT price seeded: %s", p)
 	} else {
@@ -380,7 +380,7 @@ func TestOKX_PyramidAndKill(t *testing.T) {
 	// 2nd entry (pyramid add). The avg-anchor gate only adds to a winning leg, so
 	// nudge the known price above the entry avg first (a live tick rarely moves
 	// on its own within the test window).
-	env.rt.UpdatePrice(symbol, pos.AvgPrice.Mul(decimal.NewFromFloat(1.001)))
+	env.rt.MarketData.SetPrice(symbol, pos.AvgPrice.Mul(decimal.NewFromFloat(1.001)))
 	placed2 := orderNotifyNew(hand, fill1OrderID, 20*time.Second)
 	filled2 := fillNotify(hand, 40*time.Second)
 	hand.DeliverSignal(longSigWithSLTP(symbol, decimal.Zero, decimal.Zero, false))

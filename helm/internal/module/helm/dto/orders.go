@@ -6,6 +6,16 @@ import (
 	"mallow/helm/internal/infra/journal/orderlog"
 )
 
+// OrderHistoryPageResp is a page of persisted order history, ordered
+// newest-first (by placed_at). Paging is a backward time cursor: pass Next
+// back as ?before= to fetch older orders. Empty Next means no more history.
+type OrderHistoryPageResp struct {
+	Orders  []OrderHistoryResp `json:"orders"`
+	Next    string             `json:"next,omitempty"`
+	HasMore bool               `json:"has_more"`
+	Limit   int                `json:"limit"`
+}
+
 // OrderHistoryResp is the JSON shape for a persisted order lifecycle record.
 type OrderHistoryResp struct {
 	ExchangeOrderID string `json:"exchange_order_id"`

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -47,6 +48,24 @@ func (b *Broker) Validate(ctx context.Context, cc brokerclient.Credentials) erro
 		return bybitErr("validate", out.RetCode, "")
 	}
 	return nil
+}
+
+// GetExternalUID returns Bybit's own user id from the API-key-info endpoint
+// (the same endpoint Validate already calls).
+func (b *Broker) GetExternalUID(ctx context.Context, cc brokerclient.Credentials) (string, error) {
+	var out struct {
+		RetCode int `json:"retCode"`
+		Result  struct {
+			UserID int64 `json:"userID"`
+		} `json:"result"`
+	}
+	if err := b.c.doSignedAt(ctx, toBybitCreds(cc), bybitURL(cc.IsPaper), http.MethodGet, "/v5/user/query-api", nil, &out); err != nil {
+		return "", fmt.Errorf("bybit get external uid: %w", err)
+	}
+	if out.RetCode != 0 {
+		return "", bybitErr("get external uid", out.RetCode, "")
+	}
+	return strconv.FormatInt(out.Result.UserID, 10), nil
 }
 
 func (b *Broker) GetPortfolio(ctx context.Context, cc brokerclient.Credentials) (*brokerclient.Portfolio, error) {

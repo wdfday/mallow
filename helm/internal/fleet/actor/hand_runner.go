@@ -551,15 +551,11 @@ func (h *Hand) handleSignal(ctx context.Context, sig Signal) {
 	isExitOrder := intent.Action == strategy.ActionExitLong || intent.Action == strategy.ActionExitShort
 
 	// Apply leverage/margin type on first entry per symbol for futures hands.
+	// EnsureLeverage is actor-owned (helm_actor.go) — no-ops if already set for
+	// this symbol on this helm's account, correctly coordinating across hands
+	// that might otherwise race on the exchange's single account+symbol setting.
 	if isFutures && !isExitOrder {
-		h.leverageAppliedMu.Lock()
-		if !h.leverageApplied[sig.Symbol] {
-			h.leverageApplied[sig.Symbol] = true
-			h.leverageAppliedMu.Unlock()
-			h.applyFuturesLeverage(ctx, sig.Symbol, h.cfg.futuresConfig)
-		} else {
-			h.leverageAppliedMu.Unlock()
-		}
+		h.helmRuntime.EnsureLeverage(ctx, sig.Symbol, h.cfg.futuresConfig)
 	}
 
 	orderQty := reply.Qty

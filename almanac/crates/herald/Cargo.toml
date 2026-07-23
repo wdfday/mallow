@@ -15,10 +15,17 @@ path = "src/main.rs"
 name = "gen-openapi"
 path = "src/bin/gen_openapi.rs"
 
+[[bin]]
+name = "hand-stress"
+path = "src/bin/hand_stress.rs"
+
+[[bin]]
+name = "wss-stress"
+path = "src/bin/wss_stress.rs"
+
 [dependencies]
 alm-core       = { workspace = true }
 alm-data       = { path = "../data" }
-alm-indicator  = { path = "../indicator" }
 alm-ledger     = { workspace = true }
 alm-strategy   = { path = "../strategy", features = ["openapi"] }
 alm-engine     = { path = "../engine" }
@@ -48,9 +55,6 @@ sqlx              = { workspace = true }
 # DuckDB — in-process SQL engine for querying flat Parquet files
 duckdb            = { version = "1", features = ["bundled"] }
 
-# SSE streaming
-tokio-stream      = { version = "0.1", features = ["sync"] }
-
 # Watch signal dispatch — webhook POST
 reqwest           = { version = "0.12", features = ["json"] }
 
@@ -78,7 +82,10 @@ pyroscope_pprofrs  = "0.2"
 
 # Memory allocator — returns freed pages to OS aggressively (vs glibc malloc
 # which holds virtual memory after startup spikes like HTF gap-fill).
-tikv-jemallocator  = "0.6"
+tikv-jemallocator  = { version = "0.6", features = ["stats"] }
+pprof = { version = "0.15.0", features = ["flamegraph"] }
+tikv-jemalloc-ctl = { version = "0.6", features = ["stats"] }
+metrics-util = { version = "0.20.4", features = ["debugging"] }
 
 [dev-dependencies]
 tower             = { version = "0.4", features = ["util"] }

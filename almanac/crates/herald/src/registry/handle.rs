@@ -419,34 +419,39 @@ fn warmup_v2(
 
 /// All hands watching the same symbol. The bar window is NOT stored here —
 /// it lives in the ledger and is read on demand in `evaluate`.
+///
+/// Keyed by `hand_id` (`HashMap`, not `Vec`): `add`/`remove` used to be
+/// `Vec::retain` + push — an O(n) scan of every existing hand on every single
+/// insert, just to dedupe an id that's fresh 99.99% of the time. Registering
+/// N hands onto one symbol sequentially (startup hydration, or many hands on
+/// a popular pair) was therefore O(n²) — invisible at normal hand counts,
+/// catastrophic at large ones (measured: 100k hands ~10s, 1M hands did not
+/// finish registering in 24 minutes). `HashMap` makes insert/remove/dedupe
+/// O(1) average, so total registration cost is O(n) like it should be.
 pub struct SymbolGroup {
     pub symbol: String,
-    hands: Vec<Handle>,
+    hands: std::collections::HashMap<String, Handle>,
 }
 
 impl SymbolGroup {
     pub fn new(symbol: String) -> Self {
-        Self { symbol, hands: Vec::new() }
+        Self { symbol, hands: std::collections::HashMap::new() }
     }
 
-    /// Insert / replace a hand. Returns whether any hand was replaced.
+    /// Insert / replace a hand by id — O(1) average.
     pub fn add(&mut self, hand: Handle) {
-        self.hands.retain(|h| h.hand_id != hand.hand_id);
-        self.hands.push(hand);
+        self.hands.insert(hand.hand_id.clone(), hand);
     }
 
-    /// Remove a hand by id.
+    /// Remove a hand by id — O(1) average.
     pub fn remove(&mut self, hand_id: &str) {
-        self.hands.retain(|h| {
-            if h.hand_id == hand_id {
-                info!(
-                    hand_id = %h.hand_id, helm_id = %h.helm_id,
-                    symbol = %self.symbol, target_tf = %h.target_tf,
-                    "hand deregistered"
-                );
-                false
-            } else { true }
-        });
+        if let Some(h) = self.hands.remove(hand_id) {
+            info!(
+                hand_id = %h.hand_id, helm_id = %h.helm_id,
+                symbol = %self.symbol, target_tf = %h.target_tf,
+                "hand deregistered"
+            );
+        }
     }
 
     /// Drain every hand.
@@ -471,7 +476,7 @@ impl SymbolGroup {
     /// bar.  Returns one entry per emitting hand.
     pub fn evaluate_all(&mut self, bar: &Bar, tf: Timeframe) -> Vec<(String, String, Signal)> {
         let mut results = Vec::new();
-        for h in self.hands.iter_mut() {
+        for h in self.hands.values_mut() {
             if h.target_tf != tf {
                 continue;
             }
@@ -516,7 +521,7 @@ impl SymbolGroup {
     }
 
     pub fn hand_infos(&self) -> impl Iterator<Item = &Handle> {
-        self.hands.iter()
+        self.hands.values()
     }
 }
 

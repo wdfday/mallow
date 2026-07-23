@@ -45,4 +45,4 @@ pub type BarRx = mpsc::Receiver<BarEvent>;
 // ── Subscribed TF set ─────────────────────────────────────────────────────────
 
 /// Re-export from `config::timeframe` — the source of truth for live-subscribable TFs.
-pub use alm_herald::config::timeframe::{parse_tf, SUBSCRIBE_TFS};
+pub use crate::config::timeframe::{parse_tf, SUBSCRIBE_TFS};

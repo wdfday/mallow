@@ -1,4 +1,5 @@
 pub mod config;
+pub mod feed;
 pub mod helper;
 pub mod http;
 pub mod registry;

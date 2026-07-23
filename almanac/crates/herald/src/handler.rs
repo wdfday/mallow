@@ -4,7 +4,7 @@
 //!
 //! ```text
 //!   feed::binance  ─┐
-//!   feed::okx      ─┤  mpsc::Sender<BarEvent { tf, bar, closed }>  (bounded, BAR_CHANNEL_CAP=512)
+//!   feed::okx      ─┤  mpsc::Sender<BarEvent { tf, bar, closed }>  (bounded, BAR_CHANNEL_CAP=1024)
 //!                   ▼
 //!              Handler::run
 //!                   │
@@ -37,7 +37,7 @@ use alm_ledger::Ledger;
 use async_nats::{Client, jetstream};
 use futures::StreamExt;
 use prost::Message as _;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Semaphore};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -797,6 +797,26 @@ impl HandlerCtx {
 // engine.validate / engine.register replies (which would time out at the
 // helm caller even though herald is healthy).
 
+/// Resubscribe with exponential backoff instead of propagating the error.
+/// `client.subscribe()` can fail transiently while the underlying NATS
+/// connection is mid-reconnect (e.g. right after a `ClientError`/`Disconnected`
+/// event) even though async-nats itself reconnects unboundedly on its own —
+/// bailing out via `?` here used to kill the whole control-plane task (and
+/// with it, the entire herald process) on what is normally a few-second blip.
+async fn resubscribe_with_retry(client: &Client, subject: &'static str) -> async_nats::Subscriber {
+    let mut backoff = Duration::from_millis(200);
+    loop {
+        match client.subscribe(subject).await {
+            Ok(sub) => return sub,
+            Err(e) => {
+                warn!(subject, err = %e, backoff_ms = backoff.as_millis(), "resubscribe failed — retrying");
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(Duration::from_secs(10));
+            }
+        }
+    }
+}
+
 async fn control_plane_task(ctx: Arc<HandlerCtx>) -> anyhow::Result<()> {
     let mut reset_sub      = ctx.client.subscribe(SUBJ_RESET).await?;
     let mut register_sub   = ctx.client.subscribe(SUBJ_REGISTER).await?;
@@ -818,56 +838,56 @@ async fn control_plane_task(ctx: Arc<HandlerCtx>) -> anyhow::Result<()> {
                 Some(msg) => ctx.handle_reset(msg).await,
                 None => {
                     warn!(subject = SUBJ_RESET, "NATS subscription closed — resubscribing");
-                    reset_sub = ctx.client.subscribe(SUBJ_RESET).await?;
+                    reset_sub = resubscribe_with_retry(&ctx.client, SUBJ_RESET).await;
                 }
             },
             msg = register_sub.next() => match msg {
                 Some(msg) => ctx.handle_register(msg).await,
                 None => {
                     warn!(subject = SUBJ_REGISTER, "NATS subscription closed — resubscribing");
-                    register_sub = ctx.client.subscribe(SUBJ_REGISTER).await?;
+                    register_sub = resubscribe_with_retry(&ctx.client, SUBJ_REGISTER).await;
                 }
             },
             msg = validate_sub.next() => match msg {
                 Some(msg) => ctx.handle_validate(msg).await,
                 None => {
                     warn!(subject = SUBJ_VALIDATE, "NATS subscription closed — resubscribing");
-                    validate_sub = ctx.client.subscribe(SUBJ_VALIDATE).await?;
+                    validate_sub = resubscribe_with_retry(&ctx.client, SUBJ_VALIDATE).await;
                 }
             },
             msg = deregister_sub.next() => match msg {
                 Some(msg) => ctx.handle_deregister(msg).await,
                 None => {
                     warn!(subject = SUBJ_DEREGISTER, "NATS subscription closed — resubscribing");
-                    deregister_sub = ctx.client.subscribe(SUBJ_DEREGISTER).await?;
+                    deregister_sub = resubscribe_with_retry(&ctx.client, SUBJ_DEREGISTER).await;
                 }
             },
             msg = list_sub.next() => match msg {
                 Some(msg) => ctx.handle_list(msg).await,
                 None => {
                     warn!(subject = SUBJ_LIST, "NATS subscription closed — resubscribing");
-                    list_sub = ctx.client.subscribe(SUBJ_LIST).await?;
+                    list_sub = resubscribe_with_retry(&ctx.client, SUBJ_LIST).await;
                 }
             },
             msg = ping_sub.next() => match msg {
                 Some(msg) => ctx.handle_ping(msg).await,
                 None => {
                     warn!(subject = SUBJ_PING, "NATS subscription closed — resubscribing");
-                    ping_sub = ctx.client.subscribe(SUBJ_PING).await?;
+                    ping_sub = resubscribe_with_retry(&ctx.client, SUBJ_PING).await;
                 }
             },
             msg = heartbeat_sub.next() => match msg {
                 Some(msg) => ctx.handle_heartbeat(msg).await,
                 None => {
                     warn!(subject = SUBJ_HEARTBEAT, "NATS subscription closed — resubscribing");
-                    heartbeat_sub = ctx.client.subscribe(SUBJ_HEARTBEAT).await?;
+                    heartbeat_sub = resubscribe_with_retry(&ctx.client, SUBJ_HEARTBEAT).await;
                 }
             },
             msg = stats_sub.next() => match msg {
                 Some(msg) => ctx.handle_stats(msg).await,
                 None => {
                     warn!(subject = SUBJ_STATS, "NATS subscription closed — resubscribing");
-                    stats_sub = ctx.client.subscribe(SUBJ_STATS).await?;
+                    stats_sub = resubscribe_with_retry(&ctx.client, SUBJ_STATS).await;
                 }
             },
         }
@@ -875,6 +895,14 @@ async fn control_plane_task(ctx: Arc<HandlerCtx>) -> anyhow::Result<()> {
 }
 
 // ── Signal publisher task ─────────────────────────────────────────────────────
+
+/// Upper bound on concurrently in-flight `publish + ack` calls. Not a
+/// throughput limiter (tokio tasks are cheap — this could be much higher) —
+/// it exists purely so a stalled or very slow NATS server can't make this
+/// spawn an unbounded number of tasks. Real backpressure is the bounded
+/// signal channel upstream (`sig_tx`, main.rs); this only bounds how much
+/// concurrent NATS work one herald process keeps in flight.
+const MAX_IN_FLIGHT_PUBLISHES: usize = 256;
 
 async fn signal_publisher(
     client: Client,
@@ -898,70 +926,99 @@ async fn signal_publisher(
         Err(e) => warn!(err = %e, "SIGNALS stream ensure failed — helm may not be up yet; will retry on each publish"),
     }
 
+    // Fire-and-forget: dequeue and spawn immediately, never await a publish
+    // inline here. The old code awaited `publish().await` then `ack.await`
+    // sequentially before touching the next message — throughput was capped
+    // at 1/round-trip-latency regardless of how fast signals arrived. Measured
+    // impact: at a realistic ~100µs-1ms NATS round trip, a burst from many
+    // hands sharing one symbol (synchronized crossing event) lost 79-97% of
+    // signals to this serialization alone (see HAND_CAPACITY.md). The
+    // Semaphore bounds concurrent in-flight publishes so a stalled NATS
+    // server can't spawn unboundedly many tasks; it is not the throughput
+    // lever (tokio tasks are cheap) — the channel capacity upstream is.
+    let in_flight = Arc::new(Semaphore::new(MAX_IN_FLIGHT_PUBLISHES));
+
+    while let Some(batch) = rx.recv().await {
+        let permit = match in_flight.clone().acquire_owned().await {
+            Ok(permit) => permit,
+            Err(_) => break, // semaphore closed — only happens if this fn is dropped mid-acquire
+        };
+        let js = js.clone();
+        let atomics = Arc::clone(&atomics);
+        tokio::spawn(async move {
+            let _permit = permit; // held until this task finishes, then released
+            publish_signal_with_retry(js, batch, &atomics).await;
+        });
+    }
+    info!("signal publisher channel closed");
+}
+
+/// Publishes one signal to JetStream with up to 3 retries — extracted from
+/// the old inline loop body so `signal_publisher` can spawn it per-message
+/// instead of awaiting it inline. Unchanged behavior, just runs concurrently
+/// with its siblings now instead of blocking the next dequeue.
+async fn publish_signal_with_retry(js: jetstream::Context, batch: HandSignal, atomics: &HeraldAtomics) {
     const MAX_RETRIES: usize = 3;
     const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
 
-    while let Some(batch) = rx.recv().await {
-        let response = SignalResponse {
-            signal: Some(SignalMsg::from(&batch.signal)),
-            helm_id: batch.helm_id.clone(),
-            hand_id: batch.hand_id.clone(),
-        };
-        let payload: Vec<u8> = response.encode_to_vec();
-        debug!(
-            helm_id = %batch.helm_id, hand_id = %batch.hand_id,
-            symbol = %batch.signal.symbol, subject = SUBJ_SIGNALS,
-            "publishing signal to NATS"
-        );
+    let response = SignalResponse {
+        signal: Some(SignalMsg::from(&batch.signal)),
+        helm_id: batch.helm_id.clone(),
+        hand_id: batch.hand_id.clone(),
+    };
+    let payload: Vec<u8> = response.encode_to_vec();
+    debug!(
+        helm_id = %batch.helm_id, hand_id = %batch.hand_id,
+        symbol = %batch.signal.symbol, subject = SUBJ_SIGNALS,
+        "publishing signal to NATS"
+    );
 
-        let mut published = false;
-        for attempt in 0..MAX_RETRIES {
-            match js.publish(SUBJ_SIGNALS, payload.clone().into()).await {
-                Ok(ack_future) => {
-                    match ack_future.await {
-                        Ok(_) => {
-                            info!(
-                                helm_id = %batch.helm_id, hand_id = %batch.hand_id,
-                                symbol = %batch.signal.symbol, subject = SUBJ_SIGNALS,
-                                direction = ?batch.signal.direction, strength = batch.signal.strength,
-                                bar_ts = batch.bar_ts,
-                                "signal published to NATS"
-                            );
-                            counter!("herald_nats_signals_published_total").increment(1);
-                            atomics.signals_published.fetch_add(1, Ordering::Relaxed);
-                            published = true;
-                            break;
-                        }
-                        Err(e) if attempt + 1 < MAX_RETRIES => {
-                            warn!(attempt = attempt + 1, err = %e, "signal ack failed — retrying");
-                            tokio::time::sleep(RETRY_DELAY).await;
-                        }
-                        Err(e) => {
-                            error!(subject = SUBJ_SIGNALS, err = %e, "JetStream signal ack failed after {MAX_RETRIES} attempts");
-                        }
+    let mut published = false;
+    for attempt in 0..MAX_RETRIES {
+        match js.publish(SUBJ_SIGNALS, payload.clone().into()).await {
+            Ok(ack_future) => {
+                match ack_future.await {
+                    Ok(_) => {
+                        info!(
+                            helm_id = %batch.helm_id, hand_id = %batch.hand_id,
+                            symbol = %batch.signal.symbol, subject = SUBJ_SIGNALS,
+                            direction = ?batch.signal.direction, strength = batch.signal.strength,
+                            bar_ts = batch.bar_ts,
+                            "signal published to NATS"
+                        );
+                        counter!("herald_nats_signals_published_total").increment(1);
+                        atomics.signals_published.fetch_add(1, Ordering::Relaxed);
+                        published = true;
+                        break;
+                    }
+                    Err(e) if attempt + 1 < MAX_RETRIES => {
+                        warn!(attempt = attempt + 1, err = %e, "signal ack failed — retrying");
+                        tokio::time::sleep(RETRY_DELAY).await;
+                    }
+                    Err(e) => {
+                        error!(subject = SUBJ_SIGNALS, err = %e, "JetStream signal ack failed after {MAX_RETRIES} attempts");
                     }
                 }
-                Err(e) if attempt + 1 < MAX_RETRIES => {
-                    warn!(attempt = attempt + 1, err = %e, "signal publish failed — retrying");
-                    tokio::time::sleep(RETRY_DELAY).await;
-                }
-                Err(e) => {
-                    error!(subject = SUBJ_SIGNALS, err = %e, "JetStream signal publish failed after {MAX_RETRIES} attempts");
-                }
+            }
+            Err(e) if attempt + 1 < MAX_RETRIES => {
+                warn!(attempt = attempt + 1, err = %e, "signal publish failed — retrying");
+                tokio::time::sleep(RETRY_DELAY).await;
+            }
+            Err(e) => {
+                error!(subject = SUBJ_SIGNALS, err = %e, "JetStream signal publish failed after {MAX_RETRIES} attempts");
             }
         }
-        if !published {
-            error!(
-                helm_id = %batch.helm_id, hand_id = %batch.hand_id,
-                symbol = %batch.signal.symbol, direction = ?batch.signal.direction,
-                bar_ts = batch.bar_ts,
-                "signal DROPPED after {MAX_RETRIES} publish attempts — trading bot will not receive this signal"
-            );
-            counter!("herald_nats_publish_errors_total", "subject" => "signals").increment(1);
-            atomics.nats_signals_errors.fetch_add(1, Ordering::Relaxed);
-        }
     }
-    info!("signal publisher channel closed");
+    if !published {
+        error!(
+            helm_id = %batch.helm_id, hand_id = %batch.hand_id,
+            symbol = %batch.signal.symbol, direction = ?batch.signal.direction,
+            bar_ts = batch.bar_ts,
+            "signal DROPPED after {MAX_RETRIES} publish attempts — trading bot will not receive this signal"
+        );
+        counter!("herald_nats_publish_errors_total", "subject" => "signals").increment(1);
+        atomics.nats_signals_errors.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

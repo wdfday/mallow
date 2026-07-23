@@ -3,9 +3,8 @@
 #[global_allocator]
 static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-mod feed;
 mod handler;
-use alm_herald::{config::symbols, http, registry};
+use alm_herald::{config::symbols, feed, http, registry};
 use metrics_exporter_prometheus::PrometheusBuilder;
 use pyroscope_pprofrs::{pprof_backend, PprofConfig};
 use feed::rest::{gap_fill_symbol, Exchange};
@@ -160,7 +159,13 @@ async fn main() -> Result<()> {
 
     // Bounded signal channel — if the publisher falls behind (NATS slow),
     // the registry drops signals rather than growing memory without bound.
-    let (sig_tx, sig_rx) = mpsc::channel(1024);
+    // 8192, not 1024: hand-stress --rx-latency showed many hands sharing one
+    // symbol can burst thousands of signals in a single evaluate_all pass
+    // (synchronized crossing event) — 1024 dropped ~79% of a 5k-hand burst
+    // even with a fast consumer; 8192 (+ signal_publisher's bounded
+    // concurrent publishing below) absorbed it with zero drops in testing.
+    // See crates/herald/docs/HAND_CAPACITY.md.
+    let (sig_tx, sig_rx) = mpsc::channel(8192);
     let registry = Arc::new(Registry::with_default_scripts(
         ledger.clone(), tf, sig_tx,
         default_live_scripts(),
@@ -282,7 +287,11 @@ async fn main() -> Result<()> {
     // On SIGTERM/SIGINT: abort feed tasks so their bar_tx senders drop.
     // The handler sees bar_rx closed, drains any buffered bars, then exits.
     // We give it GRACEFUL_SHUTDOWN_TIMEOUT to finish; abort after.
-    const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+    //
+    // Must stay comfortably below docker-compose.yml's `stop_grace_period`
+    // (15s) — if Docker's own SIGKILL fires before this timeout completes,
+    // the exit-reason log below never runs, and every restart looks silent.
+    const GRACEFUL_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(8);
 
     let shutdown_reason: &str;
     let result: anyhow::Result<()> = tokio::select! {

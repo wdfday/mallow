@@ -21,6 +21,7 @@
 //! [`MtfScriptStrategy::declared_htfs`] to discover which TFs the script needs.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::sync::Arc;
 
 use anyhow::Result;
 use rhai::{Array, Dynamic, Engine, Scope, AST};
@@ -37,13 +38,13 @@ use super::parse::{
     brace_depth_delta, validate_ta_top_level, CandleDirective, DEFAULT_BUF_DEPTH,
 };
 use crate::script::utils::parse_timeframe;
-use crate::script::engine::{build_engine, BAR_FIELDS};
+use crate::script::engine::{shared_engine, BAR_FIELDS};
 use crate::script::v1::{MEntry, scalar_out, bool_out};
 
 // ── MtfScriptStrategy ─────────────────────────────────────────────────────────
 
 pub struct MtfScriptStrategy {
-    engine:           Engine,
+    engine:           Arc<Engine>,
     ast:              AST,
     regime_ast:       Option<AST>,
     bindings:         HashMap<String, FeedVarBinding>,
@@ -165,8 +166,8 @@ impl MtfScriptStrategy {
         let regime_cleaned_script = process_script_block(&regime_body_owned, &mut decls, &mut decl_names)?;
         let main_cleaned_script = process_script_block(main_source.as_str(), &mut decls, &mut decl_names)?;
 
-        // ── Step 3: compile ASTs ──────────────────────────────────────────────
-        let engine = build_engine();
+        // ── Step 3: compile ASTs against the shared, process-wide engine ─────
+        let engine = shared_engine();
 
         let regime_ast = if regime_cleaned_script.trim().is_empty() {
             None

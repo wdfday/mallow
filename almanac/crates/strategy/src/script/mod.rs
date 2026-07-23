@@ -28,6 +28,32 @@ pub(crate) mod ta;
 
 pub use probe::probe_script_htfs;
 
+/// Builds the exact `rhai::Engine` a `ScriptStrategy` uses (all packages +
+/// `ind`/`ta` custom functions registered) without compiling any script.
+///
+/// For capacity/memory-profiling tools only (see herald's `hand-stress`
+/// `--heap-breakdown`) — isolates Engine-construction cost from AST-compile
+/// cost. Never use this to actually run a strategy: go through
+/// `ScriptStrategy::from_script_live`.
+pub fn build_bench_engine() -> rhai::Engine {
+    engine::build_engine()
+}
+
+/// A bare `rhai::Engine::new()` — Rhai's own default standard library only,
+/// none of herald's `ind`/`ta`/`MEntry` registrations. For capacity tools:
+/// diffing this against [`build_bench_engine`] isolates Rhai's own baseline
+/// from what herald adds on top.
+pub fn build_bare_rhai_engine_for_bench() -> rhai::Engine {
+    rhai::Engine::new()
+}
+
+/// The real process-wide shared engine every `ScriptStrategy`/`MtfScriptStrategy`
+/// actually uses (see [`engine::shared_engine`]) — for capacity tools to measure
+/// the true marginal cost of one more hand: cloning this `Arc`, nothing else.
+pub fn shared_bench_engine() -> std::sync::Arc<rhai::Engine> {
+    engine::shared_engine()
+}
+
 // ── Lint surface (shared, version-agnostic) ───────────────────────────────────
 pub use lint::{
     script_lint, LintDiagnostic, ScriptLintScope, DeclaredIndicator, KNOWN_INDICATOR_TYPES,

@@ -19,7 +19,7 @@ pub use strategy::{ScriptStrategy, script_indicator_deps};
 pub(crate) use binding::MEntry;
 pub(crate) use crate::script::utils::{scalar_out, bool_out};
 pub(crate) use crate::script::engine::{
-    build_engine, extract_max_lookback, BAR_FIELDS, DEFAULT_BUF_DEPTH,
+    shared_engine, extract_max_lookback, BAR_FIELDS, DEFAULT_BUF_DEPTH,
     second_arg_is_static_literal,
 };
 pub(crate) use parse::{

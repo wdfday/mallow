@@ -627,7 +627,24 @@ pub(crate) fn try_parse_indicator_line(line: &str) -> Option<IndicatorDecl> {
 
     // Parse args: period [, name=value | positional_num | "TF"]*
     let mut args = args_inner.split(',');
-    let period: usize = args.next()?.trim().parse().ok()?;
+    // The first positional slot is a required integer for most indicators,
+    // but a few (`kalman` — see `PERIOD_EXEMPT`) ignore it entirely and only
+    // read named params (`q_pos=`, `q_vel=`, ...). A user reasonably tries
+    // the same all-positional style that works everywhere else
+    // (`ind.kalman(0.001, 0.001, 1)`), and previously that non-integer first
+    // token made this whole function bail via `?` — the declaration line was
+    // never recognized at all, silently falling through to a bare
+    // `ind.kalman(...)` expression that Rhai compiles fine (`ind` just looks
+    // like an undefined variable, not a syntax error) and fails at runtime,
+    // every bar, forever, with the error swallowed by `ScriptStrategy::on_bar`.
+    // Fall back to `0` instead of bailing: for `PERIOD_EXEMPT` types period is
+    // unused anyway (harmless), and for everything else `0` still surfaces a
+    // real, actionable diagnostic via `check_indicator_params`'s
+    // period-must-be-≥-1 check, instead of dead silence.
+    let period_tok = args.next()?.trim();
+    let period: usize = period_tok.parse()
+        .or_else(|_| period_tok.parse::<f64>().map(|f| f.max(0.0).round() as usize))
+        .unwrap_or(0);
 
     let mut extra_params   = HashMap::new();
     let mut timeframe      = None;

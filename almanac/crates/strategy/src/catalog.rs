@@ -49,7 +49,7 @@ pub struct ParamDef {
 /// Metadata for one indicator type.
 #[derive(Debug, Serialize)]
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
-pub struct IndicatorMeta {
+pub struct RawIndicatorMeta {
     /// Identifier used in `"type"` field and `ind.TYPE(...)` Rhai call.
     pub name: &'static str,
     /// Human-readable label.
@@ -81,6 +81,96 @@ pub struct IndicatorMeta {
     pub overlay: bool,
 }
 
+/// Public catalog entry — [`RawIndicatorMeta`] plus per-field pane placement.
+///
+/// Replaces the old whole-indicator `overlay: bool` as the authoritative
+/// source for chart layout: a handful of indicators mix a main-pane field
+/// (a price-level line) with sub-pane fields (oscillator/ratio values) —
+/// `bbands`'s `bandwidth`/`percent_b`, `bull_bear`/`elder_ray`'s power fields
+/// vs their `ema` line. The FE's `getPaneForIndicator` in
+/// `app/dashboard/strategy/use-chart-data.ts` currently re-derives this via
+/// a hand-maintained keyword/field-name heuristic — this is meant to replace
+/// that with real per-field data, the same migration already done for
+/// live-chart pane placement (WASM, not FE — see recent `on-chart indicator
+/// pane placement` commits).
+///
+/// `mainpane` + `subpanes` never include `BOOL_FIELDS` members (`bullish`,
+/// `bearish`, …) — a 0/1 flag isn't a line to place on either pane, it's a
+/// marker; see `alm_indicator::field_kind`.
+#[derive(Debug, Serialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+pub struct IndicatorMeta {
+    pub name: &'static str,
+    pub label: &'static str,
+    pub category: &'static str,
+    pub description: &'static str,
+    pub params: Vec<ParamDef>,
+    #[serde(serialize_with = "serialize_outputs")]
+    #[cfg_attr(feature = "openapi", schema(value_type = Vec<OutputField>))]
+    pub outputs: Vec<&'static str>,
+    pub multi: bool,
+    pub primary: &'static str,
+    pub declaration: &'static str,
+    pub example: &'static str,
+    pub overlay: bool,
+    /// Output field names that render on the price chart's main pane.
+    pub mainpane: Vec<&'static str>,
+    /// Output field names grouped by shared sub-pane — each inner `Vec`
+    /// renders together on one sub-pane (same y-axis). Indicators needing
+    /// more than one distinct sub-pane get more than one entry here; today
+    /// none do (every known type's sub fields share a single group), but the
+    /// shape supports it without another schema change.
+    pub subpanes: Vec<Vec<&'static str>>,
+}
+
+/// Per-field pane overrides for indicators that mix main-pane and sub-pane
+/// output in one type. `(indicator_name, field_name) → is_main`. Every other
+/// field of every other indicator falls back to its `overlay` bool applying
+/// uniformly to all (non-bool) fields.
+const PANE_OVERRIDES: &[(&str, &str, bool)] = &[
+    ("bbands", "upper", true),
+    ("bbands", "middle", true),
+    ("bbands", "lower", true),
+    ("bbands", "bandwidth", false),
+    ("bbands", "percent_b", false),
+    ("bull_bear", "ema", true),
+    ("bull_bear", "bull", false),
+    ("bull_bear", "bear", false),
+    ("elder_ray", "ema", true),
+    ("elder_ray", "bull_power", false),
+    ("elder_ray", "bear_power", false),
+];
+
+fn split_panes(raw: &RawIndicatorMeta) -> (Vec<&'static str>, Vec<Vec<&'static str>>) {
+    let mut mainpane = Vec::new();
+    let mut sub_group = Vec::new();
+    for &field in &raw.outputs {
+        if alm_indicator::field_kind(field) == alm_indicator::FieldKind::Bool {
+            continue; // markers, not lines — placed on neither pane
+        }
+        let is_main = PANE_OVERRIDES.iter()
+            .find(|(name, f, _)| *name == raw.name && *f == field)
+            .map(|(_, _, is_main)| *is_main)
+            .unwrap_or(raw.overlay);
+        if is_main { mainpane.push(field); } else { sub_group.push(field); }
+    }
+    let subpanes = if sub_group.is_empty() { vec![] } else { vec![sub_group] };
+    (mainpane, subpanes)
+}
+
+impl From<RawIndicatorMeta> for IndicatorMeta {
+    fn from(raw: RawIndicatorMeta) -> Self {
+        let (mainpane, subpanes) = split_panes(&raw);
+        Self {
+            name: raw.name, label: raw.label, category: raw.category,
+            description: raw.description, params: raw.params, outputs: raw.outputs,
+            multi: raw.multi, primary: raw.primary, declaration: raw.declaration,
+            example: raw.example, overlay: raw.overlay,
+            mainpane, subpanes,
+        }
+    }
+}
+
 fn p_int(name: &'static str, default: i64) -> ParamDef {
     ParamDef { name, type_: "int", default: serde_json::json!(default), description: None }
 }
@@ -93,9 +183,13 @@ fn p_float_desc(name: &'static str, default: f64, desc: &'static str) -> ParamDe
 
 /// Returns the full indicator catalog (one entry per `"type"` key).
 pub fn all() -> Vec<IndicatorMeta> {
+    raw_all().into_iter().map(IndicatorMeta::from).collect()
+}
+
+fn raw_all() -> Vec<RawIndicatorMeta> {
     vec![
         // ── Trend / MA ────────────────────────────────────────────────────────
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "sma", label: "Simple Moving Average", category: "trend",
             description: "Arithmetic mean of closing prices over a rolling window — the simplest trend baseline.",
             params: vec![p_int("period", 20)],
@@ -105,7 +199,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if close > sma20[0] { long = true; }",
             overlay: true,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "ema", label: "Exponential Moving Average", category: "trend",
             description: "Exponentially-weighted average that gives more weight to recent bars — faster than SMA.",
             params: vec![p_int("period", 20)],
@@ -115,7 +209,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if ema9[0] > ema21[0] && ema9[1] <= ema21[1] { long = true; }",
             overlay: true,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "wma", label: "Weighted Moving Average", category: "trend",
             description: "Linearly weighted average where the most recent bar has the highest weight.",
             params: vec![p_int("period", 20)],
@@ -125,7 +219,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if close > wma14[0] { long = true; }",
             overlay: true,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "hma", label: "Hull Moving Average", category: "trend",
             description: "Hull's MA using WMA of WMA to dramatically reduce lag while staying smooth.",
             params: vec![p_int("period", 20)],
@@ -135,7 +229,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if hma20[0] > hma20[1] { long = true; }",
             overlay: true,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "dema", label: "Double EMA", category: "trend",
             description: "Double EMA that subtracts the error of EMA to eliminate most lag from a single EMA.",
             params: vec![p_int("period", 20)],
@@ -145,7 +239,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if dema9[0] > dema21[0] && dema9[1] <= dema21[1] { long = true; }",
             overlay: true,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "tema", label: "Triple EMA", category: "trend",
             description: "Triple EMA — even faster response than DEMA with further lag reduction.",
             params: vec![p_int("period", 20)],
@@ -155,7 +249,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if tema9[0] > tema21[0] && tema9[1] <= tema21[1] { long = true; }",
             overlay: true,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "smma", label: "Smoothed MA (RMA)", category: "trend",
             description: "Smoothed MA (alias RMA) — slow-reacting average that filters out short-term noise.",
             params: vec![p_int("period", 20)],
@@ -165,7 +259,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if close > smma14[0] { long = true; }",
             overlay: true,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "alma", label: "Arnaud Legoux MA", category: "trend",
             description: "Gaussian-weighted MA centred near the most recent bar for low lag and low noise.",
             params: vec![
@@ -179,7 +273,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if close > alma9[0] { long = true; }",
             overlay: true,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "mcginley", label: "McGinley Dynamic", category: "trend",
             description: "Self-adjusting MA that automatically corrects for speed differences in market movement.",
             params: vec![p_int("period", 14)],
@@ -189,7 +283,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if close > mc14[0] { long = true; }",
             overlay: true,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "lsma", label: "Least Squares MA", category: "trend",
             description: "Linear regression line fit over the window — slope indicates trend direction and strength.",
             params: vec![p_int("period", 25)],
@@ -199,7 +293,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if ls25[0].slope > 0 && close > ls25[0].value { long = true; }",
             overlay: true,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "vwma", label: "Volume-Weighted MA", category: "trend",
             description: "Volume-weighted MA where high-volume bars exert proportionally more influence.",
             params: vec![p_int("period", 20)],
@@ -209,7 +303,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if close > vwma20[0] { long = true; }",
             overlay: true,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "kama", label: "Kaufman Adaptive MA", category: "trend",
             description: "Kaufman adaptive MA — speeds up in trending markets and slows down in ranging conditions.",
             params: vec![
@@ -223,7 +317,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if kama10[0] > kama10[1] { long = true; }",
             overlay: true,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "macd", label: "MACD", category: "trend",
             description: "Moving Average Convergence Divergence — difference between fast and slow EMAs with a signal line.",
             params: vec![p_int("fast", 12), p_int("slow", 26), p_int("signal", 9)],
@@ -233,7 +327,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if macd1[0].histogram > 0 && macd1[1].histogram <= 0 { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "trix", label: "TRIX", category: "trend",
             description: "1-day rate-of-change of a triple-smoothed EMA — filters noise and shows momentum.",
             params: vec![p_int("period", 18), p_int("signal", 9)],
@@ -243,7 +337,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if trix18[0].trix > trix18[0].signal && trix18[1].trix <= trix18[1].signal { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "adx", label: "Average Directional Index", category: "trend",
             description: "Trend-strength on a 0–100 scale (above 25 = strong trend), plus +DI/-DI directional lines.",
             params: vec![p_int("period", 14)],
@@ -253,7 +347,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if adx14[0] > 25 && adx14[0].plus_di > adx14[0].minus_di { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "dmi", label: "DMI (Directional Movement)", category: "trend",
             description: "Directional Movement Index — +DI vs −DI crossover signals trend direction changes.",
             params: vec![p_int("period", 14)],
@@ -263,7 +357,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if dmi14[0].plus_di > dmi14[0].minus_di && dmi14[1].plus_di <= dmi14[1].minus_di { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "aroon", label: "Aroon", category: "trend",
             description: "Measures how many bars ago the highest high / lowest low occurred to gauge trend age.",
             params: vec![p_int("period", 25)],
@@ -273,7 +367,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if aroon25[0].up > 70 && aroon25[0].down < 30 { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "aroon_osc", label: "Aroon Oscillator", category: "trend",
             description: "Aroon Up − Aroon Down on a −100…+100 scale — positive = uptrend dominance.",
             params: vec![p_int("period", 25)],
@@ -283,7 +377,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if arosc25[0] > 0 && arosc25[1] <= 0 { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "vortex", label: "Vortex Indicator", category: "trend",
             description: "+VI and −VI crossover signals new trend direction based on high-low range movement.",
             params: vec![p_int("period", 14)],
@@ -293,7 +387,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if vx14[0].plus_vi > vx14[0].minus_vi && vx14[1].plus_vi <= vx14[1].minus_vi { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "alligator", label: "Williams Alligator", category: "trend",
             description: "Three smoothed MAs (jaw/teeth/lips) that identify sleeping, awakening, and eating trend phases.",
             params: vec![
@@ -307,7 +401,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if flag(ali[0].bullish) && !flag(ali[1].bullish) { long = true; }",
             overlay: true,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "gmma", label: "Guppy MMMA", category: "trend",
             description: "Guppy Multiple MA — two groups of EMAs (short/long) reveal underlying trend structure.",
             params: vec![],
@@ -319,7 +413,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if gmma[0] > 0 && flag(gmma[0].bullish) { long = true; }",
             overlay: true,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "kdj", label: "KDJ", category: "trend",
             description: "Stochastic-based oscillator popular in Asian markets; J line amplifies divergence signals.",
             params: vec![p_int("period", 9), p_int("k_period", 3), p_int("d_period", 3)],
@@ -329,7 +423,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if kdj9[0].k > kdj9[0].d && kdj9[0].k < 20 { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "kalman", label: "Kalman Filter", category: "trend",
             description: "Optimal state estimator tracking price (value) and velocity — minimal lag, low noise.",
             params: vec![
@@ -344,7 +438,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             overlay: true,
         },
         // ── Momentum / Oscillator ─────────────────────────────────────────────
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "rsi", label: "Relative Strength Index", category: "momentum",
             description: "Momentum oscillator bounded 0–100; above 70 is overbought, below 30 is oversold.",
             params: vec![p_int("period", 14)],
@@ -354,7 +448,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if rsi14[0] < 30 { long = true; } else if rsi14[0] > 70 { short = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "cci", label: "Commodity Channel Index", category: "momentum",
             description: "Measures deviation of price from its statistical mean — cycles above/below zero indicate momentum.",
             params: vec![p_int("period", 20)],
@@ -364,7 +458,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if cci20[0] > 100 { long = true; } else if cci20[0] < -100 { short = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "roc", label: "Rate of Change", category: "momentum",
             description: "Percentage price change over n bars — positive values indicate upward momentum.",
             params: vec![p_int("period", 10)],
@@ -374,7 +468,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if roc10[0] > 0 && roc10[1] <= 0 { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "mom", label: "Momentum", category: "momentum",
             description: "Raw price difference over n bars without normalization — simple speed-of-change measure.",
             params: vec![p_int("period", 10)],
@@ -384,7 +478,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if mom10[0] > 0 && mom10[1] <= 0 { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "cmo", label: "Chande Momentum Oscillator", category: "momentum",
             description: "Like RSI but uses the raw sum of up/down moves — bounded −100 to +100.",
             params: vec![p_int("period", 14)],
@@ -394,7 +488,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if cmo14[0] > 50 { long = true; } else if cmo14[0] < -50 { short = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "dpo", label: "Detrended Price Oscillator", category: "momentum",
             description: "Removes trend from price to isolate underlying price cycles.",
             params: vec![p_int("period", 20)],
@@ -404,7 +498,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if dpo20[0] > 0 && dpo20[1] <= 0 { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "mfi", label: "Money Flow Index", category: "momentum",
             description: "Volume-weighted RSI that detects accumulation and distribution pressure.",
             params: vec![p_int("period", 14)],
@@ -414,7 +508,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if mfi14[0] < 20 { long = true; } else if mfi14[0] > 80 { short = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "bop", label: "Balance of Power", category: "momentum",
             description: "Measures buyer vs seller strength within the bar range: (close−open)/(high−low).",
             params: vec![],
@@ -424,7 +518,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if bop[0] > 0 && bop[1] <= 0 { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "williams_r", label: "Williams %R", category: "momentum",
             description: "Inverted stochastic in the range −100 to 0; above −20 is overbought, below −80 is oversold.",
             params: vec![p_int("period", 14)],
@@ -434,7 +528,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if wr14[0] < -80 { long = true; } else if wr14[0] > -20 { short = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "stochastic", label: "Stochastic Oscillator", category: "momentum",
             description: "Compares close to the high-low range over k periods; %D is the signal line smoothing.",
             params: vec![p_int("k_period", 14), p_int("d_period", 3)],
@@ -444,7 +538,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if stoch14[0].k > stoch14[0].d && stoch14[0].k < 20 { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "stoch_rsi", label: "Stochastic RSI", category: "momentum",
             description: "Applies the stochastic formula to RSI values for extra sensitivity to momentum shifts.",
             params: vec![p_int("rsi_period", 14), p_int("smooth_d", 3)],
@@ -454,7 +548,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if srsi14[0].k > srsi14[0].d && srsi14[0].k < 0.2 { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "tsi", label: "True Strength Index", category: "momentum",
             description: "Double-smoothed price change momentum oscillator bounded −100…+100 — shows trend direction and exhaustion.",
             params: vec![
@@ -467,7 +561,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if tsi[0] > 0 && tsi[1] <= 0 { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "rci", label: "Rank Correlation Index", category: "momentum",
             description: "Spearman rank correlation between price and time — +100 = perfect uptrend, −100 = downtrend.",
             params: vec![p_int("period", 9)],
@@ -477,7 +571,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if rci9[0] < -80 { long = true; } else if rci9[0] > 80 { short = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "bull_bear", label: "Bull/Bear Power", category: "momentum",
             description: "Bull Power (high − EMA) and Bear Power (low − EMA) measure buying/selling energy independently.",
             params: vec![p_int("period", 13)],
@@ -487,7 +581,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if bb13[0].bull > 0 && bb13[0].bear < 0 { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "fisher", label: "Fisher Transform", category: "momentum",
             description: "Converts price into a Gaussian normal distribution — sharp peaks signal turning points.",
             params: vec![p_int("period", 9)],
@@ -497,7 +591,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if fsh9[0].fisher > fsh9[0].signal && fsh9[1].fisher <= fsh9[1].signal { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "kst", label: "Know Sure Thing", category: "momentum",
             description: "Weighted sum of multiple ROC signals — designed to identify major market cycle turns.",
             params: vec![p_int("signal", 9)],
@@ -507,7 +601,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if kst[0].kst > kst[0].signal && kst[1].kst <= kst[1].signal { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "pmo", label: "Price Momentum Oscillator", category: "momentum",
             description: "Double-smoothed rate-of-change oscillator — more responsive than MACD for cycle timing.",
             params: vec![p_int("smooth1", 35), p_int("smooth2", 20), p_int("signal", 10)],
@@ -517,7 +611,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if pmo[0].pmo > pmo[0].signal && pmo[1].pmo <= pmo[1].signal { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "ppo", label: "Percentage Price Oscillator", category: "momentum",
             description: "MACD expressed as a percentage of the slow EMA — useful for comparing instruments at different price levels.",
             params: vec![p_int("fast", 12), p_int("slow", 26), p_int("signal", 9)],
@@ -527,7 +621,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if ppo[0].histogram > 0 && ppo[1].histogram <= 0 { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "rvi", label: "Relative Vigor Index", category: "momentum",
             description: "Measures closing strength relative to the bar range — confirms trend vigor.",
             params: vec![p_int("period", 10)],
@@ -537,7 +631,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if rvi10[0].rvi > rvi10[0].signal { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "smi", label: "Stochastic Momentum Index", category: "momentum",
             description: "Refinement of the stochastic centred around zero — shows where close is relative to bar midpoint.",
             params: vec![
@@ -552,7 +646,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if smi13[0].smi > smi13[0].signal { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "uo", label: "Ultimate Oscillator", category: "momentum",
             description: "Weighted combination of short, medium, and long-term buying pressure to reduce false divergence.",
             params: vec![p_int("fast", 7), p_int("medium", 14), p_int("slow", 28)],
@@ -562,7 +656,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if uo[0] < 30 { long = true; } else if uo[0] > 70 { short = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "connors_rsi", label: "ConnorsRSI", category: "momentum",
             description: "Composite of price RSI, consecutive-bar streak RSI, and percentile rank — mean-reversion focused.",
             params: vec![
@@ -576,7 +670,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if crsi[0] < 10 { long = true; } else if crsi[0] > 90 { short = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "ao", label: "Awesome Oscillator", category: "momentum",
             description: "Difference of 5-bar and 34-bar SMA of midpoints — measures market momentum around a baseline.",
             params: vec![
@@ -589,7 +683,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if ao[0] > 0 && ao[1] <= 0 { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "coppock", label: "Coppock Curve", category: "momentum",
             description: "Long-term momentum indicator originally designed to identify major bear market recoveries.",
             params: vec![
@@ -604,7 +698,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             overlay: false,
         },
         // ── Volatility ────────────────────────────────────────────────────────
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "atr", label: "Average True Range", category: "volatility",
             description: "Average of true range (max of high−low, |high−prev_close|, |low−prev_close|) — raw volatility measure.",
             params: vec![p_int("period", 14)],
@@ -614,7 +708,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "stop_price = close - atr14[0].atr * 2.0;",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "bbands", label: "Bollinger Bands", category: "volatility",
             description: "Price envelope at ±n standard deviations around an SMA — expands in volatile markets.",
             params: vec![
@@ -627,7 +721,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if close < bb20[0].lower { long = true; } else if close > bb20[0].upper { short = true; }",
             overlay: true,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "keltner", label: "Keltner Channel", category: "volatility",
             description: "ATR-based channel around an EMA — less sensitive to price spikes than Bollinger Bands.",
             params: vec![
@@ -641,7 +735,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if close > kc20[0].upper { long = true; } else if close < kc20[0].lower { short = true; }",
             overlay: true,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "supertrend", label: "SuperTrend", category: "volatility",
             description: "ATR-based trailing stop that flips direction when price crosses the band — trend-following.",
             params: vec![
@@ -654,7 +748,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if flag(st10[0].bullish) && !flag(st10[1].bullish) { long = true; }",
             overlay: true,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "donchian", label: "Donchian Channel", category: "volatility",
             description: "Highest high and lowest low over the period — breakout above upper or below lower signals trend.",
             params: vec![p_int("period", 20)],
@@ -664,7 +758,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if close > dc20[0].upper { long = true; } else if close < dc20[0].lower { short = true; }",
             overlay: true,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "chop", label: "Choppiness Index", category: "volatility",
             description: "Ranges 0–100: high (>61.8) = choppy/ranging; low (<38.2) = strong directional trend.",
             params: vec![p_int("period", 14)],
@@ -674,7 +768,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if chop14[0] < 38.2 { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "chop_zone", label: "ChopZone", category: "volatility",
             description: "EMA angle quantised into colour zones — positive angle = bullish, negative = bearish, near-zero = choppy.",
             params: vec![
@@ -687,7 +781,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if cz34[0].angle > 5.0 { long = true; } else if cz34[0].angle < -5.0 { short = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "chandelier_exit", label: "Chandelier Exit", category: "volatility",
             description: "ATR-based stop placed below the highest high (long stop) or above the lowest low (short stop).",
             params: vec![
@@ -700,7 +794,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if close > ce22[1].long_stop && close[1] <= ce22[1].long_stop { long = true; }",
             overlay: true,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "chande_kroll", label: "Chande Kroll Stop", category: "volatility",
             description: "Two-pass ATR stop that filters out noise — cleaner exit signals than a single-pass stop.",
             params: vec![
@@ -714,7 +808,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if close > ck[0].stop_long { long = true; } else if close < ck[0].stop_short { short = true; }",
             overlay: true,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "volatility_ratio", label: "Volatility Ratio", category: "volatility",
             description: "Ratio of current true range to the highest true range over the lookback — values >1 indicate volatility expansion.",
             params: vec![p_int_desc("lookback", 10, "highest-TR lookback")],
@@ -725,7 +819,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             overlay: false,
         },
         // ── Volume ────────────────────────────────────────────────────────────
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "obv", label: "On-Balance Volume", category: "volume",
             description: "Cumulates volume with a positive sign on up bars and negative on down bars — tracks money flow direction.",
             params: vec![],
@@ -735,7 +829,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if obv[0] > obv_ema[0] && obv[1] <= obv_ema[1] { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "cmf", label: "Chaikin Money Flow", category: "volume",
             description: "Volume-weighted sum of close-location values over the period — above zero indicates buying pressure.",
             params: vec![p_int("period", 20)],
@@ -745,7 +839,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if cmf20[0] > 0 && cmf20[1] <= 0 { long = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "vwap", label: "VWAP (session-aware)", category: "volume",
             description: "Volume-weighted average price that resets each session — intraday fair-value reference.",
             params: vec![p_int_desc("session_gap_mins", 390, "minutes of inactivity that trigger a session reset")],
@@ -756,7 +850,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             overlay: true,
         },
         // ── Pattern ───────────────────────────────────────────────────────────
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "ichimoku", label: "Ichimoku Cloud", category: "pattern",
             description: "Comprehensive Japanese trend system: tenkan/kijun cross, cloud (senkou_a/b), and chikou span.",
             params: vec![
@@ -771,7 +865,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if ichi[0].tenkan > ichi[0].kijun && flag(ichi[0].above_cloud) { long = true; }",
             overlay: true,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "parabolic_sar", label: "Parabolic SAR", category: "pattern",
             description: "Accelerating trailing stop that flips sides when price crosses it — `bullish` = 1.0 when long side.",
             params: vec![
@@ -784,7 +878,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if flag(psar[0].bullish) && !flag(psar[1].bullish) { long = true; }",
             overlay: true,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "rwi", label: "Random Walk Index", category: "pattern",
             description: "Tests whether high/low movement exceeds what a random walk would produce — >1 confirms directional move.",
             params: vec![p_int("period", 14)],
@@ -794,7 +888,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if rwi14[0].rwi_high > 1.0 { long = true; } else if rwi14[0].rwi_low > 1.0 { short = true; }",
             overlay: false,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "fractal", label: "Williams Fractal", category: "pattern",
             description: "Five-bar pattern marking local swing highs (bearish fractal) and swing lows (bullish fractal) — 2-bar lag.",
             params: vec![],
@@ -804,7 +898,7 @@ pub fn all() -> Vec<IndicatorMeta> {
             example: "if flag(frac[0].bullish) { long = true; } else if flag(frac[0].bearish) { short = true; }",
             overlay: true,
         },
-        IndicatorMeta {
+        RawIndicatorMeta {
             name: "elder_ray", label: "Elder Ray Index", category: "pattern",
             description: "Separates price power into bull_power (high − EMA) and bear_power (low − EMA) — used with a trend filter.",
             params: vec![p_int("period", 13)],
@@ -956,6 +1050,65 @@ mod tests {
                 assert_eq!(out["type"], want, "{}.{} type mismatch", meta.name, name);
             }
         }
+    }
+
+    /// For every catalog entry: `mainpane ∪ (subpanes flattened)` must exactly
+    /// equal `outputs` minus any bool-flag fields — no field lost, none
+    /// duplicated, none placed on both, no bool field placed on either.
+    #[test]
+    fn mainpane_and_subpanes_partition_scalar_outputs() {
+        use std::collections::HashSet;
+        for meta in all() {
+            let expected: HashSet<&str> = meta.outputs.iter().copied()
+                .filter(|f| alm_indicator::field_kind(f) == alm_indicator::FieldKind::Scalar)
+                .collect();
+            let mut got: Vec<&str> = meta.mainpane.iter().copied().collect();
+            for group in &meta.subpanes { got.extend(group.iter().copied()); }
+            let got_set: HashSet<&str> = got.iter().copied().collect();
+            assert_eq!(got_set, expected, "{}: mainpane+subpanes must partition scalar outputs exactly", meta.name);
+            assert_eq!(got.len(), got_set.len(), "{}: a field appears in more than one pane", meta.name);
+            for &f in &meta.mainpane {
+                assert_ne!(alm_indicator::field_kind(f), alm_indicator::FieldKind::Bool, "{}: bool field '{f}' in mainpane", meta.name);
+            }
+            for group in &meta.subpanes {
+                for &f in group {
+                    assert_ne!(alm_indicator::field_kind(f), alm_indicator::FieldKind::Bool, "{}: bool field '{f}' in subpanes", meta.name);
+                }
+            }
+        }
+    }
+
+    /// The 3 known mixed-pane indicators split exactly as the (now-deprecated)
+    /// FE heuristic in `use-chart-data.ts`'s `getPaneForIndicator` special-cased
+    /// them — this is the regression that catalog data is meant to replace.
+    #[test]
+    fn known_mixed_indicators_split_correctly() {
+        let cat = all();
+        let bbands = cat.iter().find(|m| m.name == "bbands").unwrap();
+        assert_eq!(bbands.mainpane, vec!["upper", "middle", "lower"]);
+        assert_eq!(bbands.subpanes, vec![vec!["bandwidth", "percent_b"]]);
+
+        let bull_bear = cat.iter().find(|m| m.name == "bull_bear").unwrap();
+        assert_eq!(bull_bear.mainpane, vec!["ema"]);
+        assert_eq!(bull_bear.subpanes, vec![vec!["bull", "bear"]]);
+
+        let elder_ray = cat.iter().find(|m| m.name == "elder_ray").unwrap();
+        assert_eq!(elder_ray.mainpane, vec!["ema"]);
+        assert_eq!(elder_ray.subpanes, vec![vec!["bull_power", "bear_power"]]);
+    }
+
+    /// A plain whole-main indicator (e.g. `ema`) has every field in `mainpane`,
+    /// no `subpanes`. A plain whole-sub indicator (e.g. `rsi`) is the mirror.
+    #[test]
+    fn whole_indicator_overlay_fallback_still_works() {
+        let cat = all();
+        let ema = cat.iter().find(|m| m.name == "ema").unwrap();
+        assert_eq!(ema.mainpane, vec!["value"]);
+        assert!(ema.subpanes.is_empty());
+
+        let rsi = cat.iter().find(|m| m.name == "rsi").unwrap();
+        assert!(rsi.mainpane.is_empty());
+        assert_eq!(rsi.subpanes, vec![vec!["value"]]);
     }
 
     /// `multi` and `primary` fields must be consistent with what the script

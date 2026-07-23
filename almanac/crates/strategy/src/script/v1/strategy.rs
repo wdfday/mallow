@@ -67,6 +67,7 @@
 //! ```
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
 
 use anyhow::Result;
 use rhai::{Array, Dynamic, Engine, Scope, AST};
@@ -80,13 +81,13 @@ use super::parse::{
     make_indicator_box, rewrite_ta_line, try_parse_indicator_line, validate_ta_declarations,
     brace_depth_delta, validate_ta_top_level, CandleDirective, IndicatorDecl,
 };
-use crate::script::engine::{build_engine, extract_max_lookback, BAR_FIELDS, DEFAULT_BUF_DEPTH};
+use crate::script::engine::{shared_engine, extract_max_lookback, BAR_FIELDS, DEFAULT_BUF_DEPTH};
 use crate::script::utils::{scalar_out, bool_out};
 
 // ── ScriptStrategy ───────────────────────────────────────────────────────────
 
 pub struct ScriptStrategy {
-    engine:           Engine,
+    engine:           Arc<Engine>,
     ast:              AST,
     /// Optional `regime { ... }` sub-script, run before the main AST each bar.
     /// Shares the same bindings (indicators declared in either block are unique
@@ -228,8 +229,9 @@ impl ScriptStrategy {
             );
         }
 
-        // Step 3: compile both ASTs against a single engine.
-        let engine = build_engine();
+        // Step 3: compile both ASTs against the shared, process-wide engine —
+        // see `script::engine::shared_engine` for why this is safe.
+        let engine = shared_engine();
 
         let regime_ast = if regime_cleaned_script.trim().is_empty() {
             None

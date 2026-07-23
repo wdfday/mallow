@@ -1,3 +1,5 @@
+use std::sync::{Arc, OnceLock};
+
 use rhai::{Array, Dynamic, Engine, EvalAltResult};
 
 use crate::script::v1::MEntry;
@@ -520,6 +522,28 @@ pub(crate) fn build_engine() -> Engine {
     }
 
     engine
+}
+
+// ── Shared engine ─────────────────────────────────────────────────────────────
+//
+// `build_engine()` is deterministic and takes no parameters — every call
+// produces an identical Engine, and Engine is read-only after construction
+// (`compile`/`run_ast_with_scope` both take `&self`, never `&mut self`; all
+// per-script mutable state lives in `Scope`/`AST`, not Engine). Combined with
+// this crate's `rhai/sync` feature (Engine is `Send + Sync`), one Engine can
+// safely serve every `ScriptStrategy`/`MtfScriptStrategy` instance in the
+// process instead of each one building its own from scratch.
+//
+// Measured cost of NOT doing this: ~330 KB/hand at herald's registry scale
+// (mostly Rhai's own stdlib registration, re-paid per hand for no reason) —
+// see almanac/crates/herald/src/bin/hand_stress.rs `--heap-breakdown`.
+static SHARED_ENGINE: OnceLock<Arc<Engine>> = OnceLock::new();
+
+/// The process-wide shared `Engine` every `ScriptStrategy`/`MtfScriptStrategy`
+/// should use. Built once, on first call; every caller after that just clones
+/// the `Arc` (cheap — bumps a refcount, no package re-registration).
+pub(crate) fn shared_engine() -> Arc<Engine> {
+    SHARED_ENGINE.get_or_init(|| Arc::new(build_engine())).clone()
 }
 
 // ── Lookback scanner ─────────────────────────────────────────────────────────

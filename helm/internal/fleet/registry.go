@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"mallow/helm/internal/fleet/actor"
+	signalfollower "mallow/helm/internal/fleet/actor/signal-follower"
 	"mallow/helm/internal/fleet/dispatcher"
 	"mallow/helm/internal/fleet/market"
 	"mallow/helm/internal/fleet/perf"
@@ -47,10 +48,10 @@ type Registry struct {
 	js           nats.JetStreamContext
 	runCtx       context.Context
 	syncStore    actor.SyncStore
-	posLog       poslog.Log             // nil when NATS unavailable
-	tradeLog     perf.TradeLog          // JetStream HELM_TRADES — drained into PG by TradePersister
-	pnlSummer    actor.HandPnLSummer    // postgres aggregate querier for RestorePnL + RestoreGuard
-	eventCounter actor.HandEventCounter // postgres event-count aggregate for RestoreCounters
+	posLog       poslog.Log                      // nil when NATS unavailable
+	tradeLog     perf.TradeLog                   // JetStream HELM_TRADES — drained into PG by TradePersister
+	pnlSummer    signalfollower.HandPnLSummer    // postgres aggregate querier for RestorePnL + RestoreGuard
+	eventCounter signalfollower.HandEventCounter // postgres event-count aggregate for RestoreCounters
 
 	// ── Signal routing ────────────────────────────────────────────────────
 	dispatcher *dispatcher.SignalDispatcher // wired via SetDispatcher after startup; nil before
@@ -133,7 +134,7 @@ func (r *Registry) SetTradeLog(log perf.TradeLog) {
 
 // SetPnLSummer injects the postgres PnL aggregate querier. Propagated to all runtimes.
 // Replaces the JetStream full-drain in RestorePnL with a single SQL query on startup.
-func (r *Registry) SetPnLSummer(ps actor.HandPnLSummer) {
+func (r *Registry) SetPnLSummer(ps signalfollower.HandPnLSummer) {
 	r.mu.Lock()
 	r.pnlSummer = ps
 	for _, rt := range r.helmRuntimes {
@@ -144,7 +145,7 @@ func (r *Registry) SetPnLSummer(ps actor.HandPnLSummer) {
 
 // SetEventCounter injects the postgres event-count aggregate querier. Propagated to
 // all runtimes so RestoreCounters can rebuild activity counters on startup.
-func (r *Registry) SetEventCounter(ec actor.HandEventCounter) {
+func (r *Registry) SetEventCounter(ec signalfollower.HandEventCounter) {
 	r.mu.Lock()
 	r.eventCounter = ec
 	for _, rt := range r.helmRuntimes {

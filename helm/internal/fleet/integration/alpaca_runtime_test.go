@@ -31,6 +31,8 @@ import (
 	"mallow/helm/internal/fleet/actor/core/risk"
 	"mallow/helm/internal/fleet/actor/core/strategy"
 	"mallow/helm/internal/fleet/actor/core/tactics"
+	"mallow/helm/internal/fleet/actor/eventcode"
+	signalfollower "mallow/helm/internal/fleet/actor/signal-follower"
 	"mallow/helm/internal/infra/exchange"
 	alpacaact "mallow/helm/internal/infra/exchange/alpaca/act"
 )
@@ -114,13 +116,13 @@ func newAlpacaEnv(t *testing.T) *alpacaTestEnv {
 	return &alpacaTestEnv{ex: ex, creds: creds, rt: rt, price: price}
 }
 
-func newAlpacaHand(env *alpacaTestEnv) *actor.Hand {
+func newAlpacaHand(env *alpacaTestEnv) *signalfollower.Hand {
 	strat := strategy.NewSignalFollower(0.3)
 	tact := tactics.New(tactics.SizingConfig{
 		Mode:     tactics.SizingFixedQty,
 		FixedQty: decimal.NewFromFloat(1), // 1 share minimum for Alpaca
 	})
-	hand := actor.NewHand(uuid.New(), env.rt.HelmID, env.rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
+	hand := signalfollower.NewHand(uuid.New(), env.rt.HelmID, env.rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
 	hand.Symbol = "AAPL"
 	hand.StrategyName = "signal_follower"
 	hand.EnableEventSink()
@@ -173,7 +175,7 @@ func TestAlpaca_AbsoluteSLTP(t *testing.T) {
 
 	if e, ok := recvEvent(placed, 20*time.Second); ok {
 		t.Logf("placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
-		if e.Code == actor.CodeOrderFailed {
+		if e.Code == eventcode.CodeOrderFailed {
 			t.Logf("entry order failed (market may be closed): %s — skipping bracket check", e.Reason)
 			return
 		}
@@ -237,7 +239,7 @@ func TestAlpaca_OffsetSLTP(t *testing.T) {
 
 	if e, ok := recvEvent(placed, 20*time.Second); ok {
 		t.Logf("placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
-		if e.Code == actor.CodeOrderFailed {
+		if e.Code == eventcode.CodeOrderFailed {
 			t.Logf("entry order failed (market may be closed): %s — skipping bracket check", e.Reason)
 			return
 		}
@@ -301,7 +303,7 @@ func TestAlpaca_PyramidAndKill(t *testing.T) {
 		Mode:     tactics.SizingFixedQty,
 		FixedQty: decimal.NewFromFloat(1), // 1 share minimum for Alpaca
 	})
-	hand := actor.NewHand(
+	hand := signalfollower.NewHand(
 		uuid.New(),
 		env.rt.HelmID,
 		env.rt,
@@ -337,7 +339,7 @@ func TestAlpaca_PyramidAndKill(t *testing.T) {
 
 	if e, ok := recvEvent(placed1, 20*time.Second); ok {
 		t.Logf("1st order placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
-		if e.Code == actor.CodeOrderFailed {
+		if e.Code == eventcode.CodeOrderFailed {
 			t.Logf("1st order failed (market may be closed): %s — skipping test", e.Reason)
 			return
 		}
@@ -371,7 +373,7 @@ func TestAlpaca_PyramidAndKill(t *testing.T) {
 
 	if e, ok := recvEvent(placed2, 20*time.Second); ok {
 		t.Logf("2nd order placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
-		if e.Code == actor.CodeOrderFailed {
+		if e.Code == eventcode.CodeOrderFailed {
 			logHandState(t, env.rt, hand, symbol)
 			t.Fatalf("2nd order failed: %s", e.Reason)
 		}
@@ -422,7 +424,7 @@ func TestAlpaca_PyramidAndKill(t *testing.T) {
 		t.Error("expected hand to be stopped after Kill")
 	}
 	h := hand.Health()
-	if h.Status != actor.HealthKilled {
+	if h.Status != signalfollower.HealthKilled {
 		t.Errorf("expected hand health status to be HealthKilled, got %s", h.Status)
 	}
 }

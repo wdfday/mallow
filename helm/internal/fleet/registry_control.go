@@ -6,8 +6,8 @@ import (
 
 	"github.com/google/uuid"
 
-	"mallow/helm/internal/fleet/actor"
 	"mallow/helm/internal/fleet/actor/core/risk"
+	"mallow/helm/internal/fleet/actor/core/strategy"
 	"mallow/helm/internal/fleet/dispatcher"
 	helmdomain "mallow/helm/internal/module/helm/domain"
 )
@@ -80,7 +80,7 @@ func (r *Registry) ResetHalt(id uuid.UUID) error {
 // RouteSignal implements SignalSink. Routes a signal directly to the target helm
 // (looked up by helmID) which then dispatches it to the target hand.
 // Called from dispatcher.SignalDispatcher in the NATS callback goroutine — must be non-blocking.
-func (r *Registry) RouteSignal(helmID, handID string, sig actor.Signal) {
+func (r *Registry) RouteSignal(helmID, handID string, sig strategy.Signal) {
 	id, err := uuid.Parse(helmID)
 	if err != nil {
 		r.metrics.incNoHelm()

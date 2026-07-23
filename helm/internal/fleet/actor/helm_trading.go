@@ -3,44 +3,22 @@ package actor
 import (
 	"context"
 	"log/slog"
-	"time"
-
-	"github.com/shopspring/decimal"
-
 	"mallow/helm/internal/fleet/actor/core/portfolio"
 	"mallow/helm/internal/fleet/actor/core/strategy"
 	"mallow/helm/internal/fleet/actor/core/tactics"
+	"mallow/helm/internal/fleet/actor/eventcode"
+	signalfollower "mallow/helm/internal/fleet/actor/signal-follower"
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/natsapi"
 	helmdomain "mallow/helm/internal/module/helm/domain"
+	"time"
 )
-
-// TradeProposal is a hand's request for account-level trade validation.
-type TradeProposal struct {
-	HandID string
-	Symbol string
-	Intent strategy.Intent
-	Price  decimal.Decimal // optional: resolved from price cache when zero
-	ATR    decimal.Decimal
-	// EquityOverride, when positive, replaces portfolio equity for tactician sizing.
-	// Hands with AllocatedCapital pass their realized equity (allocated + cumPnL)
-	// so position sizes compound with the hand's actual performance.
-	EquityOverride decimal.Decimal
-	// AvailableBudget, when positive, is the hand's hard cap on per-entry notional —
-	// the tactician clamps qty so qty*price ≤ AvailableBudget. Zero disables the cap.
-	// Set only for allocated hands; shared-pool hands rely on helm-level risk guards.
-	AvailableBudget decimal.Decimal
-	// PositionQty is the per-hand qty from poslog (h.pos.ActiveLegs), not net portfolio.
-	// Used by the tactician to size exits and scale-outs correctly when multiple hands
-	// share the same symbol on this helm.
-	PositionQty decimal.Decimal
-}
 
 // processTrade validates a trade against account-level guards and sizes via the hand's
 // tactician. Runs only on the trade actor goroutine (runTradeActor) — see ProcessTrade
 // (helm_actor.go) for the public request/reply wrapper every hand actually calls.
 func (r *HelmRuntime) processTrade(
-	proposal TradeProposal,
+	proposal signalfollower.TradeProposal,
 	tact tactics.Planner,
 ) helmdomain.TradeReply {
 	if proposal.Intent.Action == strategy.ActionDoNothing {
@@ -54,7 +32,7 @@ func (r *HelmRuntime) processTrade(
 
 	price := proposal.Price
 	if price.IsZero() {
-		price = r.lastKnownPrice(proposal.Symbol)
+		price = r.LastKnownPrice(proposal.Symbol)
 	}
 	if price.IsZero() {
 		if pf, ok := r.Exchange.(exchange.PriceFetcher); ok {
@@ -83,7 +61,7 @@ func (r *HelmRuntime) processTrade(
 			// Risk manager just tripped — emit event to helm.events.{helmID}.
 			// eventlog.Persister consumes that stream and updates helms.status = 'halted'.
 			r.EmitEvent(natsapi.HelmEvent{
-				Code:   CodeHelmHalted,
+				Code:   eventcode.CodeHelmHalted,
 				Reason: reason,
 				Msg:    "helm: halted by risk manager",
 			})

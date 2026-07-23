@@ -38,6 +38,9 @@ docker-compose.override.yml
 # ── data ───────────────────────────────────────────────────────────────────
 *.parquet
 monitoring/grafana/provisioning/dashboards/*.json
+
+# ── research (external reference clones, not part of mallow) ──────────────────
+research/
 *.json
 
 /deployment/data/loki/

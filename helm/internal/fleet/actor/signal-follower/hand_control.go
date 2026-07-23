@@ -1,8 +1,9 @@
-package actor
+package signalfollower
 
 import (
 	"context"
 	"mallow/helm/internal/fleet/actor/core/portfolio"
+	"mallow/helm/internal/fleet/actor/eventcode"
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/module/hand/domain"
@@ -17,11 +18,11 @@ import (
 // Lifecycle — called by Registry on behalf of user actions
 // ---------------------------------------------------------------------------
 
-// emitEvent publishes a behavioral event via HelmRuntime (slog + JetStream + eventlog persister)
+// EmitEvent publishes a behavioral event via HelmRuntime (slog + JetStream + eventlog persister)
 // and, when the test event bus is active, broadcasts a copy to all subscribers.
-func (h *Hand) emitEvent(ev natsapi.HelmEvent) {
+func (h *Hand) EmitEvent(ev natsapi.HelmEvent) {
 	ev.HandID = h.id.String()
-	h.helmRuntime.EmitEvent(ev)
+	h.helm.EmitEvent(ev)
 	if h.eventBus != nil {
 		h.eventBus.publish(ev)
 	}
@@ -65,13 +66,13 @@ func (h *Hand) Start() {
 			defer safe.RecoverHand(h.log)
 			h.log.Info("hand: on-demand reconcile — restarted after gap",
 				"gap", now.Sub(h.stoppedAt).Truncate(time.Second))
-			h.helmRuntime.ReconcileHand(context.Background(), h)
+			h.helm.ReconcileHand(context.Background(), h)
 		}()
 	}
 
-	h.log.Info("hand started", "exchange", h.helmRuntime.Exchange.Name())
-	h.emitEvent(natsapi.HelmEvent{
-		Code:   CodeHandStarted,
+	h.log.Info("hand started", "exchange", h.helm.GetExchange().Name())
+	h.EmitEvent(natsapi.HelmEvent{
+		Code:   eventcode.CodeHandStarted,
 		Msg:    "hand: started",
 		Reason: "if the strategy emits no stop_loss, a default will be applied (ATR×5; fallback 8% fixed)",
 	})
@@ -100,14 +101,14 @@ func (h *Hand) Stop() {
 		<-done
 	}
 	h.log.Info("hand stopped")
-	h.emitEvent(natsapi.HelmEvent{Code: CodeHandStopped, Msg: "hand: stopped"})
+	h.EmitEvent(natsapi.HelmEvent{Code: eventcode.CodeHandStopped, Msg: "hand: stopped"})
 }
 
 // Kill stops the hand and immediately closes all open positions via market orders.
 // Use for emergency shutdown when you must exit the exchange immediately.
 func (h *Hand) Kill(ctx context.Context) {
 	h.log.Warn("hand: kill initiated — flattening all positions")
-	h.emitEvent(natsapi.HelmEvent{Code: CodeHandKilled, Reason: "flattening all positions", Msg: "hand: killed"})
+	h.EmitEvent(natsapi.HelmEvent{Code: eventcode.CodeHandKilled, Reason: "flattening all positions", Msg: "hand: killed"})
 	h.mu.Lock()
 	h.health.Status = HealthKilled
 	h.mu.Unlock()
@@ -128,7 +129,7 @@ func (h *Hand) Kill(ctx context.Context) {
 // as safety cleanup.
 func (h *Hand) Release(ctx context.Context) {
 	h.log.Info("hand: release — performing synthetic close (buyback)")
-	h.emitEvent(natsapi.HelmEvent{Code: CodeHandReleased, Reason: "positions released (synthetic close)", Msg: "hand: released"})
+	h.EmitEvent(natsapi.HelmEvent{Code: eventcode.CodeHandReleased, Reason: "positions released (synthetic close)", Msg: "hand: released"})
 	h.mu.Lock()
 	h.health.Status = HealthReleased
 	h.mu.Unlock()
@@ -182,7 +183,7 @@ func (h *Hand) Health() HandHealth {
 
 // Position returns the current open position for this hand's symbol, or nil if flat.
 func (h *Hand) Position() *portfolio.Position {
-	return h.helmRuntime.Portfolio.GetPosition(h.Symbol)
+	return h.helm.GetPortfolio().GetPosition(h.Symbol)
 }
 
 // ---------------------------------------------------------------------------
@@ -218,8 +219,8 @@ func (h *Hand) DeliverSignal(sig Signal) {
 	case h.Signals <- sig:
 	default:
 		h.RecordDrop()
-		h.emitEvent(natsapi.HelmEvent{
-			Code:      CodeSignalDropped,
+		h.EmitEvent(natsapi.HelmEvent{
+			Code:      eventcode.CodeSignalDropped,
 			Symbol:    sig.Symbol,
 			Direction: string(sig.Direction),
 			Msg:       "hand: signal dropped — channel full",
@@ -229,9 +230,9 @@ func (h *Hand) DeliverSignal(sig Signal) {
 	}
 }
 
-// activeUnitCount returns the number of active position legs this hand currently holds.
+// ActiveUnitCount returns the number of active position legs this hand currently holds.
 // Thread-safe; called from HelmRuntime.OpenUnitCount.
-func (h *Hand) activeUnitCount() int {
+func (h *Hand) ActiveUnitCount() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.pos.ActiveCount()
@@ -382,10 +383,23 @@ func (h *Hand) ActiveLegs() []domain.LegView {
 	return out
 }
 
+// HasProtectiveExit reports whether tradeID has SL/TP levels configured —
+// regardless of whether the exchange-side bracket order IDs are known yet
+// (e.g. helm crashed between PlaceExitOrders and KindBracketPlaced). Used by
+// checkPositionDesync (helm_sync.go) to distinguish a leg that's protected by
+// this hand's own OCO tracking from one truly eligible for external-close
+// detection.
+func (h *Hand) HasProtectiveExit(tradeID string) bool {
+	h.mu.RLock()
+	el, hasExit := h.exitLevels[tradeID]
+	h.mu.RUnlock()
+	return hasExit && (len(el.ExchangeOrderIDs) > 0 || el.StopLoss.IsPositive() || el.TakeProfit.IsPositive())
+}
+
 // AvailableCash returns USDT liquid for this hand — not locked in open positions.
-// = realizedEquity (allocated + cumPnL) - deployedCapital (entry cost of open legs).
+// = RealizedEquity (allocated + cumPnL) - deployedCapital (entry cost of open legs).
 func (h *Hand) AvailableCash() decimal.Decimal {
-	avail := h.realizedEquity().Sub(h.EntryCap())
+	avail := h.RealizedEquity().Sub(h.EntryCap())
 	if avail.IsNegative() {
 		return decimal.Zero
 	}

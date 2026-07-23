@@ -1,10 +1,11 @@
-package actor
+package signalfollower
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"mallow/helm/internal/fleet/actor/eventcode"
 	"time"
 
 	"github.com/shopspring/decimal"
@@ -48,13 +49,13 @@ type HandReconcileResult struct {
 type Reconciler interface {
 	// Reconcile runs startup reconciliation for all running/paused hands under orch.
 	// It blocks until every hand has been checked.
-	Reconcile(ctx context.Context, orch *HelmRuntime) []HandReconcileResult
+	Reconcile(ctx context.Context, orch HelmPort) []HandReconcileResult
 
 	// ReconcileSingle reconciles one hand on-demand by fetching fresh exchange state.
 	// Used when a hand is restarted after an extended downtime gap so fills and
 	// external closes that occurred while the hand was stopped are applied before
 	// the first signal is processed.
-	ReconcileSingle(ctx context.Context, orch *HelmRuntime, hand *Hand) HandReconcileResult
+	ReconcileSingle(ctx context.Context, orch HelmPort, hand *Hand) HandReconcileResult
 }
 
 // reconcileHandTimeout caps exchange API time per hand during reconcile.
@@ -62,7 +63,7 @@ type Reconciler interface {
 const reconcileHandTimeout = 30 * time.Second
 
 // equityDriftThreshold is the fractional tolerance for post-reconcile equity check.
-// A drift above 1% of exchange equity triggers CodeReconcileEquityDrift.
+// A drift above 1% of exchange equity triggers eventcode.CodeReconcileEquityDrift.
 const equityDriftThreshold = 0.01
 
 // ── Default implementation ────────────────────────────────────────────────────
@@ -76,13 +77,8 @@ func NewReconciler(log poslog.Log) *DefaultReconciler {
 	return &DefaultReconciler{log: log}
 }
 
-func (r *DefaultReconciler) Reconcile(ctx context.Context, orch *HelmRuntime) []HandReconcileResult {
-	orch.mu.RLock()
-	hands := make([]*Hand, 0, len(orch.hands))
-	for _, e := range orch.hands {
-		hands = append(hands, e.h)
-	}
-	orch.mu.RUnlock()
+func (r *DefaultReconciler) Reconcile(ctx context.Context, orch HelmPort) []HandReconcileResult {
+	hands := orch.Hands()
 
 	// Batch-fetch open orders and positions once per reconcile run.
 	// On failure, nil is passed to reconcileHand — flat hands are still reconciled
@@ -92,11 +88,11 @@ func (r *DefaultReconciler) Reconcile(ctx context.Context, orch *HelmRuntime) []
 	exchangePositions, errPositions := r.fetchPositions(ctx, orch)
 	if errOrders != nil {
 		slog.Error("reconcile: ListOpenOrders failed — hands with pending orders will be marked failed",
-			"helm_id", orch.HelmID, "err", errOrders)
+			"helm_id", orch.GetHelmID(), "err", errOrders)
 	}
 	if errPositions != nil {
 		slog.Error("reconcile: ListPositions failed — hands with open legs will be marked failed",
-			"helm_id", orch.HelmID, "err", errPositions)
+			"helm_id", orch.GetHelmID(), "err", errPositions)
 	}
 
 	// Per-action counters for the summary event.
@@ -114,8 +110,8 @@ func (r *DefaultReconciler) Reconcile(ctx context.Context, orch *HelmRuntime) []
 		counts[res.Action]++
 		if res.Err != nil {
 			slog.Error("reconcile failed", "hand_id", hand.id, "err", res.Err)
-			hand.emitEvent(natsapi.HelmEvent{
-				Code:   CodeReconcileFailed,
+			hand.EmitEvent(natsapi.HelmEvent{
+				Code:   eventcode.CodeReconcileFailed,
 				Reason: res.Err.Error(),
 				Msg:    "reconcile: failed — hand left stopped for manual review",
 			})
@@ -128,7 +124,7 @@ func (r *DefaultReconciler) Reconcile(ctx context.Context, orch *HelmRuntime) []
 	// Helm-level (no HandID) so operators see one event for the whole reconcile
 	// instead of N per-hand events only.
 	orch.EmitEvent(natsapi.HelmEvent{
-		Code: CodeReconcileComplete,
+		Code: eventcode.CodeReconcileComplete,
 		Msg:  "reconcile: done",
 		Reason: fmt.Sprintf(
 			"hands=%d restored=%d fills=%d ext_close=%d cancelled=%d skipped=%d failed=%d",
@@ -154,26 +150,26 @@ func (r *DefaultReconciler) Reconcile(ctx context.Context, orch *HelmRuntime) []
 }
 
 // checkEquityDrift fetches the exchange account snapshot (if supported) and
-// compares it with the helm portfolio equity. Emits CodeReconcileEquityDrift
+// compares it with the helm portfolio equity. Emits eventcode.CodeReconcileEquityDrift
 // when the absolute difference exceeds equityDriftThreshold of exchange equity.
 // Read-only — does NOT apply the snapshot to the portfolio.
-func (r *DefaultReconciler) checkEquityDrift(ctx context.Context, orch *HelmRuntime) {
-	syncer, ok := orch.Exchange.(exchange.AccountSyncer)
+func (r *DefaultReconciler) checkEquityDrift(ctx context.Context, orch HelmPort) {
+	syncer, ok := orch.GetExchange().(exchange.AccountSyncer)
 	if !ok {
 		return
 	}
 	checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
-	snap, err := syncer.SyncAccount(checkCtx, orch.Creds, nil)
+	snap, err := syncer.SyncAccount(checkCtx, orch.GetCreds(), nil)
 	if err != nil {
 		slog.Warn("reconcile: equity drift check — SyncAccount failed (non-fatal)",
-			"helm_id", orch.HelmID, "err", err)
+			"helm_id", orch.GetHelmID(), "err", err)
 		return
 	}
-	if !snap.Equity.IsPositive() || !orch.Portfolio.Equity().IsPositive() {
+	if !snap.Equity.IsPositive() || !orch.GetPortfolio().Equity().IsPositive() {
 		return
 	}
-	helmEquity := orch.Portfolio.Equity()
+	helmEquity := orch.GetPortfolio().Equity()
 	drift := snap.Equity.Sub(helmEquity).Abs()
 	threshold := snap.Equity.Mul(decimal.NewFromFloat(equityDriftThreshold))
 	if drift.LessThan(threshold) {
@@ -181,13 +177,13 @@ func (r *DefaultReconciler) checkEquityDrift(ctx context.Context, orch *HelmRunt
 	}
 	driftPct := drift.Div(snap.Equity).Mul(decimal.NewFromInt(100))
 	slog.Warn("reconcile: equity drift detected",
-		"helm_id", orch.HelmID,
+		"helm_id", orch.GetHelmID(),
 		"exchange_equity", snap.Equity,
 		"helm_equity", helmEquity,
 		"drift_pct", driftPct,
 	)
 	orch.EmitEvent(natsapi.HelmEvent{
-		Code: CodeReconcileEquityDrift,
+		Code: eventcode.CodeReconcileEquityDrift,
 		Reason: fmt.Sprintf("exchange=%.4f helm=%.4f drift=%.2f%%",
 			snap.Equity.InexactFloat64(),
 			helmEquity.InexactFloat64(),
@@ -201,7 +197,7 @@ func (r *DefaultReconciler) checkEquityDrift(ctx context.Context, orch *HelmRunt
 // Used when a hand is restarted after an extended downtime gap. Applies any fills
 // or external closes that occurred while the hand was stopped, using the same
 // poslog+exchange logic as the startup reconciler.
-func (r *DefaultReconciler) ReconcileSingle(ctx context.Context, orch *HelmRuntime, hand *Hand) HandReconcileResult {
+func (r *DefaultReconciler) ReconcileSingle(ctx context.Context, orch HelmPort, hand *Hand) HandReconcileResult {
 	handCtx, cancel := context.WithTimeout(ctx, reconcileHandTimeout)
 	defer cancel()
 
@@ -216,8 +212,8 @@ func (r *DefaultReconciler) ReconcileSingle(ctx context.Context, orch *HelmRunti
 
 	res := r.reconcileHand(handCtx, orch, hand, openOrders, positions, errOrders, errPositions)
 	if res.Err != nil {
-		hand.emitEvent(natsapi.HelmEvent{
-			Code:   CodeReconcileFailed,
+		hand.EmitEvent(natsapi.HelmEvent{
+			Code:   eventcode.CodeReconcileFailed,
 			Reason: res.Err.Error(),
 			Msg:    "reconcile: on-demand failed — hand state may be inconsistent",
 		})
@@ -230,7 +226,7 @@ func (r *DefaultReconciler) ReconcileSingle(ctx context.Context, orch *HelmRunti
 
 func (r *DefaultReconciler) reconcileHand(
 	ctx context.Context,
-	helmRuntime *HelmRuntime,
+	helmRuntime HelmPort,
 	hand *Hand,
 	openOrders map[string]exchange.OrderResult, // nil when ListOpenOrders failed
 	positions map[string]exchange.PositionResult, // nil when ListPositions failed
@@ -303,7 +299,7 @@ func (r *DefaultReconciler) reconcileHand(
 // Each leg fails independently — other legs/hands are not affected.
 func (r *DefaultReconciler) reconcileLeg(
 	ctx context.Context,
-	helmRuntime *HelmRuntime,
+	helmRuntime HelmPort,
 	hand *Hand,
 	leg *position.LegState,
 	openOrders map[string]exchange.OrderResult,
@@ -331,7 +327,7 @@ func (r *DefaultReconciler) reconcileLeg(
 // reconcilePendingOrder handles a leg with a pending order at the exchange.
 func (r *DefaultReconciler) reconcilePendingOrder(
 	ctx context.Context,
-	orch *HelmRuntime,
+	orch HelmPort,
 	hand *Hand,
 	leg *position.LegState,
 	openOrders map[string]exchange.OrderResult,
@@ -398,8 +394,8 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 		}
 		hand.mu.Unlock()
 
-		hand.emitEvent(natsapi.HelmEvent{
-			Code:    CodeReconcileRestored,
+		hand.EmitEvent(natsapi.HelmEvent{
+			Code:    eventcode.CodeReconcileRestored,
 			Symbol:  leg.Symbol,
 			OrderID: orderID,
 			Reason:  "pending order still open at exchange after restart",
@@ -412,12 +408,12 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 	var termOrder *exchange.OrderResult
 	var err error
 	if clid.IsOurClid(orderID) {
-		if cq, ok := orch.Exchange.(exchange.ClientOrderQuerier); ok {
+		if cq, ok := orch.GetExchange().(exchange.ClientOrderQuerier); ok {
 			marketKind := exchange.MarketSpot
 			if hand.cfg.futuresConfig != nil {
 				marketKind = exchange.MarketFutures
 			}
-			termOrder, err = cq.GetOrderByClientOrderID(ctx, orch.Creds, leg.Symbol, marketKind, orderID)
+			termOrder, err = cq.GetOrderByClientOrderID(ctx, orch.GetCreds(), leg.Symbol, marketKind, orderID)
 			if err != nil {
 				return ReconcileFailed, fmt.Errorf("GetOrderByClientOrderID %s: %w", orderID, err)
 			}
@@ -426,8 +422,8 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 				if err := r.emitOrderCancelled(ctx, hand, leg.TradeID, orderID, "not_found_at_exchange"); err != nil {
 					return ReconcileFailed, err
 				}
-				hand.emitEvent(natsapi.HelmEvent{
-					Code:    CodeReconcileCancelled,
+				hand.EmitEvent(natsapi.HelmEvent{
+					Code:    eventcode.CodeReconcileCancelled,
 					Symbol:  leg.Symbol,
 					OrderID: orderID,
 					Reason:  "pre-flight order never reached the exchange",
@@ -436,10 +432,10 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 				return ReconcileCancelled, nil
 			}
 		} else {
-			return ReconcileFailed, fmt.Errorf("reconcile: exchange %s does not support ClientOrderQuerier to lookup clid %s", orch.Exchange.Name(), orderID)
+			return ReconcileFailed, fmt.Errorf("reconcile: exchange %s does not support ClientOrderQuerier to lookup clid %s", orch.GetExchange().Name(), orderID)
 		}
 	} else {
-		termOrder, err = orch.Exchange.GetOrder(ctx, orch.Creds, orderID)
+		termOrder, err = orch.GetExchange().GetOrder(ctx, orch.GetCreds(), orderID)
 		if err != nil {
 			return ReconcileFailed, fmt.Errorf("GetOrder %s: %w", orderID, err)
 		}
@@ -459,8 +455,8 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 		if err := r.emitOrderFilled(ctx, hand, leg.TradeID, termOrder, "reconcile"); err != nil {
 			return ReconcileFailed, err
 		}
-		hand.emitEvent(natsapi.HelmEvent{
-			Code:    CodeReconcileFillApplied,
+		hand.EmitEvent(natsapi.HelmEvent{
+			Code:    eventcode.CodeReconcileFillApplied,
 			Symbol:  leg.Symbol,
 			OrderID: orderID,
 			Qty:     termOrder.FilledQty,
@@ -474,8 +470,8 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 		if err := r.emitOrderCancelled(ctx, hand, leg.TradeID, orderID, termOrder.Status); err != nil {
 			return ReconcileFailed, err
 		}
-		hand.emitEvent(natsapi.HelmEvent{
-			Code:    CodeReconcileCancelled,
+		hand.EmitEvent(natsapi.HelmEvent{
+			Code:    eventcode.CodeReconcileCancelled,
 			Symbol:  leg.Symbol,
 			OrderID: orderID,
 			Reason:  termOrder.Status + " during downtime",
@@ -518,8 +514,8 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 		slog.Info("reconcile: restored partially-open order for polling",
 			"hand_id", hand.id, "order_id", orderID, "status", termOrder.Status,
 			"filled_qty", termOrder.FilledQty, "original_qty", leg.Qty)
-		hand.emitEvent(natsapi.HelmEvent{
-			Code:    CodeReconcileRestored,
+		hand.EmitEvent(natsapi.HelmEvent{
+			Code:    eventcode.CodeReconcileRestored,
 			Symbol:  leg.Symbol,
 			OrderID: orderID,
 			Reason:  termOrder.Status + " — restored for polling",
@@ -544,7 +540,7 @@ func (r *DefaultReconciler) reconcilePendingOrder(
 // trade rather than restoring the position and letting RecoverBrackets handle it later.
 func (r *DefaultReconciler) reconcileOpenLeg(
 	ctx context.Context,
-	orch *HelmRuntime,
+	orch HelmPort,
 	hand *Hand,
 	leg *position.LegState,
 	positions map[string]exchange.PositionResult,
@@ -564,8 +560,8 @@ func (r *DefaultReconciler) reconcileOpenLeg(
 		if err := r.emitExternalClose(ctx, hand, leg); err != nil {
 			return ReconcileFailed, err
 		}
-		hand.emitEvent(natsapi.HelmEvent{
-			Code:   CodeReconcileExternalClose,
+		hand.EmitEvent(natsapi.HelmEvent{
+			Code:   eventcode.CodeReconcileExternalClose,
 			Symbol: leg.Symbol,
 			Reason: "position not found at exchange after restart — closed externally during downtime",
 			Msg:    "reconcile: position externally closed",
@@ -579,8 +575,8 @@ func (r *DefaultReconciler) reconcileOpenLeg(
 	// incorrectly treat the TP auto-cancel as an external close.
 	if len(leg.ExchangeOrderIDs) > 0 {
 		if action, err := r.tryRecoverBracketFill(ctx, orch, hand, leg); action != "" {
-			hand.emitEvent(natsapi.HelmEvent{
-				Code:   CodeReconcileFillApplied,
+			hand.EmitEvent(natsapi.HelmEvent{
+				Code:   eventcode.CodeReconcileFillApplied,
 				Symbol: leg.Symbol,
 				Qty:    pos.Qty,
 				Reason: "bracket OCO triggered during downtime — position closed (residual dust may remain at exchange)",
@@ -598,8 +594,8 @@ func (r *DefaultReconciler) reconcileOpenLeg(
 	}
 
 	// No bracket fill → position is genuinely still open.
-	hand.emitEvent(natsapi.HelmEvent{
-		Code:   CodeReconcileRestored,
+	hand.EmitEvent(natsapi.HelmEvent{
+		Code:   eventcode.CodeReconcileRestored,
 		Symbol: leg.Symbol,
 		Qty:    pos.Qty,
 		Price:  pos.AvgPrice,
@@ -617,7 +613,7 @@ func (r *DefaultReconciler) reconcileOpenLeg(
 // placement. Not found → treated as never placed; the caller's normal
 // "position restored, unprotected" path already covers that (the local exit
 // monitor becomes the only net, same as a live PlaceExitOrders failure).
-func (r *DefaultReconciler) resolveAmbiguousBracket(ctx context.Context, orch *HelmRuntime, hand *Hand, leg *position.LegState) {
+func (r *DefaultReconciler) resolveAmbiguousBracket(ctx context.Context, orch HelmPort, hand *Hand, leg *position.LegState) {
 	clientOrderID := leg.PendingBracketClientOrderID
 	marketKind := exchange.MarketSpot
 	if hand.cfg.futuresConfig != nil {
@@ -625,17 +621,17 @@ func (r *DefaultReconciler) resolveAmbiguousBracket(ctx context.Context, orch *H
 	}
 
 	var found []exchange.OrderResult
-	if eq, ok := orch.Exchange.(exchange.ExitOrderQuerier); ok {
-		results, err := eq.GetExitOrderByClientOrderID(ctx, orch.Creds, leg.Symbol, marketKind, clientOrderID)
+	if eq, ok := orch.GetExchange().(exchange.ExitOrderQuerier); ok {
+		results, err := eq.GetExitOrderByClientOrderID(ctx, orch.GetCreds(), leg.Symbol, marketKind, clientOrderID)
 		if err != nil {
 			slog.Warn("reconcile: GetExitOrderByClientOrderID failed", "hand_id", hand.id, "symbol", leg.Symbol, "err", err)
 		}
 		found = results
-	} else if cq, ok := orch.Exchange.(exchange.ClientOrderQuerier); ok {
+	} else if cq, ok := orch.GetExchange().(exchange.ClientOrderQuerier); ok {
 		// Adapters without ExitOrderQuerier (Alpaca) place brackets as plain
 		// orders under suffixed clids (see PlaceExitOrders) — query both legs.
 		for _, suffix := range []string{"S", "T"} {
-			o, err := cq.GetOrderByClientOrderID(ctx, orch.Creds, leg.Symbol, marketKind, clientOrderID+suffix)
+			o, err := cq.GetOrderByClientOrderID(ctx, orch.GetCreds(), leg.Symbol, marketKind, clientOrderID+suffix)
 			if err != nil {
 				slog.Warn("reconcile: GetOrderByClientOrderID failed", "hand_id", hand.id, "symbol", leg.Symbol, "err", err)
 				continue
@@ -679,7 +675,7 @@ func (r *DefaultReconciler) resolveAmbiguousBracket(ctx context.Context, orch *H
 // Returns ("", nil) when no filled bracket is found so the caller can fall back normally.
 func (r *DefaultReconciler) tryRecoverBracketFill(
 	ctx context.Context,
-	orch *HelmRuntime,
+	orch HelmPort,
 	hand *Hand,
 	leg *position.LegState,
 ) (ReconcileAction, error) {
@@ -688,7 +684,7 @@ func (r *DefaultReconciler) tryRecoverBracketFill(
 	}
 
 	for _, orderID := range leg.ExchangeOrderIDs {
-		exOrder, err := orch.Exchange.GetOrder(ctx, orch.Creds, orderID)
+		exOrder, err := orch.GetExchange().GetOrder(ctx, orch.GetCreds(), orderID)
 		if err != nil || exOrder == nil {
 			slog.Debug("reconcile: bracket GetOrder failed or not found",
 				"hand_id", hand.id, "order_id", orderID, "err", err)
@@ -730,8 +726,8 @@ func (r *DefaultReconciler) tryRecoverBracketFill(
 			"hand_id", hand.id, "symbol", leg.Symbol,
 			"order_id", orderID, "exit_reason", exitReason,
 			"fill_price", exOrder.FilledAvg, "fill_qty", exOrder.FilledQty, "pnl", pnl)
-		hand.emitEvent(natsapi.HelmEvent{
-			Code:    CodeReconcileFillApplied,
+		hand.EmitEvent(natsapi.HelmEvent{
+			Code:    eventcode.CodeReconcileFillApplied,
 			Symbol:  leg.Symbol,
 			OrderID: orderID,
 			Qty:     exOrder.FilledQty,
@@ -914,10 +910,10 @@ func (r *DefaultReconciler) emitExternalClose(
 
 // ── Exchange batch helpers ────────────────────────────────────────────────────
 
-func (r *DefaultReconciler) fetchOpenOrders(ctx context.Context, orch *HelmRuntime) (map[string]exchange.OrderResult, error) {
-	orders, err := orch.Exchange.ListOpenOrders(ctx, orch.Creds, "")
+func (r *DefaultReconciler) fetchOpenOrders(ctx context.Context, orch HelmPort) (map[string]exchange.OrderResult, error) {
+	orders, err := orch.GetExchange().ListOpenOrders(ctx, orch.GetCreds(), "")
 	if err != nil {
-		slog.Warn("reconcile: ListOpenOrders failed", "exchange", orch.Exchange.Name(), "err", err)
+		slog.Warn("reconcile: ListOpenOrders failed", "exchange", orch.GetExchange().Name(), "err", err)
 		return nil, err
 	}
 	m := make(map[string]exchange.OrderResult, len(orders))
@@ -927,10 +923,10 @@ func (r *DefaultReconciler) fetchOpenOrders(ctx context.Context, orch *HelmRunti
 	return m, nil
 }
 
-func (r *DefaultReconciler) fetchPositions(ctx context.Context, orch *HelmRuntime) (map[string]exchange.PositionResult, error) {
-	positions, err := orch.Exchange.ListPositions(ctx, orch.Creds)
+func (r *DefaultReconciler) fetchPositions(ctx context.Context, orch HelmPort) (map[string]exchange.PositionResult, error) {
+	positions, err := orch.GetExchange().ListPositions(ctx, orch.GetCreds())
 	if err != nil {
-		slog.Warn("reconcile: ListPositions failed", "exchange", orch.Exchange.Name(), "err", err)
+		slog.Warn("reconcile: ListPositions failed", "exchange", orch.GetExchange().Name(), "err", err)
 		return nil, err
 	}
 	m := make(map[string]exchange.PositionResult, len(positions))

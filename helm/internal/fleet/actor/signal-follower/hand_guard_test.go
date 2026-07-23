@@ -1,9 +1,9 @@
-package actor_test
+package signalfollower_test
 
 // Per-hand edge-degradation guard unit tests.
 //
 // Exercises checkEdgeRisk via the sim runtime: open a position, close it at a
-// loss, and verify the hand auto-stops (CodeHandAutoStopped) exactly when a
+// loss, and verify the hand auto-stops (eventcode.CodeHandAutoStopped) exactly when a
 // configured threshold is breached.
 //
 // All four thresholds are covered independently, plus:
@@ -17,15 +17,16 @@ package actor_test
 import (
 	"context"
 	"errors"
+	"mallow/helm/internal/fleet/actor"
+	"mallow/helm/internal/fleet/actor/core/strategy"
+	"mallow/helm/internal/fleet/actor/core/tactics"
+	"mallow/helm/internal/fleet/actor/eventcode"
+	signalfollower "mallow/helm/internal/fleet/actor/signal-follower"
+	"mallow/helm/internal/module/hand/domain"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-
-	"mallow/helm/internal/fleet/actor"
-	"mallow/helm/internal/fleet/actor/core/strategy"
-	"mallow/helm/internal/fleet/actor/core/tactics"
-	"mallow/helm/internal/module/hand/domain"
 )
 
 // addGuardHand creates a Hand with the given HandGuardConfig and allocatedCap.
@@ -36,13 +37,13 @@ func addGuardHand(
 	symbol string,
 	guard domain.HandGuardConfig,
 	allocatedCap decimal.Decimal,
-) *actor.Hand {
+) *signalfollower.Hand {
 	strat := strategy.NewSignalFollower(0.3)
 	tact := tactics.New(tactics.SizingConfig{
 		Mode:     tactics.SizingFixedQty,
 		FixedQty: decimal.NewFromFloat(1.0), // 1 base unit per trade
 	})
-	h := actor.NewHand(
+	h := signalfollower.NewHand(
 		uuid.New(), rt.HelmID, rt,
 		strat, tact,
 		false, 1, 0, // pyramid=false, maxUnits=1, signalTTL=0
@@ -61,7 +62,7 @@ func addGuardHand(
 // fill price between them so the closed trade has the given PnL.
 // entryPrice is the price at open; exitPrice is the price at close.
 // Returns after both fills are confirmed.
-func roundTrip(t *testing.T, sim *simExchange, rt *actor.HelmRuntime, h *actor.Hand,
+func roundTrip(t *testing.T, sim *simExchange, rt *actor.HelmRuntime, h *signalfollower.Hand,
 	symbol string, entryPrice, exitPrice float64) {
 	t.Helper()
 
@@ -71,7 +72,7 @@ func roundTrip(t *testing.T, sim *simExchange, rt *actor.HelmRuntime, h *actor.H
 
 	entryCh := h.Subscribe(256)
 	h.DeliverSignal(longSignalFor(symbol))
-	mustWaitCodeCh(t, entryCh, actor.CodeOrderFilled, simWait)
+	mustWaitCodeCh(t, entryCh, eventcode.CodeOrderFilled, simWait)
 
 	// ── exit ─────────────────────────────────────────────────────────────────
 	sim.setFillPrice(exitPrice)
@@ -79,7 +80,7 @@ func roundTrip(t *testing.T, sim *simExchange, rt *actor.HelmRuntime, h *actor.H
 
 	exitCh := h.Subscribe(256)
 	h.DeliverSignal(exitSignalFor(symbol))
-	mustWaitCodeCh(t, exitCh, actor.CodeOrderFilled, simWait)
+	mustWaitCodeCh(t, exitCh, eventcode.CodeOrderFilled, simWait)
 }
 
 // setFillPrice updates the price returned by simExchange.PlaceOrder in a thread-safe way.
@@ -119,11 +120,11 @@ func TestGuard_MaxTotalLoss_StopsHand(t *testing.T) {
 	roundTrip(t, sim, rt, h, symbol, 10_000, 9_800)
 	// Trade 2: -200 USDT  (cumulative -400; still below -500)
 	roundTrip(t, sim, rt, h, symbol, 10_000, 9_800)
-	noCode(t, h, actor.CodeHandAutoStopped, simWait)
+	noCode(t, h, eventcode.CodeHandAutoStopped, simWait)
 
 	// Trade 3: -200 USDT  (cumulative -600 > -500 → breach)
 	roundTrip(t, sim, rt, h, symbol, 10_000, 9_800)
-	mustWaitCodeCh(t, stoppedCh, actor.CodeHandAutoStopped, simWait)
+	mustWaitCodeCh(t, stoppedCh, eventcode.CodeHandAutoStopped, simWait)
 }
 
 // ── BUG-GUARD-02: MaxAvgLossPct ──────────────────────────────────────────────
@@ -154,11 +155,11 @@ func TestGuard_MaxAvgLoss_StopsHand(t *testing.T) {
 
 	// Trade 1: -200 USDT (2% of alloc; below avg threshold of 2.5%)
 	roundTrip(t, sim, rt, h, symbol, 10_000, 9_800)
-	noCode(t, h, actor.CodeHandAutoStopped, simWait)
+	noCode(t, h, eventcode.CodeHandAutoStopped, simWait)
 
 	// Trade 2: -600 USDT. avg([-200, -600]) = -400 (4%) > -250 → breach.
 	roundTrip(t, sim, rt, h, symbol, 10_000, 9_400)
-	mustWaitCodeCh(t, stoppedCh, actor.CodeHandAutoStopped, simWait)
+	mustWaitCodeCh(t, stoppedCh, eventcode.CodeHandAutoStopped, simWait)
 }
 
 // ── BUG-GUARD-03: MaxSingleLossPct ───────────────────────────────────────────
@@ -188,7 +189,7 @@ func TestGuard_MaxSingleLoss_StopsHand(t *testing.T) {
 
 	// Single trade with a 15% loss → exceeds 10% single-loss limit.
 	roundTrip(t, sim, rt, h, symbol, 1_000, 850)
-	mustWaitCodeCh(t, stoppedCh, actor.CodeHandAutoStopped, simWait)
+	mustWaitCodeCh(t, stoppedCh, eventcode.CodeHandAutoStopped, simWait)
 }
 
 // ── BUG-GUARD-04: MaxConsecLoss ──────────────────────────────────────────────
@@ -216,11 +217,11 @@ func TestGuard_MaxConsecLoss_StopsHand(t *testing.T) {
 	// Loss 1, Loss 2 — streak not yet at limit (MaxConsecLoss=3).
 	roundTrip(t, sim, rt, h, symbol, 300, 280) // -20 USDT
 	roundTrip(t, sim, rt, h, symbol, 300, 280)
-	noCode(t, h, actor.CodeHandAutoStopped, simWait)
+	noCode(t, h, eventcode.CodeHandAutoStopped, simWait)
 
 	// Loss 3 — streak reaches MaxConsecLoss=3 → breach.
 	roundTrip(t, sim, rt, h, symbol, 300, 280)
-	mustWaitCodeCh(t, stoppedCh, actor.CodeHandAutoStopped, simWait)
+	mustWaitCodeCh(t, stoppedCh, eventcode.CodeHandAutoStopped, simWait)
 }
 
 // TestGuard_MaxConsecLoss_WinResetsStreak verifies that a winning trade resets
@@ -246,20 +247,20 @@ func TestGuard_MaxConsecLoss_WinResetsStreak(t *testing.T) {
 	// Loss 1, Loss 2 — streak=2.
 	roundTrip(t, sim, rt, h, symbol, 300, 280)
 	roundTrip(t, sim, rt, h, symbol, 300, 280)
-	noCode(t, h, actor.CodeHandAutoStopped, simWait)
+	noCode(t, h, eventcode.CodeHandAutoStopped, simWait)
 
 	// Winning trade — resets streak to 0.
 	roundTrip(t, sim, rt, h, symbol, 300, 320) // +20 USDT
-	noCode(t, h, actor.CodeHandAutoStopped, simWait)
+	noCode(t, h, eventcode.CodeHandAutoStopped, simWait)
 
 	// Two more losses (streak=2, not 3+1): must NOT stop.
 	roundTrip(t, sim, rt, h, symbol, 300, 280)
 	roundTrip(t, sim, rt, h, symbol, 300, 280)
-	noCode(t, h, actor.CodeHandAutoStopped, simWait)
+	noCode(t, h, eventcode.CodeHandAutoStopped, simWait)
 
 	// Third consecutive loss after reset → stop.
 	roundTrip(t, sim, rt, h, symbol, 300, 280)
-	mustWaitCodeCh(t, stoppedCh, actor.CodeHandAutoStopped, simWait)
+	mustWaitCodeCh(t, stoppedCh, eventcode.CodeHandAutoStopped, simWait)
 }
 
 // ── BUG-GUARD-05: window not yet full ────────────────────────────────────────
@@ -317,7 +318,7 @@ func TestGuard_WindowWarmup_NoStopBeforeFull(t *testing.T) {
 	// Trade 1 fires here; not a warmup for single-loss.
 	stoppedCh := h.Subscribe(256)
 	roundTrip(t, sim, rt, h, symbol, 100, 50) // -50 >> -10 threshold
-	mustWaitCodeCh(t, stoppedCh, actor.CodeHandAutoStopped, simWait)
+	mustWaitCodeCh(t, stoppedCh, eventcode.CodeHandAutoStopped, simWait)
 }
 
 // ── BUG-GUARD-06: guard disabled ─────────────────────────────────────────────
@@ -341,7 +342,7 @@ func TestGuard_Disabled_NoAutoStop(t *testing.T) {
 	for i := 0; i < 5; i++ {
 		roundTrip(t, sim, rt, h, symbol, 1, 0.5)
 	}
-	noCode(t, h, actor.CodeHandAutoStopped, simWait*3)
+	noCode(t, h, eventcode.CodeHandAutoStopped, simWait*3)
 }
 
 // ── BUG-GUARD-07: AllocatedCapital as pct reference ──────────────────────────
@@ -371,12 +372,12 @@ func TestGuard_AllocatedCap_UsedAsReference(t *testing.T) {
 
 	// Loss = 500−450 = 50 USDT; 50/10_000 = 0.5% < 1% → guard must NOT fire.
 	roundTrip(t, sim, rt, h, symbol, 500, 450)
-	noCode(t, h, actor.CodeHandAutoStopped, simWait*2)
+	noCode(t, h, eventcode.CodeHandAutoStopped, simWait*2)
 
 	// Loss = 500−360 = 140 USDT; 140/10_000 = 1.4% > 1% → guard fires.
 	stoppedCh := h.Subscribe(256)
 	roundTrip(t, sim, rt, h, symbol, 500, 360)
-	mustWaitCodeCh(t, stoppedCh, actor.CodeHandAutoStopped, simWait)
+	mustWaitCodeCh(t, stoppedCh, eventcode.CodeHandAutoStopped, simWait)
 }
 
 // ── BUG-GUARD-08: ring buffer wrap-around correctness ────────────────────────
@@ -406,11 +407,11 @@ func TestGuard_RingWrap_OldestEntryEvicted(t *testing.T) {
 	// Loss: -90 USDT; ring[−90] not full yet (head=1, count=1, !full).
 	// With window=2: after trade 1: head=1, !full, count=1. sum=-90 < -100 → OK.
 	roundTrip(t, sim, rt, h, symbol, 100, 10) // -90 USDT
-	noCode(t, h, actor.CodeHandAutoStopped, simWait)
+	noCode(t, h, eventcode.CodeHandAutoStopped, simWait)
 
 	// Big WIN: +500 USDT; ring=[−90, +500] → full=true, sum=+410 > -100 → OK.
 	roundTrip(t, sim, rt, h, symbol, 100, 600) // +500 USDT
-	noCode(t, h, actor.CodeHandAutoStopped, simWait)
+	noCode(t, h, eventcode.CodeHandAutoStopped, simWait)
 
 	// Loss: -90 USDT; ring wraps: ring=[−90, +500] → after push: ring=[+500, −90] (head=0→1).
 	// Wait: head was 0 after second push (wrapped). Now third push: ring[0]=-90, head=1.
@@ -419,7 +420,7 @@ func TestGuard_RingWrap_OldestEntryEvicted(t *testing.T) {
 	// ring[0] was −90, now overwritten with −90. So ring=[−90, +500]. sum=−90+500=+410 > -100 → OK.
 	// Still not stopped. Good — verifies the old entry is evicted correctly.
 	roundTrip(t, sim, rt, h, symbol, 100, 10) // -90 USDT
-	noCode(t, h, actor.CodeHandAutoStopped, simWait)
+	noCode(t, h, eventcode.CodeHandAutoStopped, simWait)
 }
 
 // TestGuard_RingWrap_TwoLossesFireWhenFull verifies the simple case where two
@@ -444,9 +445,9 @@ func TestGuard_RingWrap_TwoLossesFireWhenFull(t *testing.T) {
 
 	stoppedCh := h.Subscribe(256)
 	roundTrip(t, sim, rt, h, symbol, 100, 10) // -90 USDT; window count=1, sum=-90 < -100 → OK
-	noCode(t, h, actor.CodeHandAutoStopped, simWait)
+	noCode(t, h, eventcode.CodeHandAutoStopped, simWait)
 	roundTrip(t, sim, rt, h, symbol, 100, 10) // -90 USDT; window full, sum=-180 < -100 → FIRE
-	mustWaitCodeCh(t, stoppedCh, actor.CodeHandAutoStopped, simWait)
+	mustWaitCodeCh(t, stoppedCh, eventcode.CodeHandAutoStopped, simWait)
 }
 
 // ── RestoreGuard: edge-risk guard survives a restart ─────────────────────────
@@ -508,7 +509,7 @@ func TestRestoreGuard_ConsecLossSurvivesRestart(t *testing.T) {
 	// Exactly one more loss should now reach MaxConsecLoss=3 and auto-stop —
 	// a fresh (non-restored) guard would only be at streak=1 here.
 	roundTrip(t, sim, rt, h, symbol, 10_000, 9_900)
-	mustWaitCodeCh(t, stoppedCh, actor.CodeHandAutoStopped, simWait)
+	mustWaitCodeCh(t, stoppedCh, eventcode.CodeHandAutoStopped, simWait)
 }
 
 // TestRestoreGuard_WinInHistoryResetsStreak verifies that if the most recent closed
@@ -539,7 +540,7 @@ func TestRestoreGuard_WinInHistoryResetsStreak(t *testing.T) {
 
 	// One more loss should only bring the streak to 1 — must NOT breach MaxConsecLoss=2.
 	roundTrip(t, sim, rt, h, symbol, 2_000, 1_980)
-	noCode(t, h, actor.CodeHandAutoStopped, simWait)
+	noCode(t, h, eventcode.CodeHandAutoStopped, simWait)
 }
 
 // TestRestoreGuard_Disabled_NoOp verifies RestoreGuard is a safe no-op when the
@@ -584,5 +585,5 @@ func TestRestoreGuard_NilOrErroringSummer_NoOp(t *testing.T) {
 	// No auto-stop should fire just from calling RestoreGuard against a nil or
 	// erroring summer — it must not panic and must leave the guard in its
 	// zero-valued starting state.
-	noCode(t, h, actor.CodeHandAutoStopped, simWait)
+	noCode(t, h, eventcode.CodeHandAutoStopped, simWait)
 }

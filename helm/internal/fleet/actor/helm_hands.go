@@ -4,10 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"mallow/helm/internal/fleet/actor/eventcode"
 	"time"
 
 	"github.com/shopspring/decimal"
 
+	"mallow/helm/internal/fleet/actor/core/strategy"
+	signalfollower "mallow/helm/internal/fleet/actor/signal-follower"
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/natsapi"
 	handdomain "mallow/helm/internal/module/hand/domain"
@@ -19,14 +22,14 @@ type HandHeartbeat struct {
 	Symbol       string
 	Status       string
 	StrategyName string
-	Metrics      HandMetrics
+	Metrics      signalfollower.HandMetrics
 }
 
 // AddHand registers a hand and its persisted domain data with this runtime.
-func (r *HelmRuntime) AddHand(hand *Hand, data *handdomain.Hand) {
+func (r *HelmRuntime) AddHand(hand *signalfollower.Hand, data *handdomain.Hand) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.hands[hand.id.String()] = &handEntry{h: hand, data: data}
+	r.hands[hand.ID().String()] = &handEntry{h: hand, data: data}
 }
 
 // RemoveHand unregisters a hand from this runtime.
@@ -67,7 +70,7 @@ func (r *HelmRuntime) HandSummaries() []HandHeartbeat {
 	out := make([]HandHeartbeat, 0, len(r.hands))
 	for _, e := range r.hands {
 		out = append(out, HandHeartbeat{
-			ID:           e.h.id.String(),
+			ID:           e.h.ID().String(),
 			Symbol:       e.h.Symbol,
 			Status:       e.h.Health().Status,
 			StrategyName: e.h.StrategyName,
@@ -83,14 +86,14 @@ func (r *HelmRuntime) OpenUnitCount() int {
 	defer r.mu.RUnlock()
 	total := 0
 	for _, e := range r.hands {
-		total += e.h.activeUnitCount()
+		total += e.h.ActiveUnitCount()
 	}
 	return total
 }
 
 // DispatchHandSignal routes a signal to the named hand owned by this runtime.
 // Returns false if the hand is not found.
-func (r *HelmRuntime) DispatchHandSignal(handID string, sig Signal) bool {
+func (r *HelmRuntime) DispatchHandSignal(handID string, sig strategy.Signal) bool {
 	r.mu.RLock()
 	e, ok := r.hands[handID]
 	r.mu.RUnlock()
@@ -100,7 +103,7 @@ func (r *HelmRuntime) DispatchHandSignal(handID string, sig Signal) bool {
 	if r.IsHalted() && !sig.IsUrgent() {
 		r.EmitEvent(natsapi.HelmEvent{
 			HandID:    handID,
-			Code:      CodeSignalRejected,
+			Code:      eventcode.CodeSignalRejected,
 			Symbol:    sig.Symbol,
 			Direction: string(sig.Direction),
 			Reason:    "helm halted",
@@ -113,7 +116,7 @@ func (r *HelmRuntime) DispatchHandSignal(handID string, sig Signal) bool {
 }
 
 // GetHandEntry returns the live Hand runner and its persisted data for the given hand ID.
-func (r *HelmRuntime) GetHandEntry(id string) (*Hand, *handdomain.Hand, bool) {
+func (r *HelmRuntime) GetHandEntry(id string) (*signalfollower.Hand, *handdomain.Hand, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	e, ok := r.hands[id]
@@ -276,7 +279,7 @@ func (r *HelmRuntime) ReleaseHand(ctx context.Context, id string) (handdomain.Ha
 }
 
 // BuildHandSummary constructs a HandSummary from the live runner + persisted data.
-func BuildHandSummary(h *Hand, data *handdomain.Hand) handdomain.HandSummary {
+func BuildHandSummary(h *signalfollower.Hand, data *handdomain.Hand) handdomain.HandSummary {
 	health := h.Health()
 	m := h.Metrics()
 
@@ -342,7 +345,7 @@ func BuildHandSummary(h *Hand, data *handdomain.Hand) handdomain.HandSummary {
 // must cleanly stop the hands it holds.
 func (r *HelmRuntime) StopAllHands(ctx context.Context) {
 	r.mu.RLock()
-	hands := make([]*Hand, 0, len(r.hands))
+	hands := make([]*signalfollower.Hand, 0, len(r.hands))
 	ids := make([]string, 0, len(r.hands))
 	for id, e := range r.hands {
 		hands = append(hands, e.h)

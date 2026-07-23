@@ -36,6 +36,8 @@ import (
 	"mallow/helm/internal/fleet/actor/core/risk"
 	"mallow/helm/internal/fleet/actor/core/strategy"
 	"mallow/helm/internal/fleet/actor/core/tactics"
+	"mallow/helm/internal/fleet/actor/eventcode"
+	signalfollower "mallow/helm/internal/fleet/actor/signal-follower"
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/natsapi"
 	"mallow/helm/internal/module/hand/domain"
@@ -179,13 +181,13 @@ func buildSimRuntime(ex exchange.Exchange, capital float64, maxPositions int) *a
 }
 
 // addSimHand creates and registers a Hand with FixedQty sizing + optional TTL.
-func addSimHand(rt *actor.HelmRuntime, symbol string, qty float64, signalTTL time.Duration, minStrength float64, maxUnits int) *actor.Hand {
+func addSimHand(rt *actor.HelmRuntime, symbol string, qty float64, signalTTL time.Duration, minStrength float64, maxUnits int) *signalfollower.Hand {
 	strat := strategy.NewSignalFollower(minStrength)
 	tact := tactics.New(tactics.SizingConfig{
 		Mode:     tactics.SizingFixedQty,
 		FixedQty: decimal.NewFromFloat(qty),
 	})
-	h := actor.NewHand(
+	h := signalfollower.NewHand(
 		uuid.New(), rt.HelmID, rt,
 		strat, tact,
 		false, maxUnits, signalTTL,
@@ -202,7 +204,7 @@ func addSimHand(rt *actor.HelmRuntime, symbol string, qty float64, signalTTL tim
 // waitCode subscribes to the hand event bus and waits until an event with the
 // given code appears or the timeout expires. Returns the event and true on success.
 // IMPORTANT: call before delivering the trigger signal to avoid missing fast events.
-func waitCode(h *actor.Hand, code int, timeout time.Duration) (natsapi.HelmEvent, bool) {
+func waitCode(h *signalfollower.Hand, code int, timeout time.Duration) (natsapi.HelmEvent, bool) {
 	events := h.Subscribe(64) // subscribe once, outside the loop
 	deadline := time.After(timeout)
 	for {
@@ -222,7 +224,7 @@ func waitCode(h *actor.Hand, code int, timeout time.Duration) (natsapi.HelmEvent
 
 // mustWaitCode fails the test if the code does not appear within the timeout.
 // Creates a new subscription — call before delivering the trigger signal.
-func mustWaitCode(t *testing.T, h *actor.Hand, code int, timeout time.Duration) natsapi.HelmEvent {
+func mustWaitCode(t *testing.T, h *signalfollower.Hand, code int, timeout time.Duration) natsapi.HelmEvent {
 	t.Helper()
 	e, ok := waitCode(h, code, timeout)
 	if !ok {
@@ -266,7 +268,7 @@ func mustWaitCodeCh(t *testing.T, events <-chan natsapi.HelmEvent, code int, tim
 //
 //	events, deliver := mustWaitCodes(t, h, simWait, CodeOrderPlaced, CodeOrderFilled)
 //	deliver()  // call AFTER subscribe; events already buffered
-func mustWaitCodesSetup(t *testing.T, h *actor.Hand, timeout time.Duration, codes ...int) (<-chan natsapi.HelmEvent, func() []natsapi.HelmEvent) {
+func mustWaitCodesSetup(t *testing.T, h *signalfollower.Hand, timeout time.Duration, codes ...int) (<-chan natsapi.HelmEvent, func() []natsapi.HelmEvent) {
 	t.Helper()
 	events := h.Subscribe(128)
 	return events, func() []natsapi.HelmEvent {
@@ -284,14 +286,14 @@ func mustWaitCodesSetup(t *testing.T, h *actor.Hand, timeout time.Duration, code
 }
 
 // noCode asserts that a given code does NOT appear within the timeout.
-func noCode(t *testing.T, h *actor.Hand, code int, wait time.Duration) {
+func noCode(t *testing.T, h *signalfollower.Hand, code int, wait time.Duration) {
 	t.Helper()
 	if _, ok := waitCode(h, code, wait); ok {
 		t.Fatalf("unexpected activity code %d appeared", code)
 	}
 }
 
-func longSignalFor(symbol string) actor.Signal {
+func longSignalFor(symbol string) strategy.Signal {
 	return strategy.Signal{
 		Symbol:     symbol,
 		Direction:  strategy.DirLong,
@@ -300,7 +302,7 @@ func longSignalFor(symbol string) actor.Signal {
 	}
 }
 
-func shortSignalFor(symbol string) actor.Signal {
+func shortSignalFor(symbol string) strategy.Signal {
 	return strategy.Signal{
 		Symbol:     symbol,
 		Direction:  strategy.DirShort,
@@ -309,7 +311,7 @@ func shortSignalFor(symbol string) actor.Signal {
 	}
 }
 
-func exitSignalFor(symbol string) actor.Signal {
+func exitSignalFor(symbol string) strategy.Signal {
 	return strategy.Signal{
 		Symbol:     symbol,
 		Direction:  strategy.DirExit,
@@ -333,7 +335,7 @@ func TestSignal_LongEntry_OrderPlacedAndFilled(t *testing.T) {
 	h.Start()
 	defer h.Stop()
 
-	events, waitAll := mustWaitCodesSetup(t, h, simWait, actor.CodeOrderPlaced, actor.CodeOrderFilled)
+	events, waitAll := mustWaitCodesSetup(t, h, simWait, eventcode.CodeOrderPlaced, eventcode.CodeOrderFilled)
 	_ = events
 	h.DeliverSignal(longSignalFor(symbol))
 	waitAll()
@@ -367,7 +369,7 @@ func TestSignal_RoundTrip_EntryThenExit(t *testing.T) {
 	// Entry — subscribe before delivering so synchronous sim fills are captured.
 	entryCh := h.Subscribe(64)
 	h.DeliverSignal(longSignalFor(symbol))
-	mustWaitCodeCh(t, entryCh, actor.CodeOrderFilled, simWait)
+	mustWaitCodeCh(t, entryCh, eventcode.CodeOrderFilled, simWait)
 
 	pos := rt.Portfolio.GetPosition(symbol)
 	if pos == nil || !pos.Qty.IsPositive() {
@@ -377,7 +379,7 @@ func TestSignal_RoundTrip_EntryThenExit(t *testing.T) {
 	// Exit — new subscription for the second fill.
 	exitCh := h.Subscribe(64)
 	h.DeliverSignal(exitSignalFor(symbol))
-	mustWaitCodeCh(t, exitCh, actor.CodeOrderFilled, simWait)
+	mustWaitCodeCh(t, exitCh, eventcode.CodeOrderFilled, simWait)
 
 	if sim.placedCount() != 2 {
 		t.Fatalf("expected 2 orders (entry + exit), got %d", sim.placedCount())
@@ -408,7 +410,7 @@ func TestSignal_OrphanExitKind_DisownsLegWithoutOrder(t *testing.T) {
 
 	entryCh := h.Subscribe(64)
 	h.DeliverSignal(longSignalFor(symbol))
-	mustWaitCodeCh(t, entryCh, actor.CodeOrderFilled, simWait)
+	mustWaitCodeCh(t, entryCh, eventcode.CodeOrderFilled, simWait)
 
 	orphanCh := h.Subscribe(64)
 	h.DeliverSignal(strategy.Signal{
@@ -418,7 +420,7 @@ func TestSignal_OrphanExitKind_DisownsLegWithoutOrder(t *testing.T) {
 		Strength:   1.0,
 		ReceivedAt: time.Now().UTC(),
 	})
-	mustWaitCodeCh(t, orphanCh, actor.CodePositionExtClosed, simWait)
+	mustWaitCodeCh(t, orphanCh, eventcode.CodePositionExtClosed, simWait)
 
 	if sim.placedCount() != 1 {
 		t.Fatalf("orphan signal must not place a market order — expected 1 order (entry only), got %d", sim.placedCount())
@@ -442,7 +444,7 @@ func TestSignal_ShortEntry(t *testing.T) {
 	h.DeliverSignal(shortSignalFor(symbol))
 
 	// Since short selling is not supported yet, the signal should be rejected.
-	ev := mustWaitCodeCh(t, shortCh, actor.CodeSignalRejected, simWait)
+	ev := mustWaitCodeCh(t, shortCh, eventcode.CodeSignalRejected, simWait)
 	if ev.Reason != "not support short selling yet" {
 		t.Errorf("expected rejection reason 'not support short selling yet', got '%s'", ev.Reason)
 	}
@@ -471,8 +473,8 @@ func TestSignal_Stale_Dropped(t *testing.T) {
 	staleCh := h.Subscribe(64)
 	h.DeliverSignal(stale)
 
-	mustWaitCodeCh(t, staleCh, actor.CodeSignalStale, simWait)
-	noCode(t, h, actor.CodeOrderPlaced, simWait)
+	mustWaitCodeCh(t, staleCh, eventcode.CodeSignalStale, simWait)
+	noCode(t, h, eventcode.CodeOrderPlaced, simWait)
 
 	if sim.placedCount() != 0 {
 		t.Errorf("expected no orders for stale signal, got %d", sim.placedCount())
@@ -496,8 +498,8 @@ func TestSignal_PausedHelm_Dropped(t *testing.T) { //nolint:unused // scenario 5
 	pausedHelmCh := h.Subscribe(64)
 	h.DeliverSignal(longSignalFor(symbol))
 
-	mustWaitCodeCh(t, pausedHelmCh, actor.CodeSignalHelmPaused, simWait)
-	noCode(t, h, actor.CodeOrderPlaced, simWait)
+	mustWaitCodeCh(t, pausedHelmCh, eventcode.CodeSignalHelmPaused, simWait)
+	noCode(t, h, eventcode.CodeOrderPlaced, simWait)
 }
 
 // ── Scenario 7: signal strength below min → CodeSignalDoNothing ──────────────
@@ -519,8 +521,8 @@ func TestSignal_LowStrength_DoNothing(t *testing.T) {
 	weakCh := h.Subscribe(64)
 	h.DeliverSignal(weak)
 
-	mustWaitCodeCh(t, weakCh, actor.CodeSignalDoNothing, simWait)
-	noCode(t, h, actor.CodeOrderPlaced, simWait)
+	mustWaitCodeCh(t, weakCh, eventcode.CodeSignalDoNothing, simWait)
+	noCode(t, h, eventcode.CodeOrderPlaced, simWait)
 }
 
 // ── Scenario 8: MaxUnits reached → CodeSignalMaxUnits on second entry ────────
@@ -540,12 +542,12 @@ func TestSignal_MaxUnits_SecondEntryBlocked(t *testing.T) {
 	// First entry — should succeed.
 	entry1Ch := h.Subscribe(64)
 	h.DeliverSignal(longSignalFor(symbol))
-	mustWaitCodeCh(t, entry1Ch, actor.CodeOrderFilled, simWait)
+	mustWaitCodeCh(t, entry1Ch, eventcode.CodeOrderFilled, simWait)
 
 	// Second entry — should be blocked by MaxUnits.
 	maxUnitsCh := h.Subscribe(64)
 	h.DeliverSignal(longSignalFor(symbol))
-	mustWaitCodeCh(t, maxUnitsCh, actor.CodeSignalMaxUnits, simWait)
+	mustWaitCodeCh(t, maxUnitsCh, eventcode.CodeSignalMaxUnits, simWait)
 
 	if sim.placedCount() != 1 {
 		t.Errorf("expected exactly 1 order (second entry blocked), got %d", sim.placedCount())
@@ -574,12 +576,12 @@ func TestSignal_MaxPositions_SecondHandBlocked(t *testing.T) {
 	// h1 opens a position.
 	h1FilledCh := h1.Subscribe(64)
 	h1.DeliverSignal(longSignalFor(sym1))
-	mustWaitCodeCh(t, h1FilledCh, actor.CodeOrderFilled, simWait)
+	mustWaitCodeCh(t, h1FilledCh, eventcode.CodeOrderFilled, simWait)
 
 	// h2 tries to enter — MaxPositions cap reached → rejected.
 	h2RejectedCh := h2.Subscribe(64)
 	h2.DeliverSignal(longSignalFor(sym2))
-	mustWaitCodeCh(t, h2RejectedCh, actor.CodeSignalRejected, simWait)
+	mustWaitCodeCh(t, h2RejectedCh, eventcode.CodeSignalRejected, simWait)
 
 	if sim.placedCount() != 1 {
 		t.Errorf("expected exactly 1 order placed total, got %d", sim.placedCount())
@@ -605,7 +607,7 @@ func TestSignal_ExitLevelsPopulated_AfterFill(t *testing.T) {
 	slTpCh := h.Subscribe(64)
 	h.DeliverSignal(sig)
 
-	mustWaitCodeCh(t, slTpCh, actor.CodeOrderFilled, simWait)
+	mustWaitCodeCh(t, slTpCh, eventcode.CodeOrderFilled, simWait)
 
 	// Verify an exit order was NOT placed yet (no ExitOrderPlacer on simExchange)
 	// but the hand registered the exit levels (detectable via the Position's exit levels).
@@ -644,7 +646,7 @@ func TestSignal_InsufficientCapital_AutoStop(t *testing.T) {
 
 	strat := strategy.NewSignalFollower(0.3)
 	tact := &stubZeroQtyPlanner{}
-	h := actor.NewHand(
+	h := signalfollower.NewHand(
 		uuid.New(), rt.HelmID, rt,
 		strat, tact,
 		false, 1, 0,
@@ -666,9 +668,9 @@ func TestSignal_InsufficientCapital_AutoStop(t *testing.T) {
 	stoppedCh := h.Subscribe(64)
 	h.DeliverSignal(longSignalFor(symbol))
 
-	mustWaitCodeCh(t, rejectedCh, actor.CodeSignalRejected, simWait)
+	mustWaitCodeCh(t, rejectedCh, eventcode.CodeSignalRejected, simWait)
 	// Wait for the auto-stop event which follows the rejection.
-	mustWaitCodeCh(t, stoppedCh, actor.CodeHandAutoStopped, simWait)
+	mustWaitCodeCh(t, stoppedCh, eventcode.CodeHandAutoStopped, simWait)
 
 	// Give the async Stop() goroutine time to run.
 	time.Sleep(50 * time.Millisecond)

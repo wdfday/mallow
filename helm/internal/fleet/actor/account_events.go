@@ -2,9 +2,11 @@ package actor
 
 import (
 	"fmt"
+	"mallow/helm/internal/fleet/actor/eventcode"
 
 	"github.com/google/uuid"
 
+	signalfollower "mallow/helm/internal/fleet/actor/signal-follower"
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/natsapi"
 )
@@ -21,7 +23,7 @@ import (
 // fleet.Registry implements this interface; consumed in module/broker.
 type AccountEventHandler interface {
 	// OnAccountError fires when a sustained/repeated exchange.ErrClass
-	// condition crosses its escalation threshold (see errClassThresholds) —
+	// condition crosses its escalation threshold (see ErrClassThresholds) —
 	// not every single error, only ones that persist past the class's
 	// tolerance. reason is the last raw error message, for logging.
 	OnAccountError(accountID uuid.UUID, class exchange.ErrClass, reason string)
@@ -35,42 +37,13 @@ type AccountEventHandler interface {
 	OnTradingRestricted(accountID uuid.UUID, reason string)
 }
 
-// errClassThresholds is the number of consecutive PlaceOrder failures of a
-// given exchange.ErrClass required before it escalates to OnAccountError.
-// A zero threshold means the class never escalates — it stays metrics-only
-// (exchange.ClassifyGeneric/ErrorClassifier still tag it for Prometheus),
-// same as before this generalization for every class except Auth.
-var errClassThresholds = [exchange.ErrClassCount]int32{
-	exchange.ErrClassAuth:        1, // credentials rarely fail transiently
-	exchange.ErrClassNetwork:     5, // a couple of dropped connections is normal
-	exchange.ErrClassServerError: 5, // exchange-side 5xx/maintenance — same reasoning
-	// All other classes (RateLimit, ClockSkew, InsufficientBalance, LotSize,
-	// PriceFilter, InvalidSymbol, OrderNotFound, Unknown) default to 0 —
-	// either self-resolving (rate limit backoff, clock sync) or per-order
-	// validation issues that don't belong at the account/connection level.
-}
-
-// classifyErr uses the exchange adapter's precise ErrorClassifier when the
-// wrapped exchange implements it (MeteredExchange forwards this from the
-// inner adapter — see infra/exchange/metrics.go), falling back to the
-// transport-only string heuristic otherwise. Adapter-specific typed codes
-// (Binance/fbinance API codes, OKX sCodes, Bybit retCodes, Alpaca status
-// codes) are far more precise than ClassifyGeneric's substring matching —
-// see errors_test.go's DNS-vs-signature regression for why that matters.
-func classifyErr(ex exchange.Exchange, err error) exchange.ErrClass {
-	if c, ok := ex.(exchange.ErrorClassifier); ok {
-		return c.ClassifyError(err)
-	}
-	return exchange.ClassifyGeneric(err)
-}
-
 // NoteOrderError classifies a PlaceOrder error and, if its class's streak
-// crosses errClassThresholds, self-pauses the helm and fires OnAccountError.
-// Called from hand_runner.go on every PlaceOrder failure. Safe to call from
-// any goroutine (matches TriggerAccountError's own safety).
+// crosses signalfollower.ErrClassThresholds, self-pauses the helm and fires
+// OnAccountError. Called from hand_runner.go on every PlaceOrder failure.
+// Safe to call from any goroutine (matches TriggerAccountError's own safety).
 func (r *HelmRuntime) NoteOrderError(err error) {
-	class := classifyErr(r.Exchange, err)
-	threshold := errClassThresholds[class]
+	class := signalfollower.ClassifyErr(r.Exchange, err)
+	threshold := signalfollower.ErrClassThresholds[class]
 	if threshold <= 0 {
 		return
 	}
@@ -135,12 +108,12 @@ func (r *HelmRuntime) checkTradingRestricted(perms *exchange.AccountPermissions)
 // goroutine to avoid blocking the caller.
 func (r *HelmRuntime) TriggerAccountError(class exchange.ErrClass, reason string) {
 	r.Pause()
-	// CodeHelmCredentialError is the pre-existing, consumer-facing code for the
+	// eventcode.CodeHelmCredentialError is the pre-existing, consumer-facing code for the
 	// auth case specifically (kept stable for downstream compatibility);
-	// CodeHelmAccountError covers every other escalating class added here.
-	code := CodeHelmAccountError
+	// eventcode.CodeHelmAccountError covers every other escalating class added here.
+	code := eventcode.CodeHelmAccountError
 	if class == exchange.ErrClassAuth {
-		code = CodeHelmCredentialError
+		code = eventcode.CodeHelmCredentialError
 	}
 	r.EmitEvent(natsapi.HelmEvent{Code: code, Msg: reason})
 	if r.AccountEvents != nil {

@@ -1,4 +1,4 @@
-package actor
+package signalfollower
 
 import (
 	"context"
@@ -21,8 +21,8 @@ import (
 // the reconciler will detect and patch the missing event on next startup.
 // Must NOT be called while b.mu is held.
 func (h *Hand) publishAndApply(ctx context.Context, e poslog.Event) {
-	if h.helmRuntime.PosLog != nil {
-		if err := h.helmRuntime.PosLog.Publish(ctx, e); err != nil {
+	if h.helm.GetPosLog() != nil {
+		if err := h.helm.GetPosLog().Publish(ctx, e); err != nil {
 			h.log.Error("poslog publish failed", "event_id", e.ID, "kind", e.Kind, "err", err)
 		}
 	}
@@ -34,12 +34,12 @@ func (h *Hand) publishAndApply(ctx context.Context, e poslog.Event) {
 	switch e.Kind {
 	case poslog.KindOrderPlace:
 		var p poslog.OrderPlacePayload
-		if jsonErr := unmarshalJSON(e.Payload, &p); jsonErr == nil {
+		if jsonErr := json.Unmarshal(e.Payload, &p); jsonErr == nil {
 			h.pendingOrderPos[p.ClientOrderID] = e.TradeID
 		}
 	case poslog.KindOrderPlaced:
 		var p poslog.OrderPlacedPayload
-		if jsonErr := unmarshalJSON(e.Payload, &p); jsonErr == nil {
+		if jsonErr := json.Unmarshal(e.Payload, &p); jsonErr == nil {
 			h.pendingOrderPos[p.OrderID] = e.TradeID
 			if p.ClientOrderID != "" {
 				h.pendingOrderPos[p.ClientOrderID] = e.TradeID
@@ -47,7 +47,7 @@ func (h *Hand) publishAndApply(ctx context.Context, e poslog.Event) {
 		}
 	case poslog.KindOrderFilled:
 		var p poslog.OrderFilledPayload
-		if jsonErr := unmarshalJSON(e.Payload, &p); jsonErr == nil {
+		if jsonErr := json.Unmarshal(e.Payload, &p); jsonErr == nil {
 			tradeID := h.pendingOrderPos[p.OrderID]
 			if tradeID != "" {
 				for k, v := range h.pendingOrderPos {
@@ -61,7 +61,7 @@ func (h *Hand) publishAndApply(ctx context.Context, e poslog.Event) {
 		}
 	case poslog.KindOrderCancelled:
 		var p poslog.OrderCancelledPayload
-		if jsonErr := unmarshalJSON(e.Payload, &p); jsonErr == nil {
+		if jsonErr := json.Unmarshal(e.Payload, &p); jsonErr == nil {
 			tradeID := h.pendingOrderPos[p.OrderID]
 			if tradeID != "" {
 				for k, v := range h.pendingOrderPos {
@@ -342,7 +342,7 @@ func (h *Hand) publishOrderFilled(ctx context.Context, orderID string, qty, legQ
 //
 // No-ops when TradeLog is not configured.
 func (h *Hand) appendTradeRecord(ctx context.Context, cp poslog.PositionClosedPayload, exitCommission decimal.Decimal, exitAt time.Time) {
-	tl := h.helmRuntime.TradeLog
+	tl := h.helm.GetTradeLog()
 	if tl == nil {
 		return
 	}
@@ -397,7 +397,7 @@ func (h *Hand) appendTradeRecord(ctx context.Context, cp poslog.PositionClosedPa
 	rec := perf.TradeRecord{
 		HelmID:          h.helmID.String(),
 		HandID:          h.id.String(),
-		UserID:          h.helmRuntime.UserID.String(),
+		UserID:          h.helm.GetUserID().String(),
 		Symbol:          cp.Symbol,
 		Side:            cp.Side,
 		Qty:             cp.Qty,
@@ -437,7 +437,7 @@ func (h *Hand) appendTradeRecord(ctx context.Context, cp poslog.PositionClosedPa
 	// KindOrderPlaced that arrives concurrently will be published AFTER this point.
 	// We re-check IsFlat() inside the goroutine as a final guard; if a new leg
 	// opened in the narrow window between here and PurgeHand, we abort.
-	if pl := h.helmRuntime.PosLog; pl != nil {
+	if pl := h.helm.GetPosLog(); pl != nil {
 		helmID := h.helmID.String()
 		handID := h.id.String()
 		go func() {
@@ -464,7 +464,7 @@ func (h *Hand) appendTradeRecord(ctx context.Context, cp poslog.PositionClosedPa
 // exit_reason = "orphaned", while the audit trail (helm_id, hand_id, symbol, entry)
 // remains visible in the trade history.
 func (h *Hand) appendOrphanTradeRecord(ctx context.Context, leg *position.LegState, source string) {
-	tl := h.helmRuntime.TradeLog
+	tl := h.helm.GetTradeLog()
 	if tl == nil {
 		return
 	}
@@ -472,7 +472,7 @@ func (h *Hand) appendOrphanTradeRecord(ctx context.Context, leg *position.LegSta
 	rec := perf.TradeRecord{
 		HelmID:     h.helmID.String(),
 		HandID:     h.id.String(),
-		UserID:     h.helmRuntime.UserID.String(),
+		UserID:     h.helm.GetUserID().String(),
 		Symbol:     leg.Symbol,
 		Side:       leg.Side,
 		Qty:        leg.Qty.String(),
@@ -496,7 +496,7 @@ func (h *Hand) appendOrphanTradeRecord(ctx context.Context, leg *position.LegSta
 
 	// Poslog GC: just like normal trades, once the orphan trade record is durable,
 	// we purge the poslog if the hand is flat.
-	if pl := h.helmRuntime.PosLog; pl != nil {
+	if pl := h.helm.GetPosLog(); pl != nil {
 		helmID := h.helmID.String()
 		handID := h.id.String()
 		go func() {

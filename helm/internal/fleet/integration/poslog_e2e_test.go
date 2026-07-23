@@ -27,6 +27,8 @@ import (
 	"mallow/helm/internal/fleet/actor/core/risk"
 	"mallow/helm/internal/fleet/actor/core/strategy"
 	"mallow/helm/internal/fleet/actor/core/tactics"
+	"mallow/helm/internal/fleet/actor/eventcode"
+	signalfollower "mallow/helm/internal/fleet/actor/signal-follower"
 	"mallow/helm/internal/infra/exchange"
 	binanceact "mallow/helm/internal/infra/exchange/binance/act"
 	"mallow/helm/internal/infra/journal/poslog"
@@ -95,7 +97,7 @@ func TestPoslog_E2E(t *testing.T) {
 		Mode:     tactics.SizingFixedQty,
 		FixedQty: decimal.NewFromFloat(0.001),
 	})
-	hand := actor.NewHand(uuid.New(), helmID, rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
+	hand := signalfollower.NewHand(uuid.New(), helmID, rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
 	hand.Symbol = "BTCUSDT"
 	hand.StrategyName = "signal_follower"
 	hand.EnableEventSink()
@@ -111,7 +113,7 @@ func TestPoslog_E2E(t *testing.T) {
 	select {
 	case e := <-placed:
 		t.Logf("placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
-		if e.Code == actor.CodeOrderFailed {
+		if e.Code == eventcode.CodeOrderFailed {
 			if isBalanceError(e.Reason) {
 				t.Skipf("sandbox needs top-up: %s", e.Reason)
 			}
@@ -248,7 +250,7 @@ func TestTradeRoundTrip_E2E(t *testing.T) {
 		Mode:     tactics.SizingFixedQty,
 		FixedQty: decimal.NewFromFloat(0.001),
 	})
-	hand := actor.NewHand(uuid.New(), helmID, rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
+	hand := signalfollower.NewHand(uuid.New(), helmID, rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
 	hand.Symbol = "BTCUSDT"
 	hand.StrategyName = "signal_follower"
 	hand.EnableEventSink()
@@ -263,7 +265,7 @@ func TestTradeRoundTrip_E2E(t *testing.T) {
 	select {
 	case e := <-entryPlaced:
 		t.Logf("entry placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
-		if e.Code == actor.CodeOrderFailed {
+		if e.Code == eventcode.CodeOrderFailed {
 			if isBalanceError(e.Reason) {
 				t.Skipf("sandbox needs top-up: %s", e.Reason)
 			}
@@ -293,7 +295,7 @@ func TestTradeRoundTrip_E2E(t *testing.T) {
 	select {
 	case e := <-exitPlaced:
 		t.Logf("exit placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
-		if e.Code == actor.CodeOrderFailed {
+		if e.Code == eventcode.CodeOrderFailed {
 			// No open position to close — skip rather than fail (entry may not have filled).
 			t.Skipf("exit order failed (position may not be open): %s", e.Reason)
 		}

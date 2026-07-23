@@ -41,6 +41,8 @@ import (
 	"mallow/helm/internal/fleet/actor/core/risk"
 	"mallow/helm/internal/fleet/actor/core/strategy"
 	"mallow/helm/internal/fleet/actor/core/tactics"
+	"mallow/helm/internal/fleet/actor/eventcode"
+	signalfollower "mallow/helm/internal/fleet/actor/signal-follower"
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/journal/poslog"
 	"mallow/helm/internal/infra/natsapi"
@@ -158,10 +160,10 @@ func buildRuntime(maxPositions int) *actor.HelmRuntime {
 	return rt
 }
 
-func addHand(rt *actor.HelmRuntime, symbol string) *actor.Hand {
+func addHand(rt *actor.HelmRuntime, symbol string) *signalfollower.Hand {
 	strat := strategy.NewSignalFollower(0.5)
 	tact := tactics.New(tactics.SizingConfig{Mode: tactics.SizingFixedQty, FixedQty: decimal.NewFromFloat(0.01)})
-	h := actor.NewHand(
+	h := signalfollower.NewHand(
 		uuid.New(), rt.HelmID, rt,
 		strat, tact,
 		false, 1, 24*time.Hour,
@@ -182,7 +184,7 @@ func addHand(rt *actor.HelmRuntime, symbol string) *actor.Hand {
 // point, called by SignalDispatcher.Dispatch for every NATS signal) lives on
 // HelmRuntime, so callers need both.
 type handRT struct {
-	h  *actor.Hand
+	h  *signalfollower.Hand
 	rt *actor.HelmRuntime
 }
 
@@ -346,12 +348,12 @@ func runThroughput(n, m, rounds int, withPoslog bool, cpuProfilePath string, con
 		go func(ch <-chan natsapi.HelmEvent) {
 			for ev := range ch {
 				switch ev.Code {
-				case actor.CodeOrderFilled:
+				case eventcode.CodeOrderFilled:
 					filled.Add(1)
 					wg.Done()
-				case actor.CodeSignalRejected, actor.CodeSignalDoNothing, actor.CodeSignalStale,
-					actor.CodeSignalHelmPaused, actor.CodeSignalNoPosition, actor.CodeSignalRateLimited,
-					actor.CodeOrderFailed:
+				case eventcode.CodeSignalRejected, eventcode.CodeSignalDoNothing, eventcode.CodeSignalStale,
+					eventcode.CodeSignalHelmPaused, eventcode.CodeSignalNoPosition, eventcode.CodeSignalRateLimited,
+					eventcode.CodeOrderFailed:
 					rejected.Add(1)
 					reasonsMu.Lock()
 					reasons[fmt.Sprintf("%d:%s", ev.Code, ev.Reason)]++

@@ -33,6 +33,8 @@ import (
 	"mallow/helm/internal/fleet/actor/core/risk"
 	"mallow/helm/internal/fleet/actor/core/strategy"
 	"mallow/helm/internal/fleet/actor/core/tactics"
+	"mallow/helm/internal/fleet/actor/eventcode"
+	signalfollower "mallow/helm/internal/fleet/actor/signal-follower"
 	"mallow/helm/internal/infra/exchange"
 	alpacaact "mallow/helm/internal/infra/exchange/alpaca/act"
 	binanceact "mallow/helm/internal/infra/exchange/binance/act"
@@ -45,7 +47,7 @@ import (
 
 // fillNotify subscribes to the hand event bus and sends the first CodeOrderFilled event.
 // Subscribe is created once before the goroutine loops — safe even with synchronous fills.
-func fillNotify(hand *actor.Hand, timeout time.Duration) <-chan natsapi.HelmEvent {
+func fillNotify(hand *signalfollower.Hand, timeout time.Duration) <-chan natsapi.HelmEvent {
 	events := hand.Subscribe(64) // create once, outside the loop
 	ch := make(chan natsapi.HelmEvent, 1)
 	go func() {
@@ -57,7 +59,7 @@ func fillNotify(hand *actor.Hand, timeout time.Duration) <-chan natsapi.HelmEven
 					close(ch)
 					return
 				}
-				if ev.Code == actor.CodeOrderFilled {
+				if ev.Code == eventcode.CodeOrderFilled {
 					ch <- ev
 					return
 				}
@@ -73,7 +75,7 @@ func fillNotify(hand *actor.Hand, timeout time.Duration) <-chan natsapi.HelmEven
 // codeNotify subscribes to the hand event bus and sends the first event matching code.
 // Generic building block for one-off listeners (e.g. CodePositionExtClosed) that don't
 // warrant their own dedicated fillNotify/orderNotify-style wrapper.
-func codeNotify(hand *actor.Hand, code int, timeout time.Duration) <-chan natsapi.HelmEvent {
+func codeNotify(hand *signalfollower.Hand, code int, timeout time.Duration) <-chan natsapi.HelmEvent {
 	events := hand.Subscribe(64) // create once, outside the loop
 	ch := make(chan natsapi.HelmEvent, 1)
 	go func() {
@@ -99,7 +101,7 @@ func codeNotify(hand *actor.Hand, code int, timeout time.Duration) <-chan natsap
 }
 
 // orderNotify subscribes to the hand event bus and sends the first CodeOrderPlaced or CodeOrderFailed event.
-func orderNotify(hand *actor.Hand, timeout time.Duration) <-chan natsapi.HelmEvent {
+func orderNotify(hand *signalfollower.Hand, timeout time.Duration) <-chan natsapi.HelmEvent {
 	events := hand.Subscribe(64) // create once, outside the loop
 	ch := make(chan natsapi.HelmEvent, 1)
 	go func() {
@@ -111,7 +113,7 @@ func orderNotify(hand *actor.Hand, timeout time.Duration) <-chan natsapi.HelmEve
 					close(ch)
 					return
 				}
-				if ev.Code == actor.CodeOrderPlaced || ev.Code == actor.CodeOrderFailed {
+				if ev.Code == eventcode.CodeOrderPlaced || ev.Code == eventcode.CodeOrderFailed {
 					ch <- ev
 					return
 				}
@@ -136,19 +138,19 @@ func newTestRuntime(ex exchange.Exchange, creds exchange.Credentials, capital de
 }
 
 // newFixedQtyHand creates a Hand with FixedQty sizing (no poslog — dev mode).
-func newFixedQtyHand(rt *actor.HelmRuntime, qty decimal.Decimal) *actor.Hand {
+func newFixedQtyHand(rt *actor.HelmRuntime, qty decimal.Decimal) *signalfollower.Hand {
 	strat := strategy.NewSignalFollower(0.3)
 	tact := tactics.New(tactics.SizingConfig{
 		Mode:     tactics.SizingFixedQty,
 		FixedQty: qty,
 	})
-	h := actor.NewHand(uuid.New(), rt.HelmID, rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
+	h := signalfollower.NewHand(uuid.New(), rt.HelmID, rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
 	h.EnableEventSink()
 	return h
 }
 
 // longSig builds a long entry signal with strength 1.0.
-func longSig(symbol string) actor.Signal {
+func longSig(symbol string) strategy.Signal {
 	return strategy.Signal{
 		Symbol:     symbol,
 		Direction:  strategy.DirLong,
@@ -158,7 +160,7 @@ func longSig(symbol string) actor.Signal {
 }
 
 // cancelAllOrders cancels any pending orders found in the hand after a test.
-func cancelAllOrders(t *testing.T, rt *actor.HelmRuntime, hand *actor.Hand) {
+func cancelAllOrders(t *testing.T, rt *actor.HelmRuntime, hand *signalfollower.Hand) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -184,7 +186,7 @@ func isBalanceError(reason string) bool {
 }
 
 // exitSig builds an exit signal with strength 1.0 (urgent — always passes the filter).
-func exitSig(symbol string) actor.Signal {
+func exitSig(symbol string) strategy.Signal {
 	return strategy.Signal{
 		Symbol:     symbol,
 		Direction:  strategy.DirExit,
@@ -195,7 +197,7 @@ func exitSig(symbol string) actor.Signal {
 
 // orderNotifyNew subscribes to the hand event bus and sends the first
 // CodeOrderPlaced or CodeOrderFailed event whose OrderID differs from excludeID.
-func orderNotifyNew(hand *actor.Hand, excludeID string, timeout time.Duration) <-chan natsapi.HelmEvent {
+func orderNotifyNew(hand *signalfollower.Hand, excludeID string, timeout time.Duration) <-chan natsapi.HelmEvent {
 	events := hand.Subscribe(64)
 	ch := make(chan natsapi.HelmEvent, 1)
 	go func() {
@@ -207,7 +209,7 @@ func orderNotifyNew(hand *actor.Hand, excludeID string, timeout time.Duration) <
 					close(ch)
 					return
 				}
-				if (ev.Code == actor.CodeOrderPlaced || ev.Code == actor.CodeOrderFailed) &&
+				if (ev.Code == eventcode.CodeOrderPlaced || ev.Code == eventcode.CodeOrderFailed) &&
 					ev.OrderID != excludeID {
 					ch <- ev
 					return
@@ -223,7 +225,7 @@ func orderNotifyNew(hand *actor.Hand, excludeID string, timeout time.Duration) <
 
 // fillNotifyOrder subscribes to the hand event bus and sends the first
 // CodeOrderFilled event whose OrderID matches targetID.
-func fillNotifyOrder(hand *actor.Hand, targetID string, timeout time.Duration) <-chan natsapi.HelmEvent {
+func fillNotifyOrder(hand *signalfollower.Hand, targetID string, timeout time.Duration) <-chan natsapi.HelmEvent {
 	events := hand.Subscribe(64)
 	ch := make(chan natsapi.HelmEvent, 1)
 	go func() {
@@ -235,7 +237,7 @@ func fillNotifyOrder(hand *actor.Hand, targetID string, timeout time.Duration) <
 					close(ch)
 					return
 				}
-				if ev.Code == actor.CodeOrderFilled && ev.OrderID == targetID {
+				if ev.Code == eventcode.CodeOrderFilled && ev.OrderID == targetID {
 					ch <- ev
 					return
 				}
@@ -334,7 +336,7 @@ func TestSignalToOrder_Binance(t *testing.T) {
 	case entry := <-notify:
 		t.Logf("result: code=%d symbol=%s side=%s qty=%s price=%s order_id=%s reason=%s",
 			entry.Code, entry.Symbol, entry.Side, entry.Qty, entry.Price, entry.OrderID, entry.Reason)
-		if entry.Code == actor.CodeOrderFailed {
+		if entry.Code == eventcode.CodeOrderFailed {
 			if isBalanceError(entry.Reason) {
 				t.Skipf("sandbox needs top-up: %s", entry.Reason)
 			}
@@ -394,7 +396,7 @@ func TestSignalToOrder_OKX(t *testing.T) {
 	case entry := <-notify:
 		t.Logf("result: code=%d symbol=%s side=%s qty=%s price=%s order_id=%s reason=%s",
 			entry.Code, entry.Symbol, entry.Side, entry.Qty, entry.Price, entry.OrderID, entry.Reason)
-		if entry.Code == actor.CodeOrderFailed {
+		if entry.Code == eventcode.CodeOrderFailed {
 			if isBalanceError(entry.Reason) {
 				t.Skipf("sandbox needs top-up: %s", entry.Reason)
 			}
@@ -456,7 +458,7 @@ func TestSignalToOrder_Bybit(t *testing.T) {
 	case entry := <-notify:
 		t.Logf("result: code=%d symbol=%s side=%s qty=%s price=%s order_id=%s reason=%s",
 			entry.Code, entry.Symbol, entry.Side, entry.Qty, entry.Price, entry.OrderID, entry.Reason)
-		if entry.Code == actor.CodeOrderFailed {
+		if entry.Code == eventcode.CodeOrderFailed {
 			if isBalanceError(entry.Reason) {
 				t.Skipf("sandbox needs top-up: %s", entry.Reason)
 			}
@@ -519,7 +521,7 @@ func TestSignalToOrder_Alpaca(t *testing.T) {
 		t.Logf("result: code=%d symbol=%s side=%s qty=%s price=%s order_id=%s reason=%s",
 			entry.Code, entry.Symbol, entry.Side, entry.Qty, entry.Price, entry.OrderID, entry.Reason)
 		// Market orders on Alpaca paper may fail outside trading hours; log but don't fail the test.
-		if entry.Code == actor.CodeOrderFailed {
+		if entry.Code == eventcode.CodeOrderFailed {
 			t.Logf("order not placed: %s (market may be closed)", entry.Reason)
 			return
 		}
@@ -543,7 +545,7 @@ func TestSignalToOrder_Alpaca(t *testing.T) {
 // events are received or timeout elapses.
 // NOTE: subscribe BEFORE delivering the signal to avoid missing synchronous fills.
 // Prefer waitFillsCh when subscribing before the signal delivery is required.
-func waitFills(hand *actor.Hand, n int, timeout time.Duration) bool {
+func waitFills(hand *signalfollower.Hand, n int, timeout time.Duration) bool {
 	return waitFillsCh(hand.Subscribe(64), n, timeout)
 }
 
@@ -559,7 +561,7 @@ func waitFillsCh(events <-chan natsapi.HelmEvent, n int, timeout time.Duration) 
 			if !ok {
 				return count >= n
 			}
-			if ev.Code == actor.CodeOrderFilled {
+			if ev.Code == eventcode.CodeOrderFilled {
 				count++
 				if count >= n {
 					return true
@@ -572,7 +574,7 @@ func waitFillsCh(events <-chan natsapi.HelmEvent, n int, timeout time.Duration) 
 }
 
 // logHandState dumps hand health, metrics, and portfolio position.
-func logHandState(t *testing.T, rt *actor.HelmRuntime, hand *actor.Hand, symbol string) {
+func logHandState(t *testing.T, rt *actor.HelmRuntime, hand *signalfollower.Hand, symbol string) {
 	t.Helper()
 	h := hand.Health()
 	m := hand.Metrics()
@@ -618,7 +620,7 @@ type recordedEvent struct {
 // EnableEventSink/AddHand, before Start()) so nothing from the very first signal
 // onward is missed. Typically paired with `defer rec.dump(t, "...")` right after,
 // so the dump always runs — pass or fail.
-func recordEvents(hand *actor.Hand) *eventRecorder {
+func recordEvents(hand *signalfollower.Hand) *eventRecorder {
 	r := &eventRecorder{}
 	ch := hand.Subscribe(1024)
 	go func() {
@@ -643,7 +645,7 @@ func (r *eventRecorder) dump(t *testing.T, title string) {
 	t.Logf("╔═ %s (%d events) ═══════════════════════════════════", title, len(events))
 	for i, re := range events {
 		e := re.ev
-		name := actor.CodeNames[e.Code]
+		name := eventcode.CodeNames[e.Code]
 		if name == "" {
 			name = "?"
 		}
@@ -700,7 +702,7 @@ func TestSignalRoundTrip_Binance(t *testing.T) {
 		t.Logf("entry: code=%d order_id=%s qty=%s price=%s reason=%s",
 			entry.Code, entry.OrderID, entry.Qty, entry.Price, entry.Reason)
 		entryOrderID = entry.OrderID
-		if entry.Code == actor.CodeOrderFailed {
+		if entry.Code == eventcode.CodeOrderFailed {
 			if isBalanceError(entry.Reason) {
 				t.Skipf("sandbox needs top-up: %s", entry.Reason)
 			}
@@ -729,7 +731,7 @@ func TestSignalRoundTrip_Binance(t *testing.T) {
 	case entry := <-exitNotify:
 		t.Logf("exit: code=%d order_id=%s qty=%s price=%s reason=%s",
 			entry.Code, entry.OrderID, entry.Qty, entry.Price, entry.Reason)
-		if entry.Code == actor.CodeOrderFailed {
+		if entry.Code == eventcode.CodeOrderFailed {
 			t.Logf("exit order failed (non-fatal for sandbox): %s", entry.Reason)
 		}
 	case <-time.After(15 * time.Second):
@@ -790,7 +792,7 @@ func TestSignalRoundTrip_OKX(t *testing.T) {
 		t.Logf("entry: code=%d order_id=%s qty=%s price=%s reason=%s",
 			entry.Code, entry.OrderID, entry.Qty, entry.Price, entry.Reason)
 		entryOrderID = entry.OrderID
-		if entry.Code == actor.CodeOrderFailed {
+		if entry.Code == eventcode.CodeOrderFailed {
 			if isBalanceError(entry.Reason) {
 				t.Skipf("sandbox needs top-up: %s", entry.Reason)
 			}
@@ -818,7 +820,7 @@ func TestSignalRoundTrip_OKX(t *testing.T) {
 	case entry := <-exitNotify:
 		t.Logf("exit: code=%d order_id=%s qty=%s price=%s reason=%s",
 			entry.Code, entry.OrderID, entry.Qty, entry.Price, entry.Reason)
-		if entry.Code == actor.CodeOrderFailed {
+		if entry.Code == eventcode.CodeOrderFailed {
 			t.Logf("exit order failed (non-fatal for sandbox): %s", entry.Reason)
 		}
 	case <-time.After(15 * time.Second):
@@ -878,7 +880,7 @@ func TestSignalRoundTrip_Bybit(t *testing.T) {
 		t.Logf("entry: code=%d order_id=%s qty=%s price=%s reason=%s",
 			entry.Code, entry.OrderID, entry.Qty, entry.Price, entry.Reason)
 		entryOrderID = entry.OrderID
-		if entry.Code == actor.CodeOrderFailed {
+		if entry.Code == eventcode.CodeOrderFailed {
 			if isBalanceError(entry.Reason) {
 				t.Skipf("sandbox needs top-up: %s", entry.Reason)
 			}
@@ -906,7 +908,7 @@ func TestSignalRoundTrip_Bybit(t *testing.T) {
 	case entry := <-exitNotify:
 		t.Logf("exit: code=%d order_id=%s qty=%s price=%s reason=%s",
 			entry.Code, entry.OrderID, entry.Qty, entry.Price, entry.Reason)
-		if entry.Code == actor.CodeOrderFailed {
+		if entry.Code == eventcode.CodeOrderFailed {
 			t.Logf("exit order failed (non-fatal for sandbox): %s", entry.Reason)
 		}
 	case <-time.After(15 * time.Second):
@@ -964,7 +966,7 @@ func TestSignalRoundTrip_Alpaca(t *testing.T) {
 		t.Logf("entry: code=%d order_id=%s qty=%s price=%s reason=%s",
 			entry.Code, entry.OrderID, entry.Qty, entry.Price, entry.Reason)
 		entryOrderID = entry.OrderID
-		if entry.Code == actor.CodeOrderFailed {
+		if entry.Code == eventcode.CodeOrderFailed {
 			t.Logf("entry not placed (market may be closed): %s", entry.Reason)
 			return
 		}
@@ -992,7 +994,7 @@ func TestSignalRoundTrip_Alpaca(t *testing.T) {
 	case entry := <-exitNotify:
 		t.Logf("exit: code=%d order_id=%s qty=%s price=%s reason=%s",
 			entry.Code, entry.OrderID, entry.Qty, entry.Price, entry.Reason)
-		if entry.Code == actor.CodeOrderFailed {
+		if entry.Code == eventcode.CodeOrderFailed {
 			t.Logf("exit order failed (non-fatal): %s", entry.Reason)
 		}
 	case <-time.After(15 * time.Second):

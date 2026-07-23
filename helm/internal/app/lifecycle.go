@@ -13,7 +13,7 @@ import (
 
 	"mallow/helm/internal/config"
 	"mallow/helm/internal/fleet"
-	"mallow/helm/internal/fleet/actor"
+	signalfollower "mallow/helm/internal/fleet/actor/signal-follower"
 	"mallow/helm/internal/fleet/dispatcher"
 	"mallow/helm/internal/infra/herald"
 	"mallow/helm/internal/infra/journal/poslog"
@@ -283,7 +283,7 @@ func runOrchestrator(
 			// Step 2: Reconcile hand positions from poslog WAL vs exchange.
 			// Runs synchronously so every hand is fully restored before signals arrive.
 			if posLog != nil {
-				reconciler := actor.NewReconciler(posLog)
+				reconciler := signalfollower.NewReconciler(posLog)
 				for _, rt := range reg.All() {
 					results := reconciler.Reconcile(ctx, rt)
 					for _, res := range results {

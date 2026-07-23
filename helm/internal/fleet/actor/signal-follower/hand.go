@@ -1,4 +1,4 @@
-package actor
+package signalfollower
 
 import (
 	"context"
@@ -26,9 +26,9 @@ import (
 // Account-level resources (Exchange, Portfolio, RiskManager) are shared via HelmRuntime.
 type Hand struct {
 	// ── Identity ─────────────────────────────────────────────────────────────
-	id          uuid.UUID
-	helmID      uuid.UUID
-	helmRuntime *HelmRuntime
+	id     uuid.UUID
+	helmID uuid.UUID
+	helm   HelmPort
 
 	// ── Display metadata (set by service layer, read-only after Start) ────────
 	Symbol       string
@@ -151,6 +151,17 @@ type Hand struct {
 // ID returns the bot's unique identifier.
 func (h *Hand) ID() uuid.UUID { return h.id }
 
+// DeliverExitCancel forwards a WS-observed exit-order cancel to the hand's run
+// loop via exitCancelCh, honoring ctx cancellation instead of blocking forever
+// if the hand is shutting down. See exitCancelCh's doc for why this is routed
+// through the actor loop rather than applied directly.
+func (h *Hand) DeliverExitCancel(ctx context.Context, orderID string) {
+	select {
+	case h.exitCancelCh <- orderID:
+	case <-ctx.Done():
+	}
+}
+
 // DisableRateLimit replaces the signal rate limiter with an infinite-rate limiter.
 // Intended for tests that perform many round trips without timing gaps; not intended
 // for production use (the run-loop rate limiter is a trading-loop protection circuit).
@@ -158,10 +169,10 @@ func (h *Hand) DisableRateLimit() {
 	h.limiter = rate.NewLimiter(rate.Inf, 0)
 }
 
-// realizedEquity returns the hand's capital base for sizing: AllocatedCapital
+// RealizedEquity returns the hand's capital base for sizing: AllocatedCapital
 // plus net closed PnL (after commissions). Capped at zero — a hand that has
 // blown through its allocation stops trading via the zero-quantity guard.
-func (h *Hand) realizedEquity() decimal.Decimal {
+func (h *Hand) RealizedEquity() decimal.Decimal {
 	h.mu.RLock()
 	allocatedCap := h.allocatedCap
 	h.mu.RUnlock()
@@ -180,7 +191,7 @@ func (h *Hand) realizedEquity() decimal.Decimal {
 
 // trackOrder records a placed order in the helm-level orderID→handID map.
 func (h *Hand) trackOrder(orderID string) {
-	h.helmRuntime.TrackOrder(orderID, h.id.String())
+	h.helm.TrackOrder(orderID, h.id.String())
 }
 
 // partialAppliedState tracks accumulated quantities and costs for partial fills
@@ -242,7 +253,7 @@ type handConfig struct {
 	futuresConfig   *domain.FuturesConfig // nil for spot
 	// isFutures is derived once here from futuresConfig != nil — the domain-level signal
 	// set at hand creation (domain.Hand.Futures) — instead of every call site separately
-	// re-deriving it from h.helmRuntime.Creds.AccountType via an == comparison chain.
+	// re-deriving it from h.helm.GetCreds().AccountType via an == comparison chain.
 	isFutures bool
 }
 

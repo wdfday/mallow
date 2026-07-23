@@ -33,7 +33,7 @@ func (r *HelmRuntime) AvailableCash() decimal.Decimal {
 
 	for _, e := range r.hands {
 		deployed := e.h.EntryCap()
-		handCash := e.h.realizedEquity().Sub(deployed)
+		handCash := e.h.RealizedEquity().Sub(deployed)
 		if handCash.IsPositive() {
 			handCashSum = handCashSum.Add(handCash)
 		}
@@ -75,7 +75,7 @@ func (r *HelmRuntime) IsHalted() bool {
 // Price returns the last known market price for a symbol.
 // Returns zero if no price has been received yet.
 func (r *HelmRuntime) Price(symbol string) decimal.Decimal {
-	return r.lastKnownPrice(symbol)
+	return r.LastKnownPrice(symbol)
 }
 
 // ExchangeSnapshot returns a point-in-time copy of exchange latency/error metrics.

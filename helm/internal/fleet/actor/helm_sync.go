@@ -4,17 +4,19 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"mallow/helm/internal/fleet/actor/clid"
+	"mallow/helm/internal/fleet/actor/core/portfolio"
+	"mallow/helm/internal/fleet/actor/core/strategy"
+	"mallow/helm/internal/fleet/actor/eventcode"
+	"mallow/helm/internal/fleet/actor/position"
+	signalfollower "mallow/helm/internal/fleet/actor/signal-follower"
+	"mallow/helm/internal/infra/exchange"
+	"mallow/helm/internal/infra/natsapi"
+	handdomain "mallow/helm/internal/module/hand/domain"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
-
-	"mallow/helm/internal/fleet/actor/clid"
-	"mallow/helm/internal/fleet/actor/core/portfolio"
-	"mallow/helm/internal/fleet/actor/core/strategy"
-	"mallow/helm/internal/fleet/actor/position"
-	"mallow/helm/internal/infra/exchange"
-	"mallow/helm/internal/infra/natsapi"
 )
 
 // Fill idempotency delegates to fillDedup
@@ -24,9 +26,9 @@ import (
 // to prevent double-publishing the same fill with a different Nats-Msg-Id.
 func (r *HelmRuntime) MarkOrderFillPublished(orderID string) { r.dedup.markFillPublished(orderID) }
 
-// hasOrderFillPublished returns true if trade.filled was already published for this orderID
+// HasOrderFillPublished returns true if trade.filled was already published for this orderID
 // via the REST fill path.
-func (r *HelmRuntime) hasOrderFillPublished(orderID string) bool {
+func (r *HelmRuntime) HasOrderFillPublished(orderID string) bool {
 	return r.dedup.hasFillPublished(orderID)
 }
 
@@ -168,7 +170,7 @@ func (r *HelmRuntime) Sync(ctx context.Context) error {
 	r.storeSyncAt(now)
 
 	r.EmitEvent(natsapi.HelmEvent{
-		Code:   CodeHelmSynced,
+		Code:   eventcode.CodeHelmSynced,
 		Reason: fmt.Sprintf("positions=%d new_txns=%d", len(pfPositions), len(newTxns)),
 		Msg:    "helm: portfolio synced from exchange",
 	})
@@ -177,7 +179,7 @@ func (r *HelmRuntime) Sync(ctx context.Context) error {
 		natsapi.PublishPortfolioSync(r.js, helmID, accountID, userID, snap.Cash, r.AvailableCash(), snap.Equity, natsPositions, natsPositionTxns, now)
 		for _, t := range newTxns {
 			// Skip fills already published by the REST fill path to prevent duplicates.
-			if r.hasOrderFillPublished(t.OrderID) {
+			if r.HasOrderFillPublished(t.OrderID) {
 				continue
 			}
 			natsapi.PublishTradeFill(r.js, t)
@@ -299,7 +301,7 @@ func (r *HelmRuntime) RecoverGapFills(ctx context.Context) {
 // KindBracketPlaced was not — crash window between the two events).
 func (r *HelmRuntime) RecoverHandBrackets(ctx context.Context) {
 	r.mu.RLock()
-	hands := make([]*Hand, 0, len(r.hands))
+	hands := make([]*signalfollower.Hand, 0, len(r.hands))
 	for _, e := range r.hands {
 		hands = append(hands, e.h)
 	}
@@ -309,7 +311,7 @@ func (r *HelmRuntime) RecoverHandBrackets(ctx context.Context) {
 		// RecoverBrackets. exitLevels is ephemeral (not persisted) — on restart it
 		// starts empty, causing RecoverBrackets to find nothing and checkPositionDesync
 		// to mark the position as unprotected → spurious EXT_CLOSE.
-		h.restoreExitLevelsFromPoslog()
+		h.RestoreExitLevelsFromPoslog()
 		h.RecoverBrackets(ctx)
 	}
 }
@@ -319,7 +321,7 @@ func (r *HelmRuntime) RecoverHandBrackets(ctx context.Context) {
 // It is called after a successful REST Sync.
 func (r *HelmRuntime) checkPositionDesync(ctx context.Context) {
 	r.mu.RLock()
-	hands := make([]*Hand, 0, len(r.hands))
+	hands := make([]*signalfollower.Hand, 0, len(r.hands))
 	for _, e := range r.hands {
 		hands = append(hands, e.h)
 	}
@@ -327,17 +329,13 @@ func (r *HelmRuntime) checkPositionDesync(ctx context.Context) {
 
 	// 1. Group active open legs by symbol.
 	type handLeg struct {
-		hand *Hand
-		leg  *position.LegState
+		hand *signalfollower.Hand
+		leg  handdomain.LegView
 	}
 	symbolLegs := make(map[string][]handLeg)
 	for _, hand := range hands {
-		hand.mu.RLock()
-		legs := hand.pos.ActiveLegs()
-		hand.mu.RUnlock()
-
-		for _, leg := range legs {
-			if leg.Phase == position.PhaseOpen {
+		for _, leg := range hand.ActiveLegs() {
+			if leg.Phase == string(position.PhaseOpen) {
 				symbolLegs[leg.Symbol] = append(symbolLegs[leg.Symbol], handLeg{hand: hand, leg: leg})
 			}
 		}
@@ -365,11 +363,7 @@ func (r *HelmRuntime) checkPositionDesync(ctx context.Context) {
 		var protected []handLeg
 		var unprotected []handLeg
 		for _, hl := range hlList {
-			hl.hand.mu.RLock()
-			el, hasExit := hl.hand.exitLevels[hl.leg.TradeID]
-			hl.hand.mu.RUnlock()
-
-			if hasExit && (len(el.ExchangeOrderIDs) > 0 || el.StopLoss.IsPositive() || el.TakeProfit.IsPositive()) {
+			if hl.hand.HasProtectiveExit(hl.leg.PositionID) {
 				protected = append(protected, hl)
 			} else {
 				unprotected = append(unprotected, hl)
@@ -394,7 +388,7 @@ func (r *HelmRuntime) checkPositionDesync(ctx context.Context) {
 				// Delivered as a signal (not a direct cross-goroutine method call) so
 				// the state mutation happens on the hand's own run loop, same as every
 				// other trigger in this file — see handleOrphanSignal/handlePositionDesync.
-				hl.hand.DeliverSignal(Signal{
+				hl.hand.DeliverSignal(strategy.Signal{
 					Symbol:     hl.leg.Symbol,
 					Direction:  strategy.DirExit,
 					ExitKind:   strategy.ExitKindOrphan,

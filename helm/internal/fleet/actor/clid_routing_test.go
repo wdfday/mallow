@@ -22,8 +22,8 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"mallow/helm/internal/fleet/actor"
 	"mallow/helm/internal/fleet/actor/clid"
+	"mallow/helm/internal/fleet/actor/eventcode"
 	"mallow/helm/internal/infra/exchange"
 )
 
@@ -140,7 +140,7 @@ func TestClidRouting_WsFillBeforeRestResponse(t *testing.T) {
 	h.DeliverSignal(longSignalFor(symbol))
 
 	// The fill arrived via WS before PlaceOrder returned; it must route to this hand.
-	mustWaitCodeCh(t, filledCh, actor.CodeOrderFilled, simWait)
+	mustWaitCodeCh(t, filledCh, eventcode.CodeOrderFilled, simWait)
 
 	// clid sent to the exchange must be a mallow-generated id.
 	select {

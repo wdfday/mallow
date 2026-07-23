@@ -25,6 +25,8 @@ import (
 	"mallow/helm/internal/fleet/actor/core/risk"
 	"mallow/helm/internal/fleet/actor/core/strategy"
 	"mallow/helm/internal/fleet/actor/core/tactics"
+	"mallow/helm/internal/fleet/actor/eventcode"
+	signalfollower "mallow/helm/internal/fleet/actor/signal-follower"
 	"mallow/helm/internal/infra/exchange"
 	binanceact "mallow/helm/internal/infra/exchange/binance/act"
 )
@@ -154,13 +156,13 @@ func waitOCO(t *testing.T, env *binanceTestEnv, timeout time.Duration) []exchang
 	return orders
 }
 
-func newBinanceHand(env *binanceTestEnv) *actor.Hand {
+func newBinanceHand(env *binanceTestEnv) *signalfollower.Hand {
 	strat := strategy.NewSignalFollower(0.3)
 	tact := tactics.New(tactics.SizingConfig{
 		Mode:     tactics.SizingFixedQty,
 		FixedQty: decimal.NewFromFloat(0.01),
 	})
-	hand := actor.NewHand(uuid.New(), env.rt.HelmID, env.rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
+	hand := signalfollower.NewHand(uuid.New(), env.rt.HelmID, env.rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
 	hand.Symbol = "ETHUSDT"
 	hand.StrategyName = "signal_follower"
 	hand.EnableEventSink()
@@ -211,7 +213,7 @@ func cleanupBinance(t *testing.T, ex *binanceact.Client, creds exchange.Credenti
 	}
 }
 
-func longSigWithSLTP(symbol string, stopPrice, targetPrice decimal.Decimal, isOffset bool) actor.Signal {
+func longSigWithSLTP(symbol string, stopPrice, targetPrice decimal.Decimal, isOffset bool) strategy.Signal {
 	return strategy.Signal{
 		Symbol:      symbol,
 		Direction:   strategy.DirLong,
@@ -259,7 +261,7 @@ func TestBinance_AbsoluteSLTP(t *testing.T) {
 	// Wait for entry order placed.
 	if e, ok := recvEvent(placed, 20*time.Second); ok {
 		t.Logf("placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
-		if e.Code == actor.CodeOrderFailed {
+		if e.Code == eventcode.CodeOrderFailed {
 			if isBalanceError(e.Reason) {
 				t.Skipf("sandbox needs top-up: %s", e.Reason)
 			}
@@ -317,7 +319,7 @@ func TestBinance_OffsetSLTP(t *testing.T) {
 
 	if e, ok := recvEvent(placed, 20*time.Second); ok {
 		t.Logf("placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
-		if e.Code == actor.CodeOrderFailed {
+		if e.Code == eventcode.CodeOrderFailed {
 			if isBalanceError(e.Reason) {
 				t.Skipf("sandbox needs top-up: %s", e.Reason)
 			}
@@ -381,7 +383,7 @@ func TestBinance_PyramidAndKill(t *testing.T) {
 		FixedQty: decimal.NewFromFloat(0.01),
 	})
 
-	hand := actor.NewHand(
+	hand := signalfollower.NewHand(
 		uuid.New(),
 		env.rt.HelmID,
 		env.rt,
@@ -420,7 +422,7 @@ func TestBinance_PyramidAndKill(t *testing.T) {
 	var fill1Qty decimal.Decimal
 	if e, ok := recvEvent(placed1, 20*time.Second); ok {
 		t.Logf("1st order placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
-		if e.Code == actor.CodeOrderFailed {
+		if e.Code == eventcode.CodeOrderFailed {
 			if isBalanceError(e.Reason) {
 				t.Skipf("sandbox needs top-up: %s", e.Reason)
 			}
@@ -455,7 +457,7 @@ func TestBinance_PyramidAndKill(t *testing.T) {
 
 	if e, ok := recvEvent(placed2, 20*time.Second); ok {
 		t.Logf("2nd order placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
-		if e.Code == actor.CodeOrderFailed {
+		if e.Code == eventcode.CodeOrderFailed {
 			t.Fatalf("2nd order failed: %s", e.Reason)
 		}
 	} else {
@@ -519,7 +521,7 @@ func TestBinance_PyramidAndKill(t *testing.T) {
 		t.Error("expected hand to be stopped after Kill")
 	}
 	h := hand.Health()
-	if h.Status != actor.HealthKilled {
+	if h.Status != signalfollower.HealthKilled {
 		t.Errorf("expected hand health status to be HealthKilled, got %s", h.Status)
 	}
 }
@@ -556,7 +558,7 @@ func TestBinance_Release(t *testing.T) {
 
 	if e, ok := recvEvent(placed, 20*time.Second); ok {
 		t.Logf("entry placed: order_id=%s qty=%s", e.OrderID, e.Qty)
-		if e.Code == actor.CodeOrderFailed {
+		if e.Code == eventcode.CodeOrderFailed {
 			if isBalanceError(e.Reason) {
 				t.Skipf("sandbox needs top-up: %s", e.Reason)
 			}
@@ -608,7 +610,7 @@ func TestBinance_Release(t *testing.T) {
 	if hand.IsRunning() {
 		t.Error("expected hand to be stopped after Release")
 	}
-	if h := hand.Health(); h.Status != actor.HealthReleased {
+	if h := hand.Health(); h.Status != signalfollower.HealthReleased {
 		t.Errorf("expected hand health status to be HealthReleased, got %s", h.Status)
 	}
 
@@ -683,7 +685,7 @@ func TestBinance_ExitSignalCancelsBracket(t *testing.T) {
 	if e, ok := recvEvent(entryPlaced, 20*time.Second); ok {
 		entryOrderID = e.OrderID
 		t.Logf("entry placed: order_id=%s qty=%s", e.OrderID, e.Qty)
-		if e.Code == actor.CodeOrderFailed {
+		if e.Code == eventcode.CodeOrderFailed {
 			if isBalanceError(e.Reason) {
 				t.Skipf("sandbox needs top-up: %s", e.Reason)
 			}
@@ -730,7 +732,7 @@ func TestBinance_ExitSignalCancelsBracket(t *testing.T) {
 	if e, ok := recvEvent(exitNotify, 15*time.Second); ok {
 		exitOrderID = e.OrderID
 		t.Logf("exit placed: order_id=%s qty=%s", e.OrderID, e.Qty)
-		if e.Code == actor.CodeOrderFailed {
+		if e.Code == eventcode.CodeOrderFailed {
 			logHandState(t, env.rt, hand, symbol)
 			t.Fatalf("exit order failed: %s", e.Reason)
 		}
@@ -818,7 +820,7 @@ func TestBinance_OCOExternallyCancelled(t *testing.T) {
 
 	if e, ok := recvEvent(entryPlaced, 20*time.Second); ok {
 		t.Logf("entry placed: order_id=%s qty=%s", e.OrderID, e.Qty)
-		if e.Code == actor.CodeOrderFailed {
+		if e.Code == eventcode.CodeOrderFailed {
 			if isBalanceError(e.Reason) {
 				t.Skipf("sandbox needs top-up: %s", e.Reason)
 			}
@@ -852,7 +854,7 @@ func TestBinance_OCOExternallyCancelled(t *testing.T) {
 	preCancelQty := portfolioQty(env.rt, symbol)
 	t.Logf("portfolio qty before external cancel: %s", preCancelQty)
 
-	extClosed := codeNotify(hand, actor.CodePositionExtClosed, 20*time.Second)
+	extClosed := codeNotify(hand, eventcode.CodePositionExtClosed, 20*time.Second)
 
 	// Cancel BOTH bracket legs directly against the exchange, bypassing the hand
 	// entirely (never goes through cancelExitOrders, so neither ID is ever marked in

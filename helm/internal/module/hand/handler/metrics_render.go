@@ -12,7 +12,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"mallow/helm/internal/fleet/actor"
+	"mallow/helm/internal/fleet/actor/eventcode"
 	"mallow/helm/internal/infra/exchange"
 )
 
@@ -143,7 +143,7 @@ func renderPrometheus(reg RuntimeRegistry, runningHands int) string {
 			if count == 0 {
 				continue
 			}
-			name, ok := actor.CodeNames[code]
+			name, ok := eventcode.CodeNames[code]
 			if !ok {
 				name = fmt.Sprintf("code_%d", code)
 			}

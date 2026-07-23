@@ -30,6 +30,8 @@ import (
 	"mallow/helm/internal/fleet/actor/core/risk"
 	"mallow/helm/internal/fleet/actor/core/strategy"
 	"mallow/helm/internal/fleet/actor/core/tactics"
+	"mallow/helm/internal/fleet/actor/eventcode"
+	signalfollower "mallow/helm/internal/fleet/actor/signal-follower"
 	"mallow/helm/internal/infra/exchange"
 	bybitact "mallow/helm/internal/infra/exchange/bybit/act"
 )
@@ -95,13 +97,13 @@ func newBybitEnv(t *testing.T) *bybitTestEnv {
 	return &bybitTestEnv{ex: ex, creds: creds, rt: rt, price: price}
 }
 
-func newBybitHand(env *bybitTestEnv) *actor.Hand {
+func newBybitHand(env *bybitTestEnv) *signalfollower.Hand {
 	strat := strategy.NewSignalFollower(0.3)
 	tact := tactics.New(tactics.SizingConfig{
 		Mode:     tactics.SizingFixedQty,
 		FixedQty: decimal.NewFromFloat(0.1),
 	})
-	hand := actor.NewHand(uuid.New(), env.rt.HelmID, env.rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
+	hand := signalfollower.NewHand(uuid.New(), env.rt.HelmID, env.rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
 	hand.Symbol = "ETHUSDT"
 	hand.StrategyName = "signal_follower"
 	hand.EnableEventSink()
@@ -191,7 +193,7 @@ func TestBybit_AbsoluteSLTP(t *testing.T) {
 
 	if e, ok := recvEvent(placed, 20*time.Second); ok {
 		t.Logf("placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
-		if e.Code == actor.CodeOrderFailed {
+		if e.Code == eventcode.CodeOrderFailed {
 			if isBalanceError(e.Reason) {
 				t.Skipf("sandbox needs top-up: %s", e.Reason)
 			}
@@ -250,7 +252,7 @@ func TestBybit_OffsetSLTP(t *testing.T) {
 
 	if e, ok := recvEvent(placed, 20*time.Second); ok {
 		t.Logf("placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
-		if e.Code == actor.CodeOrderFailed {
+		if e.Code == eventcode.CodeOrderFailed {
 			if isBalanceError(e.Reason) {
 				t.Skipf("sandbox needs top-up: %s", e.Reason)
 			}
@@ -303,7 +305,7 @@ func TestBybit_PyramidAndKill(t *testing.T) {
 		Mode:     tactics.SizingFixedQty,
 		FixedQty: decimal.NewFromFloat(0.1),
 	})
-	hand := actor.NewHand(
+	hand := signalfollower.NewHand(
 		uuid.New(),
 		env.rt.HelmID,
 		env.rt,
@@ -340,7 +342,7 @@ func TestBybit_PyramidAndKill(t *testing.T) {
 	var fill1OrderID string
 	if e, ok := recvEvent(placed1, 20*time.Second); ok {
 		t.Logf("1st order placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
-		if e.Code == actor.CodeOrderFailed {
+		if e.Code == eventcode.CodeOrderFailed {
 			if isBalanceError(e.Reason) {
 				t.Skipf("sandbox needs top-up: %s", e.Reason)
 			}
@@ -376,7 +378,7 @@ func TestBybit_PyramidAndKill(t *testing.T) {
 
 	if e, ok := recvEvent(placed2, 20*time.Second); ok {
 		t.Logf("2nd order placed: order_id=%s side=%s qty=%s", e.OrderID, e.Side, e.Qty)
-		if e.Code == actor.CodeOrderFailed {
+		if e.Code == eventcode.CodeOrderFailed {
 			logHandState(t, env.rt, hand, symbol)
 			t.Fatalf("2nd order failed: %s", e.Reason)
 		}
@@ -430,7 +432,7 @@ func TestBybit_PyramidAndKill(t *testing.T) {
 		t.Error("expected hand to be stopped after Kill")
 	}
 	h := hand.Health()
-	if h.Status != actor.HealthKilled {
+	if h.Status != signalfollower.HealthKilled {
 		t.Errorf("expected hand health status to be HealthKilled, got %s", h.Status)
 	}
 }

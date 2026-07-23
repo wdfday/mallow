@@ -35,7 +35,9 @@ import (
 	"mallow/helm/internal/fleet/actor/core/risk"
 	"mallow/helm/internal/fleet/actor/core/strategy"
 	"mallow/helm/internal/fleet/actor/core/tactics"
+	"mallow/helm/internal/fleet/actor/eventcode"
 	"mallow/helm/internal/fleet/actor/position"
+	signalfollower "mallow/helm/internal/fleet/actor/signal-follower"
 	"mallow/helm/internal/infra/exchange"
 	binanceact "mallow/helm/internal/infra/exchange/binance/act"
 	"mallow/helm/internal/infra/journal/poslog"
@@ -94,10 +96,10 @@ func buildReconcileRuntime(env *reconcileEnv, helmID uuid.UUID, capital decimal.
 
 // newReconcileHand builds a fixed-qty ETHUSDT hand with the given (possibly
 // reused, to simulate "same hand after restart") id.
-func newReconcileHand(rt *actor.HelmRuntime, handID uuid.UUID, qty decimal.Decimal) *actor.Hand {
+func newReconcileHand(rt *actor.HelmRuntime, handID uuid.UUID, qty decimal.Decimal) *signalfollower.Hand {
 	strat := strategy.NewSignalFollower(0.3)
 	tact := tactics.New(tactics.SizingConfig{Mode: tactics.SizingFixedQty, FixedQty: qty})
-	h := actor.NewHand(handID, rt.HelmID, rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
+	h := signalfollower.NewHand(handID, rt.HelmID, rt, strat, tact, false, 1, 0, nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
 	h.Symbol = "ETHUSDT"
 	h.StrategyName = "signal_follower"
 	h.EnableEventSink()
@@ -207,7 +209,7 @@ func TestReconcile_PreFlightNeverPlaced_Binance(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	results := actor.NewReconciler(env.pl).Reconcile(ctx, rt)
+	results := signalfollower.NewReconciler(env.pl).Reconcile(ctx, rt)
 
 	if len(results) != 1 {
 		t.Fatalf("want 1 reconcile result, got %d", len(results))
@@ -217,7 +219,7 @@ func TestReconcile_PreFlightNeverPlaced_Binance(t *testing.T) {
 	if res.Err != nil {
 		t.Fatalf("reconcile error: %v", res.Err)
 	}
-	if res.Action != actor.ReconcileCancelled {
+	if res.Action != signalfollower.ReconcileCancelled {
 		t.Fatalf("want ReconcileCancelled (clid never reached the exchange), got %s", res.Action)
 	}
 	if res.Phase != position.PhaseIdle {
@@ -275,7 +277,7 @@ func TestReconcile_OpenPositionRestored_Binance(t *testing.T) {
 	hand1.DeliverSignal(longSig("ETHUSDT"))
 	select {
 	case e := <-placed:
-		if e.Code == actor.CodeOrderFailed {
+		if e.Code == eventcode.CodeOrderFailed {
 			rec1.dump(t, "TestReconcile_OpenPositionRestored_Binance (entry failed)")
 			rt1.Stop()
 			if isBalanceError(e.Reason) {
@@ -315,7 +317,7 @@ func TestReconcile_OpenPositionRestored_Binance(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	results := actor.NewReconciler(env.pl).Reconcile(ctx, rt2)
+	results := signalfollower.NewReconciler(env.pl).Reconcile(ctx, rt2)
 
 	if len(results) != 1 {
 		t.Fatalf("want 1 reconcile result, got %d", len(results))
@@ -326,9 +328,9 @@ func TestReconcile_OpenPositionRestored_Binance(t *testing.T) {
 		t.Fatalf("reconcile error: %v", res.Err)
 	}
 	switch res.Action {
-	case actor.ReconcileRestored:
+	case signalfollower.ReconcileRestored:
 		t.Log("outcome: ReconcileRestored — the hand's own WS fill was already durable before Stop()")
-	case actor.ReconcileFillApplied:
+	case signalfollower.ReconcileFillApplied:
 		t.Log("outcome: ReconcileFillApplied — reconcile recovered a fill the hand never got to apply itself")
 	default:
 		t.Fatalf("want ReconcileRestored or ReconcileFillApplied (position is open at exchange either way), got %s", res.Action)
@@ -389,7 +391,7 @@ func TestReconcile_ExternalCloseDuringDowntime_Binance(t *testing.T) {
 	hand1.DeliverSignal(longSig("ETHUSDT"))
 	select {
 	case e := <-placed:
-		if e.Code == actor.CodeOrderFailed {
+		if e.Code == eventcode.CodeOrderFailed {
 			rec1.dump(t, "TestReconcile_ExternalCloseDuringDowntime_Binance (entry failed)")
 			rt1.Stop()
 			if isBalanceError(e.Reason) {
@@ -462,7 +464,7 @@ func TestReconcile_ExternalCloseDuringDowntime_Binance(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	results := actor.NewReconciler(env.pl).Reconcile(ctx, rt2)
+	results := signalfollower.NewReconciler(env.pl).Reconcile(ctx, rt2)
 
 	if len(results) != 1 {
 		t.Fatalf("want 1 reconcile result, got %d", len(results))
@@ -472,7 +474,7 @@ func TestReconcile_ExternalCloseDuringDowntime_Binance(t *testing.T) {
 	if res.Err != nil {
 		t.Fatalf("reconcile error: %v", res.Err)
 	}
-	if res.Action != actor.ReconcileExternalClose {
+	if res.Action != signalfollower.ReconcileExternalClose {
 		t.Fatalf("want ReconcileExternalClose (position sold outside the hand), got %s", res.Action)
 	}
 	if res.Phase != position.PhaseIdle {

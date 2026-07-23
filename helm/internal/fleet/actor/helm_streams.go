@@ -8,6 +8,7 @@ package actor
 import (
 	"context"
 	"log/slog"
+	"mallow/helm/internal/fleet/actor/eventcode"
 	"time"
 
 	"mallow/helm/internal/fleet/actor/clid"
@@ -259,10 +260,7 @@ func (r *HelmRuntime) applyLifecycleEvent(ctx context.Context, ev exchange.Order
 					case <-handCtx.Done():
 						return
 					}
-					select {
-					case entry.h.exitCancelCh <- orderID:
-					case <-handCtx.Done():
-					}
+					entry.h.DeliverExitCancel(handCtx, orderID)
 				}(ev.OrderID)
 			}
 		}
@@ -304,7 +302,7 @@ func (r *HelmRuntime) applyWsFillSafe(ctx context.Context, ev exchange.WsFillEve
 // Partial fills are applied incrementally to the portfolio and tracked for REST dedup.
 func (r *HelmRuntime) applyWsFill(ctx context.Context, ev exchange.WsFillEvent) {
 	// Normalize commission to quote currency and adjust qty for buys where fee is paid in the base asset or standard non-quote assets like BNB.
-	ev.FilledQty, ev.Commission = r.normalizeCommission(ctx, ev.Symbol, ev.Side, ev.FilledQty, ev.FilledAvg, ev.Commission, ev.CommissionAsset)
+	ev.FilledQty, ev.Commission = r.NormalizeCommission(ctx, ev.Symbol, ev.Side, ev.FilledQty, ev.FilledAvg, ev.Commission, ev.CommissionAsset)
 
 	helmID := r.HelmID.String()
 
@@ -408,10 +406,10 @@ func (r *HelmRuntime) applyWsFill(ctx context.Context, ev exchange.WsFillEvent) 
 	}
 
 	// Orphan and partial paths: emit fill event directly.
-	// (Normal hand path emits its own CodeOrderFilled via hand.applyFill → EmitEvent.)
+	// (Normal hand path emits its own eventcode.CodeOrderFilled via hand.applyFill → EmitEvent.)
 	r.EmitEvent(natsapi.HelmEvent{
 		HandID:  botID,
-		Code:    CodeOrderFilled,
+		Code:    eventcode.CodeOrderFilled,
 		Symbol:  ev.Symbol,
 		Side:    string(ev.Side),
 		Qty:     ev.FilledQty,

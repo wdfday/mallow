@@ -1,4 +1,4 @@
-package actor_test
+package signalfollower_test
 
 // Reconciler crash-scenario tests.
 //
@@ -32,6 +32,7 @@ import (
 	"mallow/helm/internal/fleet/actor/core/risk"
 	"mallow/helm/internal/fleet/actor/core/strategy"
 	"mallow/helm/internal/fleet/actor/core/tactics"
+	signalfollower "mallow/helm/internal/fleet/actor/signal-follower"
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/journal/poslog"
 )
@@ -151,11 +152,11 @@ func buildRuntime(ex exchange.Exchange, log poslog.Log) *actor.HelmRuntime {
 	return rt
 }
 
-func addHand(rt *actor.HelmRuntime, pyramid bool, maxUnits int) *actor.Hand {
+func addHand(rt *actor.HelmRuntime, pyramid bool, maxUnits int) *signalfollower.Hand {
 	handID := uuid.New()
 	strat := strategy.NewSignalFollower(0.3)
 	tact := tactics.New(tactics.DefaultSizingConfig())
-	h := actor.NewHand(handID, rt.HelmID, rt, strat, tact, pyramid, maxUnits, 10*time.Second, nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
+	h := signalfollower.NewHand(handID, rt.HelmID, rt, strat, tact, pyramid, maxUnits, 10*time.Second, nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
 	rt.AddHand(h, &domain.Hand{ID: h.ID(), HelmID: rt.HelmID, Symbols: domain.StringSlice{h.Symbol}})
 	return h
 }
@@ -201,12 +202,12 @@ func TestReconcile_FlatHand(t *testing.T) {
 	rt := buildRuntime(ex, log)
 	addHand(rt, false, 1)
 
-	results := actor.NewReconciler(log).Reconcile(context.Background(), rt)
+	results := signalfollower.NewReconciler(log).Reconcile(context.Background(), rt)
 
 	if len(results) != 1 {
 		t.Fatalf("want 1 result, got %d", len(results))
 	}
-	if results[0].Action != actor.ReconcileSkipped {
+	if results[0].Action != signalfollower.ReconcileSkipped {
 		t.Fatalf("want ReconcileSkipped, got %s", results[0].Action)
 	}
 	if len(log.publishedIDs()) != 0 {
@@ -228,9 +229,9 @@ func TestReconcile_PendingOrderStillOpen(t *testing.T) {
 	rt := buildRuntime(ex, log)
 	addHand(rt, false, 1)
 
-	results := actor.NewReconciler(log).Reconcile(context.Background(), rt)
+	results := signalfollower.NewReconciler(log).Reconcile(context.Background(), rt)
 
-	if results[0].Action != actor.ReconcileRestored {
+	if results[0].Action != signalfollower.ReconcileRestored {
 		t.Fatalf("want ReconcileRestored, got %s", results[0].Action)
 	}
 	if len(log.publishedIDs()) != 0 {
@@ -254,9 +255,9 @@ func TestReconcile_CrashBetweenPlacedAndFilled(t *testing.T) {
 	rt := buildRuntime(ex, log)
 	addHand(rt, false, 1)
 
-	results := actor.NewReconciler(log).Reconcile(context.Background(), rt)
+	results := signalfollower.NewReconciler(log).Reconcile(context.Background(), rt)
 
-	if results[0].Action != actor.ReconcileFillApplied {
+	if results[0].Action != signalfollower.ReconcileFillApplied {
 		t.Fatalf("want ReconcileFillApplied, got %s", results[0].Action)
 	}
 	ids := log.publishedIDs()
@@ -283,9 +284,9 @@ func TestReconcile_CrashWithCancelledOrder(t *testing.T) {
 	rt := buildRuntime(ex, log)
 	addHand(rt, false, 1)
 
-	results := actor.NewReconciler(log).Reconcile(context.Background(), rt)
+	results := signalfollower.NewReconciler(log).Reconcile(context.Background(), rt)
 
-	if results[0].Action != actor.ReconcileCancelled {
+	if results[0].Action != signalfollower.ReconcileCancelled {
 		t.Fatalf("want ReconcileCancelled, got %s", results[0].Action)
 	}
 	ids := log.publishedIDs()
@@ -311,9 +312,9 @@ func TestReconcile_OpenPositionConfirmed(t *testing.T) {
 	rt := buildRuntime(ex, log)
 	addHand(rt, false, 1)
 
-	results := actor.NewReconciler(log).Reconcile(context.Background(), rt)
+	results := signalfollower.NewReconciler(log).Reconcile(context.Background(), rt)
 
-	if results[0].Action != actor.ReconcileRestored {
+	if results[0].Action != signalfollower.ReconcileRestored {
 		t.Fatalf("want ReconcileRestored, got %s", results[0].Action)
 	}
 	if len(log.publishedIDs()) != 0 {
@@ -345,9 +346,9 @@ func TestReconcile_AmbiguousBracket_FoundAtExchange(t *testing.T) {
 	rt := buildRuntime(ex, log)
 	addHand(rt, false, 1)
 
-	results := actor.NewReconciler(log).Reconcile(context.Background(), rt)
+	results := signalfollower.NewReconciler(log).Reconcile(context.Background(), rt)
 
-	if results[0].Action != actor.ReconcileRestored {
+	if results[0].Action != signalfollower.ReconcileRestored {
 		t.Fatalf("want ReconcileRestored, got %s", results[0].Action)
 	}
 	var sawBracketPlaced bool
@@ -394,9 +395,9 @@ func TestReconcile_AmbiguousBracket_NotFound(t *testing.T) {
 	rt := buildRuntime(ex, log)
 	addHand(rt, false, 1)
 
-	results := actor.NewReconciler(log).Reconcile(context.Background(), rt)
+	results := signalfollower.NewReconciler(log).Reconcile(context.Background(), rt)
 
-	if results[0].Action != actor.ReconcileRestored {
+	if results[0].Action != signalfollower.ReconcileRestored {
 		t.Fatalf("want ReconcileRestored, got %s", results[0].Action)
 	}
 	for _, e := range log.published {
@@ -421,9 +422,9 @@ func TestReconcile_ExternalClose(t *testing.T) {
 	rt := buildRuntime(ex, log)
 	h := addHand(rt, false, 1)
 
-	results := actor.NewReconciler(log).Reconcile(context.Background(), rt)
+	results := signalfollower.NewReconciler(log).Reconcile(context.Background(), rt)
 
-	if results[0].Action != actor.ReconcileExternalClose {
+	if results[0].Action != signalfollower.ReconcileExternalClose {
 		t.Fatalf("want ReconcileExternalClose, got %s", results[0].Action)
 	}
 	ids := log.publishedIDs()
@@ -453,7 +454,7 @@ func TestReconcile_ExternalClose_Idempotent(t *testing.T) {
 	rt := buildRuntime(ex, log)
 	h := addHand(rt, false, 1)
 
-	rec := actor.NewReconciler(log)
+	rec := signalfollower.NewReconciler(log)
 	rec.Reconcile(context.Background(), rt)
 	// Second run: poslog still returns same events (dedup happens inside JetStream, not here).
 	rec.Reconcile(context.Background(), rt)
@@ -488,9 +489,9 @@ func TestReconcile_ExitingPhase_OrderStillOpen(t *testing.T) {
 	rt := buildRuntime(ex, log)
 	addHand(rt, false, 1)
 
-	results := actor.NewReconciler(log).Reconcile(context.Background(), rt)
+	results := signalfollower.NewReconciler(log).Reconcile(context.Background(), rt)
 
-	if results[0].Action != actor.ReconcileRestored {
+	if results[0].Action != signalfollower.ReconcileRestored {
 		t.Fatalf("want ReconcileRestored, got %s", results[0].Action)
 	}
 }
@@ -519,12 +520,12 @@ func TestReconcile_PartiallyFilledOrder_Restored(t *testing.T) {
 	rt := buildRuntime(ex, log)
 	hand := addHand(rt, false, 1)
 
-	results := actor.NewReconciler(log).Reconcile(context.Background(), rt)
+	results := signalfollower.NewReconciler(log).Reconcile(context.Background(), rt)
 
 	if len(results) != 1 {
 		t.Fatalf("want 1 result, got %d", len(results))
 	}
-	if results[0].Action != actor.ReconcileRestored {
+	if results[0].Action != signalfollower.ReconcileRestored {
 		t.Fatalf("want ReconcileRestored, got %s", results[0].Action)
 	}
 	// No poslog events should be emitted for a still-open order.
@@ -568,9 +569,9 @@ func TestReconcile_ExitingPhase_CloseFilled(t *testing.T) {
 	rt := buildRuntime(ex, log)
 	addHand(rt, false, 1)
 
-	results := actor.NewReconciler(log).Reconcile(context.Background(), rt)
+	results := signalfollower.NewReconciler(log).Reconcile(context.Background(), rt)
 
-	if results[0].Action != actor.ReconcileFillApplied {
+	if results[0].Action != signalfollower.ReconcileFillApplied {
 		t.Fatalf("want ReconcileFillApplied, got %s", results[0].Action)
 	}
 	ids := log.publishedIDs()
@@ -596,9 +597,9 @@ func TestReconcile_WAL_PreFlight_Open(t *testing.T) {
 	rt := buildRuntime(ex, log)
 	addHand(rt, false, 1)
 
-	results := actor.NewReconciler(log).Reconcile(context.Background(), rt)
+	results := signalfollower.NewReconciler(log).Reconcile(context.Background(), rt)
 
-	if results[0].Action != actor.ReconcileRestored {
+	if results[0].Action != signalfollower.ReconcileRestored {
 		t.Fatalf("want ReconcileRestored, got %s", results[0].Action)
 	}
 	ids := log.publishedIDs()
@@ -626,9 +627,9 @@ func TestReconcile_WAL_PreFlight_Filled(t *testing.T) {
 	rt := buildRuntime(ex, log)
 	addHand(rt, false, 1)
 
-	results := actor.NewReconciler(log).Reconcile(context.Background(), rt)
+	results := signalfollower.NewReconciler(log).Reconcile(context.Background(), rt)
 
-	if results[0].Action != actor.ReconcileFillApplied {
+	if results[0].Action != signalfollower.ReconcileFillApplied {
 		t.Fatalf("want ReconcileFillApplied, got %s", results[0].Action)
 	}
 	ids := log.publishedIDs()
@@ -654,9 +655,9 @@ func TestReconcile_WAL_PreFlight_NotFound(t *testing.T) {
 	rt := buildRuntime(ex, log)
 	addHand(rt, false, 1)
 
-	results := actor.NewReconciler(log).Reconcile(context.Background(), rt)
+	results := signalfollower.NewReconciler(log).Reconcile(context.Background(), rt)
 
-	if results[0].Action != actor.ReconcileCancelled {
+	if results[0].Action != signalfollower.ReconcileCancelled {
 		t.Fatalf("want ReconcileCancelled, got %s", results[0].Action)
 	}
 	ids := log.publishedIDs()
@@ -696,9 +697,9 @@ func TestReconcile_WAL_PreFlight_PyramidAdd_Open(t *testing.T) {
 	rt := buildRuntime(ex, log)
 	addHand(rt, true, 2) // pyramid = true, maxUnits = 2
 
-	results := actor.NewReconciler(log).Reconcile(context.Background(), rt)
+	results := signalfollower.NewReconciler(log).Reconcile(context.Background(), rt)
 
-	if results[0].Action != actor.ReconcileRestored {
+	if results[0].Action != signalfollower.ReconcileRestored {
 		t.Fatalf("want ReconcileRestored, got %s", results[0].Action)
 	}
 	ids := log.publishedIDs()
@@ -728,9 +729,9 @@ func TestReconcile_WAL_PreFlight_PyramidAdd_Filled(t *testing.T) {
 	rt := buildRuntime(ex, log)
 	addHand(rt, true, 2)
 
-	results := actor.NewReconciler(log).Reconcile(context.Background(), rt)
+	results := signalfollower.NewReconciler(log).Reconcile(context.Background(), rt)
 
-	if results[0].Action != actor.ReconcileFillApplied {
+	if results[0].Action != signalfollower.ReconcileFillApplied {
 		t.Fatalf("want ReconcileFillApplied, got %s", results[0].Action)
 	}
 	ids := log.publishedIDs()
@@ -758,9 +759,9 @@ func TestReconcile_WAL_PreFlight_PyramidAdd_Cancelled(t *testing.T) {
 	rt := buildRuntime(ex, log)
 	addHand(rt, true, 2)
 
-	results := actor.NewReconciler(log).Reconcile(context.Background(), rt)
+	results := signalfollower.NewReconciler(log).Reconcile(context.Background(), rt)
 
-	if results[0].Action != actor.ReconcileCancelled {
+	if results[0].Action != signalfollower.ReconcileCancelled {
 		t.Fatalf("want ReconcileCancelled, got %s", results[0].Action)
 	}
 	ids := log.publishedIDs()

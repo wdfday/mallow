@@ -11,6 +11,7 @@ import (
 	"mallow/helm/internal/infra/exchange"
 
 	"mallow/helm/internal/fleet/actor"
+	signalfollower "mallow/helm/internal/fleet/actor/signal-follower"
 	"mallow/helm/internal/module/hand/domain"
 )
 
@@ -31,7 +32,7 @@ func (s *Service) Get(id uuid.UUID) (domain.HandSummary, error) {
 }
 
 // GetHand returns the live Hand runner for the given ID, or nil if not in memory.
-func (s *Service) GetHand(id uuid.UUID) *actor.Hand {
+func (s *Service) GetHand(id uuid.UUID) *signalfollower.Hand {
 	data, err := s.repo.Get(id)
 	if err != nil {
 		return nil
@@ -211,8 +212,8 @@ func (s *Service) Create(cfg domain.HandConfig) (domain.HandSummary, error) {
 		return domain.HandSummary{}, fmt.Errorf("save hand: %w", err)
 	}
 
-	strat, tact := actor.BuildHandComponents(data)
-	hand := actor.NewHand(id, cfg.HelmID, rt, strat, tact, data.Position.Pyramid, data.Position.MaxUnits, actor.SignalTTLFor(data), data.Futures, data.OrderType, data.LimitTimeoutSec, data.LimitFallback, data.Guard, data.AllocatedCapital)
+	strat, tact := signalfollower.BuildHandComponents(data)
+	hand := signalfollower.NewHand(id, cfg.HelmID, rt, strat, tact, data.Position.Pyramid, data.Position.MaxUnits, signalfollower.SignalTTLFor(data), data.Futures, data.OrderType, data.LimitTimeoutSec, data.LimitFallback, data.Guard, data.AllocatedCapital)
 	setMeta(hand, data)
 	rt.AddHand(hand, data)
 
@@ -268,8 +269,8 @@ func (s *Service) Update(id uuid.UUID, patch domain.HandConfig) error {
 
 	if rt, err := s.registry.Get(helmID); err == nil {
 		rt.RemoveHand(id.String())
-		strat, tact := actor.BuildHandComponents(updated)
-		hand := actor.NewHand(updated.ID, helmID, rt, strat, tact, updated.Position.Pyramid, updated.Position.MaxUnits, actor.SignalTTLFor(updated), updated.Futures, updated.OrderType, updated.LimitTimeoutSec, updated.LimitFallback, updated.Guard, updated.AllocatedCapital)
+		strat, tact := signalfollower.BuildHandComponents(updated)
+		hand := signalfollower.NewHand(updated.ID, helmID, rt, strat, tact, updated.Position.Pyramid, updated.Position.MaxUnits, signalfollower.SignalTTLFor(updated), updated.Futures, updated.OrderType, updated.LimitTimeoutSec, updated.LimitFallback, updated.Guard, updated.AllocatedCapital)
 		setMeta(hand, updated)
 		rt.AddHand(hand, updated)
 	}
@@ -341,7 +342,7 @@ func validateSizingConfig(p domain.PositionConfig) error {
 	return nil
 }
 
-func setMeta(hand *actor.Hand, b *domain.Hand) {
+func setMeta(hand *signalfollower.Hand, b *domain.Hand) {
 	if len(b.Symbols) > 0 {
 		hand.Symbol = b.Symbols[0]
 	}

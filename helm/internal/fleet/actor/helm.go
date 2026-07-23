@@ -3,17 +3,10 @@ package actor
 import (
 	"context"
 	"log/slog"
-	"sync"
-	"sync/atomic"
-	"time"
-
-	"github.com/google/uuid"
-	"github.com/nats-io/nats.go"
-	"github.com/shopspring/decimal"
-
 	"mallow/helm/internal/fleet/actor/core/portfolio"
 	"mallow/helm/internal/fleet/actor/core/risk"
 	"mallow/helm/internal/fleet/actor/core/strategy"
+	signalfollower "mallow/helm/internal/fleet/actor/signal-follower"
 	"mallow/helm/internal/fleet/market"
 	"mallow/helm/internal/fleet/perf"
 	"mallow/helm/internal/infra/exchange"
@@ -22,31 +15,20 @@ import (
 	handdomain "mallow/helm/internal/module/hand/domain"
 	helmdomain "mallow/helm/internal/module/helm/domain"
 	"mallow/helm/internal/safe"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/google/uuid"
+	"github.com/nats-io/nats.go"
+	"github.com/shopspring/decimal"
 )
 
 // handEntry pairs the live Hand goroutine with its persisted domain data.
 // Owned exclusively by HelmRuntime; never shared across runtimes.
 type handEntry struct {
-	h    *Hand
+	h    *signalfollower.Hand
 	data *handdomain.Hand
-}
-
-// HandPnLSummer queries aggregate PnL metrics for a hand from PostgreSQL in one query.
-// Implemented by tradelog.Log; injected into HelmRuntime to avoid draining JetStream
-// history on every startup.
-type HandPnLSummer interface {
-	SumHandPnL(ctx context.Context, handID uuid.UUID) (totalPnL, totalCommission decimal.Decimal, wins, losses int64, err error)
-	// RecentClosedPnL returns the PnL of a hand's last `limit` closed trades,
-	// oldest first. Used by RestoreGuard to rebuild the edge-risk guard's ring
-	// buffer on startup instead of replaying poslog history.
-	RecentClosedPnL(ctx context.Context, handID uuid.UUID, limit int) ([]decimal.Decimal, error)
-}
-
-// HandEventCounter returns a hand's activity-event counts grouped by code, in one
-// query. Implemented by eventlog.Log; used to rebuild signal/order counters on
-// restart (PnL/win/loss come from HandPnLSummer).
-type HandEventCounter interface {
-	CountHandEvents(ctx context.Context, handID uuid.UUID) (map[int]int64, error)
 }
 
 // RiskManager is the interface for account-level risk controls.
@@ -145,13 +127,13 @@ type HelmRuntime struct {
 
 	// ── Durability ───────────────────────────────────────────────────────────
 	// nil fields degrade gracefully: poslog events are lost, events go to slog only.
-	PosLog       poslog.Log            // JetStream WAL for position events
-	TradeLog     perf.TradeLog         // JetStream HELM_TRADES — closed round-trip trades; TradePersister drains into PG
-	PnLSummer    HandPnLSummer         // postgres aggregate query for RestorePnL + RestoreGuard; nil = degrade gracefully
-	EventCounter HandEventCounter      // postgres event-count aggregate for RestoreCounters; nil = counters start at 0
-	SyncStore    SyncStore             // persists last_synced_at after each successful portfolio sync; exported since Registry (package fleet) wires it in
-	nc           *nats.Conn            // NATS connection; used for portfolio.synced.* (nc.Publish path)
-	js           nats.JetStreamContext // JetStream context; publishes helm.events.* (durable, 7d)
+	PosLog       poslog.Log                      // JetStream WAL for position events
+	TradeLog     perf.TradeLog                   // JetStream HELM_TRADES — closed round-trip trades; TradePersister drains into PG
+	PnLSummer    signalfollower.HandPnLSummer    // postgres aggregate query for RestorePnL + RestoreGuard; nil = degrade gracefully
+	EventCounter signalfollower.HandEventCounter // postgres event-count aggregate for RestoreCounters; nil = counters start at 0
+	SyncStore    SyncStore                       // persists last_synced_at after each successful portfolio sync; exported since Registry (package fleet) wires it in
+	nc           *nats.Conn                      // NATS connection; used for portfolio.synced.* (nc.Publish path)
+	js           nats.JetStreamContext           // JetStream context; publishes helm.events.* (durable, 7d)
 
 	// ── WS fill stream lifecycle ─────────────────────────────────────────────
 	// fillStreamCancel cancels the per-runtime WS stream context so RotateCreds
@@ -312,10 +294,61 @@ func (r *HelmRuntime) EventCodeCounts() map[int]int64 {
 // Called by Hand.Start() when the hand is restarted after an extended downtime gap
 // (> onDemandReconcileGap) so fills and position changes during downtime are applied
 // before the first signal arrives. No-op when PosLog is nil (dev / no-persistence mode).
-func (r *HelmRuntime) ReconcileHand(ctx context.Context, hand *Hand) {
+func (r *HelmRuntime) ReconcileHand(ctx context.Context, hand *signalfollower.Hand) {
 	if r.PosLog == nil {
 		return
 	}
-	rec := NewReconciler(r.PosLog)
+	rec := signalfollower.NewReconciler(r.PosLog)
 	rec.ReconcileSingle(ctx, r, hand)
+}
+
+// ── HelmPort accessors ──────────────────────────────────────────────────────
+// Getter methods for the HelmPort interface: the struct fields below are
+// already exported and used directly by other files in package actor, so they
+// keep their names — these wrappers exist only so a Hand depending on the
+// HelmPort interface (rather than the concrete struct) can reach them.
+
+func (r *HelmRuntime) GetHelmID() uuid.UUID                             { return r.HelmID }
+func (r *HelmRuntime) GetPortfolio() *portfolio.Portfolio               { return r.Portfolio }
+func (r *HelmRuntime) GetExchange() exchange.Exchange                   { return r.Exchange }
+func (r *HelmRuntime) GetCreds() exchange.Credentials                   { return r.Creds }
+func (r *HelmRuntime) GetAccountID() uuid.UUID                          { return r.AccountID }
+func (r *HelmRuntime) GetUserID() uuid.UUID                             { return r.UserID }
+func (r *HelmRuntime) GetPosLog() poslog.Log                            { return r.PosLog }
+func (r *HelmRuntime) GetTradeLog() perf.TradeLog                       { return r.TradeLog }
+func (r *HelmRuntime) GetPnLSummer() signalfollower.HandPnLSummer       { return r.PnLSummer }
+func (r *HelmRuntime) GetEventCounter() signalfollower.HandEventCounter { return r.EventCounter }
+
+// Hands returns a snapshot of all hands currently registered with this
+// runtime. Used by the reconciler (package signalfollower) instead of
+// reaching into HelmRuntime's private hand registry directly.
+func (r *HelmRuntime) Hands() []*signalfollower.Hand {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	hands := make([]*signalfollower.Hand, 0, len(r.hands))
+	for _, e := range r.hands {
+		hands = append(hands, e.h)
+	}
+	return hands
+}
+
+// PublishTradeFill publishes a trade.filled event when JetStream is available
+// and reports whether it did — callers use the result to gate a paired
+// MarkOrderFillPublished so a fill is never marked published without actually
+// having been published (dev/test mode runs with nc/js nil).
+func (r *HelmRuntime) PublishTradeFill(msg natsapi.TransactionMsg) bool {
+	if r.js == nil {
+		return false
+	}
+	natsapi.PublishTradeFill(r.js, msg)
+	return true
+}
+
+// PublishSignal publishes a signal audit event when JetStream is available;
+// a no-op otherwise (dev/test mode runs with nc/js nil).
+func (r *HelmRuntime) PublishSignal(msg natsapi.SignalMsg) {
+	if r.js == nil {
+		return
+	}
+	natsapi.PublishSignal(r.js, msg)
 }

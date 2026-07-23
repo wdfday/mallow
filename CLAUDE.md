@@ -346,11 +346,11 @@ helm/
 ├── cmd/helm/         # main entry + swagger annotations
 ├── internal/
 │   ├── app/          # Uber FX wiring, lifecycle, exchange factory, server
-│   ├── config/       # Viper config (API_ADDR, POSTGRES_URL, NATS_URL, SYNC_INTERVAL, market-data, …)
+│   ├── config/       # Viper config (API_ADDR, POSTGRES_URL, NATS_URL, SYNC_INTERVAL, …)
 │   ├── infra/
 │   │   ├── engine/   # SignalClient (NATS protobuf → bars + signals), BarAggregator
 │   │   ├── exchange/ # Broker adapters: alpaca, binance, bybit, fbinance (Binance futures), okx
-│   │   ├── marketdata/ # Market-data listeners (okx, binance, bybit WebSocket; alpaca/oanda dirs exist but errored out of global config, see MARKET_DATA_SOURCE) — optional
+│   │   ├── marketdata/ # alpaca/oanda market-data listeners — separate per-account-credential path, not wired by default (see fleet/market for the live public feed)
 │   │   ├── nats/     # NATS + JetStream setup (streams: user.>, signals, trade.filled.>, helm.pos.>, helm.trades.>, helm.equity.>, portfolio.>)
 │   │   ├── natsapi/  # NATS req/rep protocol (subjects, CallerMeta, envelopes)
 │   │   ├── perflog/  # Per-helm and per-hand performance log (portfolio + trades)
@@ -361,18 +361,19 @@ helm/
 │   │   ├── broker/   # Broker connections — encrypted API key storage, paper flag, status
 │   │   ├── helm/     # Helm CRUD + account linking + NATS handler
 │   │   └── hand/     # Hand CRUD + lifecycle + NATS handler
-│   └── runtime/      # HelmRuntime, Hand goroutine, Registry, SignalDispatcher, reconciler
+│   └── fleet/        # Registry (orchestrator) + actor/ (HelmRuntime, Hand, reconciler) + dispatcher/ (SignalDispatcher)
 ```
 
 **Core concepts:**
 - **Broker Connection** (`module/broker`): user-scoped encrypted credentials for a single exchange account. Statuses: `pending` / `active` / `disconnected` / `error`. Paper-trading flag.
 - **Account** (`module/account`): aggregated view of a user's positions / cash / transactions per broker. Surfaces SSE `events` endpoint that streams `trade.filled.{account_id}` for the UI.
 - **Helm**: account-level execution container. One Helm per broker account. Owns capital budget, portfolio config, risk circuit-breakers. Auto-created synchronously when a broker connection is activated (same request).
-- **Hand** (`runtime.Hand`): autonomous signal-following bot. Owns a script/named strategy, position sizing, exit rules, JetStream poslog. Multiple hands per helm.
-- **HelmRuntime**: in-memory execution context shared by all hands under one helm (exchange, portfolio, order book, poslog).
+- **Hand** (`fleet/actor.Hand`): autonomous signal-following bot. Owns a script/named strategy, position sizing, exit rules, JetStream poslog. Multiple hands per helm.
+- **HelmRuntime** (`fleet/actor.HelmRuntime`): in-memory execution context shared by all hands under one helm (exchange, portfolio, order book, poslog).
 - **poslog**: JetStream-backed write-ahead log of position events (`order_placed`, `order_filled`, `order_cancelled`, `position_orphaned`). Replayed on restart by the reconciler.
-- **SignalDispatcher**: routes incoming `SignalResponse` from herald to the correct Hand channel by `bot_id`.
-- **Registry** (`runtime.Registry`): in-memory map of `helm_id → HelmRuntime`. `SpawnAll` on startup; `Get` for dispatch.
+- **SignalDispatcher** (`fleet/dispatcher`): routes incoming `SignalResponse` from herald to the correct Hand channel by `bot_id`. Depends only on `fleet/actor/core/strategy` (Layer 1) — never on `fleet` or `fleet/actor` — and is wired to `Registry` only at the `app/` composition root via the `SignalSink` interface it defines.
+- **Registry** (`fleet.Registry`): in-memory map of `helm_id → HelmRuntime`. `SpawnAll` on startup; `Get` for dispatch. One-directional dependency onto `fleet/actor` — nothing in `fleet/actor` references `Registry`, so `fleet` (the orchestrator) is a thin package around the `actor` engine it owns.
+- **market** (`fleet/market`): single source of truth for public exchange data — price, symbol filters/notional, L2 order book. One self-connecting WebSocket per exchange (binance/okx/bybit), sole writer; everything else (HelmRuntime, hands) only reads. Independent of herald/NATS.
 
 **Hand lifecycle states:** `stopped → running → stopped` via start/stop. Plus: `kill` (stop + flatten this hand's positions at exchange) and `release` (stop + emit `position_orphaned` poslog events, leaving positions live at exchange). Hands are **never hard-deleted** — kept for review; there is no delete/pause/resume/restart for a hand (pausing is a helm-level cascade-stop).
 
@@ -531,13 +532,9 @@ NATS_URL
 ENCRYPTION_KEY              # AES-GCM key for broker credentials
 PYROSCOPE_URL               # empty = profiling disabled
 SYNC_INTERVAL               # portfolio sync interval (default: 5m)
-MARKET_DATA_SOURCE          # none | okx | binance | bybit (default: none) — alpaca/ibkr/oanda now rejected here;
-                             # those need per-account provider credentials from helm config, not global env
-MARKET_DATA_SYMBOLS         # comma-separated symbols for market-data listener
-MARKET_DATA_CRYPTO          # true | false
-ALPACA_MD_API_KEY           # Alpaca market-data key
-ALPACA_MD_API_SECRET
 ```
+
+Public market-data streaming (price, symbol filters/notional, L2 order book) is not env-configured — `fleet/market` self-connects one WebSocket per exchange (binance/okx/bybit), derived automatically from which exchanges have live hands (`handservice.SymbolsByExchange()`), independent of herald/NATS. Alpaca/oanda market data remains a separate per-account-credential path (`infra/marketdata/{alpaca,oanda}`), not wired by default.
 
 ### api-gateway env
 

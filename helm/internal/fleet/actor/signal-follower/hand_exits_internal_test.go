@@ -1,12 +1,16 @@
-package actor
+package signalfollower_test
 
-// checkExits internal test — verifies the local exit monitor tags the
+// checkExits white-box test — verifies the local exit monitor tags the
 // delivered Signal with the correct strategy.ExitKind (sl/tp) instead of
 // leaving it untagged. checkExits is unexported and only reachable via the
-// run loop's ticker in production, so this lives in package actor (not
-// actor_test) to call it directly; poslog event helpers mirror
-// reconcile_test.go's recPlaced/recFilled (kept self-contained per that
-// file's own precedent for duplicating across test files in this package).
+// run loop's ticker in production, so this test reaches it through the
+// export_test.go hooks (TestCheckExits, TestSetExitLevel, ...) — this file
+// is package signalfollower_test (not signalfollower) because it also needs
+// a concrete *actor.HelmRuntime, and package signalfollower can never import
+// package actor (which imports signalfollower for Hand — that would cycle).
+// poslog event helpers mirror reconcile_test.go's recPlaced/recFilled (kept
+// self-contained per that file's own precedent for duplicating across test
+// files in this package).
 
 import (
 	"context"
@@ -18,25 +22,27 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
+	"mallow/helm/internal/fleet/actor"
 	"mallow/helm/internal/fleet/actor/core/portfolio"
 	"mallow/helm/internal/fleet/actor/core/risk"
 	"mallow/helm/internal/fleet/actor/core/strategy"
 	"mallow/helm/internal/fleet/actor/core/tactics"
+	signalfollower "mallow/helm/internal/fleet/actor/signal-follower"
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/journal/poslog"
 	"mallow/helm/internal/module/hand/domain"
 )
 
-func buildCheckExitsHand(t *testing.T, symbol string) (*Hand, *HelmRuntime) {
+func buildCheckExitsHand(t *testing.T, symbol string) (*signalfollower.Hand, *actor.HelmRuntime) {
 	t.Helper()
 	pf := portfolio.New(decimal.NewFromFloat(10_000))
 	rm := risk.New(risk.DefaultConfig(), pf)
-	rt := NewHelmRuntime(uuid.New(), uuid.New(), uuid.New(), "test", pf, rm, nil, exchange.Credentials{}, nil, time.Now())
+	rt := actor.NewHelmRuntime(uuid.New(), uuid.New(), uuid.New(), "test", pf, rm, nil, exchange.Credentials{}, nil, time.Now())
 	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(49_000)) // below the SL level set below
 
 	strat := strategy.NewSignalFollower(0.3)
 	tact := tactics.New(tactics.DefaultSizingConfig())
-	h := NewHand(uuid.New(), rt.HelmID, rt, strat, tact, false, 1, 10*time.Second,
+	h := signalfollower.NewHand(uuid.New(), rt.HelmID, rt, strat, tact, false, 1, 10*time.Second,
 		nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
 	h.Symbol = symbol
 
@@ -46,20 +52,16 @@ func buildCheckExitsHand(t *testing.T, symbol string) (*Hand, *HelmRuntime) {
 	tradeID := "seed-1"
 	placed := poslog.OrderPlacedPayload{OrderID: tradeID, Symbol: symbol, Side: "buy", Qty: "0.01", Price: "50000", OrderType: "market"}
 	placedPayload, _ := json.Marshal(placed)
-	if err := h.pos.Apply(poslog.Event{ID: tradeID, TradeID: tradeID, Kind: poslog.KindOrderPlaced, Payload: placedPayload, At: time.Now()}); err != nil {
+	if err := h.TestSeedPoslogEvent(poslog.Event{ID: tradeID, TradeID: tradeID, Kind: poslog.KindOrderPlaced, Payload: placedPayload, At: time.Now()}); err != nil {
 		t.Fatalf("seed KindOrderPlaced: %v", err)
 	}
 	filled := poslog.OrderFilledPayload{OrderID: tradeID, FillPrice: "50000", FillQty: "0.01", Source: "ws"}
 	filledPayload, _ := json.Marshal(filled)
-	if err := h.pos.Apply(poslog.Event{ID: tradeID + "_filled", TradeID: tradeID, Kind: poslog.KindOrderFilled, Payload: filledPayload, At: time.Now()}); err != nil {
+	if err := h.TestSeedPoslogEvent(poslog.Event{ID: tradeID + "_filled", TradeID: tradeID, Kind: poslog.KindOrderFilled, Payload: filledPayload, At: time.Now()}); err != nil {
 		t.Fatalf("seed KindOrderFilled: %v", err)
 	}
 
-	h.exitLevels[tradeID] = exitLevel{
-		Symbol:   symbol,
-		Side:     "buy",
-		StopLoss: decimal.NewFromFloat(49_500), // current price (49_000) is below this
-	}
+	h.TestSetExitLevel(tradeID, symbol, "buy", decimal.NewFromFloat(49_500), decimal.Zero, nil, "") // current price (49_000) is below this
 	return h, rt
 }
 
@@ -67,7 +69,7 @@ func TestCheckExits_TagsStopLoss(t *testing.T) {
 	const symbol = "BTCUSDT"
 	h, _ := buildCheckExitsHand(t, symbol)
 
-	h.checkExits()
+	h.TestCheckExits()
 
 	select {
 	case sig := <-h.Signals:
@@ -93,24 +95,24 @@ func TestCheckExits_MultiLegSameSymbol_AttributesCorrectLeg(t *testing.T) {
 	const symbol = "BTCUSDT"
 	pf := portfolio.New(decimal.NewFromFloat(10_000))
 	rm := risk.New(risk.DefaultConfig(), pf)
-	rt := NewHelmRuntime(uuid.New(), uuid.New(), uuid.New(), "test", pf, rm, nil, exchange.Credentials{}, nil, time.Now())
+	rt := actor.NewHelmRuntime(uuid.New(), uuid.New(), uuid.New(), "test", pf, rm, nil, exchange.Credentials{}, nil, time.Now())
 	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(49_000)) // below leg-1's SL; above leg-2's SL
 
 	strat := strategy.NewSignalFollower(0.3)
 	tact := tactics.New(tactics.DefaultSizingConfig())
-	h := NewHand(uuid.New(), rt.HelmID, rt, strat, tact, false, 2, 10*time.Second,
+	h := signalfollower.NewHand(uuid.New(), rt.HelmID, rt, strat, tact, false, 2, 10*time.Second,
 		nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
 	h.Symbol = symbol
 
 	seedLeg := func(tradeID string) {
 		placed := poslog.OrderPlacedPayload{OrderID: tradeID, Symbol: symbol, Side: "buy", Qty: "0.01", Price: "50000", OrderType: "market"}
 		placedPayload, _ := json.Marshal(placed)
-		if err := h.pos.Apply(poslog.Event{ID: tradeID, TradeID: tradeID, Kind: poslog.KindOrderPlaced, Payload: placedPayload, At: time.Now()}); err != nil {
+		if err := h.TestSeedPoslogEvent(poslog.Event{ID: tradeID, TradeID: tradeID, Kind: poslog.KindOrderPlaced, Payload: placedPayload, At: time.Now()}); err != nil {
 			t.Fatalf("seed KindOrderPlaced(%s): %v", tradeID, err)
 		}
 		filled := poslog.OrderFilledPayload{OrderID: tradeID, FillPrice: "50000", FillQty: "0.01", Source: "ws"}
 		filledPayload, _ := json.Marshal(filled)
-		if err := h.pos.Apply(poslog.Event{ID: tradeID + "_filled", TradeID: tradeID, Kind: poslog.KindOrderFilled, Payload: filledPayload, At: time.Now()}); err != nil {
+		if err := h.TestSeedPoslogEvent(poslog.Event{ID: tradeID + "_filled", TradeID: tradeID, Kind: poslog.KindOrderFilled, Payload: filledPayload, At: time.Now()}); err != nil {
 			t.Fatalf("seed KindOrderFilled(%s): %v", tradeID, err)
 		}
 	}
@@ -120,10 +122,10 @@ func TestCheckExits_MultiLegSameSymbol_AttributesCorrectLeg(t *testing.T) {
 	// leg-1's SL is above the current price (49_000) — triggers.
 	// leg-2's SL is below the current price — must NOT trigger, and must survive
 	// leg-1's exit untouched (this is the exact collision the old symbol key had).
-	h.exitLevels["leg-1"] = exitLevel{Symbol: symbol, Side: "buy", StopLoss: decimal.NewFromFloat(49_500)}
-	h.exitLevels["leg-2"] = exitLevel{Symbol: symbol, Side: "buy", StopLoss: decimal.NewFromFloat(48_500)}
+	h.TestSetExitLevel("leg-1", symbol, "buy", decimal.NewFromFloat(49_500), decimal.Zero, nil, "")
+	h.TestSetExitLevel("leg-2", symbol, "buy", decimal.NewFromFloat(48_500), decimal.Zero, nil, "")
 
-	h.checkExits()
+	h.TestCheckExits()
 
 	select {
 	case sig := <-h.Signals:
@@ -137,16 +139,14 @@ func TestCheckExits_MultiLegSameSymbol_AttributesCorrectLeg(t *testing.T) {
 		t.Fatal("expected checkExits to deliver a signal for leg-1")
 	}
 
-	h.mu.RLock()
-	leg2, ok := h.exitLevels["leg-2"]
-	h.mu.RUnlock()
+	leg2SL, ok := h.TestExitLevel("leg-2")
 	if !ok {
 		t.Fatal("leg-2's exitLevels entry was removed — collision with leg-1's trigger")
 	}
-	if !leg2.StopLoss.Equal(decimal.NewFromFloat(48_500)) {
-		t.Errorf("leg-2's exitLevels entry was corrupted: stop_loss = %s, want 48500", leg2.StopLoss)
+	if !leg2SL.Equal(decimal.NewFromFloat(48_500)) {
+		t.Errorf("leg-2's exitLevels entry was corrupted: stop_loss = %s, want 48500", leg2SL)
 	}
-	if _, stillThere := h.exitLevels["leg-1"]; stillThere {
+	if _, stillThere := h.TestExitLevel("leg-1"); stillThere {
 		t.Error("leg-1's exitLevels entry should have been deleted after triggering")
 	}
 }
@@ -227,22 +227,17 @@ func (c *plainCancelExchange) CancelOrder(_ context.Context, _ exchange.Credenti
 	return nil
 }
 
-func buildCancelTestHand(t *testing.T, ex exchange.Exchange, tradeID, symbol, groupID string) *Hand {
+func buildCancelTestHand(t *testing.T, ex exchange.Exchange, tradeID, symbol, groupID string) *signalfollower.Hand {
 	t.Helper()
 	pf := portfolio.New(decimal.NewFromFloat(10_000))
 	rm := risk.New(risk.DefaultConfig(), pf)
-	rt := NewHelmRuntime(uuid.New(), uuid.New(), uuid.New(), "test", pf, rm, ex, exchange.Credentials{}, nil, time.Now())
+	rt := actor.NewHelmRuntime(uuid.New(), uuid.New(), uuid.New(), "test", pf, rm, ex, exchange.Credentials{}, nil, time.Now())
 	strat := strategy.NewSignalFollower(0.3)
 	tact := tactics.New(tactics.DefaultSizingConfig())
-	h := NewHand(uuid.New(), rt.HelmID, rt, strat, tact, false, 1, 10*time.Second,
+	h := signalfollower.NewHand(uuid.New(), rt.HelmID, rt, strat, tact, false, 1, 10*time.Second,
 		nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
 	h.Symbol = symbol
-	h.exitLevels[tradeID] = exitLevel{
-		Symbol:           symbol,
-		Side:             "buy",
-		ExchangeOrderIDs: []string{"order-1", "order-2"},
-		GroupID:          groupID,
-	}
+	h.TestSetExitLevel(tradeID, symbol, "buy", decimal.Zero, decimal.Zero, []string{"order-1", "order-2"}, groupID)
 	return h
 }
 
@@ -250,9 +245,7 @@ func TestCancelExitOrders_PrefersGroupCancel(t *testing.T) {
 	fake := &cancelCallExchange{done: make(chan struct{})}
 	h := buildCancelTestHand(t, fake, "trade-1", "BTCUSDT", "group-1")
 
-	h.mu.Lock()
-	h.cancelExitOrders(context.Background(), "trade-1", "BTCUSDT", "")
-	h.mu.Unlock()
+	h.TestCancelExitOrders(context.Background(), "trade-1", "BTCUSDT", "")
 
 	select {
 	case <-fake.done:
@@ -274,9 +267,7 @@ func TestCancelExitOrders_FallsBackToPerID_WhenNoGroupID(t *testing.T) {
 	fake := &cancelCallExchange{done: make(chan struct{})}
 	h := buildCancelTestHand(t, fake, "trade-1", "BTCUSDT", "") // no GroupID
 
-	h.mu.Lock()
-	h.cancelExitOrders(context.Background(), "trade-1", "BTCUSDT", "")
-	h.mu.Unlock()
+	h.TestCancelExitOrders(context.Background(), "trade-1", "BTCUSDT", "")
 
 	select {
 	case <-fake.done:
@@ -306,9 +297,7 @@ func TestCancelExitOrders_FallsBackToPerID_WhenExchangeHasNoGroupCanceller(t *te
 	fake := &plainCancelExchange{done: make(chan struct{})}
 	h := buildCancelTestHand(t, fake, "trade-1", "BTCUSDT", "group-1")
 
-	h.mu.Lock()
-	h.cancelExitOrders(context.Background(), "trade-1", "BTCUSDT", "")
-	h.mu.Unlock()
+	h.TestCancelExitOrders(context.Background(), "trade-1", "BTCUSDT", "")
 
 	select {
 	case <-fake.done:

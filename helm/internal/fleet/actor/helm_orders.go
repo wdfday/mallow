@@ -1,7 +1,6 @@
 package actor
 
 import (
-	"encoding/json"
 	"sync"
 )
 
@@ -113,10 +112,6 @@ func (f *fillDedup) markFillPublished(orderID string) {
 	}
 	f.fills[orderID] = struct{}{}
 	f.fillsMu.Unlock()
-}
-
-func unmarshalJSON(b []byte, v any) error {
-	return json.Unmarshal(b, v)
 }
 
 // ── HelmRuntime order-routing methods ────────────────────────────────────────

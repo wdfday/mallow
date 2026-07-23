@@ -2,6 +2,7 @@ package actor
 
 import (
 	"mallow/helm/internal/fleet/actor/core/risk"
+	"mallow/helm/internal/fleet/actor/eventcode"
 	"mallow/helm/internal/infra/natsapi"
 )
 
@@ -48,7 +49,7 @@ func (r *HelmRuntime) Pause() []string {
 		}
 	}
 	r.pausedHands = wasRunning
-	r.EmitEvent(natsapi.HelmEvent{Code: CodeHelmPaused, Msg: "helm: Paused"})
+	r.EmitEvent(natsapi.HelmEvent{Code: eventcode.CodeHelmPaused, Msg: "helm: Paused"})
 	return wasRunning
 }
 
@@ -60,7 +61,7 @@ func (r *HelmRuntime) Resume() []string {
 	r.Paused = false
 	toRestart := r.pausedHands
 	r.pausedHands = nil
-	r.EmitEvent(natsapi.HelmEvent{Code: CodeHelmResumed, Msg: "helm: resumed"})
+	r.EmitEvent(natsapi.HelmEvent{Code: eventcode.CodeHelmResumed, Msg: "helm: resumed"})
 	return toRestart
 }
 
@@ -71,7 +72,7 @@ func (r *HelmRuntime) Resume() []string {
 // ResetHalt clears the risk-manager halt flag on this runtime.
 func (r *HelmRuntime) ResetHalt() {
 	r.RiskMgr.ResetHalt()
-	r.EmitEvent(natsapi.HelmEvent{Code: CodeHelmUnhalted, Msg: "helm: halt reset"})
+	r.EmitEvent(natsapi.HelmEvent{Code: eventcode.CodeHelmUnhalted, Msg: "helm: halt reset"})
 }
 
 // UpdateRiskConfig replaces the live risk parameters.

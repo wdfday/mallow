@@ -16,17 +16,19 @@ import (
 	"mallow/helm/internal/fleet/actor"
 	"mallow/helm/internal/fleet/actor/core/strategy"
 	"mallow/helm/internal/fleet/actor/core/tactics"
+	"mallow/helm/internal/fleet/actor/eventcode"
+	signalfollower "mallow/helm/internal/fleet/actor/signal-follower"
 	"mallow/helm/internal/module/hand/domain"
 )
 
 // addPyramidHand mirrors addSimHand but with pyramid (merge) mode enabled.
-func addPyramidHand(rt *actor.HelmRuntime, symbol string, qty float64, maxUnits int) *actor.Hand {
+func addPyramidHand(rt *actor.HelmRuntime, symbol string, qty float64, maxUnits int) *signalfollower.Hand {
 	strat := strategy.NewSignalFollower(0.3)
 	tact := tactics.New(tactics.SizingConfig{
 		Mode:     tactics.SizingFixedQty,
 		FixedQty: decimal.NewFromFloat(qty),
 	})
-	h := actor.NewHand(
+	h := signalfollower.NewHand(
 		uuid.New(), rt.HelmID, rt,
 		strat, tact,
 		true, maxUnits, 0, // pyramid=true
@@ -54,7 +56,7 @@ func TestPyramid_AvgGate_AddsOnWinnerBlocksOnLoser(t *testing.T) {
 	// 1) First entry @ 100 → opens the leg (avg = 100).
 	ch := h.Subscribe(64)
 	h.DeliverSignal(longSignalFor(symbol))
-	mustWaitCodeCh(t, ch, actor.CodeOrderFilled, simWait)
+	mustWaitCodeCh(t, ch, eventcode.CodeOrderFilled, simWait)
 	if sim.placedCount() != 1 {
 		t.Fatalf("want 1 order after first entry, got %d", sim.placedCount())
 	}
@@ -63,7 +65,7 @@ func TestPyramid_AvgGate_AddsOnWinnerBlocksOnLoser(t *testing.T) {
 	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(105))
 	ch = h.Subscribe(64)
 	h.DeliverSignal(longSignalFor(symbol))
-	mustWaitCodeCh(t, ch, actor.CodeOrderFilled, simWait)
+	mustWaitCodeCh(t, ch, eventcode.CodeOrderFilled, simWait)
 	if sim.placedCount() != 2 {
 		t.Fatalf("want 2 orders after winning add, got %d", sim.placedCount())
 	}
@@ -72,8 +74,8 @@ func TestPyramid_AvgGate_AddsOnWinnerBlocksOnLoser(t *testing.T) {
 	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(95))
 	ch = h.Subscribe(64)
 	h.DeliverSignal(longSignalFor(symbol))
-	mustWaitCodeCh(t, ch, actor.CodeSignalDoNothing, simWait) // pyramid gate fires
-	noCode(t, h, actor.CodeOrderPlaced, simWait)
+	mustWaitCodeCh(t, ch, eventcode.CodeSignalDoNothing, simWait) // pyramid gate fires
+	noCode(t, h, eventcode.CodeOrderPlaced, simWait)
 	if sim.placedCount() != 2 {
 		t.Errorf("pyramid gate must block a losing add; want 2 orders, got %d", sim.placedCount())
 	}
@@ -82,7 +84,7 @@ func TestPyramid_AvgGate_AddsOnWinnerBlocksOnLoser(t *testing.T) {
 	rt.MarketData.SetPrice(symbol, decimal.NewFromFloat(101))
 	ch = h.Subscribe(64)
 	h.DeliverSignal(longSignalFor(symbol))
-	mustWaitCodeCh(t, ch, actor.CodeOrderFilled, simWait)
+	mustWaitCodeCh(t, ch, eventcode.CodeOrderFilled, simWait)
 	if sim.placedCount() != 3 {
 		t.Errorf("want 3 orders after price recovers above avg, got %d", sim.placedCount())
 	}

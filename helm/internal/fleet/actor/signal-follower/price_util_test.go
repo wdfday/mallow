@@ -1,4 +1,4 @@
-package actor
+package signalfollower
 
 import (
 	"testing"
@@ -31,12 +31,12 @@ func TestTruncateQty(t *testing.T) {
 		qty, _ := decimal.NewFromString(tc.rawQty)
 		filters := exchange.SymbolFilters{QtyStep: step}
 
-		got := truncateQty(filters, qty)
+		got := TruncateQty(filters, qty)
 		ok := got.String() == tc.want
 		mark := "✅"
 		if !ok {
 			mark = "❌"
-			t.Errorf("truncateQty [%s] step=%s qty=%s: got %s, want %s",
+			t.Errorf("TruncateQty [%s] step=%s qty=%s: got %s, want %s",
 				tc.symbol, tc.rawStep, tc.rawQty, got, tc.want)
 		}
 

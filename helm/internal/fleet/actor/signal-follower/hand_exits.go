@@ -1,10 +1,11 @@
-package actor
+package signalfollower
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
 	"mallow/helm/internal/fleet/actor/core/strategy"
+	"mallow/helm/internal/fleet/actor/eventcode"
 	"mallow/helm/internal/fleet/actor/position"
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/journal/poslog"
@@ -48,7 +49,7 @@ func (h *Hand) cancelExitOrders(_ context.Context, tradeID string, symbol string
 	}
 
 	groupID := lv.GroupID
-	groupCanceller, hasGroupCanceller := h.helmRuntime.Exchange.(exchange.ExitOrderGroupCanceller)
+	groupCanceller, hasGroupCanceller := h.helm.GetExchange().(exchange.ExitOrderGroupCanceller)
 	market := exchange.MarketSpot
 	if h.cfg.isFutures {
 		market = exchange.MarketFutures
@@ -66,11 +67,11 @@ func (h *Hand) cancelExitOrders(_ context.Context, tradeID string, symbol string
 			// means once one leg fires — OKX's bracket IS one algo id (nothing to
 			// skip), and Binance's OCO already auto-cancels the sibling leg when one
 			// fills, so this call is idempotent by design, not a race.
-			if err := groupCanceller.CancelExitOrderGroup(cancelCtx, h.helmRuntime.Creds, symbol, market, groupID); err != nil {
+			if err := groupCanceller.CancelExitOrderGroup(cancelCtx, h.helm.GetCreds(), symbol, market, groupID); err != nil {
 				h.log.Error("hand: cancel exit order group failed", "symbol", symbol, "group_id", groupID, "err", err)
-				h.helmRuntime.EmitEvent(natsapi.HelmEvent{
+				h.helm.EmitEvent(natsapi.HelmEvent{
 					HandID: h.id.String(),
-					Code:   CodeOrderExitFailed,
+					Code:   eventcode.CodeOrderExitFailed,
 					Symbol: symbol,
 					Reason: fmt.Sprintf("cancel bracket group %s failed: %s", groupID, err),
 					Msg:    "hand: cancel exit order group FAILED — bracket may still be live at the exchange",
@@ -89,7 +90,7 @@ func (h *Hand) cancelExitOrders(_ context.Context, tradeID string, symbol string
 		// to the caller or the activity feed that a leg may still be live).
 		var failed []string
 		for _, id := range ids {
-			if err := h.helmRuntime.Exchange.CancelOrder(cancelCtx, h.helmRuntime.Creds, id); err != nil {
+			if err := h.helm.GetExchange().CancelOrder(cancelCtx, h.helm.GetCreds(), id); err != nil {
 				h.log.Warn("hand: cancel exit order failed", "symbol", symbol, "order_id", id, "err", err)
 				failed = append(failed, id)
 			} else {
@@ -99,9 +100,9 @@ func (h *Hand) cancelExitOrders(_ context.Context, tradeID string, symbol string
 		if len(failed) > 0 {
 			h.log.Error("hand: cancel exit orders incomplete — some legs may still be live",
 				"symbol", symbol, "failed_order_ids", failed)
-			h.helmRuntime.EmitEvent(natsapi.HelmEvent{
+			h.helm.EmitEvent(natsapi.HelmEvent{
 				HandID: h.id.String(),
-				Code:   CodeOrderExitFailed,
+				Code:   eventcode.CodeOrderExitFailed,
 				Symbol: symbol,
 				Reason: fmt.Sprintf("cancel failed for order ids: %v", failed),
 				Msg:    "hand: cancel exit orders incomplete — bracket may still be partially live at the exchange",
@@ -121,7 +122,7 @@ func (h *Hand) flattenPositions(ctx context.Context) []string {
 	for _, leg := range h.pos.ActiveLegs() {
 		if leg.Phase == position.PhaseEntering {
 			h.log.Info("hand: kill flattening pending entry order", "symbol", leg.Symbol, "order_id", leg.PendingOrderID)
-			if err := h.helmRuntime.Exchange.CancelOrder(ctx, h.helmRuntime.Creds, leg.PendingOrderID); err != nil {
+			if err := h.helm.GetExchange().CancelOrder(ctx, h.helm.GetCreds(), leg.PendingOrderID); err != nil {
 				h.log.Error("hand: kill cancel pending entry order failed", "symbol", leg.Symbol, "order_id", leg.PendingOrderID, "err", err)
 			}
 
@@ -143,7 +144,7 @@ func (h *Hand) flattenPositions(ctx context.Context) []string {
 
 		if leg.Phase == position.PhaseAdding {
 			h.log.Info("hand: kill flattening pending add order", "symbol", leg.Symbol, "order_id", leg.PendingOrderID)
-			if err := h.helmRuntime.Exchange.CancelOrder(ctx, h.helmRuntime.Creds, leg.PendingOrderID); err != nil {
+			if err := h.helm.GetExchange().CancelOrder(ctx, h.helm.GetCreds(), leg.PendingOrderID); err != nil {
 				h.log.Error("hand: kill cancel pending add order failed", "symbol", leg.Symbol, "order_id", leg.PendingOrderID, "err", err)
 			}
 
@@ -177,7 +178,7 @@ func (h *Hand) flattenPositions(ctx context.Context) []string {
 
 		for _, id := range exitOrderIDs {
 			h.log.Info("hand: kill flattening cancelling exit order", "symbol", leg.Symbol, "order_id", id)
-			if err := h.helmRuntime.Exchange.CancelOrder(ctx, h.helmRuntime.Creds, id); err != nil {
+			if err := h.helm.GetExchange().CancelOrder(ctx, h.helm.GetCreds(), id); err != nil {
 				h.log.Error("hand: kill cancel exit order failed", "symbol", leg.Symbol, "order_id", id, "err", err)
 			}
 		}
@@ -193,14 +194,14 @@ func (h *Hand) flattenPositions(ctx context.Context) []string {
 		// Truncate to 4 decimal places to avoid filter rejection on kill flatten.
 		// Futures use ReduceOnly and manage precision differently — skip truncation.
 		if !h.cfg.isFutures {
-			qty = truncateQty(h.helmRuntime.filtersFor(ctx, leg.Symbol), qty)
+			qty = TruncateQty(h.helm.FiltersFor(ctx, leg.Symbol), qty)
 		}
 		if qty.IsZero() {
 			h.log.Info("hand: kill flatten qty rounds to zero — dust exit (no exchange order)",
 				"symbol", leg.Symbol, "original_qty", leg.Qty.Abs())
 			continue
 		}
-		result, err := h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, exchange.OrderRequest{
+		result, err := h.helm.GetExchange().PlaceOrder(ctx, h.helm.GetCreds(), exchange.OrderRequest{
 			Symbol: leg.Symbol,
 			Side:   closeSide,
 			Type:   exchange.Market,
@@ -213,8 +214,8 @@ func (h *Hand) flattenPositions(ctx context.Context) []string {
 		h.log.Info("hand: kill flatten order placed", "symbol", leg.Symbol,
 			"side", closeSide, "qty", qty, "order_id", result.ID)
 		h.metrics.ordersPlaced.Add(1)
-		h.emitEvent(natsapi.HelmEvent{
-			Code:    CodeOrderPlaced,
+		h.EmitEvent(natsapi.HelmEvent{
+			Code:    eventcode.CodeOrderPlaced,
 			Symbol:  leg.Symbol,
 			Side:    string(closeSide),
 			Qty:     qty,
@@ -435,15 +436,15 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 
 		switch preCancelPhase {
 		case position.PhaseEntering:
-			h.emitEvent(natsapi.HelmEvent{
-				Code:    CodePositionEnterCancelled,
+			h.EmitEvent(natsapi.HelmEvent{
+				Code:    eventcode.CodePositionEnterCancelled,
 				OrderID: orderID,
 				Reason:  "ws_cancel",
 				Msg:     "position: entry order cancelled externally — no position opened",
 			})
 		case position.PhaseAdding:
-			h.emitEvent(natsapi.HelmEvent{
-				Code:    CodePositionAddCancelled,
+			h.EmitEvent(natsapi.HelmEvent{
+				Code:    eventcode.CodePositionAddCancelled,
 				OrderID: orderID,
 				Reason:  "ws_cancel",
 				Msg:     "position: add order cancelled externally — position reverts to prior state",
@@ -457,8 +458,8 @@ func (h *Hand) HandleExitOrderCanceled(ctx context.Context, orderID string) {
 		"order_id", orderID,
 		"position_id", affectedLeg.TradeID,
 	)
-	h.emitEvent(natsapi.HelmEvent{
-		Code:   CodePositionExtClosed,
+	h.EmitEvent(natsapi.HelmEvent{
+		Code:   eventcode.CodePositionExtClosed,
 		Symbol: affectedSymbol,
 		Reason: fmt.Sprintf("bracket order %s cancelled by exchange (not helm-initiated)", orderID),
 		Msg:    "hand: position externally closed — user manual exit detected",
@@ -521,8 +522,8 @@ func (h *Hand) rearmLocalExit(tradeID, symbol string) {
 	h.mu.Unlock()
 	h.log.Warn("hand: exit failed — exchange OCO cancelled, local SL/TP monitor re-armed",
 		"symbol", symbol, "stop_loss", el.StopLoss, "take_profit", el.TakeProfit)
-	h.emitEvent(natsapi.HelmEvent{
-		Code:   CodeOrderExitFailed,
+	h.EmitEvent(natsapi.HelmEvent{
+		Code:   eventcode.CodeOrderExitFailed,
 		Symbol: symbol,
 		Reason: "exit order failed; exchange OCO cancelled — local SL/TP monitor re-armed",
 		Msg:    "hand: exit failed — local SL/TP now guarding the open position",
@@ -541,8 +542,8 @@ func (h *Hand) orphanLegsForSymbol(ctx context.Context, symbol, source string) {
 		if leg.Symbol != symbol {
 			continue
 		}
-		h.emitEvent(natsapi.HelmEvent{
-			Code:   CodePositionExtClosed,
+		h.EmitEvent(natsapi.HelmEvent{
+			Code:   eventcode.CodePositionExtClosed,
 			Symbol: symbol,
 			Reason: "could not cleanly exit — leg orphaned (" + source + ")",
 			Msg:    "hand: position orphaned — audit trade record written (pnl=0)",
@@ -579,7 +580,7 @@ func (h *Hand) releasePositions(ctx context.Context) {
 			closeSide = "buy"
 		}
 		qty := leg.Qty.Abs()
-		price := h.helmRuntime.lastKnownPrice(leg.Symbol)
+		price := h.helm.LastKnownPrice(leg.Symbol)
 
 		releaseID := fmt.Sprintf("release_%s_%d", leg.Symbol, time.Now().UnixNano())
 
@@ -645,7 +646,7 @@ func (h *Hand) checkExits() {
 
 	for tid, el := range exits {
 		sym := el.Symbol
-		price := h.helmRuntime.lastKnownPrice(sym)
+		price := h.helm.LastKnownPrice(sym)
 		if !price.IsPositive() {
 			continue
 		}
@@ -682,8 +683,8 @@ func (h *Hand) checkExits() {
 			h.mu.Unlock()
 			h.log.Warn("exit monitor: hand flat but exitLevels present — external close detected, stopping hand",
 				"symbol", sym)
-			h.emitEvent(natsapi.HelmEvent{
-				Code:   CodeHandAutoStopped,
+			h.EmitEvent(natsapi.HelmEvent{
+				Code:   eventcode.CodeHandAutoStopped,
 				Symbol: sym,
 				Reason: "external close detected: hand flat but local exit level present",
 				Msg:    "hand: auto-stopped due to position desync",
@@ -705,8 +706,8 @@ func (h *Hand) checkExits() {
 			"reason", kind, "price", price,
 			"stop_loss", el.StopLoss, "take_profit", el.TakeProfit)
 
-		h.emitEvent(natsapi.HelmEvent{
-			Code:      CodeOrderExitTriggered,
+		h.EmitEvent(natsapi.HelmEvent{
+			Code:      eventcode.CodeOrderExitTriggered,
 			Symbol:    sym,
 			Direction: string(strategy.DirExit),
 			Price:     price,
@@ -782,7 +783,7 @@ func (h *Hand) fetchBracketStates(ctx context.Context) []bracketState {
 	h.mu.RUnlock()
 
 	for i := range checks {
-		checks[i].result, checks[i].err = h.helmRuntime.Exchange.GetOrder(ctx, h.helmRuntime.Creds, checks[i].id)
+		checks[i].result, checks[i].err = h.helm.GetExchange().GetOrder(ctx, h.helm.GetCreds(), checks[i].id)
 	}
 	return checks
 }
@@ -953,8 +954,8 @@ func (h *Hand) handlePositionDesync(ctx context.Context, leg *position.LegState)
 		"symbol", leg.Symbol, "position_id", leg.TradeID,
 		"leg_qty", legQty,
 	)
-	h.emitEvent(natsapi.HelmEvent{
-		Code:   CodePositionExtClosed,
+	h.EmitEvent(natsapi.HelmEvent{
+		Code:   eventcode.CodePositionExtClosed,
 		Symbol: leg.Symbol,
 		Reason: "position externally closed — detected via portfolio desync",
 		Msg:    "hand: position externally closed — detected via portfolio desync",
@@ -966,9 +967,9 @@ func (h *Hand) handlePositionDesync(ctx context.Context, leg *position.LegState)
 	// same "we don't actually know what happened" situation as the external-close branch
 	// in HandleExitOrderCanceled and orphanLegsForSymbol. Those two correctly emit
 	// KindPositionOrphaned with no claimed PnL; this one used to emit KindPositionClosed
-	// with a PnL guessed from lastKnownPrice (never a real fill price) and feed it into
+	// with a PnL guessed from LastKnownPrice (never a real fill price) and feed it into
 	// appendTradeRecord — a fabricated number counted into win-rate/Sharpe like a genuine
-	// trade. Same underlying event (CodePositionExtClosed), inconsistent treatment. Fixed
+	// trade. Same underlying event (eventcode.CodePositionExtClosed), inconsistent treatment. Fixed
 	// 2026-07-10 to match the other two: KindPositionOrphaned + appendOrphanTradeRecord.
 	payload, _ := json.Marshal(poslog.PositionOrphanedPayload{Symbol: leg.Symbol, Source: "desync"})
 	h.publishAndApply(ctx, poslog.Event{
@@ -1035,7 +1036,7 @@ func (h *Hand) closeLegAsDust(ctx context.Context, symbol, side string, qty, pri
 	// Remove routing for bracket IDs off the actor loop — prevents the orphan
 	// path from double-applying their fills after this synthetic close.
 	for _, id := range bracketIDs {
-		h.helmRuntime.RemoveOrderTracking(id)
+		h.helm.RemoveOrderTracking(id)
 	}
 
 	// Transition leg to PhaseExiting so applyFill detects isClosingFill.

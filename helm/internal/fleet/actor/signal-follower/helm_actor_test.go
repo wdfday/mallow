@@ -1,10 +1,11 @@
-package actor
+package signalfollower_test
 
 // HelmRuntime trade-actor tests: verifies the actor conversion (helm_actor.go)
 // correctly serializes leverage across hands and computes proportional fee
-// attribution, without touching the mutex it replaced. package actor (not
-// actor_test) so seeding a hand's position can use h.pos.Apply directly,
-// mirroring hand_exits_internal_test.go's precedent for this kind of setup.
+// attribution, without touching the mutex it replaced. package actor_test
+// (external) since Hand now lives in package signalfollower; seeding a
+// hand's position goes through the TestSeedPoslogEvent export_test.go hook
+// instead of touching h.pos directly.
 
 import (
 	"context"
@@ -17,10 +18,13 @@ import (
 	"github.com/google/uuid"
 	"github.com/shopspring/decimal"
 
+	"mallow/helm/internal/fleet/actor"
 	"mallow/helm/internal/fleet/actor/core/portfolio"
 	"mallow/helm/internal/fleet/actor/core/risk"
 	"mallow/helm/internal/fleet/actor/core/strategy"
 	"mallow/helm/internal/fleet/actor/core/tactics"
+	"mallow/helm/internal/fleet/actor/eventcode"
+	signalfollower "mallow/helm/internal/fleet/actor/signal-follower"
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/journal/poslog"
 	"mallow/helm/internal/infra/natsapi"
@@ -66,7 +70,7 @@ func TestEnsureLeverage_CrossHandRace(t *testing.T) {
 	ex := &leverageCallExchange{}
 	pf := portfolio.New(decimal.NewFromFloat(10_000))
 	rm := risk.New(risk.DefaultConfig(), pf)
-	rt := NewHelmRuntime(uuid.New(), uuid.New(), uuid.New(), "test", pf, rm, ex, exchange.Credentials{}, nil, time.Now())
+	rt := actor.NewHelmRuntime(uuid.New(), uuid.New(), uuid.New(), "test", pf, rm, ex, exchange.Credentials{}, nil, time.Now())
 
 	ctx := context.Background()
 	// Hand A and Hand B both configured for 10x isolated on the same symbol —
@@ -91,26 +95,26 @@ func TestEnsureLeverage_CrossHandRace(t *testing.T) {
 // symbol (poslog-seeded, same mechanism as hand_exits_internal_test.go's
 // buildCheckExitsHand), subscribed to its own event bus so the test can observe
 // CodeFeeAttributed. qty.IsZero() leaves the hand flat (no leg at all).
-func feeAttributionHand(t *testing.T, rt *HelmRuntime, symbol string, qty decimal.Decimal) *Hand {
+func feeAttributionHand(t *testing.T, rt *actor.HelmRuntime, symbol string, qty decimal.Decimal) *signalfollower.Hand {
 	t.Helper()
 	strat := strategy.NewSignalFollower(0.3)
 	tact := tactics.New(tactics.DefaultSizingConfig())
-	h := NewHand(uuid.New(), rt.HelmID, rt, strat, tact, false, 1, 0,
+	h := signalfollower.NewHand(uuid.New(), rt.HelmID, rt, strat, tact, false, 1, 0,
 		nil, domain.OrderTypeMarket, 0, "", domain.HandGuardConfig{}, decimal.Zero)
 	h.Symbol = symbol
 	h.EnableEventSink()
 	rt.AddHand(h, &domain.Hand{ID: h.ID(), HelmID: rt.HelmID, Symbols: domain.StringSlice{symbol}})
 
 	if qty.IsPositive() {
-		tradeID := "seed-" + h.id.String()
+		tradeID := "seed-" + h.ID().String()
 		placed, _ := json.Marshal(poslog.OrderPlacedPayload{
 			OrderID: tradeID, Symbol: symbol, Side: "buy", Qty: qty.String(), Price: "50000", OrderType: "market",
 		})
-		if err := h.pos.Apply(poslog.Event{ID: tradeID, TradeID: tradeID, Kind: poslog.KindOrderPlaced, Payload: placed, At: time.Now()}); err != nil {
+		if err := h.TestSeedPoslogEvent(poslog.Event{ID: tradeID, TradeID: tradeID, Kind: poslog.KindOrderPlaced, Payload: placed, At: time.Now()}); err != nil {
 			t.Fatalf("seed KindOrderPlaced: %v", err)
 		}
 		filled, _ := json.Marshal(poslog.OrderFilledPayload{OrderID: tradeID, FillPrice: "50000", FillQty: qty.String(), Source: "ws"})
-		if err := h.pos.Apply(poslog.Event{ID: tradeID + "_filled", TradeID: tradeID, Kind: poslog.KindOrderFilled, Payload: filled, At: time.Now()}); err != nil {
+		if err := h.TestSeedPoslogEvent(poslog.Event{ID: tradeID + "_filled", TradeID: tradeID, Kind: poslog.KindOrderFilled, Payload: filled, At: time.Now()}); err != nil {
 			t.Fatalf("seed KindOrderFilled: %v", err)
 		}
 	}
@@ -125,7 +129,7 @@ func TestReportFeeEvent_ProportionalAttribution(t *testing.T) {
 	const symbol = "BTCUSDT"
 	pf := portfolio.New(decimal.NewFromFloat(10_000))
 	rm := risk.New(risk.DefaultConfig(), pf)
-	rt := NewHelmRuntime(uuid.New(), uuid.New(), uuid.New(), "test", pf, rm, nil, exchange.Credentials{}, nil, time.Now())
+	rt := actor.NewHelmRuntime(uuid.New(), uuid.New(), uuid.New(), "test", pf, rm, nil, exchange.Credentials{}, nil, time.Now())
 
 	hA := feeAttributionHand(t, rt, symbol, decimal.NewFromFloat(3)) // 3/4 share
 	hB := feeAttributionHand(t, rt, symbol, decimal.NewFromFloat(1)) // 1/4 share
@@ -135,7 +139,7 @@ func TestReportFeeEvent_ProportionalAttribution(t *testing.T) {
 	evB := hB.Subscribe(8)
 	evFlat := hFlat.Subscribe(8)
 
-	rt.ReportFeeEvent(FeeEvent{Kind: "funding", Symbol: symbol, Amount: decimal.NewFromFloat(-8)})
+	rt.ReportFeeEvent(actor.FeeEvent{Kind: "funding", Symbol: symbol, Amount: decimal.NewFromFloat(-8)})
 
 	gotA := waitFeeAttributed(t, evA)
 	gotB := waitFeeAttributed(t, evB)
@@ -160,7 +164,7 @@ func waitFeeAttributed(t *testing.T, ch <-chan natsapi.HelmEvent) decimal.Decima
 	t.Helper()
 	select {
 	case ev := <-ch:
-		if ev.Code != CodeFeeAttributed {
+		if ev.Code != eventcode.CodeFeeAttributed {
 			t.Fatalf("expected CodeFeeAttributed, got code %d", ev.Code)
 		}
 		// Reason is "kind=<kind> amount=<amount>" (see applyFeeEvent) — split on the

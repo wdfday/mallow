@@ -18,10 +18,12 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"mallow/helm/internal/fleet/actor/eventcode"
 
 	"github.com/shopspring/decimal"
 
 	"mallow/helm/internal/fleet/actor/core/tactics"
+	signalfollower "mallow/helm/internal/fleet/actor/signal-follower"
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/natsapi"
 	handdomain "mallow/helm/internal/module/hand/domain"
@@ -33,7 +35,7 @@ import (
 // on a per-request channel — request/reply, unlike the fire-and-forget queues
 // used for fills/lifecycle events, because the caller needs the sizing decision.
 type tradeRequest struct {
-	proposal TradeProposal
+	proposal signalfollower.TradeProposal
 	tact     tactics.Planner
 	reply    chan helmdomain.TradeReply
 }
@@ -85,7 +87,7 @@ func (r *HelmRuntime) runTradeActor(ctx context.Context) {
 // ProcessTrade validates a trade against account-level guards and sizes via the
 // hand's tactician. Thin wrapper: the real logic lives in processTrade, run only
 // on the trade actor goroutine. Blocks until the actor replies or ctx is done.
-func (r *HelmRuntime) ProcessTrade(ctx context.Context, proposal TradeProposal, tact tactics.Planner) helmdomain.TradeReply {
+func (r *HelmRuntime) ProcessTrade(ctx context.Context, proposal signalfollower.TradeProposal, tact tactics.Planner) helmdomain.TradeReply {
 	req := &tradeRequest{proposal: proposal, tact: tact, reply: make(chan helmdomain.TradeReply, 1)}
 	select {
 	case r.tradeReqCh <- req:
@@ -174,7 +176,7 @@ func (r *HelmRuntime) ensureLeverage(ctx context.Context, symbol string, futures
 	slog.Info("helm: leverage set", "helm_id", r.HelmID, "symbol", symbol,
 		"leverage", futures.Leverage, "margin_type", marginType)
 	r.EmitEvent(natsapi.HelmEvent{
-		Code:   CodeHandLeverageSet,
+		Code:   eventcode.CodeHandLeverageSet,
 		Symbol: symbol,
 		Reason: fmt.Sprintf("leverage=%d margin_type=%s", futures.Leverage, marginType),
 		Msg:    "helm: leverage & margin configured",
@@ -204,13 +206,13 @@ func (r *HelmRuntime) feeSplit(ev FeeEvent) map[string]decimal.Decimal {
 	total := decimal.Zero
 	for _, e := range entries {
 		var handQty decimal.Decimal
-		for _, leg := range e.h.pos.ActiveLegs() {
+		for _, leg := range e.h.ActiveLegs() {
 			if leg.Symbol == ev.Symbol {
 				handQty = handQty.Add(leg.Qty.Abs())
 			}
 		}
 		if handQty.IsPositive() {
-			qtyByHand[e.h.id.String()] = handQty
+			qtyByHand[e.h.ID().String()] = handQty
 			total = total.Add(handQty)
 		}
 	}
@@ -234,12 +236,12 @@ func (r *HelmRuntime) applyFeeEvent(ev FeeEvent) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	for _, e := range r.hands {
-		share, ok := shares[e.h.id.String()]
+		share, ok := shares[e.h.ID().String()]
 		if !ok {
 			continue
 		}
-		e.h.emitEvent(natsapi.HelmEvent{
-			Code:   CodeFeeAttributed,
+		e.h.EmitEvent(natsapi.HelmEvent{
+			Code:   eventcode.CodeFeeAttributed,
 			Symbol: ev.Symbol,
 			Reason: fmt.Sprintf("kind=%s amount=%s", ev.Kind, share),
 			Msg:    "helm: fee event attributed to hand",

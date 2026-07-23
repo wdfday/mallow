@@ -1,9 +1,10 @@
-package actor
+package signalfollower
 
 import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"mallow/helm/internal/fleet/actor/eventcode"
 	"time"
 
 	"github.com/google/uuid"
@@ -21,7 +22,7 @@ import (
 // NewHand creates a Hand. Call Start() to spawn its run-loop goroutine.
 func NewHand(
 	id, helmID uuid.UUID,
-	rt *HelmRuntime,
+	rt HelmPort,
 	strat strategy.Strategy,
 	tact tactics.Planner,
 	pyramid bool,
@@ -42,13 +43,13 @@ func NewHand(
 		ring = make([]decimal.Decimal, edgeRisk.WindowTrades)
 	}
 	return &Hand{
-		id:          id,
-		helmID:      helmID,
-		log:         slog.With("hand_id", id.String(), "helm_id", helmID.String()),
-		helmRuntime: rt,
-		strategy:    strat,
-		tactician:   tact,
-		limiter:     rate.NewLimiter(rate.Every(1*time.Second), 5),
+		id:        id,
+		helmID:    helmID,
+		log:       slog.With("hand_id", id.String(), "helm_id", helmID.String()),
+		helm:      rt,
+		strategy:  strat,
+		tactician: tact,
+		limiter:   rate.NewLimiter(rate.Every(1*time.Second), 5),
 		cfg: handConfig{
 			pyramid:         pyramid,
 			maxUnits:        maxUnits,
@@ -143,7 +144,7 @@ func (h *Hand) restorePosition(hp *position.HandPositions, currentPrice decimal.
 
 	// Restore each active leg into the portfolio without generating new orders.
 	for _, leg := range hp.ActiveLegs() {
-		h.helmRuntime.Portfolio.RestorePosition(leg.Symbol, leg.Side, leg.Qty, leg.EntryPrice, currentPrice, leg.DeployedCapital, leg.OpenedAt)
+		h.helm.GetPortfolio().RestorePosition(leg.Symbol, leg.Side, leg.Qty, leg.EntryPrice, currentPrice, leg.DeployedCapital, leg.OpenedAt)
 	}
 
 	h.mu.Lock()
@@ -158,7 +159,7 @@ func (h *Hand) restorePosition(hp *position.HandPositions, currentPrice decimal.
 	for _, leg := range hp.ActiveLegs() {
 		if leg.HasPendingOrder() {
 			h.pendingOrderPos[leg.PendingOrderID] = leg.TradeID
-			h.helmRuntime.TrackOrder(leg.PendingOrderID, h.id.String())
+			h.helm.TrackOrder(leg.PendingOrderID, h.id.String())
 		}
 	}
 
@@ -201,7 +202,7 @@ func (h *Hand) restorePosition(hp *position.HandPositions, currentPrice decimal.
 	// HandleExitOrderCanceled work correctly after restart.
 	for _, leg := range hp.ActiveLegs() {
 		for _, id := range leg.ExchangeOrderIDs {
-			h.helmRuntime.TrackOrder(id, h.id.String())
+			h.helm.TrackOrder(id, h.id.String())
 		}
 	}
 	h.mu.Unlock()
@@ -215,7 +216,7 @@ func (h *Hand) restorePosition(hp *position.HandPositions, currentPrice decimal.
 //  3. poslog PositionClosed events — last resort when both above are unavailable.
 func (h *Hand) RestorePnL(ctx context.Context, events []poslog.Event) {
 	// Fast path: single SQL aggregate query — no JetStream drain needed.
-	if ps := h.helmRuntime.PnLSummer; ps != nil {
+	if ps := h.helm.GetPnLSummer(); ps != nil {
 		totalPnL, totalCommission, wins, losses, err := ps.SumHandPnL(ctx, h.id)
 		if err == nil {
 			h.metrics.mu.Lock()
@@ -233,7 +234,7 @@ func (h *Hand) RestorePnL(ctx context.Context, events []poslog.Event) {
 		h.log.Warn("hand: PnL SQL query failed, falling back to JetStream drain", "err", err)
 	}
 
-	if tl := h.helmRuntime.TradeLog; tl != nil {
+	if tl := h.helm.GetTradeLog(); tl != nil {
 		trades, err := tl.Since(ctx, h.id.String(), time.Time{})
 		if err == nil && len(trades) > 0 {
 			var totalPnL, totalCommission decimal.Decimal
@@ -337,7 +338,7 @@ func (h *Hand) RestoreGuard(ctx context.Context) {
 	if h.guard.cfg.WindowTrades == 0 {
 		return
 	}
-	ps := h.helmRuntime.PnLSummer
+	ps := h.helm.GetPnLSummer()
 	if ps == nil {
 		return
 	}
@@ -379,7 +380,7 @@ func (h *Hand) RestoreGuard(ctx context.Context) {
 // (lag of the most recent signal) and is intentionally left at 0 — restoring a stale
 // point-in-time lag is meaningless.
 func (h *Hand) RestoreCounters(ctx context.Context) {
-	ec := h.helmRuntime.EventCounter
+	ec := h.helm.GetEventCounter()
 	if ec == nil {
 		return
 	}
@@ -393,22 +394,22 @@ func (h *Hand) RestoreCounters(ctx context.Context) {
 	}
 	var filtered int64
 	for _, c := range []int{
-		CodeSignalStale, CodeSignalHelmPaused, CodeSignalRateLimited,
-		CodeSignalDoNothing, CodeSignalMaxUnits, CodeSignalRejected, CodeSignalNoPosition,
+		eventcode.CodeSignalStale, eventcode.CodeSignalHelmPaused, eventcode.CodeSignalRateLimited,
+		eventcode.CodeSignalDoNothing, eventcode.CodeSignalMaxUnits, eventcode.CodeSignalRejected, eventcode.CodeSignalNoPosition,
 	} {
 		filtered += counts[c]
 	}
-	h.metrics.signalsReceived.Store(counts[CodeSignalReceived])
+	h.metrics.signalsReceived.Store(counts[eventcode.CodeSignalReceived])
 	h.metrics.signalsFiltered.Store(filtered)
-	h.metrics.signalsDropped.Store(counts[CodeSignalDropped])
-	h.metrics.tradesApproved.Store(counts[CodeTradeApproved])
-	h.metrics.ordersPlaced.Store(counts[CodeOrderPlaced])
-	h.metrics.ordersFilled.Store(counts[CodeOrderFilled])
-	h.metrics.ordersFailed.Store(counts[CodeOrderFailed])
+	h.metrics.signalsDropped.Store(counts[eventcode.CodeSignalDropped])
+	h.metrics.tradesApproved.Store(counts[eventcode.CodeTradeApproved])
+	h.metrics.ordersPlaced.Store(counts[eventcode.CodeOrderPlaced])
+	h.metrics.ordersFilled.Store(counts[eventcode.CodeOrderFilled])
+	h.metrics.ordersFailed.Store(counts[eventcode.CodeOrderFailed])
 	h.log.Info("hand: counters restored from event log",
-		"signals", counts[CodeSignalReceived], "filtered", filtered,
-		"approved", counts[CodeTradeApproved], "placed", counts[CodeOrderPlaced],
-		"filled", counts[CodeOrderFilled], "failed", counts[CodeOrderFailed],
-		"dropped", counts[CodeSignalDropped],
+		"signals", counts[eventcode.CodeSignalReceived], "filtered", filtered,
+		"approved", counts[eventcode.CodeTradeApproved], "placed", counts[eventcode.CodeOrderPlaced],
+		"filled", counts[eventcode.CodeOrderFilled], "failed", counts[eventcode.CodeOrderFailed],
+		"dropped", counts[eventcode.CodeSignalDropped],
 	)
 }

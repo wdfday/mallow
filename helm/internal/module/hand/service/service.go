@@ -10,6 +10,7 @@ import (
 
 	"mallow/helm/internal/fleet"
 	"mallow/helm/internal/fleet/actor"
+	signalfollower "mallow/helm/internal/fleet/actor/signal-follower"
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/module/hand/domain"
 )
@@ -21,7 +22,7 @@ type registry interface {
 }
 
 // Service is the CRUD + lifecycle layer for hands.
-// Business logic (signal handling, order placement, portfolio) lives in actor.Hand.
+// Business logic (signal handling, order placement, portfolio) lives in signalfollower.Hand.
 // Live hand state is owned by HelmRuntime.hands — Service delegates runtime ops via
 // registry.Get(helmID) → HelmRuntime methods.
 type Service struct {
@@ -60,8 +61,8 @@ func (s *Service) hydrateOne(data *domain.Hand) error {
 	if err != nil {
 		return fmt.Errorf("no runtime for helm %q: %w", data.HelmID, err)
 	}
-	strat, tact := actor.BuildHandComponents(data)
-	hand := actor.NewHand(data.ID, data.HelmID, rt, strat, tact, data.Position.Pyramid, data.Position.MaxUnits, actor.SignalTTLFor(data), data.Futures, data.OrderType, data.LimitTimeoutSec, data.LimitFallback, data.Guard, data.AllocatedCapital)
+	strat, tact := signalfollower.BuildHandComponents(data)
+	hand := signalfollower.NewHand(data.ID, data.HelmID, rt, strat, tact, data.Position.Pyramid, data.Position.MaxUnits, signalfollower.SignalTTLFor(data), data.Futures, data.OrderType, data.LimitTimeoutSec, data.LimitFallback, data.Guard, data.AllocatedCapital)
 	setMeta(hand, data)
 	rt.AddHand(hand, data)
 	if data.Status == domain.HandStatusRunning {

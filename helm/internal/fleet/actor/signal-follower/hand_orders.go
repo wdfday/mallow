@@ -1,9 +1,10 @@
-package actor
+package signalfollower
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"mallow/helm/internal/fleet/actor/eventcode"
 	"strings"
 	"time"
 
@@ -51,7 +52,7 @@ func (h *Hand) fetchPendingOrders(ctx context.Context) []polledOrder {
 
 	out := make([]polledOrder, 0, len(pending))
 	for _, o := range pending {
-		result, err := h.helmRuntime.Exchange.GetOrder(ctx, h.helmRuntime.Creds, o.ID)
+		result, err := h.helm.GetExchange().GetOrder(ctx, h.helm.GetCreds(), o.ID)
 		out = append(out, polledOrder{order: o, result: result, err: err})
 	}
 	return out
@@ -61,7 +62,7 @@ func (h *Hand) fetchPendingOrders(ctx context.Context) []polledOrder {
 // single-owner invariant with handleSignal/handleWsFill. The occasional REST it still issues
 // (dust-remainder cancel, limit timeout) fires only for orders that actually changed — rare —
 // so it does not meaningfully block the loop. Race-tolerant against the WS path via the
-// existing seenFills / hasOrderFillPublished dedup guards.
+// existing seenFills / HasOrderFillPublished dedup guards.
 func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 	for _, p := range polled {
 		o := p.order
@@ -93,7 +94,7 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 				break
 			}
 			h.mu.Unlock()
-			if h.helmRuntime.hasOrderFillPublished(result.ID) {
+			if h.helm.HasOrderFillPublished(result.ID) {
 				h.mu.Lock()
 				delete(h.partialApplied, result.ID)
 				h.mu.Unlock()
@@ -161,14 +162,14 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 			if result.FilledQty.IsPositive() && o.Qty.IsPositive() {
 				remaining := o.Qty.Sub(result.FilledQty)
 				if remaining.IsPositive() && remaining.Div(o.Qty).LessThan(decimal.NewFromFloat(0.02)) {
-					if err := h.helmRuntime.Exchange.CancelOrder(ctx, h.helmRuntime.Creds, o.ID); err != nil {
+					if err := h.helm.GetExchange().CancelOrder(ctx, h.helm.GetCreds(), o.ID); err != nil {
 						h.log.Warn("hand: cancel partial remainder failed", "order_id", o.ID, "err", err)
 					} else {
 						h.log.Info("hand: cancelled dust remainder on partial fill",
 							"order_id", o.ID, "filled", result.FilledQty, "original", o.Qty)
-						h.helmRuntime.EmitEvent(natsapi.HelmEvent{
+						h.helm.EmitEvent(natsapi.HelmEvent{
 							HandID:  h.id.String(),
-							Code:    CodeOrderPartialCancel,
+							Code:    eventcode.CodeOrderPartialCancel,
 							Symbol:  result.Symbol,
 							OrderID: o.ID,
 							Qty:     result.FilledQty,
@@ -235,15 +236,15 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 				})
 			}
 			// Terminal: remove from routing map so cancelled orders don't accumulate.
-			h.helmRuntime.RemoveOrderTracking(o.ID)
+			h.helm.RemoveOrderTracking(o.ID)
 			h.log.Info("order: "+result.Status,
 				"symbol", result.Symbol,
 				"order_id", o.ID,
 				"side", result.Side,
 				"status", result.Status,
 			)
-			h.emitEvent(natsapi.HelmEvent{
-				Code:    CodeOrderCancelled,
+			h.EmitEvent(natsapi.HelmEvent{
+				Code:    eventcode.CodeOrderCancelled,
 				Symbol:  result.Symbol,
 				OrderID: o.ID,
 				Side:    string(result.Side),
@@ -253,8 +254,8 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 			// Position-level cancel events: tell users the trade intent was cancelled.
 			switch preCancelPhase {
 			case position.PhaseEntering:
-				h.emitEvent(natsapi.HelmEvent{
-					Code:    CodePositionEnterCancelled,
+				h.EmitEvent(natsapi.HelmEvent{
+					Code:    eventcode.CodePositionEnterCancelled,
 					Symbol:  result.Symbol,
 					OrderID: o.ID,
 					Side:    string(result.Side),
@@ -262,8 +263,8 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 					Msg:     "position: entry cancelled — no position opened",
 				})
 			case position.PhaseAdding:
-				h.emitEvent(natsapi.HelmEvent{
-					Code:    CodePositionAddCancelled,
+				h.EmitEvent(natsapi.HelmEvent{
+					Code:    eventcode.CodePositionAddCancelled,
 					Symbol:  result.Symbol,
 					OrderID: o.ID,
 					Side:    string(result.Side),
@@ -298,7 +299,7 @@ func (h *Hand) applyPolledOrders(ctx context.Context, polled []polledOrder) {
 	// WS full-fills already clean these; this catches poll/REST-immediate-only fills
 	// so the routing map never accumulates stale entries.
 	for _, k := range terminalKeys {
-		h.helmRuntime.RemoveOrderTracking(k)
+		h.helm.RemoveOrderTracking(k)
 	}
 }
 
@@ -381,9 +382,9 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 	h.log.Info("hand: limit order timed out", "order_id", o.ID, "age", age,
 		"filled", alreadyFilledQty, "remaining", remainingQty, "fallback", h.cfg.limitFallback)
 
-	h.helmRuntime.EmitEvent(natsapi.HelmEvent{
+	h.helm.EmitEvent(natsapi.HelmEvent{
 		HandID:  h.id.String(),
-		Code:    CodeOrderLimitTimeout,
+		Code:    eventcode.CodeOrderLimitTimeout,
 		Symbol:  o.Symbol,
 		OrderID: o.ID,
 		Qty:     remainingQty,
@@ -417,14 +418,14 @@ func (h *Hand) handleLimitTimeout(ctx context.Context, o handdomain.Order, polle
 // remaining qty. Pure REST, mutates no hand state, so it runs OFF the actor loop.
 func (h *Hand) runLimitTimeoutREST(ctx context.Context, plt *pendingLimitTimeout) {
 	o := plt.order
-	if err := h.helmRuntime.Exchange.CancelOrder(ctx, h.helmRuntime.Creds, o.ID); err != nil {
+	if err := h.helm.GetExchange().CancelOrder(ctx, h.helm.GetCreds(), o.ID); err != nil {
 		plt.cancelErr = err
 		return
 	}
 	if plt.fallbackClid == "" {
 		return
 	}
-	plt.result, plt.placeErr = h.helmRuntime.Exchange.PlaceOrder(ctx, h.helmRuntime.Creds, exchange.OrderRequest{
+	plt.result, plt.placeErr = h.helm.GetExchange().PlaceOrder(ctx, h.helm.GetCreds(), exchange.OrderRequest{
 		Symbol:        o.Symbol,
 		Side:          exchange.OrderSide(o.Side),
 		Type:          exchange.Market,
@@ -448,7 +449,7 @@ func (h *Hand) applyLimitTimeoutResult(ctx context.Context, plt *pendingLimitTim
 	if plt.cancelErr != nil {
 		h.log.Warn("hand: limit timeout cancel failed", "order_id", o.ID, "err", plt.cancelErr)
 		if plt.fallbackClid != "" {
-			h.helmRuntime.RemoveOrderTracking(plt.fallbackClid)
+			h.helm.RemoveOrderTracking(plt.fallbackClid)
 		}
 		return
 	}
@@ -478,15 +479,15 @@ func (h *Hand) applyLimitTimeoutResult(ctx context.Context, plt *pendingLimitTim
 	}
 	if plt.placeErr != nil {
 		h.log.Error("hand: limit fallback market order failed", "order_id", o.ID, "err", plt.placeErr)
-		h.helmRuntime.RemoveOrderTracking(plt.fallbackClid)
+		h.helm.RemoveOrderTracking(plt.fallbackClid)
 		return
 	}
 
 	result := plt.result
 	h.log.Info("hand: limit fallback market placed", "new_order_id", result.ID, "qty", plt.remainingQty)
-	h.helmRuntime.EmitEvent(natsapi.HelmEvent{
+	h.helm.EmitEvent(natsapi.HelmEvent{
 		HandID:  h.id.String(),
-		Code:    CodeOrderLimitFallback,
+		Code:    eventcode.CodeOrderLimitFallback,
 		Symbol:  o.Symbol,
 		OrderID: result.ID,
 		Side:    string(o.Side),
@@ -553,7 +554,7 @@ func (h *Hand) recoverAmbiguousPlace(ctx context.Context, symbol, clid string, p
 	if !exchange.IsAmbiguousPlaceError(placeErr) {
 		return nil
 	}
-	q, ok := h.helmRuntime.Exchange.(exchange.ClientOrderQuerier)
+	q, ok := h.helm.GetExchange().(exchange.ClientOrderQuerier)
 	if !ok {
 		return nil
 	}
@@ -573,7 +574,7 @@ func (h *Hand) recoverAmbiguousPlace(ctx context.Context, symbol, clid string, p
 		case <-time.After(d):
 		}
 		qCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		res, err := q.GetOrderByClientOrderID(qCtx, h.helmRuntime.Creds, symbol, market, clid)
+		res, err := q.GetOrderByClientOrderID(qCtx, h.helm.GetCreds(), symbol, market, clid)
 		cancel()
 		if err != nil || res == nil {
 			continue
@@ -598,7 +599,7 @@ func isLotSizeError(ex exchange.Exchange, err error) bool {
 	if err == nil {
 		return false
 	}
-	class := classifyErr(ex, err)
+	class := ClassifyErr(ex, err)
 	return class == exchange.ErrClassLotSize || class == exchange.ErrClassPriceFilter
 }
 
@@ -608,7 +609,7 @@ func isLotSizeError(ex exchange.Exchange, err error) bool {
 // the net delta — callers need cumQty/cumCommission for the netQty==0 completion path.
 // Caller must hold h.mu.Lock().
 func (h *Hand) deductPartial(ctx context.Context, orderID string, result *exchange.OrderResult) (cumQty, cumCommission, netQty, netCommission decimal.Decimal) {
-	cumQty, cumCommission = h.helmRuntime.normalizeCommission(
+	cumQty, cumCommission = h.helm.NormalizeCommission(
 		ctx, result.Symbol, result.Side,
 		result.FilledQty, result.FilledAvg,
 		result.Commission, result.CommissionAsset,

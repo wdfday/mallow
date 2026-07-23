@@ -32,25 +32,38 @@ pub struct Sma {
     buffer: VecDeque<f64>,
     /// Running sum để tính SMA trong O(1)
     sum: f64,
+    /// EXPERIMENT (temporary): Kahan compensation term — testing whether
+    /// compensated summation actually reduces alm_py-vs-Backtrader trade
+    /// count divergence on stochastic_dk/reversal_catcher. See
+    /// project_strategy_comparison memory for the baseline (3977 vs 3951).
+    c: f64,
 }
 
 impl Sma {
     pub fn new(period: usize) -> Self {
         assert!(period > 0, "SMA period must be > 0");
-        Self { period, buffer: VecDeque::with_capacity(period + 1), sum: 0.0 }
+        Self { period, buffer: VecDeque::with_capacity(period + 1), sum: 0.0, c: 0.0 }
     }
 
     pub fn description() -> &'static str {
         "Simple Moving Average — unweighted mean of the last N closes. Baseline smoothing filter used in crossover and trend-detection systems. Outputs a single value (price scale)."
     }
 
+    fn kahan_add(&mut self, x: f64) {
+        let y = x - self.c;
+        let t = self.sum + y;
+        self.c = (t - self.sum) - y;
+        self.sum = t;
+    }
+
     /// Feed một giá mới. Trả về `Some(sma)` sau khi đủ `period` bar.
     pub fn update(&mut self, value: f64) -> Option<f64> {
         self.buffer.push_back(value);
-        self.sum += value;
+        self.kahan_add(value);
 
         if self.buffer.len() > self.period {
-            self.sum -= self.buffer.pop_front().unwrap();
+            let old = self.buffer.pop_front().unwrap();
+            self.kahan_add(-old);
         }
 
         if self.buffer.len() == self.period {
@@ -75,6 +88,7 @@ impl Sma {
     pub fn reset(&mut self) {
         self.buffer.clear();
         self.sum = 0.0;
+        self.c = 0.0;
     }
 }
 

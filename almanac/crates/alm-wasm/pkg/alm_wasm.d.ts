@@ -167,6 +167,14 @@ export function list_strategies(): any;
 export function metric_catalog(): any;
 
 /**
+ * Higher timeframes an `ind.TYPE(period, "TF")` line in `script` declares, e.g.
+ * `["H1", "H4"]`. Empty means the script is base-TF only. Mirrors the same probe
+ * `ChartState::backtest` uses internally to reject HTF scripts on-chart — callers
+ * use this to know which extra timeframes to open separate charts for instead.
+ */
+export function probe_script_htfs(script: string): any;
+
+/**
  * Compute indicators over a bar series.
  *
  * `config_json`: `{ label: { "type": "ema", "period": 20, ... } }`

@@ -167,12 +167,42 @@ fn get_usize_arr6(v: &Value, key: &str, default: [usize; 6]) -> [usize; 6] {
 
 impl IndicatorBox {
     /// Build from `{ "type": "rsi", "period": 14, ... }`.
+    ///
+    /// Constructors across this crate `assert!` on invalid params (period,
+    /// multiplier, sigma, relational constraints like fast<slow) instead of
+    /// returning `Result` — and callers routinely pass in-flight/invalid values
+    /// (e.g. WASM `ChartState` while a user is mid-edit on a param input, or a
+    /// live script registration with unvalidated extras). `get_usize`'s
+    /// `.max(1)` clamp only covers the single-argument `period > 0` case; it
+    /// does not cover per-type minimums above 1 (`vortex`/`dpo`/`rci`/`fisher`/
+    /// `rwi`/`volatility_ratio` need `>= 2`, `bbands` needs `period > 1`), extra
+    /// `f64` params with their own asserts (`alma` sigma, `chandelier_exit`/
+    /// `chande_kroll` multiplier/factor), or cross-param relations (`coppock`
+    /// short<long). A panic here must never propagate: on wasm32 it unwinds
+    /// across the wasm-bindgen `&mut self` boundary without running the borrow
+    /// guard's `Drop`, permanently poisoning the JS-side object (every later
+    /// call throws "recursive use of an object detected") — see `get_usize`'s
+    /// doc comment for the `period` case this was originally found from.
+    /// Catch it here instead of trusting every constructor across ~65
+    /// indicator types (native AND wasm callers) to be individually hardened.
     pub fn from_config(cfg: &Value) -> Result<Self> {
         let type_ = cfg
             .get("type")
             .and_then(Value::as_str)
             .unwrap_or_default();
 
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Self::build_variant(type_, cfg))) {
+            Ok(result) => result,
+            Err(payload) => {
+                let msg = payload.downcast_ref::<&str>().map(|s| s.to_string())
+                    .or_else(|| payload.downcast_ref::<String>().cloned())
+                    .unwrap_or_else(|| "constructor panicked with a non-string payload".to_string());
+                bail!("indicator '{type_}' rejected its parameters: {msg}")
+            }
+        }
+    }
+
+    fn build_variant(type_: &str, cfg: &Value) -> Result<Self> {
         let ind = match type_ {
             // ── Trend / MA ────────────────────────────────────────────────────
             "sma"       => Self::Sma(Sma::new(get_usize(cfg, "period", 20))),
@@ -1161,6 +1191,53 @@ mod tests {
             let ind = IndicatorBox::from_config(&json!({ "type": name })).unwrap();
             assert_eq!(ind.type_name(), *name, "type_name mismatch for {name}");
             assert!(!ind.field_names().is_empty(), "{name} must expose at least one field");
+        }
+    }
+
+    /// Regression for the WASM `ChartState` crash class: `from_config` must
+    /// never panic regardless of how malformed/adversarial the params are —
+    /// it must always return `Err`, not unwind. `get_usize`'s blanket `.max(1)`
+    /// clamp isn't enough on its own (several types need `period >= 2`), and
+    /// `get_f64` extras (multiplier/factor/sigma/step) had no clamp at all
+    /// before `from_config` wrapped construction in `catch_unwind` — this test
+    /// is what actually proves that wrap works, not just that it compiles.
+    #[test]
+    fn from_config_never_panics_on_adversarial_params() {
+        // Broad sweep: every type × period 0/1 — catches every `period >= 2`
+        // constructor (vortex, dpo, rci, fisher, rwi, volatility_ratio, bbands)
+        // that the old `.max(1)` clamp let through.
+        for name in ALL_TYPES {
+            for period in [0i64, 1] {
+                let cfg = json!({ "type": name, "period": period, "lookback": period });
+                let result = std::panic::catch_unwind(|| IndicatorBox::from_config(&cfg));
+                assert!(result.is_ok(), "{name} with period={period} panicked instead of erroring");
+            }
+        }
+
+        // Targeted: the specific extra-param asserts found by code audit —
+        // unclamped `get_f64` extras and cross-param relations.
+        let adversarial: &[(&str, serde_json::Value)] = &[
+            ("alma",             json!({"type": "alma", "period": 9, "sigma": -1.0})),
+            ("alma",             json!({"type": "alma", "period": 9, "sigma": 0.0})),
+            ("chandelier_exit",  json!({"type": "chandelier_exit", "period": 22, "multiplier": -3.0})),
+            ("chandelier_exit",  json!({"type": "chandelier_exit", "period": 22, "multiplier": 0.0})),
+            ("chande_kroll",     json!({"type": "chande_kroll", "atr_period": 10, "factor": -1.5, "stop_period": 9})),
+            ("coppock",          json!({"type": "coppock", "short": 20, "long": 10, "wma": 10})),
+            ("parabolic_sar",    json!({"type": "parabolic_sar", "step": -0.02, "max": 0.2})),
+            ("parabolic_sar",    json!({"type": "parabolic_sar", "step": 0.5, "max": 0.02})),
+            ("bbands",           json!({"type": "bbands", "period": 1})),
+            ("uo",               json!({"type": "uo", "fast": 20, "medium": 10, "slow": 5})),
+            ("kama",             json!({"type": "kama", "er_period": 10, "fast": 30, "slow": 2})),
+        ];
+        for (name, cfg) in adversarial {
+            // The only invariant this test enforces is "never panics" — whether
+            // a given adversarial value actually trips one of these types'
+            // asserts (and so comes back `Err`) vs. constructs anyway with a
+            // semantically-nonsensical value (e.g. `parabolic_sar` accepts a
+            // negative `step` with no assert on it at all) is a separate,
+            // lower-priority correctness question, not what this test is for.
+            let result = std::panic::catch_unwind(|| IndicatorBox::from_config(cfg));
+            assert!(result.is_ok(), "{name} with adversarial params panicked instead of erroring: {cfg}");
         }
     }
 

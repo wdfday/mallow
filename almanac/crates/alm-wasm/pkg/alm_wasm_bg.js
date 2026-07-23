@@ -1,5 +1,3 @@
-//#region exports
-
 /**
  * Stateful chart object — holds bars + live indicator instances.
  *
@@ -29,8 +27,6 @@ export class ChartState {
      * @returns {any}
      */
     add_head(t, o, h, l, c, v) {
-        if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
-        _assertNum(this.__wbg_ptr);
         const ret = wasm.chartstate_add_head(this.__wbg_ptr, t, o, h, l, c, v);
         return ret;
     }
@@ -45,8 +41,6 @@ export class ChartState {
      * @returns {any}
      */
     add_indicator(config_json) {
-        if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
-        _assertNum(this.__wbg_ptr);
         const ptr0 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.chartstate_add_indicator(this.__wbg_ptr, ptr0, len0);
@@ -64,8 +58,6 @@ export class ChartState {
      * @returns {any}
      */
     add_tail(t, o, h, l, c, v) {
-        if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
-        _assertNum(this.__wbg_ptr);
         const ret = wasm.chartstate_add_tail(this.__wbg_ptr, t, o, h, l, c, v);
         return ret;
     }
@@ -84,8 +76,6 @@ export class ChartState {
      * @returns {any}
      */
     backtest(script, config_json, from_ts, to_ts) {
-        if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
-        _assertNum(this.__wbg_ptr);
         const ptr0 = passStringToWasm0(script, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -105,8 +95,6 @@ export class ChartState {
      * @returns {any}
      */
     backtest_named(strategy_name, params_json, config_json, from_ts, to_ts) {
-        if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
-        _assertNum(this.__wbg_ptr);
         const ptr0 = passStringToWasm0(strategy_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(params_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -121,8 +109,6 @@ export class ChartState {
      * @returns {number}
      */
     bar_count() {
-        if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
-        _assertNum(this.__wbg_ptr);
         const ret = wasm.chartstate_bar_count(this.__wbg_ptr);
         return ret >>> 0;
     }
@@ -130,8 +116,6 @@ export class ChartState {
      * Remove the current script; named indicator slots are unaffected.
      */
     clear_script() {
-        if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
-        _assertNum(this.__wbg_ptr);
         wasm.chartstate_clear_script(this.__wbg_ptr);
     }
     /**
@@ -146,8 +130,6 @@ export class ChartState {
      * @returns {any}
      */
     load_head(t, o, h, l, c, v) {
-        if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
-        _assertNum(this.__wbg_ptr);
         const ptr0 = passArrayF64ToWasm0(t, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passArrayF64ToWasm0(o, wasm.__wbindgen_malloc);
@@ -175,8 +157,6 @@ export class ChartState {
      * @returns {any}
      */
     load_tail(t, o, h, l, c, v) {
-        if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
-        _assertNum(this.__wbg_ptr);
         const ptr0 = passArrayF64ToWasm0(t, wasm.__wbindgen_malloc);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passArrayF64ToWasm0(o, wasm.__wbindgen_malloc);
@@ -208,8 +188,6 @@ export class ChartState {
      * @returns {number}
      */
     raw_bar_count() {
-        if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
-        _assertNum(this.__wbg_ptr);
         const ret = wasm.chartstate_raw_bar_count(this.__wbg_ptr);
         return ret >>> 0;
     }
@@ -218,8 +196,6 @@ export class ChartState {
      * @param {string} label
      */
     remove_indicator(label) {
-        if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
-        _assertNum(this.__wbg_ptr);
         const ptr0 = passStringToWasm0(label, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         wasm.chartstate_remove_indicator(this.__wbg_ptr, ptr0, len0);
@@ -228,16 +204,12 @@ export class ChartState {
      * Clear everything — bars, indicator instances, configs, and script.
      */
     reset() {
-        if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
-        _assertNum(this.__wbg_ptr);
         wasm.chartstate_reset(this.__wbg_ptr);
     }
     /**
      * Clear bars and reset all indicator instances; keep configs and script.
      */
     reset_bars() {
-        if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
-        _assertNum(this.__wbg_ptr);
         wasm.chartstate_reset_bars(this.__wbg_ptr);
     }
     /**
@@ -252,11 +224,8 @@ export class ChartState {
      * @returns {any}
      */
     set_candle_transform(kind, period) {
-        if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
-        _assertNum(this.__wbg_ptr);
         const ptr0 = passStringToWasm0(kind, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
-        _assertNum(period);
         const ret = wasm.chartstate_set_candle_transform(this.__wbg_ptr, ptr0, len0, period);
         return ret;
     }
@@ -271,8 +240,6 @@ export class ChartState {
      * @returns {any}
      */
     set_indicators(config_json) {
-        if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
-        _assertNum(this.__wbg_ptr);
         const ptr0 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.chartstate_set_indicators(this.__wbg_ptr, ptr0, len0);
@@ -298,8 +265,6 @@ export class ChartState {
      * @returns {any}
      */
     set_script(script) {
-        if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
-        _assertNum(this.__wbg_ptr);
         const ptr0 = passStringToWasm0(script, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.chartstate_set_script(this.__wbg_ptr, ptr0, len0);
@@ -311,8 +276,6 @@ export class ChartState {
      * @returns {any}
      */
     snapshot() {
-        if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
-        _assertNum(this.__wbg_ptr);
         const ret = wasm.chartstate_snapshot(this.__wbg_ptr);
         return ret;
     }
@@ -323,8 +286,6 @@ export class ChartState {
         let deferred1_0;
         let deferred1_1;
         try {
-            if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
-            _assertNum(this.__wbg_ptr);
             const ret = wasm.chartstate_symbol(this.__wbg_ptr);
             deferred1_0 = ret[0];
             deferred1_1 = ret[1];
@@ -344,8 +305,6 @@ export class ChartState {
      * @returns {any}
      */
     update_indicator(label, config_json) {
-        if (this.__wbg_ptr == 0) throw new Error('Attempt to use a moved value');
-        _assertNum(this.__wbg_ptr);
         const ptr0 = passStringToWasm0(label, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ptr1 = passStringToWasm0(config_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
@@ -435,6 +394,21 @@ export function metric_catalog() {
 }
 
 /**
+ * Higher timeframes an `ind.TYPE(period, "TF")` line in `script` declares, e.g.
+ * `["H1", "H4"]`. Empty means the script is base-TF only. Mirrors the same probe
+ * `ChartState::backtest` uses internally to reject HTF scripts on-chart — callers
+ * use this to know which extra timeframes to open separate charts for instead.
+ * @param {string} script
+ * @returns {any}
+ */
+export function probe_script_htfs(script) {
+    const ptr0 = passStringToWasm0(script, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.probe_script_htfs(ptr0, len0);
+    return ret;
+}
+
+/**
  * Compute indicators over a bar series.
  *
  * `config_json`: `{ label: { "type": "ema", "period": 20, ... } }`
@@ -500,7 +474,6 @@ export function smooth_ha(t, o, h, l, c, v, period) {
     const len4 = WASM_VECTOR_LEN;
     const ptr5 = passArrayF64ToWasm0(v, wasm.__wbindgen_malloc);
     const len5 = WASM_VECTOR_LEN;
-    _assertNum(period);
     const ret = wasm.smooth_ha(ptr0, len0, ptr1, len1, ptr2, len2, ptr3, len3, ptr4, len4, ptr5, len5, period);
     return ret;
 }
@@ -523,22 +496,16 @@ export function validate_script(script, base_tf) {
     const ret = wasm.validate_script(ptr0, len0, ptr1, len1);
     return ret;
 }
-
-//#endregion
-
-//#region wasm imports
-export function __wbg_Error_2e59b1b37a9a34c3() { return logError(function (arg0, arg1) {
+export function __wbg_Error_2e59b1b37a9a34c3(arg0, arg1) {
     const ret = Error(getStringFromWasm0(arg0, arg1));
     return ret;
-}, arguments); }
+}
 export function __wbg___wbindgen_is_string_b29b5c5a8065ba1a(arg0) {
     const ret = typeof(arg0) === 'string';
-    _assertBoolean(ret);
     return ret;
 }
 export function __wbg___wbindgen_is_undefined_c0cca72b82b86f4d(arg0) {
     const ret = arg0 === undefined;
-    _assertBoolean(ret);
     return ret;
 }
 export function __wbg___wbindgen_throw_81fc77679af83bc6(arg0, arg1) {
@@ -547,72 +514,72 @@ export function __wbg___wbindgen_throw_81fc77679af83bc6(arg0, arg1) {
 export function __wbg_getRandomValues_3f44b700395062e5() { return handleError(function (arg0, arg1) {
     globalThis.crypto.getRandomValues(getArrayU8FromWasm0(arg0, arg1));
 }, arguments); }
-export function __wbg_new_4f9fafbb3909af72() { return logError(function () {
+export function __wbg_new_4f9fafbb3909af72() {
     const ret = new Object();
     return ret;
-}, arguments); }
-export function __wbg_new_99cabae501c0a8a0() { return logError(function () {
+}
+export function __wbg_new_99cabae501c0a8a0() {
     const ret = new Map();
     return ret;
-}, arguments); }
-export function __wbg_new_f3c9df4f38f3f798() { return logError(function () {
+}
+export function __wbg_new_f3c9df4f38f3f798() {
     const ret = new Array();
     return ret;
-}, arguments); }
-export function __wbg_now_e7c6795a7f81e10f() { return logError(function (arg0) {
+}
+export function __wbg_now_e7c6795a7f81e10f(arg0) {
     const ret = arg0.now();
     return ret;
-}, arguments); }
-export function __wbg_performance_3fcf6e32a7e1ed0a() { return logError(function (arg0) {
+}
+export function __wbg_performance_3fcf6e32a7e1ed0a(arg0) {
     const ret = arg0.performance;
     return ret;
-}, arguments); }
-export function __wbg_set_08463b1df38a7e29() { return logError(function (arg0, arg1, arg2) {
+}
+export function __wbg_set_08463b1df38a7e29(arg0, arg1, arg2) {
     const ret = arg0.set(arg1, arg2);
     return ret;
-}, arguments); }
-export function __wbg_set_6be42768c690e380() { return logError(function (arg0, arg1, arg2) {
+}
+export function __wbg_set_6be42768c690e380(arg0, arg1, arg2) {
     arg0[arg1] = arg2;
-}, arguments); }
-export function __wbg_set_6c60b2e8ad0e9383() { return logError(function (arg0, arg1, arg2) {
+}
+export function __wbg_set_6c60b2e8ad0e9383(arg0, arg1, arg2) {
     arg0[arg1 >>> 0] = arg2;
-}, arguments); }
-export function __wbg_static_accessor_GLOBAL_THIS_a1248013d790bf5f() { return logError(function () {
+}
+export function __wbg_static_accessor_GLOBAL_THIS_a1248013d790bf5f() {
     const ret = typeof globalThis === 'undefined' ? null : globalThis;
     return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
-}, arguments); }
-export function __wbg_static_accessor_GLOBAL_f2e0f995a21329ff() { return logError(function () {
+}
+export function __wbg_static_accessor_GLOBAL_f2e0f995a21329ff() {
     const ret = typeof global === 'undefined' ? null : global;
     return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
-}, arguments); }
-export function __wbg_static_accessor_SELF_24f78b6d23f286ea() { return logError(function () {
+}
+export function __wbg_static_accessor_SELF_24f78b6d23f286ea() {
     const ret = typeof self === 'undefined' ? null : self;
     return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
-}, arguments); }
-export function __wbg_static_accessor_WINDOW_59fd959c540fe405() { return logError(function () {
+}
+export function __wbg_static_accessor_WINDOW_59fd959c540fe405() {
     const ret = typeof window === 'undefined' ? null : window;
     return isLikeNone(ret) ? 0 : addToExternrefTable0(ret);
-}, arguments); }
-export function __wbindgen_cast_0000000000000001() { return logError(function (arg0) {
+}
+export function __wbindgen_cast_0000000000000001(arg0) {
     // Cast intrinsic for `F64 -> Externref`.
     const ret = arg0;
     return ret;
-}, arguments); }
-export function __wbindgen_cast_0000000000000002() { return logError(function (arg0) {
+}
+export function __wbindgen_cast_0000000000000002(arg0) {
     // Cast intrinsic for `I64 -> Externref`.
     const ret = arg0;
     return ret;
-}, arguments); }
-export function __wbindgen_cast_0000000000000003() { return logError(function (arg0, arg1) {
+}
+export function __wbindgen_cast_0000000000000003(arg0, arg1) {
     // Cast intrinsic for `Ref(String) -> Externref`.
     const ret = getStringFromWasm0(arg0, arg1);
     return ret;
-}, arguments); }
-export function __wbindgen_cast_0000000000000004() { return logError(function (arg0) {
+}
+export function __wbindgen_cast_0000000000000004(arg0) {
     // Cast intrinsic for `U64 -> Externref`.
     const ret = BigInt.asUintN(64, arg0);
     return ret;
-}, arguments); }
+}
 export function __wbindgen_init_externref_table() {
     const table = wasm.__wbindgen_externrefs;
     const offset = table.grow(4);
@@ -622,28 +589,14 @@ export function __wbindgen_init_externref_table() {
     table.set(offset + 2, true);
     table.set(offset + 3, false);
 }
-
-//#endregion
 const ChartStateFinalization = (typeof FinalizationRegistry === 'undefined')
     ? { register: () => {}, unregister: () => {} }
     : new FinalizationRegistry(ptr => wasm.__wbg_chartstate_free(ptr >>> 0, 1));
 
-
-//#region intrinsics
 function addToExternrefTable0(obj) {
     const idx = wasm.__externref_table_alloc();
     wasm.__wbindgen_externrefs.set(idx, obj);
     return idx;
-}
-
-function _assertBoolean(n) {
-    if (typeof(n) !== 'boolean') {
-        throw new Error(`expected a boolean argument, found ${typeof(n)}`);
-    }
-}
-
-function _assertNum(n) {
-    if (typeof(n) !== 'number') throw new Error(`expected a number argument, found ${typeof(n)}`);
 }
 
 function getArrayU8FromWasm0(ptr, len) {
@@ -685,22 +638,6 @@ function isLikeNone(x) {
     return x === undefined || x === null;
 }
 
-function logError(f, args) {
-    try {
-        return f.apply(this, args);
-    } catch (e) {
-        let error = (function () {
-            try {
-                return e instanceof Error ? `${e.message}\n\nStack:\n${e.stack}` : e.toString();
-            } catch(_) {
-                return "<failed to stringify thrown value>";
-            }
-        }());
-        console.error("wasm-bindgen: imported JS function that was not marked as `catch` threw an error:", error);
-        throw e;
-    }
-}
-
 function passArrayF64ToWasm0(arg, malloc) {
     const ptr = malloc(arg.length * 8, 8) >>> 0;
     getFloat64ArrayMemory0().set(arg, ptr / 8);
@@ -709,7 +646,6 @@ function passArrayF64ToWasm0(arg, malloc) {
 }
 
 function passStringToWasm0(arg, malloc, realloc) {
-    if (typeof(arg) !== 'string') throw new Error(`expected a string argument, found ${typeof(arg)}`);
     if (realloc === undefined) {
         const buf = cachedTextEncoder.encode(arg);
         const ptr = malloc(buf.length, 1) >>> 0;
@@ -737,7 +673,7 @@ function passStringToWasm0(arg, malloc, realloc) {
         ptr = realloc(ptr, len, len = offset + arg.length * 3, 1) >>> 0;
         const view = getUint8ArrayMemory0().subarray(ptr + offset, ptr + len);
         const ret = cachedTextEncoder.encodeInto(arg, view);
-        if (ret.read !== arg.length) throw new Error('failed to pass whole string');
+
         offset += ret.written;
         ptr = realloc(ptr, len, offset, 1) >>> 0;
     }
@@ -776,13 +712,7 @@ if (!('encodeInto' in cachedTextEncoder)) {
 let WASM_VECTOR_LEN = 0;
 
 
-//#endregion
-
-//#region wasm loading
-
 let wasm;
 export function __wbg_set_wasm(val) {
     wasm = val;
 }
-
-//#endregion

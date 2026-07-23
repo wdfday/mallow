@@ -29,6 +29,7 @@ export const list_indicators: () => any;
 export const list_mtf_strategies: () => any;
 export const list_strategies: () => any;
 export const metric_catalog: () => any;
+export const probe_script_htfs: (a: number, b: number) => any;
 export const run_indicators: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number, n: number, o: number, p: number) => any;
 export const smooth_ha: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number, i: number, j: number, k: number, l: number, m: number) => any;
 export const validate_script: (a: number, b: number, c: number, d: number) => any;

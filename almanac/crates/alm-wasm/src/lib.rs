@@ -371,3 +371,16 @@ pub fn validate_script(script: &str, base_tf: &str) -> JsValue {
     let (errors, scope) = script_lint(script, tf);
     to_js(&json!({ "errors": errors, "scope": scope }))
 }
+
+/// Higher timeframes an `ind.TYPE(period, "TF")` line in `script` declares, e.g.
+/// `["H1", "H4"]`. Empty means the script is base-TF only. Mirrors the same probe
+/// `ChartState::backtest` uses internally to reject HTF scripts on-chart — callers
+/// use this to know which extra timeframes to open separate charts for instead.
+#[wasm_bindgen]
+pub fn probe_script_htfs(script: &str) -> JsValue {
+    let tfs: Vec<String> = alm_strategy::probe_script_htfs(script)
+        .into_iter()
+        .map(|tf| tf.to_string())
+        .collect();
+    to_js(&tfs)
+}

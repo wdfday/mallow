@@ -11,7 +11,7 @@ import (
 
 	"mallow/helm/internal/fleet/actor/clid"
 	"mallow/helm/internal/fleet/actor/core/strategy"
-	"mallow/helm/internal/fleet/actor/position"
+	"mallow/helm/internal/fleet/actor/signal-follower/position"
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/natsapi"
 	handdomain "mallow/helm/internal/module/hand/domain"

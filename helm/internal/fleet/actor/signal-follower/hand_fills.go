@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"mallow/helm/internal/fleet/actor/clid"
 	"mallow/helm/internal/fleet/actor/eventcode"
-	"mallow/helm/internal/fleet/actor/position"
+	"mallow/helm/internal/fleet/actor/signal-follower/position"
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/journal/poslog"
 	"mallow/helm/internal/infra/natsapi"

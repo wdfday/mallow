@@ -7,7 +7,7 @@ import (
 
 	"github.com/shopspring/decimal"
 
-	"mallow/helm/internal/fleet/actor/position"
+	"mallow/helm/internal/fleet/actor/signal-follower/position"
 	"mallow/helm/internal/infra/journal/poslog"
 )
 

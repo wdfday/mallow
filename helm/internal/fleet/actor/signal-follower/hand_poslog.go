@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"mallow/helm/internal/fleet/actor/core/strategy"
-	"mallow/helm/internal/fleet/actor/position"
+	"mallow/helm/internal/fleet/actor/signal-follower/position"
 	"mallow/helm/internal/fleet/perf"
 	"mallow/helm/internal/infra/exchange"
 	"mallow/helm/internal/infra/journal/poslog"

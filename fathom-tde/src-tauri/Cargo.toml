@@ -1,0 +1,60 @@
+[package]
+name = "fathom-tde"
+version = "0.1.0"
+description = "Fathom — local-first research IDE for alpha/strategy work"
+edition = "2021"
+
+[lib]
+name = "fathom_tde_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-fs = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "process"] }
+
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# Realtime bar streaming — gateway's /api/v1/stream (binary protobuf BarMsg frames over WS).
+# rustls (not native-tls) to match reqwest's TLS stack above — one less TLS implementation linked.
+tokio-tungstenite = { version = "0.29", features = ["rustls-tls-native-roots"] }
+futures-util = "0.3"
+prost = "0.14"
+keyring = "3"
+rand = "0.8"
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+urlencoding = "2"
+tiny_http = "0.12"
+csv = "1"
+portable-pty = "0.8"
+rusqlite = { version = "0.32", features = ["bundled"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+dirs = "5"
+# Parquet writing for the ~/Fathom/.data lake — pinned to alm-data's arrow/parquet
+# major so the dependency tree keeps a single copy.
+parquet = { version = "58", default-features = false, features = ["arrow"] }
+arrow-array = "58"
+arrow-schema = "58"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+anyhow = "1"
+
+# Native almanac crates — this workspace lives outside almanac/, path deps reach back through it.
+alm-core = { path = "../../almanac/crates/core" }
+alm-data = { path = "../../almanac/crates/data" }
+alm-strategy = { path = "../../almanac/crates/strategy" }
+alm-engine = { path = "../../almanac/crates/engine" }
+
+[[bin]]
+name = "fathom-tde"
+path = "src/main.rs"

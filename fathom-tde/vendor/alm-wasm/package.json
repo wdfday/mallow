@@ -1,0 +1,18 @@
+{
+  "name": "alm-wasm",
+  "type": "module",
+  "description": "WebAssembly bindings for almanac — candle transforms, indicators, mini backtest",
+  "version": "0.1.0",
+  "files": [
+    "alm_wasm_bg.wasm",
+    "alm_wasm.js",
+    "alm_wasm_bg.js",
+    "alm_wasm.d.ts"
+  ],
+  "main": "alm_wasm.js",
+  "types": "alm_wasm.d.ts",
+  "sideEffects": [
+    "./alm_wasm.js",
+    "./snippets/*"
+  ]
+}

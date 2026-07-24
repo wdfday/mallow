@@ -1,0 +1,990 @@
+@import "tailwindcss";
+
+@import "@fontsource/inter/400.css";
+@import "@fontsource/inter/500.css";
+@import "@fontsource/inter/600.css";
+@import "@fontsource/inter/700.css";
+@import "@fontsource/jetbrains-mono/400.css";
+@import "@fontsource/jetbrains-mono/500.css";
+@import "@fontsource/plus-jakarta-sans/600.css";
+@import "@fontsource/plus-jakarta-sans/700.css";
+
+:root {
+  --font-inter: 'Inter', system-ui, sans-serif;
+  --font-jetbrains-mono: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+  --font-plus-jakarta: 'Plus Jakarta Sans', system-ui, sans-serif;
+}
+
+/* Ported from mallow-client/app/globals.css — same 13 palettes, kept in sync intentionally. */
+
+/* ─── Default (navy-dark) ───────────────────────────────────────────────────── */
+:root {
+  --background: #0a0e27;
+  --foreground: #cbd5e1;
+  --card: #0c1230;
+  --card-foreground: #cbd5e1;
+  --popover: #0f1535;
+  --popover-foreground: #cbd5e1;
+  --primary: #cbd5e1;
+  --primary-foreground: #0a0e27;
+  --secondary: #00d9ff;
+  --secondary-foreground: #020a0e;
+  --accent: #fbbf24;
+  --accent-foreground: #0a0e27;
+  --muted: #131830;
+  --muted-foreground: #64748b;
+  --border: #1c2244;
+  --input: #0c1230;
+  --ring: #00d9ff;
+  --destructive: #f85149;
+  --destructive-foreground: #ffffff;
+  --chart-1: #00d9ff; --chart-2: #fbbf24; --chart-3: #a855f7; --chart-4: #10b981; --chart-5: #f43f5e;
+  --sidebar: #070a1f;
+  --sidebar-foreground: #cbd5e1;
+  --sidebar-primary: #00d9ff;
+  --sidebar-primary-foreground: #020a0e;
+  --sidebar-accent: #0c1230;
+  --sidebar-accent-foreground: #cbd5e1;
+  --sidebar-border: #1c2244;
+  --sidebar-ring: #00d9ff;
+  --radius: 0.625rem;
+}
+
+/* OPTION 1 — Deep Navy · Cyan + Gold */
+
+.navy-dark {
+  --background: #0a0e27;
+  --foreground: #cbd5e1;
+  --card: #0c1230;
+  --card-foreground: #cbd5e1;
+  --popover: #0f1535;
+  --popover-foreground: #cbd5e1;
+  --primary: #cbd5e1;
+  --primary-foreground: #0a0e27;
+  --secondary: #00d9ff;
+  --secondary-foreground: #020a0e;
+  --accent: #fbbf24;
+  --accent-foreground: #0a0e27;
+  --muted: #131830;
+  --muted-foreground: #64748b;
+  --border: #1c2244;
+  --input: #0c1230;
+  --ring: #00d9ff;
+  --destructive: #f85149;
+  --destructive-foreground: #ffffff;
+  --chart-1: #00d9ff; --chart-2: #fbbf24; --chart-3: #a855f7; --chart-4: #10b981; --chart-5: #f43f5e;
+  --sidebar: #070a1f;
+  --sidebar-foreground: #cbd5e1;
+  --sidebar-primary: #00d9ff;
+  --sidebar-primary-foreground: #020a0e;
+  --sidebar-accent: #0c1230;
+  --sidebar-accent-foreground: #cbd5e1;
+  --sidebar-border: #1c2244;
+  --sidebar-ring: #00d9ff;
+}
+
+.navy-light {
+  --background: #f8fafc;
+  --foreground: #0d1a3a;
+  --card: #f0f7ff;
+  --card-foreground: #0d1a3a;
+  --popover: #f0f7ff;
+  --popover-foreground: #0d1a3a;
+  --primary: #0d1a3a;
+  --primary-foreground: #ffffff;
+  --secondary: #0891b2;
+  --secondary-foreground: #ffffff;
+  --accent: #d97706;
+  --accent-foreground: #ffffff;
+  --muted: #e2eaf6;
+  --muted-foreground: #4a6a9a;
+  --border: #c8d5ee;
+  --input: #f0f7ff;
+  --ring: #0891b2;
+  --destructive: #cf222e;
+  --destructive-foreground: #ffffff;
+  --chart-1: #0891b2; --chart-2: #d97706; --chart-3: #7c3aed; --chart-4: #059669; --chart-5: #e11d48;
+  --sidebar: #e8f0fc;
+  --sidebar-foreground: #0d1a3a;
+  --sidebar-primary: #0891b2;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #d5e3f8;
+  --sidebar-accent-foreground: #0d1a3a;
+  --sidebar-border: #c8d5ee;
+  --sidebar-ring: #0891b2;
+}
+
+/* OPTION 2 — Black · Purple + Cyan */
+
+.purple-dark {
+  --background: #0f0117;
+  --foreground: #f3f4f6;
+  --card: #130120;
+  --card-foreground: #f3f4f6;
+  --popover: #180226;
+  --popover-foreground: #f3f4f6;
+  --primary: #f3f4f6;
+  --primary-foreground: #0f0117;
+  --secondary: #a78bfa;
+  --secondary-foreground: #0f0117;
+  --accent: #22d3ee;
+  --accent-foreground: #0f0117;
+  --muted: #1a0230;
+  --muted-foreground: #6b7280;
+  --border: #2d045a;
+  --input: #130120;
+  --ring: #a78bfa;
+  --destructive: #f85149;
+  --destructive-foreground: #ffffff;
+  --chart-1: #a78bfa; --chart-2: #22d3ee; --chart-3: #f59e0b; --chart-4: #10b981; --chart-5: #f43f5e;
+  --sidebar: #09000f;
+  --sidebar-foreground: #f3f4f6;
+  --sidebar-primary: #a78bfa;
+  --sidebar-primary-foreground: #0f0117;
+  --sidebar-accent: #130120;
+  --sidebar-accent-foreground: #f3f4f6;
+  --sidebar-border: #2d045a;
+  --sidebar-ring: #a78bfa;
+}
+
+.purple-light {
+  --background: #f5f3ff;
+  --foreground: #1e1b4b;
+  --card: #ede9ff;
+  --card-foreground: #1e1b4b;
+  --popover: #ede9ff;
+  --popover-foreground: #1e1b4b;
+  --primary: #1e1b4b;
+  --primary-foreground: #ffffff;
+  --secondary: #7c3aed;
+  --secondary-foreground: #ffffff;
+  --accent: #06b6d4;
+  --accent-foreground: #ffffff;
+  --muted: #e0d9ff;
+  --muted-foreground: #5b5296;
+  --border: #c4b5fd;
+  --input: #ede9ff;
+  --ring: #7c3aed;
+  --destructive: #cf222e;
+  --destructive-foreground: #ffffff;
+  --chart-1: #7c3aed; --chart-2: #06b6d4; --chart-3: #f59e0b; --chart-4: #059669; --chart-5: #e11d48;
+  --sidebar: #ede9ff;
+  --sidebar-foreground: #1e1b4b;
+  --sidebar-primary: #7c3aed;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #ddd6fe;
+  --sidebar-accent-foreground: #1e1b4b;
+  --sidebar-border: #c4b5fd;
+  --sidebar-ring: #7c3aed;
+}
+
+/* OPTION 3 — Charcoal · Teal + Orange */
+
+.charcoal-dark {
+  --background: #1a1a1a;
+  --foreground: #f3f4f6;
+  --card: #202020;
+  --card-foreground: #f3f4f6;
+  --popover: #252525;
+  --popover-foreground: #f3f4f6;
+  --primary: #f3f4f6;
+  --primary-foreground: #1a1a1a;
+  --secondary: #2dd4bf;
+  --secondary-foreground: #0d1a19;
+  --accent: #fb923c;
+  --accent-foreground: #1a1a1a;
+  --muted: #282828;
+  --muted-foreground: #9ca3af;
+  --border: #333333;
+  --input: #202020;
+  --ring: #2dd4bf;
+  --destructive: #f85149;
+  --destructive-foreground: #ffffff;
+  --chart-1: #2dd4bf; --chart-2: #fb923c; --chart-3: #a855f7; --chart-4: #3b82f6; --chart-5: #f43f5e;
+  --sidebar: #111111;
+  --sidebar-foreground: #f3f4f6;
+  --sidebar-primary: #2dd4bf;
+  --sidebar-primary-foreground: #0d1a19;
+  --sidebar-accent: #202020;
+  --sidebar-accent-foreground: #f3f4f6;
+  --sidebar-border: #333333;
+  --sidebar-ring: #2dd4bf;
+}
+
+.charcoal-light {
+  --background: #f9fafb;
+  --foreground: #111827;
+  --card: #f3f4f6;
+  --card-foreground: #111827;
+  --popover: #f3f4f6;
+  --popover-foreground: #111827;
+  --primary: #111827;
+  --primary-foreground: #ffffff;
+  --secondary: #14b8a6;
+  --secondary-foreground: #ffffff;
+  --accent: #f97316;
+  --accent-foreground: #ffffff;
+  --muted: #e5e7eb;
+  --muted-foreground: #6b7280;
+  --border: #d1d5db;
+  --input: #f3f4f6;
+  --ring: #14b8a6;
+  --destructive: #cf222e;
+  --destructive-foreground: #ffffff;
+  --chart-1: #14b8a6; --chart-2: #f97316; --chart-3: #7c3aed; --chart-4: #3b82f6; --chart-5: #e11d48;
+  --sidebar: #f0f2f4;
+  --sidebar-foreground: #111827;
+  --sidebar-primary: #14b8a6;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #e5e7eb;
+  --sidebar-accent-foreground: #111827;
+  --sidebar-border: #d1d5db;
+  --sidebar-ring: #14b8a6;
+}
+
+/* OPTION 4 — Deep Blue · Neon Green + Hot Pink */
+
+.neon-dark {
+  --background: #0d1117;
+  --foreground: #ffffff;
+  --card: #111920;
+  --card-foreground: #ffffff;
+  --popover: #131d26;
+  --popover-foreground: #ffffff;
+  --primary: #ffffff;
+  --primary-foreground: #0d1117;
+  --secondary: #39ff14;
+  --secondary-foreground: #0d1117;
+  --accent: #ff006e;
+  --accent-foreground: #ffffff;
+  --muted: #161f28;
+  --muted-foreground: #8b949e;
+  --border: #21262d;
+  --input: #111920;
+  --ring: #39ff14;
+  --destructive: #f85149;
+  --destructive-foreground: #ffffff;
+  --chart-1: #39ff14; --chart-2: #ff006e; --chart-3: #f59e0b; --chart-4: #3b82f6; --chart-5: #a78bfa;
+  --sidebar: #090d12;
+  --sidebar-foreground: #ffffff;
+  --sidebar-primary: #39ff14;
+  --sidebar-primary-foreground: #0d1117;
+  --sidebar-accent: #111920;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: #21262d;
+  --sidebar-ring: #39ff14;
+}
+
+.neon-light {
+  --background: #f0f4ff;
+  --foreground: #0a0e27;
+  --card: #e8eeff;
+  --card-foreground: #0a0e27;
+  --popover: #e8eeff;
+  --popover-foreground: #0a0e27;
+  --primary: #0a0e27;
+  --primary-foreground: #ffffff;
+  --secondary: #0066ff;
+  --secondary-foreground: #ffffff;
+  --accent: #39ff14;
+  --accent-foreground: #0a0e27;
+  --muted: #dae2ff;
+  --muted-foreground: #4a5568;
+  --border: #b8c8f0;
+  --input: #e8eeff;
+  --ring: #0066ff;
+  --destructive: #cf222e;
+  --destructive-foreground: #ffffff;
+  --chart-1: #0066ff; --chart-2: #39ff14; --chart-3: #7c3aed; --chart-4: #059669; --chart-5: #e11d48;
+  --sidebar: #e0eaff;
+  --sidebar-foreground: #0a0e27;
+  --sidebar-primary: #0066ff;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #d4e0ff;
+  --sidebar-accent-foreground: #0a0e27;
+  --sidebar-border: #b8c8f0;
+  --sidebar-ring: #0066ff;
+}
+
+/* OPTION 5 — Orange + Teal (Warm) */
+
+.orange-dark {
+  --background: #1a0f08;
+  --foreground: #f5f5f5;
+  --card: #221408;
+  --card-foreground: #f5f5f5;
+  --popover: #281900;
+  --popover-foreground: #f5f5f5;
+  --primary: #f5f5f5;
+  --primary-foreground: #1a0f08;
+  --secondary: #ff9660;
+  --secondary-foreground: #1a0f08;
+  --accent: #00d4ff;
+  --accent-foreground: #1a0f08;
+  --muted: #2a1a0d;
+  --muted-foreground: #a08060;
+  --border: #3d2415;
+  --input: #221408;
+  --ring: #ff9660;
+  --destructive: #f85149;
+  --destructive-foreground: #ffffff;
+  --chart-1: #ff9660; --chart-2: #00d4ff; --chart-3: #ffd700; --chart-4: #10b981; --chart-5: #f43f5e;
+  --sidebar: #130a04;
+  --sidebar-foreground: #f5f5f5;
+  --sidebar-primary: #ff9660;
+  --sidebar-primary-foreground: #1a0f08;
+  --sidebar-accent: #221408;
+  --sidebar-accent-foreground: #f5f5f5;
+  --sidebar-border: #3d2415;
+  --sidebar-ring: #ff9660;
+}
+
+.orange-light {
+  --background: #fff8f3;
+  --foreground: #1a1a1a;
+  --card: #fff0e6;
+  --card-foreground: #1a1a1a;
+  --popover: #fff0e6;
+  --popover-foreground: #1a1a1a;
+  --primary: #1a1a1a;
+  --primary-foreground: #ffffff;
+  --secondary: #ff6b35;
+  --secondary-foreground: #ffffff;
+  --accent: #004e89;
+  --accent-foreground: #ffffff;
+  --muted: #fce8d8;
+  --muted-foreground: #8b5e40;
+  --border: #f0cdb0;
+  --input: #fff0e6;
+  --ring: #ff6b35;
+  --destructive: #cf222e;
+  --destructive-foreground: #ffffff;
+  --chart-1: #ff6b35; --chart-2: #004e89; --chart-3: #ffd700; --chart-4: #059669; --chart-5: #e11d48;
+  --sidebar: #fce8d8;
+  --sidebar-foreground: #1a1a1a;
+  --sidebar-primary: #ff6b35;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #f8dbc5;
+  --sidebar-accent-foreground: #1a1a1a;
+  --sidebar-border: #f0cdb0;
+  --sidebar-ring: #ff6b35;
+}
+
+/* OPTION 6 — Red + Gold (Warm) */
+
+.crimson-dark {
+  --background: #1a0505;
+  --foreground: #f5f5f5;
+  --card: #220808;
+  --card-foreground: #f5f5f5;
+  --popover: #2a0a0a;
+  --popover-foreground: #f5f5f5;
+  --primary: #f5f5f5;
+  --primary-foreground: #1a0505;
+  --secondary: #ff6b6b;
+  --secondary-foreground: #1a0505;
+  --accent: #ffd700;
+  --accent-foreground: #1a0505;
+  --muted: #2a0a0a;
+  --muted-foreground: #a06060;
+  --border: #420f0f;
+  --input: #220808;
+  --ring: #ff6b6b;
+  --destructive: #f85149;
+  --destructive-foreground: #ffffff;
+  --chart-1: #ff6b6b; --chart-2: #ffd700; --chart-3: #a78bfa; --chart-4: #10b981; --chart-5: #f97316;
+  --sidebar: #110303;
+  --sidebar-foreground: #f5f5f5;
+  --sidebar-primary: #ff6b6b;
+  --sidebar-primary-foreground: #1a0505;
+  --sidebar-accent: #220808;
+  --sidebar-accent-foreground: #f5f5f5;
+  --sidebar-border: #420f0f;
+  --sidebar-ring: #ff6b6b;
+}
+
+.crimson-light {
+  --background: #faf7f2;
+  --foreground: #1a1a1a;
+  --card: #f5ede6;
+  --card-foreground: #1a1a1a;
+  --popover: #f5ede6;
+  --popover-foreground: #1a1a1a;
+  --primary: #1a1a1a;
+  --primary-foreground: #ffffff;
+  --secondary: #d32f2f;
+  --secondary-foreground: #ffffff;
+  --accent: #ffd700;
+  --accent-foreground: #1a1a1a;
+  --muted: #ecddd0;
+  --muted-foreground: #7a5a48;
+  --border: #e0c8b0;
+  --input: #f5ede6;
+  --ring: #d32f2f;
+  --destructive: #cf222e;
+  --destructive-foreground: #ffffff;
+  --chart-1: #d32f2f; --chart-2: #ffd700; --chart-3: #7c3aed; --chart-4: #059669; --chart-5: #e11d48;
+  --sidebar: #f0e8de;
+  --sidebar-foreground: #1a1a1a;
+  --sidebar-primary: #d32f2f;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #e8ddd0;
+  --sidebar-accent-foreground: #1a1a1a;
+  --sidebar-border: #e0c8b0;
+  --sidebar-ring: #d32f2f;
+}
+
+/* OPTION 7 — Rose + Lavender (Warm) */
+
+.rose-dark {
+  --background: #1a0a12;
+  --foreground: #f5f5f5;
+  --card: #22101a;
+  --card-foreground: #f5f5f5;
+  --popover: #2a1522;
+  --popover-foreground: #f5f5f5;
+  --primary: #f5f5f5;
+  --primary-foreground: #1a0a12;
+  --secondary: #ff4081;
+  --secondary-foreground: #ffffff;
+  --accent: #b39ddb;
+  --accent-foreground: #1a0a12;
+  --muted: #2a1522;
+  --muted-foreground: #a06080;
+  --border: #4a1a30;
+  --input: #22101a;
+  --ring: #ff4081;
+  --destructive: #f85149;
+  --destructive-foreground: #ffffff;
+  --chart-1: #ff4081; --chart-2: #b39ddb; --chart-3: #00d4ff; --chart-4: #10b981; --chart-5: #ffd700;
+  --sidebar: #12060e;
+  --sidebar-foreground: #f5f5f5;
+  --sidebar-primary: #ff4081;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #22101a;
+  --sidebar-accent-foreground: #f5f5f5;
+  --sidebar-border: #4a1a30;
+  --sidebar-ring: #ff4081;
+}
+
+.rose-light {
+  --background: #faf5f7;
+  --foreground: #1a1a1a;
+  --card: #f5ecf0;
+  --card-foreground: #1a1a1a;
+  --popover: #f5ecf0;
+  --popover-foreground: #1a1a1a;
+  --primary: #1a1a1a;
+  --primary-foreground: #ffffff;
+  --secondary: #e91e63;
+  --secondary-foreground: #ffffff;
+  --accent: #7c4dff;
+  --accent-foreground: #ffffff;
+  --muted: #ecdde5;
+  --muted-foreground: #7a4862;
+  --border: #dfc8d5;
+  --input: #f5ecf0;
+  --ring: #e91e63;
+  --destructive: #cf222e;
+  --destructive-foreground: #ffffff;
+  --chart-1: #e91e63; --chart-2: #7c4dff; --chart-3: #00bcd4; --chart-4: #059669; --chart-5: #ff9800;
+  --sidebar: #f0e4ec;
+  --sidebar-foreground: #1a1a1a;
+  --sidebar-primary: #e91e63;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #e8d8e2;
+  --sidebar-accent-foreground: #1a1a1a;
+  --sidebar-border: #dfc8d5;
+  --sidebar-ring: #e91e63;
+}
+
+/* OPTION 8 — Amber + Slate (Warm) */
+
+.amber-dark {
+  --background: #1a0f00;
+  --foreground: #f5f5f5;
+  --card: #221500;
+  --card-foreground: #f5f5f5;
+  --popover: #2a1a00;
+  --popover-foreground: #f5f5f5;
+  --primary: #f5f5f5;
+  --primary-foreground: #1a0f00;
+  --secondary: #ffb74d;
+  --secondary-foreground: #1a0f00;
+  --accent: #78909c;
+  --accent-foreground: #ffffff;
+  --muted: #2a1a00;
+  --muted-foreground: #a07840;
+  --border: #3d2800;
+  --input: #221500;
+  --ring: #ffb74d;
+  --destructive: #f85149;
+  --destructive-foreground: #ffffff;
+  --chart-1: #ffb74d; --chart-2: #78909c; --chart-3: #a78bfa; --chart-4: #10b981; --chart-5: #f43f5e;
+  --sidebar: #130a00;
+  --sidebar-foreground: #f5f5f5;
+  --sidebar-primary: #ffb74d;
+  --sidebar-primary-foreground: #1a0f00;
+  --sidebar-accent: #221500;
+  --sidebar-accent-foreground: #f5f5f5;
+  --sidebar-border: #3d2800;
+  --sidebar-ring: #ffb74d;
+}
+
+.amber-light {
+  --background: #fffbf5;
+  --foreground: #1a1a1a;
+  --card: #fff5e6;
+  --card-foreground: #1a1a1a;
+  --popover: #fff5e6;
+  --popover-foreground: #1a1a1a;
+  --primary: #1a1a1a;
+  --primary-foreground: #ffffff;
+  --secondary: #ff9800;
+  --secondary-foreground: #ffffff;
+  --accent: #455a64;
+  --accent-foreground: #ffffff;
+  --muted: #fcebd5;
+  --muted-foreground: #7a6040;
+  --border: #f0d8b0;
+  --input: #fff5e6;
+  --ring: #ff9800;
+  --destructive: #cf222e;
+  --destructive-foreground: #ffffff;
+  --chart-1: #ff9800; --chart-2: #455a64; --chart-3: #7c3aed; --chart-4: #059669; --chart-5: #e11d48;
+  --sidebar: #f8edd8;
+  --sidebar-foreground: #1a1a1a;
+  --sidebar-primary: #ff9800;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #f0e4c8;
+  --sidebar-accent-foreground: #1a1a1a;
+  --sidebar-border: #f0d8b0;
+  --sidebar-ring: #ff9800;
+}
+
+/* OPTION 9 — Pitch Black + Neon Green (Matrix) */
+
+.matrix-dark {
+  --background: #000000;
+  --foreground: #ffffff;
+  --card: #0a0a0a;
+  --card-foreground: #ffffff;
+  --popover: #0f0f0f;
+  --popover-foreground: #ffffff;
+  --primary: #ffffff;
+  --primary-foreground: #000000;
+  --secondary: #39ff14;
+  --secondary-foreground: #000000;
+  --accent: #00cc00;
+  --accent-foreground: #000000;
+  --muted: #111111;
+  --muted-foreground: #6b6b6b;
+  --border: #1f1f1f;
+  --input: #0a0a0a;
+  --ring: #39ff14;
+  --destructive: #f85149;
+  --destructive-foreground: #ffffff;
+  --chart-1: #39ff14; --chart-2: #00cc00; --chart-3: #00ff88; --chart-4: #00ffcc; --chart-5: #ff4444;
+  --sidebar: #000000;
+  --sidebar-foreground: #ffffff;
+  --sidebar-primary: #39ff14;
+  --sidebar-primary-foreground: #000000;
+  --sidebar-accent: #0a0a0a;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: #1f1f1f;
+  --sidebar-ring: #39ff14;
+}
+
+.matrix-light {
+  --background: #f5f5f5;
+  --foreground: #000000;
+  --card: #eeeeee;
+  --card-foreground: #000000;
+  --popover: #eeeeee;
+  --popover-foreground: #000000;
+  --primary: #000000;
+  --primary-foreground: #ffffff;
+  --secondary: #39ff14;
+  --secondary-foreground: #000000;
+  --accent: #2a2a2a;
+  --accent-foreground: #ffffff;
+  --muted: #e0e0e0;
+  --muted-foreground: #666666;
+  --border: #cccccc;
+  --input: #eeeeee;
+  --ring: #39ff14;
+  --destructive: #cf222e;
+  --destructive-foreground: #ffffff;
+  --chart-1: #39ff14; --chart-2: #2a2a2a; --chart-3: #059669; --chart-4: #3b82f6; --chart-5: #e11d48;
+  --sidebar: #e8e8e8;
+  --sidebar-foreground: #000000;
+  --sidebar-primary: #39ff14;
+  --sidebar-primary-foreground: #000000;
+  --sidebar-accent: #dddddd;
+  --sidebar-accent-foreground: #000000;
+  --sidebar-border: #cccccc;
+  --sidebar-ring: #39ff14;
+}
+
+/* OPTION 10 — Pure Black + Neon Pink + Cyan (Cyberpunk) */
+
+.cyberpunk-dark {
+  --background: #0a0a0a;
+  --foreground: #ffffff;
+  --card: #111111;
+  --card-foreground: #ffffff;
+  --popover: #161616;
+  --popover-foreground: #ffffff;
+  --primary: #ffffff;
+  --primary-foreground: #0a0a0a;
+  --secondary: #ff006e;
+  --secondary-foreground: #ffffff;
+  --accent: #00f5ff;
+  --accent-foreground: #0a0a0a;
+  --muted: #1a1a1a;
+  --muted-foreground: #888888;
+  --border: #252525;
+  --input: #111111;
+  --ring: #ff006e;
+  --destructive: #f85149;
+  --destructive-foreground: #ffffff;
+  --chart-1: #ff006e; --chart-2: #00f5ff; --chart-3: #ffd700; --chart-4: #39ff14; --chart-5: #a78bfa;
+  --sidebar: #060606;
+  --sidebar-foreground: #ffffff;
+  --sidebar-primary: #ff006e;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #111111;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: #252525;
+  --sidebar-ring: #ff006e;
+}
+
+.cyberpunk-light {
+  --background: #f5f5f5;
+  --foreground: #000000;
+  --card: #eeeeee;
+  --card-foreground: #000000;
+  --popover: #eeeeee;
+  --popover-foreground: #000000;
+  --primary: #000000;
+  --primary-foreground: #ffffff;
+  --secondary: #ff006e;
+  --secondary-foreground: #ffffff;
+  --accent: #00bcd4;
+  --accent-foreground: #000000;
+  --muted: #e0e0e0;
+  --muted-foreground: #666666;
+  --border: #cccccc;
+  --input: #eeeeee;
+  --ring: #ff006e;
+  --destructive: #cf222e;
+  --destructive-foreground: #ffffff;
+  --chart-1: #ff006e; --chart-2: #00bcd4; --chart-3: #ffd700; --chart-4: #059669; --chart-5: #7c3aed;
+  --sidebar: #e8e8e8;
+  --sidebar-foreground: #000000;
+  --sidebar-primary: #ff006e;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #dddddd;
+  --sidebar-accent-foreground: #000000;
+  --sidebar-border: #cccccc;
+  --sidebar-ring: #ff006e;
+}
+
+/* OPTION 11 — Charcoal + Neon Orange + Purple (Chrome) */
+
+.chrome-dark {
+  --background: #1a1a1a;
+  --foreground: #ffffff;
+  --card: #222222;
+  --card-foreground: #ffffff;
+  --popover: #272727;
+  --popover-foreground: #ffffff;
+  --primary: #ffffff;
+  --primary-foreground: #1a1a1a;
+  --secondary: #ff9500;
+  --secondary-foreground: #1a1a1a;
+  --accent: #b300ff;
+  --accent-foreground: #ffffff;
+  --muted: #2a2a2a;
+  --muted-foreground: #8b8b8b;
+  --border: #363636;
+  --input: #222222;
+  --ring: #ff9500;
+  --destructive: #f85149;
+  --destructive-foreground: #ffffff;
+  --chart-1: #ff9500; --chart-2: #b300ff; --chart-3: #00f5ff; --chart-4: #39ff14; --chart-5: #f43f5e;
+  --sidebar: #111111;
+  --sidebar-foreground: #ffffff;
+  --sidebar-primary: #ff9500;
+  --sidebar-primary-foreground: #1a1a1a;
+  --sidebar-accent: #222222;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: #363636;
+  --sidebar-ring: #ff9500;
+}
+
+.chrome-light {
+  --background: #f5f5f5;
+  --foreground: #000000;
+  --card: #eeeeee;
+  --card-foreground: #000000;
+  --popover: #eeeeee;
+  --popover-foreground: #000000;
+  --primary: #000000;
+  --primary-foreground: #ffffff;
+  --secondary: #ff6600;
+  --secondary-foreground: #ffffff;
+  --accent: #9d00ff;
+  --accent-foreground: #ffffff;
+  --muted: #e0e0e0;
+  --muted-foreground: #666666;
+  --border: #cccccc;
+  --input: #eeeeee;
+  --ring: #ff6600;
+  --destructive: #cf222e;
+  --destructive-foreground: #ffffff;
+  --chart-1: #ff6600; --chart-2: #9d00ff; --chart-3: #00bcd4; --chart-4: #059669; --chart-5: #e11d48;
+  --sidebar: #e8e8e8;
+  --sidebar-foreground: #000000;
+  --sidebar-primary: #ff6600;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #dddddd;
+  --sidebar-accent-foreground: #000000;
+  --sidebar-border: #cccccc;
+  --sidebar-ring: #ff6600;
+}
+
+/* OPTION 12 — Emerald Green + Deep Navy (Professional Premium) */
+
+.emerald-dark {
+  --background: #0a1428;
+  --foreground: #e3f2fd;
+  --card: #0d1a34;
+  --card-foreground: #e3f2fd;
+  --popover: #101e3a;
+  --popover-foreground: #e3f2fd;
+  --primary: #e3f2fd;
+  --primary-foreground: #0a1428;
+  --secondary: #00c853;
+  --secondary-foreground: #0a1428;
+  --accent: #2196f3;
+  --accent-foreground: #ffffff;
+  --muted: #101e3a;
+  --muted-foreground: #7090b0;
+  --border: #1a2d50;
+  --input: #0d1a34;
+  --ring: #00c853;
+  --destructive: #f85149;
+  --destructive-foreground: #ffffff;
+  --chart-1: #00c853; --chart-2: #2196f3; --chart-3: #ffd700; --chart-4: #ff9500; --chart-5: #f43f5e;
+  --sidebar: #070e1e;
+  --sidebar-foreground: #e3f2fd;
+  --sidebar-primary: #00c853;
+  --sidebar-primary-foreground: #0a1428;
+  --sidebar-accent: #0d1a34;
+  --sidebar-accent-foreground: #e3f2fd;
+  --sidebar-border: #1a2d50;
+  --sidebar-ring: #00c853;
+}
+
+.emerald-light {
+  --background: #f0f4f3;
+  --foreground: #1a1a1a;
+  --card: #e6eeeb;
+  --card-foreground: #1a1a1a;
+  --popover: #e6eeeb;
+  --popover-foreground: #1a1a1a;
+  --primary: #1a1a1a;
+  --primary-foreground: #ffffff;
+  --secondary: #1b5e20;
+  --secondary-foreground: #ffffff;
+  --accent: #0d47a1;
+  --accent-foreground: #ffffff;
+  --muted: #d8e5e0;
+  --muted-foreground: #4a6a58;
+  --border: #c0d5cc;
+  --input: #e6eeeb;
+  --ring: #1b5e20;
+  --destructive: #cf222e;
+  --destructive-foreground: #ffffff;
+  --chart-1: #1b5e20; --chart-2: #0d47a1; --chart-3: #ffd700; --chart-4: #ff9800; --chart-5: #e11d48;
+  --sidebar: #e0eae6;
+  --sidebar-foreground: #1a1a1a;
+  --sidebar-primary: #1b5e20;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #d5e5de;
+  --sidebar-accent-foreground: #1a1a1a;
+  --sidebar-border: #c0d5cc;
+  --sidebar-ring: #1b5e20;
+}
+
+/* OPTION 13 — Pure Monochrome (Mono) · Zero hue, maximum contrast, sharp corners */
+
+.mono-dark {
+  --background: #000000;
+  --foreground: #ffffff;
+  --card: #0d0d0d;
+  --card-foreground: #ffffff;
+  --popover: #0d0d0d;
+  --popover-foreground: #ffffff;
+  --primary: #ffffff;
+  --primary-foreground: #000000;
+  /* Accent role, not a surface: this app renders text-secondary/border-secondary as its accent
+     (active states, Run button, override tints). The original shadcn-style surface grey
+     (#1a1a1a) was ~1.1:1 against the background — accents were invisible in mono. */
+  --secondary: #d4d4d4;
+  --secondary-foreground: #000000;
+  --accent: #262626;
+  --accent-foreground: #ffffff;
+  --muted: #1a1a1a;
+  --muted-foreground: #a3a3a3;
+  --border: #2a2a2a;
+  --input: #1a1a1a;
+  --ring: #ffffff;
+  --destructive: #ff453a;
+  --destructive-foreground: #ffffff;
+  /* Even perceptual ladder with a ≥3:1 floor — the old tail (#666/#404040) dropped to 1.9:1. */
+  --chart-1: #ffffff; --chart-2: #c9c9c9; --chart-3: #9e9e9e; --chart-4: #757575; --chart-5: #525252;
+  --sidebar: #0a0a0a;
+  --sidebar-foreground: #ffffff;
+  --sidebar-primary: #ffffff;
+  --sidebar-primary-foreground: #000000;
+  --sidebar-accent: #1a1a1a;
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-border: #2a2a2a;
+  --sidebar-ring: #ffffff;
+  --radius: 0.125rem;
+}
+
+.mono-light {
+  --background: #ffffff;
+  --foreground: #000000;
+  --card: #fafafa;
+  --card-foreground: #000000;
+  --popover: #fafafa;
+  --popover-foreground: #000000;
+  --primary: #000000;
+  --primary-foreground: #ffffff;
+  /* Accent role, not a surface — see .mono-dark: #e5e5e5 text on white was invisible. */
+  --secondary: #333333;
+  --secondary-foreground: #ffffff;
+  --accent: #d4d4d4;
+  --accent-foreground: #000000;
+  --muted: #ededed;
+  --muted-foreground: #595959;
+  --border: #d4d4d4;
+  --input: #e5e5e5;
+  --ring: #000000;
+  --destructive: #d32f2f;
+  --destructive-foreground: #ffffff;
+  /* Even perceptual ladder with a ~3:1 floor — the old tail (#a6a6a6) was 2.3:1 on white. */
+  --chart-1: #000000; --chart-2: #363636; --chart-3: #5e5e5e; --chart-4: #7d7d7d; --chart-5: #949494;
+  --sidebar: #fafafa;
+  --sidebar-foreground: #000000;
+  --sidebar-primary: #000000;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #e5e5e5;
+  --sidebar-accent-foreground: #000000;
+  --sidebar-border: #d4d4d4;
+  --sidebar-ring: #000000;
+  --radius: 0.125rem;
+}
+
+/* Corner mode — user override decoupled from palette (Settings → Corners). Every theme gets
+   both looks: 'auto' keeps the palette's native radius (mono square, the rest rounded); these
+   classes force it. Must stay AFTER all palette blocks — they share specificity with
+   `.{palette}-{variant}` on the same element, so source order is what makes them win. */
+.corners-rounded {
+  --radius: 0.625rem;
+}
+.corners-square {
+  --radius: 0.125rem;
+}
+
+@theme inline {
+  --font-sans: var(--font-inter), system-ui, sans-serif;
+  --font-mono: var(--font-jetbrains-mono), 'SFMono-Regular', Consolas, monospace;
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Custom scrollbar hiding utility (used by the project-tree sidebar) */
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-none {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* dockview's "abyss" theme ships its own hardcoded dark palette (--dv-color-abyss-*) —
+   completely independent of our --border/--sidebar/--card tokens above, so panel/tab borders
+   never followed the app's active palette or light/dark mode. Point every --dv-* color at the
+   real theme variable instead — same idea as border-border/bg-sidebar/bg-card everywhere else in
+   the app, so the Chart/Editor/Output/CLI panels read as part of the same surface as
+   title-rail/Sidebar, not a separately-themed nested app. */
+.dockview-theme-abyss {
+  --dv-group-view-background-color: var(--background);
+  --dv-tabs-and-actions-container-background-color: var(--sidebar);
+  --dv-activegroup-visiblepanel-tab-background-color: var(--background);
+  --dv-activegroup-hiddenpanel-tab-background-color: var(--card);
+  --dv-inactivegroup-visiblepanel-tab-background-color: var(--background);
+  --dv-inactivegroup-hiddenpanel-tab-background-color: var(--card);
+  --dv-activegroup-visiblepanel-tab-color: var(--foreground);
+  --dv-activegroup-hiddenpanel-tab-color: var(--muted-foreground);
+  --dv-inactivegroup-visiblepanel-tab-color: var(--muted-foreground);
+  --dv-inactivegroup-hiddenpanel-tab-color: var(--muted-foreground);
+  --dv-separator-border: var(--border);
+  --dv-tab-divider-color: var(--border);
+  --dv-paneview-header-border-color: var(--border);
+  --dv-icon-hover-background-color: var(--sidebar-accent);
+  --dv-paneview-active-outline-color: var(--secondary);
+  /* abyss's own --dv-sash-color / --dv-active-sash-color are BOTH transparent — hovering (or even
+     actively dragging) a split between panels showed no feedback at all, so there was no visual
+     affordance that a divider is draggable. --dv-active-sash-color also has a built-in 0.5s hover
+     delay (dockview's own CSS, not overridable here) before it fades in — expected, not a bug. */
+  --dv-active-sash-color: var(--secondary);
+}

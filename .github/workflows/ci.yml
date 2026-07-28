@@ -142,13 +142,72 @@ jobs:
       - name: trace overlay
         run: docker compose --env-file deployment/environments/shared.env.example -f deployment/docker-compose.yml -f deployment/docker-compose.trace.yml config -q
 
+  dependency-audit:
+    name: audit / ${{ matrix.check }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [go-vuln, rust-vuln, py-vuln]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        if: matrix.check == 'go-vuln'
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: govulncheck (identity, helm, api-gateway, hist-data, pkg)
+        if: matrix.check == 'go-vuln'
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          for svc in identity helm api-gateway hist-data pkg; do
+            echo "::group::govulncheck / $svc"
+            (cd "$svc" && govulncheck ./...)
+            echo "::endgroup::"
+          done
+        env:
+          GOTOOLCHAIN: local
+
+      # Non-blocking: almanac/Cargo.lock is gitignored (binary workspace, resolves
+      # fresh every run), so this can't be fixed once and stay fixed the way a
+      # committed lockfile would — it drifts with whatever crates.io has that day.
+      # As of 2026-07-28 there are 5 known advisories with no clean fix yet, incl.
+      # RUSTSEC-2023-0071 (rsa/Marvin attack) which upstream has no patched release
+      # for at all — a hard gate here would be permanently red for reasons outside
+      # this repo's control. Findings still show in the job log for visibility.
+      - name: cargo audit (almanac) — informational, not a merge gate
+        if: matrix.check == 'rust-vuln'
+        working-directory: almanac
+        continue-on-error: true
+        run: |
+          cargo install cargo-audit --locked
+          cargo audit
+
+      - name: Set up Rust
+        if: matrix.check == 'py-vuln'
+        uses: dtolnay/rust-toolchain@stable
+      - name: Set up Python
+        if: matrix.check == 'py-vuln'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: pip-audit (alm-py)
+        if: matrix.check == 'py-vuln'
+        working-directory: almanac/crates/alm-py
+        run: |
+          python -m pip install --upgrade pip
+          pip install pip-audit maturin
+          pip install -e '.[dev]'
+          pip-audit
+
   # Single required status check for branch protection — add "ci" here instead
   # of every matrix entry by name, so adding/removing a service later doesn't
   # mean going back to update the branch protection rule too.
   ci:
     name: CI
     if: always()
-    needs: [go-services, go-pkg, rust-almanac, alm-py, swagger-check, compose-validate]
+    needs: [go-services, go-pkg, rust-almanac, alm-py, swagger-check, compose-validate, dependency-audit]
     runs-on: ubuntu-latest
     steps:
       - name: Fail if any dependency failed

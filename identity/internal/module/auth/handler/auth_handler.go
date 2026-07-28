@@ -61,7 +61,7 @@ func (h *AuthHandler) RegisterRoutes(r *gin.Engine, authMiddleware *middleware.M
 func (h *AuthHandler) register(c *gin.Context) {
 	var req dto.RegisterRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, "invalid request data")
+		shared.HandleError(c, shared.ErrInvalidRequestBody)
 		return
 	}
 
@@ -98,7 +98,7 @@ func (h *AuthHandler) register(c *gin.Context) {
 func (h *AuthHandler) login(c *gin.Context) {
 	var req dto.LoginRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, "invalid request data")
+		shared.HandleError(c, shared.ErrInvalidRequestBody)
 		return
 	}
 
@@ -138,7 +138,7 @@ func (h *AuthHandler) login(c *gin.Context) {
 func (h *AuthHandler) authenticateGoogle(c *gin.Context) {
 	var req dto.GoogleAuthRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, "invalid request data")
+		shared.HandleError(c, shared.ErrInvalidRequestBody)
 		return
 	}
 
@@ -175,7 +175,7 @@ func (h *AuthHandler) refreshToken(c *gin.Context) {
 	// Get refresh token from cookie only
 	refreshToken, err := h.getRefreshTokenFromCookie(c)
 	if err != nil || refreshToken == "" {
-		shared.RespondWithError(c, http.StatusBadRequest, "refresh token not found in cookie")
+		shared.HandleError(c, shared.ErrBadRequest.WithDetails("message", "refresh token not found in cookie"))
 		return
 	}
 
@@ -206,7 +206,7 @@ func (h *AuthHandler) logout(c *gin.Context) {
 	// Get current user from context (set by auth middleware)
 	user, exists := middleware.GetCurrentUser(c)
 	if !exists {
-		shared.RespondWithError(c, http.StatusUnauthorized, "user not found in context")
+		shared.HandleError(c, shared.ErrUserNotInContext)
 		return
 	}
 
@@ -214,7 +214,7 @@ func (h *AuthHandler) logout(c *gin.Context) {
 	refreshToken, err := h.getRefreshTokenFromCookie(c)
 	if err != nil || refreshToken == "" {
 		// If not in cookie, user might have already logged out or cookie expired
-		shared.RespondWithError(c, http.StatusBadRequest, "refresh token not found")
+		shared.HandleError(c, shared.ErrBadRequest.WithDetails("message", "refresh token not found"))
 		return
 	}
 

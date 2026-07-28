@@ -23,10 +23,7 @@ func (s *profileService) CreateDefaultProfile(ctx context.Context, userID string
 		// Profile already exists, return it
 		return existingProfile, nil
 	} else if !errors.Is(err, shared.ErrNotFound) && !errors.Is(err, shared.ErrProfileNotFound) {
-		if shared.IsAppError(err) {
-			return nil, err
-		}
-		return nil, shared.ErrInternal.WithError(err)
+		return nil, shared.WrapRepoErr(err)
 	}
 
 	// Create default profile with sensible defaults for Vietnamese users
@@ -47,10 +44,7 @@ func (s *profileService) CreateDefaultProfile(ctx context.Context, userID string
 
 	// Create profile in repository
 	if err := s.repo.Create(ctx, profile); err != nil {
-		if shared.IsAppError(err) {
-			return nil, err
-		}
-		return nil, shared.ErrInternal.WithError(err)
+		return nil, shared.WrapRepoErr(err)
 	}
 
 	return s.GetProfile(ctx, userID)

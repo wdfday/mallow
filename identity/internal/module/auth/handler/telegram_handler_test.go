@@ -276,6 +276,42 @@ func TestConfirmLink_Success_LinksAccount(t *testing.T) {
 	assert.False(t, mr.Exists("telegram:link:valid-otp"))
 }
 
+// TestConfirmLink_LinkAccountAppError_PreservesCode proves confirmLink no longer force-wraps
+// service errors into a generic 500: LinkAccount returning a structured AppError (here a
+// conflict) must surface with its own status/code, not get downgraded to Internal Server Error.
+func TestConfirmLink_LinkAccountAppError_PreservesCode(t *testing.T) {
+	mr, rdb := newMiniRedis(t)
+	usrSvc := &telegramMockUserService{}
+	h := NewTelegramHandler(usrSvc, nil, rdb, nil, "")
+
+	currentUserID := uuid.New()
+
+	payload, _ := json.Marshal(telegramLinkPayload{ID: "12345", Username: "tguser"})
+	mr.Set("telegram:link:valid-otp", string(payload))
+
+	usrSvc.On("GetByLinkedAccount", mock.Anything, "telegram", "12345").
+		Return(nil, shared.ErrUserNotFound)
+	usrSvc.On("LinkAccount", mock.Anything, currentUserID.String(), mock.Anything).
+		Return(shared.ErrConflict.WithDetails("message", "linked account row conflict"))
+
+	router := gin.New()
+	router.POST("/confirm-link", setCurrentUser(currentUserID), h.confirmLink)
+
+	body := bytes.NewBufferString(`{"otp":"valid-otp"}`)
+	req := httptest.NewRequest(http.MethodPost, "/confirm-link", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	assert.Equal(t, http.StatusConflict, w.Code)
+
+	var response map[string]interface{}
+	_ = json.Unmarshal(w.Body.Bytes(), &response)
+	assert.Equal(t, "CONFLICT", response["code"])
+
+	usrSvc.AssertExpectations(t)
+}
+
 func TestConfirmLink_SameUserRelink_Success(t *testing.T) {
 	mr, rdb := newMiniRedis(t)
 	usrSvc := &telegramMockUserService{}

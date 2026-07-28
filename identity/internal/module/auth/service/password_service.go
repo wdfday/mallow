@@ -8,7 +8,6 @@ import (
 	"mallow/identity/internal/module/auth/domain"
 	"mallow/identity/internal/module/auth/dto"
 	"mallow/identity/internal/module/auth/helper"
-	"mallow/identity/internal/module/auth/repository"
 	notificationservice "mallow/identity/internal/module/notification/service"
 	profileservice "mallow/identity/internal/module/profile/service"
 	userservice "mallow/identity/internal/module/user/service"
@@ -22,7 +21,7 @@ type PasswordService struct {
 	cost           int // bcrypt cost factor
 	userService    userservice.IUserService
 	profileService profileservice.Service
-	tokenRepo      repository.TokenRepository
+	tokenRepo      domain.TokenRepository
 	tokenGenerator ITokenService
 	emailService   notificationservice.EmailService
 	logger         *slog.Logger
@@ -32,7 +31,7 @@ type PasswordService struct {
 func NewPasswordService(
 	userService userservice.IUserService,
 	profileService profileservice.Service,
-	tokenRepo repository.TokenRepository,
+	tokenRepo domain.TokenRepository,
 	tokenGenerator ITokenService,
 	emailService notificationservice.EmailService,
 	logger *slog.Logger,

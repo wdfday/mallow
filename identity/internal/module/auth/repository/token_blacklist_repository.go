@@ -12,17 +12,9 @@ import (
 	"github.com/redis/go-redis/v9"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
-)
 
-// ITokenBlacklistRepository defines operations for token blacklist management
-type ITokenBlacklistRepository interface {
-	Add(ctx context.Context, token string, userID uuid.UUID, reason string, expiresAt time.Time) error
-	IsBlacklisted(ctx context.Context, token string) (bool, error)
-	IsRevokedByFields(ctx context.Context, sid, userID string) (bool, error)
-	CleanupExpired(ctx context.Context) error
-	BlacklistAllUserTokens(ctx context.Context, userID uuid.UUID, reason string) error
-	RevokeSession(ctx context.Context, sid string, expiresAt time.Time) error
-}
+	authDomain "mallow/identity/internal/module/auth/domain"
+)
 
 // TokenBlacklistEntry is the GORM model persisted to PostgreSQL.
 // It is exported so gorm.go can include it in AutoMigrate.
@@ -45,7 +37,7 @@ type tokenBlacklistRepository struct {
 
 // NewTokenBlacklistRepository creates a DB+Redis-backed token blacklist repository.
 // PostgreSQL is the persistent source of truth; Redis is a fast cache.
-func NewTokenBlacklistRepository(db *gorm.DB, rdb *redis.Client) ITokenBlacklistRepository {
+func NewTokenBlacklistRepository(db *gorm.DB, rdb *redis.Client) authDomain.ITokenBlacklistRepository {
 	return &tokenBlacklistRepository{db: db, redis: rdb}
 }
 

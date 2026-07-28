@@ -6,17 +6,17 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"mallow/identity/internal/middleware"
-	"mallow/identity/internal/module/auth/repository"
+	"mallow/identity/internal/module/auth/domain"
 	"mallow/identity/internal/shared"
 )
 
 // InternalHandler exposes service-to-service endpoints protected by X-Service-Secret.
 type InternalHandler struct {
-	blacklistRepo repository.ITokenBlacklistRepository
+	blacklistRepo domain.ITokenBlacklistRepository
 }
 
 // NewInternalHandler constructs an InternalHandler.
-func NewInternalHandler(blacklistRepo repository.ITokenBlacklistRepository) *InternalHandler {
+func NewInternalHandler(blacklistRepo domain.ITokenBlacklistRepository) *InternalHandler {
 	return &InternalHandler{blacklistRepo: blacklistRepo}
 }
 
@@ -45,8 +45,12 @@ func (h *InternalHandler) checkRevoked(c *gin.Context) {
 
 	blacklisted, err := h.blacklistRepo.IsRevokedByFields(c.Request.Context(), sid, sub)
 	if err != nil {
-		shared.RespondWithAppError(c, shared.ErrInternal.WithError(err))
+		shared.HandleError(c, err)
 		return
 	}
+	// Flat {"blacklisted": bool} shape — NOT the standard RespondWithSuccess envelope.
+	// api-gateway's IdentityClient.CheckRevoked decodes this field at the top level
+	// (api-gateway/internal/service/identity.go); wrapping it under "data" would silently
+	// break that cross-service contract.
 	c.JSON(http.StatusOK, gin.H{"blacklisted": blacklisted})
 }

@@ -5,7 +5,6 @@ import (
 	"log/slog"
 	profileservice "mallow/identity/internal/module/profile/service"
 	"mallow/identity/internal/module/user/domain"
-	"mallow/identity/internal/module/user/repository"
 	"mallow/identity/internal/shared"
 	"time"
 )
@@ -64,13 +63,13 @@ type IUserService interface {
 }
 
 type UserService struct {
-	repo           repository.Repository
+	repo           domain.Repository
 	profileService profileservice.Service
 	logger         *slog.Logger
 }
 
 func NewUserService(
-	repo repository.Repository,
+	repo domain.Repository,
 	profileService profileservice.Service,
 	logger *slog.Logger,
 ) *UserService {

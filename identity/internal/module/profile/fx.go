@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"mallow/identity/internal/module/profile/domain"
 	"mallow/identity/internal/module/profile/handler"
 	"mallow/identity/internal/module/profile/repository"
 	"mallow/identity/internal/module/profile/service"
@@ -13,7 +14,7 @@ var Module = fx.Module("profile",
 	fx.Provide(
 		fx.Annotate(
 			repository.New,
-			fx.As(new(repository.Repository)),
+			fx.As(new(domain.Repository)),
 		),
 		service.NewService,
 		handler.NewHandler,

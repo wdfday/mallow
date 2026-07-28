@@ -7,7 +7,6 @@ import (
 	"github.com/google/uuid"
 
 	authDomain "mallow/identity/internal/module/auth/domain"
-	"mallow/identity/internal/module/auth/repository"
 	"mallow/identity/internal/shared"
 )
 
@@ -22,12 +21,12 @@ type ISessionService interface {
 }
 
 type sessionService struct {
-	repo      repository.ISessionRepository
-	blacklist repository.ITokenBlacklistRepository
+	repo      authDomain.ISessionRepository
+	blacklist authDomain.ITokenBlacklistRepository
 }
 
 // NewSessionService creates a session service backed by a session repository and blacklist.
-func NewSessionService(repo repository.ISessionRepository, blacklist repository.ITokenBlacklistRepository) ISessionService {
+func NewSessionService(repo authDomain.ISessionRepository, blacklist authDomain.ITokenBlacklistRepository) ISessionService {
 	return &sessionService{repo: repo, blacklist: blacklist}
 }
 

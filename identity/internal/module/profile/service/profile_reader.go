@@ -18,10 +18,7 @@ func (s *profileService) GetProfile(ctx context.Context, userID string) (*domain
 
 	profile, err := s.repo.GetByUserID(ctx, userID)
 	if err != nil {
-		if shared.IsAppError(err) {
-			return nil, err
-		}
-		return nil, shared.ErrInternal.WithError(err)
+		return nil, shared.WrapRepoErr(err)
 	}
 	return profile, nil
 }

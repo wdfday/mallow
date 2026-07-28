@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"net/http"
 	"testing"
 
 	"github.com/google/uuid"
@@ -70,6 +71,11 @@ func TestCreateProfile_ValidationErrors(t *testing.T) {
 		field string
 	}{
 		{
+			name:  "invalid income_stability",
+			req:   dto.CreateProfileRequest{IncomeStability: invalidStr("erratic")},
+			field: "income_stability",
+		},
+		{
 			name:  "invalid risk_tolerance",
 			req:   dto.CreateProfileRequest{RiskTolerance: invalidStr("not-valid")},
 			field: "risk_tolerance",
@@ -105,9 +111,10 @@ func TestCreateProfile_ValidationErrors(t *testing.T) {
 			assert.Error(t, err)
 			assert.Nil(t, result)
 
-			if appErr, ok := err.(*shared.AppError); ok {
-				assert.Equal(t, tc.field, appErr.Details["field"])
-			}
+			appErr, ok := err.(*shared.AppError)
+			assert.True(t, ok, "expected a structured AppError, not a generic error")
+			assert.Equal(t, http.StatusBadRequest, appErr.StatusCode, "invalid enum input must map to 400, not fall through to 500")
+			assert.Equal(t, tc.field, appErr.Details["field"])
 
 			mockRepo.AssertExpectations(t)
 		})
@@ -128,6 +135,11 @@ func TestUpdateProfile_ValidationErrors(t *testing.T) {
 		req   dto.UpdateProfileRequest
 		field string
 	}{
+		{
+			name:  "empty full_name",
+			req:   dto.UpdateProfileRequest{FullName: invalidStr("   ")},
+			field: "full_name",
+		},
 		{
 			name:  "invalid risk_tolerance",
 			req:   dto.UpdateProfileRequest{RiskTolerance: invalidStr("extreme")},
@@ -161,9 +173,10 @@ func TestUpdateProfile_ValidationErrors(t *testing.T) {
 			assert.Error(t, err)
 			assert.Nil(t, result)
 
-			if appErr, ok := err.(*shared.AppError); ok {
-				assert.Equal(t, tc.field, appErr.Details["field"])
-			}
+			appErr, ok := err.(*shared.AppError)
+			assert.True(t, ok, "expected a structured AppError, not a generic error")
+			assert.Equal(t, http.StatusBadRequest, appErr.StatusCode, "invalid input must map to 400, not fall through to 500")
+			assert.Equal(t, tc.field, appErr.Details["field"])
 
 			// No repo methods should be called when validation fails.
 			mockRepo.AssertExpectations(t)

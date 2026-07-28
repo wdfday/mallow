@@ -2,7 +2,6 @@ package handler
 
 import (
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"net/http"
 	"time"
@@ -124,13 +123,13 @@ func (h *TelegramHandler) botInfo(c *gin.Context) {
 func (h *TelegramHandler) confirmLink(c *gin.Context) {
 	var req authdto.ConfirmTelegramLinkRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, "invalid request data")
+		shared.HandleError(c, shared.ErrInvalidRequestBody)
 		return
 	}
 
 	currentUser, ok := middleware.GetCurrentUser(c)
 	if !ok {
-		shared.RespondWithError(c, http.StatusUnauthorized, "user not found in context")
+		shared.HandleError(c, shared.ErrUserNotInContext)
 		return
 	}
 	userID := currentUser.ID.String()
@@ -139,13 +138,13 @@ func (h *TelegramHandler) confirmLink(c *gin.Context) {
 	key := telegramOTPPrefix + req.OTP
 	raw, err := h.rdb.GetDel(c.Request.Context(), key).Result()
 	if err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, "invalid or expired OTP")
+		shared.HandleError(c, shared.ErrBadRequest.WithDetails("message", "invalid or expired OTP"))
 		return
 	}
 
 	var payload telegramLinkPayload
 	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, "invalid OTP payload")
+		shared.HandleError(c, shared.ErrBadRequest.WithDetails("message", "invalid OTP payload"))
 		return
 	}
 	telegramID := payload.ID
@@ -153,7 +152,7 @@ func (h *TelegramHandler) confirmLink(c *gin.Context) {
 	// Check telegram_id not already linked to another user.
 	existing, err := h.userService.GetByLinkedAccount(c.Request.Context(), "telegram", telegramID)
 	if err == nil && existing.ID.String() != userID {
-		shared.RespondWithError(c, http.StatusConflict, "telegram account already linked to another user")
+		shared.HandleError(c, shared.ErrConflict.WithDetails("message", "telegram account already linked to another user"))
 		return
 	}
 
@@ -168,7 +167,7 @@ func (h *TelegramHandler) confirmLink(c *gin.Context) {
 		Username:   username,
 	}
 	if err := h.userService.LinkAccount(c.Request.Context(), userID, account); err != nil {
-		shared.RespondWithAppError(c, shared.ErrInternal.WithError(err))
+		shared.HandleError(c, err)
 		return
 	}
 
@@ -188,23 +187,24 @@ func (h *TelegramHandler) confirmLink(c *gin.Context) {
 // @Success 200 {object} shared.Success
 // @Failure 400 {object} shared.ErrorResponse
 // @Failure 401 {object} shared.ErrorResponse
+// @Failure 404 {object} shared.ErrorResponse
 // @Failure 500 {object} shared.ErrorResponse
 // @Router /api/v1/auth/telegram/link [delete]
 func (h *TelegramHandler) unlink(c *gin.Context) {
 	var req authdto.UnlinkTelegramRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, "invalid request data")
+		shared.HandleError(c, shared.ErrInvalidRequestBody)
 		return
 	}
 
 	currentUser, ok := middleware.GetCurrentUser(c)
 	if !ok {
-		shared.RespondWithError(c, http.StatusUnauthorized, "user not found in context")
+		shared.HandleError(c, shared.ErrUserNotInContext)
 		return
 	}
 
 	if err := h.userService.UnlinkAccount(c.Request.Context(), currentUser.ID.String(), "telegram", req.ProviderID); err != nil {
-		shared.RespondWithAppError(c, shared.ErrInternal.WithError(err))
+		shared.HandleError(c, err)
 		return
 	}
 
@@ -248,11 +248,7 @@ func (h *TelegramHandler) getUserByTelegram(c *gin.Context) {
 	telegramID := c.Param("telegram_id")
 	user, err := h.userService.GetByLinkedAccount(c.Request.Context(), "telegram", telegramID)
 	if err != nil {
-		if errors.Is(err, shared.ErrUserNotFound) {
-			shared.RespondWithError(c, http.StatusNotFound, "user not found")
-			return
-		}
-		shared.RespondWithAppError(c, shared.ErrInternal.WithError(err))
+		shared.HandleError(c, err)
 		return
 	}
 	acc := user.GetLinkedAccount("telegram")

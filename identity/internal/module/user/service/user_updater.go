@@ -11,10 +11,7 @@ import (
 func (s *UserService) Update(ctx context.Context, user *domain.User) error {
 	user.UpdatedAt = time.Now()
 	if err := s.repo.Update(ctx, user); err != nil {
-		if shared.IsAppError(err) {
-			return err
-		}
-		return shared.ErrInternal.WithError(err)
+		return shared.WrapRepoErr(err)
 	}
 	return nil
 }
@@ -22,10 +19,7 @@ func (s *UserService) Update(ctx context.Context, user *domain.User) error {
 // UpdateColumns performs partial update
 func (s *UserService) UpdateColumns(ctx context.Context, id string, cols map[string]any) error {
 	if err := s.repo.UpdateColumns(ctx, id, cols); err != nil {
-		if shared.IsAppError(err) {
-			return err
-		}
-		return shared.ErrInternal.WithError(err)
+		return shared.WrapRepoErr(err)
 	}
 	return nil
 }
@@ -46,20 +40,14 @@ func (s *UserService) UpdateLastLogin(ctx context.Context, id string, at time.Ti
 
 func (s *UserService) LinkAccount(ctx context.Context, userID string, account domain.LinkedAccount) error {
 	if err := s.repo.LinkAccount(ctx, userID, account); err != nil {
-		if shared.IsAppError(err) {
-			return err
-		}
-		return shared.ErrInternal.WithError(err)
+		return shared.WrapRepoErr(err)
 	}
 	return nil
 }
 
 func (s *UserService) UnlinkAccount(ctx context.Context, userID, provider, providerID string) error {
 	if err := s.repo.UnlinkAccount(ctx, userID, provider, providerID); err != nil {
-		if shared.IsAppError(err) {
-			return err
-		}
-		return shared.ErrInternal.WithError(err)
+		return shared.WrapRepoErr(err)
 	}
 	return nil
 }

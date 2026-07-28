@@ -5,9 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	authdomain "mallow/identity/internal/module/auth/domain"
 	"mallow/identity/internal/module/auth/dto"
-	"mallow/identity/internal/module/auth/repository"
 	profiledomain "mallow/identity/internal/module/profile/domain"
 	profiledto "mallow/identity/internal/module/profile/dto"
 	profileservice "mallow/identity/internal/module/profile/service"
@@ -28,7 +28,7 @@ type Service struct {
 	jwtService         IJWTService
 	passwordService    IPasswordService
 	googleOAuthService *GoogleOAuthService
-	tokenBlacklistRepo repository.ITokenBlacklistRepository
+	tokenBlacklistRepo authdomain.ITokenBlacklistRepository
 	config             *config.Config
 	logger             *slog.Logger
 }
@@ -44,7 +44,7 @@ func NewService(
 	jwtService IJWTService,
 	passwordService IPasswordService,
 	googleOAuthService *GoogleOAuthService,
-	tokenBlacklistRepo repository.ITokenBlacklistRepository,
+	tokenBlacklistRepo authdomain.ITokenBlacklistRepository,
 	cfg *config.Config,
 	logger *slog.Logger,
 ) *Service {
@@ -264,7 +264,14 @@ func (s *Service) RefreshToken(ctx context.Context, refreshToken string) (*dto.T
 		return nil, shared.ErrInternal.WithError(err)
 	}
 
-	return dto.NewTokenResponse(accessToken, expiresAt), nil
+	// NewTokenResponse wants seconds-until-expiry, not the absolute unix timestamp
+	// GenerateAccessToken returns — same conversion NewAuthResponse already does for login.
+	expiresIn := expiresAt - time.Now().Unix()
+	if expiresIn < 0 {
+		expiresIn = 0
+	}
+
+	return dto.NewTokenResponse(accessToken, expiresIn), nil
 }
 
 // AuthenticateGoogle authenticates a user with Google OAuth
@@ -275,10 +282,10 @@ func (s *Service) AuthenticateGoogle(ctx context.Context, req dto.GoogleAuthRequ
 		return nil, err
 	}
 
-	if s.config == nil || s.config.Google.ClientID == "" {
+	if s.config == nil || len(s.config.Google.ClientIDs) == 0 {
 		return nil, shared.ErrInternal.WithDetails("message", "Google auth is not configured")
 	}
-	if googleUser.Audience != s.config.Google.ClientID {
+	if !slices.Contains(s.config.Google.ClientIDs, googleUser.Audience) {
 		return nil, shared.ErrUnauthorized.WithDetails("message", "Google token audience mismatch")
 	}
 	if !googleUser.VerifiedEmail {

@@ -83,7 +83,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMiddleware *middleware.Middl
 func (h *Handler) getProfile(c *gin.Context) {
 	currentUser, exists := middleware.GetCurrentUser(c)
 	if !exists {
-		shared.RespondWithError(c, http.StatusUnauthorized, "user not found in context")
+		shared.HandleError(c, shared.ErrUserNotInContext)
 		return
 	}
 
@@ -113,13 +113,13 @@ func (h *Handler) getProfile(c *gin.Context) {
 func (h *Handler) updateProfile(c *gin.Context) {
 	currentUser, exists := middleware.GetCurrentUser(c)
 	if !exists {
-		shared.RespondWithError(c, http.StatusUnauthorized, "user not found in context")
+		shared.HandleError(c, shared.ErrUserNotInContext)
 		return
 	}
 
 	var req profiledto.UpdateProfileRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, "invalid request data")
+		shared.HandleError(c, shared.ErrInvalidRequestBody)
 		return
 	}
 

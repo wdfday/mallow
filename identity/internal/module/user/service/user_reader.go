@@ -11,10 +11,7 @@ import (
 func (s *UserService) GetByID(ctx context.Context, id string) (*domain.User, error) {
 	user, err := s.repo.GetByID(ctx, id)
 	if err != nil {
-		if shared.IsAppError(err) {
-			return nil, err
-		}
-		return nil, shared.ErrInternal.WithError(err)
+		return nil, shared.WrapRepoErr(err)
 	}
 	return user, nil
 }
@@ -24,10 +21,7 @@ func (s *UserService) GetByEmail(ctx context.Context, email string) (*domain.Use
 	email = strings.ToLower(strings.TrimSpace(email))
 	user, err := s.repo.GetByEmail(ctx, email)
 	if err != nil {
-		if shared.IsAppError(err) {
-			return nil, err
-		}
-		return nil, shared.ErrInternal.WithError(err)
+		return nil, shared.WrapRepoErr(err)
 	}
 	return user, nil
 }
@@ -36,10 +30,7 @@ func (s *UserService) GetByGoogleID(ctx context.Context, googleID string) (*doma
 	googleID = strings.TrimSpace(googleID)
 	user, err := s.repo.GetByGoogleID(ctx, googleID)
 	if err != nil {
-		if shared.IsAppError(err) {
-			return nil, err
-		}
-		return nil, shared.ErrInternal.WithError(err)
+		return nil, shared.WrapRepoErr(err)
 	}
 	return user, nil
 }
@@ -48,10 +39,7 @@ func (s *UserService) GetByGoogleID(ctx context.Context, googleID string) (*doma
 func (s *UserService) List(ctx context.Context, filter domain.ListUsersFilter, pagination shared.Pagination) (shared.Page[domain.User], error) {
 	page, err := s.repo.List(ctx, filter, pagination)
 	if err != nil {
-		if shared.IsAppError(err) {
-			return shared.Page[domain.User]{}, err
-		}
-		return shared.Page[domain.User]{}, shared.ErrInternal.WithError(err)
+		return shared.Page[domain.User]{}, shared.WrapRepoErr(err)
 	}
 	return page, nil
 }
@@ -59,10 +47,7 @@ func (s *UserService) List(ctx context.Context, filter domain.ListUsersFilter, p
 func (s *UserService) GetByLinkedAccount(ctx context.Context, provider, providerID string) (*domain.User, error) {
 	user, err := s.repo.GetByLinkedAccount(ctx, provider, providerID)
 	if err != nil {
-		if shared.IsAppError(err) {
-			return nil, err
-		}
-		return nil, shared.ErrInternal.WithError(err)
+		return nil, shared.WrapRepoErr(err)
 	}
 	return user, nil
 }

@@ -10,21 +10,12 @@ import (
 	authDomain "mallow/identity/internal/module/auth/domain"
 )
 
-// ISessionRepository defines session persistence operations.
-type ISessionRepository interface {
-	Create(ctx context.Context, session *authDomain.Session) error
-	ListByUser(ctx context.Context, userID uuid.UUID) ([]authDomain.Session, error)
-	GetBySID(ctx context.Context, sid string, userID uuid.UUID) (*authDomain.Session, error)
-	MarkRevoked(ctx context.Context, sid string, userID uuid.UUID) error
-	RevokeAllByUser(ctx context.Context, userID uuid.UUID) error
-}
-
 type sessionRepository struct {
 	db *gorm.DB
 }
 
 // NewSessionRepository creates a PostgreSQL-backed session repository.
-func NewSessionRepository(db *gorm.DB) ISessionRepository {
+func NewSessionRepository(db *gorm.DB) authDomain.ISessionRepository {
 	return &sessionRepository{db: db}
 }
 

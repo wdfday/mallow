@@ -18,10 +18,7 @@ func (s *UserService) Create(ctx context.Context, user *domain.User) (*domain.Us
 	if _, err := s.repo.GetByEmail(ctx, user.Email); err == nil {
 		return nil, shared.ErrConflict.WithDetails("field", "email")
 	} else if !errors.Is(err, shared.ErrUserNotFound) {
-		if shared.IsAppError(err) {
-			return nil, err
-		}
-		return nil, shared.ErrInternal.WithError(err)
+		return nil, shared.WrapRepoErr(err)
 	}
 
 	// Set timestamps
@@ -32,10 +29,7 @@ func (s *UserService) Create(ctx context.Context, user *domain.User) (*domain.Us
 
 	// Create user
 	if err := s.repo.Create(ctx, user); err != nil {
-		if shared.IsAppError(err) {
-			return nil, err
-		}
-		return nil, shared.ErrInternal.WithError(err)
+		return nil, shared.WrapRepoErr(err)
 	}
 
 	// Create default profile for the new user

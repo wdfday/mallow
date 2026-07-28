@@ -14,7 +14,7 @@ type gormRepository struct {
 }
 
 // New creates a new profile repository instance.
-func New(db *gorm.DB) Repository {
+func New(db *gorm.DB) domain.Repository {
 	return &gormRepository{db: db}
 }
 

@@ -44,3 +44,30 @@ var (
 	ErrTokenInvalid    = pkgshared.ErrTokenInvalid
 	ErrProfileNotFound = pkgshared.ErrProfileNotFound
 )
+
+// Handler-layer sentinels for the two most common request-level failures, so every
+// handler produces the same structured {status, code, message, details} shape instead
+// of ad-hoc raw strings via RespondWithError.
+var (
+	ErrInvalidRequestBody = ErrValidation.WithDetails("message", "invalid request data")
+	ErrUserNotInContext   = ErrUnauthorized.WithDetails("message", "user not found in context")
+)
+
+// WrapRepoErr translates a repository-layer error into a client-facing AppError at the
+// service boundary: an existing AppError passes through unchanged (its real code/status
+// survives), anything else is wrapped as Internal so the opaque cause never leaks into
+// the response body. Standard replacement for the repeated
+//
+//	if shared.IsAppError(err) { return err }
+//	return shared.ErrInternal.WithError(err)
+//
+// idiom scattered across service methods that call straight through to a repository.
+func WrapRepoErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	if IsAppError(err) {
+		return err
+	}
+	return ErrInternal.WithError(err)
+}

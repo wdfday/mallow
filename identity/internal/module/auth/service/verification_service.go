@@ -8,7 +8,6 @@ import (
 
 	"mallow/identity/internal/module/auth/domain"
 	"mallow/identity/internal/module/auth/helper"
-	"mallow/identity/internal/module/auth/repository"
 	notificationservice "mallow/identity/internal/module/notification/service"
 	profileservice "mallow/identity/internal/module/profile/service"
 	"mallow/identity/internal/module/user/service"
@@ -17,7 +16,7 @@ import (
 
 // VerificationService handles the full email verification lifecycle
 type VerificationService struct {
-	tokenRepo      repository.TokenRepository
+	tokenRepo      domain.TokenRepository
 	userService    service.IUserService
 	profileService profileservice.Service
 	tokenGen       ITokenService
@@ -27,7 +26,7 @@ type VerificationService struct {
 
 // NewVerificationService creates a new verification service
 func NewVerificationService(
-	tokenRepo repository.TokenRepository,
+	tokenRepo domain.TokenRepository,
 	userService service.IUserService,
 	profileService profileservice.Service,
 	tokenGen ITokenService,

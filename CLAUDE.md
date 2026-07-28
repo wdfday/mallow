@@ -559,7 +559,7 @@ CORS_ORIGINS                # comma-separated list
 ### identity env
 
 ```env
-SERVER_PORT                 # default: 8080
+SERVER_PORT                 # default: 8082 (8080 is api-gateway's port)
 POSTGRES_URL                # default: postgres://mallow:mallow-dev@localhost:5432/identity?sslmode=disable
 REDIS_URL
 NATS_URL

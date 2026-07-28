@@ -48,7 +48,7 @@ func (h *UserHandler) RegisterRoutes(r *gin.Engine, authMiddleware *middleware.M
 func (h *UserHandler) getMe(c *gin.Context) {
 	currentUser, exists := middleware.GetCurrentUser(c)
 	if !exists {
-		shared.RespondWithError(c, http.StatusUnauthorized, "user not found in context")
+		shared.HandleError(c, shared.ErrUserNotInContext)
 		return
 	}
 
@@ -80,19 +80,19 @@ func (h *UserHandler) getMe(c *gin.Context) {
 func (h *UserHandler) updateMe(c *gin.Context) {
 	currentUser, exists := middleware.GetCurrentUser(c)
 	if !exists {
-		shared.RespondWithError(c, http.StatusUnauthorized, "user not found in context")
+		shared.HandleError(c, shared.ErrUserNotInContext)
 		return
 	}
 
 	var req dto.UpdateUserProfileRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, "invalid request data")
+		shared.HandleError(c, shared.ErrInvalidRequestBody)
 		return
 	}
 
 	hasAnyField := req.FullName != nil || req.DisplayName != nil || req.PhoneNumber != nil
 	if !hasAnyField {
-		shared.RespondWithError(c, http.StatusBadRequest, "no fields to update")
+		shared.HandleError(c, shared.ErrBadRequest.WithDetails("message", "no fields to update"))
 		return
 	}
 
@@ -104,7 +104,7 @@ func (h *UserHandler) updateMe(c *gin.Context) {
 		if req.FullName != nil {
 			trimmed := strings.TrimSpace(*req.FullName)
 			if trimmed == "" {
-				shared.RespondWithError(c, http.StatusBadRequest, "full_name cannot be empty")
+				shared.HandleError(c, shared.ErrValidation.WithDetails("field", "full_name").WithDetails("message", "full_name cannot be empty"))
 				return
 			}
 			fullName = &trimmed

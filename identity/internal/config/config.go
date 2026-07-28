@@ -106,7 +106,12 @@ type TelegramConfig struct {
 }
 
 type GoogleConfig struct {
-	ClientID string
+	// ClientIDs holds every audience accepted for Google id_token verification — the web client
+	// (mallow-client's implicit flow) and, optionally, a separate "Desktop app" client (native
+	// apps using loopback-redirect Authorization Code + PKCE, e.g. fathom-tde). Google issues a
+	// distinct client_id per registered application type, so a single-client check would reject
+	// desktop-issued tokens outright.
+	ClientIDs []string
 }
 
 // Load reads configuration using Viper.
@@ -118,7 +123,7 @@ func Load() *Config {
 	v := viper.New()
 
 	// ── Defaults ────────────────────────────────────────────────────────────
-	v.SetDefault("SERVER_PORT", "8080")
+	v.SetDefault("SERVER_PORT", "8082") // 8080 is api-gateway's port
 	v.SetDefault("GIN_MODE", "debug")
 	v.SetDefault("POSTGRES_URL", "postgres://mallow:mallow-dev@localhost:5432/identity?sslmode=disable")
 	v.SetDefault("REDIS_URL", "redis://localhost:6379/0")
@@ -153,6 +158,7 @@ func Load() *Config {
 	v.SetDefault("TELEGRAM_BOT_USERNAME", "")
 	v.SetDefault("TELEGRAM_ALLOWED_CHATS", "")
 	v.SetDefault("GOOGLE_CLIENT_ID", "")
+	v.SetDefault("GOOGLE_CLIENT_ID_DESKTOP", "")
 	v.SetDefault("ADMIN_SEED_EMAIL", "")
 	v.SetDefault("ADMIN_SEED_PASSWORD", "")
 
@@ -226,7 +232,10 @@ func Load() *Config {
 			AllowedChats: v.GetString("TELEGRAM_ALLOWED_CHATS"),
 		},
 		Google: GoogleConfig{
-			ClientID: strings.TrimSpace(v.GetString("GOOGLE_CLIENT_ID")),
+			ClientIDs: nonEmptyStrings(
+				strings.TrimSpace(v.GetString("GOOGLE_CLIENT_ID")),
+				strings.TrimSpace(v.GetString("GOOGLE_CLIENT_ID_DESKTOP")),
+			),
 		},
 		AdminSeed: AdminSeedConfig{
 			Email:    v.GetString("ADMIN_SEED_EMAIL"),
@@ -241,6 +250,16 @@ func parseDuration(s string) time.Duration {
 		return 24 * time.Hour
 	}
 	return d
+}
+
+func nonEmptyStrings(vals ...string) []string {
+	out := make([]string, 0, len(vals))
+	for _, v := range vals {
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func splitComma(s string) []string {

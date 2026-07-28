@@ -5,7 +5,6 @@ import (
 
 	"mallow/identity/internal/module/profile/domain"
 	profiledto "mallow/identity/internal/module/profile/dto"
-	"mallow/identity/internal/module/profile/repository"
 )
 
 // ProfileCreator defines profile creation operations
@@ -33,11 +32,11 @@ type Service interface {
 
 // profileService implements all profile use cases
 type profileService struct {
-	repo repository.Repository
+	repo domain.Repository
 }
 
 // NewService creates a new profile service
-func NewService(repo repository.Repository) Service {
+func NewService(repo domain.Repository) Service {
 	return &profileService{
 		repo: repo,
 	}

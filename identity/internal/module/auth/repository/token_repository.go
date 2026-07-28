@@ -12,17 +12,6 @@ import (
 	"mallow/identity/internal/shared"
 )
 
-// TokenRepository handles short-lived verification token persistence in Redis.
-type TokenRepository interface {
-	Create(ctx context.Context, token *domain.VerificationToken) error
-	GetByToken(ctx context.Context, tokenStr string) (*domain.VerificationToken, error)
-	// MarkAsUsed invalidates the token by deleting it from Redis.
-	MarkAsUsed(ctx context.Context, tokenStr string) error
-	// DeleteExpired is a no-op: Redis TTL handles expiry automatically.
-	DeleteExpired(ctx context.Context) error
-	DeleteByUserIDAndType(ctx context.Context, userID, tokenType string) error
-}
-
 // tokenPayload is the JSON value stored under the primary key.
 type tokenPayload struct {
 	UserID    string  `json:"user_id"`
@@ -37,7 +26,7 @@ type tokenRepository struct {
 }
 
 // NewTokenRepository creates a Redis-backed token repository.
-func NewTokenRepository(rdb *redis.Client) TokenRepository {
+func NewTokenRepository(rdb *redis.Client) domain.TokenRepository {
 	return &tokenRepository{rdb: rdb}
 }
 

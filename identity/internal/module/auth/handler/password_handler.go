@@ -54,13 +54,13 @@ func (h *PasswordHandler) RegisterRoutes(r *gin.Engine, authMiddleware *middlewa
 func (h *PasswordHandler) changePassword(c *gin.Context) {
 	user, exists := middleware.GetCurrentUser(c)
 	if !exists {
-		shared.RespondWithError(c, http.StatusUnauthorized, "user not found in context")
+		shared.HandleError(c, shared.ErrUserNotInContext)
 		return
 	}
 
 	var req dto2.ChangePasswordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, "invalid request data")
+		shared.HandleError(c, shared.ErrInvalidRequestBody)
 		return
 	}
 
@@ -85,7 +85,7 @@ func (h *PasswordHandler) changePassword(c *gin.Context) {
 func (h *PasswordHandler) forgotPassword(c *gin.Context) {
 	var req dto2.ForgotPasswordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, "invalid request data")
+		shared.HandleError(c, shared.ErrInvalidRequestBody)
 		return
 	}
 
@@ -114,7 +114,7 @@ func (h *PasswordHandler) forgotPassword(c *gin.Context) {
 func (h *PasswordHandler) resetPassword(c *gin.Context) {
 	var req dto2.ResetPasswordRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, "invalid request data")
+		shared.HandleError(c, shared.ErrInvalidRequestBody)
 		return
 	}
 

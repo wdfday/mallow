@@ -702,18 +702,25 @@ func TestRefreshToken(t *testing.T) {
 			Role:  userdomain.UserRoleUser,
 		}
 
+		// GenerateAccessToken's second return value is an absolute unix expiry timestamp (same
+		// contract Login/Register rely on via NewAuthResponse's expiresAt→expiresIn conversion) —
+		// not a relative duration, so the mock has to return a realistic "now + 1h" timestamp for
+		// RefreshToken's own expiresAt→expiresIn conversion to produce a sane result.
+		expiresAt := time.Now().Add(1 * time.Hour).Unix()
 		mockJWTService.On("ValidateRefreshToken", refreshToken).Return(makeRFClaims(userID, sid), nil)
 		mockTokenBlacklistRepo.On("IsBlacklisted", ctx, refreshToken).Return(false, nil)
 		mockUserService.On("GetByID", ctx, userID.String()).Return(user, nil)
 		mockJWTService.On("GenerateAccessToken", user.ID.String(), user.Email, sid, user.Role).
-			Return("new_access_token", int64(3600), nil)
+			Return("new_access_token", expiresAt, nil)
 
 		result, err := service.RefreshToken(ctx, refreshToken)
 
 		assert.NoError(t, err)
 		assert.NotNil(t, result)
 		assert.Equal(t, "new_access_token", result.AccessToken)
-		assert.Equal(t, int64(3600), result.ExpiresIn)
+		// Within a couple seconds of 3600 — not exact-equal, since it's derived from wall-clock
+		// time elapsed between building `expiresAt` above and RefreshToken's own now-conversion.
+		assert.InDelta(t, int64(3600), result.ExpiresIn, 2)
 
 		mockJWTService.AssertExpectations(t)
 		mockTokenBlacklistRepo.AssertExpectations(t)

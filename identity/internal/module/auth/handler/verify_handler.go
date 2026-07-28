@@ -52,7 +52,7 @@ func (h *VerifyHandler) RegisterRoutes(r *gin.Engine, authMiddleware *middleware
 func (h *VerifyHandler) verifyEmail(c *gin.Context) {
 	var req dto2.VerifyEmailRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, "invalid request data")
+		shared.HandleError(c, shared.ErrInvalidRequestBody)
 		return
 	}
 
@@ -77,7 +77,7 @@ func (h *VerifyHandler) verifyEmail(c *gin.Context) {
 func (h *VerifyHandler) sendVerification(c *gin.Context) {
 	user, exists := middleware.GetCurrentUser(c)
 	if !exists {
-		shared.RespondWithError(c, http.StatusUnauthorized, "user not found in context")
+		shared.HandleError(c, shared.ErrUserNotInContext)
 		return
 	}
 
@@ -105,7 +105,7 @@ func (h *VerifyHandler) sendVerification(c *gin.Context) {
 func (h *VerifyHandler) resendVerification(c *gin.Context) {
 	var req dto2.ResendVerificationRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, "invalid request data")
+		shared.HandleError(c, shared.ErrInvalidRequestBody)
 		return
 	}
 

@@ -42,8 +42,12 @@ func (h *SessionHandler) RegisterRoutes(r *gin.Engine, authMiddleware *middlewar
 // @Router /api/v1/auth/sessions [get]
 // @Security BearerAuth
 func (h *SessionHandler) list(c *gin.Context) {
-	userID := c.GetString("user_id")
-	sessions, err := h.sessionService.ListSessions(c.Request.Context(), userID)
+	currentUser, exists := middleware.GetCurrentUser(c)
+	if !exists {
+		shared.HandleError(c, shared.ErrUserNotInContext)
+		return
+	}
+	sessions, err := h.sessionService.ListSessions(c.Request.Context(), currentUser.ID.String())
 	if err != nil {
 		shared.HandleError(c, err)
 		return
@@ -63,8 +67,12 @@ func (h *SessionHandler) list(c *gin.Context) {
 // @Security BearerAuth
 func (h *SessionHandler) revoke(c *gin.Context) {
 	sid := c.Param("sid")
-	userID := c.GetString("user_id")
-	if err := h.sessionService.RevokeSession(c.Request.Context(), sid, userID); err != nil {
+	currentUser, exists := middleware.GetCurrentUser(c)
+	if !exists {
+		shared.HandleError(c, shared.ErrUserNotInContext)
+		return
+	}
+	if err := h.sessionService.RevokeSession(c.Request.Context(), sid, currentUser.ID.String()); err != nil {
 		shared.HandleError(c, err)
 		return
 	}
@@ -80,8 +88,12 @@ func (h *SessionHandler) revoke(c *gin.Context) {
 // @Router /api/v1/auth/sessions [delete]
 // @Security BearerAuth
 func (h *SessionHandler) revokeAll(c *gin.Context) {
-	userID := c.GetString("user_id")
-	if err := h.sessionService.RevokeAllSessions(c.Request.Context(), userID); err != nil {
+	currentUser, exists := middleware.GetCurrentUser(c)
+	if !exists {
+		shared.HandleError(c, shared.ErrUserNotInContext)
+		return
+	}
+	if err := h.sessionService.RevokeAllSessions(c.Request.Context(), currentUser.ID.String()); err != nil {
 		shared.HandleError(c, err)
 		return
 	}

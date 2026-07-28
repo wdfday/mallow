@@ -52,7 +52,7 @@ func (h *AdminHandler) RegisterRoutes(r *gin.Engine, authMiddleware *middleware.
 func (h *AdminHandler) list(c *gin.Context) {
 	var req dto.ListUsersRequest
 	if err := c.ShouldBindQuery(&req); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, "invalid query parameters")
+		shared.HandleError(c, shared.ErrValidation.WithDetails("message", "invalid query parameters"))
 		return
 	}
 
@@ -64,7 +64,7 @@ func (h *AdminHandler) list(c *gin.Context) {
 	if req.Role != "" {
 		role := domain.UserRole(strings.ToLower(req.Role))
 		if role != domain.UserRoleAdmin && role != domain.UserRoleUser {
-			shared.RespondWithError(c, http.StatusBadRequest, "invalid role filter")
+			shared.HandleError(c, shared.ErrValidation.WithDetails("field", "role").WithDetails("message", "invalid role filter"))
 			return
 		}
 		filter.Role = &role
@@ -76,7 +76,7 @@ func (h *AdminHandler) list(c *gin.Context) {
 		case domain.UserStatusActive, domain.UserStatusPendingVerification, domain.UserStatusSuspended:
 			filter.Status = &status
 		default:
-			shared.RespondWithError(c, http.StatusBadRequest, "invalid status filter")
+			shared.HandleError(c, shared.ErrValidation.WithDetails("field", "status").WithDetails("message", "invalid status filter"))
 			return
 		}
 	}
@@ -197,13 +197,13 @@ func (h *AdminHandler) changeRole(c *gin.Context) {
 
 	var req dto.ChangeUserRoleRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, "invalid request data")
+		shared.HandleError(c, shared.ErrInvalidRequestBody)
 		return
 	}
 
 	role := domain.UserRole(strings.ToLower(req.Role))
 	if role != domain.UserRoleAdmin && role != domain.UserRoleUser {
-		shared.RespondWithError(c, http.StatusBadRequest, "invalid role")
+		shared.HandleError(c, shared.ErrValidation.WithDetails("field", "role").WithDetails("message", "invalid role"))
 		return
 	}
 
@@ -218,12 +218,12 @@ func (h *AdminHandler) changeRole(c *gin.Context) {
 func (h *AdminHandler) parseUserID(c *gin.Context) (string, bool) {
 	id := strings.TrimSpace(c.Param("id"))
 	if id == "" {
-		shared.RespondWithError(c, http.StatusBadRequest, "user id is required")
+		shared.HandleError(c, shared.ErrBadRequest.WithDetails("param", "id").WithDetails("message", "user id is required"))
 		return "", false
 	}
 
 	if _, err := uuid.Parse(id); err != nil {
-		shared.RespondWithError(c, http.StatusBadRequest, "invalid user id")
+		shared.HandleError(c, shared.ErrBadRequest.WithDetails("param", "id").WithDetails("message", "invalid user id"))
 		return "", false
 	}
 

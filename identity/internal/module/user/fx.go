@@ -1,6 +1,7 @@
 package user
 
 import (
+	"mallow/identity/internal/module/user/domain"
 	"mallow/identity/internal/module/user/handler"
 	"mallow/identity/internal/module/user/repository"
 	"mallow/identity/internal/module/user/service"
@@ -14,7 +15,7 @@ var Module = fx.Module("user",
 		// Repository - provide as interface
 		fx.Annotate(
 			repository.New, // Using gorm repository
-			fx.As(new(repository.Repository)),
+			fx.As(new(domain.Repository)),
 		),
 
 		// Service - provide as interface

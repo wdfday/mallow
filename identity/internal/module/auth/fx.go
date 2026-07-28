@@ -8,6 +8,7 @@ import (
 	"go.uber.org/fx"
 
 	"mallow/identity/internal/config"
+	"mallow/identity/internal/module/auth/domain"
 	"mallow/identity/internal/module/auth/handler"
 	"mallow/identity/internal/module/auth/repository"
 	"mallow/identity/internal/module/auth/service"
@@ -44,7 +45,7 @@ func ProvideJWTService(cfg *config.Config) (service.IJWTService, error) {
 func ProvidePasswordService(
 	userService userservice.IUserService,
 	profileSvc profileservice.Service,
-	tokenRepo repository.TokenRepository,
+	tokenRepo domain.TokenRepository,
 	tokenService service.ITokenService,
 	emailService notificationservice.EmailService,
 	logger *slog.Logger,

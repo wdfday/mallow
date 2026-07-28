@@ -17,7 +17,7 @@ type gormRepo struct {
 	db *gorm.DB
 }
 
-func New(db *gorm.DB) Repository {
+func New(db *gorm.DB) domain.Repository {
 	return &gormRepo{db: db}
 }
 

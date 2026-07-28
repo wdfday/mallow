@@ -658,6 +658,12 @@ const docTemplate = `{
                             "$ref": "#/definitions/mallow_identity_internal_shared.ErrorResponse"
                         }
                     },
+                    "404": {
+                        "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/mallow_identity_internal_shared.ErrorResponse"
+                        }
+                    },
                     "500": {
                         "description": "Internal Server Error",
                         "schema": {

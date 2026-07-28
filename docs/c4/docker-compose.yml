@@ -1,0 +1,24 @@
+# Renders workspace.dsl as live C4 diagrams in the browser.
+# Run from this directory:
+#
+#   docker compose up
+#
+# Then open http://localhost:8079 — watches workspace.dsl and reloads on
+# save, so editing the DSL updates the diagram without a restart. Port 8079
+# (not the default 8080) to avoid colliding with api-gateway/8080,
+# identity/8082, helm/8084, herald/8090 when this runs alongside the main
+# stack.
+#
+# NOTE: `structurizr/lite` is deprecated by the Structurizr team (the image
+# now just prints a migration notice and exits) — this uses the replacement
+# they point to, `structurizr/structurizr local`, same volume-mount contract.
+services:
+  structurizr:
+    image: structurizr/structurizr
+    command: ["local"]
+    container_name: mallow-c4
+    ports:
+      - "8079:8080"
+    volumes:
+      - ./:/usr/local/structurizr
+    restart: unless-stopped

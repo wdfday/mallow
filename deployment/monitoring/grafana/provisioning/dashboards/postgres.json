@@ -136,6 +136,101 @@
         { "expr": "sum(rate(pg_stat_database_tup_deleted[2m]))", "legendFormat": "Deleted rows", "refId": "C" }
       ],
       "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "collapsed": false, "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 }, "id": 104, "title": "Business Metrics — custom SQL via PG_EXPORTER_EXTEND_QUERY_PATH (see deployment/postgres/queries/)", "type": "row" },
+
+    { "type": "timeseries", "id": 40,
+      "title": "Users by Status (identity)",
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 33 },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [{ "expr": "identity_users_by_status_count", "legendFormat": "{{status}}", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "type": "timeseries", "id": 41,
+      "title": "Sessions (identity)",
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 33 },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [
+        { "expr": "identity_sessions_active", "legendFormat": "active", "refId": "A" },
+        { "expr": "identity_sessions_total", "legendFormat": "total (incl. expired/revoked)", "refId": "B" }
+      ],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "type": "stat", "id": 42,
+      "title": "Blacklisted Tokens (identity)",
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 33 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "red" } } },
+      "targets": [{ "expr": "identity_token_blacklist_total_count", "legendFormat": "blacklisted", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "type": "timeseries", "id": 43,
+      "title": "Helms by Status (helm)",
+      "gridPos": { "h": 7, "w": 6, "x": 0, "y": 40 },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [{ "expr": "helm_helms_by_status_count", "legendFormat": "{{status}}", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "type": "timeseries", "id": 44,
+      "title": "Hands by Status (helm)",
+      "gridPos": { "h": 7, "w": 6, "x": 6, "y": 40 },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [{ "expr": "helm_hands_by_status_count", "legendFormat": "{{status}}", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "type": "timeseries", "id": 45,
+      "title": "Broker Connections by Status (helm)",
+      "gridPos": { "h": 7, "w": 6, "x": 12, "y": 40 },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [{ "expr": "helm_broker_connections_by_status_count", "legendFormat": "{{broker_type}} — {{status}}", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "type": "stat", "id": 46,
+      "title": "Active Accounts (helm)",
+      "gridPos": { "h": 7, "w": 6, "x": 18, "y": 40 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "blue" } } },
+      "targets": [{ "expr": "helm_accounts_active_total_count", "legendFormat": "active accounts", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "type": "stat", "id": 47,
+      "title": "Strategy Versions Stored (herald)",
+      "gridPos": { "h": 7, "w": 6, "x": 0, "y": 47 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "purple" } } },
+      "targets": [{ "expr": "herald_strategy_versions_total_count", "legendFormat": "versions", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "type": "stat", "id": 48,
+      "title": "Distinct Strategies (herald)",
+      "gridPos": { "h": 7, "w": 6, "x": 6, "y": 47 },
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "area", "textMode": "auto" },
+      "fieldConfig": { "defaults": { "color": { "mode": "fixed", "fixedColor": "purple" } } },
+      "targets": [{ "expr": "herald_strategy_names_distinct_total_count", "legendFormat": "distinct names", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
+    },
+
+    { "type": "timeseries", "id": 49,
+      "title": "Symbols by Asset Class (herald)",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 47 },
+      "options": { "tooltip": { "mode": "multi" }, "legend": { "displayMode": "list", "placement": "bottom" } },
+      "fieldConfig": { "defaults": { "unit": "short", "custom": { "lineWidth": 2, "fillOpacity": 10 } } },
+      "targets": [{ "expr": "herald_symbols_by_class_count", "legendFormat": "{{asset_class}} live={{live_enabled}} crawl={{crawl_enabled}}", "refId": "A" }],
+      "datasource": { "type": "prometheus", "uid": "prometheus" }
     }
   ],
   "refresh": "30s",

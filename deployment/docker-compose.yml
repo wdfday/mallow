@@ -34,7 +34,6 @@ services:
     environment:
       NATS_PASS_SIGNAL_ENGINE: ${NATS_PASS_SIGNAL_ENGINE:-signal-engine-dev}
       NATS_PASS_HELM: ${NATS_PASS_HELM:-helm-dev}
-      NATS_PASS_STRATEGIST: ${NATS_PASS_STRATEGIST:-strategist-dev}
       NATS_PASS_GATEWAY: ${NATS_PASS_GATEWAY:-gateway-dev}
       NATS_PASS_IDENTITY: ${NATS_PASS_IDENTITY:-identity-dev}
       NATS_PASS_SURVEYOR: ${NATS_PASS_SURVEYOR:-surveyor-dev}
@@ -115,7 +114,7 @@ services:
       nats:
         condition: service_healthy
     environment:
-      PORT: "8082"
+      SERVER_PORT: "8082"
       POSTGRES_URL: "postgres://mallow:${POSTGRES_PASSWORD:-mallow-dev}@postgres:5432/identity?sslmode=disable"
       REDIS_URL: "redis://redis:6379"
       NATS_URL: "nats://identity:${NATS_PASS_IDENTITY:-identity-dev}@nats:4222"
@@ -247,9 +246,6 @@ services:
   # API layer
   # ═══════════════════════════════════════════════════════════════════
 
-  # strategist — AI agent (Google ADK); add back when Dockerfile is ready
-  # profiles: ["strategist"]
-
   gateway:
     build:
       context: ..
@@ -264,7 +260,6 @@ services:
       JWT_SECRET: ${JWT_SECRET:-mallow-dev-secret-change-in-prod}
       IDENTITY_URL: http://identity:8082
       HELM_URL: http://helm:8084
-      STRATEGIST_URL: http://strategist:8081
       HERALD_URL: ${HERALD_URL:-http://herald:8090}
       REDIS_URL: redis://redis:6379
       GIN_MODE: ${GIN_MODE:-release}
@@ -275,12 +270,56 @@ services:
   # Monitoring — LGTP stack  (docker compose --profile monitoring up -d)
   # ═══════════════════════════════════════════════════════════════════
 
+  # postgres-exporter — one instance per database, NOT auto-discover.
+  #
+  # PG_EXPORTER_AUTO_DISCOVER_DATABASES (tried first) is explicitly marked
+  # DEPRECATED by the project and has a known bug: the exporter only ever
+  # builds its metric collector from the FIRST configured DSN
+  # (cmd/postgres_exporter/main.go, confirmed via
+  # prometheus-community/postgres_exporter#999) — the extra discovered
+  # connections are established but never actually scraped for per-table
+  # stats. pg_stat_database (instance-wide, used by postgres.json) already
+  # covers all DBs regardless of which one you connect to, so that dashboard
+  # was never affected — only pg_stat_user_tables (per-table bloat/vacuum,
+  # needed for the "PostgreSQL Tables" dashboard) requires one exporter
+  # per DB, per the maintainer's own recommendation in that issue.
   postgres-exporter:
     image: prometheuscommunity/postgres-exporter:latest
     container_name: postgres-exporter
     profiles: ["monitoring"]
     environment:
       DATA_SOURCE_NAME: "postgresql://mallow:${POSTGRES_PASSWORD:-mallow-dev}@postgres:5432/identity?sslmode=disable"
+      PG_EXPORTER_EXTEND_QUERY_PATH: /queries.yaml
+    volumes:
+      - ./postgres/queries/identity.yaml:/queries.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres-exporter-helm:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: postgres-exporter-helm
+    profiles: ["monitoring"]
+    environment:
+      DATA_SOURCE_NAME: "postgresql://mallow:${POSTGRES_PASSWORD:-mallow-dev}@postgres:5432/helm?sslmode=disable"
+      PG_EXPORTER_EXTEND_QUERY_PATH: /queries.yaml
+    volumes:
+      - ./postgres/queries/helm.yaml:/queries.yaml:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres-exporter-herald:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: postgres-exporter-herald
+    profiles: ["monitoring"]
+    environment:
+      DATA_SOURCE_NAME: "postgresql://mallow:${POSTGRES_PASSWORD:-mallow-dev}@postgres:5432/herald?sslmode=disable"
+      PG_EXPORTER_EXTEND_QUERY_PATH: /queries.yaml
+    volumes:
+      - ./postgres/queries/herald.yaml:/queries.yaml:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -298,6 +337,18 @@ services:
     restart: unless-stopped
 
   # nats-exporter — converts NATS monitoring JSON (port 8222) → Prometheus /metrics
+  #
+  # -routez/-gatewayz/-leafz omitted on purpose: nats-server.conf has no cluster{}
+  # or leafnode{} block (single node, no self-hosted-tenancy leaf nodes yet), so
+  # those endpoints would just report empty. -accstatz also omitted: every service
+  # shares the one default account (authorization{} block scopes by subject, not
+  # by account), so per-account stats wouldn't add a real breakdown either.
+  #
+  # -connz_detailed adds a series per live connection (cid/ip/name/lang/version
+  # labels) so per-service NATS traffic (identity/helm/herald/gateway) is visible
+  # instead of only the server-wide connz total. Cardinality is bounded here —
+  # these are long-lived service connections, not per-request — so the label churn
+  # from restarts/reconnects is small relative to the 7d TSDB retention.
   nats-exporter:
     image: natsio/prometheus-nats-exporter:latest
     container_name: nats-exporter
@@ -306,7 +357,9 @@ services:
       - "-varz"
       - "-jsz=all"
       - "-connz"
+      - "-connz_detailed"
       - "-subz"
+      - "-healthz"
       - "http://nats:8222"
     ports:
       - "7777:7777"
@@ -315,43 +368,33 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # cAdvisor — container CPU / RAM / network / disk metrics
-  #
-  # --docker_only: on Docker Desktop (macOS/Windows) the raw /rootfs, /sys,
-  # /var/lib/docker mounts below don't reflect real paths — Docker Desktop
-  # runs containers inside a hidden Linux VM, not directly on the host, so
-  # cAdvisor's default cgroupfs/sysfs walk reads garbage and metric export
-  # breaks. --docker_only makes it pull stats via the Docker Engine API
-  # (through the docker.sock mount) instead, which is always correct
-  # regardless of host OS. On native Linux hosts this flag is harmless — the
-  # Engine API still reports accurate cgroup-backed stats.
-  cadvisor:
-    image: gcr.io/cadvisor/cadvisor:v0.49.1
-    container_name: cadvisor
+  # docker-stats-exporter — per-container CPU/mem/net/blockio via the Docker
+  # Engine stats API (dockerode → /containers/{id}/stats), not raw
+  # graphdriver/cgroup filesystem reads. Replaced cAdvisor here 2026-07-28:
+  # cAdvisor (tried up to latest v0.52.1, --docker_only, and without it) is
+  # structurally broken on this host because Docker Desktop uses the
+  # containerd snapshotter storage backend (`docker info` → driver-type:
+  # io.containerd.snapshotter.v1) instead of the classic overlay2 graphdriver
+  # — cAdvisor's docker handler hardcodes a read from
+  # /rootfs/var/lib/docker/image/overlayfs/layerdb/mounts/<id>/mount-id to find
+  # each container's read-write layer, which doesn't exist under containerd
+  # snapshotter, so every container gets dropped ("failed to identify the
+  # read-write layer ID"), leaving only the root cgroup. No flag works around
+  # it, and cAdvisor has no exposed containerd.sock to fall back to on Docker
+  # Desktop. This exporter is immune since it never touches the filesystem —
+  # if re-deploying to a real Linux host, cAdvisor would work fine there
+  # (git history has the old config), but there's no reason to maintain two
+  # tools — this one works everywhere Docker's own API works.
+  docker-stats-exporter:
+    image: wywywywy/docker_stats_exporter:latest
+    container_name: docker-stats-exporter
     profiles: ["monitoring"]
-    privileged: true
-    command:
-      - "--docker_only=true"
-      # disk/diskIO metrics force cAdvisor to resolve each container's overlay2
-      # read-write layer path under /rootfs/var/lib/docker/... — on Docker
-      # Desktop for Mac that path is never real (all storage lives inside the
-      # hidden LinuxKit VM's virtual disk, not on the macOS host filesystem),
-      # so every container fails "failed to identify the read-write layer ID"
-      # and gets dropped entirely, including its cpu/memory/network stats.
-      # We don't need disk stats for OOM/restart correlation, so drop them.
-      - "--disable_metrics=disk,diskIO,advtcp,cpu_topology,cpuset,hugetlb,memory_numa,process,referenced_memory,resctrl,sched,tcp,udp"
+    environment:
+      DOCKERSTATS_INTERVAL: "15"
     volumes:
-      - /:/rootfs:ro
-      # docker.sock mounted explicitly (not the whole /var/run dir) — on Docker
-      # Desktop for Mac, bind-mounting the parent directory instead of the
-      # socket file itself often hands a stale/unreachable proxy path to
-      # nested containers, which is exactly what broke --docker_only above.
       - /var/run/docker.sock:/var/run/docker.sock:ro
-      - /sys:/sys:ro
-      - /var/lib/docker:/var/lib/docker:ro
-      - /dev/disk:/dev/disk:ro
     ports:
-      - "8180:8080"
+      - "9487:9487"
     restart: unless-stopped
 
   # Prometheus — metrics

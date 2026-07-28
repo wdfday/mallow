@@ -125,6 +125,20 @@ prometheus.scrape "postgres" {
   forward_to      = [prometheus.remote_write.default.receiver]
 }
 
+prometheus.scrape "postgres_helm" {
+  targets         = [{ __address__ = "postgres-exporter-helm:9187" }]
+  metrics_path    = "/metrics"
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.default.receiver]
+}
+
+prometheus.scrape "postgres_herald" {
+  targets         = [{ __address__ = "postgres-exporter-herald:9187" }]
+  metrics_path    = "/metrics"
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.default.receiver]
+}
+
 prometheus.scrape "redis" {
   targets         = [{ __address__ = "redis-exporter:9121" }]
   metrics_path    = "/metrics"
@@ -132,8 +146,8 @@ prometheus.scrape "redis" {
   forward_to      = [prometheus.remote_write.default.receiver]
 }
 
-prometheus.scrape "cadvisor" {
-  targets         = [{ __address__ = "cadvisor:8080" }]
+prometheus.scrape "docker_stats" {
+  targets         = [{ __address__ = "docker-stats-exporter:9487" }]
   metrics_path    = "/metrics"
   scrape_interval = "15s"
   forward_to      = [prometheus.remote_write.default.receiver]

@@ -3,9 +3,6 @@
 -- Docker entrypoint runs this once on first postgres volume initialization.
 
 -- "identity" is created by POSTGRES_DB.
-SELECT 'CREATE DATABASE strategist'
-WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'strategist')\gexec
-
 SELECT 'CREATE DATABASE helm'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'helm')\gexec
 
@@ -13,7 +10,6 @@ SELECT 'CREATE DATABASE herald'
 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'herald')\gexec
 
 GRANT ALL PRIVILEGES ON DATABASE identity     TO mallow;
-GRANT ALL PRIVILEGES ON DATABASE strategist   TO mallow;
 GRANT ALL PRIVILEGES ON DATABASE helm         TO mallow;
 GRANT ALL PRIVILEGES ON DATABASE herald       TO mallow;
 
@@ -24,10 +20,6 @@ GRANT ALL ON SCHEMA public TO mallow;
 \connect helm
 GRANT ALL ON SCHEMA public TO mallow;
 \i /schemas/helm_schema.sql
-
-\connect strategist
-GRANT ALL ON SCHEMA public TO mallow;
-\i /schemas/strategist_schema.sql
 
 \connect herald
 GRANT ALL ON SCHEMA public TO mallow;

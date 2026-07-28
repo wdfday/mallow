@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Blocks a commit if gitleaks finds a secret in the staged diff.
+# Only checks what you're about to commit, not full history — a `gitleaks
+# detect` full-repo scan on 2026-07-28 found 148 historical matches, all
+# either already-deleted paper/demo trading keys (paper_keys.txt explicitly
+# says "safe to commit") or false positives on empty `KEY=` template lines.
+# Nothing live in the current tree; not worth a destructive history rewrite
+# for sandbox credentials.
+#
+# Enable once per clone: just install-hooks
+
+set -euo pipefail
+
+if ! command -v gitleaks >/dev/null 2>&1; then
+  echo "pre-commit: gitleaks not installed (brew install gitleaks) — skipping secret scan" >&2
+  exit 0
+fi
+
+gitleaks protect --staged --redact -v

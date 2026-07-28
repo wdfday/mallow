@@ -7,6 +7,13 @@ dc-prod := "docker compose --env-file " + env_dir + "/prod.env -f deployment/doc
 default:
     @just --list
 
+# ── Git hooks ─────────────────────────────────────────────────────────────────
+
+# One-time per clone: points git at .githooks/ (pre-commit secret scan via gitleaks)
+install-hooks:
+    git config core.hooksPath .githooks
+    @echo "hooksPath set to .githooks — pre-commit now runs gitleaks on staged changes"
+
 # ── Infra ─────────────────────────────────────────────────────────────────────
 
 # Start backing services only: nats + postgres + redis + identity + herald

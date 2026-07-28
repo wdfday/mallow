@@ -31,6 +31,7 @@ dependencies = [
 dev = [
     "pytest>=7.0",
     "maturin>=1.5,<2.0",
+    "pandas_ta>=0.3.14b0", # tests/test_indicators_real_data.py only — not used by alm_py itself
 ]
 
 [tool.maturin]

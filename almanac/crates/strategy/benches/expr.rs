@@ -39,9 +39,9 @@ fn bench_rsi_construct(c: &mut Criterion) {
     group.bench_function("script", |b| b.iter(|| {
         build_strategy("script", &json!({
             "script": "\
-                let rsi14 = ind.rsi(14);\
-                if rsi14[0] < 35.0 { entry = true; }\
-                if rsi14[0] > 65.0 { exit  = true; }\
+                let rsi14 = ind.rsi(14);\n\
+                if rsi14[0] < 35.0 { entry = true; }\n\
+                if rsi14[0] > 65.0 { exit  = true; }\n\
             "
         })).unwrap()
     }));
@@ -61,9 +61,9 @@ fn bench_rsi_run(c: &mut Criterion) {
     group.bench_with_input(BenchmarkId::from_parameter("script"), &bars, |b, bars| {
         let mut s = build_strategy("script", &json!({
             "script": "\
-                let rsi14 = ind.rsi(14);\
-                if rsi14[0] < 35.0 { entry = true; }\
-                if rsi14[0] > 65.0 { exit  = true; }\
+                let rsi14 = ind.rsi(14);\n\
+                if rsi14[0] < 35.0 { entry = true; }\n\
+                if rsi14[0] > 65.0 { exit  = true; }\n\
             "
         })).unwrap();
         b.iter(|| { s.reset(); run_all(s.as_mut(), bars) })
@@ -81,10 +81,10 @@ fn bench_ema_run(c: &mut Criterion) {
     group.bench_with_input(BenchmarkId::from_parameter("ind_script"), &bars, |b, bars| {
         let mut s = build_strategy("script", &json!({
             "script": "\
-                let ema20 = ind.ema(20);\
-                let ema50 = ind.ema(50);\
-                if cross_above(ema20, ema50) { entry = true; }\
-                if cross_below(ema20, ema50) { exit  = true; }\
+                let ema20 = ind.ema(20);\n\
+                let ema50 = ind.ema(50);\n\
+                if cross_above(ema20, ema50) { entry = true; }\n\
+                if cross_below(ema20, ema50) { exit  = true; }\n\
             "
         })).unwrap();
         b.iter(|| { s.reset(); run_all(s.as_mut(), bars) })
@@ -120,12 +120,12 @@ fn bench_multi_run(c: &mut Criterion) {
     group.bench_with_input(BenchmarkId::from_parameter("script"), &bars, |b, bars| {
         let mut s = build_strategy("script", &json!({
             "script": "\
-                let rsi14 = ind.rsi(14);\
-                let ema20 = ind.ema(20);\
-                let ema50 = ind.ema(50);\
-                let macd  = ind.macd(12);\
-                if rsi14[0] < 40.0 && ema20[0] > ema50[0] && macd[0] > 0.0 { entry = true; }\
-                if rsi14[0] > 60.0 || ema20[0] < ema50[0] { exit = true; }\
+                let rsi14 = ind.rsi(14);\n\
+                let ema20 = ind.ema(20);\n\
+                let ema50 = ind.ema(50);\n\
+                let macd  = ind.macd(12);\n\
+                if rsi14[0] < 40.0 && ema20[0] > ema50[0] && macd[0] > 0.0 { entry = true; }\n\
+                if rsi14[0] > 60.0 || ema20[0] < ema50[0] { exit = true; }\n\
             "
         })).unwrap();
         b.iter(|| { s.reset(); run_all(s.as_mut(), bars) })

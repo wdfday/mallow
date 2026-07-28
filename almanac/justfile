@@ -115,6 +115,18 @@ gen-openapi format="yaml":
     cargo run --bin gen-openapi -- {{format}} > openapi.{{format}}
     @echo "wrote openapi.{{format}}"
 
+# ── Benchmarks ────────────────────────────────────────────────────────────────
+
+# Full alm-strategy Rhai-vs-hardcoded benchmark (same command CI runs on push to main)
+bench:
+    cargo bench -p alm-strategy --bench expr
+
+# Quick low-sample run for local iteration — not for tracking/CI, just a fast
+# directional read while poking at the engine. Pass a filter to scope to one
+# group, e.g. `just bench-quick rsi_run`.
+bench-quick filter="":
+    cargo bench -p alm-strategy --bench expr -- {{filter}} --warm-up-time 1 --measurement-time 2 --sample-size 10
+
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
 # Remove build artifacts

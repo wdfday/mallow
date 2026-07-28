@@ -1,0 +1,60 @@
+name: Benchmark
+
+# Tracks alm-strategy's Rhai-script-vs-hardcoded-Rust performance over time
+# (crates/strategy/benches/expr.rs) — exists specifically because engine
+# changes like disabling Rhai's fast_operators (needed for exact float
+# comparison, see script/engine.rs) trade a real performance cost for
+# correctness, and that cost should be visible commit-to-commit, not
+# discovered by accident months later.
+#
+# Runs on push to main only:
+#   - PRs have no baseline to compare against until main has at least one
+#     recorded run, so there's nothing useful to alert on yet.
+#   - Pushing benchmark history from an untrusted PR branch (fork) would let
+#     that branch's own results poison main's tracked history.
+#
+# Results are pushed to the `gh-pages` branch and rendered as a chart at
+# https://<owner>.github.io/<repo>/dev/bench/ — GitHub Pages must be enabled
+# ONCE, manually, in repo Settings → Pages → Source: branch `gh-pages` / `/`
+# root. This workflow creates/updates that branch's content but can't flip
+# the Pages setting itself.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "almanac/crates/strategy/**"
+      - "almanac/crates/core/**"
+      - "almanac/crates/indicator/**"
+      - "almanac/crates/engine/**"
+      - ".github/workflows/benchmark.yml"
+
+permissions:
+  contents: write # needed to push benchmark history to gh-pages
+
+jobs:
+  bench:
+    name: cargo bench / alm-strategy expr
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: almanac -> target
+      - name: Run benchmark
+        working-directory: almanac
+        run: cargo bench -p alm-strategy --bench expr | tee output.txt
+      - name: Store result + update gh-pages chart
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: "criterion"
+          output-file-path: almanac/output.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          auto-push: true
+          # A run has to regress past 150% of the last recorded baseline
+          # before this comments/fails — normal shared-runner noise is
+          # usually well under that, so this only fires for a real regression.
+          alert-threshold: "150%"
+          comment-on-alert: true
+          fail-on-alert: true

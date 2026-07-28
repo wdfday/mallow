@@ -1,0 +1,156 @@
+name: CI
+
+# CI only — no deploy. Runs on every PR and on push to main. Each Go service
+# is its own module (go.work just links them for local dev), so they're
+# tested independently in a matrix rather than one `go test ./...` at repo
+# root — a failure tells you exactly which service broke, and one service's
+# slow test suite (hist-data's binance provider tests run ~50s) doesn't block
+# fast-failing on another.
+#
+# thstrategist/ is intentionally not built here — zero commits in git history
+# per the repo's own history, nothing to test yet.
+#
+# alm-py's tests/ (pytest, deterministic) is wired in below — including the
+# named-strategy-vs-Rhai-script parity suite. alm-py's notebooks/comparison/
+# pipeline (vs vectorbt/backtrader, `just compare` in that crate) is NOT
+# wired in: it's exploratory research tooling that produces markdown reports
+# for human review, not a pass/fail gate, and has known accepted discrepancies
+# (see repo's own project memory on Sharpe/Sortino rf/ddof mismatch) that
+# would make it permanently red if treated as a blocking check.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.26.5" # matches go.work's own `go 1.26.5` directive
+
+jobs:
+  go-services:
+    name: go / ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [identity, helm, api-gateway, hist-data]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: ${{ matrix.service }}/go.sum
+      - uses: extractions/setup-just@v2
+      - name: Build
+        working-directory: ${{ matrix.service }}
+        run: just build
+      - name: Vet
+        working-directory: ${{ matrix.service }}
+        run: go vet ./...
+      - name: Test
+        working-directory: ${{ matrix.service }}
+        run: just test
+
+  go-pkg:
+    name: go / pkg
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: pkg/go.sum
+      - working-directory: pkg
+        run: go build ./...
+      - working-directory: pkg
+        run: go vet ./...
+      - working-directory: pkg
+        run: go test ./...
+
+  rust-almanac:
+    name: rust / almanac
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: almanac -> target
+      - working-directory: almanac
+        run: cargo build --workspace
+      - working-directory: almanac
+        run: cargo test --workspace
+
+  alm-py:
+    name: python / alm-py
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: almanac -> target
+      # Builds the PyO3 extension (maturin backend) + installs pyproject.toml's
+      # [project.dependencies]/[project.optional-dependencies].dev in one step —
+      # same as the local `install-deps` recipe in this crate's own justfile.
+      - name: Install + build extension
+        working-directory: almanac/crates/alm-py
+        run: |
+          python -m pip install --upgrade pip
+          pip install maturin
+          pip install -e '.[dev]'
+      - name: Test
+        working-directory: almanac/crates/alm-py
+        run: pytest tests/ -v
+
+  swagger-check:
+    name: swagger / ${{ matrix.service }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [identity, helm]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: ${{ matrix.service }}/go.sum
+      - uses: extractions/setup-just@v2
+      - name: Generated docs match what's committed
+        working-directory: ${{ matrix.service }}
+        run: just swagger-check
+
+  compose-validate:
+    name: docker compose config
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: dev (base)
+        run: docker compose --env-file deployment/environments/shared.env.example -f deployment/docker-compose.yml config -q
+      - name: staging overlay
+        run: docker compose --env-file deployment/environments/staging.env.example -f deployment/docker-compose.yml -f deployment/docker-compose.staging.yml config -q
+      - name: prod overlay
+        run: docker compose --env-file deployment/environments/prod.env.example -f deployment/docker-compose.yml -f deployment/docker-compose.prod.yml config -q
+      - name: trace overlay
+        run: docker compose --env-file deployment/environments/shared.env.example -f deployment/docker-compose.yml -f deployment/docker-compose.trace.yml config -q
+
+  # Single required status check for branch protection — add "ci" here instead
+  # of every matrix entry by name, so adding/removing a service later doesn't
+  # mean going back to update the branch protection rule too.
+  ci:
+    name: CI
+    if: always()
+    needs: [go-services, go-pkg, rust-almanac, alm-py, swagger-check, compose-validate]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fail if any dependency failed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1

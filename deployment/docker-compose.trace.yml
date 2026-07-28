@@ -1,0 +1,33 @@
+# Trace overlay — merge on top of the base (dev) file when chasing a specific
+# bug locally and the normal log level isn't giving enough signal:
+#
+#   docker compose --env-file environments/shared.env \
+#     -f docker-compose.yml -f docker-compose.trace.yml up -d
+#
+# Not meant to be left on by default — this is loud, and for herald it can
+# meaningfully affect throughput under real market-data load (every tick/bar
+# gets logged at trace). Only touches log verbosity; doesn't change ports,
+# resources, or restart policy — those stay whatever docker-compose.yml (or
+# whatever other overlay you merge alongside this one) already says.
+#
+# Turn it off by just dropping the -f flag on your next `up` — nothing here
+# persists once the container is recreated without this file.
+
+services:
+  identity:
+    environment:
+      LOG_LEVEL: debug
+      GIN_MODE: debug
+
+  helm:
+    environment:
+      LOG_LEVEL: debug
+      GIN_MODE: debug
+
+  gateway:
+    environment:
+      GIN_MODE: debug
+
+  herald:
+    environment:
+      RUST_LOG: "herald=trace,alm_engine=debug,alm_ledger=debug,alm_strategy=debug,tower_http=debug"

@@ -1,0 +1,108 @@
+# Production overlay — merge on top of the base file:
+#
+#   docker compose --env-file environments/prod.env \
+#     -f docker-compose.yml -f docker-compose.prod.yml \
+#     --profile monitoring up -d
+#
+# Only lists the services/fields that actually differ from docker-compose.yml.
+# Anything not mentioned here (image build, healthchecks, volumes, NATS auth
+# accounts, ...) is inherited unchanged from the base file — this is a diff,
+# not a copy, so the two files can't silently drift apart the way three full
+# duplicates would.
+#
+# What changes vs base, and why:
+#   - No host-exposed ports for postgres/redis/nats/identity/herald/helm.
+#     Only `gateway` (the public edge, per CLAUDE.md's Service Map) and
+#     `cloudflared` should ever be reachable from outside this network.
+#     Reaching identity/herald/helm directly bypasses gateway's JWT check
+#     entirely — that's a real hole, not a hardening nicety.
+#     NATS is fully closed too: self-hosted tenancy (which would need 4222
+#     reachable for a tenant's leaf node) is explicitly deferred/unbuilt per
+#     project notes — reopen 4222 deliberately if that ships.
+#   - `ports: !reset []` is required, not `ports: []` — Compose's default
+#     merge for list fields is to concatenate with the base file, so a plain
+#     empty list here is a no-op and the base ports leak straight through.
+#     Only `!reset` with an *empty* list reliably clears them in this Compose
+#     version (v5.3.0) — `!reset` with a non-empty replacement list silently
+#     produced no ports at all when tested, so don't rely on that shape here.
+#   - `restart: always` on the core services — recovers even after a host
+#     reboot without someone having to notice and run `docker compose up`.
+#   - `deploy.resources.limits` on every app service — one runaway goroutine
+#     leak or Rust panic-loop shouldn't be able to starve the whole host.
+#     Numbers below are a starting guess, not measured — tighten once you've
+#     watched real memory usage in Grafana for a week.
+#   - GIN_MODE/COOKIE_* forced to production-safe values regardless of what
+#     prod.env happens to contain — these are not supposed to be
+#     environment-file-configurable footguns. LOG_LEVEL/RUST_LOG stay at
+#     `info`, matching staging — `warn` is tempting to reach for as "prod =
+#     quieter" but it throws away the normal-operation trail you need to
+#     reconstruct what led up to an error, not just the error itself. Drop a
+#     specific noisy subsystem to `warn` if it turns out to be too chatty at
+#     `info`, don't make `warn` the blanket prod default.
+#   - monitoring profile is NOT optional here the way `just up-mon` treats it
+#     locally — observability matters more, not less, once real users exist.
+
+services:
+  nats:
+    ports: !reset [] # closed entirely — reopen 4222 only when self-hosted tenancy actually ships
+    restart: always
+
+  postgres:
+    ports: !reset [] # no host exposure; use `just sh postgres` or an SSH tunnel for psql access
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  redis:
+    ports: !reset []
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  identity:
+    ports: !reset [] # only reachable via gateway's reverse proxy
+    environment:
+      GIN_MODE: release
+      LOG_LEVEL: info
+      COOKIE_SECURE: "true"
+      COOKIE_SAME_SITE: "strict"
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  herald:
+    ports: !reset []
+    environment:
+      RUST_LOG: "herald=info,alm_engine=info,alm_ledger=info"
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  helm:
+    ports: !reset []
+    environment:
+      GIN_MODE: release
+      LOG_LEVEL: info
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+
+  gateway:
+    environment:
+      GIN_MODE: release
+      RATE_LIMIT_PER_MINUTE: "300"
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 256M

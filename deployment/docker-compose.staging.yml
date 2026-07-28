@@ -1,0 +1,93 @@
+# Staging overlay — merge on top of the base file:
+#
+#   docker compose --env-file environments/staging.env \
+#     -f docker-compose.yml -f docker-compose.staging.yml \
+#     --profile monitoring up -d
+#
+# Deliberately near-identical to docker-compose.prod.yml in structure — the
+# whole point of staging is catching bugs that only show up when the topology
+# matches prod (network isolation, resource limits, restart behavior). Where
+# staging differs from prod, it's always in the *loose* direction (more
+# logging, one debug port left open), never structurally different — a
+# staging environment that's shaped differently from prod just moves the
+# "only shows up in prod" bugs one step later instead of catching them.
+#
+# What differs from prod specifically:
+#   - LOG_LEVEL stays at info (not warn) — you're actively watching this
+#     environment for bugs, warn-only logging works against that.
+#   - Separate secrets file (environments/staging.env) and — if this runs on
+#     its own host/domain — its own CORS_ORIGINS. If staging instead shares a
+#     host with dev/prod, give it distinct container_names/project name
+#     (`docker compose -p mallow-staging ...`) so it doesn't collide.
+#
+# Note: `ports: !reset []` (not `ports: []`) is required to actually clear a
+# service's host ports — Compose merges list fields with the base file by
+# default, so a plain empty list is a silent no-op here. `!reset` with a
+# *non-empty* replacement list was tested and doesn't work reliably in this
+# Compose version (v5.3.0) either — it produced no ports at all — so NATS is
+# closed entirely rather than partially reopened for troubleshooting.
+
+services:
+  nats:
+    ports: !reset []
+    restart: always
+
+  postgres:
+    ports: !reset []
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  redis:
+    ports: !reset []
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  identity:
+    ports: !reset []
+    environment:
+      GIN_MODE: release
+      LOG_LEVEL: info
+      COOKIE_SECURE: "true"
+      COOKIE_SAME_SITE: "strict"
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+  herald:
+    ports: !reset []
+    environment:
+      RUST_LOG: "herald=info,alm_engine=info,alm_ledger=info"
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  helm:
+    ports: !reset []
+    environment:
+      GIN_MODE: release
+      LOG_LEVEL: info
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 768M
+
+  gateway:
+    environment:
+      GIN_MODE: release
+      RATE_LIMIT_PER_MINUTE: "300"
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 256M

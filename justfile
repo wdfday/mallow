@@ -1,5 +1,7 @@
 env_dir := justfile_directory() + "/deployment/environments"
 dc := "docker compose --env-file " + env_dir + "/shared.env -f deployment/docker-compose.yml"
+dc-staging := "docker compose --env-file " + env_dir + "/staging.env -f deployment/docker-compose.yml -f deployment/docker-compose.staging.yml"
+dc-prod := "docker compose --env-file " + env_dir + "/prod.env -f deployment/docker-compose.yml -f deployment/docker-compose.prod.yml"
 
 # List all recipes
 default:
@@ -26,6 +28,26 @@ up *args:
 up-mon *args:
     {{dc}} --profile monitoring up -d {{args}}
     @echo "Grafana:  http://localhost:3000  (admin / mallow)"
+
+# Start full stack with trace-level logging — loud, for chasing a specific bug (not to stay on)
+up-trace *args:
+    {{dc}} -f deployment/docker-compose.trace.yml up -d {{args}}
+
+# Start staging stack (hardened overlay + staging.env — see deployment/docker-compose.staging.yml)
+up-staging *args:
+    {{dc-staging}} --profile monitoring up -d {{args}}
+
+# Start production stack (hardened overlay + prod.env — see deployment/docker-compose.prod.yml)
+up-prod *args:
+    {{dc-prod}} --profile monitoring up -d {{args}}
+
+# Stop staging stack
+down-staging:
+    {{dc-staging}} down
+
+# Stop production stack
+down-prod:
+    {{dc-prod}} down
 
 # Stop all containers
 down:

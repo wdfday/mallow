@@ -116,6 +116,18 @@ pub(crate) fn build_engine() -> Engine {
     engine.set_max_operations(500_000);
     crate::script::ta::register_ta(&mut engine);
 
+    // Rhai's "Fast Operators" mode is ON by default (its own doc comment claiming
+    // "Default is false" is stale as of 1.25 — see `LangOptions::default()`).
+    // When enabled, binary ops between two non-custom types (e.g. f64/f64) never
+    // go through function resolution at all: `eval_fn_call_expr` short-circuits
+    // straight to Rhai's hardcoded built-in (epsilon-tolerant for floats) and the
+    // registered `register_fn("==", ...)` overrides below are never consulted.
+    // Custom types (MEntry) are unaffected — `is_variant()` is true for them, so
+    // they always go through normal resolution — which is why the MEntry overloads
+    // "worked" while the plain-f64 ones silently didn't. Disabling fast-ops routes
+    // every operator call through resolve_fn, where our exact overrides win.
+    engine.set_fast_operators(false);
+
     // ── Exact f64 comparisons (override Rhai's epsilon comparison) ───────────
     engine.register_fn("==", |a: f64, b: f64| a == b);
     engine.register_fn("!=", |a: f64, b: f64| a != b);
@@ -1176,5 +1188,29 @@ mod tests {
     fn slope_two_arg_is_scanned() {
         assert_eq!(extract_max_lookback("s = slope(close, 20);"), 20);
         assert_eq!(extract_max_lookback("s = slope(close);"),      0);
+    }
+}
+
+#[cfg(test)]
+mod fast_ops_ulp_test {
+    use super::shared_engine;
+    use rhai::Scope;
+
+    #[test]
+    fn ulp_apart_f64_comparison_is_exact() {
+        let k = f64::from_bits(4635359467649740402);
+        let d = f64::from_bits(4635359467649740401);
+        assert!(k > d, "sanity: native Rust comparison");
+
+        let engine = shared_engine();
+        let mut scope = Scope::new();
+        scope.push("k", k);
+        scope.push("d", d);
+
+        let gt: bool = engine.eval_with_scope(&mut scope, "k > d").unwrap();
+        let le: bool = engine.eval_with_scope(&mut scope, "k <= d").unwrap();
+
+        assert!(gt, "Rhai `k > d` should match native comparison (true)");
+        assert!(!le, "Rhai `k <= d` should match native comparison (false)");
     }
 }

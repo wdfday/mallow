@@ -24,8 +24,9 @@ func TestPercentEquityScalesByStrength(t *testing.T) {
 	equity := decimal.NewFromInt(10000)
 
 	tact := New(SizingConfig{
-		Mode:    SizingPercentEquity,
-		UnitPct: 0.10, // unit = 1000 → 10 base @ price 100
+		Mode:           SizingPercentEquity,
+		UnitPct:        0.10, // unit = 1000 → 10 base @ price 100
+		StrengthSizing: true, // this test's whole point is strength scaling
 	})
 	tact.UpdateEquity(equity)
 

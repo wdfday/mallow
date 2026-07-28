@@ -38,6 +38,12 @@ test-int filter="TestBinance_":
     go test -v -count=1 -run "{{filter}}" \
         ./internal/runtime/ -timeout 120s
 
+# Race detector — same -p 1/-short scoping as `test` (race detector multiplies
+# per-goroutine memory, so the OOM guard matters even more here). Scope to a
+# package with `just test-race ./internal/fleet/...` when the full run is slow.
+test-race pkg="./...":
+    GOMEMLIMIT=512MiB go test -race -p 1 -parallel 1 -count=1 -short {{pkg}}
+
 # Format source files
 fmt:
     gofmt -w $(rg --files cmd internal | rg '\.go$')
